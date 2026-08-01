@@ -1505,6 +1505,7 @@ export interface StreamDeps {
   emittedAt: string;
   fingerprintCursors: Map<string, FingerprintCursor>;
   progress: CollectContext["progress"];
+  requestBrowserSurfacePhase: CollectContext["requestBrowserSurfacePhase"];
   requested: CollectContext["requested"];
 }
 
@@ -2480,26 +2481,73 @@ async function runRequestedStreams(
  * `runRequestedStreams` to keep that function's branch count under the
  * repo's cognitive-complexity ceiling — this is a pure extraction, no
  * behavior change.
+ *
+ * Slack is `surfaceScope: "phase"` (browser-surface-policy.ts): the
+ * controller does NOT reserve a run-level managed surface for it, so
+ * `PDPP_BROWSER_SURFACE_REMOTE_CDP_URL` is never set in `process.env` for
+ * this run — `withResolvedRemoteCdpUrl`'s default `process.env` read would
+ * find nothing. This function requests a bounded phase-scoped lease
+ * (`deps.requestBrowserSurfacePhase`, connector-runtime.ts) immediately
+ * before the four gap streams and releases it in `finally` on every exit
+ * path (success, failure, or cancellation/stdin-close, all of which resolve
+ * `deps.requestBrowserSurfacePhase`'s promise per its own contract) — the
+ * only window this connector actually needs a browser for.
+ *
+ * When no phase surface is available (or the request times out), this is a
+ * CAPABILITY precondition, not an HTTP request: it short-circuits BEFORE
+ * `acquireSlackApiBrowserTransport`/any transport/the HTTP governor are ever
+ * touched — no retries, no browser acquire call of any kind — and reports
+ * each due stream's existing honest `optional_stream_capability_missing`
+ * SKIP_RESULT directly via `runOptionalStream` (the exact same classified
+ * shape a live acquisition failure produces, reused rather than
+ * duplicated). NEVER a local Chromium launch, which does not exist in the
+ * production `reference` image.
+ *
+ * `acquire` is only exercised on a granted phase lease and defaults to the
+ * real `acquireBrowserForConnector`; overridable so tests can prove the
+ * remote-CDP-URL composition without launching a real browser process,
+ * mirroring `acquireSlackApiBrowserTransport`'s own injection seam.
  */
-async function runGapStreamsIfRequested(
+export async function runGapStreamsIfRequested(
   deps: StreamDeps,
   credentials: SlackCredentials,
-  emit: CollectContext["emit"]
+  emit: CollectContext["emit"],
+  acquire: (
+    options: Parameters<typeof acquireBrowserForConnector>[0]
+  ) => Promise<SlackApiIsolatedBrowser> = acquireBrowserForConnector
 ): Promise<void> {
-  const gapStreamsRequested =
-    deps.requested.has("stars") ||
-    deps.requested.has("user_groups") ||
-    deps.requested.has("reminders") ||
-    deps.requested.has("dm_read_states");
-  if (!gapStreamsRequested) {
+  const dueStreams = (["stars", "user_groups", "reminders", "dm_read_states"] as const).filter((stream) =>
+    deps.requested.has(stream)
+  );
+  if (dueStreams.length === 0) {
+    return;
+  }
+  const phaseResult = await deps.requestBrowserSurfacePhase();
+  if (phaseResult.kind !== "granted") {
+    // Capability precondition failed: report each due stream's honest,
+    // already-classified capability-missing skip WITHOUT ever creating a
+    // transport, calling `acquire`, or entering the HTTP governor/retry
+    // path — an unavailable phase lease is not a request that can be
+    // retried into existence.
+    const unavailableError = new Error(
+      `slack_api_browser_unavailable: browser_surface_phase_unavailable: ${phaseResult.reason}`
+    );
+    for (const stream of dueStreams) {
+      deps.progress(`Slack: ${stream} skipped — no managed browser surface available`, { stream });
+      await runOptionalStream(emit, stream, () => Promise.reject(unavailableError));
+    }
     return;
   }
   // One browser page, shared across all four gap streams this run — not
-  // one per stream. Acquisition failure (e.g. Chromium missing) is caught
-  // per-stream below via `runOptionalStream`'s own isolation, so a single
-  // failed acquisition reports four honest skips instead of one shared
-  // browser bug taking down four otherwise-unrelated stream attempts.
-  const transport = await acquireSlackApiBrowserTransport(deps.progress, credentials.cookie);
+  // one per stream. A failure acquiring the browser itself (e.g. Chromium
+  // launch error, cookie-seed failure) with a GRANTED phase lease is still
+  // caught per-stream below via `runOptionalStream`'s own isolation, so
+  // a single failed acquisition reports four honest skips instead of one
+  // shared browser bug taking down four otherwise-unrelated stream
+  // attempts.
+  const transport = await acquireSlackApiBrowserTransport(deps.progress, credentials.cookie, (options) =>
+    acquire(withResolvedRemoteCdpUrl(options, phaseResult.handle.env))
+  );
   try {
     if (deps.requested.has("stars")) {
       deps.progress("Slack: emitting stars", { stream: "stars" });
@@ -2527,6 +2575,7 @@ async function runGapStreamsIfRequested(
     }
   } finally {
     await transport.release();
+    await phaseResult.handle.release();
   }
 }
 
@@ -2693,6 +2742,7 @@ if (isMainModule(import.meta.url)) {
         emittedAt: ctx.emittedAt,
         fingerprintCursors,
         progress,
+        requestBrowserSurfacePhase: ctx.requestBrowserSurfacePhase,
         requested,
       };
       const priorChannelLastTs = normalizeStringRecord(messagesState?.channel_last_ts);

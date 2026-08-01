@@ -74,6 +74,7 @@ function makeDeps(db: DatabaseSync, harness: RecordingEmit): StreamDeps {
     emittedAt: "2026-06-05T12:00:00.000Z",
     fingerprintCursors: new Map(),
     progress: () => Promise.resolve(),
+    requestBrowserSurfacePhase: () => Promise.reject(new Error("requestBrowserSurfacePhase not used by this test")),
     requested,
   };
 }
@@ -84,7 +85,7 @@ function canvasCoverage(harness: RecordingEmit): Record<string, unknown> | null 
   const msg = harness.protocolMessages.find(
     (m) => m.type === "DETAIL_COVERAGE" && (m as { stream?: string }).stream === "canvases"
   );
-  return msg ? (msg as unknown as Record<string, unknown>) : null;
+  return msg ? (msg as Record<string, unknown>) : null;
 }
 
 test("runCanvasesStream: declares considered === the enumerated quip inventory (a real complete denominator)", async () => {

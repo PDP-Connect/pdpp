@@ -61,6 +61,7 @@ function makeHarness(
     emittedAt: "2026-05-26T12:00:00.000Z",
     fingerprintCursors: cursors,
     progress: () => Promise.resolve(),
+    requestBrowserSurfacePhase: () => Promise.reject(new Error("requestBrowserSurfacePhase not used by this test")),
     requested,
   };
   return { cursors, deps: partial as StreamDeps, emitted: recording.emitted };

@@ -101,6 +101,7 @@ function makeDeps(
     emittedAt: "2026-06-05T12:00:00.000Z",
     fingerprintCursors: cursors,
     progress: () => Promise.resolve(),
+    requestBrowserSurfacePhase: () => Promise.reject(new Error("requestBrowserSurfacePhase not used by this test")),
     requested: new Map<string, StreamScope>(requestedStreams.map((n) => [n, { name: n }])),
   };
 }
@@ -110,7 +111,7 @@ function coverageFor(harness: RecordingEmit, stream: string): Record<string, unk
   const msg = harness.protocolMessages.find(
     (m) => m.type === "DETAIL_COVERAGE" && (m as { stream?: string }).stream === stream
   );
-  return msg ? (msg as unknown as Record<string, unknown>) : null;
+  return msg ? (msg as Record<string, unknown>) : null;
 }
 
 test("users: a fresh run declares considered === covered === enumerated (all emitted, a real complete)", async () => {

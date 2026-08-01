@@ -135,6 +135,7 @@ function makeChannelDeps(requestedStreams: readonly string[]): {
       emittedAt: "2026-06-03T12:00:00.000Z",
       fingerprintCursors: new Map([["channels", openFingerprintCursor({}, { excludeFromFingerprint: [] })]]),
       progress: () => Promise.resolve(),
+      requestBrowserSurfacePhase: () => Promise.reject(new Error("requestBrowserSurfacePhase not used by this test")),
       requested,
     },
     emitted: harness.emitted,
