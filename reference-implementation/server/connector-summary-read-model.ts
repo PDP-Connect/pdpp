@@ -3142,9 +3142,23 @@ export async function runBoundedSummaryEvidenceSweep(options: {
       // what guarantees the stuck page is revisited, using the EXISTING
       // dirty/checkpoint authority rather than a second durable queue.
       anyFoldIncomplete = true;
-    } else {
-      observedIds.push(...pageIds);
     }
+    // Publish-candidacy is independent of this page's own incomplete flag
+    // (2026-08-01 stuck-publisher symptom: a page-wide `incomplete` — set
+    // because ONE connection's fold in this batch didn't finish — used to
+    // withhold ALL of the page's ids from `observedIds`, including sibling
+    // rows in the same page whose canonical evidence had already fully
+    // converged. Those already-current rows then never got a single publish
+    // attempt until keyset wraparound revisited their page — potentially
+    // many minutes away with a large/dirty fleet ahead of them, even though
+    // nothing else was actually blocking them.
+    // `publishConnectorListSummaryTerminalProjectionsForIds` already
+    // re-queries evidence per id and only publishes rows that independently
+    // satisfy `evidenceRowIsFullyCurrent`, so handing it every page's ids
+    // regardless of the page's aggregate fold outcome costs one bounded
+    // extra evidence read per page and drops zero correctness: a row that
+    // is NOT actually current is simply filtered out there, same as today.
+    observedIds.push(...pageIds);
     cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
       // Short page: this was genuinely the last page of the complete set.

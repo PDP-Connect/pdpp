@@ -192,6 +192,109 @@ test("fleet-scale: a bounded sweep page publishes exactly its own page, never mo
     assert.equal(publishedCount, pageSize, "only the swept page's connections may have a current terminal projection");
   }));
 
+// ── 2026-08-01 stuck-publisher regression: a page-wide `incomplete` flag
+// (caused by ONE heavy connection's fold not converging within the shared
+// budget) previously withheld EVERY id sharing that page from `observedIds`
+// — including sibling connections whose own evidence was already fully
+// current — so those siblings never got a publish attempt until keyset
+// wraparound revisited their page, which can be many minutes away on a
+// large/dirty fleet even though nothing was actually blocking them.
+//
+// The sibling's checkpoint is seeded directly at/above the page's terminal
+// high-water mark so `rowNeedsFoldParticipation` is deterministically
+// `false` for it — no wall-clock/deadline tuning needed to keep it out of
+// fold participation while the heavy connection's own fold genuinely stops
+// short of the same high-water mark. ────────────────────────────────────
+
+let heavyEventSeq = 0;
+
+function seedHeavyTerminalEvents(connectorInstanceId: string, count: number): void {
+  const stmt = getDb().prepare(
+    `INSERT INTO spine_events(
+       event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+       actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
+     ) VALUES (?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test', 'run', ?, 'succeeded', ?, ?, ?, '1')`
+  );
+  for (let i = 0; i < count; i += 1) {
+    heavyEventSeq += 1;
+    const data = JSON.stringify({
+      collection_facts: {
+        reference_only: true,
+        schema_version: 1,
+        streams: [{ record_count: heavyEventSeq, resolved: true, stream: "messages" }],
+      },
+      connection_id: connectorInstanceId,
+      connector_instance_id: connectorInstanceId,
+    });
+    stmt.run(
+      `heavy_evt_${heavyEventSeq}`,
+      heavyEventSeq,
+      NOW,
+      NOW,
+      `heavy_trace_${heavyEventSeq}`,
+      `heavy_run_${heavyEventSeq}`,
+      `heavy_run_${heavyEventSeq}`,
+      connectorInstanceId,
+      data
+    );
+  }
+}
+
+test("a page-wide incomplete fold (one heavy connection sharing the page) does not withhold a sibling connection's already-current id from observedIds, and the sibling publishes", () =>
+  withTempDb(async () => {
+    seedConnector(CONNECTOR_ID);
+    const heavyId = "cin_terminal_publish_a_heavy";
+    const currentId = "cin_terminal_publish_b_current";
+    await seedInstance(heavyId, CONNECTOR_ID);
+    await seedInstance(currentId, CONNECTOR_ID);
+    await rebuildConnectorSummaryEvidence();
+
+    // Give the heavy connection a terminal-event backlog large enough that a
+    // tightly bounded fold (maxEventsPerFold below) cannot converge it
+    // within one page pass, raising the page's shared high-water mark
+    // (`readMaxTerminalEventSeq`, scoped to the page's id set) to 2001.
+    seedHeavyTerminalEvents(heavyId, 2001);
+    await markConnectorSummaryEvidenceDirty({ connectorInstanceId: heavyId, reason: "heavy backlog" });
+
+    // Deterministically exclude currentId from fold participation: its own
+    // checkpoint is stamped at exactly the page's high-water mark, so
+    // `rowNeedsFoldParticipation` (checkpoint < maxSeq) reads false for it
+    // regardless of how far the heavy connection's own fold gets this pass —
+    // the real-world equivalent of a connection whose terminal history was
+    // already fully folded before a much larger sibling's backlog arrived.
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET stream_facts_event_seq = ? WHERE connector_instance_id = ?")
+      .run(heavyEventSeq, currentId);
+
+    const sweep = await runBoundedSummaryEvidenceSweep({
+      maxDurationMs: 5000,
+      maxEventsPerFold: 500,
+      pageSize: 25,
+    });
+
+    assert.equal(sweep.incomplete, true, "the heavy connection's fold must not converge within a 500-event budget");
+    assert.ok(
+      sweep.observedIds.includes(currentId),
+      "the sibling's id must still reach observedIds despite the shared page's incomplete flag"
+    );
+
+    const result = await publishConnectorListSummaryTerminalProjectionsForIds(sweep.observedIds);
+    const currentProjection = await getConnectorListSummaryTerminalProjection(currentId);
+    assert.equal(
+      currentProjection.state,
+      "current",
+      "the sibling must actually publish, not just appear in observedIds"
+    );
+
+    const heavyProjection = await getConnectorListSummaryTerminalProjection(heavyId);
+    assert.notEqual(
+      heavyProjection.state,
+      "current",
+      "the genuinely non-converged heavy connection must NOT be published as current"
+    );
+    assert.ok(result.published >= 1);
+  }));
+
 const PUBLISHER_CALL_PATTERN =
   /publishConnectorListSummaryTerminalProjectionsForIds|publishConnectorListSummaryTerminalProjection\b/;
 
