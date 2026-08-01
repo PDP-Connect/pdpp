@@ -7,15 +7,16 @@ import type { Agent as HttpsAgent } from "node:https";
 import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../lib/db.ts";
 import {
   classifyAssistanceNotification,
+  computeInteractionPushTtl,
   NOTIFICATION_TIERS,
+  projectInteractionTransportPriority,
   projectNotificationDelivery,
   shouldFanoutRenderedVerdict,
+  WEB_PUSH_MAX_TTL_SECONDS,
 } from "./notification-policy.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import type { DnsLookupAll } from "./ssrf-guard.ts";
 import { createPinnedHttpsAgent, resolveAllowedAddresses } from "./ssrf-guard.ts";
-
-const DEFAULT_TTL_SECONDS = 10 * 60;
 
 /**
  * Owner-supplied push subscription as it arrives over the wire, before
@@ -163,10 +164,17 @@ export interface WebPushFanoutResult {
  */
 export type EnabledWebPushConfig = Extract<WebPushConfig, { enabled: true }>;
 
+/** Per-send transport tuning: RFC 8030 urgency and TTL, both optional. */
+export interface WebPushTransportOptions {
+  ttlSeconds?: number;
+  urgency?: "high" | "normal";
+}
+
 export type WebPushSender = (
   subscription: NormalizedWebPushSubscription,
   payload: unknown,
-  config: EnabledWebPushConfig
+  config: EnabledWebPushConfig,
+  transportOptions?: WebPushTransportOptions
 ) => Promise<unknown>;
 
 /**
@@ -740,6 +748,14 @@ function interactionPushBody(sensitivity: InteractionSensitivity): string {
 export interface PendingInteractionInput {
   kind?: unknown;
   request_id?: unknown;
+  /**
+   * Original interaction duration in seconds, as validated by the runtime
+   * (finite, `> 0`, or absent/`null` for an unbounded interaction — see
+   * `runtime/index.ts`'s INTERACTION validator). Read only for RFC 8030
+   * urgency/TTL projection (`notification-policy.ts`) — never surfaced in
+   * push body copy.
+   */
+  timeout_seconds?: unknown;
   [key: string]: unknown;
 }
 
@@ -923,8 +939,8 @@ export async function guardWebPushEndpoint(
 
 /**
  * `deps` is a test-only seam (production callers — `sendPayloadToOwnerSubscriptions`
- * — always call `sender(subscription, payload, config)`, exactly 3 positional
- * args, so this parameter is always undefined/defaulted in production).
+ * — always call `sender(subscription, payload, config, transportOptions)`, so
+ * this parameter is always undefined/defaulted in production).
  * `guardWebPushEndpointImpl` lets a test inject `dnsLookupImpl`/
  * `isGlobalUnicastAddressImpl` into the guard without real DNS, and
  * `webPushModuleImpl` lets a test point at a differently-configured `web-push`
@@ -932,11 +948,17 @@ export async function guardWebPushEndpoint(
  * options `defaultSendNotification` forwards — the wrapped module still
  * calls through to the real `web-push` for VAPID/encryption, so it proves
  * production behavior, not a mock's behavior).
+ *
+ * `transportOptions` carries the RFC 8030 `Urgency`/`TTL` a caller computed
+ * from interaction kind and remaining lifetime (see `notification-policy.ts`).
+ * Both default to the library/previous-fixed-TTL behavior so non-interaction
+ * fanouts (assistance/escalation/test) are unaffected.
  */
 export async function defaultSendNotification(
   subscription: NormalizedWebPushSubscription,
   payload: unknown,
   config: EnabledWebPushConfig,
+  transportOptions: WebPushTransportOptions = {},
   {
     guardWebPushEndpointImpl = guardWebPushEndpoint,
     webPushModuleImpl,
@@ -958,10 +980,10 @@ export async function defaultSendNotification(
   try {
     // `web-push` builds VAPID headers and the encrypted body itself from
     // `subscription`/`payload`/these options — unchanged from before this
-    // guard. `agent` and `timeout` are the only additions: neither alters
-    // protocol correctness. `agent` pins which literal address the library's
-    // own `https.request` call (which we do not otherwise touch) is allowed
-    // to dial. `timeout` bounds how long that request can stay open — without
+    // guard. `agent` and `timeout` are additions that don't alter protocol
+    // correctness. `agent` pins which literal address the library's own
+    // `https.request` call (which we do not otherwise touch) is allowed to
+    // dial. `timeout` bounds how long that request can stay open — without
     // it, an endpoint that accepts a connection and then hangs leaves this
     // call pending forever (see WEB_PUSH_SEND_TIMEOUT_MS above). On timeout,
     // `web-push` destroys its own request socket and this promise rejects,
@@ -969,11 +991,16 @@ export async function defaultSendNotification(
     // never follows redirects (any non-2xx status, including 3xx, is
     // rejected as an "unexpected response code" — see web-push-lib.js's
     // `sendNotification`), so no separate redirect guard is needed here.
+    // `urgency`/`TTL` forward the caller's RFC 8030 §5.3/§5.2 choice — `TTL`
+    // is a retention request the push service may shorten, never a delivery
+    // guarantee, so a shorter caller-supplied value never widens the window
+    // during which a stale interaction prompt could still be delivered.
     return await webPush.sendNotification(subscription, JSON.stringify(payload), {
       agent: guard.agent,
       contentEncoding: "aes128gcm",
-      TTL: DEFAULT_TTL_SECONDS,
+      TTL: transportOptions.ttlSeconds ?? WEB_PUSH_MAX_TTL_SECONDS,
       timeout: WEB_PUSH_SEND_TIMEOUT_MS,
+      urgency: transportOptions.urgency ?? "normal",
     });
   } finally {
     // Runs on success, error, AND timeout (a timeout rejects the promise via
@@ -991,6 +1018,7 @@ interface SendPayloadToOwnerSubscriptionsArgs {
   payload: unknown;
   sender: WebPushSender;
   store: WebPushSubscriptionStore;
+  transportOptions?: WebPushTransportOptions;
 }
 
 async function sendPayloadToOwnerSubscriptions({
@@ -1001,6 +1029,7 @@ async function sendPayloadToOwnerSubscriptions({
   payload,
   log,
   logContext,
+  transportOptions = {},
 }: SendPayloadToOwnerSubscriptionsArgs): Promise<WebPushFanoutResult> {
   const subscriptions = await store.listActiveRaw(ownerSubjectId);
   let sent = 0;
@@ -1008,7 +1037,7 @@ async function sendPayloadToOwnerSubscriptions({
   await Promise.all(
     subscriptions.map(async (record) => {
       try {
-        await sender({ endpoint: record.endpoint, keys: record.keys }, payload, config);
+        await sender({ endpoint: record.endpoint, keys: record.keys }, payload, config, transportOptions);
         await store.markSuccess(record.endpoint);
         sent += 1;
       } catch (err) {
@@ -1067,7 +1096,7 @@ export function classifyPushFanoutOutcome(result: unknown): PushFanoutOutcome {
 /**
  * Optional durable-attention recorder. When provided, the fanout classifies
  * its delivery result into a `notification_state` and invokes the callback so
- * the operator console can render "we notified the owner" vs "delivery failed"
+ * the operator console can render "accepted for delivery" vs "delivery failed"
  * without rereading transport logs. Callback failure is logged but never
  * propagated: failing to record the outcome must not break notification fanout.
  */
@@ -1152,6 +1181,22 @@ async function fanoutPendingInteractionWebPushImpl({
     log.warn?.(`[controller] web push for run ${runId} skipped: missing owner subject`);
     return { attempted: 0, sent: 0, unavailable: false };
   }
+  const kind = typeof interaction?.kind === "string" ? interaction.kind : undefined;
+  const timeoutSeconds =
+    typeof interaction?.timeout_seconds === "number" && Number.isFinite(interaction.timeout_seconds)
+      ? interaction.timeout_seconds
+      : null;
+  // Remaining lifetime "at send time": this fanout runs synchronously off the
+  // interaction's arrival (no queueing/delay layer sits between the runtime
+  // recording the interaction and this call), so the original timeout budget
+  // IS the remaining budget here — there is no earlier "created_at" this
+  // module can read without new plumbing/storage.
+  const ttlDecision = computeInteractionPushTtl({ remainingSeconds: timeoutSeconds });
+  if (!ttlDecision.send) {
+    log.warn?.(`[controller] web push for run ${runId} suppressed: interaction already past useful expiry`);
+    return { attempted: 0, sent: 0, suppressed: true, unavailable: false };
+  }
+  const urgency = projectInteractionTransportPriority({ kind, timeoutSeconds });
   const payload = buildPendingInteractionPushPayload({ connectorDisplayName, interaction, routeTo, runId });
   return sendPayloadToOwnerSubscriptions({
     config,
@@ -1161,6 +1206,7 @@ async function fanoutPendingInteractionWebPushImpl({
     payload,
     sender,
     store,
+    transportOptions: { ttlSeconds: ttlDecision.ttlSeconds, urgency },
   });
 }
 

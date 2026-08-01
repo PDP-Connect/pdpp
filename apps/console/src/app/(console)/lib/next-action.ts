@@ -152,7 +152,7 @@ export function formatNextAction(action: RefNextAction | null | undefined): Form
 function formatNotificationHint(state: NonNullable<RefNextAction["notification_state"]> | null): string | null {
   switch (state) {
     case "sent":
-      return "Notification sent to your devices.";
+      return "Notification accepted for delivery to your devices.";
     case "failed":
       return "Notification delivery failed — open the dashboard to act.";
     case "suppressed":

@@ -483,7 +483,7 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
     /**
      * Update the durable `notification_state` on a tracked attention row.
      * Called from the push fanout seam so the operator console can show
-     * "we notified the owner" vs. "delivery failed" without re-querying
+     * "accepted for delivery" vs. "delivery failed" without re-querying
      * transport logs.
      *
      * Returns the updated record (or `null` when nothing was tracked or

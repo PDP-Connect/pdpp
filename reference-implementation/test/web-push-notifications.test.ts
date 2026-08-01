@@ -78,10 +78,15 @@ interface SendNotificationDeps {
   guardWebPushEndpointImpl?: (endpoint: string) => Promise<GuardResult>;
   webPushModuleImpl?: unknown;
 }
+interface SendNotificationTransportOptions {
+  ttlSeconds?: number;
+  urgency?: "high" | "normal";
+}
 type DefaultSendNotificationFn = (
   subscription: { endpoint: string; keys: SubscriptionKeys },
   payload: unknown,
   config: { privateKey: string; publicKey: string; subject: string },
+  transportOptions?: SendNotificationTransportOptions,
   deps?: SendNotificationDeps
 ) => Promise<SendNotificationResult>;
 const defaultSendNotification = defaultSendNotificationUntyped as DefaultSendNotificationFn;
@@ -500,13 +505,19 @@ test("defaultSendNotification blocks before ever calling into the web-push libra
 
   await assert.rejects(
     () =>
-      defaultSendNotification(sampleSubscription("https://blocked.invalid/sub/one", keys), { hello: "world" }, config, {
-        guardWebPushEndpointImpl: async () => ({
-          ok: false,
-          reason: "endpoint host blocked.invalid resolves to a non-public address 169.254.169.254",
-        }),
-        webPushModuleImpl: spyModule,
-      }),
+      defaultSendNotification(
+        sampleSubscription("https://blocked.invalid/sub/one", keys),
+        { hello: "world" },
+        config,
+        {},
+        {
+          guardWebPushEndpointImpl: async () => ({
+            ok: false,
+            reason: "endpoint host blocked.invalid resolves to a non-public address 169.254.169.254",
+          }),
+          webPushModuleImpl: spyModule,
+        }
+      ),
     WEB_PUSH_BLOCKED_PATTERN
   );
   assert.equal(sendNotificationCalled, false, "web-push.sendNotification must never be called when the guard blocks");
@@ -532,10 +543,16 @@ test("defaultSendNotification forwards the pinned agent and the exact send timeo
       const restoreTlsConnect = spyOnTlsConnect(dialedHosts);
 
       try {
-        const result = await defaultSendNotification(subscription, { hello: "world" }, config, {
-          guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
-          webPushModuleImpl: spy.module,
-        });
+        const result = await defaultSendNotification(
+          subscription,
+          { hello: "world" },
+          config,
+          { ttlSeconds: 30, urgency: "high" },
+          {
+            guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
+            webPushModuleImpl: spy.module,
+          }
+        );
 
         assert.equal(
           result.statusCode,
@@ -554,6 +571,12 @@ test("defaultSendNotification forwards the pinned agent and the exact send timeo
           forwarded.timeout,
           WEB_PUSH_SEND_TIMEOUT_MS,
           "the exact configured send timeout must be forwarded"
+        );
+        assert.equal(forwarded.TTL, 30, "the caller-supplied TTL must be forwarded to web-push literally");
+        assert.equal(
+          forwarded.urgency,
+          "high",
+          "the caller-supplied RFC 8030 Urgency must be forwarded to web-push literally"
         );
 
         // VAPID: the real library generated a real Authorization header from
@@ -613,10 +636,16 @@ test("defaultSendNotification destroys the pinned agent on success (production s
         setVapidDetails: spy.module.setVapidDetails,
       };
 
-      await defaultSendNotification(subscription, { hello: "world" }, config, {
-        guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
-        webPushModuleImpl: observingModule,
-      });
+      await defaultSendNotification(
+        subscription,
+        { hello: "world" },
+        config,
+        {},
+        {
+          guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
+          webPushModuleImpl: observingModule,
+        }
+      );
 
       assert.equal(
         destroyCallCount,
@@ -661,10 +690,16 @@ test("defaultSendNotification destroys the pinned agent on a rejected/error send
       };
 
       await assert.rejects(() =>
-        defaultSendNotification(subscription, { hello: "world" }, config, {
-          guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
-          webPushModuleImpl: observingModule,
-        })
+        defaultSendNotification(
+          subscription,
+          { hello: "world" },
+          config,
+          {},
+          {
+            guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
+            webPushModuleImpl: observingModule,
+          }
+        )
       );
 
       assert.equal(destroyCallCount, 1, "the pinned agent's destroy() must be called exactly once after a failed send");
@@ -710,10 +745,16 @@ test("defaultSendNotification bounds a hanging endpoint with the configured time
       const start = Date.now();
       await assert.rejects(
         () =>
-          defaultSendNotification(subscription, { hello: "world" }, config, {
-            guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
-            webPushModuleImpl: observingModule,
-          }),
+          defaultSendNotification(
+            subscription,
+            { hello: "world" },
+            config,
+            {},
+            {
+              guardWebPushEndpointImpl: testGuardWithSelfSignedTrust("127.0.0.1"),
+              webPushModuleImpl: observingModule,
+            }
+          ),
         TIMEOUT_PATTERN
       );
       const elapsedMs = Date.now() - start;
@@ -1017,6 +1058,103 @@ test("web push fanout is scoped to the interaction owner subject", async () => {
   assert.ok(other0);
   assert.equal(local0.last_success_at !== null, true);
   assert.equal(other0.last_success_at, null);
+});
+
+// ─── §RFC8030: urgency + TTL projection on the pending-interaction fanout ──
+
+interface RecordedTransportCall {
+  transportOptions: { ttlSeconds?: number; urgency?: string } | undefined;
+}
+
+function recordingSender(calls: RecordedTransportCall[]) {
+  return (_subscription: unknown, _payload: unknown, _config: unknown, transportOptions?: unknown) => {
+    calls.push({ transportOptions: transportOptions as RecordedTransportCall["transportOptions"] });
+  };
+}
+
+async function fanoutOnceWithTimeout(kind: string, timeoutSeconds: number | undefined, calls: RecordedTransportCall[]) {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert("owner_local", sampleSubscription("https://push.example.invalid/sub/one"), {});
+  return await fanoutPendingInteractionWebPush({
+    config: {
+      enabled: true,
+      privateKey: VAPID_PRIVATE,
+      publicKey: VAPID_PUBLIC,
+      subject: "mailto:test@example.invalid",
+    },
+    connectorDisplayName: "Manual connector",
+    interaction: {
+      kind,
+      request_id: "int_urgency",
+      ...(timeoutSeconds === undefined ? {} : { timeout_seconds: timeoutSeconds }),
+    },
+    log: { warn: () => undefined },
+    ownerSubjectId: "owner_local",
+    runId: "run_urgency",
+    sender: recordingSender(calls),
+    store: toWebPushSubscriptionStore(store),
+  });
+}
+
+test("fanoutPendingInteractionWebPush sets high urgency for a response-required kind with a bounded timeout", async () => {
+  for (const [kind, timeoutSeconds] of [
+    ["otp", 60],
+    ["credentials", 300],
+    ["manual_action", 900],
+  ] as const) {
+    const calls: RecordedTransportCall[] = [];
+    // biome-ignore lint/performance/noAwaitInLoops: sequential fixtures keep each case's store isolated and readable.
+    await fanoutOnceWithTimeout(kind, timeoutSeconds, calls);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.transportOptions?.urgency, "high", `kind=${kind} timeout=${timeoutSeconds}`);
+  }
+});
+
+test("fanoutPendingInteractionWebPush sets normal urgency for a non-response-required kind or an unbounded/absent timeout", async () => {
+  for (const [kind, timeoutSeconds] of [
+    ["manual_action", undefined],
+    ["manual_action", 1800],
+    ["informational", 60],
+  ] as const) {
+    const calls: RecordedTransportCall[] = [];
+    // biome-ignore lint/performance/noAwaitInLoops: sequential fixtures keep each case's store isolated and readable.
+    await fanoutOnceWithTimeout(kind, timeoutSeconds, calls);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.transportOptions?.urgency, "normal", `kind=${kind} timeout=${timeoutSeconds}`);
+  }
+});
+
+test("fanoutPendingInteractionWebPush computes TTL from remaining lifetime across 0/10/35/60/300/900/long/absent", async () => {
+  const cases: [number | undefined, boolean, number | undefined][] = [
+    [0, false, undefined],
+    [10, false, undefined],
+    [35, true, 5],
+    [60, true, 30],
+    [300, true, 270],
+    [900, true, 600],
+    [3600, true, 600],
+    [undefined, true, 600],
+  ];
+  for (const [timeoutSeconds, expectSend, expectedTtl] of cases) {
+    const calls: RecordedTransportCall[] = [];
+    // biome-ignore lint/performance/noAwaitInLoops: sequential fixtures keep each case's store isolated and readable.
+    const result = await fanoutOnceWithTimeout("otp", timeoutSeconds, calls);
+    if (expectSend) {
+      assert.equal(calls.length, 1, `timeout=${timeoutSeconds} should attempt a send`);
+      assert.equal(calls[0]?.transportOptions?.ttlSeconds, expectedTtl, `timeout=${timeoutSeconds}`);
+    } else {
+      assert.equal(calls.length, 0, `timeout=${timeoutSeconds} should suppress the send (already past useful expiry)`);
+      assert.equal(result.attempted, 0);
+      assert.equal(result.suppressed, true);
+    }
+  }
+});
+
+test("fanoutPendingInteractionWebPush suppresses the send outright for an already-expired interaction", async () => {
+  const calls: RecordedTransportCall[] = [];
+  const result = await fanoutOnceWithTimeout("otp", 10, calls);
+  assert.equal(calls.length, 0, "no send should be attempted for a 10s interaction (fully consumed by transit margin)");
+  assert.deepEqual(result, { attempted: 0, sent: 0, suppressed: true, unavailable: false });
 });
 
 test("SQLite WebPushSubscriptionStore persists owner-scoped subscription state", async () => {

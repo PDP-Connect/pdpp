@@ -31,10 +31,14 @@ import test from "node:test";
 import {
   classifyAssistanceNotification,
   classifyRunEventNotification,
+  computeInteractionPushTtl,
   isWithinQuietWindow,
   NOTIFICATION_TIERS,
+  projectInteractionTransportPriority,
   projectNotificationDelivery,
   shouldFanoutRenderedVerdict,
+  WEB_PUSH_MAX_TTL_SECONDS,
+  WEB_PUSH_TRANSIT_MARGIN_SECONDS,
 } from "../server/notification-policy.ts";
 
 const WRAP = { enabled: true, end: "07:00", start: "22:00", timeZone: "UTC" };
@@ -275,4 +279,102 @@ test("projectNotificationDelivery keeps an informational push eligible when outs
   });
   assert.equal(projection.quiet_hours_applied, false);
   assert.equal(projection.interruptive_eligible, true);
+});
+
+// ─── projectInteractionTransportPriority — RFC 8030 Urgency ──────────────
+
+test("projectInteractionTransportPriority is high only for a response-required kind with a bounded timeout", () => {
+  assert.equal(projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: 60 }), "high");
+  assert.equal(projectInteractionTransportPriority({ kind: "credentials", timeoutSeconds: 300 }), "high");
+  assert.equal(projectInteractionTransportPriority({ kind: "manual_action", timeoutSeconds: 900 }), "high");
+});
+
+test("projectInteractionTransportPriority is normal for a non-response-required kind regardless of timeout", () => {
+  assert.equal(projectInteractionTransportPriority({ kind: "informational", timeoutSeconds: 60 }), "normal");
+  assert.equal(projectInteractionTransportPriority({ kind: undefined, timeoutSeconds: 60 }), "normal");
+});
+
+test("projectInteractionTransportPriority is normal when the timeout exceeds the urgent ceiling (900s)", () => {
+  assert.equal(projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: 901 }), "normal");
+  assert.equal(projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: 1800 }), "normal");
+});
+
+test("projectInteractionTransportPriority is normal when the timeout is absent, zero, or invalid", () => {
+  assert.equal(projectInteractionTransportPriority({ kind: "otp" }), "normal");
+  assert.equal(projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: null }), "normal");
+  assert.equal(projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: 0 }), "normal");
+  assert.equal(projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: -5 }), "normal");
+  assert.equal(projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: Number.NaN }), "normal");
+});
+
+test("projectInteractionTransportPriority at the exact 900s boundary is high", () => {
+  assert.equal(
+    projectInteractionTransportPriority({ kind: "otp", timeoutSeconds: 900 }),
+    "high",
+    "900s is the documented inclusive ceiling"
+  );
+});
+
+// ─── computeInteractionPushTtl — durable remaining lifetime at send time ─
+
+test("computeInteractionPushTtl suppresses the send for a 0s or negative remaining lifetime", () => {
+  assert.deepEqual(computeInteractionPushTtl({ remainingSeconds: 0 }), { send: false });
+});
+
+test("computeInteractionPushTtl suppresses the send once transit margin consumes all remaining lifetime", () => {
+  // 10s and 35s: only a 60s window puts a positive budget after the
+  // margin; margin+1 is the exact boundary.
+  assert.deepEqual(computeInteractionPushTtl({ remainingSeconds: 10 }), { send: false });
+  assert.deepEqual(
+    computeInteractionPushTtl({ remainingSeconds: 35 }),
+    { send: true, ttlSeconds: 35 - WEB_PUSH_TRANSIT_MARGIN_SECONDS },
+    "35s remaining leaves a 5s budget after the 30s margin"
+  );
+});
+
+test("computeInteractionPushTtl subtracts the transit margin for a mid-range remaining lifetime", () => {
+  assert.deepEqual(computeInteractionPushTtl({ remainingSeconds: 60 }), {
+    send: true,
+    ttlSeconds: 60 - WEB_PUSH_TRANSIT_MARGIN_SECONDS,
+  });
+  assert.deepEqual(computeInteractionPushTtl({ remainingSeconds: 300 }), {
+    send: true,
+    ttlSeconds: 300 - WEB_PUSH_TRANSIT_MARGIN_SECONDS,
+  });
+});
+
+test("computeInteractionPushTtl caps at WEB_PUSH_MAX_TTL_SECONDS for a long remaining lifetime", () => {
+  assert.deepEqual(computeInteractionPushTtl({ remainingSeconds: 900 }), {
+    send: true,
+    ttlSeconds: WEB_PUSH_MAX_TTL_SECONDS,
+  });
+  assert.deepEqual(computeInteractionPushTtl({ remainingSeconds: 24 * 60 * 60 }), {
+    send: true,
+    ttlSeconds: WEB_PUSH_MAX_TTL_SECONDS,
+  });
+});
+
+test("computeInteractionPushTtl falls back to WEB_PUSH_MAX_TTL_SECONDS when remaining lifetime is absent", () => {
+  assert.deepEqual(computeInteractionPushTtl(), { send: true, ttlSeconds: WEB_PUSH_MAX_TTL_SECONDS });
+  // Destructuring default (remainingSeconds = undefined implicitly) applies
+  // identically whether the property is omitted or the whole options object
+  // is omitted, so `computeInteractionPushTtl({})` exercises the same branch
+  // as the no-args call above without fighting exactOptionalPropertyTypes.
+  assert.deepEqual(computeInteractionPushTtl({}), { send: true, ttlSeconds: WEB_PUSH_MAX_TTL_SECONDS });
+  assert.deepEqual(computeInteractionPushTtl({ remainingSeconds: null }), {
+    send: true,
+    ttlSeconds: WEB_PUSH_MAX_TTL_SECONDS,
+  });
+});
+
+test("computeInteractionPushTtl never returns a TTL that outlives the interaction's useful expiry", () => {
+  for (const remainingSeconds of [0, 10, 35, 60, 300, 900, 24 * 60 * 60]) {
+    const decision = computeInteractionPushTtl({ remainingSeconds });
+    if (decision.send) {
+      assert.ok(
+        decision.ttlSeconds <= remainingSeconds || remainingSeconds >= WEB_PUSH_MAX_TTL_SECONDS,
+        `TTL ${decision.ttlSeconds} must not exceed remaining lifetime ${remainingSeconds}`
+      );
+    }
+  }
 });

@@ -25,7 +25,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createScheduler } from "../runtime/scheduler.ts";
+import { createScheduler, markNeedsHumanDedupeFromInteraction } from "../runtime/scheduler.ts";
 import type { ConnectorSchedule } from "../runtime/scheduler-domain-types.ts";
 import type { SchedulerLastRunTimeRecord, SchedulerRunHistoryRecord } from "../server/stores/scheduler-store.ts";
 
@@ -281,6 +281,71 @@ test("§10-F fanoutEscalationWebPush: builds correct payload shape for blocked a
   assert.doesNotMatch(attentionPayload.body, /ChatGPT/i, "body must not echo connector name (lock-screen safety)");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(attentionPayload.body, /My Bank/i);
+});
+
+// ─── notification-narrow: interaction push + needs-human escalation share dedupe ──
+//
+// A scheduled interaction's onInteraction callback (the pending-interaction
+// push) and the scheduler's gateNeedsHuman escalation push both react to the
+// same transition — a connector run becoming human-required (isNeedsHuman
+// treats "has an active/pending-interaction run" as needs-human). Without
+// reusing notifiedNeedsHumanSkips, the very next tick's gateNeedsHuman would
+// fire a SECOND, separate push for a connector instance that was already
+// notified via onInteraction.
+
+test("markNeedsHumanDedupeFromInteraction pre-arms the dedupe key for a scheduler-enriched interaction", () => {
+  const notifiedNeedsHumanSkips = new Set<string>();
+  markNeedsHumanDedupeFromInteraction(
+    { connector_instance_id: "push-dedupe-reuse-instance", kind: "manual_action", request_id: "int_1" },
+    notifiedNeedsHumanSkips
+  );
+  assert.equal(notifiedNeedsHumanSkips.has("push-dedupe-reuse-instance"), true);
+});
+
+test("markNeedsHumanDedupeFromInteraction is a no-op for an interaction missing connector_instance_id, or a non-object", () => {
+  const notifiedNeedsHumanSkips = new Set<string>();
+  markNeedsHumanDedupeFromInteraction({ kind: "manual_action", request_id: "int_1" }, notifiedNeedsHumanSkips);
+  markNeedsHumanDedupeFromInteraction(null, notifiedNeedsHumanSkips);
+  markNeedsHumanDedupeFromInteraction(undefined, notifiedNeedsHumanSkips);
+  markNeedsHumanDedupeFromInteraction("not-an-object", notifiedNeedsHumanSkips);
+  markNeedsHumanDedupeFromInteraction(["array"], notifiedNeedsHumanSkips);
+  assert.equal(notifiedNeedsHumanSkips.size, 0);
+});
+
+test("§10-F needs-human dedupe pre-arming does not suppress escalation for an UNRELATED connector instance", async () => {
+  const interactingConnectorId = "push-dedupe-other-a";
+  const interactingInstanceId = "push-dedupe-other-a-instance";
+  const untouchedConnectorId = "push-dedupe-other-b";
+  const untouchedInstanceId = "push-dedupe-other-b-instance";
+
+  const escalations: EscalationInfo[] = [];
+
+  const scheduler = createScheduler({
+    connectors: [
+      makeSchedule({ connectorId: interactingConnectorId, connectorInstanceId: interactingInstanceId, intervalMs: 50 }),
+      makeSchedule({ connectorId: untouchedConnectorId, connectorInstanceId: untouchedInstanceId, intervalMs: 50 }),
+    ],
+    // Only the connector that never interacts is needs-human here — proves
+    // the pre-arm keys off connector_instance_id, not a global flag.
+    isNeedsHuman: (_connectorId, connectorInstanceId) => connectorInstanceId === untouchedInstanceId,
+    onHumanRequiredStateEscalation: (info) => {
+      escalations.push(info);
+    },
+    onInteraction: async () => ({ request_id: "", status: "cancelled", type: "INTERACTION_RESPONSE" }),
+  });
+
+  scheduler.start();
+  await new Promise((res) => setTimeout(res, 400));
+  scheduler.stop();
+
+  const attentionForUntouched = escalations.filter(
+    (e) => e.reason === "needs_attention" && e.connectorInstanceId === untouchedInstanceId
+  );
+  assert.equal(
+    attentionForUntouched.length,
+    1,
+    "the connector instance that never fired onInteraction must still get its escalation push"
+  );
 });
 
 // ─── §10-F: dedup does not fire after streak reset ────────────────────────────

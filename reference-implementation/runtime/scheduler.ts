@@ -303,6 +303,26 @@ import { defaultReadinessChecker } from "./scheduler-readiness.ts";
 // ─── createScheduler ────────────────────────────────────────────────────────
 
 /**
+ * §10-F dedupe reuse: pre-arms `notifiedNeedsHumanSkips` for the interaction's
+ * connector instance so `gateNeedsHuman` (pre-run-gate.ts) treats a
+ * pending-interaction push that just fired as an already-notified
+ * needs-human transition, instead of firing a second, separate escalation
+ * push on the very next tick. `interaction` is read structurally (matching
+ * `withSchedulerInteractionContext`'s enrichment, run-executor.ts) rather
+ * than typed, because `InteractionHandler` args are `unknown[]` by contract.
+ * A no-op for any interaction missing a string `connector_instance_id`.
+ */
+export function markNeedsHumanDedupeFromInteraction(interaction: unknown, notifiedNeedsHumanSkips: Set<string>): void {
+  if (!interaction || typeof interaction !== "object" || Array.isArray(interaction)) {
+    return;
+  }
+  const connectorInstanceId = (interaction as { connector_instance_id?: unknown }).connector_instance_id;
+  if (typeof connectorInstanceId === "string" && connectorInstanceId) {
+    notifiedNeedsHumanSkips.add(connectorInstanceId);
+  }
+}
+
+/**
  * Create a scheduler that manages periodic connector runs.
  */
 export function createScheduler(opts: SchedulerOptions): Scheduler {
@@ -506,6 +526,23 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     ...(synthesizedRevalidationStore ? { synthesizedRevalidationStore } : {}),
   });
 
+  // §10-F dedupe reuse: a scheduled interaction's pending-interaction push
+  // (fired via `onInteraction` below) and the needs-human escalation push
+  // (fired via `gateNeedsHuman` in pre-run-gate.ts, keyed by the same
+  // connectorInstanceId) both react to the same underlying transition — a
+  // connector run becoming human-required. Without this, the very next
+  // scheduler tick's `gateNeedsHuman` sees `isNeedsHuman() === true` (an
+  // active run counts) and fires a SECOND, separate escalation push for a
+  // connector instance that was already notified. Pre-arming
+  // `notifiedNeedsHumanSkips` here — the same Set `gateNeedsHuman` already
+  // consults — makes the escalation gate treat this transition as already
+  // notified, with no new storage or cross-module plumbing: `runtime` is the
+  // same object `createPreRunGate` was given above.
+  const onInteractionWithNeedsHumanDedupe: typeof onInteraction = (...args: unknown[]) => {
+    markNeedsHumanDedupeFromInteraction(args[0], runtime.notifiedNeedsHumanSkips);
+    return onInteraction(...args);
+  };
+
   const runExecutor = createRunExecutor({
     admitRunConnection,
     getState,
@@ -513,7 +550,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     isManagedConnector,
     markNeedsHuman,
     maxRunWallClockMs: schedulerMaxRunWallClockMs,
-    onInteraction,
+    onInteraction: onInteractionWithNeedsHumanDedupe,
     onRunComplete,
     persistLastRunTime,
     recordAndNotify,

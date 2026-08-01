@@ -710,7 +710,7 @@ export interface NextAction {
    * Durable notification delivery state for the attention prompt
    * driving this CTA. `null` for schedule-fallback CTAs (the precise
    * record is unknown) and for non-attention states. The dashboard
-   * uses this to render "we notified you on another device" vs.
+   * uses this to render "accepted for delivery to another device" vs.
    * "delivery failed — open the dashboard" without rereading
    * transport logs. The spec scenario "Notification failure does not
    * cause a run storm" requires this to remain visible even after

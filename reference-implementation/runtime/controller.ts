@@ -827,6 +827,8 @@ interface RuntimeInteraction {
   readonly message?: string;
   readonly request_id: string;
   readonly stream?: string | null;
+  /** Original interaction duration in seconds, read only for push urgency/TTL projection. */
+  readonly timeout_seconds?: number;
 }
 
 function readRuntimeInteraction(value: unknown): RuntimeInteraction {
@@ -840,11 +842,15 @@ function readRuntimeInteraction(value: unknown): RuntimeInteraction {
   }
   const message = Reflect.get(value, "message");
   const stream = Reflect.get(value, "stream");
+  const timeoutSeconds = Reflect.get(value, "timeout_seconds");
   return {
     kind,
     request_id: requestId,
     ...(typeof message === "string" ? { message } : {}),
     ...(typeof stream === "string" || stream === null ? { stream } : {}),
+    ...(typeof timeoutSeconds === "number" && Number.isFinite(timeoutSeconds)
+      ? { timeout_seconds: timeoutSeconds }
+      : {}),
   };
 }
 
@@ -1783,7 +1789,13 @@ async function fireWebPush(args: {
     const recordOutcome = await buildAttentionOutcomeRecorder({ requestId, runId: args.runId });
     await fanoutPendingInteractionWebPush({
       connectorDisplayName: args.connectorDisplayName,
-      interaction: { kind: args.interaction.kind, request_id: args.interaction.request_id },
+      interaction: {
+        kind: args.interaction.kind,
+        request_id: args.interaction.request_id,
+        ...(args.interaction.timeout_seconds === undefined
+          ? {}
+          : { timeout_seconds: args.interaction.timeout_seconds }),
+      },
       log: args.log as Console,
       ownerSubjectId: args.ownerSubjectId,
       runId: args.runId,

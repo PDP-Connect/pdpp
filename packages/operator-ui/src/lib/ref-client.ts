@@ -345,7 +345,7 @@ export interface RefNextAction {
    * Durable notification delivery state for the attention prompt
    * driving this CTA. `null` for schedule-fallback CTAs (the durable
    * record is unknown) and for older snapshots that pre-date this
-   * field. The dashboard renders "we notified you / delivery failed /
+   * field. The dashboard renders "accepted for delivery / delivery failed /
    * quiet hours" without rereading transport logs. Per the
    * schedule/manual-attention spec, `failed` MUST remain visible
    * — notification failure is not permission to relaunch the run.
