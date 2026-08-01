@@ -3472,6 +3472,70 @@ test("processMessage: records an attempted attachment into the coverage accumula
   assert.deepEqual(coverage.optionalSkipKeys, []);
 });
 
+test("processMessage: fresh-discovery attachment coverage — emitRecord()=true control: an accepted hydrated attachment credits required+hydrated exactly once", async () => {
+  // Control for the pair below: proves the harness/assertions themselves are
+  // sound (an accepted emit DOES credit coverage) before the false case
+  // proves a rejected one must NOT.
+  const coverage = makeAttachmentDetailCoverage();
+  const { deps, emitted } = makeHarness({
+    attachmentCoverage: coverage,
+    emitRecordAccepts: () => true,
+    hydrateAttachment: statusStampingHydrator({ "gmmsgid-1111:2": "hydrated" }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.equal(
+    emitted.filter((r) => r.stream === "attachments").length,
+    1,
+    "the accepted attachment record must land exactly once"
+  );
+  assert.deepEqual(coverage.requiredKeys, ["gmmsgid-1111:2"]);
+  assert.deepEqual(coverage.hydratedKeys, ["gmmsgid-1111:2"]);
+});
+
+test("processMessage: fresh-discovery attachment coverage — emitRecord()=false control: a hydrated attachment the host rejects credits NOTHING (this is the exact defect the full-stack gate blocked on)", async () => {
+  // A real hydration succeeds (hydration_status="hydrated") but the host's
+  // own emitRecord scope-filters it out — the record never actually lands.
+  // recordAttachmentCoverage must not run at all in this case: crediting
+  // required/hydrated for an attempt the host never received is exactly the
+  // fresh-path counterexample the gate reproduced (coverage.requiredKeys=1,
+  // hydratedKeys=1, accepted emissions=0) against the pre-fix ordering,
+  // where recordAttachmentCoverage ran unconditionally BEFORE emitRecord.
+  const coverage = makeAttachmentDetailCoverage();
+  const { deps, emitted } = makeHarness({
+    attachmentCoverage: coverage,
+    emitRecordAccepts: (stream) => stream !== "attachments",
+    hydrateAttachment: statusStampingHydrator({ "gmmsgid-1111:2": "hydrated" }),
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.equal(
+    emitted.filter((r) => r.stream === "attachments").length,
+    0,
+    "the rejected attachment record must never land in the emitted stream"
+  );
+  assert.deepEqual(
+    coverage.requiredKeys,
+    [],
+    "a rejected emit must not credit required coverage — the host never actually received this attempt"
+  );
+  assert.deepEqual(
+    coverage.hydratedKeys,
+    [],
+    "a rejected emit must not credit hydrated coverage even though the underlying provider hydration genuinely succeeded"
+  );
+  assert.deepEqual(coverage.gapKeys, []);
+  assert.deepEqual(coverage.optionalSkipKeys, []);
+});
+
 test("processMessage: leaves no coverage trace and still emits when no accumulator is wired", async () => {
   // The accumulator is optional: a pass without one (e.g. attachments not in
   // scope) must not throw and must still emit the attachment record.

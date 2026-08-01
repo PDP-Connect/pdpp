@@ -765,23 +765,31 @@ async function emitAttachmentRecords(
   for (const a of attachments) {
     const hydration = await deps.hydrateAttachment(msg, a);
     const hydrated = hydration.record;
-    // Record the outcome BEFORE emitting so the coverage denominator counts
-    // every attempt even if the emit is scope-filtered downstream.
-    if (deps.attachmentCoverage) {
+    const emitted = await deps.emitRecord("attachments", { ...hydrated });
+    // Coverage is credited AFTER emitting and ONLY when accepted: an
+    // attempt whose emit is scope-filtered downstream never actually landed
+    // in the host's records, so it must not claim a required/hydrated
+    // coverage credit either — a real hydration the host never received is
+    // indistinguishable, from the commit-gate's perspective, from one that
+    // never happened. (This mirrors settleServedAttachmentRecoveryAttempt's
+    // identical accepted-only gate on the served-recovery path — both
+    // attachment-emission call sites in this connector must agree on when
+    // "considered" becomes real.)
+    if (emitted && deps.attachmentCoverage) {
       recordAttachmentCoverage(deps.attachmentCoverage, hydrated);
     }
-    const emitted = await deps.emitRecord("attachments", { ...hydrated });
     // `emitted` only proves the record landed, not that hydration succeeded —
-    // a `failed` (and `deferred`) attachment still emits a record so the
-    // coverage denominator is honest. Only `hydrated` (a real blob fill) may
-    // acknowledge a served gap as recovered. `too_large` is deliberately
-    // excluded even though the commit-gate already treats it as covered via
-    // `optionalSkipKeys`: it is a permanent by-policy skip, never the subject
-    // of a durable DETAIL_GAP in the first place (gaps are only ever created
-    // for `failed`, see `emitAttachmentDetailGaps`), so there is nothing to
-    // recover — the pre-existing pending row (from an earlier `failed`
-    // attempt, before a size cap started applying) is already harmless and
-    // left to age/terminalize on its own.
+    // a `failed` (and `deferred`) attachment still emits a record, and IF
+    // accepted, the coverage denominator above stays honest. Only `hydrated`
+    // (a real blob fill) that was ALSO accepted may acknowledge a served gap
+    // as recovered. `too_large` is deliberately excluded even though the
+    // commit-gate already treats it as covered via `optionalSkipKeys`: it is
+    // a permanent by-policy skip, never the subject of a durable DETAIL_GAP
+    // in the first place (gaps are only ever created for `failed`, see
+    // `emitAttachmentDetailGaps`), so there is nothing to recover — the
+    // pre-existing pending row (from an earlier `failed` attempt, before a
+    // size cap started applying) is already harmless and left to
+    // age/terminalize on its own.
     if (!emitted || hydrated.hydration_status !== "hydrated") {
       continue;
     }
