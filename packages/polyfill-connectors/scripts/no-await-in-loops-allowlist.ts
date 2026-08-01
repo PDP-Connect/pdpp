@@ -1448,14 +1448,21 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "src/auto-login/chatgpt.ts",
-    line: 529,
+    line: 500,
+    column: 5,
+    category: "bounded_retry_polling",
+    note: "navigateAndProbeSession(): each next /api/auth/session retry probe is gated by the prior probe's negative result, not run speculatively or in parallel.",
+  },
+  {
+    path: "src/auto-login/chatgpt.ts",
+    line: 547,
     column: 5,
     category: "bounded_retry_polling",
     note: "checkpoint(): retry/backoff/poll loop gated on the prior attempt's outcome",
   },
   {
     path: "src/auto-login/chatgpt.ts",
-    line: 872,
+    line: 890,
     column: 5,
     category: "bounded_retry_polling",
     note: "page.waitForTimeout(): retry/backoff/poll loop gated on the prior attempt's outcome",
