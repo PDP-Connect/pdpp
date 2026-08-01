@@ -36,7 +36,7 @@ import {
   referenceQueries,
   writeTransaction,
 } from "../lib/db.ts";
-import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
+import { withConnectorInstanceControlPlaneWrite } from "./connector-instance-write-coordinator.ts";
 import { getDb } from "./db.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
 import {
@@ -778,11 +778,21 @@ interface RepairedEvidence {
  * pre-lock discovery snapshot) and upsert. On lock/read/write failure,
  * returns row-shaped `stale`/`failed` evidence with a closed sanitized
  * reason code — never a fabricated clean row.
+ *
+ * Uses `withConnectorInstanceControlPlaneWrite`, NOT `withConnectorInstanceWrite`:
+ * this is maintenance-class work, not an ingest write, so it must not
+ * consume a slot in the bounded ingest writer-admission gate
+ * (`activeLimit()`/`queueLimit()`). Repair still gets the same per-instance
+ * mutual exclusion (the keyed gate + Postgres advisory lock), which is all
+ * correctness requires here; ordinary ingest volume saturating the ingest
+ * gate must never be able to starve a genuinely healthy connection's
+ * evidence repair forever (the same reasoning `upsertForEnrollment` in
+ * `stores/connector-instance-store.ts` already applies to enrollment).
  */
 async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
   try {
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
-    return await withConnectorInstanceWrite(connectorInstanceId, async () => {
+    return await withConnectorInstanceControlPlaneWrite(connectorInstanceId, async () => {
       if (isPostgresStorageBackend()) {
         return repairCandidatePostgres(connectorInstanceId);
       }
