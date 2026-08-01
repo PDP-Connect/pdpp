@@ -2381,7 +2381,20 @@ function mapCoverageAxis(
     const accepted = pickAcceptedCoverage(manifestStreams);
     return accepted ?? "complete";
   }
-  if (lastRun.status === "failed" || lastRun.status === "cancelled" || lastRun.status === "abandoned") {
+  if (
+    lastRun.status === "failed" ||
+    lastRun.status === "cancelled" ||
+    lastRun.status === "abandoned" ||
+    lastRun.status === "skipped"
+  ) {
+    // `skipped` is a terminal non-success outcome (pre-run gate declined to
+    // run: browser-surface unavailable, session required, etc. — see
+    // runtime/scheduler/pre-run-gate.ts and controller.ts:1556, which already
+    // group it with `failed`). Before this branch, a `skipped` last run fell
+    // through to `unknown` below purely because it wasn't listed here — not
+    // because the projection lacked evidence. `partial` is honest: no fresh
+    // coverage evidence was produced this cycle, but the connection and its
+    // prior evidence are not unattributed-unknown.
     return "partial";
   }
   return "unknown";
