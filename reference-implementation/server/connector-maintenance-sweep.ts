@@ -50,6 +50,12 @@ export interface ConnectorMaintenanceSweepOptions {
     readonly afterId?: string | null;
     readonly maxDurationMs: number;
     readonly pageSize?: number;
+    /** The fenced lease's own `generation` for this round (see
+     * `ConnectorMaintenanceCursorLease`) — reused, unmodified, as the
+     * fold-vs-repair phase-fairness turn key (connector-summary-read-model.ts's
+     * `runBoundedObservationPhases`). Not a new counter: it is already
+     * atomically incremented per acquisition for stale-owner fencing. */
+    readonly phaseTurnGeneration?: number;
   }) => Promise<unknown>;
   readonly runHistoryBackfillBatchSize?: number;
   readonly runHistoryBackfillMaxDurationMs?: number;
@@ -165,7 +171,11 @@ export function createResumableConnectorMaintenanceSweep(
         return null;
       }
       const result = readResumableEvidenceSweepResult(
-        await options.runEvidenceSweep({ ...args, afterId: lease.resumeAfterId }),
+        await options.runEvidenceSweep({
+          ...args,
+          afterId: lease.resumeAfterId,
+          phaseTurnGeneration: lease.generation,
+        }),
         lease.resumeAfterId
       );
       if (!result) {

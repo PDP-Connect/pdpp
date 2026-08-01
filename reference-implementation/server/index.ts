@@ -6661,6 +6661,7 @@ export async function startServer(opts: ServerOpts = {}) {
         ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
         maxDurationMs: args.maxDurationMs,
         pageSize: args.pageSize ?? CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
+        ...(args.phaseTurnGeneration === undefined ? {} : { phaseTurnGeneration: args.phaseTurnGeneration }),
       });
       // Assemble + publish the terminal owner-LIST projection for exactly
       // the connections this call's evidence sweep just converged to

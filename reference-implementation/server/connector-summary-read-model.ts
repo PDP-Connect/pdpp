@@ -2463,11 +2463,53 @@ interface BoundedObservationPhases {
  * Run bounded phases under one cooperative deadline. The helper owns the
  * time-versus-work policy: a fold batch or writer-fenced repair may finish
  * after entry, but no later unit starts once the absolute deadline expires.
+ *
+ * Phase-fairness (2026-07-31 live symptom: a page whose terminal fold is
+ * genuinely slow — few events, but high per-write latency — consumed the
+ * whole shared deadline every single round, leaving the generic repair
+ * phase [`record_checkpoint_mismatch`, `dirty`, etc.] zero remaining budget
+ * on every visit; the fold's own checkpoint crept forward while the SAME
+ * connection's repair candidate was reported `skipped` forever). Fold and
+ * generic repair operate on disjoint evidence columns (fold: `terminal_facts_state`/
+ * `stream_facts_event_seq`/`stream_latest_facts_json`; generic repair:
+ * `record_snapshot`/`manifest_declaration`/`retained_bytes`/etc. — see
+ * `classifyCandidate`/`repairCandidateSqlite` in
+ * connector-summary-evidence-engine.ts), so neither phase's correctness
+ * depends on the other running first. The ONE genuine ordering dependency
+ * is `missing` repair before fold: a row that does not exist yet has
+ * nothing for the fold to touch (see the cold-fold-retry branch below).
+ *
+ * Because there is no correctness reason to always run fold first, and
+ * always running repair first would only relocate the same starvation onto
+ * fold (an adversarial slow repair — e.g. under ingest-admission
+ * contention — would then starve fold forever instead), which phase gets
+ * first claim on the deadline ALTERNATES every call, keyed off the
+ * durable, already-atomically-incremented
+ * `ConnectorMaintenanceCursorLease.generation` the caller acquired for this
+ * exact round (see `createResumableConnectorMaintenanceSweep` in
+ * connector-maintenance-sweep.ts). This is not new state: `generation` is
+ * fenced, monotonic, and unique per acquisition on both SQLite and
+ * Postgres already, for stale-owner fencing — reusing its parity needs no
+ * new column, no new query, and (unlike an in-process counter) survives
+ * process restarts and stays correct if two processes ever raced for the
+ * same lease, since only the winner's `generation` is ever passed in here.
+ * A caller with no lease (unbounded reads, or a test that omits the
+ * option) defaults to fold-first, the original behavior.
+ *
+ * Termination: whichever phase goes first this round gets the FULL
+ * remaining deadline (no fixed time-fraction split, which cannot itself
+ * guarantee progress if one phase's single unit outruns its slice — e.g. a
+ * lease-admission-blocked repair candidate that takes longer than any
+ * naive reservation). Over any two consecutive rounds (consecutive
+ * `generation` values always differ in parity), each phase gets to go
+ * first at least once — so a phase that is merely SLOW (not permanently
+ * blocked) makes genuine forward progress at least every other round,
+ * without expanding any round's own total wall-clock budget.
  */
 async function runBoundedObservationPhases(
   connectorInstanceIds: readonly string[] | null,
   deadline: number,
-  options: { readonly maxCandidates?: number; readonly maxEvents?: number }
+  options: { readonly maxCandidates?: number; readonly maxEvents?: number; readonly phaseTurnGeneration?: number }
 ): Promise<BoundedObservationPhases> {
   let repairDurationMs = 0;
   let maintenanceIncomplete = false;
@@ -2501,18 +2543,34 @@ async function runBoundedObservationPhases(
     return result;
   };
 
-  const firstFold = await startFold();
-  if (firstFold !== null) {
-    foldOutcome = firstFold;
+  // `missing` repair always runs before the first fold attempt regardless
+  // of turn — the one genuine ordering dependency (see doc above). Turn
+  // parity only decides whether the FIRST fold attempt or the GENERIC
+  // repair phase gets first claim on the remaining deadline.
+  const genericRepairGoesFirst = (options.phaseTurnGeneration ?? 0) % 2 === 1;
+  let missing: ReconcilePhaseResult;
+  let generic: ReconcilePhaseResult;
+  if (genericRepairGoesFirst) {
+    missing = await startRepair(["missing"], BOUNDED_MISSING_REPAIR_CANDIDATES);
+    generic = await startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
+    const firstFold = await startFold();
+    if (firstFold !== null) {
+      foldOutcome = firstFold;
+    }
+  } else {
+    const firstFold = await startFold();
+    if (firstFold !== null) {
+      foldOutcome = firstFold;
+    }
+    missing = await startRepair(["missing"], BOUNDED_MISSING_REPAIR_CANDIDATES);
+    generic = await startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
   }
-  const missing = await startRepair(["missing"], BOUNDED_MISSING_REPAIR_CANDIDATES);
   if (foldOutcome.participants === 0 && missing.repaired > 0) {
     const coldFold = await startFold();
     if (coldFold !== null) {
       foldOutcome = coldFold;
     }
   }
-  const generic = await startRepair(GENERIC_REPAIR_CANDIDATE_REASONS, options.maxCandidates);
   const result = mergeReconcilePhaseResults(missing, generic);
   maintenanceIncomplete ||= result.skipped > 0 || foldOutcome.incomplete || Date.now() >= deadline;
   return { foldOutcome, incomplete: maintenanceIncomplete, repairDurationMs, result };
@@ -2576,6 +2634,10 @@ async function observeConnectorSummaryEvidence(
     readonly maxCandidates?: number;
     readonly maxDurationMs?: number;
     readonly maxEvents?: number;
+    /** See `runBoundedObservationPhases`'s doc: the lease `generation` (or
+     * equivalent) whose parity decides which phase — fold or generic
+     * repair — gets first claim on this call's shared deadline. */
+    readonly phaseTurnGeneration?: number;
   } = {}
 ): Promise<{
   candidateReasonCounts: Readonly<Record<string, number>>;
@@ -2976,6 +3038,17 @@ function resolveBoundedSweepOutcome(walk: {
   return { incomplete, resumeAfterId: walk.coveredCompleteSet ? null : walk.cursor };
 }
 
+function buildPageObservationOptions(
+  deadline: number,
+  options: { readonly maxEventsPerFold?: number; readonly phaseTurnGeneration?: number }
+): { readonly deadline: number; readonly maxEvents?: number; readonly phaseTurnGeneration?: number } {
+  return {
+    deadline,
+    ...(typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {}),
+    ...(typeof options.phaseTurnGeneration === "number" ? { phaseTurnGeneration: options.phaseTurnGeneration } : {}),
+  };
+}
+
 function emitBoundedSweepPageObservation(
   pageResult: Awaited<ReturnType<typeof observeConnectorSummaryEvidence>>,
   pageIds: readonly string[],
@@ -3008,6 +3081,12 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   readonly pageSize?: number;
   readonly afterId?: string | null;
   readonly maxEventsPerFold?: number;
+  /** See `runBoundedObservationPhases`'s doc: the caller's durable lease
+   * `generation` for this round, whose parity decides which phase (fold or
+   * generic repair) goes first on every page this call processes. Omitted
+   * by callers with no lease (unbounded/one-off calls), which default to
+   * the original fold-first order. */
+  readonly phaseTurnGeneration?: number;
 }): Promise<BoundedSweepResult> {
   const deadline = Date.now() + options.maxDurationMs;
   const pageSize = options.pageSize ?? 25;
@@ -3039,10 +3118,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     // is bounded by pageSize, not by N. The page receives the sweep's one
     // absolute cooperative deadline; it never fabricates another duration.
     const pageStartedAt = Date.now();
-    const pageResult = await observeConnectorSummaryEvidence(pageIds, {
-      deadline,
-      ...(typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {}),
-    });
+    const pageResult = await observeConnectorSummaryEvidence(pageIds, buildPageObservationOptions(deadline, options));
     discovered += pageIds.length;
     repaired += pageResult.reconciled;
     skipped += pageResult.skipped;
