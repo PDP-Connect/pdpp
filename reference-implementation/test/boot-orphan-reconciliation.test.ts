@@ -863,6 +863,262 @@ test("SQLite: a NULL-identity terminal spine event must NOT converge the wrong r
   }
 });
 
+test("SQLite: connection A already terminal + connection B still running, sharing a run_id — A's legacy NULL-identity event must NOT converge B's row", async () => {
+  // Independent-gate reproduction: an earlier version of the fallback guard
+  // only checked run_history rows with status='running', so once A's OWN
+  // row had already terminalized (through any path), A's terminal sibling
+  // became invisible to the disambiguation check and B's still-running row
+  // was wrongly treated as the sole candidate.
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    insertTerminalSpineEvent(dbPath, {
+      actor_id: "conn_a",
+      connector_instance_id: "cin_collision_a",
+      event_id: "evt_collision_a_completed",
+      event_type: "run.completed",
+      occurred_at: "2026-05-10T12:15:00.000Z",
+      run_id: "run_terminal_a_running_b",
+      status: "succeeded",
+    });
+    const raw = new Database(dbPath);
+    try {
+      raw
+        .prepare(
+          `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, completed_at, attempt)
+           VALUES ('run_terminal_a_running_b', 'cin_collision_a', 'conn_a', '{}', 'succeeded', '[]', '2026-05-10T12:00:00.000Z', '2026-05-10T12:15:00.000Z', 1)`
+        )
+        .run();
+      // Connection A's run.abandoned is a SEPARATE legacy event with NULL
+      // identity and no resolvable caused_by_event_id — the exact shape
+      // that must be inert here, since A already converged via run.completed
+      // above and B is a DIFFERENT connection.
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+           VALUES ('evt_collision_null_ident', 'run.abandoned', '2026-05-10T12:30:00.000Z', '2026-05-10T12:30:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'controller', 'run', 'run_terminal_a_running_b', 'abandoned',
+                   'run_terminal_a_running_b', '{}', 'v1')`
+        )
+        .run();
+    } finally {
+      raw.close();
+    }
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_b",
+      connector_instance_id: "cin_collision_b",
+      run_id: "run_terminal_a_running_b",
+      started_at: "2026-05-10T12:05:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-terminal-a-running-b",
+      controllerId: "host-terminal-a-running-b",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      0,
+      "A's legacy NULL-identity run.abandoned must not be allowed to converge B's running row"
+    );
+
+    const raw2 = new Database(dbPath);
+    try {
+      const rowB = raw2
+        .prepare("SELECT status FROM run_history WHERE run_id = ? AND connector_instance_id = ?")
+        .get("run_terminal_a_running_b", "cin_collision_b") as { status: string };
+      assert.equal(rowB.status, "running", "B's row must remain running — it must not absorb A's abandon event");
+
+      const rowA = raw2
+        .prepare("SELECT status, completed_at FROM run_history WHERE run_id = ? AND connector_instance_id = ?")
+        .get("run_terminal_a_running_b", "cin_collision_a") as { status: string; completed_at: string };
+      assert.equal(rowA.status, "succeeded", "A's own already-terminal row must be untouched");
+      assert.equal(rowA.completed_at, "2026-05-10T12:15:00.000Z");
+    } finally {
+      raw2.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("SQLite: multiple NULL-identity legacy terminal events across colliding run_id histories converge only the unambiguous singleton", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const raw = new Database(dbPath);
+    try {
+      // Ambiguous history: two NULL-identity run.abandoned events for the
+      // SAME run_id, shared by two still-running connections. Neither may
+      // be safely applied to either row.
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+           VALUES ('evt_multi_null_ambiguous', 'run.abandoned', '2026-05-10T12:30:00.000Z', '2026-05-10T12:30:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'controller', 'run', 'run_multi_ambiguous', 'abandoned',
+                   'run_multi_ambiguous', '{}', 'v1')`
+        )
+        .run();
+      // Unambiguous singleton (the true run_1785516896273_1 shape): one
+      // NULL-identity run.abandoned, one running row, no collision.
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+           VALUES ('evt_multi_null_singleton', 'run.abandoned', '2026-05-10T12:30:00.000Z', '2026-05-10T12:30:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'controller', 'run', 'run_multi_singleton', 'abandoned',
+                   'run_multi_singleton', '{}', 'v1')`
+        )
+        .run();
+    } finally {
+      raw.close();
+    }
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_x",
+      connector_instance_id: "cin_multi_ambiguous_x",
+      run_id: "run_multi_ambiguous",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_y",
+      connector_instance_id: "cin_multi_ambiguous_y",
+      run_id: "run_multi_ambiguous",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_z",
+      connector_instance_id: "cin_multi_singleton_z",
+      run_id: "run_multi_singleton",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-multi-null-ident",
+      controllerId: "host-multi-null-ident",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      1,
+      "exactly the one unambiguous singleton converges; the colliding pair stays untouched"
+    );
+
+    const raw2 = new Database(dbPath);
+    try {
+      const ambiguousRows = raw2
+        .prepare("SELECT status FROM run_history WHERE run_id = ?")
+        .all("run_multi_ambiguous") as { status: string }[];
+      assert.equal(ambiguousRows.length, 2);
+      assert.ok(
+        ambiguousRows.every((r) => r.status === "running"),
+        "both colliding rows remain running — neither NULL-identity event can pick a side"
+      );
+
+      const singleton = raw2
+        .prepare("SELECT status, completed_at FROM run_history WHERE run_id = ?")
+        .get("run_multi_singleton") as { status: string; completed_at: string | null };
+      assert.equal(singleton.status, "abandoned", "the unambiguous singleton converges");
+      assert.ok(singleton.completed_at);
+    } finally {
+      raw2.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("SQLite: caused_by_event_id resolves true identity even when two connections collide on run_id (primary recovery path)", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const raw = new Database(dbPath);
+    try {
+      // The ORIGINAL run.started for connection B — a normal writer-authority
+      // event with a real connector_instance_id, exactly what caused_by_event_id
+      // durably points back to.
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+              connector_instance_id, source_kind, source_id)
+           VALUES ('evt_caused_by_started_b', 'run.started', '2026-05-10T12:00:00.000Z', '2026-05-10T12:00:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'conn_b', 'run', 'run_caused_by_collision', 'running',
+                   'run_caused_by_collision', '{}', 'v1', 'cin_caused_by_b', 'connector', 'conn_b')`
+        )
+        .run();
+      // B's terminal run.abandoned: NULL identity (legacy shape), but its
+      // caused_by_event_id points at the run.started row above — this must
+      // resolve to B even though A collides on the same run_id.
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+           VALUES ('evt_caused_by_abandoned_b', 'run.abandoned', '2026-05-10T12:30:00.000Z', '2026-05-10T12:30:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'controller', 'run', 'run_caused_by_collision', 'abandoned',
+                   'run_caused_by_collision', '{"caused_by_event_id":"evt_caused_by_started_b"}', 'v1')`
+        )
+        .run();
+    } finally {
+      raw.close();
+    }
+    // Connection A collides on the same run_id and must stay untouched.
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_a",
+      connector_instance_id: "cin_caused_by_a",
+      run_id: "run_caused_by_collision",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_b",
+      connector_instance_id: "cin_caused_by_b",
+      run_id: "run_caused_by_collision",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-caused-by-collision",
+      controllerId: "host-caused-by-collision",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      1,
+      "caused_by_event_id resolves B's true identity even though A collides on the same run_id"
+    );
+
+    const raw2 = new Database(dbPath);
+    try {
+      const rowB = raw2
+        .prepare("SELECT status, completed_at FROM run_history WHERE run_id = ? AND connector_instance_id = ?")
+        .get("run_caused_by_collision", "cin_caused_by_b") as { status: string; completed_at: string | null };
+      assert.equal(rowB.status, "abandoned", "B converges via the resolved caused_by_event_id identity");
+      assert.ok(rowB.completed_at);
+
+      const rowA = raw2
+        .prepare("SELECT status FROM run_history WHERE run_id = ? AND connector_instance_id = ?")
+        .get("run_caused_by_collision", "cin_caused_by_a") as { status: string };
+      assert.equal(rowA.status, "running", "A must remain untouched — the event durably resolves to B, not A");
+    } finally {
+      raw2.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
 test("Postgres parity old-fail/new-pass: terminal spine already exists + stale running run_history converges without re-emitting a spine event", {
   skip: !POSTGRES_URL,
 }, async () => {
@@ -1059,6 +1315,237 @@ test("Postgres parity: a NULL-identity terminal spine event must NOT converge th
   } finally {
     await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_shared_ambiguous_pg%'").catch(() => undefined);
     await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_shared_ambiguous_pg%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres parity: connection A already terminal + connection B still running, sharing a run_id — A's legacy NULL-identity event must NOT converge B's row", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.completed', $2, $2, 'default', 'trc_seed', 'runtime', $3, 'run', $4, 'succeeded', $4, '{}'::jsonb, 'v1', $5, 'connector', $3)`,
+      [
+        "evt_pg_collision_a_completed",
+        "2026-05-10T12:15:00.000Z",
+        "conn_a_pg",
+        "run_pg_terminal_a_running_b",
+        "cin_pg_collision_a",
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, completed_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'succeeded', '[]'::jsonb, $4, $5, 1)`,
+      [
+        "run_pg_terminal_a_running_b",
+        "cin_pg_collision_a",
+        "conn_a_pg",
+        "2026-05-10T12:00:00.000Z",
+        "2026-05-10T12:15:00.000Z",
+      ]
+    );
+    // A's legacy NULL-identity run.abandoned — must be inert now that A
+    // already converged via run.completed above and B is a DIFFERENT connection.
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, '{}'::jsonb, 'v1')`,
+      ["evt_pg_collision_null_ident", "2026-05-10T12:30:00.000Z", "run_pg_terminal_a_running_b"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_terminal_a_running_b", "cin_pg_collision_b", "conn_b_pg", "2026-05-10T12:05:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-pg-terminal-a-running-b",
+      controllerId: "host-pg-terminal-a-running-b",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      0,
+      "A's legacy NULL-identity run.abandoned must not be allowed to converge B's running row"
+    );
+
+    const { rows: rowB } = await postgresQuery<{ status: string }>(
+      "SELECT status FROM run_history WHERE run_id = $1 AND connector_instance_id = $2",
+      ["run_pg_terminal_a_running_b", "cin_pg_collision_b"]
+    );
+    assert.equal(rowB[0]?.status, "running", "B's row must remain running — it must not absorb A's abandon event");
+
+    const { rows: rowA } = await postgresQuery<{ status: string; completed_at: string }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1 AND connector_instance_id = $2",
+      ["run_pg_terminal_a_running_b", "cin_pg_collision_a"]
+    );
+    assert.equal(rowA[0]?.status, "succeeded", "A's own already-terminal row must be untouched");
+    assert.equal(rowA[0]?.completed_at, "2026-05-10T12:15:00.000Z");
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_pg_terminal_a_running_b%'").catch(
+      () => undefined
+    );
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_pg_terminal_a_running_b%'").catch(
+      () => undefined
+    );
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres parity: multiple NULL-identity legacy terminal events across colliding run_id histories converge only the unambiguous singleton", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, '{}'::jsonb, 'v1')`,
+      ["evt_pg_multi_null_ambiguous", "2026-05-10T12:30:00.000Z", "run_pg_multi_ambiguous"]
+    );
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, '{}'::jsonb, 'v1')`,
+      ["evt_pg_multi_null_singleton", "2026-05-10T12:30:00.000Z", "run_pg_multi_singleton"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_multi_ambiguous", "cin_pg_multi_ambiguous_x", "conn_x_pg", "2026-05-10T12:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_multi_ambiguous", "cin_pg_multi_ambiguous_y", "conn_y_pg", "2026-05-10T12:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_multi_singleton", "cin_pg_multi_singleton_z", "conn_z_pg", "2026-05-10T12:00:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-pg-multi-null-ident",
+      controllerId: "host-pg-multi-null-ident",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      1,
+      "exactly the one unambiguous singleton converges; the colliding pair stays untouched"
+    );
+
+    const { rows: ambiguousRows } = await postgresQuery<{ status: string }>(
+      "SELECT status FROM run_history WHERE run_id = $1",
+      ["run_pg_multi_ambiguous"]
+    );
+    assert.equal(ambiguousRows.length, 2);
+    assert.ok(
+      ambiguousRows.every((r) => r.status === "running"),
+      "both colliding rows remain running — neither NULL-identity event can pick a side"
+    );
+
+    const { rows: singleton } = await postgresQuery<{ status: string; completed_at: string | null }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1",
+      ["run_pg_multi_singleton"]
+    );
+    assert.equal(singleton[0]?.status, "abandoned", "the unambiguous singleton converges");
+    assert.ok(singleton[0]?.completed_at);
+  } finally {
+    await postgresQuery(
+      "DELETE FROM run_history WHERE run_id IN ('run_pg_multi_ambiguous', 'run_pg_multi_singleton')"
+    ).catch(() => undefined);
+    await postgresQuery(
+      "DELETE FROM spine_events WHERE run_id IN ('run_pg_multi_ambiguous', 'run_pg_multi_singleton')"
+    ).catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres parity: caused_by_event_id resolves true identity even when two connections collide on run_id (primary recovery path)", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version,
+            connector_instance_id, source_kind, source_id)
+         VALUES ($1, 'run.started', $2, $2, 'default', 'trc_seed', 'runtime', 'conn_b_pg', 'run', $3, 'running', $3, '{}'::jsonb, 'v1', $4, 'connector', 'conn_b_pg')`,
+      ["evt_pg_caused_by_started_b", "2026-05-10T12:00:00.000Z", "run_pg_caused_by_collision", "cin_pg_caused_by_b"]
+    );
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, $4::jsonb, 'v1')`,
+      [
+        "evt_pg_caused_by_abandoned_b",
+        "2026-05-10T12:30:00.000Z",
+        "run_pg_caused_by_collision",
+        JSON.stringify({ caused_by_event_id: "evt_pg_caused_by_started_b" }),
+      ]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_caused_by_collision", "cin_pg_caused_by_a", "conn_a_pg", "2026-05-10T12:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_pg_caused_by_collision", "cin_pg_caused_by_b", "conn_b_pg", "2026-05-10T12:00:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-pg-caused-by-collision",
+      controllerId: "host-pg-caused-by-collision",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      1,
+      "caused_by_event_id resolves B's true identity even though A collides on the same run_id"
+    );
+
+    const { rows: rowB } = await postgresQuery<{ status: string; completed_at: string | null }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1 AND connector_instance_id = $2",
+      ["run_pg_caused_by_collision", "cin_pg_caused_by_b"]
+    );
+    assert.equal(rowB[0]?.status, "abandoned", "B converges via the resolved caused_by_event_id identity");
+    assert.ok(rowB[0]?.completed_at);
+
+    const { rows: rowA } = await postgresQuery<{ status: string }>(
+      "SELECT status FROM run_history WHERE run_id = $1 AND connector_instance_id = $2",
+      ["run_pg_caused_by_collision", "cin_pg_caused_by_a"]
+    );
+    assert.equal(rowA[0]?.status, "running", "A must remain untouched — the event durably resolves to B, not A");
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_pg_caused_by_collision%'").catch(
+      () => undefined
+    );
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_pg_caused_by_collision%'").catch(
+      () => undefined
+    );
     clearCurrentBootEpoch();
     await closePostgresStorage();
   }
