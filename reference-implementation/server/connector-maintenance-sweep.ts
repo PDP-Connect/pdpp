@@ -98,14 +98,22 @@ function readResumableEvidenceSweepResult(
   if (result.incomplete && result.resumeAfterId === "") {
     return null;
   }
-  // `runBoundedSummaryEvidenceSweep`'s cursor always ADVANCES past every
-  // page it processes, converged or not (2026-08-01: it no longer rewinds
-  // to before a non-converging page — see that function's own doc for why
-  // rewinding could permanently starve the rest of the fleet), and reports
-  // `incomplete: true, resumeAfterId: null` as a deliberate round-robin
-  // WRAP whenever THIS call's own walk reaches the true end of keyset
-  // order — even when it started mid-fleet resuming a prior round (see
-  // `reachedKeysetTail` on `BoundedSweepResult` and `resolveBoundedSweepOutcome`
+  // `runBoundedSummaryEvidenceSweep`'s cursor advances past every page it
+  // processes, converged or not (2026-08-01: it does not rewind to before a
+  // non-converging page that genuinely ran — see that function's own doc
+  // for why rewinding could permanently starve the rest of the fleet), and
+  // reports `incomplete: true, resumeAfterId: null` as a deliberate
+  // round-robin WRAP whenever THIS call's own walk reaches the true end of
+  // keyset order — even when it started mid-fleet resuming a prior round.
+  // ONE exception (2026-08-01 fairness fix): a page that never even ran
+  // discovery this call (`starved` — the shared deadline was already spent
+  // at its turn) DOES rewind, to exactly before itself, so the next call
+  // gives it first claim on a fresh deadline rather than being starved
+  // again by the same earlier pages every tick — that shape is
+  // `incomplete: true` with a non-null `resumeAfterId`, which every branch
+  // below already accepts unchanged (only the `resumeAfterId === null`
+  // branches below are about the wrap case). See `reachedKeysetTail` on
+  // `BoundedSweepResult` and `resolveBoundedSweepOutcome`
   // in connector-summary-read-model.ts: a mid-fleet-started pass that
   // reaches the tail cannot yet claim complete convergence, so it forces
   // one more validation pass from position zero instead of reporting

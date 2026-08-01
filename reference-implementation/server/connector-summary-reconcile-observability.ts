@@ -37,6 +37,10 @@ export interface ConnectorSummaryReconcileObservation {
   readonly scopeKind: "complete" | "scoped";
   readonly scopeSize: number;
   readonly skipped: number;
+  /** This page's own repair/fold phases never started even one discovery
+   * query — the shared sweep deadline was already spent when this page's
+   * turn came up (see `BoundedObservationPhases.starved`'s doc). */
+  readonly starved: boolean;
   readonly terminalFoldEventsRead: number;
   readonly terminalFoldMinimumCheckpointAfter: number | null;
   readonly terminalFoldMinimumCheckpointBefore: number | null;
@@ -121,6 +125,7 @@ export function createConnectorSummaryReconcileObservationSink(
       observation.failed > 0 ||
       observation.skipped > 0 ||
       observation.incomplete ||
+      observation.starved ||
       observation.failureClasses.length > 0;
     if (!exceptional) {
       cleanBarrierCount += 1;
@@ -146,6 +151,7 @@ export function createConnectorSummaryReconcileObservationSink(
           scope_kind: observation.scopeKind === "scoped" ? "scoped" : "complete",
           scope_size: nonNegativeInteger(observation.scopeSize),
           skipped: nonNegativeInteger(observation.skipped),
+          starved: observation.starved === true,
           terminal_fold_events_read: nonNegativeInteger(observation.terminalFoldEventsRead),
           terminal_fold_minimum_checkpoint_after:
             observation.terminalFoldMinimumCheckpointAfter === null

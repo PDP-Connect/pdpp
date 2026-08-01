@@ -232,6 +232,149 @@ test(
   )
 );
 
+/**
+ * Sets the test-only per-page-fetch delay seam
+ * (`testOnlySweepPageFetchDelay` in connector-summary-read-model.ts) for the
+ * duration of `fn`. `pageIndex: undefined` delays every page's fetch;
+ * a specific index delays only that 0-based page.
+ */
+async function withSweepPageFetchDelay<T>(delayMs: number, pageIndex: number | undefined, fn: () => Promise<T>) {
+  process.env.PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_MS = String(delayMs);
+  if (pageIndex !== undefined) {
+    process.env.PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_PAGE_INDEX = String(pageIndex);
+  }
+  try {
+    return await fn();
+  } finally {
+    delete process.env.PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_MS;
+    delete process.env.PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_PAGE_INDEX;
+  }
+}
+
+/**
+ * 2026-08-01 LIVE symptom (distinct from the scenarios above): those tests
+ * model a page whose repair genuinely RUNS but is slow. This models the gap
+ * that survived that fix — a page that IS fetched (unlike a page the outer
+ * loop's own deadline check declines to fetch at all, which the pre-existing
+ * cursor behavior already resumes correctly from), but whose own
+ * repair/fold phases find the shared deadline already spent by the time
+ * their turn comes up, because an EARLIER page in the SAME call legitimately
+ * consumed most of the budget. Live evidence: two connector instances on the
+ * fleet's second (16-row) page stayed `dirty=1`/`state=stale` for over an
+ * hour despite a periodic sweep ticking every 60s and completing a full
+ * round-robin pass each tick — `candidate_reason_counts: {}` was logged for
+ * that page on nearly every tick (proving `observeConnectorSummaryEvidence`
+ * WAS invoked for it — a log line only emits after that call returns), yet
+ * `discoverCandidates` inside it never actually ran.
+ *
+ * This exact race (deadline crosses in the narrow window between the OUTER
+ * loop's per-page check and that page's OWN first internal check) is
+ * reliably sub-millisecond against local SQLite — not reproducible via real
+ * wall-clock timing alone (confirmed empirically: 40+ trials at varying
+ * budgets never landed in the window). `testOnlySweepPageFetchDelay` makes
+ * it deterministic, the same "synchronous test-only block on a specific
+ * seam" technique `testOnlyRepairCandidateSqliteDelay` already uses for the
+ * analogous per-candidate race in connector-summary-evidence-engine.ts.
+ *
+ * Before this fix: `runBoundedSummaryEvidenceSweep`'s per-page loop treated
+ * a starved page exactly like a slow-but-ran page — it advanced the cursor
+ * PAST it. Because the SAME earlier page exhausts the shared budget on
+ * every subsequent call too (its own dirty/candidate set is unaffected by
+ * cursor position), the starved page was starved again next call, and again
+ * after that — the round-robin wraparound that is supposed to guarantee
+ * eventual revisit never fired, because every call restarts from page 1 and
+ * re-exhausts the same budget there first.
+ *
+ * After this fix: a page whose repair/fold phases never got to run even one
+ * discovery query this call (`BoundedObservationPhases.starved`) rewinds the
+ * resume cursor to exactly BEFORE that page, instead of advancing past it —
+ * so the VERY NEXT call gives it first claim on a fresh deadline. This test
+ * proves the starved page's connection converges on the immediate next
+ * round, not "eventually, maybe never."
+ */
+test(
+  "a page that IS fetched but finds the shared deadline already spent (starved) still repairs on the very next bounded tick",
+  withTempDb(async () => {
+    const pageSize = 5;
+    // 10 brand-new connections, one keyset-ordered id space — every one is a
+    // genuine "missing" repair candidate (first-ever observation, no
+    // evidence row yet), so page 1 does REAL discovery+repair work (not
+    // injected) and converges within its own share of the budget. Page 1 =
+    // the first 5 ids; page 2 = the remaining 5 (exactly one more full page,
+    // so the walk stops there rather than continuing to a third page).
+    const allIds = seedConnections(10, { connectorId: "c1" });
+    const page1Ids = allIds.slice(0, pageSize);
+    const page2Ids = allIds.slice(pageSize);
+    const targetId = page2Ids.at(-1) as string;
+
+    // Page 1 (index 0) fetches and runs normally, fast. Page 2 (index 1)'s
+    // OWN fetch is held just long enough that the shared 60ms deadline is
+    // already spent by the time page 2's phases check it — reproducing the
+    // exact live race deterministically.
+    const result = await withSweepPageFetchDelay(80, 1, () =>
+      runBoundedSummaryEvidenceSweep({ maxDurationMs: 60, pageSize })
+    );
+
+    // Sanity: page 1 genuinely ran and converged (real repair work
+    // happened) — this is NOT the "deadline already spent before ANY page
+    // starts" shape (that case, `starved` on page 1 itself, already
+    // resumes correctly from position zero via the ordinary path).
+    assert.equal(
+      page1Ids.every((id) => evidenceRow(id) !== undefined),
+      true,
+      "page 1 must have genuinely run and repaired every one of its own candidates"
+    );
+
+    // The decisive assertion this fix adds: page 2 was starved this call
+    // (fetched, but its repair phase never ran even one discovery query) —
+    // proven via the new `starved` flag, not inferred indirectly from
+    // timing or from an absent evidence row alone.
+    assert.equal(
+      result.starved,
+      true,
+      "page 2 must be reported starved: it was fetched but its repair phase never ran even one discovery query this call"
+    );
+    assert.equal(result.discovered, pageSize + page2Ids.length, "both pages were genuinely fetched this call");
+    assert.equal(evidenceRow(targetId), undefined, "the starved page's connection has no evidence row yet this call");
+
+    // The mutation-sensitive proof: the resume cursor must rewind to BEFORE
+    // page 2 (page 1's own last id), not advance past page 2 and not wrap
+    // to null, so the very next call gives page 2 first claim on a fresh
+    // deadline.
+    assert.equal(
+      result.resumeAfterId,
+      page1Ids.at(-1),
+      "a starved page's resume cursor must rewind to exactly before it (the last id of the page before it), not advance past it or wrap to null"
+    );
+    assert.equal(result.incomplete, true, "a call with a starved page is never a clean full pass");
+
+    // The terminal proof: the VERY NEXT bounded call, resuming from that
+    // cursor, must genuinely repair the previously-starved connection — not
+    // "eventually, maybe never." No fetch delay this round: page 2 now
+    // goes FIRST, with the complete fresh budget to itself.
+    const secondResult = await runBoundedSummaryEvidenceSweep({
+      afterId: result.resumeAfterId,
+      maxDurationMs: 60_000,
+      pageSize,
+    });
+    assert.notEqual(
+      evidenceRow(targetId),
+      undefined,
+      "the previously-starved connection must have a durable evidence row after exactly one more bounded tick"
+    );
+    assert.equal(
+      secondResult.starved,
+      false,
+      "the previously-starved page must not be starved again on the immediate next call — it now goes first"
+    );
+    assert.equal(
+      secondResult.discovered,
+      page2Ids.length,
+      "the second call covers exactly the previously-starved page"
+    );
+  })
+);
+
 test(
   "a mid-fleet-started call that reaches the end of keyset order without a clean start still reports incomplete and forces a wraparound validation pass",
   withTempDb(async () => {

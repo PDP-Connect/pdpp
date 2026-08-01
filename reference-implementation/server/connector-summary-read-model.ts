@@ -80,6 +80,41 @@ function resolveCooperativeDeadline(options: {
   return null;
 }
 
+/**
+ * Test-only synchronous delay between `runBoundedSummaryEvidenceSweep`'s
+ * outer per-page deadline check and that page's own discovery/repair/fold
+ * barrier. Exists solely to make deterministically reproducible, in tests,
+ * the exact real-world race the 2026-08-01 fairness fix closes: on live
+ * Postgres (non-trivial per-query round-trip latency, unlike embedded
+ * SQLite), the shared deadline can already be spent by the time a
+ * genuinely-fetched later page's OWN phases check it, even though the
+ * OUTER loop's check for that same page passed moments earlier — a window
+ * too narrow (sub-millisecond against local SQLite) to hit reliably via
+ * real wall-clock timing alone. A complete no-op unless
+ * `PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_MS` is set to a positive integer
+ * (never set in production). `PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_PAGE_INDEX`,
+ * when set, scopes the delay to exactly that 0-based page index (so a test
+ * can let page 1 converge normally, then delay ONLY page 2's fetch) —
+ * unset applies the delay to every page, the simpler default most callers
+ * want. Same `Atomics.wait`-on-a-throwaway-buffer technique as
+ * `testOnlyRepairCandidateSqliteDelay` in connector-summary-evidence-engine.ts,
+ * for the same reason: a genuine synchronous, deterministic block, not an
+ * `await setTimeout` whose actual delay is scheduler-dependent.
+ */
+function testOnlySweepPageFetchDelay(pageIndex: number): void {
+  const raw = process.env.PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_MS;
+  const ms = raw ? Number.parseInt(raw, 10) : 0;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+  const rawPageIndex = process.env.PDPP_TEST_SWEEP_PAGE_FETCH_DELAY_PAGE_INDEX;
+  if (rawPageIndex !== undefined && Number.parseInt(rawPageIndex, 10) !== pageIndex) {
+    return;
+  }
+  const sab = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(sab), 0, 0, ms);
+}
+
 let connectorSummaryReconcileObservationSink: ConnectorSummaryReconcileObservationSink | null = null;
 
 /** Configure best-effort process-local telemetry; no persisted read-model state changes. */
@@ -2457,6 +2492,23 @@ interface BoundedObservationPhases {
   readonly incomplete: boolean;
   readonly repairDurationMs: number;
   readonly result: ReconcilePhaseResult;
+  /**
+   * `true` when the shared deadline was ALREADY spent before this page's
+   * repair phases ran even one discovery query — distinct from a page that
+   * genuinely ran discovery/repair/fold and simply did not converge within
+   * its slice (`incomplete` alone covers that case). A starved page
+   * contributes ZERO candidate classification this call (`emptyReconcilePhaseResult`
+   * short-circuits `startRepair` before `discoverCandidates` runs at all —
+   * see `startRepair`'s `canStartWork()` guard below), so its own dirty/
+   * checkpoint-lagging rows are invisible to this call's `candidateReasonCounts`
+   * even though they durably remain candidates. 2026-08-01 fairness gap: a
+   * multi-page sweep whose FIRST page alone consumes the entire shared
+   * budget starves every later page THIS way, every single call, forever —
+   * `incomplete` alone could not distinguish that from "ran and didn't
+   * converge," so the resume cursor kept wrapping past the starved page
+   * instead of rewinding to it (see `runBoundedSummaryEvidenceSweep`).
+   */
+  readonly starved: boolean;
 }
 
 /**
@@ -2514,12 +2566,21 @@ async function runBoundedObservationPhases(
   let repairDurationMs = 0;
   let maintenanceIncomplete = false;
   let foldOutcome = emptyFoldOutcome();
+  // `true` only until the FIRST repair/fold unit this page attempts actually
+  // starts. If that first attempt (always `missing`'s `startRepair`,
+  // regardless of turn parity — see below) finds the deadline already spent,
+  // this page never ran even one discovery query: a starved page, not
+  // merely a slow-converging one. Any later unit finding the deadline spent
+  // is the ordinary "ran out of shared budget mid-page" case `incomplete`
+  // already reports.
+  let noWorkStartedYet = true;
   const canStartWork = () => Date.now() < deadline;
   const startFold = (): Promise<FoldOutcome | null> => {
     if (!canStartWork()) {
       maintenanceIncomplete = true;
       return Promise.resolve(null);
     }
+    noWorkStartedYet = false;
     return foldStreamFactsBestEffort(connectorInstanceIds, {
       deadline,
       maxEvents: options.maxEvents ?? BOUNDED_FOLD_MAX_EVENTS,
@@ -2533,6 +2594,7 @@ async function runBoundedObservationPhases(
       maintenanceIncomplete = true;
       return emptyReconcilePhaseResult();
     }
+    noWorkStartedYet = false;
     const startedAt = Date.now();
     const result = await reconcileConnectorSummaryEvidence(connectorInstanceIds, {
       candidateReasons,
@@ -2573,7 +2635,7 @@ async function runBoundedObservationPhases(
   }
   const result = mergeReconcilePhaseResults(missing, generic);
   maintenanceIncomplete ||= result.skipped > 0 || foldOutcome.incomplete || Date.now() >= deadline;
-  return { foldOutcome, incomplete: maintenanceIncomplete, repairDurationMs, result };
+  return { foldOutcome, incomplete: maintenanceIncomplete, repairDurationMs, result, starved: noWorkStartedYet };
 }
 
 // ---------------------------------------------------------------------------
@@ -2650,6 +2712,9 @@ async function observeConnectorSummaryEvidence(
   incomplete: boolean;
   repairDurationMs: number;
   resumeAfterSeq: number | null;
+  /** See `BoundedObservationPhases.starved`'s doc. Always `false` for an
+   * unbounded call (no shared deadline to be starved by). */
+  starved: boolean;
   terminalFoldEventsRead: number;
   terminalFoldMinimumCheckpointAfter: number | null;
   terminalFoldMinimumCheckpointBefore: number | null;
@@ -2661,6 +2726,7 @@ async function observeConnectorSummaryEvidence(
   let foldOutcome = emptyFoldOutcome();
   let repairDurationMs = 0;
   let maintenanceIncomplete = false;
+  let starved = false;
   try {
     if (overallDeadline === null) {
       const repairStartedAt = Date.now();
@@ -2675,6 +2741,7 @@ async function observeConnectorSummaryEvidence(
         incomplete: maintenanceIncomplete,
         repairDurationMs,
         result,
+        starved,
       } = await runBoundedObservationPhases(connectorInstanceIds, overallDeadline, options));
     }
   } catch (err) {
@@ -2697,6 +2764,7 @@ async function observeConnectorSummaryEvidence(
       repairDurationMs,
       resumeAfterSeq: null,
       skipped: 0,
+      starved: false,
       terminalFoldEventsRead: 0,
       terminalFoldMinimumCheckpointAfter: null,
       terminalFoldMinimumCheckpointBefore: null,
@@ -2726,6 +2794,7 @@ async function observeConnectorSummaryEvidence(
     repairDurationMs,
     resumeAfterSeq: foldOutcome.resumeAfterSeq,
     skipped: result.skipped,
+    starved,
     terminalFoldEventsRead: foldOutcome.eventsRead,
     terminalFoldMinimumCheckpointAfter: foldOutcome.minimumCheckpointAfter,
     terminalFoldMinimumCheckpointBefore: foldOutcome.minimumCheckpointBefore,
@@ -2824,6 +2893,7 @@ export async function reconcileDirtyConnectorSummaryEvidence(
       scopeKind: connectorInstanceIds === null ? "complete" : "scoped",
       scopeSize: connectorInstanceIds === null ? outcome.candidatesInspected : connectorInstanceIds.length,
       skipped: outcome.skipped,
+      starved: outcome.starved,
       terminalFoldEventsRead: outcome.terminalFoldEventsRead,
       terminalFoldMinimumCheckpointAfter: outcome.terminalFoldMinimumCheckpointAfter,
       terminalFoldMinimumCheckpointBefore: outcome.terminalFoldMinimumCheckpointBefore,
@@ -2845,6 +2915,7 @@ export async function reconcileDirtyConnectorSummaryEvidence(
       scopeKind: connectorInstanceIds === null ? "complete" : "scoped",
       scopeSize: connectorInstanceIds?.length ?? 0,
       skipped: 0,
+      starved: false,
       terminalFoldEventsRead: 0,
       terminalFoldMinimumCheckpointAfter: null,
       terminalFoldMinimumCheckpointBefore: null,
@@ -2875,15 +2946,20 @@ export interface BoundedSweepResult {
    * should NOT treat this as a correctness gate (design.md "Startup is
    * acceleration, not authority": the unbounded read-time barrier always
    * covers whatever this sweep missed). `resumeAfterId`, when set, is the
-   * exact cursor position to resume from on a follow-up call — always PAST
-   * the last page this call attempted, whether or not that page's own fold
+   * exact cursor position to resume from on a follow-up call — PAST the
+   * last page this call attempted, whether or not that page's own fold
    * genuinely converged (2026-08-01: a page that never converges must not
    * be able to pin the cursor before itself forever, permanently starving
    * every connection after it in keyset order — see this function's own
    * doc). A row a non-converging page left unrepaired remains classified as
    * a candidate by its own dirty flag / checkpoint lag independent of
    * cursor position, so it is genuinely revisited once round-robin
-   * wraparound brings the cursor back to it, never silently lost.
+   * wraparound brings the cursor back to it, never silently lost. ONE
+   * exception (2026-08-01 fairness fix): when any page this call attempted
+   * never even ran discovery (starved by an already-exhausted shared
+   * deadline), `resumeAfterId` instead rewinds to exactly BEFORE that
+   * page — see `resolveBoundedSweepOutcome`'s `firstStarvedPageCursor` doc
+   * for why "advance past it" is unsafe specifically for a starved page.
    */
   readonly incomplete: boolean;
   /**
@@ -2897,7 +2973,7 @@ export interface BoundedSweepResult {
    * bounded by `maxPages`/`maxDurationMs`.
    */
   readonly observedIds: readonly string[];
-  /** Complete-set orphan pruning only ran when the sweep covered every page AND every page's fold genuinely converged this call (see below). */
+  /** Complete-set orphan pruning only ran when the sweep covered every page, every page's fold genuinely converged, AND no page was starved this call (see below). */
   readonly prunedComplete: boolean;
   /**
    * `true` when THIS call's own page-walk reached the true end of keyset
@@ -2919,6 +2995,18 @@ export interface BoundedSweepResult {
   readonly repaired: number;
   readonly resumeAfterId: string | null;
   readonly skipped: number;
+  /**
+   * `true` when at least one page this call attempted never ran even one
+   * discovery query (the shared deadline was already spent at its turn —
+   * see `BoundedObservationPhases.starved`'s doc). Exposed so a caller (or a
+   * test) can distinguish "every page genuinely ran, some just didn't
+   * converge" (`incomplete: true`, `starved: false`) from "a later page was
+   * starved of budget entirely by an earlier one" (`starved: true`) — the
+   * fairness gap this field's introduction (2026-08-01) closes: a starved
+   * page's resume cursor rewinds to before it instead of advancing past it,
+   * guaranteeing it gets first claim on the very next call's fresh deadline.
+   */
+  readonly starved: boolean;
 }
 
 /**
@@ -3023,13 +3111,48 @@ export interface BoundedSweepResult {
  * runs on every page — no separate retry queue needed: dirty/checkpoint
  * state IS the durable memory of what still needs repair, this cursor is
  * only an acceleration hint for where to look first.
+ *
+ * `firstStarvedPageCursor` (2026-08-01 fairness fix): the cursor position
+ * BEFORE the first page this call found already deadline-exhausted at its
+ * own turn (see `BoundedObservationPhases.starved`) — `null` when no page
+ * was starved. A starved page ran ZERO discovery for its ids: unlike a page
+ * that genuinely ran and merely didn't converge (safe to advance past —
+ * its rows remain classified as candidates by their own dirty/checkpoint
+ * state regardless of cursor position), a starved page's rows were never
+ * even looked at this call. If every call's shared deadline is
+ * systematically exhausted by the SAME earlier page(s) in keyset order
+ * (the observed live symptom: page 1 alone consuming the entire per-tick
+ * budget), advancing past a starved page the ordinary way means it is
+ * starved again on every subsequent call too — the round-robin wraparound
+ * that is supposed to guarantee eventual revisit never actually reaches it,
+ * because every call restarts from position zero and re-exhausts the same
+ * budget on the same early pages first. When any page was starved this
+ * call, the resume cursor rewinds to exactly before that page (overriding
+ * the ordinary complete-set-wrap-to-null outcome), so the VERY NEXT call
+ * starts there — giving the previously-starved page first claim on a fresh
+ * deadline instead of last (guaranteed bounded-fair progress: a starved
+ * page is repaired within one additional tick, not "eventually, maybe
+ * never" under permanent budget pressure from earlier pages).
  */
 function resolveBoundedSweepOutcome(walk: {
   readonly startedFromBeginning: boolean;
   readonly coveredCompleteSet: boolean;
   readonly anyFoldIncomplete: boolean;
+  readonly anyPageStarved: boolean;
   readonly cursor: string | null;
+  readonly firstStarvedPageCursor: string | null;
 }): { readonly incomplete: boolean; readonly resumeAfterId: string | null } {
+  // `firstStarvedPageCursor` alone cannot distinguish "no page was starved"
+  // from "the FIRST page was starved" — both are `null` (a starved first
+  // page's before-cursor is legitimately `null`, the walk's own starting
+  // position). `anyPageStarved` is the real gate; `firstStarvedPageCursor`
+  // is only the resume VALUE once that gate fires (and `null` is exactly
+  // the correct resume value when page 1 itself was starved — the very
+  // next call must restart from position zero, which is what a `null`
+  // cursor already means).
+  if (walk.anyPageStarved) {
+    return { incomplete: true, resumeAfterId: walk.firstStarvedPageCursor };
+  }
   const cleanFullPass = walk.startedFromBeginning && walk.coveredCompleteSet && !walk.anyFoldIncomplete;
   const incomplete = !cleanFullPass;
   if (!incomplete) {
@@ -3067,6 +3190,7 @@ function emitBoundedSweepPageObservation(
     scopeKind: "scoped",
     scopeSize: pageIds.length,
     skipped: pageResult.skipped,
+    starved: pageResult.starved,
     terminalFoldEventsRead: pageResult.terminalFoldEventsRead,
     terminalFoldMinimumCheckpointAfter: pageResult.terminalFoldMinimumCheckpointAfter,
     terminalFoldMinimumCheckpointBefore: pageResult.terminalFoldMinimumCheckpointBefore,
@@ -3101,13 +3225,26 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   let pages = 0;
   let coveredCompleteSet = false;
   let anyFoldIncomplete = false;
+  let anyPageStarved = false;
+  // The cursor value BEFORE the FIRST starved page fetched its ids this
+  // call (see `resolveBoundedSweepOutcome`'s doc) — `null` while no page has
+  // been starved yet, then pinned to that one value for the rest of this
+  // call even if a later page is starved too (the earliest starved page in
+  // keyset order is where the next call must resume, since everything from
+  // there onward this call is equally unproven).
+  let firstStarvedPageCursor: string | null = null;
 
   for (;;) {
     if (Date.now() >= deadline || pages >= maxPages) {
       break;
     }
+    const cursorBeforePage = cursor;
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const pageIds = await readInstanceIdPage(cursor, pageSize);
+    // Test-only: see `testOnlySweepPageFetchDelay` — no-op in production.
+    // `pages` still holds the count of ALREADY-completed pages here (it
+    // increments below), so it is exactly this page's own 0-based index.
+    testOnlySweepPageFetchDelay(pages);
     if (pageIds.length === 0) {
       coveredCompleteSet = true;
       break;
@@ -3123,6 +3260,20 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     repaired += pageResult.reconciled;
     skipped += pageResult.skipped;
     emitBoundedSweepPageObservation(pageResult, pageIds, pageStartedAt);
+    if (pageResult.starved && !anyPageStarved) {
+      // This page never ran even one discovery query this call (the shared
+      // deadline was already spent at its turn) — distinct from, and
+      // strictly worse than, a page that ran and merely didn't converge
+      // (`pageResult.incomplete` alone, handled below). Advancing past a
+      // starved page the ordinary way is unsafe: if the SAME earlier
+      // page(s) exhaust the shared budget on every call (the live symptom
+      // this fixes), a starved page is starved again next call too, and the
+      // "round-robin wraparound eventually revisits it" guarantee never
+      // actually fires. Recorded once, at the FIRST starved page in this
+      // call's keyset order.
+      anyPageStarved = true;
+      firstStarvedPageCursor = cursorBeforePage;
+    }
     if (pageResult.incomplete) {
       // This page's own fold/repair did not converge within the shared
       // deadline. Do NOT stop the walk here and do NOT rewind the cursor:
@@ -3140,7 +3291,9 @@ export async function runBoundedSummaryEvidenceSweep(options: {
       // cursor naturally returns to the start once a later call's walk
       // reaches the true end of the set (`coveredCompleteSet` below) — is
       // what guarantees the stuck page is revisited, using the EXISTING
-      // dirty/checkpoint authority rather than a second durable queue.
+      // dirty/checkpoint authority rather than a second durable queue. This
+      // "advance past it" reasoning holds ONLY for a page that actually ran
+      // (`starved` false); a starved page is handled separately above.
       anyFoldIncomplete = true;
     }
     // Publish-candidacy is independent of this page's own incomplete flag
@@ -3158,6 +3311,9 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     // regardless of the page's aggregate fold outcome costs one bounded
     // extra evidence read per page and drops zero correctness: a row that
     // is NOT actually current is simply filtered out there, same as today.
+    // A starved page contributed no repair work, but its ids are still safe
+    // to hand to the publisher for the same reason: it re-queries evidence
+    // per id and only publishes rows independently current.
     observedIds.push(...pageIds);
     cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
@@ -3168,7 +3324,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   }
 
   let prunedComplete = false;
-  if (coveredCompleteSet && !anyFoldIncomplete) {
+  if (coveredCompleteSet && !anyFoldIncomplete && !anyPageStarved) {
     // The sweep's own pages already scoped-pruned every id they discovered
     // was gone. What per-page scoped pruning CANNOT catch: an evidence row
     // whose connector_instance_id was NEVER discovered by any page at all —
@@ -3187,8 +3343,10 @@ export async function runBoundedSummaryEvidenceSweep(options: {
 
   const { incomplete, resumeAfterId } = resolveBoundedSweepOutcome({
     anyFoldIncomplete,
+    anyPageStarved,
     coveredCompleteSet,
     cursor,
+    firstStarvedPageCursor,
     startedFromBeginning,
   });
   return {
@@ -3200,5 +3358,6 @@ export async function runBoundedSummaryEvidenceSweep(options: {
     repaired,
     resumeAfterId,
     skipped,
+    starved: anyPageStarved,
   };
 }

@@ -126,18 +126,40 @@ function seedTerminalEvents(connectorInstanceId: string, count: number): number 
   return count;
 }
 
+async function withSustainedSlowRepair<T>(delayMs: number, fn: () => Promise<T>): Promise<T> {
+  process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS = String(delayMs);
+  try {
+    return await fn();
+  } finally {
+    delete process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS;
+  }
+}
+
 test(
   "a sweep whose deadline is exhausted mid-set stops early, reports incomplete, and never runs complete-set pruning",
   withTempDb(async () => {
     const n = 50;
     seedConnections(n);
 
-    // Deadline exhausted almost immediately — expect only a small number of
-    // pages (likely just the first) to complete before the deadline check
-    // stops the loop.
-    const result = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 10 });
+    // A genuinely (not just marginally) slow per-candidate repair, paired
+    // with a deadline just under one page's own total repair cost: page 1
+    // deterministically STARTS and RUNS its own repair/fold phases (never
+    // `starved` — see connector-summary-evidence-sweep-page-starvation.test.ts
+    // for that distinct, narrower case), then genuinely runs out of shared
+    // budget mid-page, stopping the outer loop before any further page is
+    // even fetched. A near-zero (e.g. 1ms) deadline against un-injected,
+    // real-world-fast repair work is racy here (whether the deadline is
+    // already spent before page 1's own first phase even checks it is a
+    // sub-millisecond timing question — see this file's own sibling test
+    // for why that specific race needs a dedicated deterministic seam) —
+    // this deadline/delay pairing is chosen so the outcome is unambiguous:
+    // page 1 definitely starts, definitely doesn't finish.
+    const result = await withSustainedSlowRepair(20, () =>
+      runBoundedSummaryEvidenceSweep({ maxDurationMs: 30, pageSize: 10 })
+    );
 
-    assert.equal(result.incomplete, true, "a near-zero deadline cannot cover 50 connections in 10-per-page pages");
+    assert.equal(result.incomplete, true, "a tight deadline cannot cover 50 connections in 10-per-page pages");
+    assert.equal(result.starved, false, "page 1 must have genuinely run its own repair phases, not been starved");
     // The cursor ADVANCES past the deadline-cut page rather than rewinding
     // before it (2026-08-01: rewinding is what let a single non-converging
     // page permanently starve every connection after it in keyset order —
@@ -457,9 +479,17 @@ test(
     process.env.PDPP_TEST_REPAIR_CANDIDATE_SQLITE_DELAY_MS = "80";
     try {
       const startedAt = Date.now();
-      const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 1, pageSize: 25 });
+      // 3ms, not 1ms: reliably (proven across repeated trials) lands past
+      // the outer loop's own per-page check with time to spare for this
+      // page's FIRST repair unit to genuinely start — i.e. never `starved`
+      // (see connector-summary-evidence-sweep-page-starvation.test.ts for
+      // that distinct, narrower "deadline already spent before even one
+      // discovery query ran" case) — while still expiring long before a
+      // second 80ms-delayed candidate could start.
+      const first = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 3, pageSize: 25 });
       const elapsedMs = Date.now() - startedAt;
       assert.equal(first.incomplete, true, "the expired cold page reports incomplete");
+      assert.equal(first.starved, false, "the page's first repair unit must have genuinely started, not been starved");
       // The cursor ADVANCES past this page's last id rather than rewinding
       // before it (2026-08-01: rewinding is what let a single
       // non-converging page permanently starve every connection after it —
