@@ -148,6 +148,14 @@ const BACKFILL_17MO = PARSERS_BACKFILL_17MO;
 const INCREMENTAL_OVERLAP_MS = PARSERS_INCREMENTAL_OVERLAP_MS;
 const ID_TEXT_SNIP = 160;
 const HTML_PREVIEW_MAX = 600;
+// Playwright's locator.click() timeout message is a multi-line call log
+// (e.g. "waiting for locator(...) - locator resolved to <button disabled...>
+// - element is not enabled - retrying click action ..."), routinely 400+
+// chars. ID_TEXT_SNIP (160) is sized for short identifiers/filenames and
+// was cutting this off before the actionability state (disabled/hidden/
+// covered) — the actual cause of the timeout — ever appeared. Sized like
+// HTML_PREVIEW_MAX so the full call log survives into diagnostics.
+const CLICK_ERROR_SNIP = 600;
 
 // Pure helpers — hashId, currencyToCents, isoDate, mmddyyyy, parseCsv,
 // rowsToTransactions — live in ./parsers.ts.
@@ -697,7 +705,7 @@ function formatDiagnosticInfo(diag: DiagnosticInfo): string {
     parts.push(download);
   }
   if (diag.error) {
-    parts.push(`error=${diag.error.slice(0, ID_TEXT_SNIP)}`);
+    parts.push(`error=${diag.error.slice(0, CLICK_ERROR_SNIP)}`);
   }
   return parts.join("; ");
 }
@@ -1167,7 +1175,7 @@ async function emitExportClickFailedDiagnostic(
   onDiagnostics({
     phase: "export_click_failed",
     diag,
-    error: msg.slice(0, ID_TEXT_SNIP),
+    error: msg.slice(0, CLICK_ERROR_SNIP),
   });
 }
 

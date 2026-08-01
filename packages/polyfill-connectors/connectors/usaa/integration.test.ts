@@ -910,6 +910,101 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
 });
 
 /**
+ * Regression for the 2026-08-01 live run (run_a6568f40d5004a3f843a2a2b5a73df55,
+ * account 1/4): the export button was found but `located.export.click()`
+ * timed out after EXPORT_CLICK_TIMEOUT_MS. Playwright's real timeout message
+ * for this shape is a multi-line call log — "waiting for locator(...) -
+ * locator resolved to <button disabled ...> - element is not enabled -
+ * retrying click action ..." — that easily runs past 160 chars, and the
+ * actionability state (disabled/hidden/covered) recorded after "resolved to"
+ * is the one piece of evidence that would explain *why* the click failed.
+ * Before this fix, `emitExportClickFailedDiagnostic` truncated the message
+ * to `ID_TEXT_SNIP` (160 chars) — sized for short identifiers, not
+ * Playwright call logs — so every occurrence of this error shape lost
+ * exactly that evidence before it ever reached `onDiagnostics` (confirmed
+ * against the live run's stored `known_gaps_json`, which cuts off mid-tag
+ * at "<button di"). This test drives a click() that rejects with a
+ * realistically-sized disabled-button call log and asserts the disabled
+ * marker survives into both the raw `onDiagnostics` payload and the
+ * ladder-exhausted SKIP_RESULT message.
+ */
+test("driveExport surfaces the disabled-button call log on an export-click timeout, not just the first 160 chars", async () => {
+  const realisticTimeoutMessage =
+    'locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator(\'button.ent-as-utility-bar__item.export\').first()\n    - locator resolved to <button disabled class="ent-as-utility-bar__item export" type="button">Export</button>\n    - element is not enabled\n    - retrying click action\n      - waiting 20ms\n    - waiting for element to be visible, enabled and stable\n    - element is not enabled\n    - retrying click action\n      - waiting 100ms';
+  assert.ok(
+    realisticTimeoutMessage.length > 160,
+    "the fixture message must exceed the old 160-char cutoff to prove the regression"
+  );
+
+  const diagnostics: DiagnosticInfo[] = [];
+  const page: Page = Object.assign({} as Page, {
+    evaluate() {
+      return Promise.resolve({
+        dialog_html_preview: null,
+        dialogs_open: 0,
+        export_candidates: [],
+        has_utility_bar: true,
+        nav_candidates: [],
+        title: "Bank Account Summary | USAA",
+        url: "https://www.usaa.com/my/checking?accountId=private",
+      });
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    keyboard: { press: () => Promise.resolve() },
+    locator(selector: string) {
+      if (selector === "button.ent-as-utility-bar__item.export") {
+        return {
+          click: () => Promise.reject(new Error(realisticTimeoutMessage)),
+          count: () => Promise.resolve(1),
+          first(): unknown {
+            return this;
+          },
+        };
+      }
+      return {
+        count: () => Promise.resolve(0),
+        filter(): unknown {
+          return this;
+        },
+        first(): unknown {
+          return this;
+        },
+      };
+    },
+    title: () => Promise.resolve("Bank Account Summary | USAA"),
+    url: () => "https://www.usaa.com/my/checking?accountId=private",
+  });
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking", {
+    onDiagnostics: (d) => diagnostics.push(d),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "failed" });
+  const clickFailed = diagnostics.find((d) => d.phase === "export_click_failed");
+  assert.ok(clickFailed, "expected an export_click_failed diagnostic");
+  assert.match(
+    clickFailed?.error ?? "",
+    /resolved to <button disabled/,
+    "the disabled-button actionability state must survive truncation"
+  );
+
+  const { deps, messages } = makeHarness();
+  await emitExportFailure(deps, makeAccount(), clickFailed ?? null);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.match(
+    skip.message,
+    /resolved to <button disabled/,
+    "the disabled-button evidence must reach the emitted SKIP_RESULT message, not just the in-memory diagnostic"
+  );
+});
+
+/**
  * Regression for the 2026-07-31 gate finding: the live pending gap on
  * 0002-qjnDfcbON1LHLxlg2AtzmEHo failed with phase=export_dialog_unexpected_shape,
  * and neither PDPP_CAPTURE_FIXTURES nor PDPP_CAPTURE_ON_FAILURE was set for
