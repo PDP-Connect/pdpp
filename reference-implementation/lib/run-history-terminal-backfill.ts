@@ -30,6 +30,22 @@
  * sweep. Ties on `occurred_at` (millisecond-resolution timestamps can
  * collide) are broken deterministically by `recorded_at` then `event_id` so
  * SQLite and Postgres pick the same "latest" terminal event.
+ *
+ * NULL connector_instance_id on the terminal spine event: the orphan
+ * reconciler's PRE-writer-authority incarnation (before 3614e31f9) wrote
+ * `run.abandoned` via a raw INSERT that never populated
+ * connector_instance_id/source_kind/source_id — those columns default to
+ * NULL. `run_history.connector_instance_id` is NOT NULL, so a strict `s.
+ * connector_instance_id = rh.connector_instance_id` join can never match
+ * such a row (SQL NULL = value is UNKNOWN, not true) — this is exactly why
+ * run_1785516896273_1 stayed unrepaired after this backfill shipped. Since
+ * `run_id` is not globally unique (two different connections can share one —
+ * see run-history-duplicate-run-id-identity.test.ts), blindly treating a
+ * NULL connector_instance_id as a wildcard match on run_id alone risks
+ * folding a legacy NULL-instance event into the WRONG connection's row when
+ * two connections share that run_id. Both queries below therefore only
+ * accept a NULL-instance terminal event when the run_id is unambiguous: the
+ * candidate run_history row is the ONLY 'running' row for that run_id.
  */
 
 import type { PoolClient } from "pg";
@@ -46,6 +62,7 @@ const TERMINAL_EVENT_TYPES_SQL =
   "'run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned'";
 
 interface TerminalBackfillRow {
+  connector_id: string;
   connector_instance_id: string;
   data_json: unknown;
   event_type: string;
@@ -81,7 +98,13 @@ function terminalBackfillDataFromRow(dataJson: unknown): Record<string, unknown>
 
 function toRunHistorySpineEvent(row: TerminalBackfillRow): RunHistorySpineEvent {
   return {
-    connectorId: row.source_kind === "connector" ? row.source_id : null,
+    // Legacy pre-writer-authority terminal events (e.g. run_1785516896273_1's
+    // run.abandoned) wrote no source_kind/source_id at all, so the spine
+    // event's own identity resolves to null here. Fall back to run_history's
+    // own connector_id (NOT NULL in schema) rather than let the writer's
+    // `event.connectorId` guard silently reject an otherwise-legitimate
+    // convergence.
+    connectorId: row.source_kind === "connector" ? row.source_id : row.connector_id,
     connectorInstanceId: row.connector_instance_id,
     data: terminalBackfillDataFromRow(row.data_json),
     eventType: row.event_type,
@@ -97,6 +120,7 @@ export async function backfillRunHistoryFromTerminalSpinePostgres(client: PoolCl
     SELECT DISTINCT ON (rh.run_id, rh.connector_instance_id)
       rh.run_id,
       rh.connector_instance_id,
+      rh.connector_id,
       s.event_type,
       s.status,
       s.occurred_at,
@@ -106,7 +130,18 @@ export async function backfillRunHistoryFromTerminalSpinePostgres(client: PoolCl
     FROM run_history rh
     JOIN spine_events s
       ON s.run_id = rh.run_id
-     AND s.connector_instance_id = rh.connector_instance_id
+     AND (
+       s.connector_instance_id = rh.connector_instance_id
+       OR (
+         s.connector_instance_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM run_history other
+           WHERE other.run_id = rh.run_id
+             AND other.status = 'running'
+             AND other.connector_instance_id <> rh.connector_instance_id
+         )
+       )
+     )
      AND s.event_type IN (${TERMINAL_EVENT_TYPES_SQL})
     WHERE rh.status = 'running'
     ORDER BY rh.run_id, rh.connector_instance_id, s.occurred_at DESC, s.recorded_at DESC, s.event_id DESC
@@ -133,6 +168,7 @@ export function backfillRunHistoryFromTerminalSpineSqlite(raw: SqliteStatementLi
       SELECT
         rh.run_id      AS run_id,
         rh.connector_instance_id AS connector_instance_id,
+        rh.connector_id AS connector_id,
         s.event_type    AS event_type,
         s.status        AS status,
         s.occurred_at   AS occurred_at,
@@ -145,7 +181,18 @@ export function backfillRunHistoryFromTerminalSpineSqlite(raw: SqliteStatementLi
           SELECT t.event_id
           FROM spine_events t
           WHERE t.run_id = rh.run_id
-            AND t.connector_instance_id = rh.connector_instance_id
+            AND (
+              t.connector_instance_id = rh.connector_instance_id
+              OR (
+                t.connector_instance_id IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM run_history other
+                  WHERE other.run_id = rh.run_id
+                    AND other.status = 'running'
+                    AND other.connector_instance_id <> rh.connector_instance_id
+                )
+              )
+            )
             AND t.event_type IN (${TERMINAL_EVENT_TYPES_SQL})
           ORDER BY t.occurred_at DESC, t.recorded_at DESC, t.event_id DESC
           LIMIT 1

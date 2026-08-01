@@ -723,6 +723,146 @@ test("SQLite old-fail/new-pass: terminal spine already exists + stale running ru
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// The EXACT live shape of run_1785516896273_1: its run.abandoned terminal
+// spine event was written by the PRE-3614e31f9 raw INSERT, which never
+// populated connector_instance_id/source_kind/source_id — those columns are
+// NULL on that row, unlike every synthetic fixture above (which always sets
+// connector_instance_id/source_kind/source_id to mirror a live writer-
+// authority insert). run_history.connector_instance_id/connector_id are
+// NOT NULL, so `s.connector_instance_id = rh.connector_instance_id` can
+// never match this row — this is why the fix shipped in
+// 0cd6ee9b2/ff59c5b9b still left run_1785516896273_1 unrepaired.
+// ─────────────────────────────────────────────────────────────────────────
+
+test("SQLite old-fail/new-pass: terminal spine event with NULL connector_instance_id/source_kind/source_id (the exact run_1785516896273_1 shape) still converges", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    // No connector_instance_id/source_kind/source_id passed — insertTerminalSpineEvent
+    // defaults them to NULL, matching the pre-writer-authority raw INSERT's
+    // column list exactly (it never named those columns at all).
+    const raw = new Database(dbPath);
+    try {
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+           VALUES ('evt_null_ident_abandoned', 'run.abandoned', '2026-05-10T12:30:00.000Z', '2026-05-10T12:30:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'controller', 'run', 'run_1785516896273_1', 'abandoned',
+                   'run_1785516896273_1', '{}', 'v1')`
+        )
+        .run();
+    } finally {
+      raw.close();
+    }
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_gmail",
+      connector_instance_id: "cin_live_shape_1",
+      run_id: "run_1785516896273_1",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-null-ident-1",
+      controllerId: "host-null-ident",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(result.selected, 0, "already has a terminal spine event — not a new orphan");
+    assert.equal(result.abandoned, 0, "no new run.abandoned event must be emitted");
+    assert.equal(
+      result.backfilled,
+      1,
+      "backfill must converge the row even though the terminal event's connector_instance_id is NULL"
+    );
+
+    const finalized = new Database(dbPath);
+    try {
+      const row = finalized
+        .prepare("SELECT status, completed_at FROM run_history WHERE run_id = ?")
+        .get("run_1785516896273_1") as { status: string; completed_at: string | null };
+      assert.equal(row.status, "abandoned", "must not stay stuck at status='running' forever");
+      assert.ok(row.completed_at, "completed_at must be stamped");
+    } finally {
+      finalized.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
+test("SQLite: a NULL-identity terminal spine event must NOT converge the wrong row when two connections share its run_id", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    const raw = new Database(dbPath);
+    try {
+      raw
+        .prepare(
+          `INSERT INTO spine_events
+             (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+              actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+           VALUES ('evt_null_ident_ambiguous', 'run.abandoned', '2026-05-10T12:30:00.000Z', '2026-05-10T12:30:00.000Z',
+                   'default', 'trc_seed', 'runtime', 'controller', 'run', 'run_shared_ambiguous', 'abandoned',
+                   'run_shared_ambiguous', '{}', 'v1')`
+        )
+        .run();
+    } finally {
+      raw.close();
+    }
+    // Two DIFFERENT connections legitimately share this run_id (confirmed
+    // live shape — run-history-duplicate-run-id-identity.test.ts). Both are
+    // still 'running'; the NULL-identity terminal event above must not be
+    // able to pick a side.
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_a",
+      connector_instance_id: "cin_ambiguous_a",
+      run_id: "run_shared_ambiguous",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+    insertRunningRunHistoryRow(dbPath, {
+      connector_id: "conn_b",
+      connector_instance_id: "cin_ambiguous_b",
+      run_id: "run_shared_ambiguous",
+      started_at: "2026-05-10T12:00:00.000Z",
+    });
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-null-ident-ambiguous",
+      controllerId: "host-null-ident-ambiguous",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      0,
+      "must refuse to guess which of two connections sharing this run_id the NULL-identity event belongs to"
+    );
+
+    const raw2 = new Database(dbPath);
+    try {
+      const rows = raw2
+        .prepare(
+          "SELECT connector_instance_id, status FROM run_history WHERE run_id = ? ORDER BY connector_instance_id"
+        )
+        .all("run_shared_ambiguous") as { connector_instance_id: string; status: string }[];
+      assert.equal(rows.length, 2);
+      assert.ok(
+        rows.every((r) => r.status === "running"),
+        "both rows must remain 'running' — neither can be safely converged"
+      );
+    } finally {
+      raw2.close();
+    }
+  } finally {
+    clearCurrentBootEpoch();
+    closeDb();
+  }
+});
+
 test("Postgres parity old-fail/new-pass: terminal spine already exists + stale running run_history converges without re-emitting a spine event", {
   skip: !POSTGRES_URL,
 }, async () => {
@@ -814,6 +954,111 @@ test("Postgres parity old-fail/new-pass: terminal spine already exists + stale r
   } finally {
     await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_hist_pg_%'").catch(() => undefined);
     await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_hist_pg_%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres parity: terminal spine event with NULL connector_instance_id/source_kind/source_id (the exact live run_1785516896273_1 shape) still converges", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    // No connector_instance_id/source_kind/source_id column named at all —
+    // reproduces the pre-3614e31f9 raw INSERT's exact column list, under
+    // which those columns default to NULL. Every other fixture in this file
+    // sets them explicitly (mirroring a live writer-authority insert), which
+    // is exactly why this shape slipped through undetected.
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, '{}'::jsonb, 'v1')`,
+      ["evt_null_ident_pg_abandoned", "2026-05-10T12:30:00.000Z", "run_1785516896273_1_pg"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_1785516896273_1_pg", "cin_null_ident_pg_1", "conn_gmail_pg", "2026-05-10T12:00:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-null-ident-pg-1",
+      controllerId: "host-null-ident-pg",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(result.selected, 0, "already has a terminal spine event — not a new orphan");
+    assert.equal(result.abandoned, 0, "no new run.abandoned event must be emitted");
+    assert.equal(
+      result.backfilled,
+      1,
+      "backfill must converge the row even though the terminal event's connector_instance_id is NULL"
+    );
+
+    const { rows: finalized } = await postgresQuery<{ status: string; completed_at: string | null }>(
+      "SELECT status, completed_at FROM run_history WHERE run_id = $1",
+      ["run_1785516896273_1_pg"]
+    );
+    assert.equal(finalized[0]?.status, "abandoned", "must not stay stuck at status='running' forever");
+    assert.ok(finalized[0]?.completed_at, "completed_at must be stamped");
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_1785516896273_1_pg%'").catch(() => undefined);
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_1785516896273_1_pg%'").catch(() => undefined);
+    clearCurrentBootEpoch();
+    await closePostgresStorage();
+  }
+});
+
+test("Postgres parity: a NULL-identity terminal spine event must NOT converge the wrong row when two connections share its run_id", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events
+           (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+            actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+         VALUES ($1, 'run.abandoned', $2, $2, 'default', 'trc_seed', 'runtime', 'controller', 'run', $3, 'abandoned', $3, '{}'::jsonb, 'v1')`,
+      ["evt_null_ident_pg_ambiguous", "2026-05-10T12:30:00.000Z", "run_shared_ambiguous_pg"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_shared_ambiguous_pg", "cin_ambiguous_pg_a", "conn_a_pg", "2026-05-10T12:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO run_history (run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, $4, 1)`,
+      ["run_shared_ambiguous_pg", "cin_ambiguous_pg_b", "conn_b_pg", "2026-05-10T12:00:00.000Z"]
+    );
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-null-ident-pg-ambiguous",
+      controllerId: "host-null-ident-pg-ambiguous",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+
+    assert.equal(
+      result.backfilled,
+      0,
+      "must refuse to guess which of two connections sharing this run_id the NULL-identity event belongs to"
+    );
+
+    const { rows } = await postgresQuery<{ connector_instance_id: string; status: string }>(
+      "SELECT connector_instance_id, status FROM run_history WHERE run_id = $1 ORDER BY connector_instance_id",
+      ["run_shared_ambiguous_pg"]
+    );
+    assert.equal(rows.length, 2);
+    assert.ok(
+      rows.every((r) => r.status === "running"),
+      "both rows must remain 'running' — neither can be safely converged"
+    );
+  } finally {
+    await postgresQuery("DELETE FROM run_history WHERE run_id LIKE 'run_shared_ambiguous_pg%'").catch(() => undefined);
+    await postgresQuery("DELETE FROM spine_events WHERE run_id LIKE 'run_shared_ambiguous_pg%'").catch(() => undefined);
     clearCurrentBootEpoch();
     await closePostgresStorage();
   }
