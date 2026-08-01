@@ -1672,6 +1672,33 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     return null;
   }
 
+  // Single bounded-lifecycle rule for the derived session id's identity
+  // cache entry, shared by both acquire and release: insert it up front,
+  // run `body`, then evict it in a `finally` UNLESS `body` reports the
+  // identity must outlive this call (a granted acquisition, whose eventual
+  // release is the only other reader). Every early-return/failure branch of
+  // acquisition and every branch of release — including "no lease found" —
+  // falls through this same `finally`, so a future branch added to either
+  // function cannot silently reintroduce the leak: it would have to
+  // deliberately opt out via `keepAfterReturn`.
+  async function withPhaseSessionIdentity<T>(
+    sessionId: string,
+    connectorInstanceId: string,
+    body: () => Promise<{ result: T; keepAfterReturn: boolean }>
+  ): Promise<T> {
+    connectorInstanceIdByRunId.set(sessionId, connectorInstanceId);
+    let keepAfterReturn = false;
+    try {
+      const { keepAfterReturn: shouldKeep, result } = await body();
+      keepAfterReturn = shouldKeep;
+      return result;
+    } finally {
+      if (!keepAfterReturn) {
+        connectorInstanceIdByRunId.delete(sessionId);
+      }
+    }
+  }
+
   async function acquireManagedBrowserSurfaceForPhase(
     input: PhaseSurfaceAcquireInput
   ): Promise<PhaseSurfaceAcquireResult> {
@@ -1685,44 +1712,46 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
 
     const sessionId = browserSurfacePhaseSessionId(runId);
-    // Keyed by the session id: every internal helper below (
-    // emitBrowserSurfaceLeaseEvent, requireConnectorInstanceIdForRun, ...)
-    // reads/writes this map by ctx.runId, which for a phase acquire IS the
-    // session id, not the real run id.
-    connectorInstanceIdByRunId.set(sessionId, connectorInstanceId);
-    await expireBrowserSurfaceWaitsWithoutPromotion();
-    const phaseCtx: ManagedSurfaceContext = {
-      automationMetadata: {},
-      connectorId,
-      connectorInstanceId,
-      manifest: {},
-      // Phase leases take an ordinary transient slot — retainSurfaceProcess
-      // is never set for a phase acquire (contract fact 2: the phase
-      // primitive is a lifecycle wrapper, not new capacity math).
-      options: {},
-      runId: sessionId,
-      traceContext,
-    };
-    const attempt = await acquireManagedBrowserSurfaceAttempt(phaseCtx, "interactive", { allowReadinessRetry: true });
-    if (attempt.kind === "early_return") {
-      if (attempt.result.status === "waiting_for_browser_surface") {
-        // Never block the run waiting for capacity. Cancel the just-queued
-        // wait immediately rather than leaving a phantom waiter behind for
-        // this session id.
-        await cancelBrowserSurfaceRun(sessionId);
-        return { kind: "unavailable", reason: "capacity_full" };
+    return await withPhaseSessionIdentity(sessionId, connectorInstanceId, async () => {
+      await expireBrowserSurfaceWaitsWithoutPromotion();
+      const phaseCtx: ManagedSurfaceContext = {
+        automationMetadata: {},
+        connectorId,
+        connectorInstanceId,
+        manifest: {},
+        // Phase leases take an ordinary transient slot — retainSurfaceProcess
+        // is never set for a phase acquire (contract fact 2: the phase
+        // primitive is a lifecycle wrapper, not new capacity math).
+        options: {},
+        runId: sessionId,
+        traceContext,
+      };
+      const attempt = await acquireManagedBrowserSurfaceAttempt(phaseCtx, "interactive", { allowReadinessRetry: true });
+      if (attempt.kind === "early_return") {
+        if (attempt.result.status === "waiting_for_browser_surface") {
+          // Never block the run waiting for capacity. Cancel the just-queued
+          // wait immediately rather than leaving a phantom waiter behind for
+          // this session id.
+          await cancelBrowserSurfaceRun(sessionId);
+          return { keepAfterReturn: false, result: { kind: "unavailable", reason: "capacity_full" } };
+        }
+        return {
+          keepAfterReturn: false,
+          result: { kind: "unavailable", reason: phaseUnavailableReasonForEarlyReturn(attempt.result) },
+        };
       }
-      return { kind: "unavailable", reason: phaseUnavailableReasonForEarlyReturn(attempt.result) };
-    }
-    if (!(attempt.lease && attempt.env)) {
-      return { kind: "unavailable", reason: "surface_failed" };
-    }
-    phaseLeasesByRunId.set(runId, {
-      connectorId,
-      fencingToken: attempt.lease.fencing_token,
-      leaseId: attempt.lease.lease_id,
+      if (!(attempt.lease && attempt.env)) {
+        return { keepAfterReturn: false, result: { kind: "unavailable", reason: "surface_failed" } };
+      }
+      // Granted: the identity must outlive this call for the eventual
+      // release to resolve run.browser_surface_released against it.
+      phaseLeasesByRunId.set(runId, {
+        connectorId,
+        fencingToken: attempt.lease.fencing_token,
+        leaseId: attempt.lease.lease_id,
+      });
+      return { keepAfterReturn: true, result: grantFromPhaseLease(attempt.lease, attempt.env) };
     });
-    return grantFromPhaseLease(attempt.lease, attempt.env);
   }
 
   async function releaseManagedBrowserSurfaceForPhase(runId: string): Promise<void> {
@@ -1734,37 +1763,35 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     // connector's own release racing the run-cleanup backstop) sees no
     // entry and no-ops, rather than both racing the same fenced release.
     phaseLeasesByRunId.delete(runId);
-    const lease = browserSurfaceLeaseManager?.getLease(entry.leaseId);
-    if (!lease) {
-      return;
-    }
-    // Release using the RECORDED fencing token, not the live lease's current
-    // one: if this lease has since been reassigned to a new generation, a
-    // release carrying the old token is rejected as stale by the lease
-    // manager instead of freeing someone else's active grant.
-    const leaseAtGrant: BrowserSurfaceLease = { ...lease, fencing_token: entry.fencingToken };
     const sessionId = browserSurfacePhaseSessionId(runId);
-    try {
-      await releaseBrowserSurfaceLease(
-        leaseAtGrant,
-        entry.connectorId,
-        sessionId,
-        createTraceContext(),
-        `${sessionId} phase release`
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn?.(`[controller] failed to release phase browser-surface lease for ${runId}: ${message}`);
-    }
-    // A phase has a bounded end, so unlike the run path we can retire its
-    // connector-instance record here instead of growing this map by one
-    // extra entry for every phase-scoped run the controller ever serves.
-    // This must happen AFTER the release call above: releaseBrowserSurfaceLease
-    // emits run.browser_surface_released keyed by this same session id, and
-    // that emit needs connectorInstanceIdByRunId still populated to resolve
-    // the connector_instance_id (the persisted-active-runs fallback can never
-    // find a row for a derived session id, only for a real run_id).
-    connectorInstanceIdByRunId.delete(sessionId);
+    await withPhaseSessionIdentity(sessionId, entry.connectorId, async () => {
+      const lease = browserSurfaceLeaseManager?.getLease(entry.leaseId);
+      if (!lease) {
+        return { keepAfterReturn: false, result: undefined };
+      }
+      // Release using the RECORDED fencing token, not the live lease's current
+      // one: if this lease has since been reassigned to a new generation, a
+      // release carrying the old token is rejected as stale by the lease
+      // manager instead of freeing someone else's active grant.
+      const leaseAtGrant: BrowserSurfaceLease = { ...lease, fencing_token: entry.fencingToken };
+      try {
+        await releaseBrowserSurfaceLease(
+          leaseAtGrant,
+          entry.connectorId,
+          sessionId,
+          createTraceContext(),
+          `${sessionId} phase release`
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[controller] failed to release phase browser-surface lease for ${runId}: ${message}`);
+      }
+      // A phase has a bounded end: once release (successful or not) has run,
+      // this is the LAST reader of the session identity, so it does not
+      // outlive this call — unlike the run-level path, which keeps its
+      // connector-instance record for the run's whole remaining lifetime.
+      return { keepAfterReturn: false, result: undefined };
+    });
   }
 
   async function cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null> {

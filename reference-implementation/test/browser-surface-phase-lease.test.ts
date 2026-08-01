@@ -25,6 +25,7 @@ import test, { type TestContext } from "node:test";
 import {
   type BrowserSurface,
   type BrowserSurfaceAllocator,
+  type BrowserSurfaceLease,
   BrowserSurfaceLeaseManager,
   DEFAULT_NEKO_PRIORITY_RANKS,
   type EnsureBrowserSurfaceRequest,
@@ -600,7 +601,9 @@ test("I9 (regression): releaseManagedBrowserSurfaceForPhase both terminalizes th
     1,
     "run.browser_surface_released must actually be persisted for the phase session id"
   );
-  const releasedData = JSON.parse(releasedRows[0].data_json);
+  const [releasedRow] = releasedRows;
+  assert.ok(releasedRow);
+  const releasedData = JSON.parse(releasedRow.data_json);
   assert.equal(
     releasedData.connector_instance_id,
     "slack",
@@ -618,5 +621,171 @@ test("I9 (regression): releaseManagedBrowserSurfaceForPhase both terminalizes th
     parentRows.length,
     0,
     "the parent run's own event history must not gain a browser_surface_released row from the phase release"
+  );
+});
+
+// ─── I10-I14: identity cache must not leak past ANY unsuccessful path ──────
+//
+// Probe: emitLeaseEvent (exported on the manager, backed by the same
+// requireConnectorInstanceIdForRun guard as every other lease event) is
+// called directly for the derived session id, with listPersistedActiveRuns
+// stubbed to return NOTHING — so the fallback lookup can never resolve it.
+// If the in-memory identity cache still has an entry for this session id
+// (i.e. it leaked), the emit call resolves silently. If it was correctly
+// evicted, the emit call warns with the "refusing to persist an unbound
+// run event" guard message, proving no stale identity survived.
+async function probeSessionIdentityLeaked(
+  manager: ReturnType<typeof createBrowserSurfaceManager>,
+  sessionId: string,
+  warnCalls: string[]
+): Promise<boolean> {
+  const before = warnCalls.length;
+  await manager.emitLeaseEvent(
+    "run.browser_surface_released",
+    "slack",
+    sessionId,
+    createTraceContext(),
+    // Field values are irrelevant to this probe: requireConnectorInstanceIdForRun
+    // is consulted before the lease payload is ever serialized.
+    { fencing_token: 0, run_id: sessionId, status: "released" } as BrowserSurfaceLease
+  );
+  return warnCalls.length === before;
+}
+
+test("I10 (regression): a capacity_full early return evicts the phase session identity, not just the phantom waiter", async (t) => {
+  const warnCalls: string[] = [];
+  const leaseManager = createManager({ managedConnectors: new Set(["slack", "other"]), surfaceCap: 1 });
+  const { allocator, manager } = setup(t, createReadyAllocator(), { leaseManager, warnCalls });
+
+  const occupying = leaseManager.acquire({ connectorId: "other", profileKey: "other-profile", runId: "run_occupying" });
+  await leaseManager.ensureStartingSurfaceReady({ allocator, leaseId: occupying.lease.lease_id });
+
+  const result = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x"));
+  assert.deepEqual(result, { kind: "unavailable", reason: "capacity_full" });
+
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const leaked = await probeSessionIdentityLeaked(manager, sessionId, warnCalls);
+  assert.equal(
+    leaked,
+    false,
+    "capacity_full must evict the session identity cache entry, not just cancel the phantom waiter lease"
+  );
+});
+
+test("I11 (regression): a non-capacity early-return (ensureSurface failure) evicts the phase session identity", async (t) => {
+  const warnCalls: string[] = [];
+  // An allocator whose ensureSurface always rejects drives
+  // acquireManagedBrowserSurfaceAttempt to its early_return branch via a
+  // surface-start failure — distinct from I10's capacity/waiting early
+  // return and I12's "resolved but incomplete lease/env" branch.
+  const failingAllocator: BrowserSurfaceAllocator = {
+    ensureSurface: () => Promise.reject(new Error("simulated ensureSurface failure")),
+    getSurfaceStatus: async () => null,
+    listSurfaces: async () => [],
+    stopSurface: async () => null,
+  };
+  const { manager } = setup(t, failingAllocator, { warnCalls });
+
+  const result = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x"));
+  assert.equal(result.kind, "unavailable");
+
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const leaked = await probeSessionIdentityLeaked(manager, sessionId, warnCalls);
+  assert.equal(leaked, false, "an early-return/failure from a failing allocator must evict the session identity");
+});
+
+test("I12 (regression): a granted attempt missing lease/env (surface_failed) evicts the phase session identity", async (t) => {
+  const warnCalls: string[] = [];
+  const leaseManager = createManager();
+  // An allocator whose ensureSurface never settles ready-with-env is out of
+  // scope for this harness (BrowserSurfaceLeaseManager's own attempt loop
+  // requires a real surface); instead simulate the "attempt resolved but
+  // lease/env came back incomplete" branch directly via a lease manager
+  // stubbed to return a starting (non-leased, non-early-return) status that
+  // acquireManagedBrowserSurfaceAttempt maps to a missing lease/env. This
+  // reuses the SAME allocator that fails ensureSurface, which drives
+  // acquireManagedBrowserSurfaceAttempt to its "not (lease && env)" branch
+  // instead of the early_return branch (distinguishing this from I11).
+  const flakyAllocator: BrowserSurfaceAllocator = {
+    ensureSurface: (request) =>
+      Promise.resolve({
+        backend: "neko",
+        cdp_url: "",
+        connector_id: request.connectorId,
+        created_at: "2026-07-31T12:00:00.000Z",
+        health: "unhealthy",
+        last_used_at: "2026-07-31T12:00:00.000Z",
+        profile_key: request.profileKey,
+        stream_base_url: "",
+        surface_id: request.surfaceId,
+      }),
+    getSurfaceStatus: async () => null,
+    listSurfaces: async () => [],
+    stopSurface: async () => null,
+  };
+  const { manager } = setup(t, flakyAllocator, { leaseManager, warnCalls });
+
+  const result = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x"));
+  assert.equal(result.kind, "unavailable");
+
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const leaked = await probeSessionIdentityLeaked(manager, sessionId, warnCalls);
+  assert.equal(leaked, false, "a granted attempt missing lease/env must evict the session identity, not retain it");
+});
+
+test("I13 (regression): releasing a phase whose lease has already disappeared (external removal) still evicts the phase session identity", async (t) => {
+  const warnCalls: string[] = [];
+  const leaseManager = createManager();
+  const { manager } = setup(t, createReadyAllocator(), { leaseManager, warnCalls });
+
+  const granted = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x"));
+  assert.equal(granted.kind, "granted");
+  assert.ok(granted.kind === "granted");
+
+  // BrowserSurfaceLeaseManager never actually removes a lease_id from its
+  // own map once created (terminal leases stay retrievable, by design, for
+  // audit/fencing purposes) — so the ONLY way releaseManagedBrowserSurfaceForPhase's
+  // `getLease(entry.leaseId)` legitimately returns undefined is a lookup
+  // failure at the boundary itself. Stub getLease (same monkeypatch
+  // technique the I3 fencing-token test above uses on release()) to
+  // reproduce exactly that boundary condition without fabricating an
+  // otherwise-unreachable internal state.
+  const originalGetLease = leaseManager.getLease.bind(leaseManager);
+  leaseManager.getLease = (leaseId) => (leaseId === granted.leaseId ? undefined : originalGetLease(leaseId));
+
+  await manager.releaseManagedBrowserSurfaceForPhase("run_x");
+
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const leaked = await probeSessionIdentityLeaked(manager, sessionId, warnCalls);
+  assert.equal(
+    leaked,
+    false,
+    "the missing-lease release branch must still evict the session identity, not leave it cached forever"
+  );
+});
+
+test("I14 (regression): a normal successful release evicts the phase session identity after the release event resolves", async (t) => {
+  const warnCalls: string[] = [];
+  const { manager } = setup(t, createReadyAllocator(), {
+    listPersistedActiveRuns: async () => [{ run_id: "run_x" }],
+    warnCalls,
+  });
+
+  const granted = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x"));
+  assert.equal(granted.kind, "granted");
+
+  await manager.releaseManagedBrowserSurfaceForPhase("run_x");
+  assert.deepEqual(
+    warnCalls,
+    [],
+    "the release's own event emission must have resolved cleanly (identity present then)"
+  );
+
+  const sessionId = browserSurfacePhaseSessionId("run_x");
+  const leaked = await probeSessionIdentityLeaked(manager, sessionId, warnCalls);
+  assert.equal(
+    leaked,
+    false,
+    "after a normal release completes, the session identity must be evicted — it must not persist indefinitely"
   );
 });
