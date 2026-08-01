@@ -1072,6 +1072,7 @@ test("starting-surface getSurfaceStatus failure on every post-ensure poll (in-pl
   let ensureCalls = 0;
   let postEnsureStatusCalls = 0;
   const surfaces = new Map<string, BrowserSurface>();
+  const stopRequests: StopBrowserSurfaceRequest[] = [];
   const allocator: BrowserSurfaceAllocator = {
     ensureSurface: async (request) => {
       ensureCalls += 1;
@@ -1099,7 +1100,10 @@ test("starting-surface getSurfaceStatus failure on every post-ensure poll (in-pl
       throw new Error(`GET http://${surfaceId}:9223/json/version failed: fetch failed`);
     },
     listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
-    stopSurface: async () => await Promise.resolve(null),
+    stopSurface: async (request) => {
+      stopRequests.push(request);
+      return await Promise.resolve(null);
+    },
   };
   const { controller, runConnectorCalls } = setup(t, {
     browserSurfaceAllocator: allocator,
@@ -1126,10 +1130,25 @@ test("starting-surface getSurfaceStatus failure on every post-ensure poll (in-pl
   );
   assert.equal(
     postEnsureStatusCalls,
-    6,
-    "3 in-place poll attempts against the post-ensure getSurfaceStatus call per surface (default browserSurfaceStartingPollRetryAttempts=3), across the 2 outer acquire attempts — bounded, never unbounded"
+    7,
+    "3 in-place poll attempts against the post-ensure getSurfaceStatus call per surface (default browserSurfaceStartingPollRetryAttempts=3), across the 2 outer acquire attempts, plus 1 extra getSurfaceStatus 'before' snapshot taken when the outer reacquire stops the first surface's abandoned container before minting a replacement — bounded, never unbounded"
   );
   assert.equal(runConnectorCalls.length, 0, "connector is never spawned when the surface never reaches ready");
+  // This mock's getSurfaceStatus throws unconditionally for any surface with
+  // a container_id — including the replacement-observing allocator's own
+  // pre-flight "before" snapshot inside stopSurface (see
+  // replacement-observing-allocator.ts's stopSurfaceWithObservation), which
+  // is not itself retried. So the best-effort container-reclaim attempt
+  // fails the SAME way the original readiness poll did, and is swallowed
+  // (stopAllocatorSurfaceAfterProbeFailure logs a warning, does not throw)
+  // rather than blocking the outer reacquire — a persistently unreachable
+  // allocator cannot stop containers any more than it can poll them, and
+  // that must not prevent the bounded reacquire-once path from proceeding.
+  assert.equal(
+    stopRequests.length,
+    0,
+    "a persistently broken allocator cannot service the reclaim stop either — it fails best-effort, logged, and must not block the outer reacquire"
+  );
 
   const events = listRunEvents("run_start_failed_status_persistent").map((e) => e.event_type);
   assert.equal(
@@ -1797,8 +1816,14 @@ test("capacity-pressure reclaim persistent allocator failure exhausts the in-pla
   );
   assert.equal(
     stopRequests.length,
+    2,
+    "the idle other-profile surface is reclaimed (stopped) exactly once — no leak from a repeated reclaim per in-place poll retry — PLUS the first reclaimed surface's own abandoned container is stopped exactly once before the outer reacquire mints surface_reclaimed_2, so a persistently failing allocator cannot spray containers past the surface cap"
+  );
+  assert.equal(
+    stopRequests.filter((request) => request.surfaceId === "surface_reclaimed_1" && request.reason === "surface_failed")
+      .length,
     1,
-    "the idle other-profile surface is reclaimed (stopped) exactly once — no leak from a repeated reclaim per in-place poll retry"
+    "the abandoned surface_reclaimed_1 container is stopped exactly once, tagged with the terminal failure reason"
   );
   assert.equal(at(ensureRequests, 0).surfaceId, "surface_reclaimed_1");
   assert.equal(at(ensureRequests, 1).surfaceId, "surface_reclaimed_1", "in-place retries target the same surface_id");

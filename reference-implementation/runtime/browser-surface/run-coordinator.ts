@@ -1224,6 +1224,21 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       // non-terminal sibling (absent from every terminal allowlist) so the
       // dead surface_id stays observable without poisoning run_history.
       if (options.allowStartFailureRetry && shouldRetryReadinessFailure()) {
+        // remote-surface's ensureStartingSurfaceReady abandons the surface
+        // row in place on a terminal surface_failed (its own bare `catch {}`
+        // never calls stopSurface) — it only stops tracking the surface in
+        // its own accounting, it does not stop the underlying container. The
+        // fresh acquire below always mints a brand-new surface_id against a
+        // brand-new container, so without an explicit stop here, each failed
+        // attempt leaves its container running: N failed attempts strand N
+        // containers, silently exceeding PDPP_NEKO_SURFACE_CAP (see the
+        // 2026-07-31 Amazon canary incident, where two consecutive
+        // surface_failed attempts left both containers running — both went
+        // Docker-healthy minutes later, well inside the readiness budget,
+        // proving they were never actually dead). Reuse the same
+        // invalidate+stop path probe failures already use so the abandoned
+        // container is reclaimed before the retry mints a replacement.
+        await invalidateBrowserSurfaceAfterProbeFailure(readyResult.lease, "surface_start_failed");
         await emitBrowserSurfaceLeaseEvent(
           "run.browser_surface_retried",
           connectorId,
