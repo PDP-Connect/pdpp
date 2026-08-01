@@ -34,6 +34,23 @@ export interface ReplacementObservingAllocatorOptions {
   readonly ledger: BrowserSurfaceReplacementLedger;
   readonly onPersistenceError?: (error: unknown) => void;
   readonly persist?: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
+  /**
+   * Authoritative durable read-after-uncertain-write reconciliation
+   * (2026-08-01 fourth gate revision): `persist` can commit its durable
+   * write and THEN reject — SQLite's post-insert re-read and Postgres's
+   * post-insert RETURNING-result handling can both throw after the row is
+   * already durably committed. A rejected `started`-phase `persist` call
+   * is therefore an UNKNOWN outcome, not proof of non-commit. This is
+   * called with the receipt's `replacement_id` to authoritatively resolve
+   * that uncertainty before `record` decides whether to roll the
+   * in-memory admission back: adopt the durable row if it committed,
+   * roll back only once its absence is confirmed. If omitted, `record`
+   * fails safe — it treats a rejected `started` persist as UNRESOLVABLE
+   * uncertainty (never proven absent) and does NOT roll back, exactly the
+   * same "leave it in memory, keep reporting the fault" behavior as when
+   * reconciliation itself throws.
+   */
+  readonly reconcileStartedAdmission?: (replacementId: string) => Promise<ReplacementReceipt | null>;
 }
 
 interface EnsureObservation {
@@ -416,24 +433,31 @@ function startStopReceipt(
 
 /**
  * Persists a replacement receipt via transactional admission (2026-08-01
- * third gate revision — replaces a parallel "non-durable tracker" design
- * that required every resolution path to remember a cleanup step, and
- * leaked on the successful-replacement and successful-stop paths that
- * never called it). This is durable bookkeeping ABOUT an allocator
- * operation, not the operation itself: a persistence failure here must
- * never propagate to callers observing an ensureSurface/stopSurface call
- * (2026-08-01 Amazon incident root cause).
+ * third/fourth gate revisions — replaces a parallel "non-durable tracker"
+ * design that required every resolution path to remember a cleanup step
+ * and leaked on paths that never called it). This is durable bookkeeping
+ * ABOUT an allocator operation, not the operation itself: a persistence
+ * failure here must never propagate to callers observing an
+ * ensureSurface/stopSurface call (2026-08-01 Amazon incident root cause).
  *
  * For a `started` receipt (the only phase `ledger.start` can produce,
  * which is also the only phase `ledger.discardUnresolvedStart` can roll
- * back), a rejected persist immediately rolls the admission back out of
- * the ledger's in-memory state via `discardUnresolvedStart` and this
- * returns `null`: to every caller, it is exactly as if that `started` call
- * had never happened. There is nothing left to track, nothing that can
- * suppress a later observation, and nothing that can later be resolved
- * into an orphan durable terminal/completed event — the invariant "a
- * durable resolution always has a durable started predecessor" holds by
- * construction, not by every call site remembering a side-tracker.
+ * back), a REJECTED persist call is NOT proof the durable write never
+ * happened (2026-08-01 fourth gate revision): both supported stores can
+ * commit their INSERT and then throw during post-insert processing
+ * (SQLite's post-insert re-read; Postgres's post-insert RETURNING-result
+ * handling). Blindly rolling back on every rejection can therefore strand
+ * a durable `started` row with no in-memory representation left to ever
+ * resolve it — an orphan pending row that also permanently suppresses
+ * later observations for its surface, since nothing durable ever confirms
+ * whether it needs reconciling. `reconcileAfterUncertainPersistRejection`
+ * resolves this UNKNOWN outcome authoritatively before any rollback
+ * decision is made: adopt the durable row if the write actually committed
+ * (the in-memory admission already agrees — nothing to change), roll back
+ * only once durable absence is CONFIRMED. If reconciliation is unavailable
+ * or itself fails, the safe default is to NOT roll back (leave the receipt
+ * in memory, keep reporting the fault) — the destructive action
+ * (`discardUnresolvedStart`) never runs on unresolved uncertainty.
  *
  * For a `terminal`/`completed` receipt, there is no analogous rollback: an
  * in-memory resolution of an already-durably-admitted `started` receipt is
@@ -450,12 +474,53 @@ async function record(
     return await (options.persist ?? (async (value: ReplacementReceipt) => value))(receipt);
   } catch (error) {
     reportPersistenceError(options, error);
-    if (receipt.phase === "started") {
-      options.ledger.discardUnresolvedStart(receipt.replacement_id);
-      return null;
+    if (receipt.phase !== "started") {
+      return receipt;
     }
+    return await reconcileAfterUncertainPersistRejection(options, receipt);
+  }
+}
+
+/**
+ * Authoritatively resolves whether a rejected `started` persist call
+ * actually committed durably before deciding whether to roll the
+ * in-memory admission back. See `record`'s doc comment for why a rejection
+ * alone cannot answer this. Every branch is fail-safe toward NOT rolling
+ * back: only a durably-CONFIRMED-absent result triggers
+ * `discardUnresolvedStart`.
+ */
+async function reconcileAfterUncertainPersistRejection(
+  options: ReplacementObservingAllocatorOptions,
+  receipt: ReplacementReceipt
+): Promise<ReplacementReceipt | null> {
+  if (!options.reconcileStartedAdmission) {
+    // No authoritative reconciliation available: the outcome remains
+    // genuinely unknown, so the safe default is to leave the in-memory
+    // admission exactly as `ledger.start` created it — never invent a
+    // "confirmed absent" verdict this function has no way to prove.
     return receipt;
   }
+  let durable: ReplacementReceipt | null;
+  try {
+    durable = await options.reconcileStartedAdmission(receipt.replacement_id);
+  } catch (error) {
+    // Reconciliation itself failed: still unresolved, still not a proven
+    // absence — fail safe the same way as "no reconciliation available".
+    reportPersistenceError(options, error);
+    return receipt;
+  }
+  if (durable) {
+    // The write actually committed (commit-then-reject): the in-memory
+    // admission already agrees with the durable row (both were produced
+    // from the same `ledger.start` call) — nothing to roll back, nothing
+    // to change. Returning the in-memory receipt (not the durable read)
+    // keeps object identity stable for callers that compare it structurally.
+    return receipt;
+  }
+  // Durable absence is now CONFIRMED (not merely assumed from a rejection)
+  // — safe to roll the in-memory admission back out of the ledger.
+  options.ledger.discardUnresolvedStart(receipt.replacement_id);
+  return null;
 }
 
 function pendingForSurface(

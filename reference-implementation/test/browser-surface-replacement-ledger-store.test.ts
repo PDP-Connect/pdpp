@@ -208,6 +208,28 @@ async function assertStoreContract(store: BrowserSurfaceReplacementReceiptStore,
   );
   assert.equal(pendingBeforeRestart?.phase, "started");
 
+  // 2026-08-01 fourth gate revision: findByReplacementId is the
+  // authoritative read-after-uncertain-write reconciliation primitive —
+  // it must return the latest committed row for an exact replacement_id
+  // regardless of phase (unlike findPendingForSurface/findPendingForScope,
+  // which only ever surface an unresolved `started` row), and null for a
+  // replacement_id that was never durably admitted.
+  assert.equal(
+    (await store.findByReplacementId(first.started.replacement_id))?.phase,
+    "completed",
+    "findByReplacementId returns the LATEST row for the id, even after it resolved past started"
+  );
+  assert.equal(
+    (await store.findByReplacementId(second.started.replacement_id))?.replacement_id,
+    second.started.replacement_id,
+    "findByReplacementId finds an unresolved started row too"
+  );
+  assert.equal(
+    await store.findByReplacementId(`${namespace}:replacement-never-admitted`),
+    null,
+    "findByReplacementId confirms absence for a replacement_id that was never durably written"
+  );
+
   const scoped = receiptSequence(id("connection-scope"), id("subject-scope"));
   const oldSurfacePending = { ...scoped.started, surface_id: id("surface-retired") };
   const authoritativeScopedPending = await store.append(oldSurfacePending);

@@ -31,6 +31,19 @@ export interface BrowserSurfaceReplacementReceiptStore {
   dryRunSelectionOverrideBatch: (
     input: ReplacementReceiptSelectionOverrideBatchInput
   ) => Promise<ReplacementReceiptSelectionOverrideBatchVerification>;
+  /**
+   * Reads the latest durably-committed row for an exact `replacement_id`,
+   * regardless of phase. Used ONLY for read-after-uncertain-write
+   * reconciliation (2026-08-01 fourth gate revision): `append` can commit
+   * its INSERT and then throw during post-insert processing (SQLite's
+   * post-insert re-read; Postgres's post-insert RETURNING-result
+   * handling), so a rejected `append` call does not prove the row was
+   * never durably written. This lookup is the authoritative way to find
+   * out, and is deliberately narrower than `findPendingForSurface`/
+   * `findPendingForScope` (which answer "is anything pending for this
+   * surface/scope", not "did this exact receipt commit").
+   */
+  findByReplacementId: (replacementId: string) => Promise<ReplacementReceipt | null>;
   findPendingForScope: (input: {
     readonly connection_id: string;
     readonly surface_subject_id: string | null;
@@ -1296,6 +1309,16 @@ class SqliteBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRepla
   }
 
   // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared replacement ledger contract.
+  async findByReplacementId(replacementId: string): Promise<ReplacementReceipt | null> {
+    const row = dbRow(
+      `SELECT * FROM browser_surface_replacement_receipts
+       WHERE replacement_id = ? ORDER BY event_seq DESC LIMIT 1`,
+      [replacementId]
+    );
+    return row ? mapRow(row) : null;
+  }
+
+  // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared replacement ledger contract.
   async findPendingForSurface(surfaceId: string): Promise<ReplacementReceipt | null> {
     const row = dbRow(
       `SELECT started.* FROM browser_surface_replacement_receipts AS started
@@ -1710,6 +1733,15 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
     const authoritative = mapRow(row);
     assertSameEvent(authoritative, receipt);
     return authoritative;
+  }
+
+  async findByReplacementId(replacementId: string): Promise<ReplacementReceipt | null> {
+    const result = await this.#query(
+      `SELECT * FROM browser_surface_replacement_receipts
+       WHERE replacement_id = $1 ORDER BY event_seq DESC LIMIT 1`,
+      [replacementId]
+    );
+    return result.rows[0] ? mapRow(result.rows[0]) : null;
   }
 
   async findPendingForSurface(surfaceId: string): Promise<ReplacementReceipt | null> {

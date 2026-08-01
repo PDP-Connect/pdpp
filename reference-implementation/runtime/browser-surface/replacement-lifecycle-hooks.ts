@@ -89,6 +89,9 @@ function wrapAllocator(
     ledger,
     onPersistenceError: (error) => logReplacementPersistenceError(input.log, error),
     persist: (receipt) => persistReplacementReceipt(input.receiptStore, receipt),
+    reconcileStartedAdmission: (replacementId) =>
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+      input.receiptStore?.findByReplacementId(replacementId) ?? Promise.resolve(null),
   });
 }
 

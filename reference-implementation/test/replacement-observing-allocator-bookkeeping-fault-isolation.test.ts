@@ -314,6 +314,11 @@ test("a failed first persist does not suppress a later durable transition receip
         persisted.push(receipt);
         return receipt;
       },
+      // The store is genuinely down (never received the write at all, not
+      // a commit-then-reject), so reconciliation authoritatively confirms
+      // absence — rollback is the correct outcome here, unlike the
+      // commit-then-reject tests below.
+      reconcileStartedAdmission: () => Promise.resolve(null),
     }
   );
 
@@ -501,6 +506,10 @@ test("a failed start is rolled back so a genuinely successful advertised replace
         persistedPhases.push(receipt.phase);
         return receipt;
       },
+      // The store is genuinely down (rejected before ever writing, not a
+      // commit-then-reject) — reconciliation authoritatively confirms
+      // absence, so rollback is the correct outcome.
+      reconcileStartedAdmission: () => Promise.resolve(null),
     }
   );
 
@@ -581,6 +590,9 @@ test("a failed stop's started receipt is rolled back so a genuinely successful s
         persistedPhases.push(receipt.phase);
         return receipt;
       },
+      // The store is genuinely down (rejected before ever writing) —
+      // reconciliation authoritatively confirms absence.
+      reconcileStartedAdmission: () => Promise.resolve(null),
     }
   );
 
@@ -634,6 +646,9 @@ test("repeated failed-then-successful lifecycles (ensure and stop) leave nothing
         persistedPhases.push(receipt.phase);
         return receipt;
       },
+      // The store is genuinely down (rejected before ever writing) —
+      // reconciliation authoritatively confirms absence.
+      reconcileStartedAdmission: () => Promise.resolve(null),
     }
   );
 
@@ -668,5 +683,286 @@ test("repeated failed-then-successful lifecycles (ensure and stop) leave nothing
     persistedPhases,
     ["started", "started"],
     "the final ensure and stop must each durably persist their own started receipt, after 3 prior rolled-back lifecycles"
+  );
+});
+
+// 2026-08-01 fourth gate revision, P1: `append` in BOTH supported stores can
+// commit its INSERT and then throw during post-insert processing — SQLite's
+// post-insert re-read (browser-surface-replacement-ledger-store.ts's
+// `dbRow` call right after the INSERT) and Postgres's post-insert
+// RETURNING-result handling can both fail after the row already exists
+// durably. Blindly discarding the in-memory admission on ANY rejection (the
+// third-round fix) can therefore strand a durable `started` row with
+// nothing left in memory to ever resolve it — an orphan pending row that
+// also permanently suppresses later observations, since nothing ever
+// proves whether it needs reconciling. These tests simulate that exact
+// commit-then-reject window for both stores and prove: (a) the real
+// allocator result/error always survives untouched; (b) the durable
+// admission is ADOPTED, not discarded, once reconciliation confirms it
+// committed; (c) no orphan resolution is ever produced; (d) repeated
+// commit-then-reject lifecycles on one instance still resolve correctly and
+// do not accumulate unbounded state.
+
+/**
+ * A minimal fake durable store that mimics the SQLite/Postgres
+ * commit-then-reject shape: `append` writes the row into `rows` (the
+ * durable commit) and THEN throws (the post-insert processing failure),
+ * exactly like SQLite's post-insert `dbRow` re-read or Postgres's
+ * post-insert RETURNING-result handling failing after the INSERT already
+ * committed. `findByReplacementId` reads directly from `rows`, exactly
+ * like the real stores' reconciliation query would.
+ */
+function commitThenRejectStore(): {
+  readonly rows: ReplacementReceipt[];
+  readonly persist: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
+  readonly reconcileStartedAdmission: (replacementId: string) => Promise<ReplacementReceipt | null>;
+} {
+  const rows: ReplacementReceipt[] = [];
+  return {
+    // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+    persist: async (receipt) => {
+      rows.push(receipt); // the durable commit — happens BEFORE the throw.
+      throw new Error("simulated post-insert processing failure (commit-then-reject)");
+    },
+    reconcileStartedAdmission: (replacementId) =>
+      Promise.resolve(rows.find((row) => row.replacement_id === replacementId) ?? null),
+    rows,
+  };
+}
+
+test("SQLite-equivalent commit-then-reject: a real stopSurface failure survives, and the durable started row is adopted (not orphaned)", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const store = commitThenRejectStore();
+  const realError = new Error("real allocator stopSurface failure");
+  const persistenceErrors: unknown[] = [];
+
+  const observed = createReplacementObservingAllocator(
+    baseAllocator({
+      getSurfaceStatus: async () => surface,
+      stopSurface: () => Promise.reject(realError),
+    }),
+    {
+      ledger,
+      onPersistenceError: (error) => persistenceErrors.push(error),
+      persist: store.persist,
+      reconcileStartedAdmission: store.reconcileStartedAdmission,
+    }
+  );
+
+  await assert.rejects(
+    observed.stopSurface({ reason: "capacity_pressure", surfaceId: surface.surface_id }),
+    (error: unknown) => error === realError,
+    "the real allocator stopSurface error must survive a commit-then-reject started write untouched"
+  );
+  assert.ok(persistenceErrors.length >= 1, "the commit-then-reject fault must still be reported");
+  // Both the started write AND its subsequent terminal resolution (the
+  // stop-failure path's recordTerminal call, since the receipt WAS adopted
+  // as durably admitted, not rolled back) hit the commit-then-reject fake
+  // and each durably commit before their own post-write throw — matching
+  // the real stores' actual behavior for a resolution write, not just a
+  // started write.
+  assert.deepEqual(
+    store.rows.map((row) => row.phase),
+    ["started", "terminal"],
+    "both the adopted started row and its terminal resolution must durably commit, in order"
+  );
+  assert.deepEqual(
+    ledger.list().map((receipt) => receipt.phase),
+    ["started", "terminal"],
+    "the in-memory ledger must reflect the same adopted, resolved receipt — not rolled back, not duplicated"
+  );
+});
+
+test("Postgres-equivalent commit-then-reject: a real ensureSurface success survives, and the durable started row is adopted (not orphaned)", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const store = commitThenRejectStore();
+  const before: BrowserSurface = { ...surface, allocator_metadata: { ensure_disposition: "replace" } };
+  const after: BrowserSurface = { ...surface, container_id: "container-committed" };
+  let ensureCalls = 0;
+
+  const observed = createReplacementObservingAllocator(
+    {
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      ensureSurface: async () => {
+        ensureCalls += 1;
+        return after;
+      },
+      getSurfaceStatus: async () => before,
+      listSurfaces: async () => [after],
+      stopSurface: async () => null,
+    },
+    {
+      ledger,
+      persist: store.persist,
+      reconcileStartedAdmission: store.reconcileStartedAdmission,
+    }
+  );
+
+  const result = await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+
+  assert.deepEqual(
+    result,
+    after,
+    "the real allocator success must survive a commit-then-reject started write untouched"
+  );
+  assert.equal(ensureCalls, 1);
+  assert.equal(
+    store.rows.length,
+    1,
+    "the durable started row committed and must remain — this is the adopted admission"
+  );
+  assert.deepEqual(
+    ledger.list().map((receipt) => receipt.phase),
+    ["started"],
+    "the in-memory ledger must still hold exactly the admitted started receipt — not rolled back, not duplicated"
+  );
+});
+
+test("reconciliation failing (cannot determine commit-then-reject vs. genuine absence) does not roll back and does not mask the real result", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const realError = new Error("real allocator stopSurface failure");
+  const persistenceErrors: unknown[] = [];
+
+  const observed = createReplacementObservingAllocator(
+    baseAllocator({
+      getSurfaceStatus: async () => surface,
+      stopSurface: () => Promise.reject(realError),
+    }),
+    {
+      ledger,
+      onPersistenceError: (error) => persistenceErrors.push(error),
+      persist: () => Promise.reject(new Error("simulated persist rejection")),
+      reconcileStartedAdmission: () => Promise.reject(new Error("simulated reconciliation-read failure")),
+    }
+  );
+
+  await assert.rejects(
+    observed.stopSurface({ reason: "capacity_pressure", surfaceId: surface.surface_id }),
+    (error: unknown) => error === realError,
+    "the real allocator error must survive even when reconciliation itself cannot resolve the uncertainty"
+  );
+  assert.ok(persistenceErrors.length >= 2, "both the persist fault and the reconciliation fault must be reported");
+  // The started admission is NOT rolled back (the point of this test), so
+  // the stop-failure path's recordTerminal still runs against it and
+  // resolves it in-memory — that in-memory resolution always succeeds
+  // (ledger.terminate is pure, synchronous state), independent of whether
+  // ITS OWN durable persist attempt also fails.
+  assert.deepEqual(
+    ledger.list().map((receipt) => receipt.phase),
+    ["started", "terminal"],
+    "an unresolvable started outcome must NOT roll back — it remains admitted and its resolution proceeds normally"
+  );
+});
+
+test("omitting reconcileStartedAdmission entirely fails safe: no rollback on a rejected start, no masking of the real result", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const before: BrowserSurface = { ...surface, allocator_metadata: { ensure_disposition: "replace" } };
+  const after: BrowserSurface = { ...surface, container_id: "container-no-reconciliation" };
+
+  const observed = createReplacementObservingAllocator(
+    {
+      ensureSurface: async () => after,
+      getSurfaceStatus: async () => before,
+      listSurfaces: async () => [after],
+      stopSurface: async () => null,
+    },
+    {
+      ledger,
+      // No `reconcileStartedAdmission` provided at all.
+      persist: () => Promise.reject(new Error("simulated persist rejection")),
+    }
+  );
+
+  const result = await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+
+  assert.deepEqual(result, after, "the real allocator success must survive when reconciliation is unavailable");
+  assert.deepEqual(
+    ledger.list().map((receipt) => receipt.phase),
+    ["started"],
+    "without reconciliation, the safe default must be to NOT roll back an uncertain rejection"
+  );
+});
+
+test("repeated commit-then-reject lifecycles on one instance each adopt their own durable admission with no orphan resolution and no unbounded state", async () => {
+  // Single allocator instance across all 3 lifecycles, matching production.
+  // Each lifecycle is its own preclaimed-replacement failure: the started
+  // write commits durably and then throws (commit-then-reject), the real
+  // ensureSurface call fails, and the failure path attempts to terminalize
+  // the preclaimed receipt. The durable started row must be adopted (not
+  // orphaned by a wrongful rollback), and its terminal resolution — since
+  // the receipt IS durably admitted — must reach the store too, in order.
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const store = commitThenRejectStore();
+  let terminalShouldFail = false;
+  const persist = (receipt: ReplacementReceipt): Promise<ReplacementReceipt> => {
+    if (receipt.phase !== "started" || !terminalShouldFail) {
+      store.rows.push(receipt);
+      return Promise.resolve(receipt);
+    }
+    return store.persist(receipt);
+  };
+  const before: BrowserSurface = { ...surface, allocator_metadata: { ensure_disposition: "replace" } };
+  const realError = new Error("real allocator ensureSurface failure");
+
+  const observed = createReplacementObservingAllocator(
+    {
+      ensureSurface: () => Promise.reject(realError),
+      getSurfaceStatus: async () => before,
+      listSurfaces: async () => [before],
+      stopSurface: async () => null,
+    },
+    {
+      ledger,
+      persist,
+      reconcileStartedAdmission: store.reconcileStartedAdmission,
+    }
+  );
+
+  for (let i = 0; i < 3; i += 1) {
+    terminalShouldFail = true;
+    // biome-ignore lint/performance/noAwaitInLoops: sequential, resolved-before-the-next lifecycles are the point of this test.
+    await assert.rejects(
+      observed.ensureSurface({
+        connectorId: surface.connector_id,
+        profileKey: surface.profile_key,
+        surfaceId: surface.surface_id,
+      }),
+      (error: unknown) => error === realError,
+      `lifecycle ${i} must still reject with the real allocator error`
+    );
+  }
+
+  // Every one of the 3 lifecycles' started rows committed durably (via the
+  // commit-then-reject window) and must have been ADOPTED — never
+  // orphaned, never duplicated by a spurious retry.
+  const startedRows = store.rows.filter((row) => row.phase === "started");
+  assert.equal(startedRows.length, 3, "all 3 commit-then-reject started rows must be adopted, not orphaned");
+  assert.deepEqual(
+    new Set(startedRows.map((row) => row.replacement_id)).size,
+    3,
+    "each lifecycle's started row must be distinct — no duplicate admissions"
+  );
+
+  // No unbounded state: the in-memory ledger holds exactly one
+  // started+terminal pair per lifecycle (6 total for 3 lifecycles) — state
+  // strictly proportional to the receipts actually admitted, not a
+  // separate growing side-tracker independent of the receipts themselves.
+  assert.equal(
+    ledger.list().length,
+    startedRows.length * 2,
+    "in-memory ledger state is bounded by the receipts admitted (started+terminal per lifecycle), not by a separate growing tracker"
+  );
+  assert.deepEqual(
+    ledger.list().map((receipt) => receipt.phase),
+    ["started", "terminal", "started", "terminal", "started", "terminal"],
+    "each lifecycle's admitted receipt is fully resolved, in order, with no lingering unresolved state"
   );
 });

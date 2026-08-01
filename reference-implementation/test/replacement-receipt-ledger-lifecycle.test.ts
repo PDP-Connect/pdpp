@@ -842,6 +842,12 @@ function lifecyclePersistence(initialSurface: BrowserSurfaceWithPersistenceMetad
     applySelectionOverride: async () => notImplementedInLifecycleFake("applySelectionOverride"),
     applySelectionOverrideBatch: async () => notImplementedInLifecycleFake("applySelectionOverrideBatch"),
     dryRunSelectionOverrideBatch: async () => notImplementedInLifecycleFake("dryRunSelectionOverrideBatch"),
+    findByReplacementId: (replacementId) =>
+      Promise.resolve(
+        receipts
+          .filter((receipt) => receipt.replacement_id === replacementId)
+          .sort((left, right) => right.event_seq - left.event_seq)[0] ?? null
+      ),
     findPendingForScope: async ({ connection_id, surface_subject_id, profile_key }) =>
       receipts
         .filter(
