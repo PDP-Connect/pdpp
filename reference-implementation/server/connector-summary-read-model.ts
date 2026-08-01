@@ -2605,10 +2605,10 @@ async function runBoundedObservationPhases(
     return result;
   };
 
-  // `missing` repair always runs before the first fold attempt regardless
-  // of turn — the one genuine ordering dependency (see doc above). Turn
-  // parity only decides whether the FIRST fold attempt or the GENERIC
-  // repair phase gets first claim on the remaining deadline.
+  // Turn parity decides the order: on odd generations, `missing` repair goes
+  // first, then generic repair, then fold. On even generations, fold goes
+  // first, then both repair phases. The `missing` phase recomputes on cold
+  // fold (if fold found no participants). See doc above for design rationale.
   const genericRepairGoesFirst = (options.phaseTurnGeneration ?? 0) % 2 === 1;
   let missing: ReconcilePhaseResult;
   let generic: ReconcilePhaseResult;
