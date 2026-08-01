@@ -81,26 +81,56 @@ export interface BrowserSurfaceReplacementLedgerOptions {
 }
 
 export interface BrowserSurfaceReplacementLedger {
+  /**
+   * Marks a durably-CONFIRMED `started` admission — clears any "unknown"
+   * marker for it (2026-08-01 fifth gate revision) so it is treated as
+   * ordinary, resolvable, pending state again. No-op for a replacement_id
+   * that was never marked unknown.
+   */
+  adoptConfirmedStart: (replacementId: string) => void;
   complete: (input: ReplacementCompletionInput) => ReplacementReceipt;
   /**
-   * Rolls back a `started` admission that is not durable, so it was never
-   * effectively admitted to this ledger's observable state (2026-08-01
-   * third gate revision — replaces a parallel "non-durable tracker" design
-   * that required every caller path to remember a cleanup step and leaked
-   * on the paths that did not). Only removes a receipt that is STILL
-   * exactly `phase: "started"` with no resolution recorded — discarding an
-   * already-resolved or already-observed-elsewhere receipt would corrupt
-   * the ledger's own topology invariants, so this is a no-op (not a throw)
-   * for any replacement_id that is not in that exact discardable state,
-   * including an unknown id. After a successful discard,
-   * `start()`/`terminate()`/`complete()` for the SAME idempotency_key
-   * behave exactly as if that `started` call had never happened — a caller
-   * that immediately retries the same logical attempt gets a fresh
-   * admission, not a replay of the discarded one.
+   * Rolls back a `started` admission that is CONFIRMED not durable, so it
+   * was never effectively admitted to this ledger's observable state
+   * (2026-08-01 third gate revision — replaces a parallel "non-durable
+   * tracker" design that required every caller path to remember a cleanup
+   * step and leaked on the paths that did not). Only removes a receipt
+   * that is STILL exactly `phase: "started"` with no resolution recorded
+   * — discarding an already-resolved or already-observed-elsewhere
+   * receipt would corrupt the ledger's own topology invariants, so this
+   * is a no-op (not a throw) for any replacement_id that is not in that
+   * exact discardable state, including an unknown id. After a successful
+   * discard, `start()`/`terminate()`/`complete()` for the SAME
+   * idempotency_key behave exactly as if that `started` call had never
+   * happened — a caller that immediately retries the same logical attempt
+   * gets a fresh admission, not a replay of the discarded one. Also clears
+   * any "unknown" marker for the id.
    */
   discardUnresolvedStart: (replacementId: string) => void;
   hydrate: (receipts: readonly ReplacementReceipt[]) => void;
+  /**
+   * True while a `started` receipt's durable admission is UNKNOWN — its
+   * `persist` call was rejected but reconciliation has not (yet)
+   * authoritatively confirmed whether the durable write committed or not
+   * (2026-08-01 fifth gate revision). An unknown-admission receipt is
+   * ledger-owned uncertainty, not ordinary pending state: callers
+   * (`isPendingForSurface`/scope-pending lookups) must NOT treat it as an
+   * authoritative in-flight claim capable of suppressing a later, real
+   * observation, and must NOT resolve it (terminate/complete) until this
+   * returns false. False for any replacement_id never marked unknown, or
+   * one already resolved via `adoptConfirmedStart`/`discardUnresolvedStart`.
+   */
+  isAdmissionUnknown: (replacementId: string) => boolean;
   list: () => readonly ReplacementReceipt[];
+  /**
+   * Marks a `started` receipt's durable admission as UNKNOWN — its
+   * `persist` call was rejected and reconciliation could not
+   * authoritatively resolve whether it committed (2026-08-01 fifth gate
+   * revision). No-op (not a throw) for any replacement_id that is not
+   * currently an unresolved `started` receipt. Idempotent: marking an
+   * already-unknown id again is a no-op.
+   */
+  markStartedAdmissionUnknown: (replacementId: string) => void;
   selectCurrent: (
     connectionId: string,
     surfaceSubjectId?: string,
@@ -165,6 +195,17 @@ export function createBrowserSurfaceReplacementLedger(
   const receipts: ReplacementReceipt[] = [];
   const byIdempotency = new Map<string, ReplacementReceipt[]>();
   const byReplacement = new Map<string, ReplacementReceipt[]>();
+  // Ledger-owned admission-uncertainty state (2026-08-01 fifth gate
+  // revision — replaces returning a volatile receipt from the caller side
+  // with no way for the ledger's own pending/resolution queries to
+  // recognize it as uncertain). Bounded by construction: an id is only
+  // ever added here immediately after `markStartedAdmissionUnknown`, and
+  // is always removed by exactly one of `adoptConfirmedStart`,
+  // `discardUnresolvedStart`, or `terminate`/`complete` resolving it — so
+  // this cannot grow independently of the receipts it annotates, and
+  // never holds an id for a replacement_id that isn't (or was) a live
+  // `started` receipt in `byReplacement`.
+  const unknownAdmissions = new Set<string>();
   let nextEventSeq = 1;
 
   function append(receipt: ReplacementReceipt): ReplacementReceipt {
@@ -323,14 +364,17 @@ export function createBrowserSurfaceReplacementLedger(
   }
 
   return {
+    adoptConfirmedStart,
     complete,
     discardUnresolvedStart,
     hydrate(hydratedReceipts) {
       hydrateReceipts(hydratedReceipts, append);
     },
+    isAdmissionUnknown,
     list() {
       return receipts.slice();
     },
+    markStartedAdmissionUnknown,
     selectCurrent(connectionId, surfaceSubjectId, currentGenerationHash) {
       return selectCurrentForScope(receipts, connectionId, surfaceSubjectId, currentGenerationHash);
     },
@@ -344,10 +388,37 @@ export function createBrowserSurfaceReplacementLedger(
     if (!started) {
       throw new Error(`replacement ${replacementId} has no started receipt`);
     }
+    // A receipt whose durable admission is still UNKNOWN must never be
+    // resolved (2026-08-01 fifth gate revision): its `started` write may
+    // not actually be durable, and appending a terminal/completed event
+    // for it here would risk exactly the orphan-resolution hazard the
+    // fourth gate revision closed. Callers (recordTerminal/
+    // recordPreclaimedEnsureResult) already run inside a try/catch that
+    // reports and swallows this without masking the real allocator
+    // result — see replacement-observing-allocator.ts.
+    if (unknownAdmissions.has(replacementId)) {
+      throw new Error(`replacement ${replacementId} admission is unresolved (durable status unknown)`);
+    }
     return started;
   }
 
+  function adoptConfirmedStart(replacementId: string): void {
+    unknownAdmissions.delete(replacementId);
+  }
+
+  function markStartedAdmissionUnknown(replacementId: string): void {
+    const events = byReplacement.get(replacementId);
+    if (events?.length === 1 && events[0]?.phase === "started") {
+      unknownAdmissions.add(replacementId);
+    }
+  }
+
+  function isAdmissionUnknown(replacementId: string): boolean {
+    return unknownAdmissions.has(replacementId);
+  }
+
   function discardUnresolvedStart(replacementId: string): void {
+    unknownAdmissions.delete(replacementId);
     const events = byReplacement.get(replacementId);
     if (!(events?.length === 1 && events[0]?.phase === "started")) {
       // Not in the exact discardable state (unknown id, already resolved,

@@ -36,19 +36,20 @@ export interface ReplacementObservingAllocatorOptions {
   readonly persist?: (receipt: ReplacementReceipt) => Promise<ReplacementReceipt>;
   /**
    * Authoritative durable read-after-uncertain-write reconciliation
-   * (2026-08-01 fourth gate revision): `persist` can commit its durable
-   * write and THEN reject — SQLite's post-insert re-read and Postgres's
-   * post-insert RETURNING-result handling can both throw after the row is
-   * already durably committed. A rejected `started`-phase `persist` call
-   * is therefore an UNKNOWN outcome, not proof of non-commit. This is
-   * called with the receipt's `replacement_id` to authoritatively resolve
-   * that uncertainty before `record` decides whether to roll the
-   * in-memory admission back: adopt the durable row if it committed,
-   * roll back only once its absence is confirmed. If omitted, `record`
-   * fails safe — it treats a rejected `started` persist as UNRESOLVABLE
-   * uncertainty (never proven absent) and does NOT roll back, exactly the
-   * same "leave it in memory, keep reporting the fault" behavior as when
-   * reconciliation itself throws.
+   * (2026-08-01 fourth/fifth gate revisions): `persist` can commit its
+   * durable write and THEN reject — SQLite's post-insert re-read and
+   * Postgres's post-insert RETURNING-result handling can both throw after
+   * the row is already durably committed. A rejected `started`-phase
+   * `persist` call is therefore an UNKNOWN outcome, not proof of
+   * non-commit. This is called with the receipt's `replacement_id` to
+   * authoritatively resolve that uncertainty: adopt the durable row if it
+   * committed, roll back once its absence is confirmed, or — if omitted,
+   * or if this itself throws — mark the receipt as ledger-owned UNKNOWN
+   * admission state via `ledger.markStartedAdmissionUnknown`. An unknown
+   * receipt is never treated as ordinary pending state (cannot suppress a
+   * later real observation) and is never resolved (terminate/complete
+   * refuses it) until a later bounded reconciliation attempt before a
+   * same-scope observation adopts or discards it.
    */
   readonly reconcileStartedAdmission?: (replacementId: string) => Promise<ReplacementReceipt | null>;
 }
@@ -57,6 +58,12 @@ interface EnsureObservation {
   readonly attemptId: string;
   readonly before: BrowserSurface | null;
   readonly preclaimed: ReplacementReceipt | null;
+}
+
+interface ReplacementAdmissionScope {
+  readonly connectionId: string;
+  readonly profileKey: string;
+  readonly surfaceSubjectId?: string;
 }
 
 /**
@@ -139,6 +146,7 @@ async function observePendingReplacement(
   before: BrowserSurface | null
 ): Promise<{ attemptId: string; preclaimed: ReplacementReceipt | null }> {
   try {
+    await reconcileUnknownAdmissionForScope(options, admissionScopeForRequest(request));
     const attemptId = options.createEnsureAttemptId?.(request) ?? randomUUID();
     const advertisedReplacement = await startAdvertisedReplacement(options, request, before, attemptId);
     const preclaimed = advertisedReplacement ?? (await pendingReplacementForRequest(options, request));
@@ -262,11 +270,45 @@ async function recordContainerTransition(
   if (!(previousContainerId && after.container_id) || previousContainerId === after.container_id) {
     return;
   }
-  const existing = await pendingForSurface(options, after.surface_id);
+  // Dedup ONLY against a pending receipt for THIS EXACT transition
+  // (matching the idempotency-key prefix `ensure:<surfaceId>:<prevHash><nextHash>:`
+  // that `ensureReceipt` derives below from the same previous/next
+  // container ids — a `started` receipt never carries a
+  // `next_generation_hash` field, so the idempotency key is the only
+  // stable place both sides of the transition are recorded together) —
+  // not against any prior unresolved receipt for the surface.
+  // Container-transition receipts are fire-and-forget observability
+  // records this module never resolves (unlike a preclaimed advertised
+  // replacement, which IS resolved via recordPreclaimedEnsureResult), so
+  // an OLDER transition's receipt staying unresolved forever must never
+  // block recording a genuinely NEW, distinct transition — otherwise only
+  // the very first observed transition for a surface's whole lifetime
+  // would ever get an audit receipt (2026-08-01 fifth gate revision: this
+  // was the exact mechanism behind "three later successful rotations
+  // produce only one persist attempt", independent of the
+  // admission-uncertainty bug this revision also fixes — a stuck
+  // unknown-admission receipt merely made the pre-existing surface-wide
+  // block trigger on the very first attempt instead of the second).
+  const transitionKeyPrefix = ensureTransitionIdempotencyKeyPrefix(
+    after.surface_id,
+    previousContainerId,
+    after.container_id
+  );
+  const existing = await pendingForTransition(options, after.surface_id, transitionKeyPrefix);
   if (existing) {
     return;
   }
   await ensureReceipt(options, request, after, previousContainerId, attemptId, after.container_id);
+}
+
+function ensureTransitionIdempotencyKeyPrefix(
+  surfaceId: string,
+  previousContainerId: string,
+  nextContainerId: string
+): string {
+  const previousHash = deriveOpaqueGenerationHash(previousContainerId);
+  const nextHash = `:${deriveOpaqueGenerationHash(nextContainerId)}`;
+  return `ensure:${surfaceId}:${previousHash}${nextHash}:`;
 }
 
 /**
@@ -330,15 +372,13 @@ async function recordEnsureFailure(
 /**
  * Resolves a `started` receipt to a terminal outcome. Unlike the prior
  * (2026-08-01 second gate revision) design, this performs NO non-durable
- * bookkeeping of its own: by the time any receipt reaches this function,
- * `ensureReceipt`/`startStopReceipt` already guaranteed (via `record`'s
- * transactional admission) that it is durably persisted, or that it was
- * rolled back and this function is never called for it at all (every
- * caller checks the `ReplacementReceipt | null` result of the start before
- * proceeding to a resolution). A durable terminal/completed receipt can
- * therefore never be orphaned with no `started` predecessor beneath it —
- * that invariant is enforced at admission time, not at resolution time,
- * so there is no parallel state to leak on any success or failure path.
+ * bookkeeping of its own: `record` has either durably admitted the start,
+ * confirmed its absence and returned `null`, or marked it ledger-owned
+ * UNKNOWN. The ledger rejects resolution for UNKNOWN, so this function can
+ * only append a terminal receipt beneath a durably admitted start. A
+ * durable terminal/completed receipt can therefore never be orphaned with
+ * no `started` predecessor beneath it — that invariant is enforced at
+ * admission time, not by a parallel cleanup tracker.
  */
 async function recordTerminal(
   options: ReplacementObservingAllocatorOptions,
@@ -401,6 +441,9 @@ async function startStopReceiptObserved(
   request: StopBrowserSurfaceRequest
 ): Promise<ReplacementReceipt | null> {
   try {
+    if (before) {
+      await reconcileUnknownAdmissionForScope(options, admissionScopeForSurface(before));
+    }
     return await startStopReceipt(options, before, request);
   } catch (error) {
     reportPersistenceError(options, error);
@@ -433,38 +476,36 @@ function startStopReceipt(
 
 /**
  * Persists a replacement receipt via transactional admission (2026-08-01
- * third/fourth gate revisions — replaces a parallel "non-durable tracker"
- * design that required every resolution path to remember a cleanup step
- * and leaked on paths that never called it). This is durable bookkeeping
- * ABOUT an allocator operation, not the operation itself: a persistence
- * failure here must never propagate to callers observing an
+ * third/fourth/fifth gate revisions — replaces a parallel "non-durable
+ * tracker" design that required every resolution path to remember a
+ * cleanup step and leaked on paths that never called it). This is durable
+ * bookkeeping ABOUT an allocator operation, not the operation itself: a
+ * persistence failure here must never propagate to callers observing an
  * ensureSurface/stopSurface call (2026-08-01 Amazon incident root cause).
  *
- * For a `started` receipt (the only phase `ledger.start` can produce,
- * which is also the only phase `ledger.discardUnresolvedStart` can roll
- * back), a REJECTED persist call is NOT proof the durable write never
- * happened (2026-08-01 fourth gate revision): both supported stores can
- * commit their INSERT and then throw during post-insert processing
- * (SQLite's post-insert re-read; Postgres's post-insert RETURNING-result
- * handling). Blindly rolling back on every rejection can therefore strand
- * a durable `started` row with no in-memory representation left to ever
- * resolve it — an orphan pending row that also permanently suppresses
- * later observations for its surface, since nothing durable ever confirms
- * whether it needs reconciling. `reconcileAfterUncertainPersistRejection`
- * resolves this UNKNOWN outcome authoritatively before any rollback
- * decision is made: adopt the durable row if the write actually committed
- * (the in-memory admission already agrees — nothing to change), roll back
- * only once durable absence is CONFIRMED. If reconciliation is unavailable
- * or itself fails, the safe default is to NOT roll back (leave the receipt
- * in memory, keep reporting the fault) — the destructive action
- * (`discardUnresolvedStart`) never runs on unresolved uncertainty.
+ * For a `started` receipt (the only phase `ledger.start` can produce), a
+ * REJECTED persist call is NOT proof the durable write never happened
+ * (2026-08-01 fourth gate revision): both supported stores can commit
+ * their INSERT and then throw during post-insert processing (SQLite's
+ * post-insert re-read; Postgres's post-insert RETURNING-result handling).
+ * `reconcileAfterUncertainPersistRejection` resolves this outcome
+ * authoritatively: DURABLE (adopt — `ledger.adoptConfirmedStart`, nothing
+ * to change), ABSENT (confirmed — `ledger.discardUnresolvedStart`, roll
+ * back), or still UNKNOWN (reconciliation unavailable or itself failed —
+ * `ledger.markStartedAdmissionUnknown`). Marking UNKNOWN is
+ * ledger-OWNED state, not a caller-side tracker (2026-08-01 fifth gate
+ * revision — the prior fix returned the volatile in-memory receipt
+ * unchanged on an unresolved outcome, which an ordinary pending lookup's
+ * `isPendingForSurface` check could not distinguish from a genuinely
+ * durable pending claim, so it silently suppressed every later real
+ * observation for that scope forever). The preparation boundary retries
+ * reconciliation before a later same-scope observation can be blocked or
+ * resolved by it.
  *
  * For a `terminal`/`completed` receipt, there is no analogous rollback: an
  * in-memory resolution of an already-durably-admitted `started` receipt is
- * valid regardless of whether ITS OWN durable write succeeds (the ledger's
- * own `hasResolution`/pending-lookup logic already reflects the correct
- * in-memory truth), so a persist failure here is reported and the
- * unresolved-but-in-memory-resolved receipt is returned unchanged.
+ * valid regardless of whether ITS OWN durable write succeeds, so a persist
+ * failure here is reported and the receipt is returned unchanged.
  */
 async function record(
   options: ReplacementObservingAllocatorOptions,
@@ -483,21 +524,18 @@ async function record(
 
 /**
  * Authoritatively resolves whether a rejected `started` persist call
- * actually committed durably before deciding whether to roll the
- * in-memory admission back. See `record`'s doc comment for why a rejection
- * alone cannot answer this. Every branch is fail-safe toward NOT rolling
- * back: only a durably-CONFIRMED-absent result triggers
- * `discardUnresolvedStart`.
+ * actually committed durably. Every branch either adopts (durable),
+ * discards (confirmed absent), or explicitly marks the receipt as
+ * ledger-owned UNKNOWN admission state — never silently leaves it
+ * indistinguishable from an ordinary durable pending claim. See
+ * `record`'s doc comment for the full rationale.
  */
 async function reconcileAfterUncertainPersistRejection(
   options: ReplacementObservingAllocatorOptions,
   receipt: ReplacementReceipt
 ): Promise<ReplacementReceipt | null> {
   if (!options.reconcileStartedAdmission) {
-    // No authoritative reconciliation available: the outcome remains
-    // genuinely unknown, so the safe default is to leave the in-memory
-    // admission exactly as `ledger.start` created it — never invent a
-    // "confirmed absent" verdict this function has no way to prove.
+    options.ledger.markStartedAdmissionUnknown(receipt.replacement_id);
     return receipt;
   }
   let durable: ReplacementReceipt | null;
@@ -505,16 +543,18 @@ async function reconcileAfterUncertainPersistRejection(
     durable = await options.reconcileStartedAdmission(receipt.replacement_id);
   } catch (error) {
     // Reconciliation itself failed: still unresolved, still not a proven
-    // absence — fail safe the same way as "no reconciliation available".
+    // absence — mark it unknown rather than silently leaving it
+    // indistinguishable from a durable pending claim.
     reportPersistenceError(options, error);
+    options.ledger.markStartedAdmissionUnknown(receipt.replacement_id);
     return receipt;
   }
   if (durable) {
-    // The write actually committed (commit-then-reject): the in-memory
-    // admission already agrees with the durable row (both were produced
-    // from the same `ledger.start` call) — nothing to roll back, nothing
-    // to change. Returning the in-memory receipt (not the durable read)
-    // keeps object identity stable for callers that compare it structurally.
+    // The write actually committed (commit-then-reject): adopt it —
+    // nothing to roll back, nothing to change. Returning the in-memory
+    // receipt (not the durable read) keeps object identity stable for
+    // callers that compare it structurally.
+    options.ledger.adoptConfirmedStart(receipt.replacement_id);
     return receipt;
   }
   // Durable absence is now CONFIRMED (not merely assumed from a rejection)
@@ -523,17 +563,129 @@ async function reconcileAfterUncertainPersistRejection(
   return null;
 }
 
-function pendingForSurface(
+/**
+ * Finds a pending `started` receipt for the EXACT transition (matching the
+ * idempotency-key prefix `ensure:<surfaceId>:<prevHash><nextHash>:` that
+ * `ensureReceipt` derives from the same previous/next container ids — a
+ * `started` receipt never carries a populated `next_generation_hash`
+ * field, since that column is only set by `ledger.complete()`, so the
+ * idempotency key is the only place both sides of the transition are
+ * recorded together) on a surface. The preparation boundary already makes
+ * one bounded reconciliation attempt for the same scope. If that durable
+ * read remains transiently unavailable, an unknown admission is excluded
+ * here and fails open rather than blocking this new observation.
+ *
+ * Scoped to the exact transition, not "any pending receipt for this
+ * surface at all" (2026-08-01 fifth gate revision — see
+ * `recordContainerTransition`'s doc comment): an older, distinct
+ * transition's receipt is intentionally left unresolved forever by this
+ * module and must never block recording a genuinely new, different
+ * transition. Falls back to `options.findPending` (a broader, durable
+ * "any pending receipt for this surface" lookup — unchanged since before
+ * this revision) only when nothing matches in memory, to still catch a
+ * still-pending durable receipt for this exact transition that predates
+ * an in-process restart; a durable match for a DIFFERENT transition is
+ * ignored, for the same reason an in-memory one is.
+ */
+async function pendingForTransition(
   options: ReplacementObservingAllocatorOptions,
-  surfaceId: string
+  surfaceId: string,
+  idempotencyKeyPrefix: string
 ): Promise<ReplacementReceipt | null> {
-  const inMemory = findPendingInMemory(options.ledger.list(), surfaceId);
-  return inMemory ? Promise.resolve(inMemory) : (options.findPending?.(surfaceId) ?? Promise.resolve(null));
+  const inMemory = findPendingTransitionInMemory(options.ledger, surfaceId, idempotencyKeyPrefix);
+  if (inMemory) {
+    return inMemory;
+  }
+  const durable = await (options.findPending?.(surfaceId) ?? Promise.resolve(null));
+  return durable?.idempotency_key.startsWith(idempotencyKeyPrefix) ? durable : null;
 }
 
-function findPendingInMemory(receipts: readonly ReplacementReceipt[], surfaceId: string): ReplacementReceipt | null {
+async function reconcileUnknownAdmissionForScope(
+  options: ReplacementObservingAllocatorOptions,
+  scope: ReplacementAdmissionScope
+): Promise<void> {
+  if (!options.reconcileStartedAdmission) {
+    return;
+  }
+  // One exact-ID read per observation bounds bookkeeping work even if the
+  // durable store stays transiently unreadable. Unknown admissions fail
+  // open, so the remaining entries cannot suppress this observation; a
+  // later observation retries this oldest unresolved entry.
+  const [unknown] = options.ledger
+    .list()
+    .filter(
+      (receipt) =>
+        receipt.phase === "started" &&
+        isInAdmissionScope(receipt, scope) &&
+        options.ledger.isAdmissionUnknown(receipt.replacement_id)
+    )
+    .sort((left, right) => left.event_seq - right.event_seq);
+  if (unknown) {
+    await reconcileKnownUnknownAdmission(options, unknown);
+  }
+}
+
+async function reconcileKnownUnknownAdmission(
+  options: ReplacementObservingAllocatorOptions,
+  receipt: ReplacementReceipt
+): Promise<void> {
+  if (!options.reconcileStartedAdmission) {
+    return;
+  }
+  let durable: ReplacementReceipt | null;
+  try {
+    durable = await options.reconcileStartedAdmission(receipt.replacement_id);
+  } catch (error) {
+    // Still unresolved — remains marked unknown for a future attempt.
+    reportPersistenceError(options, error);
+    return;
+  }
+  if (durable) {
+    options.ledger.adoptConfirmedStart(receipt.replacement_id);
+  } else {
+    options.ledger.discardUnresolvedStart(receipt.replacement_id);
+  }
+}
+
+function findPendingTransitionInMemory(
+  ledger: ReplacementObservingAllocatorOptions["ledger"],
+  surfaceId: string,
+  idempotencyKeyPrefix: string
+): ReplacementReceipt | null {
+  const receipts = ledger.list();
   return (
-    receipts.filter((receipt) => isPendingForSurface(receipt, receipts, surfaceId)).sort(compareReceipts)[0] ?? null
+    receipts
+      .filter(
+        (receipt) =>
+          isPendingForSurface(receipt, receipts, surfaceId) &&
+          !ledger.isAdmissionUnknown(receipt.replacement_id) &&
+          receipt.idempotency_key.startsWith(idempotencyKeyPrefix)
+      )
+      .sort(compareReceipts)[0] ?? null
+  );
+}
+
+function admissionScopeForRequest(request: EnsureBrowserSurfaceRequest): ReplacementAdmissionScope {
+  return {
+    connectionId: request.surfaceSubjectId ?? request.connectorId,
+    profileKey: request.profileKey,
+    ...(request.surfaceSubjectId ? { surfaceSubjectId: request.surfaceSubjectId } : {}),
+  };
+}
+
+function admissionScopeForSurface(surface: BrowserSurface): ReplacementAdmissionScope {
+  return {
+    connectionId: surface.surface_subject_id ?? surface.connector_id,
+    profileKey: surface.profile_key,
+    ...(surface.surface_subject_id ? { surfaceSubjectId: surface.surface_subject_id } : {}),
+  };
+}
+
+function isInAdmissionScope(receipt: ReplacementReceipt, scope: ReplacementAdmissionScope): boolean {
+  return (
+    receipt.connection_id === scope.connectionId &&
+    receipt.profile_key === scope.profileKey &&
+    receipt.surface_subject_id === scope.surfaceSubjectId
   );
 }
 

@@ -1296,3 +1296,94 @@ test("discardUnresolvedStart is a no-op that preserves the receipt once it has b
     "a resolved receipt's started/completed pair must survive an attempted discard unchanged"
   );
 });
+
+// 2026-08-01 fifth gate revision: adoptConfirmedStart/markStartedAdmissionUnknown/
+// isAdmissionUnknown represent a rejected `started` persist's admission
+// outcome as ledger-owned tri-state {durable|absent|unknown} rather than
+// returning the volatile in-memory receipt unchanged and letting callers
+// treat it as an ordinary durable pending claim.
+
+test("markStartedAdmissionUnknown marks an unresolved started receipt as unknown, and requireStarted-consuming operations reflect it via isAdmissionUnknown", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "unknown-connection",
+    idempotency_key: "unknown-key",
+    profile_key: "unknown-profile",
+    surface_id: "unknown-surface",
+  });
+
+  assert.equal(ledger.isAdmissionUnknown(started.replacement_id), false, "a fresh start is not unknown");
+
+  ledger.markStartedAdmissionUnknown(started.replacement_id);
+
+  assert.equal(ledger.isAdmissionUnknown(started.replacement_id), true);
+  assert.deepEqual(ledger.list(), [started], "marking unknown must not remove or alter the in-memory receipt");
+});
+
+test("adoptConfirmedStart clears unknown-admission status without altering the receipt", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "adopt-connection",
+    idempotency_key: "adopt-key",
+    profile_key: "adopt-profile",
+    surface_id: "adopt-surface",
+  });
+  ledger.markStartedAdmissionUnknown(started.replacement_id);
+
+  ledger.adoptConfirmedStart(started.replacement_id);
+
+  assert.equal(ledger.isAdmissionUnknown(started.replacement_id), false);
+  assert.deepEqual(ledger.list(), [started], "adopting a confirmed start must not alter the in-memory receipt");
+});
+
+test("adoptConfirmedStart is a no-op (never a throw) for a replacement_id that was never marked unknown", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  assert.doesNotThrow(() => ledger.adoptConfirmedStart("replacement_does-not-exist"));
+  assert.equal(ledger.isAdmissionUnknown("replacement_does-not-exist"), false);
+});
+
+test("markStartedAdmissionUnknown only marks a receipt that is currently an unresolved started admission — a resolved receipt is left alone", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "resolved-unknown-connection",
+    idempotency_key: "resolved-unknown-key",
+    profile_key: "resolved-unknown-profile",
+    surface_id: "resolved-unknown-surface",
+  });
+  ledger.terminate({
+    cause: started.cause,
+    connection_id: started.connection_id,
+    outcome: "failed",
+    profile_key: started.profile_key,
+    replacement_id: started.replacement_id,
+    ...(started.surface_id ? { surface_id: started.surface_id } : {}),
+  });
+
+  ledger.markStartedAdmissionUnknown(started.replacement_id);
+
+  assert.equal(
+    ledger.isAdmissionUnknown(started.replacement_id),
+    false,
+    "an already-resolved receipt must never be marked unknown admission"
+  );
+});
+
+test("discardUnresolvedStart also clears any unknown-admission marker for the discarded receipt", () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const started = ledger.start({
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "discard-unknown-connection",
+    idempotency_key: "discard-unknown-key",
+    profile_key: "discard-unknown-profile",
+    surface_id: "discard-unknown-surface",
+  });
+  ledger.markStartedAdmissionUnknown(started.replacement_id);
+
+  ledger.discardUnresolvedStart(started.replacement_id);
+
+  assert.equal(ledger.isAdmissionUnknown(started.replacement_id), false);
+  assert.deepEqual(ledger.list(), [], "the discarded receipt must not appear in list()");
+});

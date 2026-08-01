@@ -14,6 +14,15 @@ import {
   createBrowserSurfaceReplacementLedger,
   createReplacementObservingAllocator,
 } from "../runtime/browser-surface/replacement-receipt-ledger.ts";
+import { deriveOpaqueGenerationHash } from "../runtime/browser-surface/replacement-receipt-ledger-state.ts";
+import { closeDb, initDb } from "../server/db.ts";
+import { closePostgresStorage, initPostgresStorage } from "../server/postgres-storage.ts";
+import {
+  createPostgresBrowserSurfaceReplacementReceiptStore,
+  createSqliteBrowserSurfaceReplacementReceiptStore,
+} from "../server/stores/browser-surface-replacement-ledger-store.ts";
+
+const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 // 2026-08-01 Amazon incident (run_227a4fbba7af49bea5a33cc55bb4f12c): the
 // replacement-ledger bookkeeping wrapped around ensureSurface/stopSurface
@@ -352,6 +361,120 @@ test("a failed first persist does not suppress a later durable transition receip
   const [durableReceipt] = persisted;
   assert.ok(durableReceipt, "expected exactly one durable receipt");
   assert.equal(durableReceipt.phase, "started");
+});
+
+// 2026-08-01 fifth gate revision: `options.findPending` is a broader,
+// pre-existing durable "any pending receipt for this surface" fallback
+// (production-wired to `findPendingForSurface`, unchanged since before
+// this revision) consulted only when nothing matches in memory — e.g.
+// after a process restart, when the in-memory ledger is empty but a
+// durable started receipt for a prior, still-unresolved transition
+// exists. It must still dedup against a durable match for the EXACT same
+// transition, but must NOT treat a durable match for a DIFFERENT
+// transition as blocking — same exact-transition scoping the in-memory
+// path enforces.
+test("findPending's durable fallback dedups an exact-transition match but ignores a durable receipt for a different transition", async () => {
+  const container1Id = "container-restart-1";
+  const container2Id = "container-restart-2";
+  const container3Id = "container-restart-3";
+  const container1: BrowserSurface = { ...surface, container_id: container1Id };
+  const container2: BrowserSurface = { ...surface, container_id: container2Id };
+  const container3: BrowserSurface = { ...surface, container_id: container3Id };
+  let ensureCalls = 0;
+
+  // Simulates a fresh in-memory ledger (as after a process restart) with a
+  // durable receipt already on record for the container1->container2
+  // transition, discovered only via `findPending` since nothing is in memory.
+  const previousHash = deriveOpaqueGenerationHash(container1Id);
+  const nextHash = `:${deriveOpaqueGenerationHash(container2Id)}`;
+  const durableReceiptForFirstTransition: ReplacementReceipt = {
+    cause: "allocator_internal_ensure_surface",
+    connection_id: "restart-connection",
+    event_seq: 1,
+    idempotency_key: `ensure:${surface.surface_id}:${previousHash}${nextHash}:some-prior-attempt`,
+    observed_at: "2026-08-01T00:00:00.000Z",
+    phase: "started",
+    profile_key: surface.profile_key,
+    replacement_id: "replacement_prior-restart-receipt",
+    scope: JSON.stringify(["restart-connection"]),
+    surface_id: surface.surface_id,
+  };
+
+  const persistedForSameTransition: ReplacementReceipt[] = [];
+  const observedSameTransition = createReplacementObservingAllocator(
+    {
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      ensureSurface: async () => {
+        ensureCalls += 1;
+        return container2;
+      },
+      getSurfaceStatus: async () => container1,
+      listSurfaces: async () => [container2],
+      stopSurface: async () => null,
+    },
+    {
+      findPending: () => Promise.resolve(durableReceiptForFirstTransition),
+      ledger: createBrowserSurfaceReplacementLedger(),
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      persist: async (receipt) => {
+        persistedForSameTransition.push(receipt);
+        return receipt;
+      },
+    }
+  );
+
+  await observedSameTransition.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+
+  assert.equal(
+    ensureCalls,
+    1,
+    "sanity: the real allocator is still called regardless of dedup — dedup only affects receipt bookkeeping"
+  );
+  assert.equal(
+    persistedForSameTransition.length,
+    0,
+    "a durable fallback match for the EXACT SAME transition must dedup — no new receipt is persisted"
+  );
+
+  // A DIFFERENT transition (container2 -> container3): the durable fallback
+  // still returns the SAME stale receipt (as if `findPendingForSurface`'s
+  // "any pending for this surface" query surfaced it again), but it must
+  // NOT block recording this genuinely new transition's own receipt.
+  const persistedForDifferentTransition: ReplacementReceipt[] = [];
+  const observedDifferentTransition = createReplacementObservingAllocator(
+    {
+      ensureSurface: async () => container3,
+      getSurfaceStatus: async () => container2,
+      listSurfaces: async () => [container3],
+      stopSurface: async () => null,
+    },
+    {
+      findPending: () => Promise.resolve(durableReceiptForFirstTransition),
+      ledger: createBrowserSurfaceReplacementLedger(),
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      persist: async (receipt) => {
+        persistedForDifferentTransition.push(receipt);
+        return receipt;
+      },
+    }
+  );
+
+  await observedDifferentTransition.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+
+  assert.equal(
+    persistedForDifferentTransition.length,
+    1,
+    "a durable fallback match for a DIFFERENT transition must not suppress this new transition's own receipt"
+  );
+  assert.equal(persistedForDifferentTransition[0]?.phase, "started");
 });
 
 // 2026-08-01 gate revision (Blocker 3): createEnsureAttemptId is not wired
@@ -822,6 +945,43 @@ test("Postgres-equivalent commit-then-reject: a real ensureSurface success survi
   );
 });
 
+test("real SQLite commit-then-reject: a post-append failure is reconciled and adopted", async () => {
+  initDb();
+  try {
+    const ledger = createBrowserSurfaceReplacementLedger();
+    const realStore = createSqliteBrowserSurfaceReplacementReceiptStore();
+    const before: BrowserSurface = { ...surface, allocator_metadata: { ensure_disposition: "replace" } };
+    const after: BrowserSurface = { ...surface, container_id: "container-sqlite-real-committed" };
+    const observed = createReplacementObservingAllocator(
+      baseAllocator({ ensureSurface: async () => after, getSurfaceStatus: async () => before }),
+      {
+        ledger,
+        persist: async (receipt) => {
+          await realStore.append(receipt);
+          throw new Error("simulated post-append failure against real SQLite");
+        },
+        reconcileStartedAdmission: (replacementId) => realStore.findByReplacementId(replacementId),
+      }
+    );
+
+    assert.deepEqual(
+      await observed.ensureSurface({
+        connectorId: surface.connector_id,
+        profileKey: surface.profile_key,
+        surfaceId: surface.surface_id,
+      }),
+      after,
+      "the real allocator success must survive a post-commit SQLite failure"
+    );
+    const [admitted] = ledger.list();
+    assert.ok(admitted);
+    assert.equal(ledger.isAdmissionUnknown(admitted.replacement_id), false);
+    assert.equal((await realStore.findByReplacementId(admitted.replacement_id))?.phase, "started");
+  } finally {
+    closeDb();
+  }
+});
+
 test("reconciliation failing (cannot determine commit-then-reject vs. genuine absence) does not roll back and does not mask the real result", async () => {
   const ledger = createBrowserSurfaceReplacementLedger();
   const realError = new Error("real allocator stopSurface failure");
@@ -846,17 +1006,31 @@ test("reconciliation failing (cannot determine commit-then-reject vs. genuine ab
     "the real allocator error must survive even when reconciliation itself cannot resolve the uncertainty"
   );
   assert.ok(persistenceErrors.length >= 2, "both the persist fault and the reconciliation fault must be reported");
-  // The started admission is NOT rolled back (the point of this test), so
-  // the stop-failure path's recordTerminal still runs against it and
-  // resolves it in-memory — that in-memory resolution always succeeds
-  // (ledger.terminate is pure, synchronous state), independent of whether
-  // ITS OWN durable persist attempt also fails.
+  // 2026-08-01 fifth gate revision: the started admission is NOT rolled
+  // back (never proven absent), but it is also NOT resolved — a receipt
+  // marked ledger-owned UNKNOWN admission state must not be terminated
+  // until a later bounded reconciliation adopts or discards it (the
+  // stop-failure path's recordTerminal call is attempted, but the ledger
+  // itself refuses to resolve an unknown receipt and that refusal is
+  // caught and reported by recordStopFailureObserved, not left to mask
+  // the real allocator error asserted above).
   assert.deepEqual(
     ledger.list().map((receipt) => receipt.phase),
-    ["started", "terminal"],
-    "an unresolvable started outcome must NOT roll back — it remains admitted and its resolution proceeds normally"
+    ["started"],
+    "an unresolvable started outcome must NOT roll back AND must NOT be resolved until reconciled"
+  );
+  assert.equal(
+    ledger.isAdmissionUnknown(surfaceStartedReplacementId(ledger)),
+    true,
+    "the receipt must remain marked as unknown admission, not silently indistinguishable from durable pending state"
   );
 });
+
+function surfaceStartedReplacementId(ledger: BrowserSurfaceReplacementLedger): string {
+  const [started] = ledger.list();
+  assert.ok(started, "expected exactly one started receipt in the ledger");
+  return started.replacement_id;
+}
 
 test("omitting reconcileStartedAdmission entirely fails safe: no rollback on a rejected start, no masking of the real result", async () => {
   const ledger = createBrowserSurfaceReplacementLedger();
@@ -964,5 +1138,265 @@ test("repeated commit-then-reject lifecycles on one instance each adopt their ow
     ledger.list().map((receipt) => receipt.phase),
     ["started", "terminal", "started", "terminal", "started", "terminal"],
     "each lifecycle's admitted receipt is fully resolved, in order, with no lingering unresolved state"
+  );
+});
+
+test("real Postgres commit-then-reject: a genuine post-INSERT-commit driver failure is reconciled and adopted, not orphaned", {
+  skip: POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  try {
+    const ledger = createBrowserSurfaceReplacementLedger();
+    const realStore = createPostgresBrowserSurfaceReplacementReceiptStore();
+    const before: BrowserSurface = { ...surface, allocator_metadata: { ensure_disposition: "replace" } };
+    const after: BrowserSurface = { ...surface, container_id: "container-pg-real-committed" };
+    let ensureCalls = 0;
+
+    const observed = createReplacementObservingAllocator(
+      {
+        // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+        ensureSurface: async () => {
+          ensureCalls += 1;
+          return after;
+        },
+        getSurfaceStatus: async () => before,
+        listSurfaces: async () => [after],
+        stopSurface: async () => null,
+      },
+      {
+        ledger,
+        // Wraps the REAL Postgres driver call: the real INSERT commits
+        // against the dedicated container, then this throws afterward —
+        // reproducing the actual post-`RETURNING`-result failure window
+        // (`PostgresBrowserSurfaceReplacementReceiptStore`'s own
+        // post-insert handling), not a simulated fake.
+        persist: async (receipt) => {
+          await realStore.append(receipt);
+          throw new Error("simulated post-INSERT-commit driver failure against real Postgres");
+        },
+        reconcileStartedAdmission: (replacementId) => realStore.findByReplacementId(replacementId),
+      }
+    );
+
+    const result = await observed.ensureSurface({
+      connectorId: surface.connector_id,
+      profileKey: surface.profile_key,
+      surfaceId: surface.surface_id,
+    });
+
+    assert.deepEqual(
+      result,
+      after,
+      "the real allocator success must survive a genuine post-commit driver failure against real Postgres"
+    );
+    assert.equal(ensureCalls, 1);
+    assert.deepEqual(
+      ledger.list().map((receipt) => receipt.phase),
+      ["started"],
+      "the in-memory ledger must hold exactly the adopted admitted receipt — not rolled back, not duplicated"
+    );
+    const [admitted] = ledger.list();
+    assert.ok(admitted);
+    assert.equal(ledger.isAdmissionUnknown(admitted.replacement_id), false, "reconciliation adopted the durable row");
+    const durableRow = await realStore.findByReplacementId(admitted.replacement_id);
+    assert.equal(durableRow?.phase, "started", "the row genuinely committed against real Postgres and must survive");
+  } finally {
+    await closePostgresStorage();
+  }
+});
+
+// 2026-08-01 fifth (final) gate revision, P1: the fourth revision's
+// `reconcileAfterUncertainPersistRejection` returned the volatile
+// in-memory receipt UNCHANGED whenever reconciliation was unavailable or
+// itself failed — indistinguishable, to an ordinary pending lookup, from a
+// genuinely durable pending claim.
+// The gate's own probe: a rejected first started persist PLUS a transient
+// reconciliation-read failure left exactly this ambiguous state, and
+// three SUBSEQUENT real, successful container rotations for the same
+// surface then produced only ONE persist attempt total — the second and
+// third rotations' audit receipts were silently dropped because the pending
+// lookup still saw rotation 1's stuck receipt as authoritative and never
+// even tried admitting a new one.
+//
+// The fix makes "unknown admission" ledger-owned state
+// (`markStartedAdmissionUnknown`/`isAdmissionUnknown`) that the preparation
+// boundary excludes from ordinary pending and reconciles once before every
+// later same-scope observation.
+test("reject-before-commit plus a transient reconciliation-read failure does not suppress three later successful rotations' audit receipts", async () => {
+  // Single allocator instance across all 4 rotations, matching production.
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const persistedPhases: string[] = [];
+  const allocatorResults: string[] = [];
+  let persistCalls = 0;
+  let reconcileCalls = 0;
+  let liveSurface: BrowserSurface = { ...surface, container_id: "container-0" };
+  let nextContainerId = "container-1";
+
+  const observed = createReplacementObservingAllocator(
+    {
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      ensureSurface: async () => {
+        liveSurface = { ...liveSurface, container_id: nextContainerId };
+        return liveSurface;
+      },
+      getSurfaceStatus: async () => liveSurface,
+      listSurfaces: async () => [liveSurface],
+      stopSurface: async () => null,
+    },
+    {
+      ledger,
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      persist: async (receipt) => {
+        persistCalls += 1;
+        if (persistCalls === 1) {
+          // Rotation 1's started write is rejected before it ever commits
+          // (genuine absence, not commit-then-reject) — the gate's exact
+          // scenario combines this with a reconciliation READ that also
+          // fails transiently, below.
+          throw new Error("simulated reject-before-commit on rotation 1's started write");
+        }
+        persistedPhases.push(receipt.phase);
+        return receipt;
+      },
+      // biome-ignore lint/suspicious/useAwait: localized test assertion preserves its explicit contract.
+      reconcileStartedAdmission: async () => {
+        reconcileCalls += 1;
+        // Transient: the reconciliation READ ITSELF fails (distinct from
+        // "reconciliation confirms absence") — this is the exact
+        // combination the gate's probe used to leave rotation 1's receipt
+        // stuck as unresolved.
+        throw new Error("simulated transient reconciliation-read failure");
+      },
+    }
+  );
+
+  // Rotation 1: fails to persist, and its one reconciliation attempt (made
+  // eagerly inside `record`) is itself transient-unresolvable — the
+  // receipt is marked unknown admission, not rolled back, not resolved.
+  const first = await observed.ensureSurface({
+    connectorId: surface.connector_id,
+    profileKey: surface.profile_key,
+    surfaceId: surface.surface_id,
+  });
+  allocatorResults.push(first.container_id ?? "");
+
+  // Three LATER, real, successful rotations for the SAME surface. Each
+  // must still get its own persist attempt — none may be silently
+  // suppressed by rotation 1's stuck, unresolved receipt.
+  for (const containerId of ["container-2", "container-3", "container-4"]) {
+    nextContainerId = containerId;
+    // biome-ignore lint/performance/noAwaitInLoops: sequential, resolved-before-the-next rotations are the point of this test.
+    const result = await observed.ensureSurface({
+      connectorId: surface.connector_id,
+      profileKey: surface.profile_key,
+      surfaceId: surface.surface_id,
+    });
+    allocatorResults.push(result.container_id ?? "");
+  }
+
+  assert.deepEqual(
+    allocatorResults,
+    ["container-1", "container-2", "container-3", "container-4"],
+    "every rotation's real allocator result must survive regardless of the bookkeeping fault"
+  );
+  // The exact defect: persistCalls stuck at 1 (only rotation 1 ever
+  // attempted, its own rejected write) meant rotations 2-4 never even
+  // tried to persist their own receipts.
+  assert.equal(
+    persistCalls,
+    4,
+    "each of the 4 rotations must attempt its own persist — none may be silently skipped because an earlier receipt is stuck unresolved"
+  );
+  assert.deepEqual(
+    persistedPhases,
+    ["started", "started", "started"],
+    "rotations 2, 3, and 4 must each durably persist their own started receipt"
+  );
+  assert.equal(
+    ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id)).length,
+    1,
+    "repeated reconciliation reads retain only the original unknown admission, not a per-read tracker entry"
+  );
+  assert.equal(
+    reconcileCalls,
+    4,
+    "each observation makes one bounded reconciliation read for the stuck admission; repeated read faults cannot create an unbounded retry loop"
+  );
+});
+
+test("a later observation for the same scope reconciles an unknown admission even when its surface ID changed", async () => {
+  const ledger = createBrowserSurfaceReplacementLedger();
+  const durableRows: ReplacementReceipt[] = [];
+  const originalBefore: BrowserSurface = { ...surface, container_id: "scope-container-0" };
+  const originalAfter: BrowserSurface = { ...originalBefore, container_id: "scope-container-1" };
+  const successorBefore: BrowserSurface = {
+    ...originalAfter,
+    container_id: "scope-container-2",
+    surface_id: "bs_test_successor",
+  };
+  const successorAfter: BrowserSurface = { ...successorBefore, container_id: "scope-container-3" };
+  let currentBefore = originalBefore;
+  let currentAfter = originalAfter;
+  let persistCalls = 0;
+  let reconciliationCalls = 0;
+  let scopeLookupSawUnknown = false;
+
+  const observed = createReplacementObservingAllocator(
+    {
+      ensureSurface: async () => currentAfter,
+      getSurfaceStatus: async () => currentBefore,
+      listSurfaces: async () => [currentAfter],
+      stopSurface: async () => null,
+    },
+    {
+      findPendingForScope: () => {
+        scopeLookupSawUnknown = ledger.list().some((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id));
+        return Promise.resolve(null);
+      },
+      ledger,
+      persist: (receipt) => {
+        persistCalls += 1;
+        durableRows.push(receipt);
+        if (persistCalls === 1) {
+          return Promise.reject(
+            new Error("simulated post-commit write rejection before a transient reconciliation read")
+          );
+        }
+        return Promise.resolve(receipt);
+      },
+      reconcileStartedAdmission: (replacementId) => {
+        reconciliationCalls += 1;
+        if (reconciliationCalls === 1) {
+          return Promise.reject(new Error("simulated transient reconciliation-read failure"));
+        }
+        return Promise.resolve(durableRows.find((receipt) => receipt.replacement_id === replacementId) ?? null);
+      },
+    }
+  );
+
+  await observed.ensureSurface({
+    connectorId: originalBefore.connector_id,
+    profileKey: originalBefore.profile_key,
+    surfaceId: originalBefore.surface_id,
+    ...(originalBefore.surface_subject_id ? { surfaceSubjectId: originalBefore.surface_subject_id } : {}),
+  });
+  currentBefore = successorBefore;
+  currentAfter = successorAfter;
+  const result = await observed.ensureSurface({
+    connectorId: successorBefore.connector_id,
+    profileKey: successorBefore.profile_key,
+    surfaceId: successorBefore.surface_id,
+    ...(successorBefore.surface_subject_id ? { surfaceSubjectId: successorBefore.surface_subject_id } : {}),
+  });
+
+  assert.deepEqual(result, successorAfter, "the changed-surface allocator result must still survive bookkeeping");
+  assert.equal(scopeLookupSawUnknown, false, "same-scope reconciliation must run before the scope lookup");
+  assert.equal(reconciliationCalls, 2, "one eager and one later bounded exact-ID read must reconcile the admission");
+  assert.equal(persistCalls, 2, "the successor transition must retain its own valid receipt");
+  assert.equal(
+    ledger.list().filter((receipt) => ledger.isAdmissionUnknown(receipt.replacement_id)).length,
+    0,
+    "the exact durable start must be adopted, not retained as unknown"
   );
 });
