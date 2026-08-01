@@ -54,6 +54,10 @@ const REGEXP_LEAKED_SECRET = /secret-token-xyz/;
 const REGEXP_LEAKED_BEARER = /Bearer/;
 const REGEXP_LEAKED_STACK_TRACE = /\.ts:\d+|at Object|at async/;
 const REGEXP_LEAKED_NON_ALLOWLISTED_FIELD = /surfaceIdSeen/;
+const REGEXP_LEAKED_PROFILE = /private-profile/;
+const REGEXP_LEAKED_USER_PASSWORD = /user:password/;
+const REGEXP_LEAKED_SQL = /DROP TABLE/;
+const REGEXP_LEASE_ID_SHAPE = /^lease_\d+$/;
 
 const MANIFEST = {
   capabilities: {
@@ -1275,6 +1279,19 @@ test("starting-surface allocator failure persisting past the in-place poll-retry
  * that erasure — only after the retry budget (default 3 attempts) is fully
  * exhausted, never on an earlier attempt that still has budget left.
  */
+const EXACT_INSTRUMENTATION_ALLOWLIST = new Set([
+  "run_id",
+  "lease_id",
+  "surface_id",
+  "operation",
+  "attempts",
+  "error_name",
+  "code",
+  "status",
+  "category",
+  "retryable",
+]);
+
 function throwingAllocatorError(overrides: Record<string, unknown> = {}) {
   const error = new Error(
     "should never appear in the warning: contains an auth header Bearer secret-token-xyz and a stack trace"
@@ -1289,7 +1306,31 @@ function throwingAllocatorError(overrides: Record<string, unknown> = {}) {
   });
 }
 
-test("exhausted ensureSurface poll retry emits exactly one allowlisted warning, only after the third failed attempt", async (t) => {
+/** Extracts and JSON-parses every "poll retry exhausted" record out of the captured warn-log lines, in order. */
+function parseInstrumentationRecords(warnings: readonly string[]): Record<string, unknown>[] {
+  return warnings
+    .filter((message) => message.includes("poll retry exhausted"))
+    .map((message) => JSON.parse(message.slice(message.indexOf("{"))) as Record<string, unknown>);
+}
+
+/** Every leak check the gate flagged as missing, applied to one already-parsed record + its raw log line. */
+function assertRecordIsSafeAndAllowlisted(record: Record<string, unknown>, rawMessage: string) {
+  assert.deepEqual(
+    new Set(Object.keys(record)),
+    EXACT_INSTRUMENTATION_ALLOWLIST,
+    "exact allowlist — no extra and no missing fields"
+  );
+  assert.doesNotMatch(rawMessage, REGEXP_LEAKED_SECRET, "must never leak error.message");
+  assert.doesNotMatch(rawMessage, REGEXP_LEAKED_BEARER, "must never leak credentials embedded in message/stack");
+  assert.doesNotMatch(rawMessage, REGEXP_LEAKED_STACK_TRACE, "must never leak a stack trace");
+  assert.doesNotMatch(
+    rawMessage,
+    REGEXP_LEAKED_NON_ALLOWLISTED_FIELD,
+    "must never leak arbitrary error fields outside the allowlist"
+  );
+}
+
+test("exhausted ensureSurface poll retry emits exactly one allowlisted warning, only after the third failed attempt, with exact IDs", async (t) => {
   const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
   let ensureCalls = 0;
   const surfaces = new Map<string, BrowserSurface>();
@@ -1350,23 +1391,9 @@ test("exhausted ensureSurface poll retry emits exactly one allowlisted warning, 
   );
 
   const firstWarning = at(instrumentationWarnings, 0);
-  const record = JSON.parse(firstWarning.slice(firstWarning.indexOf("{")));
-  assert.deepEqual(
-    new Set(Object.keys(record)),
-    new Set([
-      "run_id",
-      "lease_id",
-      "surface_id",
-      "operation",
-      "attempts",
-      "error_name",
-      "code",
-      "status",
-      "category",
-      "retryable",
-    ]),
-    "exact allowlist — no extra and no missing fields"
-  );
+  const [record] = parseInstrumentationRecords(instrumentationWarnings);
+  assert.ok(record);
+  assertRecordIsSafeAndAllowlisted(record, firstWarning);
   assert.equal(record.operation, "ensureSurface");
   assert.equal(record.attempts, 3, "the warning fires only once the full retry budget (3) is exhausted");
   assert.equal(record.run_id, "run_instrument_ensure_exhausted");
@@ -1375,22 +1402,27 @@ test("exhausted ensureSurface poll retry emits exactly one allowlisted warning, 
   assert.equal(record.code, "docker_malformed_response");
   assert.equal(record.status, 502);
   assert.equal(record.error_name, "NekoSurfaceAllocatorError");
-  assert.ok(typeof record.lease_id === "string" && record.lease_id.length > 0);
-  assert.ok(typeof record.surface_id === "string" && record.surface_id.length > 0);
-
-  for (const message of instrumentationWarnings) {
-    assert.doesNotMatch(message, REGEXP_LEAKED_SECRET, "must never leak error.message");
-    assert.doesNotMatch(message, REGEXP_LEAKED_BEARER, "must never leak credentials embedded in message/stack");
-    assert.doesNotMatch(message, REGEXP_LEAKED_STACK_TRACE, "must never leak a stack trace");
-    assert.doesNotMatch(
-      message,
-      REGEXP_LEAKED_NON_ALLOWLISTED_FIELD,
-      "must never leak arbitrary error fields outside the allowlist"
-    );
-  }
+  assert.equal(
+    record.surface_id,
+    "surface_dynamic_1",
+    "must name the exact dead surface_id the exhausted call was made against, not just a non-empty string"
+  );
+  assert.match(
+    String(record.lease_id),
+    REGEXP_LEASE_ID_SHAPE,
+    "must be the exact current lease_id shape this harness mints"
+  );
 });
 
-test("exhausted getSurfaceStatus poll retry emits exactly one allowlisted warning naming the getSurfaceStatus operation", async (t) => {
+/**
+ * Blocker 3 (gate revision): the getSurfaceStatus test previously asserted
+ * only `length >= 1` and inspected values loosely — a mutation that warns on
+ * EVERY attempt (not just exhaustion), or that leaks a field only on this
+ * call site, still passed. This mirrors the ensureSurface test's exact
+ * cardinality, exact allowlist, exact IDs, and redaction checks so both
+ * wrapped operations are equally mutation-sensitive.
+ */
+test("exhausted getSurfaceStatus poll retry emits exactly one allowlisted warning, only after the third failed attempt, with exact IDs", async (t) => {
   const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
   let postEnsureStatusCalls = 0;
   const surfaces = new Map<string, BrowserSurface>();
@@ -1414,10 +1446,18 @@ test("exhausted getSurfaceStatus poll retry emits exactly one allowlisted warnin
     getSurfaceStatus: (surfaceId) => {
       const existing = surfaces.get(surfaceId);
       if (!existing?.container_id) {
+        // The replacement-observing allocator's pre-flight "before" snapshot,
+        // called before ensureSurface has ever run for this surface_id.
+        // Unrelated to the retry under test — must always succeed cleanly.
         return Promise.resolve(existing ?? null);
       }
       postEnsureStatusCalls += 1;
-      throw throwingAllocatorError({ category: "docker_http_error", code: "docker_http_error", status: 503 });
+      throw throwingAllocatorError({
+        category: "docker_http_error",
+        code: "docker_http_error",
+        status: 503,
+        surfaceIdSeen: surfaceId,
+      });
     },
     listSurfaces: async () => await Promise.resolve([...surfaces.values()]),
     stopSurface: async () => await Promise.resolve(null),
@@ -1437,15 +1477,275 @@ test("exhausted getSurfaceStatus poll retry emits exactly one allowlisted warnin
   });
   await controller.drainActiveRuns(1000);
 
-  assert.ok(postEnsureStatusCalls >= 3, "at least the first surface's 3-attempt budget was exhausted");
+  assert.equal(
+    postEnsureStatusCalls,
+    7,
+    "3 in-place attempts against the first dead surface, then 3 more against the outer-reacquired surface (also persistently dead here), plus 1 extra pre-stop 'before' snapshot on the abandoned first surface — matches the sibling all-poll-failure test's documented count exactly, proving this mock's call accounting is exact, not approximate"
+  );
   const instrumentationWarnings = warnings.filter((message) => message.includes("poll retry exhausted"));
-  assert.ok(instrumentationWarnings.length >= 1);
-  const firstWarning = at(instrumentationWarnings, 0);
-  const record = JSON.parse(firstWarning.slice(firstWarning.indexOf("{")));
-  assert.equal(record.operation, "getSurfaceStatus");
-  assert.equal(record.attempts, 3);
-  assert.equal(record.category, "docker_http_error");
-  assert.equal(record.status, 503);
+  assert.equal(
+    instrumentationWarnings.length,
+    2,
+    "exactly one record per exhausted getSurfaceStatus call — the first surface's exhausted budget AND the reacquired surface's own exhausted budget — never one per individual attempt (would be 6, not 2)"
+  );
+
+  const [firstRaw, secondRaw] = instrumentationWarnings;
+  assert.ok(firstRaw);
+  assert.ok(secondRaw);
+  const [firstRecord, secondRecord] = parseInstrumentationRecords(instrumentationWarnings);
+  assert.ok(firstRecord);
+  assert.ok(secondRecord);
+
+  assertRecordIsSafeAndAllowlisted(firstRecord, firstRaw);
+  assert.equal(firstRecord.operation, "getSurfaceStatus");
+  assert.equal(firstRecord.attempts, 3);
+  assert.equal(firstRecord.category, "docker_http_error");
+  assert.equal(firstRecord.status, 503);
+  assert.equal(
+    firstRecord.surface_id,
+    "surface_dynamic_1",
+    "must name the exact first surface_id, not just a non-empty string"
+  );
+  assert.match(String(firstRecord.lease_id), REGEXP_LEASE_ID_SHAPE);
+
+  assertRecordIsSafeAndAllowlisted(secondRecord, secondRaw);
+  assert.equal(secondRecord.operation, "getSurfaceStatus");
+  assert.equal(secondRecord.attempts, 3);
+  assert.equal(
+    secondRecord.surface_id,
+    "surface_dynamic_2",
+    "the outer reacquire's own exhaustion must be attributed to the SECOND (reacquired) surface_id, not the first"
+  );
+  assert.notEqual(
+    secondRecord.lease_id,
+    firstRecord.lease_id,
+    "the outer reacquire mints a new lease; the second record must carry that new lease_id, not the stale first one"
+  );
+});
+
+/**
+ * Blocker 1 (gate revision): hostile scalar values in allowlisted fields
+ * must not pass through just because they are short strings/booleans/
+ * numbers. A caught object shaped like a real allocator error but with a
+ * `code`/`category`/`name` value that is NOT one of the actual known
+ * contract members (client NekoSurfaceAllocatorError codes, server
+ * NekoSurfaceAllocatorServiceError codes, categoryForError's category
+ * union) must normalize to null, not leak verbatim.
+ */
+test("hostile scalar values in allowlisted fields normalize to null instead of leaking verbatim", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  const hostileError = throwingAllocatorError({
+    category: "profile=private-profile",
+    code: "Bearer secret-token-xyz",
+    name: "https://user:password@example.test",
+    retryable: "true",
+    status: "502; DROP TABLE runs;",
+  });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: () => {
+      throw hostileError;
+    },
+    getSurfaceStatus: async () => await Promise.resolve(null),
+    listSurfaces: async () => await Promise.resolve([]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const warnings: string[] = [];
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    onWarn: (message) => warnings.push(message),
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_instrument_hostile_scalars",
+  });
+  await controller.drainActiveRuns(1000);
+
+  const [record] = parseInstrumentationRecords(warnings);
+  assert.ok(record);
+  assert.equal(record.category, null, "an unrecognized category string must normalize to null, not pass through");
+  assert.equal(record.code, null, "a code value that isn't a real allocator error code must normalize to null");
+  assert.equal(record.error_name, null, "an unrecognized error name must normalize to null");
+  assert.equal(record.retryable, null, "a non-boolean retryable value must normalize to null, never coerced");
+  assert.equal(record.status, null, "a non-integer/non-HTTP-range status must normalize to null");
+
+  const rawMessage = warnings.find((message) => message.includes("poll retry exhausted"));
+  assert.ok(rawMessage);
+  assert.doesNotMatch(rawMessage, REGEXP_LEAKED_PROFILE, "must never leak a hostile category value verbatim");
+  assert.doesNotMatch(rawMessage, REGEXP_LEAKED_BEARER, "must never leak a hostile code value verbatim");
+  assert.doesNotMatch(rawMessage, REGEXP_LEAKED_USER_PASSWORD, "must never leak a hostile name/URL value verbatim");
+  assert.doesNotMatch(rawMessage, REGEXP_LEAKED_SQL, "must never leak a hostile status value verbatim");
+});
+
+/**
+ * Blocker 1, second half: a real, known allocator status/category/code
+ * combination must still pass through unchanged — the closed-enum
+ * constraint must not turn into a blanket null for every legitimate value.
+ */
+test("known allocator error values (client contract codes) pass through unchanged", async (t) => {
+  const leaseManager = createDynamicManagerWithReadySurface({ noInitialSurface: true });
+  const clientError = throwingAllocatorError({
+    category: undefined,
+    code: "allocator_timeout",
+    name: "NekoSurfaceAllocatorError",
+    retryable: undefined,
+    status: 504,
+  });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: () => {
+      throw clientError;
+    },
+    getSurfaceStatus: async () => await Promise.resolve(null),
+    listSurfaces: async () => await Promise.resolve([]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const warnings: string[] = [];
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    leaseManager,
+    onWarn: (message) => warnings.push(message),
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_instrument_known_client_code",
+  });
+  await controller.drainActiveRuns(1000);
+
+  const [record] = parseInstrumentationRecords(warnings);
+  assert.ok(record);
+  assert.equal(record.code, "allocator_timeout", "a real client-contract code must pass through unchanged");
+  assert.equal(record.status, 504, "a real HTTP status in range must pass through unchanged");
+  assert.equal(record.category, null, "a genuinely absent category must be null, not a leaked undefined/coercion");
+  assert.equal(record.retryable, null, "a genuinely absent retryable must be null, not coerced to false");
+});
+
+/**
+ * Blocker 2 (gate revision): the diagnostic must be provably non-interfering.
+ * Going through the full controller/lease-manager path cannot prove this —
+ * remote-surface's ensureStartingSurfaceReady wraps the wrapped allocator
+ * call in its OWN bare `catch {}` that discards the thrown error entirely
+ * (including its message), so `surface_failed` looks identical whether the
+ * ORIGINAL allocator error or a hijacked replacement propagated. Confirmed
+ * by hand: deleting the non-interference try/catch around
+ * emitExhaustedTransientPollRetryWarning left the controller-level version
+ * of this test green. Calling
+ * manager.__wrapAllocatorWithTransientPollRetryForTests directly (a
+ * test-only seam) bypasses that swallow-everything layer, so the exact
+ * rejected error's identity/message can be asserted.
+ */
+function createBareBrowserSurfaceManagerForRetrySeamTest(options: {
+  onWarn: (message: string) => void;
+  pollRetryAttempts?: number;
+}) {
+  return createBrowserSurfaceManager({
+    activeRunInteractions: new Map(),
+    browserSurfaceAllocator: null,
+    browserSurfaceLeaseManager: null,
+    browserSurfaceLeaseStore: null,
+    browserSurfaceMidWaitPollIntervalMs: undefined,
+    browserSurfaceReadinessProbe: null,
+    browserSurfaceReadinessTimeoutMs: undefined,
+    browserSurfaceReplacementReceiptStore: null,
+    browserSurfaceStartingPollRetryAttempts: options.pollRetryAttempts ?? 3,
+    browserSurfaceStartingPollRetryDelayMs: 0,
+    listPersistedActiveRuns: async () => await Promise.resolve([]),
+    log: { error: () => undefined, warn: options.onWarn },
+    pendingBrowserSurfaceLaunches: new Map(),
+    scheduleRun: () => undefined,
+    startupControllerRunReconciliation: Promise.resolve(),
+  });
+}
+
+test("an error whose property getters throw never prevents the ORIGINAL error object from being rethrown", async () => {
+  const sentinelError = new Error("adversarial getter sentinel");
+  for (const field of ["category", "code", "name", "retryable", "status"]) {
+    Object.defineProperty(sentinelError, field, {
+      enumerable: true,
+      get() {
+        throw new Error(`hostile getter for ${field} was invoked`);
+      },
+    });
+  }
+  const warnings: string[] = [];
+  const manager = createBareBrowserSurfaceManagerForRetrySeamTest({ onWarn: (message) => warnings.push(message) });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: () => {
+      throw sentinelError;
+    },
+    getSurfaceStatus: async () => await Promise.resolve(null),
+    listSurfaces: async () => await Promise.resolve([]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const wrapped = manager.__wrapAllocatorWithTransientPollRetryForTests(allocator, {
+    leaseId: () => "lease_seam_test",
+    runId: "run_seam_test",
+  });
+
+  await assert.rejects(
+    wrapped.ensureSurface({ connectorId: "managed", profileKey: "managed-profile", surfaceId: "surface_seam_test" }),
+    (thrown: unknown) => {
+      assert.strictEqual(
+        thrown,
+        sentinelError,
+        "the exact original error OBJECT (===) must be what rejects, not a copy or replacement"
+      );
+      return true;
+    }
+  );
+  assert.ok(
+    warnings.some((message) => message.includes("poll retry exhausted")),
+    "the emit path still ran despite every field-getter throwing"
+  );
+});
+
+/**
+ * Blocker 2, second half: an injected logger.warn that itself throws must
+ * not prevent the rethrow either — the try/catch must wrap the ENTIRE emit
+ * call (including the log.warn?.() invocation), not just individual field
+ * reads. Uses the same direct seam so the assertion is on the exact
+ * rejected error, not merely on a terminal lease status two swallow-layers
+ * away.
+ */
+test("a logger.warn that throws never prevents the ORIGINAL error object from being rethrown", async () => {
+  const originalError = throwingAllocatorError();
+  let warnCalls = 0;
+  const manager = createBareBrowserSurfaceManagerForRetrySeamTest({
+    onWarn: () => {
+      warnCalls += 1;
+      throw new Error("hostile logger: warn() itself throws");
+    },
+  });
+  const allocator: BrowserSurfaceAllocator = {
+    ensureSurface: () => {
+      throw originalError;
+    },
+    getSurfaceStatus: async () => await Promise.resolve(null),
+    listSurfaces: async () => await Promise.resolve([]),
+    stopSurface: async () => await Promise.resolve(null),
+  };
+  const wrapped = manager.__wrapAllocatorWithTransientPollRetryForTests(allocator, {
+    leaseId: () => "lease_seam_test",
+    runId: "run_seam_test",
+  });
+
+  await assert.rejects(
+    wrapped.ensureSurface({ connectorId: "managed", profileKey: "managed-profile", surfaceId: "surface_seam_test" }),
+    (thrown: unknown) => {
+      assert.strictEqual(
+        thrown,
+        originalError,
+        "the exact original error OBJECT (===) must be what rejects, not the logger's thrown error"
+      );
+      return true;
+    }
+  );
+  assert.ok(warnCalls >= 1, "the throwing logger must actually have been invoked by the emit path (not skipped)");
 });
 
 test("successful ensureSurface (no retry needed) never emits the exhaustion warning", async (t) => {

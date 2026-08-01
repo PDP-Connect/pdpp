@@ -40,7 +40,7 @@ import { createWindowSettleReconciliation } from "./window-settle-reconciliation
 // ─── Internal types ──────────────────────────────────────────────────────────
 
 /** run_id/lease_id context threaded into wrapAllocatorWithTransientPollRetry's exhaustion warning. leaseId is a thunk because the same wrapper instance outlives lease reacquisition within one starting-surface wait loop. */
-interface TransientPollRetryContext {
+export interface TransientPollRetryContext {
   readonly leaseId: () => string;
   readonly runId: string;
 }
@@ -232,6 +232,20 @@ export interface BrowserSurfaceManagerDeps {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export interface BrowserSurfaceManager {
+  /**
+   * TEST-ONLY seam onto wrapAllocatorWithTransientPollRetry. Exists solely so
+   * a test can prove the exhausted-retry warning is non-interfering (a
+   * throwing logger/getter never blocks rethrow of the ORIGINAL allocator
+   * error) by asserting on the exact rejected error's identity/message
+   * directly — remote-surface's ensureStartingSurfaceReady swallows any
+   * thrown error into an untyped surface_failed with no detail, so that
+   * path alone cannot distinguish the original error from a hijacked one.
+   * Not part of the real controller API; never called outside tests.
+   */
+  __wrapAllocatorWithTransientPollRetryForTests: (
+    allocator: BrowserSurfaceAllocator,
+    context: TransientPollRetryContext
+  ) => BrowserSurfaceAllocator;
   /**
    * Acquire a bounded, phase-scoped managed browser surface for a run that
    * does not hold a run-level lease (`surfaceScope: "phase"`). Idempotent per
@@ -867,7 +881,17 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
           }
         }
       }
-      emitExhaustedTransientPollRetryWarning({ attempts, context, error: lastError, operation, surfaceId });
+      // The diagnostic is telemetry, not a retry decision: it must never be
+      // able to prevent or alter this rethrow, no matter what a hostile
+      // caught value's property getters do, what JSON.stringify does on a
+      // cyclic/throwing toJSON, or whether the injected logger itself
+      // throws. try/catch/ignore around the ENTIRE emit call is the only
+      // way to guarantee that — see the 2026-08-01 gate revision.
+      try {
+        emitExhaustedTransientPollRetryWarning({ attempts, context, error: lastError, operation, surfaceId });
+      } catch {
+        // Telemetry must never interfere with the exhausted-retry rethrow below.
+      }
       throw lastError;
     }
     return {
@@ -885,11 +909,20 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
    * error reaches remote-surface's ensureStartingSurfaceReady (whose bare
    * catch{} erases it into an untyped surface_start_failed with no
    * operation, HTTP status, client code, category, or retryable bit — see
-   * the 2026-08-01 Amazon UAT root-cause gate). Reads every error field
-   * defensively (`unknown`, optional chaining, scalar-only), since the
-   * thrown value can be a NekoSurfaceAllocatorError, a category-carrying
-   * allocator error, or a bare Error/thrown non-error. Never includes
-   * message, stack, cause, response body, URL, profile key, or credentials.
+   * the 2026-08-01 Amazon UAT root-cause gate). Every field is normalized
+   * through a closed known-value/type constraint (readKnownErrorCode,
+   * readKnownErrorCategory, readBoolean, readHttpStatus, readKnownErrorName)
+   * derived from the actual allocator error contracts
+   * (NekoSurfaceAllocatorError's client `code`, NekoSurfaceAllocatorServiceError's
+   * server `code`, and the server's categoryForError/retryableForCategory
+   * union) rather than accepting any scalar shape. An unrecognized value
+   * for a closed field becomes null, not a pass-through — this is what
+   * stops a hostile caught object like `{ code: "Bearer secret-token-xyz" }`
+   * from leaking, since regex redaction cannot enumerate every possible
+   * secret shape but a closed enum can only ever emit one of its known
+   * members. The caller wraps this whole function in try/catch so a
+   * throwing getter or throwing JSON.stringify can never block the
+   * exhausted-retry rethrow.
    */
   function emitExhaustedTransientPollRetryWarning(input: {
     attempts: number;
@@ -901,40 +934,114 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     const { attempts, context, error, operation, surfaceId } = input;
     const record = {
       attempts,
-      category: readBoundedErrorField(error, "category"),
-      code: readBoundedErrorField(error, "code"),
-      error_name: readBoundedErrorField(error, "name"),
+      category: readKnownErrorCategory(error),
+      code: readKnownErrorCode(error),
+      error_name: readKnownErrorName(error),
       lease_id: context.leaseId(),
       operation,
-      retryable: readBoundedErrorField(error, "retryable"),
+      retryable: readBoolean(error, "retryable"),
       run_id: context.runId,
-      status: readBoundedErrorField(error, "status"),
+      status: readHttpStatus(error),
       surface_id: surfaceId,
     };
     log.warn?.(`[controller] browser-surface allocator poll retry exhausted: ${JSON.stringify(record)}`);
   }
 
   /**
-   * Reads one field off an unknown thrown value and returns it ONLY if it
-   * is a closed, bounded scalar (string/number/boolean, string capped at
-   * 200 chars). Anything else — objects, arrays, functions, long strings,
-   * or a missing/non-object error — becomes null. This is the allowlist
-   * boundary: it is the only place that touches the thrown error's shape,
-   * so it cannot leak message/stack/cause/body/URL/credentials even if a
-   * future error type adds them under a scalar-looking name.
+   * The full closed set of `code` values across both real allocator error
+   * contracts this wrapper can ever catch: the HTTP client's
+   * NekoSurfaceAllocatorError (@opendatalabs/remote-surface's
+   * allocator-client.ts) and the server-side
+   * NekoSurfaceAllocatorServiceError (neko-surface-allocator-server.ts),
+   * whose `code` a directly-injected/in-process allocator could also throw.
+   * Any other value — including a plausible-looking string that isn't one
+   * of these exact members — normalizes to null.
    */
-  function readBoundedErrorField(error: unknown, field: string): string | number | boolean | null {
+  const KNOWN_ALLOCATOR_ERROR_CODES: ReadonlySet<string> = new Set([
+    // client: NekoSurfaceAllocatorError["code"]
+    "allocator_http_error",
+    "allocator_fetch_error",
+    "allocator_timeout",
+    "allocator_malformed_response",
+    // server: NekoSurfaceAllocatorServiceError["code"]
+    "bad_request",
+    "docker_http_error",
+    "docker_malformed_response",
+    "docker_request_failed",
+    "foreign_resource",
+    "not_found",
+    "port_capacity_exhausted",
+    "readiness_failed",
+  ]);
+
+  /**
+   * The closed set of `category` values the allocator's HTTP handler ever
+   * computes (neko-surface-allocator-server.ts's categoryForError): every
+   * NekoSurfaceAllocatorServiceError code, plus the literal "unknown"
+   * fallback for a non-service error. Any other value normalizes to null.
+   */
+  const KNOWN_ALLOCATOR_ERROR_CATEGORIES: ReadonlySet<string> = new Set([
+    "bad_request",
+    "docker_http_error",
+    "docker_malformed_response",
+    "docker_request_failed",
+    "foreign_resource",
+    "not_found",
+    "port_capacity_exhausted",
+    "readiness_failed",
+    "unknown",
+  ]);
+
+  /** Error class names actually thrown on this path. Any other value normalizes to null. */
+  const KNOWN_ALLOCATOR_ERROR_NAMES: ReadonlySet<string> = new Set([
+    "Error",
+    "TypeError",
+    "NekoSurfaceAllocatorError",
+    "NekoSurfaceAllocatorServiceError",
+  ]);
+
+  function readErrorProperty(error: unknown, field: string): unknown {
     if (!(error && typeof error === "object")) {
+      return;
+    }
+    try {
+      return (error as Record<string, unknown>)[field];
+    } catch {
+      // A hostile caught value's getter for this property may itself throw;
+      // that must normalize to "unknown" (undefined), not propagate.
+      // biome-ignore lint/complexity/noUselessReturn: required by TypeScript noImplicitReturns — the try branch returns a value, so this branch must too.
+      return;
+    }
+  }
+
+  function readKnownErrorCode(error: unknown): string | null {
+    const value = readErrorProperty(error, "code");
+    return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_CODES.has(value) ? value : null;
+  }
+
+  function readKnownErrorCategory(error: unknown): string | null {
+    const value = readErrorProperty(error, "category");
+    return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_CATEGORIES.has(value) ? value : null;
+  }
+
+  function readKnownErrorName(error: unknown): string | null {
+    const value = readErrorProperty(error, "name");
+    return typeof value === "string" && KNOWN_ALLOCATOR_ERROR_NAMES.has(value) ? value : null;
+  }
+
+  /** Strict boolean type constraint — a truthy/falsy non-boolean (e.g. a string) normalizes to null, never coerced. */
+  function readBoolean(error: unknown, field: string): boolean | null {
+    const value = readErrorProperty(error, field);
+    return typeof value === "boolean" ? value : null;
+  }
+
+  /** Bounded to the valid HTTP status-code integer range; any other numeric value (or non-number) normalizes to null. */
+  function readHttpStatus(error: unknown): number | null {
+    const value = readErrorProperty(error, "status");
+    if (typeof value !== "number" || !Number.isInteger(value)) {
       return null;
     }
-    const value = (error as Record<string, unknown>)[field];
-    if (typeof value === "number" || typeof value === "boolean") {
-      return value;
-    }
-    if (typeof value === "string") {
-      return value.length > 200 ? value.slice(0, 200) : value;
-    }
-    return null;
+    return value >= 100 && value <= 599 ? value : null;
   }
 
   async function waitForStartingBrowserSurface(
@@ -2353,6 +2460,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   }
 
   return {
+    __wrapAllocatorWithTransientPollRetryForTests: wrapAllocatorWithTransientPollRetry,
     acquireManagedBrowserSurfaceForPhase,
     acquireManagedBrowserSurfaceForRun,
     cancelBrowserSurfaceRun,
