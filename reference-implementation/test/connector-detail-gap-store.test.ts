@@ -2554,6 +2554,10 @@ test(
   })
 );
 
+// Asserts the quarantine known_gap's message names the connector's captured
+// failure_class (here "transient_no_progress") rather than a generic label.
+const TRANSIENT_NO_PROGRESS_MESSAGE_PATTERN = /transient_no_progress/;
+
 test(
   // Live-DB root cause (2026-08-01): connector_detail_gaps showed many Gmail
   // attachment rows status=pending, attempt_count=55/56, last_error.class=
@@ -2645,7 +2649,11 @@ test(
       0,
       "55 planned run-cap defers with zero real diagnostic progress must not increment attempt_count"
     );
-    assert.equal(afterPlannedDefers.status, "pending", "still pending — run_cap_deferred correctly never quarantines on its own");
+    assert.equal(
+      afterPlannedDefers.status,
+      "pending",
+      "still pending — run_cap_deferred correctly never quarantines on its own"
+    );
 
     // ONE later run genuinely attempts this item and it fails with a
     // GENERIC no-progress reason (not run_cap_deferred) — a real, single
@@ -2734,9 +2742,7 @@ test(
         runId,
       });
       assert.equal(claimedGapId, seeded.gap_id, `iteration ${i}: gap must claim cleanly`);
-      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential — each iteration observes durable state from the prior one.
       await store.markLeasedGapAttempt({ gapId: seeded.gap_id, leaseId, runId });
-      // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential — each iteration observes durable state from the prior one.
       await store.settleLeasedGapPending(
         { gapId: seeded.gap_id, leaseId, runId },
         {
@@ -2832,7 +2838,7 @@ test(
       );
       assert.ok(quarantineKnownGap, "the quarantine must produce a visible detail_gap known_gap");
       assert.equal(quarantineKnownGap?.severity, "actionable");
-      assert.match(quarantineKnownGap?.message as string, /transient_no_progress/);
+      assert.match(quarantineKnownGap?.message as string, TRANSIENT_NO_PROGRESS_MESSAGE_PATTERN);
     } finally {
       cleanup();
     }

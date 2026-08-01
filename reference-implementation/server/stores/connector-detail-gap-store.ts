@@ -459,7 +459,7 @@ function nullableGapRowValue<T>(value: T | null | undefined): T | null {
  * See `PLANNED_STOP_RECOVERY_CLASSES`'s doc comment for the full incident.
  */
 function isGenuineNoProgressRedefer(reason: string | null, lastError: unknown): boolean {
-  const recoveryClass = classifyRecoveryGap({ last_error: lastError as { class?: unknown } | null, reason }).recoveryClass;
+  const { recoveryClass } = classifyRecoveryGap({ last_error: lastError as { class?: unknown } | null, reason });
   return !PLANNED_STOP_RECOVERY_CLASSES.has(recoveryClass);
 }
 

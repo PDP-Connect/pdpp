@@ -28,6 +28,10 @@ import test from "node:test";
 
 import { buildKnownGap } from "../runtime/connector-gap-bounding.ts";
 
+const IMAP_DOWNLOAD_FAILED_PATTERN = /imap_download_failed/;
+const NO_CAPTURED_CAUSE_PATTERN = /no captured cause/;
+const NEEDS_INVESTIGATION_PATTERN = /needs investigation/;
+
 test("a quarantined detail_gap with a captured failure_class names the cause and is actionable/maintainer, not recoverable", () => {
   const gap = buildKnownGap({
     kind: "detail_gap",
@@ -43,13 +47,14 @@ test("a quarantined detail_gap with a captured failure_class names the cause and
   assert.equal(gap.severity, "actionable");
   assert.equal(gap.reason, "quarantined");
   assert.deepEqual(gap.recovery_hint, { action: "not_retriable", retryable: false });
-  assert.match(gap.message as string, /imap_download_failed/);
+  assert.match(gap.message as string, IMAP_DOWNLOAD_FAILED_PATTERN);
 });
 
 test("a quarantined detail_gap with NO captured failure_class says so honestly instead of claiming a specific cause", () => {
   const gap = buildKnownGap({
     kind: "detail_gap",
-    message: "Repeated no-progress on this item with no captured cause; quarantined for connector diagnosis and needs investigation (siblings keep recovering).",
+    message:
+      "Repeated no-progress on this item with no captured cause; quarantined for connector diagnosis and needs investigation (siblings keep recovering).",
     reason: "quarantined",
     recoveryHint: "not_retriable",
     scope: { parent_stream: "messages", record_key: "unknown:0" },
@@ -58,8 +63,8 @@ test("a quarantined detail_gap with NO captured failure_class says so honestly i
   });
 
   assert.equal(gap.severity, "actionable");
-  assert.match(gap.message as string, /no captured cause/);
-  assert.match(gap.message as string, /needs investigation/);
+  assert.match(gap.message as string, NO_CAPTURED_CAUSE_PATTERN);
+  assert.match(gap.message as string, NEEDS_INVESTIGATION_PATTERN);
 });
 
 test("a non-quarantined detail_gap with no severity override still classifies as recoverable (the shared fallback is untouched)", () => {
