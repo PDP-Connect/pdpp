@@ -4,8 +4,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Section } from "@pdpp/operator-ui/components/primitives";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import {
+  credentialEncryptionRow,
   embeddingCacheRow,
   overallVerdict,
   ownerPasswordRow,
@@ -19,23 +21,44 @@ import {
   type Verdict,
 } from "./deployment-readiness-rows.ts";
 
+const TRAILING_SLASH_RE = /\/+$/;
+
+interface ProtocolMetadataBody {
+  authorization_endpoint?: unknown;
+  authorization_servers?: unknown;
+  grant_types_supported?: unknown;
+  issuer?: unknown;
+  resource?: unknown;
+  token_endpoint?: unknown;
+}
+
 // Self-host onboarding SLVP readiness panel. Presents existing diagnostic
 // state as a small, opinionated "can I share this MCP URL?" checklist.
 //
 // Spec: openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/design.md
 //
-// Rows derive from values already present on `/_ref/deployment` plus two
-// browser-side reads (`window.location.origin` and a one-shot fetch of
-// `/.well-known/oauth-authorization-server`). No new server endpoint.
+// Rows derive from values already present on `/_ref/deployment` plus the
+// browser origin and one-shot reads of both public OAuth metadata documents.
+// No new server endpoint.
 
-export function DeploymentReadinessPanel({ inputs }: { inputs: ServerInputs }) {
+export function DeploymentReadinessPanel({
+  inputs,
+  setupInstructions,
+  sourceRow,
+}: {
+  inputs: ServerInputs;
+  setupInstructions?: ReactNode;
+  sourceRow?: ReadinessRow;
+}) {
   const browserOrigin = useBrowserOrigin();
   const refreshTokenProbe = useRefreshTokenAdvertisement();
 
   const rows: ReadinessRow[] = [
     ownerPasswordRow(inputs),
     referenceOriginRow(inputs, browserOrigin),
+    credentialEncryptionRow(inputs),
     storageBackendRow(inputs),
+    ...(sourceRow ? [sourceRow] : []),
     embeddingCacheRow(inputs),
     refreshTokenRow(refreshTokenProbe),
   ];
@@ -43,19 +66,40 @@ export function DeploymentReadinessPanel({ inputs }: { inputs: ServerInputs }) {
   const verdict = overallVerdict(rows);
 
   return (
-    <Section
-      description="Five checks that determine whether the deployment is ready to hand out as an MCP endpoint. Derived from the /_ref/deployment report rendered below."
-      title="Deployment readiness"
-    >
-      <div className="mb-3">
-        <VerdictBanner verdict={verdict} />
-      </div>
-      <ul className="divide-y divide-border/70 border-border/70 border-y">
-        {rows.map((row) => (
-          <ReadinessRowItem key={row.check} row={row} />
-        ))}
-      </ul>
-    </Section>
+    <>
+      <Section
+        description="These checks combine the existing deployment report, the running browser origin, public OAuth metadata, and server-owned source projections."
+        title="Deployment readiness"
+      >
+        <div className="mb-3">
+          <VerdictBanner hasSourceRow={Boolean(sourceRow)} verdict={verdict} />
+        </div>
+        <ul className="divide-y divide-border/70 border-border/70 border-y">
+          {rows.map((row) => (
+            <ReadinessRowItem key={row.check} row={row} />
+          ))}
+        </ul>
+      </Section>
+      {setupInstructions ? (
+        <Section
+          description={
+            verdict === "ready"
+              ? "The prerequisites above are green. Use the scoped MCP setup below."
+              : "Readiness is advisory for advanced users. Open the disclosure to inspect the exact setup instructions even while a prerequisite needs attention."
+          }
+          title="MCP setup instructions"
+        >
+          {verdict === "ready" ? (
+            setupInstructions
+          ) : (
+            <details className="rounded-md border border-border/80 bg-muted/20 p-4">
+              <summary className="cursor-pointer font-medium text-foreground">Show setup instructions anyway</summary>
+              <div className="mt-4">{setupInstructions}</div>
+            </details>
+          )}
+        </Section>
+      ) : null}
+    </>
   );
 }
 
@@ -73,30 +117,11 @@ function useRefreshTokenAdvertisement(): RefreshTokenProbe {
   const [probe, setProbe] = useState<RefreshTokenProbe>({ state: "loading" });
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/.well-known/oauth-authorization-server", {
-          cache: "no-store",
-          credentials: "omit",
-        });
-        if (!res.ok) {
-          if (!cancelled) {
-            setProbe({ state: "unreachable" });
-          }
-          return;
-        }
-        const body = (await res.json()) as { grant_types_supported?: unknown };
-        const grants = Array.isArray(body.grant_types_supported) ? body.grant_types_supported : [];
-        const refreshTokenSupported = grants.some((g) => g === "refresh_token");
-        if (!cancelled) {
-          setProbe({ refreshTokenSupported, state: "loaded" });
-        }
-      } catch {
-        if (!cancelled) {
-          setProbe({ state: "unreachable" });
-        }
+    fetchProtocolMetadata(window.location.origin).then((nextProbe) => {
+      if (!cancelled) {
+        setProbe(nextProbe);
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
@@ -104,8 +129,71 @@ function useRefreshTokenAdvertisement(): RefreshTokenProbe {
   return probe;
 }
 
-function VerdictBanner({ verdict }: { verdict: Verdict }) {
-  const { label, body, toneClass } = verdictPresentation(verdict);
+async function fetchProtocolMetadata(origin: string): Promise<RefreshTokenProbe> {
+  try {
+    const authorizationServer = await fetch("/.well-known/oauth-authorization-server", {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!authorizationServer.ok) {
+      return { failedEndpoints: ["authorization_server"], state: "unreachable" };
+    }
+    const authorizationServerBody = (await authorizationServer.json()) as ProtocolMetadataBody;
+    const protectedResource = await fetch("/.well-known/oauth-protected-resource/mcp", {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!protectedResource.ok) {
+      return { failedEndpoints: ["protected_resource"], state: "unreachable" };
+    }
+    const protectedResourceBody = (await protectedResource.json()) as ProtocolMetadataBody;
+    return {
+      authorizationServerSupported: hasAuthorizationServerMetadata(authorizationServerBody),
+      protectedResourceSupported: hasProtectedResourceMetadata(
+        protectedResourceBody,
+        origin,
+        isNonEmptyString(authorizationServerBody.issuer) ? authorizationServerBody.issuer : null
+      ),
+      refreshTokenSupported: supportsRefreshToken(authorizationServerBody),
+      state: "loaded",
+    };
+  } catch {
+    return { failedEndpoints: ["authorization_server", "protected_resource"], state: "unreachable" };
+  }
+}
+
+function hasAuthorizationServerMetadata(body: ProtocolMetadataBody): boolean {
+  return (
+    isNonEmptyString(body.issuer) &&
+    isNonEmptyString(body.authorization_endpoint) &&
+    isNonEmptyString(body.token_endpoint)
+  );
+}
+
+function hasProtectedResourceMetadata(body: ProtocolMetadataBody, origin: string, issuer: string | null): boolean {
+  const authorizationServers = Array.isArray(body.authorization_servers) ? body.authorization_servers : [];
+  return (
+    isNonEmptyString(body.resource) &&
+    trimTrailingSlash(body.resource) === `${origin}/mcp` &&
+    issuer !== null &&
+    authorizationServers.some(
+      (server) => isNonEmptyString(server) && trimTrailingSlash(server) === trimTrailingSlash(issuer)
+    )
+  );
+}
+
+function supportsRefreshToken(body: ProtocolMetadataBody): boolean {
+  return (
+    Array.isArray(body.grant_types_supported) && body.grant_types_supported.some((grant) => grant === "refresh_token")
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function VerdictBanner({ hasSourceRow, verdict }: { hasSourceRow: boolean; verdict: Verdict }) {
+  const { label, body, toneClass } = verdictPresentation(verdict, hasSourceRow);
   return (
     <div className={`rounded-md border px-3 py-2 text-sm ${toneClass}`}>
       <div className="font-medium">{label}</div>
@@ -114,11 +202,20 @@ function VerdictBanner({ verdict }: { verdict: Verdict }) {
   );
 }
 
-function verdictPresentation(verdict: Verdict): { label: string; body: string; toneClass: string } {
+function trimTrailingSlash(value: string): string {
+  return value.replace(TRAILING_SLASH_RE, "");
+}
+
+function verdictPresentation(
+  verdict: Verdict,
+  hasSourceRow: boolean
+): { label: string; body: string; toneClass: string } {
   switch (verdict) {
     case "ready":
       return {
-        body: "Owner gate, origin, storage, embeddings, and refresh-token metadata all check out.",
+        body: hasSourceRow
+          ? "Owner auth, origin, encryption, storage, protocol metadata, and usable source evidence all check out."
+          : "Owner auth, origin, encryption, storage, embeddings, and protocol metadata all check out.",
         label: "Ready to share with Claude / ChatGPT",
         toneClass: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-[color:var(--success)]",
       };
@@ -136,14 +233,14 @@ function verdictPresentation(verdict: Verdict): { label: string; body: string; t
       };
     case "unknown":
       return {
-        body: "Browser-side probes have not returned yet.",
-        label: "Some checks still running",
+        body: "Some prerequisite evidence is still unknown or being checked.",
+        label: "Readiness is still being checked",
         toneClass: "border-border/80 bg-muted/40 text-foreground",
       };
     default:
       return {
-        body: "Browser-side probes have not returned yet.",
-        label: "Some checks still running",
+        body: "Some prerequisite evidence is still unknown or being checked.",
+        label: "Readiness is still being checked",
         toneClass: "border-border/80 bg-muted/40 text-foreground",
       };
   }

@@ -22,6 +22,7 @@
  */
 
 import { statfs } from "node:fs/promises";
+import { resolveCredentialEncryptionKey } from "./stores/credential-encryption.ts";
 
 // Shape of a connector manifest as far as diagnostics care. We do not depend
 // on the validator-strict types here — diagnostics must survive partially-
@@ -188,6 +189,10 @@ export interface DiagnosticsEnv {
 export interface DeploymentDiagnosticsInput {
   readonly backend: DiagnosticsBackend | null;
   readonly backfillProgress?: SemanticBackfillProgress | null;
+  // Runtime adapters pass the result of the authoritative key-provider check.
+  // Pure builder callers that omit it remain unknown; redacted env presence is
+  // never treated as proof that a key provider can actually be used.
+  readonly credentialEncryptionState?: CredentialEncryptionDiagnosticsState;
   readonly db: DiagnosticsDb | null;
   readonly dbPath: string;
   // Disk headroom for the filesystem hosting the reference data directory.
@@ -299,6 +304,8 @@ export interface DiagnosticsWarning {
 
 export type EnvValueProvenance = "present" | "absent" | "redacted";
 
+export type CredentialEncryptionDiagnosticsState = "configured" | "unconfigured" | "unknown";
+
 export interface EnvValueReport {
   readonly name: string;
   readonly provenance: EnvValueProvenance;
@@ -307,6 +314,9 @@ export interface EnvValueReport {
 }
 
 export interface DeploymentDiagnosticsReport {
+  readonly credential_encryption: {
+    readonly state: CredentialEncryptionDiagnosticsState;
+  };
   readonly database: {
     readonly path: string;
     // Read-only physical footprint (Postgres-only). `null` on SQLite or read
@@ -396,6 +406,8 @@ const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: bo
   { name: "PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION" },
   { name: "PDPP_RECONCILE_POLYFILL_MANIFESTS" },
   { name: "PDPP_OWNER_PASSWORD", secret: true },
+  { name: "PDPP_CREDENTIAL_ENCRYPTION_KEY", secret: true },
+  { name: "PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE", secret: true },
   { name: "PDPP_SEMANTIC_EMBEDDING_BACKEND" },
   { name: "PDPP_EMBEDDING_PROFILE_ID" },
   { name: "PDPP_EMBEDDING_MODEL_ID" },
@@ -959,6 +971,22 @@ export interface CollectDeploymentDiagnosticsOptions {
   readonly env?: DiagnosticsEnv;
 }
 
+export function resolveCredentialEncryptionDiagnosticsState(
+  env: DiagnosticsEnv = process.env as DiagnosticsEnv
+): CredentialEncryptionDiagnosticsState {
+  try {
+    return resolveCredentialEncryptionKey(env) === null ? "unconfigured" : "configured";
+  } catch {
+    return "unknown";
+  }
+}
+
+function credentialEncryptionStateOrUnknown(
+  state: CredentialEncryptionDiagnosticsState | undefined
+): CredentialEncryptionDiagnosticsState {
+  return state ?? "unknown";
+}
+
 export interface DeploymentDiagnosticsRuntimeDeps {
   readonly computeIndexState: () => SemanticIndexState | Promise<SemanticIndexState>;
   readonly getBackend: () => DiagnosticsBackend | null;
@@ -1045,6 +1073,7 @@ export async function collectDeploymentDiagnostics(
   return buildDeploymentDiagnostics({
     backend,
     backfillProgress: deps.getBackfillProgress ? deps.getBackfillProgress() : null,
+    credentialEncryptionState: resolveCredentialEncryptionDiagnosticsState(env),
     db,
     dbPath: opts.dbPath,
     diskHeadroom,
@@ -1069,6 +1098,9 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
   const warnings = buildWarnings(input, participation, backendAvailable);
 
   return {
+    credential_encryption: {
+      state: credentialEncryptionStateOrUnknown(input.credentialEncryptionState),
+    },
     database: {
       path: input.dbPath,
       ...normalizePhysicalFootprint(input.physicalFootprint),

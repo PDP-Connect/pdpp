@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  credentialEncryptionRow,
   type DiskHeadroomInputs,
   diskHeadroomRow,
   diskHeadroomRows,
@@ -39,7 +40,9 @@ const HEALTHY_DISK_HEADROOM: DiskHeadroomInputs = {
 };
 
 const baseInputs: ServerInputs = {
+  credentialEncryptionState: "configured",
   databasePath: "/data/pdpp.db",
+  diagnosticsState: "available",
   diskHeadroom: [HEALTHY_DISK_HEADROOM],
   embeddingBackendAvailable: true,
   embeddingBackendConfigured: true,
@@ -54,6 +57,7 @@ const baseInputs: ServerInputs = {
 const OWNER_PASSWORD_ENV_RE = /PDPP_OWNER_PASSWORD/;
 const REFERENCE_ORIGIN_ENV_RE = /PDPP_REFERENCE_ORIGIN/;
 const AS_ISSUER_ENV_RE = /AS_ISSUER/;
+const CREDENTIAL_ENCRYPTION_ENV_RE = /PDPP_CREDENTIAL_ENCRYPTION_KEY/;
 const DOCKER_COMPOSE_PULL_RE = /docker compose pull/;
 
 // ─── Owner password gate ────────────────────────────────────────────────────
@@ -67,6 +71,30 @@ test("ownerPasswordRow is error when password is absent", () => {
   const row = ownerPasswordRow({ ...baseInputs, ownerPasswordProvenance: "absent" });
   assert.equal(row.status, "error");
   assert.match(row.hint ?? "", OWNER_PASSWORD_ENV_RE);
+});
+
+test("ownerPasswordRow is unknown when deployment diagnostics are unavailable", () => {
+  const row = ownerPasswordRow({ ...baseInputs, diagnosticsState: "unknown" });
+  assert.equal(row.status, "unknown");
+  assert.match(row.hint ?? "", /unavailable diagnostics/);
+});
+
+// ─── Credential encryption ─────────────────────────────────────────────────
+
+test("credentialEncryptionRow is ok when the diagnostics report redacts a provider", () => {
+  assert.equal(credentialEncryptionRow(baseInputs).status, "ok");
+});
+
+test("credentialEncryptionRow is warn when no provider is configured", () => {
+  const row = credentialEncryptionRow({ ...baseInputs, credentialEncryptionState: "unconfigured" });
+  assert.equal(row.status, "warn");
+  assert.match(row.hint ?? "", CREDENTIAL_ENCRYPTION_ENV_RE);
+});
+
+test("credentialEncryptionRow is unknown when the report cannot expose provider state", () => {
+  const row = credentialEncryptionRow({ ...baseInputs, credentialEncryptionState: "unknown" });
+  assert.equal(row.status, "unknown");
+  assert.match(row.hint ?? "", /fail-closed/);
 });
 
 // ─── Reference origin alignment ─────────────────────────────────────────────
@@ -122,6 +150,18 @@ test("storageBackendRow is info when no vector index is configured", () => {
   assert.equal(row.status, "info");
 });
 
+test("storageBackendRow is error when the database is in memory", () => {
+  const row = storageBackendRow({ ...baseInputs, databasePath: ":memory:" });
+  assert.equal(row.status, "error");
+  assert.match(row.hint ?? "", /persistent database|volume/i);
+});
+
+test("storageBackendRow is unknown when disk evidence is unmeasured", () => {
+  const row = storageBackendRow({ ...baseInputs, diskHeadroom: [] });
+  assert.equal(row.status, "unknown");
+  assert.match(row.hint ?? "", /filesystem probe/);
+});
+
 // ─── Embedding cache ────────────────────────────────────────────────────────
 
 test("embeddingCacheRow is ok when cached and backend available", () => {
@@ -167,13 +207,48 @@ test("refreshTokenRow is warn when well-known is unreachable", () => {
 });
 
 test("refreshTokenRow is ok when refresh_token is advertised", () => {
-  assert.equal(refreshTokenRow({ refreshTokenSupported: true, state: "loaded" }).status, "ok");
+  assert.equal(
+    refreshTokenRow({
+      authorizationServerSupported: true,
+      protectedResourceSupported: true,
+      refreshTokenSupported: true,
+      state: "loaded",
+    }).status,
+    "ok"
+  );
 });
 
 test("refreshTokenRow is error when refresh_token is missing", () => {
-  const row = refreshTokenRow({ refreshTokenSupported: false, state: "loaded" });
+  const row = refreshTokenRow({
+    authorizationServerSupported: true,
+    protectedResourceSupported: true,
+    refreshTokenSupported: false,
+    state: "loaded",
+  });
   assert.equal(row.status, "error");
   assert.match(row.hint ?? "", DOCKER_COMPOSE_PULL_RE);
+});
+
+test("refreshTokenRow is error when authorization-server metadata is incomplete", () => {
+  const row = refreshTokenRow({
+    authorizationServerSupported: false,
+    protectedResourceSupported: true,
+    refreshTokenSupported: true,
+    state: "loaded",
+  });
+  assert.equal(row.status, "error");
+  assert.match(row.detail, /issuer|authorization endpoint|token endpoint/);
+});
+
+test("refreshTokenRow is error when protected-resource metadata does not agree", () => {
+  const row = refreshTokenRow({
+    authorizationServerSupported: true,
+    protectedResourceSupported: false,
+    refreshTokenSupported: true,
+    state: "loaded",
+  });
+  assert.equal(row.status, "error");
+  assert.match(row.hint ?? "", /protected-resource|MCP resource/i);
 });
 
 // ─── Overall verdict ────────────────────────────────────────────────────────

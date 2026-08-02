@@ -36,7 +36,9 @@ export interface DiskHeadroomInputs {
 }
 
 export interface ServerInputs {
+  credentialEncryptionState: "configured" | "unconfigured" | "unknown";
   databasePath: string;
+  diagnosticsState: "available" | "unknown";
   // One entry per distinct probed filesystem. Empty array when no probe ran
   // or all probes failed. Replaces the previous singular `DiskHeadroomInputs|null`.
   diskHeadroom: DiskHeadroomInputs[];
@@ -44,7 +46,7 @@ export interface ServerInputs {
   embeddingBackendConfigured: boolean;
   embeddingDownloadAllowed: boolean | null;
   embeddingModelCachePresent: boolean | null;
-  ownerPasswordProvenance: "absent" | "present" | "redacted";
+  ownerPasswordProvenance: "absent" | "present" | "redacted" | "unknown";
   referenceOriginConfigured: string | null;
   vectorIndexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
   vectorIndexState: DeploymentDiagnostics["semantic"]["index"]["state"];
@@ -52,8 +54,13 @@ export interface ServerInputs {
 
 export type RefreshTokenProbe =
   | { state: "loading" }
-  | { state: "unreachable" }
-  | { state: "loaded"; refreshTokenSupported: boolean };
+  | { failedEndpoints?: readonly ("authorization_server" | "protected_resource")[]; state: "unreachable" }
+  | {
+      authorizationServerSupported: boolean;
+      protectedResourceSupported: boolean;
+      refreshTokenSupported: boolean;
+      state: "loaded";
+    };
 
 export type Verdict = "ready" | "attention" | "blocked" | "unknown";
 
@@ -68,7 +75,9 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
   const largestRelation = report.database.top_relations?.[0] ?? null;
   const dhEntries = report.disk_headroom ?? [];
   return {
+    credentialEncryptionState: report.credential_encryption ? report.credential_encryption.state : "unknown",
     databasePath: report.database.path,
+    diagnosticsState: "available",
     diskHeadroom: dhEntries.map((dh) => ({
       freeBytesOnDataFs: dh.free_bytes,
       largestRelationBytes: largestRelation?.bytes ?? null,
@@ -81,20 +90,35 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
     embeddingBackendConfigured: report.semantic.backend.configured,
     embeddingDownloadAllowed: report.semantic.backend.download_allowed,
     embeddingModelCachePresent: report.semantic.backend.model_cache_present,
-    ownerPasswordProvenance: owner?.provenance ?? "absent",
+    ownerPasswordProvenance: owner?.provenance ?? "unknown",
     referenceOriginConfigured: origin?.provenance === "present" ? origin.value : null,
     vectorIndexKind: report.semantic.index.kind,
     vectorIndexState: report.semantic.index.state,
   };
 }
 
+function unavailableDiagnosticsRow(check: string): ReadinessRow {
+  return {
+    check,
+    detail: "Deployment diagnostics are unavailable, so this prerequisite is unknown.",
+    hint: "Refresh this page after the reference server responds; do not treat unavailable diagnostics as proof of readiness.",
+    status: "unknown",
+  };
+}
+
 export function ownerPasswordRow(inputs: ServerInputs): ReadinessRow {
+  if (inputs.diagnosticsState === "unknown") {
+    return unavailableDiagnosticsRow("Owner password gate");
+  }
   if (inputs.ownerPasswordProvenance === "redacted") {
     return {
       check: "Owner password gate",
       detail: "PDPP_OWNER_PASSWORD is set; owner surfaces require sign-in.",
       status: "ok",
     };
+  }
+  if (inputs.ownerPasswordProvenance === "unknown") {
+    return unavailableDiagnosticsRow("Owner password gate");
   }
   return {
     check: "Owner password gate",
@@ -104,7 +128,37 @@ export function ownerPasswordRow(inputs: ServerInputs): ReadinessRow {
   };
 }
 
+export function credentialEncryptionRow(inputs: ServerInputs): ReadinessRow {
+  if (inputs.diagnosticsState === "unknown") {
+    return unavailableDiagnosticsRow("Credential encryption");
+  }
+  if (inputs.credentialEncryptionState === "configured") {
+    return {
+      check: "Credential encryption",
+      detail: "An owner/operator-held credential encryption provider is configured for encrypted storage.",
+      status: "ok",
+    };
+  }
+  if (inputs.credentialEncryptionState === "unconfigured") {
+    return {
+      check: "Credential encryption",
+      detail: "No credential encryption key provider is configured.",
+      hint: "Set `PDPP_CREDENTIAL_ENCRYPTION_KEY` or mount a readable file through `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE` before adding a static-secret source. Capture fails closed without it.",
+      status: "warn",
+    };
+  }
+  return {
+    check: "Credential encryption",
+    detail: "The deployment report did not expose enough evidence to verify credential encryption readiness.",
+    hint: "Refresh against a current reference build; static-secret capture remains fail-closed until the key provider is verified.",
+    status: "unknown",
+  };
+}
+
 export function referenceOriginRow(inputs: ServerInputs, browserOrigin: string | null): ReadinessRow {
+  if (inputs.diagnosticsState === "unknown") {
+    return unavailableDiagnosticsRow("Reference origin alignment");
+  }
   if (!inputs.referenceOriginConfigured) {
     return {
       check: "Reference origin alignment",
@@ -139,6 +193,45 @@ export function referenceOriginRow(inputs: ServerInputs, browserOrigin: string |
 }
 
 export function storageBackendRow(inputs: ServerInputs): ReadinessRow {
+  if (inputs.diagnosticsState === "unknown") {
+    return unavailableDiagnosticsRow("Persistent storage");
+  }
+  if (inputs.databasePath.trim() === ":memory:") {
+    return {
+      check: "Persistent storage",
+      detail: "The reference database is in memory, so retained records will not survive a restart.",
+      hint: "Configure a persistent database path or volume before sharing the MCP endpoint.",
+      status: "error",
+    };
+  }
+  const diskRows = diskHeadroomRows(inputs);
+  const diskError = diskRows.find((row) => row.status === "error");
+  if (diskError) {
+    return {
+      check: "Persistent storage",
+      detail: diskError.detail,
+      hint: diskError.hint,
+      status: "error",
+    };
+  }
+  const diskWarning = diskRows.find((row) => row.status === "warn");
+  if (diskWarning) {
+    return {
+      check: "Persistent storage",
+      detail: diskWarning.detail,
+      hint: diskWarning.hint,
+      status: "warn",
+    };
+  }
+  const diskUnknown = diskRows.find((row) => row.status === "info" || row.status === "unknown");
+  if (diskUnknown) {
+    return {
+      check: "Persistent storage",
+      detail: `Database at ${inputs.databasePath}; ${diskUnknown.detail}`,
+      hint: "Refresh the deployment report after the filesystem probe succeeds; retained records must survive a restart on persistent storage.",
+      status: "unknown",
+    };
+  }
   if (inputs.vectorIndexKind === null && inputs.vectorIndexState === null) {
     return {
       check: "Storage backend",
@@ -169,6 +262,9 @@ export function storageBackendRow(inputs: ServerInputs): ReadinessRow {
 }
 
 export function embeddingCacheRow(inputs: ServerInputs): ReadinessRow {
+  if (inputs.diagnosticsState === "unknown") {
+    return unavailableDiagnosticsRow("Embedding cache");
+  }
   if (!inputs.embeddingBackendConfigured) {
     return {
       check: "Embedding cache",
@@ -202,32 +298,76 @@ export function embeddingCacheRow(inputs: ServerInputs): ReadinessRow {
 export function refreshTokenRow(probe: RefreshTokenProbe): ReadinessRow {
   if (probe.state === "loading") {
     return {
-      check: "MCP refresh-token advertisement",
+      check: "MCP protocol metadata",
       detail: "Checking the authorization-server metadata…",
       status: "unknown",
     };
   }
   if (probe.state === "unreachable") {
     return {
-      check: "MCP refresh-token advertisement",
-      detail: "Could not reach `/.well-known/oauth-authorization-server` from this origin.",
-      hint: "If your `AS_ISSUER` is not co-located with the dashboard origin, this check may show `warn` even on a healthy deployment. Confirm `grant_types_supported` includes `refresh_token` on your AS metadata directly.",
+      check: "MCP protocol metadata",
+      detail: `Could not reach ${unreachableMetadataLabel(probe.failedEndpoints)} from this origin.`,
+      hint: "Check the public discovery routes and `AS_ISSUER`; confirm `grant_types_supported` includes `refresh_token` on the authorization-server metadata directly.",
       status: "warn",
+    };
+  }
+  if (probe.authorizationServerSupported === false) {
+    return {
+      check: "MCP protocol metadata",
+      detail: "Authorization-server metadata is missing an issuer, authorization endpoint, or token endpoint.",
+      hint: "Check `AS_ISSUER`, `AS_PUBLIC_URL`, and the authorization-server discovery response before sharing the MCP URL.",
+      status: "error",
+    };
+  }
+  if (probe.authorizationServerSupported !== true) {
+    return {
+      check: "MCP protocol metadata",
+      detail: "Authorization-server metadata evidence is incomplete.",
+      hint: "Refresh the public authorization-server discovery document before sharing the MCP URL.",
+      status: "unknown",
+    };
+  }
+  if (probe.protectedResourceSupported === false) {
+    return {
+      check: "MCP protocol metadata",
+      detail: "Protected-resource metadata does not identify this origin's `/mcp` resource and authorization server.",
+      hint: "Check the protected-resource discovery response and `AS_ISSUER`; the MCP resource and OAuth issuer must agree.",
+      status: "error",
+    };
+  }
+  if (probe.protectedResourceSupported !== true) {
+    return {
+      check: "MCP protocol metadata",
+      detail: "Protected-resource metadata evidence is incomplete.",
+      hint: "Refresh the public protected-resource discovery document before sharing the MCP URL.",
+      status: "unknown",
     };
   }
   if (probe.refreshTokenSupported) {
     return {
-      check: "MCP refresh-token advertisement",
-      detail: "Authorization-server metadata advertises `refresh_token`.",
+      check: "MCP protocol metadata",
+      detail: "Authorization-server and protected-resource metadata agree, and `refresh_token` is advertised.",
       status: "ok",
     };
   }
   return {
-    check: "MCP refresh-token advertisement",
+    check: "MCP protocol metadata",
     detail: "Authorization-server metadata does not advertise `refresh_token`.",
     hint: "Reference image is too old to advertise `refresh_token`. `docker compose pull` to the current image.",
     status: "error",
   };
+}
+
+function unreachableMetadataLabel(
+  failedEndpoints: readonly ("authorization_server" | "protected_resource")[] | undefined
+): string {
+  if (failedEndpoints?.length === 1 && failedEndpoints[0] === "authorization_server") {
+    return "authorization-server metadata (`/.well-known/oauth-authorization-server`)";
+  }
+  if (failedEndpoints?.length === 1 && failedEndpoints[0] === "protected_resource") {
+    return "protected-resource metadata (`/.well-known/oauth-protected-resource/mcp`)";
+  }
+  return "OAuth discovery metadata";
 }
 
 // 2 GiB — below this a Docker build or reference restart is very likely to OOD.

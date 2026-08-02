@@ -37,6 +37,12 @@ const OWNER_AGENT_LINK_RE = /href="\/deployment\/tokens"/;
 const OWNER_TOKEN_ENV_VAR_RE = /bearer-token-env-var|Authorization: Bearer|PDPP_OWNER|owner bearer token/;
 const PROFILE_VOCABULARY_RE = /\b(core|events|full)\s+profile\b|\bprofile\s+(core|events|full)\b/i;
 const LIST_CIMD_DOCS_RE = /listCimdClientDocuments\(\)/;
+const DEPLOYMENT_DIAGNOSTICS_RE = /getDeploymentDiagnostics\(\)/;
+const CONNECTOR_SUMMARY_PAGE_RE = /listConnectorSummaries\(\{\s*limit: 100\s*\}\)/;
+const READINESS_PANEL_RE = /<DeploymentReadinessPanel/;
+const SETUP_INSTRUCTIONS_PROP_RE = /setupInstructions=/;
+const SOURCE_READINESS_RE = /sourceReadinessRow/;
+const GMAIL_RE = /gmail/i;
 const CREATE_CIMD_ACTION_RE = /createCimdClientIdentityAction/;
 const DELETE_CIMD_ACTION_RE = /deleteCimdClientIdentityAction/;
 const REDIRECT_URI_INPUT_RE = /name="redirect_uri"/;
@@ -54,6 +60,16 @@ test("connect page derives concrete entrypoints from the running public origin",
   assert.match(src, RESOLVE_PUBLIC_ORIGIN_RE);
   assert.match(src, MCP_URL_BUILDER_RE);
   assert.doesNotMatch(src, PLACEHOLDER_ORIGIN_RE);
+});
+
+test("connect page evaluates deployment and source readiness before MCP setup", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, DEPLOYMENT_DIAGNOSTICS_RE);
+  assert.match(src, CONNECTOR_SUMMARY_PAGE_RE);
+  assert.match(src, READINESS_PANEL_RE);
+  assert.match(src, SETUP_INSTRUCTIONS_PROP_RE);
+  assert.match(src, SOURCE_READINESS_RE);
+  assert.doesNotMatch(src, GMAIL_RE);
 });
 
 test("connect page includes copy-paste setup for target MCP hosts", async () => {

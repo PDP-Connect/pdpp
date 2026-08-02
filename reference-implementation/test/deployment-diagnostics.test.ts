@@ -30,6 +30,7 @@ import {
   DISK_WARN_BYTES,
   type DiskHeadroom,
   type RuntimeCapabilityPosture,
+  resolveCredentialEncryptionDiagnosticsState,
   type SemanticBackfillProgress,
   shouldAttemptSemanticUplift,
 } from "../server/deployment-diagnostics.ts";
@@ -106,6 +107,8 @@ test("buildEnvironmentReport redacts explicitly-secret allowlist entries", () =>
     GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "google-client-secret-should-never-appear",
     GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://pdpp.example/_ref/provider-auth/callback",
     NODE_ENV: "production",
+    PDPP_CREDENTIAL_ENCRYPTION_KEY: "credential-key-should-never-appear",
+    PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE: "/run/secrets/pdpp-credential-key",
     PDPP_DCR_INITIAL_ACCESS_TOKENS: "real-token-value-should-never-appear",
     PDPP_OWNER_PASSWORD: "owner-password-should-never-appear",
     PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND: "pg_search",
@@ -145,6 +148,18 @@ test("buildEnvironmentReport redacts explicitly-secret allowlist entries", () =>
   assert.equal(ownerPasswordEntry.provenance, "redacted");
   assert.equal(ownerPasswordEntry.value, null, "owner password MUST NOT reach the dashboard");
   assert.equal(ownerPasswordEntry.secret, true);
+
+  const credentialKeyEntry = report.find((e) => e.name === "PDPP_CREDENTIAL_ENCRYPTION_KEY");
+  assert.ok(credentialKeyEntry, "credential encryption key entry is present");
+  assert.equal(credentialKeyEntry.provenance, "redacted");
+  assert.equal(credentialKeyEntry.value, null, "credential encryption key MUST NOT reach the dashboard");
+  assert.equal(credentialKeyEntry.secret, true);
+
+  const credentialKeyFileEntry = report.find((e) => e.name === "PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE");
+  assert.ok(credentialKeyFileEntry, "credential encryption key-file entry is present");
+  assert.equal(credentialKeyFileEntry.provenance, "redacted");
+  assert.equal(credentialKeyFileEntry.value, null, "credential key-file path MUST NOT reach the dashboard");
+  assert.equal(credentialKeyFileEntry.secret, true);
 
   // Non-secret allowlist entries surface the actual value.
   const nodeEnv = report.find((e) => e.name === "NODE_ENV");
@@ -203,6 +218,47 @@ function runtimeCapsFromBuilder(input: RuntimeCapabilityPosture | null) {
     runtimeCapabilities: input,
   });
 }
+
+function diagnosticsWithCredentialState(credentialEncryptionState: "configured" | "unconfigured" | "unknown") {
+  return buildDeploymentDiagnostics({
+    backend: null,
+    credentialEncryptionState,
+    db: null,
+    dbPath: "/data/pdpp.sqlite",
+    env: {},
+    indexState: null,
+    manifests: [],
+  });
+}
+
+test("credential encryption diagnostics use the authoritative provider result", () => {
+  assert.equal(diagnosticsWithCredentialState("configured").credential_encryption.state, "configured");
+  assert.equal(diagnosticsWithCredentialState("unconfigured").credential_encryption.state, "unconfigured");
+  assert.equal(diagnosticsWithCredentialState("unknown").credential_encryption.state, "unknown");
+  assert.equal(
+    buildDeploymentDiagnostics({
+      backend: null,
+      db: null,
+      dbPath: "/data/pdpp.sqlite",
+      env: { PDPP_CREDENTIAL_ENCRYPTION_KEY: "operator-key" },
+      indexState: null,
+      manifests: [],
+    }).credential_encryption.state,
+    "unknown",
+    "the pure builder must not infer readiness from redacted env presence"
+  );
+  assert.equal(
+    resolveCredentialEncryptionDiagnosticsState({ PDPP_CREDENTIAL_ENCRYPTION_KEY: "operator-key" }),
+    "configured"
+  );
+  assert.equal(resolveCredentialEncryptionDiagnosticsState({}), "unconfigured");
+  assert.equal(
+    resolveCredentialEncryptionDiagnosticsState({
+      PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE: "/definitely/missing/pdpp-key",
+    }),
+    "unknown"
+  );
+});
 
 test("runtime_capabilities: absent input renders an empty/host-default report with no warnings", () => {
   const report = runtimeCapsFromBuilder(null);

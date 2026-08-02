@@ -1767,6 +1767,9 @@ export async function getDatasetSummary(): Promise<DatasetSummary> {
 // server/deployment-diagnostics.ts; the RS redacts secrets before sending,
 // and the dashboard must not re-assemble them.
 export interface DeploymentDiagnostics {
+  credential_encryption?: {
+    state: "configured" | "unconfigured" | "unknown";
+  };
   database: {
     path: string;
     // Read-only physical on-disk footprint (Postgres-only). `null` on a

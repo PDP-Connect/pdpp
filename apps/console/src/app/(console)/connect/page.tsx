@@ -7,10 +7,18 @@ import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primi
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import { DeploymentReadinessPanel } from "../components/deployment-readiness-panel.tsx";
+import { extractReadinessInputs, type ServerInputs } from "../components/deployment-readiness-rows.ts";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
+import {
+  type CimdClientDocument,
+  getDeploymentDiagnostics,
+  listCimdClientDocuments,
+  listConnectorSummaries,
+} from "../lib/ref-client.ts";
 import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";
+import { type SourceReadinessEvidence, sourceReadinessRow } from "./readiness.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -30,8 +38,55 @@ interface SetupEntry {
   value: string;
 }
 
+const DEMO_READINESS_INPUTS: ServerInputs = {
+  credentialEncryptionState: "configured",
+  databasePath: "/data/pdpp.db",
+  diagnosticsState: "available",
+  diskHeadroom: [],
+  embeddingBackendAvailable: true,
+  embeddingBackendConfigured: true,
+  embeddingDownloadAllowed: true,
+  embeddingModelCachePresent: true,
+  ownerPasswordProvenance: "redacted",
+  referenceOriginConfigured: "https://pdpp.example.test",
+  vectorIndexKind: "sqlite-vec",
+  vectorIndexState: "built",
+};
+
+const UNKNOWN_READINESS_INPUTS: ServerInputs = {
+  credentialEncryptionState: "unknown",
+  databasePath: "unknown",
+  diagnosticsState: "unknown",
+  diskHeadroom: [],
+  embeddingBackendAvailable: false,
+  embeddingBackendConfigured: false,
+  embeddingDownloadAllowed: null,
+  embeddingModelCachePresent: null,
+  ownerPasswordProvenance: "unknown",
+  referenceOriginConfigured: null,
+  vectorIndexKind: null,
+  vectorIndexState: null,
+};
+
 function trimTrailingSlash(value: string): string {
   return value.replace(TRAILING_SLASH_RE, "");
+}
+
+async function loadSourceReadinessEvidence(): Promise<SourceReadinessEvidence> {
+  try {
+    const page = await listConnectorSummaries({ limit: 100 });
+    return { hasMore: page.has_more, summaries: page.data };
+  } catch {
+    return { hasMore: false, summaries: null };
+  }
+}
+
+async function loadReadinessInputs(): Promise<ServerInputs> {
+  try {
+    return extractReadinessInputs(await getDeploymentDiagnostics());
+  } catch {
+    return UNKNOWN_READINESS_INPUTS;
+  }
 }
 
 function buildConnectTargets(origin: string) {
@@ -237,8 +292,12 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   const params = await searchParams;
   let origin: string;
   let identities: CimdClientDocument[] = [];
+  let readinessInputs: ServerInputs;
+  let sourceEvidence: SourceReadinessEvidence;
   if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
     origin = "https://pdpp.example.test";
+    readinessInputs = DEMO_READINESS_INPUTS;
+    sourceEvidence = { hasMore: false, summaries: null };
     identities = [
       {
         client_id: "https://pdpp.example.test/oauth/clients/cli-demo",
@@ -254,12 +313,16 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
     ];
   } else {
     try {
-      const [resolvedOrigin, resolvedIdentities] = await Promise.all([
+      const [resolvedOrigin, resolvedIdentities, resolvedReadinessInputs, resolvedSourceEvidence] = await Promise.all([
         getReferencePublicOrigin(),
         listCimdClientDocuments(),
+        loadReadinessInputs(),
+        loadSourceReadinessEvidence(),
       ]);
       origin = resolvedOrigin;
       identities = resolvedIdentities.data;
+      readinessInputs = resolvedReadinessInputs;
+      sourceEvidence = resolvedSourceEvidence;
     } catch (err) {
       if (err instanceof ReferenceServerUnreachableError) {
         return (
@@ -328,16 +391,28 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
         {notice ? <InlineNotice kind="notice" message={notice} /> : null}
       </div>
 
-      <Section
-        description="Use these when an AI app or local agent needs read access to records already collected in this PDPP instance."
-        title="Connect AI apps"
-      >
-        <ul className="divide-y divide-border/70 border-border/70 border-y">
-          {primaryEntries.map((entry) => (
-            <CopyRow key={entry.title} {...entry} />
-          ))}
-        </ul>
-      </Section>
+      <DeploymentReadinessPanel
+        inputs={readinessInputs}
+        setupInstructions={
+          <div>
+            <ul className="divide-y divide-border/70 border-border/70 border-y">
+              {primaryEntries.map((entry) => (
+                <CopyRow key={entry.title} {...entry} />
+              ))}
+            </ul>
+            <SelectedIdentityCommands mcpUrl={targets.mcpUrl} selected={selected} targets={targets} />
+            <div className="mt-6">
+              <p className="pdpp-eyebrow mb-2">Other agent entrypoints</p>
+              <ul className="divide-y divide-border/70 border-border/70 border-y">
+                {secondaryEntries.map((entry) => (
+                  <CopyRow key={entry.title} {...entry} />
+                ))}
+              </ul>
+            </div>
+          </div>
+        }
+        sourceRow={sourceReadinessRow(sourceEvidence)}
+      />
 
       <Callout
         action={
@@ -361,18 +436,6 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
           <ClientIdentityForm />
           <ClientIdentityList identities={identities} selectedId={selected?.document_id ?? null} />
         </div>
-        <SelectedIdentityCommands mcpUrl={targets.mcpUrl} selected={selected} targets={targets} />
-      </Section>
-
-      <Section
-        description="Use these only when the agent is running locally or reading the public agent instructions."
-        title="Other agent entrypoints"
-      >
-        <ul className="divide-y divide-border/70 border-border/70 border-y">
-          {secondaryEntries.map((entry) => (
-            <CopyRow key={entry.title} {...entry} />
-          ))}
-        </ul>
       </Section>
 
       <Callout
