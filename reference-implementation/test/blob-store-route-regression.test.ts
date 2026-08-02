@@ -141,6 +141,10 @@ function makeBoundaryHarness({
       routeHandler = args.at(-1) as (req: unknown, res: unknown) => Promise<unknown>;
       return app;
     },
+    head(...args: unknown[]) {
+      routeHandler = args.at(-1) as (req: unknown, res: unknown) => Promise<unknown>;
+      return app;
+    },
   };
   const bytes = Buffer.from("0123456789", "utf8");
   const connectorId = "blob-boundary-connector";

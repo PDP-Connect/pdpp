@@ -107,7 +107,8 @@ interface RouteResponse {
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-  get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
+  get: (path: string, ...args: RouteArg<RouteHandler>[]) => unknown;
+  head: (path: string, ...args: RouteArg<RouteHandler>[]) => unknown;
 }
 
 // Structural token shape. The host's `requireToken` middleware narrows the
@@ -2857,55 +2858,60 @@ async function resolveBlobVisibility(
 // fixes); `executeBlobsRead` owns the 404 / 200 shape and error mapping.
 export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
   const blobStore = ctx.createBlobStore();
-  app.get(
-    "/v1/blobs/:blob_id",
-    { contract: "getBlob" },
-    ctx.requireToken,
-    async (req: RouteRequest, res: RouteResponse) => {
-      try {
-        const { actorConnectorId, blobId, blobMetadata, resolvedMatch, resolverWarnings, totalSize } =
-          await resolveBlobVisibility(ctx, blobStore, req);
-        const range = resolveBlobByteRange(requestRangeHeader(req), totalSize);
-        if (range === "unsatisfiable") {
-          setBlobResponseHeaders(res, blobMetadata.mime_type, resolverWarnings);
-          sendUnsatisfiableBlobRange(res, totalSize);
-          return;
-        }
-
-        // HEAD is an authorized metadata probe. Fastify dispatches HEAD to
-        // this GET handler, so it must never load bytes and must ignore Range.
-        if (req.method === "HEAD") {
-          setBlobResponseHeaders(res, blobMetadata.mime_type, resolverWarnings);
-          res.setHeader("Content-Length", String(totalSize));
-          res.send(Buffer.alloc(0));
-          return;
-        }
-
-        const responseBytes = range ? range.end - range.start + 1 : totalSize;
-        if (responseBytes > MAX_BLOB_RESPONSE_BYTES) {
-          throw blobResponseTooLargeError();
-        }
-
-        // Single visible binding: load only the authorized range (or the
-        // bounded full body) and pipe it through the canonical operation.
-        const blobRow = await blobStore.loadContentAddressedBlob(blobId, range ?? undefined);
-        if (!blobRow) {
-          throw blobNotFoundError();
-        }
-        await serveResolvedBlob(res, {
-          actorConnectorId,
-          blobId,
-          blobRow,
-          range,
-          resolvedMatch,
-          resolverWarnings,
-          totalSize,
-        });
-      } catch (err) {
-        ctx.handleError(res, err);
+  // Registered as both GET and an explicit HEAD route (same handler) rather
+  // than relying on Fastify's `exposeHeadRoutes` auto-shadow. The auto-shadow
+  // installs its own `onSend` hook (`headRouteOnSendHandler`) that
+  // unconditionally overwrites Content-Length from the sent payload's byte
+  // length — clobbering the truthful `totalSize` header this handler sets
+  // when it deliberately sends an empty body for HEAD. An explicit HEAD
+  // registration is a normal route with no such hook, so a pre-set
+  // Content-Length header survives.
+  const handler = async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const { actorConnectorId, blobId, blobMetadata, resolvedMatch, resolverWarnings, totalSize } =
+        await resolveBlobVisibility(ctx, blobStore, req);
+      const range = resolveBlobByteRange(requestRangeHeader(req), totalSize);
+      if (range === "unsatisfiable") {
+        setBlobResponseHeaders(res, blobMetadata.mime_type, resolverWarnings);
+        sendUnsatisfiableBlobRange(res, totalSize);
+        return;
       }
+
+      // HEAD is an authorized metadata probe. It must never load bytes and
+      // must ignore Range.
+      if (req.method === "HEAD") {
+        setBlobResponseHeaders(res, blobMetadata.mime_type, resolverWarnings);
+        res.setHeader("Content-Length", String(totalSize));
+        res.send(Buffer.alloc(0));
+        return;
+      }
+
+      const responseBytes = range ? range.end - range.start + 1 : totalSize;
+      if (responseBytes > MAX_BLOB_RESPONSE_BYTES) {
+        throw blobResponseTooLargeError();
+      }
+
+      // Single visible binding: load only the authorized range (or the
+      // bounded full body) and pipe it through the canonical operation.
+      const blobRow = await blobStore.loadContentAddressedBlob(blobId, range ?? undefined);
+      if (!blobRow) {
+        throw blobNotFoundError();
+      }
+      await serveResolvedBlob(res, {
+        actorConnectorId,
+        blobId,
+        blobRow,
+        range,
+        resolvedMatch,
+        resolverWarnings,
+        totalSize,
+      });
+    } catch (err) {
+      ctx.handleError(res, err);
     }
-  );
+  };
+  app.head("/v1/blobs/:blob_id", { contract: "getBlob" }, ctx.requireToken, handler);
+  app.get("/v1/blobs/:blob_id", { contract: "getBlob" }, ctx.requireToken, handler);
 }
 
 // Mount the entire RS read family in the same registration order the inline
