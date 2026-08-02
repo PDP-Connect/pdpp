@@ -49,15 +49,18 @@ function buildProxyHeaders(request: Request, url: URL): Headers {
   return headers;
 }
 
-function buildResponseHeaders(headers: Headers): Headers {
+function buildResponseHeaders(headers: Headers, method: string): Headers {
   const nextHeaders = new Headers(headers);
   for (const header of HOP_BY_HOP_HEADERS) {
     nextHeaders.delete(header);
   }
   // Undici may transparently decode upstream bodies. Avoid stale length/encoding
-  // metadata on proxied responses.
-  nextHeaders.delete("content-length");
-  nextHeaders.delete("content-encoding");
+  // metadata on proxied body-bearing responses. HEAD has no body to decode, so
+  // preserve both representation headers as a coherent pair.
+  if (method !== "HEAD") {
+    nextHeaders.delete("content-length");
+    nextHeaders.delete("content-encoding");
+  }
   return nextHeaders;
 }
 
@@ -85,7 +88,7 @@ export async function proxyReferenceRequest(
       redirect: "manual",
     });
     return new Response(upstream.body, {
-      headers: buildResponseHeaders(upstream.headers),
+      headers: buildResponseHeaders(upstream.headers, method),
       status: upstream.status,
       statusText: upstream.statusText,
     });
