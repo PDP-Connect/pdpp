@@ -2910,7 +2910,7 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
       ctx.handleError(res, err);
     }
   };
-  app.head("/v1/blobs/:blob_id", { contract: "getBlob" }, ctx.requireToken, handler);
+  app.head("/v1/blobs/:blob_id", ctx.requireToken, handler);
   app.get("/v1/blobs/:blob_id", { contract: "getBlob" }, ctx.requireToken, handler);
 }
 

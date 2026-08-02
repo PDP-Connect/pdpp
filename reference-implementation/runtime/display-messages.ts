@@ -100,6 +100,7 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   loom_apollo_wiring_pending: "Loom support isn't wired up yet",
   manual_action_required: "Action needed to continue",
   matched: "We found a Chase statement to import",
+  messages_row_accounting_dropped: "We couldn't account for all the messages — some rows were skipped",
   missing_mapping: "We opened this conversation but it had no message data to read",
   navigation_retry_exhausted: "We tried this page several times but it did not finish loading",
   no_calendar_sources: "No calendars are configured to import from",
