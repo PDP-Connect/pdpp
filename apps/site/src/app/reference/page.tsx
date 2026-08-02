@@ -60,7 +60,7 @@ const selfServiceSteps = [
     title: "Sign in as owner",
   },
   {
-    body: "From the owner Connect surface, add Gmail. Enter the mailbox address and the Google app password supplied for that mailbox.",
+    body: "Open <your-deployment-origin>/sources/add (or choose Add source from Sources), select Gmail, and enter the mailbox address and the Google app password supplied for that mailbox.",
     label: "3",
     title: "Add Gmail with an app password",
   },

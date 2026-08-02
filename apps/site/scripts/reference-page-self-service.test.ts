@@ -8,10 +8,16 @@ import { fileURLToPath } from "node:url";
 
 const PAGE_PATH = new URL("../src/app/reference/page.tsx", import.meta.url);
 const RUNBOOK_PATH = new URL("../../../docs/operator/self-service-gmail-mcp.md", import.meta.url);
+const CONNECT_PAGE_PATH = new URL("../../../apps/console/src/app/(console)/connect/page.tsx", import.meta.url);
+const ADD_SOURCE_PAGE_PATH = new URL("../../../apps/console/src/app/(console)/sources/add/page.tsx", import.meta.url);
 const WHITESPACE_RE = /\s+/g;
+const SOURCE_ROUTE_RE = /<your-deployment-origin>\/sources\/add/;
+const CONNECT_PAGE_TITLE_RE = /title="Connect AI apps"/;
+const ADD_SOURCE_PAGE_TITLE_RE = /title="Add source"/;
 const PAGE_MARKERS = [
   "pinned Docker/Compose",
   "/owner/login",
+  "<your-deployment-origin>/sources/add",
   "Gmail",
   "app password",
   "healthy",
@@ -23,6 +29,7 @@ const RUNBOOK_MARKERS = [
   "## 1. Deploy a pinned Compose stack",
   "## 2. Sign in as owner",
   "## 3. Add Gmail with a Google app password",
+  "<your-deployment-origin>/sources/add",
   "## 4. Wait for healthy data",
   "records > 0",
   "## 5. Add the deployed MCP server to Claude Code",
@@ -53,4 +60,15 @@ test("blessed self-service journey keeps the health and data gate before MCP", a
       previousIndex = index;
     }
   }
+});
+
+test("self-service source setup names the authoritative owner route", async () => {
+  const [runbook, connectPage, addSourcePage] = await Promise.all(
+    [RUNBOOK_PATH, CONNECT_PAGE_PATH, ADD_SOURCE_PAGE_PATH].map((path) => readFile(fileURLToPath(path), "utf8"))
+  );
+
+  assert.match(runbook, SOURCE_ROUTE_RE);
+  assert.match(connectPage, CONNECT_PAGE_TITLE_RE);
+  assert.ok(connectPage.includes("dashboardRoutes.section.addSource"));
+  assert.match(addSourcePage, ADD_SOURCE_PAGE_TITLE_RE);
 });

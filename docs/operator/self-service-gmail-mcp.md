@@ -40,8 +40,8 @@ credential.
 
 ## 3. Add Gmail with a Google app password
 
-From the owner **Connect** surface, choose **Add a data source**, select Gmail,
-and enter:
+Open `<your-deployment-origin>/sources/add` (or open **Sources** and choose
+**Add source**), select Gmail, and enter:
 
 - the Gmail address for the mailbox;
 - a Google app password created for that mailbox.
