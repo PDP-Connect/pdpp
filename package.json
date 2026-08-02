@@ -72,6 +72,8 @@
     "release:signoff": "pnpm release:local && pnpm release:dry-run",
     "release:dist-tag-check": "node --import tsx scripts/check-dist-tag-posture.ts",
     "release:dist-tag-check:test": "node --test --import tsx scripts/check-dist-tag-posture.test.ts",
+    "release:selfservice-smoke": "node --import tsx scripts/release-selfservice-smoke.ts",
+    "release:selfservice-smoke:test": "node --test --import tsx scripts/release-selfservice-smoke.test.ts",
     "owner-journey:acceptance": "node --import tsx scripts/check-owner-journey-acceptance.ts",
     "owner-journey:acceptance:test": "node --test --import tsx scripts/check-owner-journey-acceptance.test.ts",
     "console:health-surface-gate": "node --import tsx scripts/check-console-health-surfaces.ts",

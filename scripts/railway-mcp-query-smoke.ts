@@ -377,7 +377,11 @@ async function mintOwnerToken(origin: string, sessionCookie: string, subjectId: 
   return ((await readBody(tokenResp)).json as { access_token: string }).access_token;
 }
 
-async function registerSeedManifest(origin: string, log: LogFn): Promise<Record<string, unknown>> {
+async function registerSeedManifest(
+  origin: string,
+  sessionCookie: string,
+  log: LogFn
+): Promise<Record<string, unknown>> {
   // The manifest body is small; fetch it from the running AS would be circular,
   // so we register the same connector_id/streams the committed spotify fixture
   // declares. Re-register is idempotent (409 on unchanged version is fine).
@@ -411,7 +415,10 @@ async function registerSeedManifest(origin: string, log: LogFn): Promise<Record<
   };
   const resp = await fetch(`${origin}/connectors`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+    },
     body: JSON.stringify(manifest),
   });
   if (![200, 201, 409].includes(resp.status)) {
@@ -467,7 +474,14 @@ async function assertAnonymousMcpRefused(origin: string, log: LogFn): Promise<nu
 
 // Mint a client access token scoped to the seeded connector via the OAuth
 // authorization-code flow with consent approval under the owner session.
-async function mintClientToken(origin: string, sessionCookie: string, log: LogFn): Promise<string> {
+interface ClientTokenEvidence {
+  accessToken: string;
+  clientId: string;
+  grantId: string;
+  refreshToken: string;
+}
+
+async function mintClientToken(origin: string, sessionCookie: string, log: LogFn): Promise<ClientTokenEvidence> {
   const registerResp = await fetch(`${origin}/oauth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -578,8 +592,25 @@ async function mintClientToken(origin: string, sessionCookie: string, log: LogFn
     const { text } = await readBody(tokenResp);
     throw new SmokeError(`oauth/token (authorization_code) failed ${tokenResp.status}: ${text}`);
   }
+  const tokenBody = (await readBody(tokenResp)).json as {
+    access_token?: unknown;
+    grant_id?: unknown;
+    refresh_token?: unknown;
+  };
+  if (
+    typeof tokenBody.access_token !== "string" ||
+    typeof tokenBody.grant_id !== "string" ||
+    typeof tokenBody.refresh_token !== "string"
+  ) {
+    throw new SmokeError(`oauth/token did not return a scoped access/refresh/grant tuple: ${JSON.stringify(tokenBody)}`);
+  }
   log("client-token: minted scoped client access token");
-  return ((await readBody(tokenResp)).json as { access_token: string }).access_token;
+  return {
+    accessToken: tokenBody.access_token,
+    clientId: client.client_id,
+    grantId: tokenBody.grant_id,
+    refreshToken: tokenBody.refresh_token,
+  };
 }
 
 interface McpPostResult {
@@ -599,11 +630,18 @@ async function mcpPost(origin: string, token: string, message: McpMessage): Prom
     body: JSON.stringify(message),
   });
   const text = await resp.text();
-  const rpc = parseMcpResponseText(resp.headers.get("content-type"), text);
+  let rpc: JsonRpcResponse | null = null;
+  try {
+    rpc = parseMcpResponseText(resp.headers.get("content-type"), text);
+  } catch {
+    // Boundary probes only need the HTTP status when a server returns a
+    // non-JSON error page. Successful MCP calls still parse strictly below.
+    rpc = null;
+  }
   return { status: resp.status, rpc, text };
 }
 
-async function runScopedMcpQuery(origin: string, clientToken: string, log: LogFn): Promise<void> {
+async function runScopedMcpQuery(origin: string, clientToken: string, log: LogFn): Promise<string[]> {
   const init = await mcpPost(origin, clientToken, mcpInitializeMessage());
   if (init.status !== 200) {
     throw new SmokeError(`MCP initialize failed ${init.status}: ${init.text}`);
@@ -631,6 +669,65 @@ async function runScopedMcpQuery(origin: string, clientToken: string, log: LogFn
     throw new SmokeError(`query_records: ${verdict.reason}`);
   }
   log(`query_records: seeded record(s) returned (${verdict.foundKeys?.join(", ")})`);
+  return verdict.foundKeys ?? [];
+}
+
+async function assertOwnerBearerRejected(origin: string, ownerToken: string, log: LogFn): Promise<number> {
+  const response = await mcpPost(origin, ownerToken, mcpToolsListMessage(4));
+  if (response.status !== 403) {
+    throw new SmokeError(
+      `owner bearer /mcp boundary failed: expected 403, got ${response.status}: ${response.text}`
+    );
+  }
+  log("owner bearer: /mcp rejected with 403");
+  return response.status;
+}
+
+async function revokeClientGrant(
+  origin: string,
+  ownerToken: string,
+  grantId: string,
+  log: LogFn
+): Promise<number> {
+  const response = await fetch(`${origin}/grants/${encodeURIComponent(grantId)}/revoke`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ownerToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+  const { text } = await readBody(response);
+  if (response.status !== 200) {
+    throw new SmokeError(`grant revoke failed ${response.status}: ${text}`);
+  }
+  log(`grant: revoked ${grantId}`);
+  return response.status;
+}
+
+async function assertRevokedClientRejected(origin: string, clientToken: string, log: LogFn): Promise<number> {
+  const response = await mcpPost(origin, clientToken, mcpToolsListMessage(5));
+  if (response.status !== 403) {
+    throw new SmokeError(
+      `revoked client /mcp boundary failed: expected 403, got ${response.status}: ${response.text}`
+    );
+  }
+  log("revocation: client bearer rejected with 403");
+  return response.status;
+}
+
+export interface LiveSmokeResult {
+  anonymousMcpStatus: number;
+  clientGrantId: string | null;
+  clientRefreshAfterRevokeStatus: number | null;
+  clientRevokedMcpStatus: number | null;
+  ownerBearerMcpStatus: number | null;
+  queryReturnedKeys: string[];
+  seed: {
+    connectorId: string;
+    recordKeys: string[];
+    stream: string;
+  };
 }
 
 export interface RunLiveSmokeOptions {
@@ -641,7 +738,7 @@ export interface RunLiveSmokeOptions {
   subjectId: string;
 }
 
-export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<void> {
+export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<LiveSmokeResult> {
   const { origin, ownerPassword, subjectId, logger, seed = true } = options;
   const log = logger ?? (() => undefined);
   // An owner session is needed either way: the seed ingest is owner-gated, and
@@ -649,16 +746,54 @@ export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<void> 
   // the manifest/owner-token/ingest steps and only re-query — used by the
   // restart-survival smoke to prove records persisted WITHOUT re-writing them.
   const sessionCookie = await establishOwnerSession(origin, ownerPassword, log);
+  let ownerToken = "";
   if (seed) {
-    const ownerToken = await mintOwnerToken(origin, sessionCookie, subjectId, log);
-    await registerSeedManifest(origin, log);
+    ownerToken = await mintOwnerToken(origin, sessionCookie, subjectId, log);
+    await registerSeedManifest(origin, sessionCookie, log);
     await seedRecords(origin, ownerToken, log);
   } else {
     log("seed: skipped (--no-seed); querying existing records only");
   }
-  await assertAnonymousMcpRefused(origin, log);
-  const clientToken = await mintClientToken(origin, sessionCookie, log);
-  await runScopedMcpQuery(origin, clientToken, log);
+  const anonymousMcpStatus = await assertAnonymousMcpRefused(origin, log);
+  const ownerBearerMcpStatus = seed ? await assertOwnerBearerRejected(origin, ownerToken, log) : null;
+  const client = await mintClientToken(origin, sessionCookie, log);
+  const queryReturnedKeys = await runScopedMcpQuery(origin, client.accessToken, log);
+
+  let clientRevokedMcpStatus: number | null = null;
+  let clientRefreshAfterRevokeStatus: number | null = null;
+  if (seed) {
+    await revokeClientGrant(origin, ownerToken, client.grantId, log);
+    clientRevokedMcpStatus = await assertRevokedClientRejected(origin, client.accessToken, log);
+    const refreshResponse = await fetch(`${origin}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: client.clientId,
+        grant_type: "refresh_token",
+        refresh_token: client.refreshToken,
+      }).toString(),
+    });
+    const { text } = await readBody(refreshResponse);
+    if (refreshResponse.status !== 400) {
+      throw new SmokeError(`revoked refresh token was not rejected: ${refreshResponse.status}: ${text}`);
+    }
+    clientRefreshAfterRevokeStatus = refreshResponse.status;
+    log("revocation: refresh token rejected with 400");
+  }
+
+  return {
+    anonymousMcpStatus,
+    clientGrantId: seed ? client.grantId : null,
+    clientRefreshAfterRevokeStatus,
+    clientRevokedMcpStatus,
+    ownerBearerMcpStatus,
+    queryReturnedKeys,
+    seed: {
+      connectorId: SEED_CONNECTOR_ID,
+      recordKeys: SEED_RECORDS.map((record) => record.key),
+      stream: SEED_STREAM,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

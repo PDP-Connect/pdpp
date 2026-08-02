@@ -71,6 +71,11 @@ curl -s -o /dev/null -w '%{http_code}\n' "$ORIGIN/connect"   # 307 -> /owner/log
 Sign in at `$ORIGIN/owner/login`, then check `$ORIGIN/deployment` for the
 runtime diagnostics surface (`GET /_ref/deployment`).
 
+For the release-owner proof from clean Compose state, use
+[`docs/operator/release-selfservice-smoke.md`](../../docs/operator/release-selfservice-smoke.md).
+It requires exact npm versions and digest-pinned images; the ordinary quickstart
+and this operator runbook may continue to use a moving tag for exploratory work.
+
 ## Storage and upgrades
 
 - Records live in the `pdpp-postgres-data` volume; secrets live in `.env`.

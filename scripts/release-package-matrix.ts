@@ -1263,14 +1263,15 @@ function verifyReceipt(file: string | undefined): void {
 // Treat it as transport syntax, not a matrix argument, so the documented
 // `pnpm ... release:matrix -- --receipt <path>` interface remains stable.
 const matrixArguments = process.argv.slice(2).filter((argument) => argument !== "--");
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
-if (matrixArguments[0] === "--row") {
+if (isMainModule && matrixArguments[0] === "--row") {
   await runMatrixRow();
-} else if (matrixArguments[0] === "--verify-receipt") {
+} else if (isMainModule && matrixArguments[0] === "--verify-receipt") {
   verifyReceipt(matrixArguments[1]);
-} else if (matrixArguments[0] === "--receipt") {
+} else if (isMainModule && matrixArguments[0] === "--receipt") {
   assert.ok(matrixArguments[1], "usage: release-package-matrix.ts --receipt <file>");
   runMatrix(matrixArguments[1]);
-} else if (process.argv[1] === fileURLToPath(import.meta.url)) {
+} else if (isMainModule) {
   runMatrix();
 }
