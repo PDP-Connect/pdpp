@@ -361,6 +361,7 @@ function sqliteInsertBackfilledRun(input: {
     null,
     sourceJsonForBackfill(),
     input.status,
+    "[]",
     input.startedAt,
     input.finishedAt,
     0,
@@ -368,6 +369,7 @@ function sqliteInsertBackfilledRun(input: {
     null,
     null,
     input.factsJson,
+    null,
   ]);
 }
 
