@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { EmittedMessage } from "./connector-runtime-protocol.ts";
 import {
   DEFAULT_SAFE_DIAGNOSTICS_POLICY,
   sanitizeSafeDiagnosticInfo,
@@ -11,6 +12,10 @@ import {
   sanitizeSafeEmission,
   withDiagnosticDeadline,
 } from "./safe-diagnostics.ts";
+
+function asEmittedMessage(value: unknown): EmittedMessage {
+  return value as EmittedMessage;
+}
 
 test("the safe emission boundary closes runtime progress and DONE bypasses", () => {
   const raw = "account=ACCT-123 transaction=PRIVATE token=SECRET https://usaa.test/private";
@@ -178,4 +183,163 @@ test("safe diagnostic payloads never copy arbitrary request or response fields",
 
   assert.equal((safe.browser_surface as { route: string }).route, "expected");
   assert.doesNotMatch(JSON.stringify(safe), /REQ-123|ACCT|SECRET|https?:\/\//u);
+});
+
+test("safe emission returns fixed finite fallbacks for hostile top-level values", () => {
+  const throwingTopLevel = new Proxy(
+    { type: "PROGRESS", message: "raw secret" },
+    {
+      get() {
+        throw new Error("secret-getter");
+      },
+    }
+  );
+  const safeTopLevel = sanitizeSafeEmission(asEmittedMessage(throwingTopLevel));
+  assert.deepEqual(safeTopLevel, {
+    error: { code: "unknown", message: "Connector failure (unknown)", retryable: false },
+    records_emitted: 0,
+    status: "failed",
+    type: "DONE",
+  });
+
+  const safeArray = sanitizeSafeEmission(asEmittedMessage(["raw secret"]));
+  assert.deepEqual(safeArray, safeTopLevel);
+
+  const unknownStatus = sanitizeSafeEmission(
+    asEmittedMessage({ type: "DONE", status: "raw-status", records_emitted: 9_999_999 })
+  );
+  assert.deepEqual(unknownStatus, { records_emitted: 1_000_000, status: "failed", type: "DONE" });
+});
+
+test("safe emission contains nested throwing getters, proxies, Error.message, and String traps", () => {
+  const throwingProgress = Object.defineProperties(
+    { type: "PROGRESS" },
+    {
+      message: {
+        get() {
+          throw new Error("secret-progress-getter");
+        },
+      },
+    }
+  );
+  assert.deepEqual(sanitizeSafeEmission(asEmittedMessage(throwingProgress)), {
+    message: "Progress",
+    type: "PROGRESS",
+  });
+
+  const throwingDiagnostics = new Proxy(
+    { phase: "known_phase", error: "raw diagnostics" },
+    {
+      get() {
+        throw new Error("secret-diagnostics-getter");
+      },
+    }
+  );
+  const safeSkip = sanitizeSafeEmission(
+    asEmittedMessage({
+      diagnostics: throwingDiagnostics,
+      message: "raw skip message",
+      reason: "raw reason",
+      stream: "raw stream",
+      type: "SKIP_RESULT",
+    })
+  );
+  assert.deepEqual(safeSkip, {
+    diagnostics: { diagnostic: "sanitized" },
+    message: "Safe diagnostic skipped: diagnostic_sanitized",
+    reason: "diagnostic_sanitized",
+    stream: "unknown",
+    type: "SKIP_RESULT",
+  });
+
+  const throwingErrorMessage = new Error("raw error");
+  Object.defineProperty(throwingErrorMessage, "message", {
+    configurable: true,
+    get() {
+      throw new Error("secret-error-message");
+    },
+  });
+  const stringTrap = new Proxy(Object.create(null), {
+    get() {
+      throw new Error("secret-string-trap");
+    },
+  });
+  const safeDone = sanitizeSafeEmission(
+    asEmittedMessage({
+      error: { code: "unknown", message: throwingErrorMessage, retryable: true },
+      records_emitted: 1,
+      status: "failed",
+      type: "DONE",
+    })
+  );
+  const safeDoneStringTrap = sanitizeSafeEmission(
+    asEmittedMessage({
+      error: { code: "unknown", message: stringTrap, retryable: true },
+      records_emitted: 1,
+      status: "failed",
+      type: "DONE",
+    })
+  );
+  assert.deepEqual(safeDone, {
+    error: { code: "unknown", message: "Connector failure (unknown)", retryable: true },
+    records_emitted: 1,
+    status: "failed",
+    type: "DONE",
+  });
+  assert.deepEqual(safeDoneStringTrap, safeDone);
+});
+
+test("safe diagnostic info fails closed for top-level, nested, own-property, and array traps", () => {
+  const throwingTopLevel = new Proxy(
+    { diag: { dialogs_open: 1 }, phase: "known_phase" },
+    {
+      get() {
+        throw new Error("secret-top-level-getter");
+      },
+    }
+  );
+  assert.deepEqual(sanitizeSafeDiagnosticInfo(throwingTopLevel), { diag: null, phase: "unknown" });
+
+  const throwingNested = new Proxy(
+    { dialogs_open: 1 },
+    {
+      get() {
+        throw new Error("secret-nested-getter");
+      },
+    }
+  );
+  assert.deepEqual(sanitizeSafeDiagnosticInfo({ diag: throwingNested, phase: "known_phase" }), {
+    diag: null,
+    phase: "unknown",
+  });
+
+  const throwingOwnProperty = new Proxy(
+    { phase: "known_phase", error: "raw error" },
+    {
+      getOwnPropertyDescriptor() {
+        throw new Error("secret-own-property-trap");
+      },
+    }
+  );
+  assert.deepEqual(sanitizeSafeDiagnosticInfo(throwingOwnProperty), {
+    diag: null,
+    diagnostic: "sanitized",
+    phase: "unknown",
+  });
+
+  assert.deepEqual(sanitizeSafeDiagnosticInfo([]), {
+    diag: null,
+    diagnostic: "sanitized",
+    phase: "unknown",
+  });
+  assert.deepEqual(
+    sanitizeSafeDiagnosticInfo({
+      error: new Proxy(Object.create(null), {
+        get() {
+          throw new Error("secret");
+        },
+      }),
+    }),
+    { diag: null, error: "unknown", phase: "unknown" }
+  );
 });

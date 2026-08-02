@@ -82,7 +82,11 @@ interface UnknownRecord {
 }
 
 function asRecord(value: unknown): UnknownRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as UnknownRecord) : {};
+  try {
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as UnknownRecord) : {};
+  } catch {
+    return {};
+  }
 }
 
 export function boundedSafeDiagnosticCount(value: unknown): number {
@@ -111,22 +115,29 @@ function safeTag(value: unknown): string {
 export function safeErrorCategory(
   error: unknown
 ): "timeout" | "download" | "dialog" | "capture" | "network" | "unknown" {
-  const raw = error instanceof Error ? error.message : String(error);
-  const lower = raw.toLowerCase();
-  if (lower.includes("timeout") || lower.includes("timed out")) {
-    return "timeout";
-  }
-  if (lower.includes("download") || lower.includes("stream") || lower.includes("saveas")) {
-    return "download";
-  }
-  if (lower.includes("dialog")) {
-    return "dialog";
-  }
-  if (lower.includes("capture")) {
-    return "capture";
-  }
-  if (lower.includes("network") || lower.includes("econn") || lower.includes("http")) {
-    return "network";
+  try {
+    const raw = error instanceof Error ? error.message : String(error);
+    if (typeof raw !== "string") {
+      return "unknown";
+    }
+    const lower = raw.toLowerCase();
+    if (lower.includes("timeout") || lower.includes("timed out")) {
+      return "timeout";
+    }
+    if (lower.includes("download") || lower.includes("stream") || lower.includes("saveas")) {
+      return "download";
+    }
+    if (lower.includes("dialog")) {
+      return "dialog";
+    }
+    if (lower.includes("capture")) {
+      return "capture";
+    }
+    if (lower.includes("network") || lower.includes("econn") || lower.includes("http")) {
+      return "network";
+    }
+  } catch {
+    return "unknown";
   }
   return "unknown";
 }
@@ -405,16 +416,20 @@ export function sanitizeSafeDiagnosticPayload(
   value: unknown,
   policy: SafeDiagnosticsPolicy = DEFAULT_SAFE_DIAGNOSTICS_POLICY
 ): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return { diagnostic: "sanitized" };
+    }
+    const raw = asRecord(value);
+    const safe: Record<string, unknown> = {};
+    addSafeDiagnosticClassifications(safe, raw, policy);
+    addSafeDiagnosticPage(safe, raw);
+    addSafeDiagnosticEvidence(safe, raw);
+    addSafeDiagnosticErrorAndCounts(safe, raw);
+    return Object.keys(safe).length > 0 ? safe : { diagnostic: "sanitized" };
+  } catch {
     return { diagnostic: "sanitized" };
   }
-  const raw = asRecord(value);
-  const safe: Record<string, unknown> = {};
-  addSafeDiagnosticClassifications(safe, raw, policy);
-  addSafeDiagnosticPage(safe, raw);
-  addSafeDiagnosticEvidence(safe, raw);
-  addSafeDiagnosticErrorAndCounts(safe, raw);
-  return Object.keys(safe).length > 0 ? safe : { diagnostic: "sanitized" };
 }
 
 /** Use the same post-boundary shape for connector callback diagnostic values. */
@@ -422,25 +437,33 @@ export function sanitizeSafeDiagnosticInfo(
   value: unknown,
   policy: SafeDiagnosticsPolicy = DEFAULT_SAFE_DIAGNOSTICS_POLICY
 ): SafeDiagnosticInfo {
-  const { page: _page, ...safe } = sanitizeSafeDiagnosticPayload(value, policy);
-  safe.diag = sanitizePageDiagnostics(asRecord(value).diag);
-  if (!Object.hasOwn(safe, "diag")) {
-    safe.diag = null;
+  try {
+    const { page: _page, ...safe } = sanitizeSafeDiagnosticPayload(value, policy);
+    safe.diag = sanitizePageDiagnostics(asRecord(value).diag);
+    if (!Object.hasOwn(safe, "diag")) {
+      safe.diag = null;
+    }
+    if (!Object.hasOwn(safe, "phase")) {
+      safe.phase = "unknown";
+    }
+    return safe as SafeDiagnosticInfo;
+  } catch {
+    return { diag: null, phase: "unknown" };
   }
-  if (!Object.hasOwn(safe, "phase")) {
-    safe.phase = "unknown";
-  }
-  return safe as SafeDiagnosticInfo;
 }
 
 /** The only safe-capture payload dispatcher. */
 export function sanitizeSafeCaptureEvent(value: unknown): SafeCaptureBoundaryRecord | null {
-  const raw = asRecord(value);
-  if (raw.kind === "surface_manifest") {
-    return { kind: "surface_manifest", payload: sanitizeSurfaceManifest(raw.payload) };
-  }
-  if (raw.kind === "artifact_metadata") {
-    return { kind: "artifact_metadata", payload: sanitizeArtifactCapturePayload(raw.payload) };
+  try {
+    const raw = asRecord(value);
+    if (raw.kind === "surface_manifest") {
+      return { kind: "surface_manifest", payload: sanitizeSurfaceManifest(raw.payload) };
+    }
+    if (raw.kind === "artifact_metadata") {
+      return { kind: "artifact_metadata", payload: sanitizeArtifactCapturePayload(raw.payload) };
+    }
+  } catch {
+    return null;
   }
   return null;
 }
@@ -536,18 +559,96 @@ function sanitizeSafeDone(
   return safe;
 }
 
+function isSafeEmissionObject(value: unknown): boolean {
+  try {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+function safeEmissionProperty(value: unknown, key: string): unknown {
+  let property: unknown;
+  try {
+    if (isSafeEmissionObject(value)) {
+      property = Reflect.get(value as object, key);
+    }
+  } catch {
+    // A hostile type getter is an unknown message and selects the fixed fallback.
+  }
+  return property;
+}
+
+function safeProgressFallback(): Extract<EmittedMessage, { type: "PROGRESS" }> {
+  return { message: DEFAULT_SAFE_PROGRESS_MESSAGE, type: "PROGRESS" };
+}
+
+function safeSkipFallback(): Extract<EmittedMessage, { type: "SKIP_RESULT" }> {
+  return {
+    diagnostics: { diagnostic: "sanitized" },
+    message: "Safe diagnostic skipped: diagnostic_sanitized",
+    reason: "diagnostic_sanitized",
+    stream: "unknown",
+    type: "SKIP_RESULT",
+  };
+}
+
+function safeDoneFallback(): Extract<EmittedMessage, { type: "DONE" }> {
+  return {
+    error: { code: "unknown", message: "Connector failure (unknown)", retryable: false },
+    records_emitted: 0,
+    status: "failed",
+    type: "DONE",
+  };
+}
+
+function safeEmissionFallback(type: unknown): EmittedMessage {
+  switch (type) {
+    case "PROGRESS":
+      return safeProgressFallback();
+    case "SKIP_RESULT":
+      return safeSkipFallback();
+    case "DONE":
+      return safeDoneFallback();
+    default:
+      return safeDoneFallback();
+  }
+}
+
+const SAFE_PASSTHROUGH_MESSAGE_TYPES = new Set([
+  "ASSISTANCE",
+  "ASSISTANCE_STATUS",
+  "BROWSER_SURFACE_REQUEST",
+  "DETAIL_COVERAGE",
+  "DETAIL_GAP",
+  "DETAIL_GAP_ATTEMPTED",
+  "DETAIL_GAP_RECOVERED",
+  "DETAIL_GAPS_PAGE_REQUEST",
+  "INTERACTION",
+  "RECORD",
+  "STATE",
+]);
+
 export function sanitizeSafeEmission(
   message: EmittedMessage,
   policy: SafeDiagnosticsPolicy = DEFAULT_SAFE_DIAGNOSTICS_POLICY
 ): EmittedMessage {
-  switch (message.type) {
-    case "PROGRESS":
-      return sanitizeSafeProgress(message, policy);
-    case "SKIP_RESULT":
-      return sanitizeSafeSkip(message, policy);
-    case "DONE":
-      return sanitizeSafeDone(message, policy);
-    default:
-      return message;
+  const type = safeEmissionProperty(message, "type");
+  if (!isSafeEmissionObject(message)) {
+    return safeDoneFallback();
+  }
+  try {
+    switch (type) {
+      case "PROGRESS":
+        return sanitizeSafeProgress(message as Extract<EmittedMessage, { type: "PROGRESS" }>, policy);
+      case "SKIP_RESULT":
+        return sanitizeSafeSkip(message as Extract<EmittedMessage, { type: "SKIP_RESULT" }>, policy);
+      case "DONE":
+        return sanitizeSafeDone(message as Extract<EmittedMessage, { type: "DONE" }>, policy);
+      default:
+        return typeof type === "string" && SAFE_PASSTHROUGH_MESSAGE_TYPES.has(type) ? message : safeDoneFallback();
+    }
+  } catch {
+    return safeEmissionFallback(type);
   }
 }
