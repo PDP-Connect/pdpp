@@ -67,6 +67,7 @@ import {
   isNoDataExportMessage,
   runSingleLadderAttempt,
   shouldParseStatementTitle,
+  tryExportLadder,
   USAA_RETRYABLE_PATTERN,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -177,6 +178,110 @@ function makeNoExportPage(
     url() {
       return finalUrl;
     },
+  });
+}
+
+function makeNoExportFallbackPage(controlLabel: string): Page {
+  let evaluateCount = 0;
+  return Object.assign({} as Page, {
+    evaluate() {
+      evaluateCount += 1;
+      if (evaluateCount === 1) {
+        return Promise.resolve({
+          account_detail_marker_count: 1,
+          export_affordance_candidates: [],
+          navigation_marker_count: 2,
+          target_count: 0,
+          transaction_marker_count: 1,
+        });
+      }
+      return Promise.resolve([
+        {
+          aria_disabled: false,
+          class_name: "activity-control",
+          disabled: false,
+          href_path: "/my/activity",
+          label: controlLabel,
+          role: "button",
+          tag: "BUTTON",
+          type: "button",
+          visible: true,
+        },
+      ]);
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    locator() {
+      return {
+        count() {
+          return Promise.resolve(0);
+        },
+        filter() {
+          return this;
+        },
+      };
+    },
+    title() {
+      return Promise.resolve("Bank Account Summary | USAA");
+    },
+    url() {
+      return "https://www.usaa.com/my/checking?accountId=private";
+    },
+  });
+}
+
+function makeDisabledExportPage(): Page {
+  return Object.assign({} as Page, {
+    evaluate(_fn: (...args: unknown[]) => unknown, arg?: unknown) {
+      if (arg && typeof arg === "object" && "exportAffordance" in (arg as Record<string, unknown>)) {
+        return Promise.resolve({
+          account_detail_marker_count: 1,
+          export_affordance_candidates: [
+            {
+              aria_disabled: false,
+              cls: "as_credit__utility-bar-item as_credit__export",
+              disabled: true,
+              id: "export-button",
+              role: "button",
+              tag: "BUTTON",
+              text: "Export",
+              type: "button",
+              visible: true,
+            },
+          ],
+          navigation_marker_count: 2,
+          target_count: 1,
+          transaction_marker_count: 1,
+        });
+      }
+      return Promise.resolve(null);
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    locator(selector: string) {
+      if (selector === "button.as_credit__utility-bar-item.as_credit__export") {
+        return {
+          count: () => Promise.resolve(1),
+          first(): unknown {
+            return this;
+          },
+          isEnabled: () => Promise.resolve(false),
+        };
+      }
+      return {
+        count: () => Promise.resolve(0),
+        filter(): unknown {
+          return this;
+        },
+        first(): unknown {
+          return this;
+        },
+      };
+    },
+    title: () => Promise.resolve("Bank Account Summary | USAA"),
+    url: () => "https://www.usaa.com/my/credit-card?accountId=private",
   });
 }
 
@@ -540,9 +645,12 @@ test("emitExportFailure: a missing export affordance is reported as a structure-
   assert.ok(skip, "SKIP_RESULT must emit when the ladder is exhausted");
   assert.equal(skip.stream, "transactions", "export failure is charged to the transactions stream");
   assert.equal(skip.reason, "export_affordance_missing", "a missing affordance/dialog is a structure-changed outcome");
-  assert.equal(skip.message, "USAA transaction export affordance was not found on the observed browser surface");
-  const emittedDiag = skip.diagnostics as { browser_surface: Record<string, unknown> };
+  assert.match(skip.message, /confirmed account page/);
+  assert.deepEqual(skip.recovery_hint, { action: "capture_live_surface", retryable: false });
+  const emittedDiag = skip.diagnostics as { terminal_failure?: string; browser_surface: Record<string, unknown> };
+  assert.equal(emittedDiag.terminal_failure, "source_structure_changed");
   assert.deepEqual(emittedDiag, {
+    terminal_failure: "source_structure_changed",
     browser_surface: {
       account_detail_marker_count: 1,
       activity_table_marker_count: 0,
@@ -572,6 +680,33 @@ test("classifyUsaaNoExportRoute requires both a closed account route and structu
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/logon", true), "interstitial");
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/dashboard", true), "unknown");
   assert.equal(classifyUsaaNoExportRoute("https://private.example/my/checking", true), "unknown");
+});
+
+test("tryExportLadder: a confirmed disabled control is terminal and does not try another date window", async () => {
+  const { deps, messages } = makeHarness();
+  const result = await tryExportLadder(
+    deps,
+    {} as BrowserContext,
+    makeDisabledExportPage(),
+    async () => ({ request_id: "test", status: "success", type: "INTERACTION_RESPONSE" }),
+    makeAccount({ account_type: "credit-card" }),
+    3,
+    4,
+    ["2026-01-01", "2025-01-01"],
+    "2026-07-16",
+    () => undefined
+  );
+
+  assert.equal(result.terminalFailure, "export_affordance_disabled");
+  assert.equal(result.csvPath, null);
+  const progress = messages
+    .filter((message): message is Extract<EmittedMessage, { type: "PROGRESS" }> => message.type === "PROGRESS")
+    .map((message) => message.message);
+  assert.equal(progress.filter((message) => message.includes("Export wait")).length, 1);
+  assert.equal(
+    progress.some((message) => message.includes("Retrying export")),
+    false
+  );
 });
 
 test("driveExport records account, challenge, and unrelated routes through the actual no-export path", async () => {
@@ -626,6 +761,42 @@ test("driveExport records account, challenge, and unrelated routes through the a
         phase: "no_export_affordance",
       },
     ]);
+  }
+});
+
+test("driveExport writes a bounded alternate-surface inventory for a terminal no-export observation", async () => {
+  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-no-export-capture-"));
+  try {
+    const first = await driveExport(makeNoExportFallbackPage("View activity"), "https://www.usaa.com/my/checking", {
+      fallbackDiagnosticRootOverride: captureRoot,
+      settleDelayMs: 0,
+      sinceDate: "2026-01-01",
+      untilDate: "2026-07-16",
+    });
+    assert.deepEqual(first, { kind: "failed" });
+
+    const fallbackPath = join(captureRoot, "usaa", "diagnostics", "no-export-affordance.json");
+    const written = JSON.parse(await readFile(fallbackPath, "utf8"));
+    assert.equal(written.phase, "no_export_affordance");
+    assert.equal(written.observation.route, "expected");
+    assert.equal(written.observation.target_count, 0);
+    assert.equal(written.surface_controls.length, 1);
+    assert.equal(written.surface_controls[0].label, "View activity");
+    assert.equal(written.surface_controls[0].href_path, "/my/activity");
+    assert.doesNotMatch(JSON.stringify(written), /accountId=|private/);
+
+    const second = await driveExport(makeNoExportFallbackPage("Statements"), "https://www.usaa.com/my/checking", {
+      fallbackDiagnosticRootOverride: captureRoot,
+      settleDelayMs: 0,
+      sinceDate: "2026-01-01",
+      untilDate: "2026-07-16",
+    });
+    assert.deepEqual(second, { kind: "failed" });
+    const rewritten = JSON.parse(await readFile(fallbackPath, "utf8"));
+    assert.equal(rewritten.surface_controls[0].label, "Statements");
+    assert.doesNotMatch(JSON.stringify(rewritten), /View activity/);
+  } finally {
+    rmSync(captureRoot, { force: true, recursive: true });
   }
 });
 
@@ -1034,9 +1205,11 @@ test("driveExport surfaces the full call log on an export-click timeout, not jus
  * called at all (the wasted actionability wait is skipped), (2) the ladder
  * gets a precise `no_export_affordance` diagnostic with
  * `affordance_disabled: true` and `target_count > 0` — present-but-not-ready,
- * not "missing" — and (3) `classifyExportLadderOutcome` treats this as
- * `export_pressure` (retryable), never `source_structure_changed`, since a
- * disabled button is not evidence the source's export UI changed.
+ * not "missing" — and (3) `classifyExportLadderOutcome` preserves the
+ * `export_pressure` evidence label, never `source_structure_changed`, since a
+ * disabled button is not evidence the source's export UI changed. The
+ * separate terminal ladder classifier still stops date retries because
+ * another window cannot enable this control.
  */
 test("driveExport short-circuits a disabled-but-present export affordance to a precise no_export_affordance diagnostic, never attempting the click", async () => {
   let clickCalled = false;
@@ -1120,21 +1293,21 @@ test("driveExport short-circuits a disabled-but-present export affordance to a p
   assert.equal(
     outcomeClass,
     "export_pressure",
-    "a disabled-but-present affordance must be treated as retryable pressure, not a structural break"
+    "a disabled-but-present affordance is pressure evidence, not a structural break"
   );
 
   // Account 3/4 in the live evidence is a credit-card account (its export
-  // button matched the as_credit__* selector), so the credit-card
-  // unverified-flow reason takes precedence over export_affordance_disabled
-  // (existing, deliberate precedence — see emitExportFailure's reason
-  // ladder). The disabled evidence still reaches the message text and the
-  // stored diagnostics regardless of which `reason` wins.
+  // button matched the as_credit__* selector), so terminal disabled evidence
+  // is more precise than the older generic credit-card-unverified reason. The
+  // next run can still prove a supported
+  // surface, but this run must not leave a retryable detail gap behind.
   const { deps, messages } = makeHarness();
   await emitExportFailure(deps, makeAccount({ account_type: "credit-card" }), noAffordance ?? null);
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
-  assert.equal(skip.reason, "credit_card_export_unverified");
-  assert.match(skip.message, /found but not actionable \(disabled\)/);
+  assert.equal(skip.reason, "export_affordance_disabled");
+  assert.match(skip.message, /remained disabled/);
+  assert.deepEqual(skip.recovery_hint, { action: "capture_live_surface", retryable: false });
   const stored = skip.diagnostics as { export_affordance_candidates?: Record<string, unknown>[] };
   const [storedCandidate] = stored.export_affordance_candidates ?? [];
   assert.ok(
@@ -1221,7 +1394,8 @@ test("driveExport surfaces export_affordance_disabled as its own reason for a no
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
   assert.equal(skip.reason, "export_affordance_disabled");
-  assert.match(skip.message, /found but not actionable \(disabled\)/);
+  assert.match(skip.message, /remained disabled/);
+  assert.deepEqual(skip.recovery_hint, { action: "capture_live_surface", retryable: false });
 });
 
 /**
@@ -1529,7 +1703,7 @@ test("emitExportFailure: credit-card account uses credit_card_export_unverified 
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
   assert.equal(skip.reason, "credit_card_export_unverified", "credit-card export flow is not yet live-verified");
-  assert.match(skip.message, /credit-card export flow not verified/, "message carries the design-notes pointer");
+  assert.match(skip.message, /credit-card export flow remains live-unverified/);
 });
 
 /**

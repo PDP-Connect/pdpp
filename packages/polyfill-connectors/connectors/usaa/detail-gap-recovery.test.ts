@@ -134,6 +134,29 @@ test("recoverServedAccountTransactionGaps treats a source-limited no-activity ex
   assert.equal(recoveriesOf(messages)[0]?.gap_id, "gap-dormant");
 });
 
+test("recoverServedAccountTransactionGaps closes a served retry gap after terminal unavailable classification", async () => {
+  const { deps, messages } = makeHarness(new Map([["ACCT-UNAVAILABLE", "gap-unavailable"]]));
+
+  await recoverServedAccountTransactionGaps(deps, [
+    {
+      accountId: "ACCT-UNAVAILABLE",
+      kind: "unavailable",
+      reason: "export_affordance_disabled",
+      errorClass: "export_affordance_disabled",
+    },
+  ]);
+
+  assert.deepEqual(recoveriesOf(messages), [
+    {
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: "gap-unavailable",
+      stream: "transactions",
+      record_key: "ACCT-UNAVAILABLE",
+    },
+  ]);
+});
+
 test("recoverServedAccountTransactionGaps leaves unserved or unenumerated accounts pending", async () => {
   const { deps, messages } = makeHarness(new Map([["ACCT-GONE", "gap-gone"]]));
 

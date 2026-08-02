@@ -22,6 +22,8 @@
  *     account id AND lands in `gap_keys`, so the run is honestly partial —
  *     a failed account is NEVER silently omitted from the denominator
  *     (that would make a partial run misread as complete);
+ *   - a confirmed terminal source/control failure is an explicit
+ *     `optional_skip_keys` entry, not a retry gap or a no-activity claim;
  *   - a run whose account loop completed with ZERO transaction-eligible
  *     accounts still reports a measured considered:0/covered:0 coverage
  *     (`enumerationComplete: true`) — the denominator was genuinely walked,
@@ -41,12 +43,15 @@ import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   type AccountTransactionOutcome,
+  applyAlternateSurfaceCoverage,
   buildAccountTransactionDetailGap,
   classifyCsvTransactionResult,
+  classifyTerminalExportFailure,
   type EmitDeps,
   emitTransactionsDetailCoverage,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
+import type { DiagnosticInfo, NoExportAffordanceObservation } from "./types.ts";
 
 interface Harness {
   deps: EmitDeps;
@@ -101,6 +106,65 @@ test("buildAccountTransactionDetailGap: locator carries only the account id, nev
   const locatorValues = Object.values(gap.detail_locator).map((v) => String(v));
   assert.ok(!locatorValues.includes("USAA CLASSIC CHECKING"), "no account name in locator");
   assert.ok(!locatorValues.includes("9241"), "no last_four in locator");
+});
+
+test("classifyTerminalExportFailure: disabled and confirmed-missing surfaces stop date retries, drift does not", () => {
+  const baseObservation: NoExportAffordanceObservation = {
+    account_detail_marker_count: 1,
+    affordance_disabled: false,
+    export_affordance_candidates: [],
+    navigation_marker_count: 2,
+    route: "expected",
+    target_count: 0,
+    transaction_marker_count: 1,
+  };
+  const base: DiagnosticInfo = { diag: null, no_export_observation: baseObservation, phase: "no_export_affordance" };
+  assert.equal(
+    classifyTerminalExportFailure({
+      ...base,
+      no_export_observation: {
+        ...baseObservation,
+        affordance_disabled: true,
+        export_affordance_candidates: [
+          {
+            aria_disabled: true,
+            cls: "as_credit__export",
+            disabled: true,
+            id: null,
+            role: "button",
+            tag: "BUTTON",
+            text: "",
+            type: "button",
+            visible: true,
+          },
+        ],
+        target_count: 1,
+      },
+    }),
+    "export_affordance_disabled"
+  );
+  assert.equal(classifyTerminalExportFailure(base), "source_structure_changed");
+  assert.equal(
+    classifyTerminalExportFailure({
+      ...base,
+      no_export_observation: { ...baseObservation, route: "unknown" },
+    }),
+    null
+  );
+  assert.equal(classifyTerminalExportFailure({ diag: null, phase: "export_artifact_wait_failed" }), null);
+});
+
+test("applyAlternateSurfaceCoverage: only exact parsed-PDF account ids upgrade failed outcomes", () => {
+  const outcomes: AccountTransactionOutcome[] = [
+    { accountId: "ACCT-3", kind: "unavailable", reason: "export_affordance_disabled", errorClass: "disabled" },
+    { accountId: "ACCT-4", kind: "gap", reason: "temporary_unavailable", errorClass: "export_no_download" },
+    { accountId: "ACCT-5", kind: "no_activity" },
+  ];
+  assert.deepEqual(
+    applyAlternateSurfaceCoverage(outcomes, new Set(["ACCT-3"])),
+    [{ accountId: "ACCT-3", kind: "hydrated" }, outcomes[1], outcomes[2]],
+    "a statement PDF with a resolved account id can cover that account, but not another failed account"
+  );
 });
 
 // ─── classifyCsvTransactionResult: dormant vs parse-trouble split ─────────
@@ -255,6 +319,25 @@ test("emitTransactionsDetailCoverage: a source-limited no-activity account is HY
   assert.equal(coverage.gap_keys, undefined, "no-activity must not appear in gap_keys");
 });
 
+test("emitTransactionsDetailCoverage: terminal unavailable is an explicit optional skip, not a retry gap or zero-activity claim", async () => {
+  const { deps, messages } = makeHarness();
+  const outcomes: AccountTransactionOutcome[] = [
+    { accountId: "ACCT-1", kind: "hydrated" },
+    { accountId: "ACCT-2", kind: "unavailable", reason: "source_structure_changed", errorClass: "missing" },
+    { accountId: "ACCT-3", kind: "gap", reason: "temporary_unavailable", errorClass: "export_no_download" },
+  ];
+  await emitTransactionsDetailCoverage(deps, outcomes, true);
+
+  const coverage = coverageOf(messages);
+  assert.ok(coverage, "expected a DETAIL_COVERAGE message");
+  assert.deepEqual(coverage.required_keys, ["ACCT-1", "ACCT-2", "ACCT-3"]);
+  assert.deepEqual(coverage.hydrated_keys, ["ACCT-1"]);
+  assert.deepEqual(coverage.optional_skip_keys, ["ACCT-2"]);
+  assert.deepEqual(coverage.gap_keys, ["ACCT-3"]);
+  assert.equal(coverage.considered, 3);
+  assert.equal(coverage.covered, 2, "hydrated + terminal optional skip are accounted for");
+});
+
 test("emitTransactionsDetailCoverage: an export failure makes the run partial via gap_keys — a failed account is NOT counted as covered", async () => {
   const { deps, messages } = makeHarness();
   const outcomes: AccountTransactionOutcome[] = [
@@ -333,7 +416,11 @@ test("emitTransactionsDetailCoverage: required_keys is the union of hydrated + g
 
   const coverage = coverageOf(messages);
   assert.ok(coverage);
-  const accountedFor = new Set([...coverage.hydrated_keys, ...(coverage.gap_keys ?? [])]);
+  const accountedFor = new Set([
+    ...coverage.hydrated_keys,
+    ...(coverage.gap_keys ?? []),
+    ...(coverage.optional_skip_keys ?? []),
+  ]);
   assert.deepEqual(
     [...coverage.required_keys].sort(),
     [...accountedFor].sort(),

@@ -14,7 +14,7 @@
  *
  * Transactions path: drive the USAA "Export" button → "Select Date Range"
  * CSV flow. Primary key is a synthetic SHA-256 hash since USAA does not
- * expose transaction IDs (documented design choice — see design-notes/usaa.md).
+ * expose transaction IDs (the manifest and parser code document the synthetic key).
  *
  * Session: cookie-based probe on UsaaMbWebMemberLoggedIn + LtpaToken2.
  * On session death, emits INTERACTION manual_action → inbox.
@@ -472,11 +472,12 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
  *     dialog was missing/unrecognized (`export_dialog_unexpected_shape`, or
  *     `no_export_affordance` with `no_export_observation.route === "expected"`
  *     — i.e. the page really was the account/transaction detail page and the
- *     export button was genuinely gone). These are the phases the ladder
- *     treats as fatal (`isFatalDiagPhase`): they don't get better with a
- *     shorter window, so retrying is pointless until the connector's
- *     selectors are revisited. This is the "source UI/API changed or terminally
- *     unsupported" outcome.
+ *     export button was genuinely gone). These source-shape phases are fatal
+ *     (`isFatalDiagPhase`): they don't get better with a shorter window, so
+ *     retrying is pointless until the connector's selectors are revisited.
+ *     A matched-but-disabled control is also terminal for ladder control, but
+ *     remains `export_pressure` here so its evidence is not mislabeled as a
+ *     missing source surface.
  *   - `navigation_drifted` — `no_export_affordance` where
  *     `no_export_observation.route` is `"unknown"` or `"interstitial"`: the
  *     page we ended up on was NOT confirmed to be the account/transaction
@@ -506,6 +507,14 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
 export type ExportLadderOutcome = "export_pressure" | "navigation_drifted" | "source_structure_changed" | "unknown";
 
 /**
+ * A bounded export observation that cannot be improved by another date
+ * window. These are terminal for this account until the owner supplies a
+ * fresh live surface capture or the connector is updated; they are not a
+ * claim that the account has zero activity.
+ */
+export type TerminalExportFailure = "export_affordance_disabled" | "source_structure_changed";
+
+/**
  * True iff `no_export_affordance`'s route observation confirms the ladder
  * really reached the account/transaction detail page. Only this route value
  * makes a missing export affordance genuinely structural — any other route
@@ -525,6 +534,9 @@ export function classifyExportLadderOutcome(lastDiag: DiagnosticInfo | null): Ex
   if (lastDiag.phase === "no_export_affordance" && !noExportRouteConfirmsAccountPage(lastDiag)) {
     return "navigation_drifted";
   }
+  if (lastDiag.phase === "no_export_affordance" && lastDiag.no_export_observation?.affordance_disabled) {
+    return "export_pressure";
+  }
   if (isFatalDiagPhase(lastDiag)) {
     return "source_structure_changed";
   }
@@ -532,9 +544,28 @@ export function classifyExportLadderOutcome(lastDiag: DiagnosticInfo | null): Ex
 }
 
 /**
- * Emit the "backfill ladder exhausted" SKIP_RESULT for transactions.
- * Called when `tryExportLadder` returns no CSV across every candidate
- * start without an explicit "nothing to export" source response.
+ * Classify only evidence that makes another date-window attempt pointless.
+ * A matched, disabled control is a control prerequisite: changing the
+ * transaction date cannot enable it. A confirmed missing control or an
+ * unexpected dialog shape is a source-surface decision, not a transient
+ * download failure. Navigation drift and post-submit pressure remain
+ * retryable and deliberately return null here.
+ */
+export function classifyTerminalExportFailure(lastDiag: DiagnosticInfo | null): TerminalExportFailure | null {
+  if (
+    lastDiag?.phase === "no_export_affordance" &&
+    noExportRouteConfirmsAccountPage(lastDiag) &&
+    lastDiag.no_export_observation?.affordance_disabled
+  ) {
+    return "export_affordance_disabled";
+  }
+  return isFatalDiagPhase(lastDiag) ? "source_structure_changed" : null;
+}
+
+/**
+ * Emit the transaction-surface result after `tryExportLadder` returns no CSV
+ * (either after its bounded retry ladder or at a terminal surface decision)
+ * without an explicit "nothing to export" source response.
  *
  * The honest-empty case (the source explicitly said "no transactions") never
  * reaches here — `processAccountTransactions` returns before calling this when
@@ -544,14 +575,40 @@ export function classifyExportLadderOutcome(lastDiag: DiagnosticInfo | null): Ex
 export async function emitExportFailure(
   deps: EmitDeps,
   a: DashboardAccount,
-  lastDiag: DiagnosticInfo | null
+  lastDiag: DiagnosticInfo | null,
+  terminalFailure: TerminalExportFailure | null = classifyTerminalExportFailure(lastDiag)
 ): Promise<void> {
-  const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
   const outcome = classifyExportLadderOutcome(lastDiag);
+  const reason = exportFailureReason(a, lastDiag, outcome, terminalFailure);
+  await deps.emit({
+    type: "SKIP_RESULT",
+    stream: "transactions",
+    reason,
+    message: exportFailureMessage(a, lastDiag, outcome, terminalFailure),
+    ...(terminalFailure ? { recovery_hint: { action: "capture_live_surface", retryable: false } } : {}),
+    diagnostics: exportFailureDiagnostics(deps, lastDiag, outcome, terminalFailure),
+  });
+}
+
+function exportFailureMessage(
+  a: DashboardAccount,
+  lastDiag: DiagnosticInfo | null,
+  outcome: ExportLadderOutcome,
+  terminalFailure: TerminalExportFailure | null
+): string {
+  const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
   const isNoExportAffordance = lastDiag?.phase === "no_export_affordance";
   const isAffordanceDisabled = Boolean(lastDiag?.no_export_observation?.affordance_disabled);
   let baseMessage = "USAA transaction export affordance was not found on the observed browser surface";
-  if (isAffordanceDisabled) {
+  if (terminalFailure === "export_affordance_disabled") {
+    baseMessage =
+      "USAA transaction export affordance was found but remained disabled after the bounded actionability wait — no exportable activity was proven and no date-window retry is scheduled";
+  } else if (terminalFailure === "source_structure_changed") {
+    baseMessage =
+      lastDiag?.phase === "export_dialog_unexpected_shape"
+        ? "USAA export dialog opened but its date-control shape was not recognized — no exportable activity was proven and a bounded live capture is required before updating the connector"
+        : "USAA transaction export affordance was not found on the confirmed account page — no exportable activity was proven and a bounded live capture is required before updating the connector";
+  } else if (isAffordanceDisabled) {
     baseMessage =
       "USAA transaction export affordance was found but not actionable (disabled) on the observed browser surface — treating as transient UI-not-ready pressure, not a missing affordance";
   } else if (outcome === "navigation_drifted") {
@@ -562,60 +619,55 @@ export async function emitExportFailure(
       ? `Export ladder exhausted (${outcome}): ${formatDiagnosticInfo(lastDiag)}`
       : "Export dialog didn't produce a download across all ranges and the source never reported an empty account — outcome unknown (transient pressure or shifted selectors)";
   }
-  const ccSuffix = isCreditCard
-    ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
-    : "";
-  // Credit-card exports keep their own unverified-flow reason regardless of
-  // outcome (the flow itself was never confirmed live), but still carry the
-  // structural-vs-pressure discriminator in diagnostics. For non-credit-card
-  // accounts:
-  //   - a confirmed missing affordance/dialog (`source_structure_changed`) is
-  //     reported as a distinct structure-changed reason so the dashboard stops
-  //     conflating "the connector is broken" with "the export was momentarily
-  //     unavailable";
-  //   - a `navigation_drifted` outcome (no_export_affordance where the route
-  //     observation did NOT confirm we reached the account page) is reported
-  //     under its own reason — it is neither a structure change nor ordinary
-  //     export pressure, and collapsing it into `export_no_download` would
-  //     hide the "we don't even know we were on the right page" distinction
-  //     that made this case retryable in the first place.
-  //   - an `affordance_disabled` observation (the button exists but was not
-  //     actionable) is reported under its own reason too — collapsing it into
-  //     `export_affordance_missing` would falsely claim the connector's
-  //     selectors are broken, and collapsing it into `export_no_download`
-  //     would lose the "we saw exactly why: it's disabled" evidence that
-  //     distinguishes UI-not-ready from ordinary post-submit pressure.
-  let reason: string;
-  if (isCreditCard) {
-    reason = "credit_card_export_unverified";
-  } else if (isAffordanceDisabled) {
-    reason = "export_affordance_disabled";
-  } else if (outcome === "source_structure_changed") {
-    reason = "export_affordance_missing";
-  } else if (outcome === "navigation_drifted") {
-    reason = "navigation_drifted";
-  } else {
-    reason = "export_no_download";
+  const ccSuffix = isCreditCard && !terminalFailure ? " (credit-card export flow remains live-unverified)" : "";
+  return `${baseMessage}${ccSuffix}`;
+}
+
+function exportFailureReason(
+  a: DashboardAccount,
+  lastDiag: DiagnosticInfo | null,
+  outcome: ExportLadderOutcome,
+  terminalFailure: TerminalExportFailure | null
+): string {
+  if (terminalFailure === "export_affordance_disabled") {
+    return "export_affordance_disabled";
   }
-  const noExportDiagnostic = isNoExportAffordance
-    ? noExportAffordanceDiagnostic(lastDiag, deps.browserSurface ?? "unknown")
-    : null;
-  const baseDiagnostics = !isNoExportAffordance && lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null;
-  const exportAffordanceCandidates = isNoExportAffordance
-    ? sanitizeExportAffordanceCandidates(lastDiag?.no_export_observation?.export_affordance_candidates)
-    : null;
-  await deps.emit({
-    type: "SKIP_RESULT",
-    stream: "transactions",
-    reason,
-    message: `${baseMessage}${ccSuffix}`,
-    diagnostics: noExportDiagnostic
-      ? {
-          browser_surface: noExportDiagnostic,
-          ...(exportAffordanceCandidates?.length ? { export_affordance_candidates: exportAffordanceCandidates } : {}),
-        }
-      : { outcome, ...(baseDiagnostics ?? {}) },
-  });
+  if (terminalFailure === "source_structure_changed" || outcome === "source_structure_changed") {
+    return "export_affordance_missing";
+  }
+  if (CREDIT_CARD_TYPE_RE.test(a.account_type)) {
+    return "credit_card_export_unverified";
+  }
+  if (lastDiag?.no_export_observation?.affordance_disabled) {
+    return "export_affordance_disabled";
+  }
+  return outcome === "navigation_drifted" ? "navigation_drifted" : "export_no_download";
+}
+
+function exportFailureDiagnostics(
+  deps: EmitDeps,
+  lastDiag: DiagnosticInfo | null,
+  outcome: ExportLadderOutcome,
+  terminalFailure: TerminalExportFailure | null
+): Record<string, unknown> {
+  const isNoExportAffordance = lastDiag?.phase === "no_export_affordance";
+  const terminal = terminalFailure ? { terminal_failure: terminalFailure } : {};
+  if (isNoExportAffordance) {
+    const browserSurface = noExportAffordanceDiagnostic(lastDiag, deps.browserSurface ?? "unknown");
+    const candidates = sanitizeExportAffordanceCandidates(
+      lastDiag?.no_export_observation?.export_affordance_candidates
+    );
+    return {
+      ...terminal,
+      browser_surface: browserSurface,
+      ...(candidates.length ? { export_affordance_candidates: candidates } : {}),
+    };
+  }
+  return {
+    outcome,
+    ...terminal,
+    ...(lastDiag ? sanitizeDiagnosticInfo(lastDiag) : {}),
+  };
 }
 
 function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
@@ -1249,9 +1301,9 @@ async function emitExportClickFailedDiagnostic(
 
 /**
  * Bounded, always-on raw evidence for `export_dialog_unexpected_shape` — the
- * one diagnostic phase this file has no live DOM evidence for (see
- * design-notes/usaa.md "2026-07-31 gate: export_dialog_unexpected_shape
- * evidence gap"). Every OTHER diagnostic capture in this file (the
+ * one diagnostic phase this file has no retained live DOM evidence for (the
+ * 2026-07-31 gate recorded only the redacted phase). Every OTHER diagnostic
+ * capture in this file (the
  * `dialog_html_preview` passed to `onDiagnostics`, and every
  * `captureExportCheckpoint` call) is either bounded to `HTML_PREVIEW_MAX`
  * chars before it reaches durable evidence, or gated behind
@@ -1319,6 +1371,93 @@ async function writeExportDialogUnexpectedShapeFallback(
   } catch {
     // Best-effort, matching every other capture call in this file: a
     // filesystem error here must never fail the connector run.
+  }
+}
+
+interface BoundedSurfaceControl {
+  aria_disabled: boolean;
+  class_name: string;
+  disabled: boolean;
+  href_path: string | null;
+  label: string;
+  role: string | null;
+  tag: string;
+  type: string | null;
+  visible: boolean;
+}
+
+/** Capture only the bounded control inventory needed to identify an alternate
+ * account-page surface after an export affordance is absent. Querying this
+ * inventory is diagnostic-only; it never drives a new selector or click. */
+async function captureBoundedSurfaceControls(page: Page): Promise<BoundedSurfaceControl[]> {
+  const controls = await page
+    .evaluate(() => {
+      const visibleControls = [...document.querySelectorAll<HTMLElement>('button, [role="button"], a')]
+        .slice(0, 24)
+        .map((el): BoundedSurfaceControl => {
+          const href = el.getAttribute("href");
+          let hrefPath: string | null = null;
+          if (href) {
+            try {
+              hrefPath = new URL(href, location.href).pathname.slice(0, 120);
+            } catch {
+              hrefPath = null;
+            }
+          }
+          return {
+            aria_disabled: el.getAttribute("aria-disabled") === "true",
+            class_name: (typeof el.className === "string" ? el.className : "").slice(0, 100),
+            disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
+            href_path: hrefPath,
+            label: (el.getAttribute("aria-label") || el.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80),
+            role: el.getAttribute("role"),
+            tag: el.tagName,
+            type: el.getAttribute("type"),
+            visible: el.offsetParent !== null,
+          };
+        });
+      return visibleControls;
+    })
+    .catch((): BoundedSurfaceControl[] => []);
+  return Array.isArray(controls) ? controls : [];
+}
+
+/**
+ * Persist one bounded, path-fixed account-page surface inventory whenever the
+ * export affordance is absent or disabled. The inventory is deliberately
+ * separate from durable SKIP_RESULT diagnostics: it is local, git-ignored,
+ * overwritten on every occurrence, and contains enough labels/routes for the
+ * next authenticated UAT run to distinguish an alternate supported surface
+ * from a real source-shape change without guessing a selector.
+ */
+async function writeNoExportAffordanceFallback(
+  page: Page,
+  observation: NoExportAffordanceObservation,
+  rootOverride: string | undefined
+): Promise<void> {
+  try {
+    const dir = join(fallbackDiagnosticRoot(rootOverride), "usaa", "diagnostics");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "no-export-affordance.json"),
+      JSON.stringify(
+        {
+          captured_at: nowIso(),
+          phase: "no_export_affordance",
+          page_title: await page.title().catch((): string => ""),
+          observation: {
+            ...observation,
+            export_affordance_candidates: sanitizeExportAffordanceCandidates(observation.export_affordance_candidates),
+          },
+          surface_controls: await captureBoundedSurfaceControls(page),
+          note: "Bounded fallback capture — overwritten on every occurrence, not accumulated. Use one authenticated UAT run to decide whether a supported alternate surface exists.",
+        },
+        null,
+        2
+      )
+    );
+  } catch {
+    // A diagnostic fallback must never fail the collection run.
   }
 }
 
@@ -1633,8 +1772,9 @@ async function emitNoExportAffordanceDiagnostic(
   checkpointSuffix: string
 ): Promise<void> {
   await captureExportCheckpoint(page, options, checkpointSuffix);
+  const noExportObservation = await captureNoExportAffordanceObservation(page);
+  await writeNoExportAffordanceFallback(page, noExportObservation, options.fallbackDiagnosticRootOverride);
   if (options.onDiagnostics) {
-    const noExportObservation = await captureNoExportAffordanceObservation(page);
     options.onDiagnostics({ diag: null, no_export_observation: noExportObservation, phase: "no_export_affordance" });
   }
 }
@@ -1752,10 +1892,11 @@ async function reauthAfterSessionLapse(
   }
 }
 
-interface ExportLadderResult {
+export interface ExportLadderResult {
   csvPath: string | null;
   exportEmpty: boolean;
   lastDiag: DiagnosticInfo | null;
+  terminalFailure: TerminalExportFailure | null;
   usedSince: string | null;
 }
 
@@ -1845,42 +1986,37 @@ export async function runSingleLadderAttempt({
 }
 
 /**
- * True iff the ladder should stop retrying remaining candidate windows for
- * this account. `export_dialog_unexpected_shape` is unconditionally fatal (no
- * route signal is available there — the export dialog itself was reached and
- * didn't match). `no_export_affordance` is fatal ONLY when the route
- * observation confirms the ladder actually reached the account/transaction
- * detail page (`route === "expected"`); when the route is `"unknown"` or
- * `"interstitial"` we can't conclude the export UI changed — the ladder may
- * simply have drifted to the wrong page (stale accountId, promo interstitial)
- * — so retrying the remaining candidate windows (and, ultimately, a future
- * run's fresh dashboard scan) stays worthwhile. See `classifyExportLadderOutcome`.
- */
-/**
- * A confirmed `no_export_affordance` on the account page is fatal (the
- * source's export UI is genuinely gone) UNLESS the observation shows the
- * affordance is present but disabled (`affordance_disabled`) — that's
- * evidence the button exists and the page structure matches expectations,
- * just that it isn't actionable yet (e.g. still loading, or momentarily
- * gated by the source). Retrying — this run's remaining candidate windows,
- * or a future run's fresh dashboard scan — can still recover it, so it must
- * not be declared a structural break.
+ * A confirmed `no_export_affordance` on the account page is terminal when
+ * the source surface is absent OR the matched control stayed disabled after
+ * the bounded actionability wait. Neither condition is date-dependent. A
+ * drifted route, post-submit pressure, or an unclassified failure remains
+ * retryable and continues through the existing bounded ladder.
  */
 function isFatalDiagPhase(diag: DiagnosticInfo | null): diag is DiagnosticInfo {
-  if (!diag) {
-    return false;
-  }
-  if (diag.phase === "export_dialog_unexpected_shape") {
-    return true;
-  }
-  return (
-    diag.phase === "no_export_affordance" &&
-    noExportRouteConfirmsAccountPage(diag) &&
-    !diag.no_export_observation?.affordance_disabled
-  );
+  return classifyTerminalExportFailureWithoutRecursion(diag) !== null;
 }
 
-async function tryExportLadder(
+function classifyTerminalExportFailureWithoutRecursion(diag: DiagnosticInfo | null): TerminalExportFailure | null {
+  if (!diag) {
+    return null;
+  }
+  if (
+    diag.phase === "no_export_affordance" &&
+    noExportRouteConfirmsAccountPage(diag) &&
+    diag.no_export_observation?.affordance_disabled
+  ) {
+    return "export_affordance_disabled";
+  }
+  if (diag.phase === "export_dialog_unexpected_shape") {
+    return "source_structure_changed";
+  }
+  if (diag.phase === "no_export_affordance" && noExportRouteConfirmsAccountPage(diag)) {
+    return "source_structure_changed";
+  }
+  return null;
+}
+
+export async function tryExportLadder(
   deps: EmitDeps,
   context: BrowserContext,
   page: Page,
@@ -1919,10 +2055,16 @@ async function tryExportLadder(
       onSessionDead,
     });
     if (outcome.kind === "session_dead") {
-      return { csvPath: null, exportEmpty: false, usedSince: null, lastDiag: diagBox.current };
+      return { csvPath: null, exportEmpty: false, lastDiag: diagBox.current, terminalFailure: null, usedSince: null };
     }
     if (outcome.kind === "success") {
-      return { csvPath: outcome.csvPath, exportEmpty: false, usedSince: sinceDate, lastDiag: diagBox.current };
+      return {
+        csvPath: outcome.csvPath,
+        exportEmpty: false,
+        lastDiag: diagBox.current,
+        terminalFailure: null,
+        usedSince: sinceDate,
+      };
     }
     if (outcome.kind === "empty") {
       await deps.emit({
@@ -1930,7 +2072,13 @@ async function tryExportLadder(
         stream: "transactions",
         message: `Export complete: no transactions for account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}`,
       });
-      return { csvPath: null, exportEmpty: true, usedSince: sinceDate, lastDiag: diagBox.current };
+      return {
+        csvPath: null,
+        exportEmpty: true,
+        lastDiag: diagBox.current,
+        terminalFailure: null,
+        usedSince: sinceDate,
+      };
     }
     const diagNow = diagBox.current;
     if (diagNow) {
@@ -1940,13 +2088,23 @@ async function tryExportLadder(
         message: `Export diagnostic: account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}, ${formatDiagnosticInfo(diagNow)}`,
       });
     }
-    if (isFatalDiagPhase(diagNow)) {
+    const terminalFailure = classifyTerminalExportFailureWithoutRecursion(diagNow);
+    if (terminalFailure) {
       await deps.emit({
         type: "PROGRESS",
         stream: "transactions",
-        message: `Export diagnostic: ${diagNow.phase}; skipping retries for account ${accountOrdinal}/${accountTotal}`,
+        message:
+          terminalFailure === "export_affordance_disabled"
+            ? `Export diagnostic: affordance disabled after bounded actionability wait; no date-window retry for account ${accountOrdinal}/${accountTotal}`
+            : `Export diagnostic: ${diagNow?.phase ?? "unknown"}; skipping retries for account ${accountOrdinal}/${accountTotal}`,
       });
-      break;
+      return {
+        csvPath: null,
+        exportEmpty: false,
+        lastDiag: diagBox.current,
+        terminalFailure,
+        usedSince: null,
+      };
     }
     await deps.emit({
       type: "PROGRESS",
@@ -1954,7 +2112,13 @@ async function tryExportLadder(
       message: `Retrying export with shorter range for account ${accountOrdinal}/${accountTotal}`,
     });
   }
-  return { csvPath: null, exportEmpty: false, usedSince: null, lastDiag: diagBox.current };
+  return {
+    csvPath: null,
+    exportEmpty: false,
+    lastDiag: diagBox.current,
+    terminalFailure: null,
+    usedSince: null,
+  };
 }
 
 interface CsvTransactionEmitResult {
@@ -2042,8 +2206,8 @@ export async function emitCsvTransactions(
  * Per-account outcome of the transactions detail pass, mirroring chase's
  * `AccountDetailOutcome` in spirit: one entry per transaction-eligible
  * account this run considered, classifying how (or whether) it was
- * covered. `kind` decides both the DETAIL_COVERAGE `hydrated_keys`
- * membership and whether a retryable DETAIL_GAP is owed:
+ * covered. `kind` decides both the DETAIL_COVERAGE key classification and
+ * whether a retryable DETAIL_GAP is owed:
  *   - `hydrated`: the CSV export downloaded and parsed with usable rows
  *     (fresh coverage of this account's ledger for the window).
  *   - `no_activity`: the source gave a real, source-limited "nothing here"
@@ -2055,6 +2219,10 @@ export async function emitCsvTransactions(
  *     downloaded CSV had data rows but none parsed to a usable transaction
  *     (header mismatch / unparseable rows) — genuinely unreached this run,
  *     retryable.
+ *   - `unavailable`: the observed account page supplied terminal evidence of
+ *     a disabled control or missing export surface. This is an explicit
+ *     optional skip, never a zero-activity claim; a bounded statement-PDF
+ *     result can still upgrade it to `hydrated` before coverage is emitted.
  * Accounts skipped because the session died mid-run are NOT recorded here
  * at all (see `runTransactionsStream`): they were never reached, so
  * `required_keys` only ever lists accounts the run actually attempted,
@@ -2062,6 +2230,12 @@ export async function emitCsvTransactions(
  */
 export type AccountTransactionOutcome =
   | { accountId: string; kind: "gap"; reason: DetailGapMessage["reason"]; errorClass: string }
+  | {
+      accountId: string;
+      kind: "unavailable";
+      reason: TerminalExportFailure;
+      errorClass: string;
+    }
   | { accountId: string; kind: "hydrated" | "no_activity" };
 
 /** Build the retryable DETAIL_GAP for a USAA transaction account whose CSV
@@ -2093,6 +2267,27 @@ export function buildAccountTransactionDetailGap(outcome: {
     detail: { class: outcome.errorClass },
     last_error: { class: outcome.errorClass },
   };
+}
+
+/**
+ * A statement PDF is an alternate transaction surface only when its index row
+ * resolved to the exact dashboard account id and the parser yielded at least
+ * one transaction. Never infer coverage from a hydrated PDF count, an
+ * unresolved account reference, or a statement row with zero parsed rows.
+ */
+export function applyAlternateSurfaceCoverage(
+  outcomes: readonly AccountTransactionOutcome[],
+  alternateSurfaceAccountIds: ReadonlySet<string>
+): AccountTransactionOutcome[] {
+  return outcomes.map((outcome) => {
+    if (
+      (outcome.kind === "gap" || outcome.kind === "unavailable") &&
+      alternateSurfaceAccountIds.has(outcome.accountId)
+    ) {
+      return { accountId: outcome.accountId, kind: "hydrated" };
+    }
+    return outcome;
+  });
 }
 
 /**
@@ -2134,8 +2329,9 @@ export function buildServedAccountTransactionGapLookup(
 
 /**
  * A served account gap is recovered only after this run reaches that same
- * account. `hydrated` and source-limited `no_activity` are both complete
- * account coverage; a fresh `gap` is deliberately re-deferred instead.
+ * account. `hydrated`, source-limited `no_activity`, and an evidence-backed
+ * terminal `unavailable` classification all account for the served work;
+ * only a fresh retryable `gap` is deliberately re-deferred.
  */
 export async function recoverServedAccountTransactionGaps(
   deps: EmitDeps,
@@ -2146,7 +2342,7 @@ export async function recoverServedAccountTransactionGaps(
     return;
   }
   for (const outcome of outcomes) {
-    if (outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
+    if (outcome.kind === "gap") {
       continue;
     }
     const gapId = served.get(outcome.accountId);
@@ -2171,6 +2367,9 @@ export async function recoverServedAccountTransactionGaps(
  *   - `required_keys`: every transaction-eligible account attempted.
  *   - `hydrated_keys`: accounts reached, including source-limited
  *     no-activity ones (won't-backfill is coverage, never a broken signal).
+ *   - `optional_skip_keys`: accounts reached but proven unavailable on the
+ *     observed source surface. These keys are accounted for by explicit
+ *     terminal policy; no transaction record or zero-activity claim is made.
  *   - `gap_keys`: accounts whose export failed transiently; each also
  *     carries a pending DETAIL_GAP so the runtime's coverage invariant is
  *     satisfied and the next run retries them.
@@ -2207,19 +2406,27 @@ export async function emitTransactionsDetailCoverage(
   const hydratedKeys = outcomes
     .filter((o) => o.kind === "hydrated" || o.kind === "no_activity")
     .map((o) => o.accountId);
+  const optionalSkipKeys = outcomes.filter((o) => o.kind === "unavailable").map((o) => o.accountId);
   const gapKeys = outcomes.filter((o) => o.kind === "gap").map((o) => o.accountId);
+  const coveredKeys = [...hydratedKeys, ...optionalSkipKeys];
   await emitDetailCoverage(deps, {
     stream: "transactions",
     stateStream: "accounts",
     requiredKeys,
     hydratedKeys,
     gapKeys,
+    optionalSkipKeys,
     considered: outcomes.length,
-    covered: hydratedKeys.length,
+    covered: coveredKeys.length,
   });
 }
 
 export interface AccountTransactionResult {
+  exportFailure?: {
+    account: DashboardAccount;
+    lastDiag: DiagnosticInfo | null;
+    terminalFailure: TerminalExportFailure | null;
+  };
   last_date: string | null;
   outcome: AccountTransactionOutcome;
 }
@@ -2293,7 +2500,7 @@ async function processAccountTransactions(
   const todayIso = new Date().toISOString().slice(0, 10);
   const candidateStarts = buildCandidateStarts(desiredSince);
 
-  const { csvPath, exportEmpty, usedSince, lastDiag } = await tryExportLadder(
+  const { csvPath, exportEmpty, usedSince, lastDiag, terminalFailure } = await tryExportLadder(
     deps,
     context,
     page,
@@ -2317,19 +2524,15 @@ async function processAccountTransactions(
         outcome: { accountId, kind: "no_activity" },
       };
     }
-    await emitExportFailure(deps, a, lastDiag);
-    // `errorClass` mirrors the ladder outcome so a gap left by a drifted
-    // navigation (stale account URL / promo interstitial — recoverable by a
-    // fresh dashboard scan next run) or a disabled-but-present export
-    // affordance (UI not ready — recoverable by any later retry, same URL)
-    // is distinguishable from the generic no-download pressure case, without
-    // inventing a new DETAIL_GAP `reason` (the protocol's closed reason
-    // vocabulary has no "wrong page"/"not actionable yet" value —
-    // `temporary_unavailable` is still the honest fit: this account is
-    // expected to be reachable again).
+    // `errorClass` mirrors the observed surface so a terminal disabled or
+    // missing affordance stays distinct from navigation drift and ordinary
+    // post-submit pressure. The protocol's closed DETAIL_GAP reason vocabulary
+    // remains unchanged for the retryable branch.
     let errorClass: string;
-    if (lastDiag?.no_export_observation?.affordance_disabled) {
+    if (terminalFailure === "export_affordance_disabled") {
       errorClass = "export_affordance_disabled";
+    } else if (terminalFailure === "source_structure_changed") {
+      errorClass = "export_affordance_missing";
     } else if (classifyExportLadderOutcome(lastDiag) === "navigation_drifted") {
       errorClass = "navigation_drifted";
     } else {
@@ -2337,7 +2540,10 @@ async function processAccountTransactions(
     }
     return {
       last_date: priorLastDate,
-      outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass },
+      outcome: terminalFailure
+        ? { accountId, kind: "unavailable", reason: terminalFailure, errorClass }
+        : { accountId, kind: "gap", reason: "temporary_unavailable", errorClass },
+      exportFailure: { account: a, lastDiag, terminalFailure },
     };
   }
   const csvResult = await emitCsvTransactions(
@@ -2352,6 +2558,13 @@ async function processAccountTransactions(
   return classifyCsvTransactionResult(accountId, priorLastDate, usedSince, csvResult);
 }
 
+interface TransactionsStreamResult {
+  cursor: TransactionsStreamCursor;
+  enumerationComplete: boolean;
+  exportFailures: ReadonlyMap<string, NonNullable<AccountTransactionResult["exportFailure"]>>;
+  outcomes: readonly AccountTransactionOutcome[];
+}
+
 async function runTransactionsStream(
   deps: EmitDeps,
   context: BrowserContext,
@@ -2362,7 +2575,7 @@ async function runTransactionsStream(
   requested: BrowserCollectContext["requested"],
   streamState: TransactionsStreamState,
   fingerprintCursor?: FingerprintCursor
-): Promise<TransactionsStreamCursor> {
+): Promise<TransactionsStreamResult> {
   const stream = requested.get("transactions");
   const sinceDateCfg = stream?.time_range?.since?.slice(0, 10);
   const seventeenMonthsAgo = new Date(Date.now() - BACKFILL_17MO).toISOString().slice(0, 10);
@@ -2372,6 +2585,7 @@ async function runTransactionsStream(
 
   const transactionAccounts = accounts.filter((a) => TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type));
   const outcomes: AccountTransactionOutcome[] = [];
+  const exportFailures = new Map<string, NonNullable<AccountTransactionResult["exportFailure"]>>();
   for (let i = 0; i < transactionAccounts.length; i += 1) {
     const a = transactionAccounts[i];
     if (!a) {
@@ -2409,8 +2623,8 @@ async function runTransactionsStream(
       continue;
     }
     outcomes.push(result.outcome);
-    if (result.outcome.kind === "gap") {
-      await deps.emit(buildAccountTransactionDetailGap(result.outcome));
+    if (result.exportFailure) {
+      exportFailures.set(result.outcome.accountId, result.exportFailure);
     }
     if (result.last_date === null) {
       // No cursor advance to record this account (e.g. a gap with no
@@ -2428,10 +2642,37 @@ async function runTransactionsStream(
   // The loop above only `break`s on a session death; reaching here without
   // one means every transaction-eligible account was attempted (including
   // the zero-eligible-accounts case, where the loop body never ran at all),
-  // so the denominator this run enumerated is genuinely complete.
+  // so the denominator this run enumerated is genuinely complete. Coverage
+  // and DETAIL_GAP emission are deliberately deferred until after the PDF
+  // surface runs; a statement PDF can be the already-supported alternate
+  // surface for an account whose CSV export failed.
+  return {
+    cursor: transactionsCursor,
+    enumerationComplete: !streamState.sessionDeadMidRun,
+    exportFailures,
+    outcomes,
+  };
+}
+
+/** Emit final transaction coverage only after every supported surface has had
+ * a chance to account for the same dashboard-account denominator. */
+async function finalizeTransactionsStream(
+  deps: EmitDeps,
+  result: TransactionsStreamResult,
+  alternateSurfaceAccountIds: ReadonlySet<string>
+): Promise<void> {
+  const outcomes = applyAlternateSurfaceCoverage(result.outcomes, alternateSurfaceAccountIds);
+  for (const outcome of outcomes) {
+    const failure = result.exportFailures.get(outcome.accountId);
+    if (failure && outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
+      await emitExportFailure(deps, failure.account, failure.lastDiag, failure.terminalFailure);
+    }
+    if (outcome.kind === "gap") {
+      await deps.emit(buildAccountTransactionDetailGap(outcome));
+    }
+  }
   await recoverServedAccountTransactionGaps(deps, outcomes);
-  await emitTransactionsDetailCoverage(deps, outcomes, !streamState.sessionDeadMidRun);
-  return transactionsCursor;
+  await emitTransactionsDetailCoverage(deps, outcomes, result.enumerationComplete);
 }
 
 /** Attach the carried-forward per-transaction fingerprint map to the
@@ -2558,10 +2799,10 @@ async function processPdfStatementRow(
   accountById: Map<string, DashboardAccount>,
   counters: PdfParseCounters,
   fingerprintCursor?: FingerprintCursor
-): Promise<void> {
+): Promise<string | null> {
   const title = row.title || "";
   if (!shouldParseStatementTitle(title)) {
-    return;
+    return null;
   }
   const period = (row.date_delivered || "").slice(0, 7) || null;
   const acct = row.account_id ? accountById.get(row.account_id) : null;
@@ -2586,7 +2827,7 @@ async function processPdfStatementRow(
           raw_text_sample: "rawTextSample" in parseMeta ? parseMeta.rawTextSample : null,
         },
       });
-      return;
+      return null;
     }
     for (const t of txns) {
       // Same per-transaction fingerprint gate as the CSV path (excludes
@@ -2601,6 +2842,7 @@ async function processPdfStatementRow(
       counters.pdfTxnCount += 1;
     }
     counters.parsedStatements += 1;
+    return row.account_id && accountById.has(row.account_id) ? row.account_id : null;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await deps.emit({
@@ -2609,6 +2851,7 @@ async function processPdfStatementRow(
       reason: "pdf_parse_failed",
       message: `PDF statement parse failed at row ${row.rowIndex + 1}: ${msg.slice(0, ID_TEXT_SNIP)}`,
     });
+    return null;
   }
 }
 
@@ -2618,25 +2861,35 @@ async function emitPdfStatementTransactions(
   hydrationResults: Map<number, HydrationResult>,
   accounts: readonly DashboardAccount[],
   fingerprintCursor?: FingerprintCursor
-): Promise<void> {
+): Promise<Set<string>> {
   const accountById = new Map<string, DashboardAccount>(
     accounts
       .filter((a): a is DashboardAccount & { account_id_raw: string } => Boolean(a.account_id_raw))
       .map((a) => [a.account_id_raw, a])
   );
+  const transactionAccountIds = new Set(
+    accounts
+      .filter((a) => a.account_id_raw && TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type))
+      .map((a) => a.account_id_raw as string)
+  );
+  const coveredAccountIds = new Set<string>();
   const counters: PdfParseCounters = { pdfTxnCount: 0, parsedStatements: 0, unknownTemplates: 0 };
   for (const row of indexRows) {
     const ok = hydrationSuccess(hydrationResults.get(row.rowIndex));
     if (!ok) {
       continue;
     }
-    await processPdfStatementRow(deps, row, ok, accountById, counters, fingerprintCursor);
+    const accountId = await processPdfStatementRow(deps, row, ok, accountById, counters, fingerprintCursor);
+    if (accountId && transactionAccountIds.has(accountId)) {
+      coveredAccountIds.add(accountId);
+    }
   }
   await deps.emit({
     type: "PROGRESS",
     stream: "transactions",
     message: `PDF parse complete: ${counters.pdfTxnCount} transaction(s) across ${counters.parsedStatements} statement(s) (${counters.unknownTemplates} unknown templates)`,
   });
+  return coveredAccountIds;
 }
 
 async function runStatementsStream(
@@ -2646,7 +2899,8 @@ async function runStatementsStream(
   statementsFingerprintCursor?: FingerprintCursor,
   transactionsFingerprintCursor?: FingerprintCursor,
   statementsHydrationCursor?: StatementHydrationCursor
-): Promise<void> {
+): Promise<Set<string>> {
+  const alternateSurfaceAccountIds = new Set<string>();
   try {
     await deps.emit({
       type: "PROGRESS",
@@ -2679,7 +2933,16 @@ async function runStatementsStream(
       );
     }
     if (requested.has("transactions")) {
-      await emitPdfStatementTransactions(deps, indexRows, summary.results, accounts, transactionsFingerprintCursor);
+      const pdfCoveredAccountIds = await emitPdfStatementTransactions(
+        deps,
+        indexRows,
+        summary.results,
+        accounts,
+        transactionsFingerprintCursor
+      );
+      for (const accountId of pdfCoveredAccountIds) {
+        alternateSurfaceAccountIds.add(accountId);
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2694,6 +2957,7 @@ async function runStatementsStream(
       },
     });
   }
+  return alternateSurfaceAccountIds;
 }
 
 // ─── Inbox stream ───────────────────────────────────────────────────────
@@ -3146,8 +3410,9 @@ if (isMainModule(import.meta.url)) {
       // (not just the fingerprint map).
       let transactionsCursorAfterCsv: TransactionsStreamCursor =
         (state.transactions as TransactionsPriorState | undefined) ?? {};
+      let transactionsRun: TransactionsStreamResult | null = null;
       if (requested.has("transactions")) {
-        transactionsCursorAfterCsv = await runTransactionsStream(
+        transactionsRun = await runTransactionsStream(
           deps,
           context,
           page,
@@ -3158,6 +3423,7 @@ if (isMainModule(import.meta.url)) {
           streamState,
           transactionsFingerprintCursor
         );
+        transactionsCursorAfterCsv = transactionsRun.cursor;
       }
 
       // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
@@ -3185,7 +3451,7 @@ if (isMainModule(import.meta.url)) {
         const statementsHydrationCursor = requested.has("statements")
           ? openStatementHydrationCursor(readPriorStatementHydration(state.statements))
           : undefined;
-        await runStatementsStream(
+        const alternateSurfaceAccountIds = await runStatementsStream(
           { ...deps, page },
           accounts,
           requested,
@@ -3193,6 +3459,13 @@ if (isMainModule(import.meta.url)) {
           transactionsFingerprintCursor,
           statementsHydrationCursor
         );
+        if (transactionsRun) {
+          await finalizeTransactionsStream(deps, transactionsRun, alternateSurfaceAccountIds);
+          transactionsRun = null;
+        }
+      } else if (transactionsRun) {
+        await finalizeTransactionsStream(deps, transactionsRun, new Set<string>());
+        transactionsRun = null;
       }
 
       // Persist the merged per-transaction fingerprint map (CSV + PDF paths)
