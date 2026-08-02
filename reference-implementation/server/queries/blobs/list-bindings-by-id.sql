@@ -9,11 +9,9 @@
 -- the blob bytes when at least one visible record exposes the
 -- requested blob via `data.blob_ref.blob_id`.
 --
--- The result is bounded per-blob in practice (a content-addressed
--- blob is referenced by the records that emit those bytes — usually
--- one, sometimes a small handful when the same payload is shared).
--- The wrapper's `LIMIT ?` placeholder caps the read defensively;
--- the caller passes a domain-appropriate limit.
+-- The wrapper binds one extra row to the `LIMIT ?` placeholder so the
+-- BlobStore can detect overflow. An overflow is an incomplete visibility
+-- proof and must fail closed; it is not an authorization result.
 SELECT 0 AS id, connector_id, connector_instance_id, stream, record_key
 FROM blob_bindings
 WHERE blob_id = ?

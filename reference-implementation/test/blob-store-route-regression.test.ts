@@ -14,7 +14,7 @@ const TOP_LEVEL_REGEX_1 = /^blob_sha256_/;
  *   - 404 + `blob_not_found` when the blob exists but no visible record under
  *     the actor's storage binding references it.
  *
- * The existing `query-contract.test.js` covers the success path
+ * The existing `query-contract.test.ts` covers the success path
  * incidentally; this file focuses on the visibility/404 contract that the
  * extracted `BlobStore` capability must preserve.
  */
@@ -25,7 +25,10 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { exec, referenceQueries } from "../lib/db.ts";
 import { startServer } from "../server/index.ts";
+import { MAX_BLOB_RESPONSE_BYTES, mountRsBlobRead } from "../server/routes/rs-read.ts";
+import { createBlobStore } from "../server/stores/blob-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -103,6 +106,140 @@ async function withHarness(fn: (urls: { asUrl: string; rsUrl: string }) => Promi
   } finally {
     await closeServer(server);
   }
+}
+
+interface BoundaryHarness {
+  errors: Array<{ code?: string; message?: string }>;
+  invoke: () => Promise<void>;
+  loadedRanges: Array<{ end: number; start: number } | null>;
+  response: {
+    body: unknown;
+    headers: Map<string, string>;
+    statusCode: number;
+  };
+}
+
+function makeBoundaryHarness({
+  method,
+  range,
+  size,
+}: {
+  method: string;
+  range?: string;
+  size: number;
+}): BoundaryHarness {
+  const loadedRanges: Array<{ end: number; start: number } | null> = [];
+  const errors: Array<{ code?: string; message?: string }> = [];
+  const response = {
+    body: undefined as unknown,
+    headers: new Map<string, string>(),
+    statusCode: 200,
+  };
+  let routeHandler: ((req: unknown, res: unknown) => Promise<unknown>) | undefined;
+  const app = {
+    get(...args: unknown[]) {
+      routeHandler = args.at(-1) as (req: unknown, res: unknown) => Promise<unknown>;
+      return app;
+    },
+  };
+  const bytes = Buffer.from("0123456789", "utf8");
+  const connectorId = "blob-boundary-connector";
+  const record = { data: { blob_ref: { blob_id: "blob_sha256_boundary" } } };
+  const blobStore = {
+    listBlobBindings: async () => [
+      {
+        connector_id: connectorId,
+        connector_instance_id: "blob-boundary-instance",
+        record_key: "attachment-1",
+        stream: "attachments",
+      },
+    ],
+    loadContentAddressedBlob: (_blobId: string, selectedRange?: { end: number; start: number }) => {
+      loadedRanges.push(selectedRange ?? null);
+      const data = selectedRange ? bytes.subarray(selectedRange.start, selectedRange.end + 1) : bytes;
+      return {
+        blob_id: "blob_sha256_boundary",
+        connector_id: connectorId,
+        connector_instance_id: "blob-boundary-instance",
+        data,
+        mime_type: "application/octet-stream",
+        record_key: "attachment-1",
+        sha256: "sha256-boundary",
+        size_bytes: size,
+        stream: "attachments",
+      };
+    },
+    loadContentAddressedBlobMetadata: () => ({
+      blob_id: "blob_sha256_boundary",
+      mime_type: "application/octet-stream",
+      sha256: "sha256-boundary",
+      size_bytes: size,
+    }),
+  };
+  const context = {
+    AmbiguousConnectionError: class extends Error {
+      constructor(message: string, _candidates: unknown[]) {
+        super(message);
+      }
+    },
+    buildOwnerReadGrant: (stream: string) => ({ streams: [{ name: stream }] }),
+    canonicalConnectorKey: (connector: string) => connector,
+    createBlobStore: () => blobStore,
+    getRecord: async () => record,
+    handleError: (_res: unknown, err: unknown) => errors.push(err as { code?: string; message?: string }),
+    opts: {},
+    ownerSubjectIdForBindings: () => "boundary-owner",
+    requireToken: () => undefined,
+    resolveOwnerManifestFromScope: async () => ({
+      manifest: { streams: [{ name: "attachments" }] },
+      storageBinding: { connector_id: connectorId },
+    }),
+    resolveOwnerReadScope: async () => ({ source: null }),
+    resolveReadRequestBindings: async () => ({
+      bindings: [{ connectorId, connectorInstanceId: "blob-boundary-instance", displayName: null }],
+      requestConnectionId: null,
+      warnings: [],
+    }),
+  };
+  mountRsBlobRead(
+    app as unknown as Parameters<typeof mountRsBlobRead>[0],
+    context as unknown as Parameters<typeof mountRsBlobRead>[1]
+  );
+  const req = {
+    headers: range ? { range } : {},
+    method,
+    params: { blob_id: "blob_sha256_boundary" },
+    path: "/v1/blobs/blob_sha256_boundary",
+    query: {},
+    tokenInfo: { pdpp_token_kind: "owner" },
+  };
+  const res = {
+    json(body: unknown) {
+      response.body = body;
+      return response;
+    },
+    send(body: unknown) {
+      response.body = body;
+      return response;
+    },
+    setHeader(name: string, value: string) {
+      response.headers.set(name.toLowerCase(), value);
+      return response;
+    },
+    status(code: number) {
+      response.statusCode = code;
+      return res;
+    },
+  };
+  return {
+    errors,
+    invoke: async () => {
+      assert.ok(routeHandler, "blob route must register a handler");
+      await routeHandler(req, res);
+    },
+    loadedRanges,
+    response,
+  };
 }
 
 interface ConnectorManifest {
@@ -261,4 +398,61 @@ test("GET /v1/blobs/:blob_id returns 200 with bytes when a visible record refere
     assert.equal(headResp.headers.get("cache-control"), "private, no-store");
     assert.equal(await headResp.text(), "");
   });
+});
+
+test("BlobStore uses metadata-only and backend byte-range reads on SQLite", async () => {
+  await withHarness(async () => {
+    const blobId = "blob_sha256_store_range_001";
+    const bytes = Buffer.from("0123456789", "utf8");
+    exec(referenceQueries.blobsInsertBlob, [
+      blobId,
+      "blob-store-test",
+      "blob-store-instance",
+      "attachments",
+      "range-1",
+      "text/plain",
+      bytes.length,
+      "sha256-test",
+      bytes,
+    ]);
+
+    const store = createBlobStore();
+    const metadata = await store.loadContentAddressedBlobMetadata(blobId);
+    assert.ok(metadata, "metadata lookup must find the blob");
+    assert.equal(Object.hasOwn(metadata, "data"), false, "metadata lookup must not select blob bytes");
+
+    const ranged = await store.loadContentAddressedBlob(blobId, { end: 5, start: 2 });
+    assert.ok(ranged, "range lookup must find the blob");
+    assert.deepEqual(Buffer.from(ranged.data ?? []), bytes.subarray(2, 6));
+  });
+});
+
+test("blob route rejects oversized GET before its byte loader", async () => {
+  const harness = makeBoundaryHarness({ method: "GET", size: MAX_BLOB_RESPONSE_BYTES + 1 });
+  await harness.invoke();
+  assert.deepEqual(harness.loadedRanges, [], "oversized GET must not load the blob row");
+  assert.equal(harness.errors[0]?.code, "invalid_request");
+});
+
+test("blob route HEAD ignores Range and stays metadata-only", async () => {
+  const headSize = MAX_BLOB_RESPONSE_BYTES + 1;
+  const harness = makeBoundaryHarness({ method: "HEAD", range: "bytes=1-3", size: headSize });
+  await harness.invoke();
+  assert.deepEqual(harness.loadedRanges, [], "HEAD must not load the blob row");
+  assert.equal(harness.errors.length, 0);
+  assert.equal(harness.response.statusCode, 200);
+  assert.equal(harness.response.headers.get("content-length"), String(headSize));
+  assert.equal(harness.response.headers.has("content-range"), false);
+  assert.deepEqual(harness.response.body, Buffer.alloc(0));
+});
+
+test("blob route passes a valid GET range to the backend and emits the selected bytes", async () => {
+  const harness = makeBoundaryHarness({ method: "GET", range: "bytes=1-3", size: 10 });
+  await harness.invoke();
+  assert.deepEqual(harness.loadedRanges, [{ end: 3, start: 1 }]);
+  assert.equal(harness.errors.length, 0);
+  assert.equal(harness.response.statusCode, 206);
+  assert.equal(harness.response.headers.get("content-range"), "bytes 1-3/10");
+  assert.equal(harness.response.headers.get("content-length"), "3");
+  assert.deepEqual(harness.response.body, Buffer.from("123", "utf8"));
 });

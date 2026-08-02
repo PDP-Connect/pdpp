@@ -77,6 +77,7 @@ import {
   type StreamsListDependencies,
   type StreamsListInput,
 } from "../../operations/rs-streams-list/index.ts";
+import type { BlobByteRange, BlobMetadata } from "../stores/blob-store.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -86,6 +87,7 @@ import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 interface RouteRequest {
   _pdpp_resolver_warnings?: ResolverWarning[] | undefined;
   readonly headers: Readonly<Record<string, unknown>>;
+  readonly method: string;
   readonly params: Readonly<Record<string, string>>;
   readonly path: string;
   readonly query: Readonly<Record<string, unknown>>;
@@ -208,8 +210,9 @@ interface BlobRow {
 }
 
 interface BlobStoreLike {
-  listBlobBindings: (blobId: string) => Promise<BlobBindingRow[]>;
-  loadContentAddressedBlob: (blobId: string) => Promise<BlobRow | null>;
+  listBlobBindings: (blobId: string) => BlobBindingRow[] | Promise<BlobBindingRow[]>;
+  loadContentAddressedBlob: (blobId: string, range?: BlobByteRange) => BlobRow | null | Promise<BlobRow | null>;
+  loadContentAddressedBlobMetadata: (blobId: string) => BlobMetadata | null | Promise<BlobMetadata | null>;
 }
 
 interface AmbiguousConnectionErrorCtor {
@@ -2433,20 +2436,31 @@ async function scanBlobBindingMatches(
   const ownerMode = tokenInfo.pdpp_token_kind === "owner";
   const requestParams = (req.query as Record<string, unknown>) || {};
 
+  type AddressableResolution =
+    | { readonly connectorInstanceIds: ReadonlySet<string>; readonly kind: "allow" }
+    | { readonly kind: "deny" }
+    | { readonly error: unknown; readonly kind: "error" };
+
+  function addressableResolution(ids: Iterable<string>): AddressableResolution {
+    const connectorInstanceIds = new Set(ids);
+    return connectorInstanceIds.size > 0 ? { connectorInstanceIds, kind: "allow" } : { kind: "deny" };
+  }
+
   // Owner-mode addressable cache: owner can read any active connection and
   // there is no grant-scope connection_id constraint. Client mode resolves
   // `(stream → bindings)` lazily and honors per-stream
-  // `grant.streams[].connection_id`.
-  const streamBindingCache = new Map<string, Set<string>>();
-  async function resolveAddressableForStream(streamName: string): Promise<Set<string>> {
+  // `grant.streams[].connection_id`. The discriminated result is deliberate:
+  // an empty set is never interpreted as unrestricted access.
+  const streamBindingCache = new Map<string, AddressableResolution>();
+  async function resolveAddressableForStream(streamName: string): Promise<AddressableResolution> {
     if (ownerMode) {
       // Owner mode: no grant scoping; the default fan-in set already captures
       // every active connection under the actor's connector, narrowed only by
       // request-time `connection_id` (or alias).
-      return defaultAddressableInstanceIds;
+      return addressableResolution(defaultAddressableInstanceIds);
     }
     if (streamBindingCache.has(streamName)) {
-      return streamBindingCache.get(streamName) as Set<string>;
+      return streamBindingCache.get(streamName) as AddressableResolution;
     }
     try {
       const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
@@ -2457,9 +2471,11 @@ async function scanBlobBindingMatches(
         storageBinding,
         streamName,
       });
-      const ids = new Set(streamBindings.map((b) => b.connectorInstanceId).filter(Boolean) as string[]);
-      streamBindingCache.set(streamName, ids);
-      return ids;
+      const resolution = addressableResolution(
+        streamBindings.map((b) => b.connectorInstanceId).filter(Boolean) as string[]
+      );
+      streamBindingCache.set(streamName, resolution);
+      return resolution;
     } catch (err) {
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       const code = (err as { code?: string })?.code;
@@ -2467,11 +2483,13 @@ async function scanBlobBindingMatches(
         // Grant-scope pins a connection that is not currently active, or the
         // request supplied an addressable id outside the grant for this stream.
         // Treat the stream as inaccessible for the blob-visibility check.
-        const empty = new Set<string>();
-        streamBindingCache.set(streamName, empty);
-        return empty;
+        const denied: AddressableResolution = { kind: "deny" };
+        streamBindingCache.set(streamName, denied);
+        return denied;
       }
-      throw err;
+      const failed: AddressableResolution = { error: err, kind: "error" };
+      streamBindingCache.set(streamName, failed);
+      return failed;
     }
   }
 
@@ -2479,11 +2497,17 @@ async function scanBlobBindingMatches(
   // the no-grant-scope fan-in case use the default set; grant-scoped clients
   // resolve per-stream.
   async function bindingIsAddressable(binding: BlobBindingRow): Promise<boolean> {
-    const addressable =
+    const resolution =
       grantStreams.length || ownerMode
         ? await resolveAddressableForStream(binding.stream)
-        : defaultAddressableInstanceIds;
-    return !(addressable.size > 0 && binding.connector_instance_id && !addressable.has(binding.connector_instance_id));
+        : addressableResolution(defaultAddressableInstanceIds);
+    if (resolution.kind === "error") {
+      throw resolution.error;
+    }
+    if (resolution.kind === "deny" || !binding.connector_instance_id) {
+      return false;
+    }
+    return resolution.connectorInstanceIds.has(binding.connector_instance_id);
   }
 
   // Load the record this binding points at (under the binding's own connection
@@ -2560,23 +2584,53 @@ function buildAmbiguousConnectionError(
   );
 }
 
+// The existing connector hydration policy caps one materialized attachment at
+// 25 MiB. Reuse that established ceiling for a raw GET response; it applies to
+// the selected range or the full body, and is checked before the blob row is
+// loaded. HEAD is metadata-only and is not a response-body allocation.
+export const MAX_BLOB_RESPONSE_BYTES = 25 * 1024 * 1024;
+
+function blobResponseTooLargeError(): Error & { code: string } {
+  const err = new Error(`Blob response exceeds the ${MAX_BLOB_RESPONSE_BYTES}-byte response limit.`) as Error & {
+    code: string;
+  };
+  err.code = "invalid_request";
+  return err;
+}
+
+function setBlobResponseHeaders(
+  res: RouteResponse,
+  mimeType: string,
+  resolverWarnings: ResolverWarning[] | undefined
+): void {
+  res.setHeader("Content-Type", mimeType);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Accept-Ranges", "bytes");
+  // P3: when the resolver observed deprecated alias use, surface it as a
+  // structured response header so callers see migration signal.
+  if (Array.isArray(resolverWarnings) && resolverWarnings.some((w) => w?.code === "deprecated_alias_used")) {
+    res.setHeader("PDPP-Warning", "deprecated_alias_used: connector_instance_id");
+  }
+}
+
 // Pipe the resolved (single) binding through the canonical `executeBlobsRead`
 // operation and write the response: content headers, the deprecated-alias
 // warning header (P3 — the raw-bytes response has no JSON envelope to carry
-// `meta.warnings[]`), and the bytes. Behaviour-identical to the previous inline
-// tail.
+// `meta.warnings[]`), and the bytes. The route has already authorized the
+// range against metadata and selected the backend's range primitive.
 async function serveResolvedBlob(
   res: RouteResponse,
   args: {
     blobId: string;
     blobRow: BlobRow;
     actorConnectorId: string | null;
-    rangeHeader: unknown;
+    range: BlobByteRange | null;
+    totalSize: number;
     resolvedMatch: { binding: BlobBindingRow; record: unknown };
     resolverWarnings: ResolverWarning[] | undefined;
   }
 ): Promise<void> {
-  const { blobId, blobRow, actorConnectorId, rangeHeader, resolvedMatch, resolverWarnings } = args;
+  const { blobId, blobRow, actorConnectorId, range, totalSize, resolvedMatch, resolverWarnings } = args;
   const dependencies = {
     getActorConnectorId: () => actorConnectorId,
     getVisibleRecord: () => resolvedMatch.record,
@@ -2599,40 +2653,26 @@ async function serveResolvedBlob(
   }
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const blob = output.blob;
-  res.setHeader("Content-Type", blob.mime_type);
-  res.setHeader("Cache-Control", "private, no-store");
-  res.setHeader("Accept-Ranges", "bytes");
-  // P3: when the resolver observed deprecated alias use, surface it as a
-  // structured response header so callers see migration signal.
-  if (Array.isArray(resolverWarnings) && resolverWarnings.some((w) => w?.code === "deprecated_alias_used")) {
-    res.setHeader("PDPP-Warning", "deprecated_alias_used: connector_instance_id");
-  }
+  setBlobResponseHeaders(res, blob.mime_type, resolverWarnings);
   const bytes = Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || "");
-  sendBlobBytes(res, bytes, rangeHeader);
+  sendBlobBytes(res, bytes, range, totalSize);
 }
 
-function sendBlobBytes(res: RouteResponse, bytes: Buffer, rangeHeader: unknown): void {
-  const range = resolveBlobByteRange(rangeHeader, bytes.length);
-  if (range === "unsatisfiable") {
-    res.setHeader("Content-Range", `bytes */${bytes.length}`);
-    res.setHeader("Content-Length", "0");
-    res.status(416).send(Buffer.alloc(0));
-    return;
-  }
+function sendBlobBytes(res: RouteResponse, bytes: Buffer, range: BlobByteRange | null, totalSize: number): void {
   if (range) {
-    const rangedBytes = bytes.subarray(range.start, range.end + 1);
-    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${bytes.length}`);
-    res.setHeader("Content-Length", String(rangedBytes.length));
-    res.status(206).send(rangedBytes);
+    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${totalSize}`);
+    res.setHeader("Content-Length", String(bytes.length));
+    res.status(206).send(bytes);
     return;
   }
   res.setHeader("Content-Length", String(bytes.length));
   res.send(bytes);
 }
 
-interface BlobByteRange {
-  end: number;
-  start: number;
+function sendUnsatisfiableBlobRange(res: RouteResponse, totalSize: number): void {
+  res.setHeader("Content-Range", `bytes */${totalSize}`);
+  res.setHeader("Content-Length", "0");
+  res.status(416).send(Buffer.alloc(0));
 }
 
 interface ParsedBlobByteRange {
@@ -2684,7 +2724,123 @@ function isValidBlobByteRange(range: ParsedBlobByteRange, size: number): boolean
 }
 
 function requestRangeHeader(req: RouteRequest): unknown {
-  return req.headers.range ?? req.headers.Range;
+  return req.method === "GET" ? (req.headers.range ?? req.headers.Range) : undefined;
+}
+
+function blobNotFoundError(): Error & { code: string } {
+  const err = new Error("Blob not found") as Error & { code: string };
+  err.code = "blob_not_found";
+  return err;
+}
+
+interface ResolvedBlobVisibility {
+  actorConnectorId: string | null;
+  blobId: string;
+  blobMetadata: BlobMetadata;
+  resolvedMatch: { binding: BlobBindingRow; record: unknown };
+  resolverWarnings: ResolverWarning[] | undefined;
+  totalSize: number;
+}
+
+async function loadBlobMetadata(blobStore: BlobStoreLike, blobId: string): Promise<BlobMetadata> {
+  // Metadata is selected without `data`; bytes are loaded only after the
+  // binding scan proves that at least one record is visible.
+  const blobMetadata = await blobStore.loadContentAddressedBlobMetadata(blobId);
+  if (!blobMetadata) {
+    throw blobNotFoundError();
+  }
+  return blobMetadata;
+}
+
+function canonicalActorConnectorId(ctx: MountRsReadContext, storageBinding: StorageBindingLike): string | null {
+  // Blob bindings are stored under the canonical connector key at ingest. The
+  // grant/owner storage binding may still carry a legacy URL-shaped connector
+  // id, so canonicalize before matching binding.connector_id or the visibility
+  // scan never matches and the read fails blob_not_found.
+  // See canonicalize-connector-keys Decision 1.
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
+  const rawActorConnectorId = storageBinding?.connector_id ?? null;
+  return rawActorConnectorId ? (ctx.canonicalConnectorKey(rawActorConnectorId) ?? rawActorConnectorId) : null;
+}
+
+function selectResolvedBlobMatch(
+  ctx: MountRsReadContext,
+  blobId: string,
+  matchedByInstance: Map<string, { binding: BlobBindingRow; record: unknown }>,
+  requestConnectionId: string | null,
+  defaultBindings: ReadRequestBinding[]
+): { binding: BlobBindingRow; record: unknown } {
+  if (matchedByInstance.size === 0) {
+    throw blobNotFoundError();
+  }
+  if (matchedByInstance.size > 1 && !requestConnectionId) {
+    throw buildAmbiguousConnectionError(ctx, blobId, matchedByInstance, defaultBindings);
+  }
+  const [selectedMatch] = matchedByInstance.values() as IterableIterator<{
+    binding: BlobBindingRow;
+    record: unknown;
+  }>;
+  return selectedMatch as { binding: BlobBindingRow; record: unknown };
+}
+
+function blobMetadataSizeBytes(blobMetadata: BlobMetadata): number {
+  const totalSize = Number(blobMetadata.size_bytes);
+  if (!Number.isSafeInteger(totalSize) || totalSize < 0) {
+    const metadataError = new Error("Blob metadata has an invalid size_bytes value") as Error & { code?: string };
+    metadataError.code = "api_error";
+    throw metadataError;
+  }
+  return totalSize;
+}
+
+async function resolveBlobVisibility(
+  ctx: MountRsReadContext,
+  blobStore: BlobStoreLike,
+  req: RouteRequest
+): Promise<ResolvedBlobVisibility> {
+  const blobId = decodeURIComponent(req.params.blob_id as string);
+  const { tokenInfo } = req;
+  const { storageBinding, manifest, nativeProviderStorage } = await resolveBlobActorScope(ctx, req, tokenInfo);
+  const {
+    bindings: defaultBindings,
+    requestConnectionId,
+    warnings: resolverWarnings,
+  } = await ctx.resolveReadRequestBindings({
+    grant: tokenInfo.grant || { streams: [] },
+    nativeProviderStorage,
+    ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
+    requestParams: (req.query as Record<string, unknown>) || {},
+    storageBinding,
+    streamName: null,
+  });
+  const defaultAddressableInstanceIds = new Set(
+    defaultBindings.map((b) => b.connectorInstanceId).filter(Boolean) as string[]
+  );
+
+  const blobMetadata = await loadBlobMetadata(blobStore, blobId);
+  const blobBindings = await blobStore.listBlobBindings(blobId);
+  const actorConnectorId = canonicalActorConnectorId(ctx, storageBinding);
+  const matchedByInstance = await scanBlobBindingMatches(ctx, {
+    actorConnectorId,
+    blobBindings,
+    blobId,
+    defaultAddressableInstanceIds,
+    manifest,
+    nativeProviderStorage,
+    req,
+    storageBinding,
+    tokenInfo,
+  });
+
+  const resolvedMatch = selectResolvedBlobMatch(ctx, blobId, matchedByInstance, requestConnectionId, defaultBindings);
+  return {
+    actorConnectorId,
+    blobId,
+    blobMetadata,
+    resolvedMatch,
+    resolverWarnings,
+    totalSize: blobMetadataSizeBytes(blobMetadata),
+  };
 }
 
 // GET /v1/blobs/:blob_id — per-binding blob-visibility read. Storage reads
@@ -2701,102 +2857,43 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
     ctx.requireToken,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
-        const blobId = decodeURIComponent(req.params.blob_id as string);
-        const { tokenInfo } = req;
-        const { storageBinding, manifest, nativeProviderStorage } = await resolveBlobActorScope(ctx, req, tokenInfo);
+        const { actorConnectorId, blobId, blobMetadata, resolvedMatch, resolverWarnings, totalSize } =
+          await resolveBlobVisibility(ctx, blobStore, req);
+        const range = resolveBlobByteRange(requestRangeHeader(req), totalSize);
+        if (range === "unsatisfiable") {
+          setBlobResponseHeaders(res, blobMetadata.mime_type, resolverWarnings);
+          sendUnsatisfiableBlobRange(res, totalSize);
+          return;
+        }
 
-        // Resolve the default set of bindings this caller can address. When
-        // the request supplies `connection_id` (or the deprecated alias) the
-        // resolver narrows; otherwise the resolver fans in. The blob route
-        // does not know the stream yet — that comes from per-binding records
-        // — so we resolve without a stream constraint here and re-check the
-        // per-stream grant-scope `connection_id` constraint per binding below.
-        const {
-          bindings: defaultBindings,
-          requestConnectionId,
-          warnings: resolverWarnings,
-        } = await ctx.resolveReadRequestBindings({
-          grant: tokenInfo.grant || { streams: [] },
-          nativeProviderStorage,
-          ownerSubjectId: ctx.ownerSubjectIdForBindings(tokenInfo),
-          requestParams: (req.query as Record<string, unknown>) || {},
-          storageBinding,
-          streamName: null,
-        });
-        const defaultAddressableInstanceIds = new Set(
-          defaultBindings.map((b) => b.connectorInstanceId).filter(Boolean) as string[]
-        );
+        // HEAD is an authorized metadata probe. Fastify dispatches HEAD to
+        // this GET handler, so it must never load bytes and must ignore Range.
+        if (req.method === "HEAD") {
+          setBlobResponseHeaders(res, blobMetadata.mime_type, resolverWarnings);
+          res.setHeader("Content-Length", String(totalSize));
+          res.send(Buffer.alloc(0));
+          return;
+        }
 
-        // Pre-load the blob and its bindings ourselves so we can perform a
-        // route-level scan for ambiguity (P1 fix: the canonical operation
-        // short-circuits on the first visible match and cannot observe
-        // multiplicity) and so we can apply the per-stream grant-scope
-        // `connection_id` constraint per blob binding (P2 fix: blobs cannot
-        // borrow the connector-wide addressable set when the grant pins a
-        // specific connection on the binding's stream).
-        const blobRow = await blobStore.loadContentAddressedBlob(blobId);
+        const responseBytes = range ? range.end - range.start + 1 : totalSize;
+        if (responseBytes > MAX_BLOB_RESPONSE_BYTES) {
+          throw blobResponseTooLargeError();
+        }
+
+        // Single visible binding: load only the authorized range (or the
+        // bounded full body) and pipe it through the canonical operation.
+        const blobRow = await blobStore.loadContentAddressedBlob(blobId, range ?? undefined);
         if (!blobRow) {
-          const notFound = new Error("Blob not found") as Error & { code?: string };
-          notFound.code = "blob_not_found";
-          throw notFound;
+          throw blobNotFoundError();
         }
-        const blobBindings = await blobStore.listBlobBindings(blobId);
-        // Blob bindings are stored under the canonical connector key at ingest.
-        // The grant/owner storage binding may still carry a legacy URL-shaped
-        // connector id, so canonicalize before matching binding.connector_id or
-        // the visibility scan never matches and the read fails blob_not_found.
-        // See canonicalize-connector-keys Decision 1.
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-        const rawActorConnectorId = storageBinding?.connector_id ?? null;
-        const actorConnectorId = rawActorConnectorId
-          ? (ctx.canonicalConnectorKey(rawActorConnectorId) ?? rawActorConnectorId)
-          : null;
-
-        // Iterate every blob binding and collect the unique connector instances
-        // that expose a visible record referencing this blob.
-        const matchedByInstance = await scanBlobBindingMatches(ctx, {
-          actorConnectorId,
-          blobBindings,
-          blobId,
-          defaultAddressableInstanceIds,
-          manifest,
-          nativeProviderStorage,
-          req,
-          storageBinding,
-          tokenInfo,
-        });
-
-        if (matchedByInstance.size === 0) {
-          const notFound = new Error("Blob not found") as Error & { code?: string };
-          notFound.code = "blob_not_found";
-          throw notFound;
-        }
-
-        // Ambiguity: more than one connection exposed the blob and the caller
-        // did not narrow with `connection_id`. Emit the typed
-        // `ambiguous_connection` envelope with `available_connections` so the
-        // caller can recover.
-        if (matchedByInstance.size > 1 && !requestConnectionId) {
-          throw buildAmbiguousConnectionError(ctx, blobId, matchedByInstance, defaultBindings);
-        }
-
-        // Single visible binding: serve the blob bytes. The selected match is
-        // piped through the canonical `executeBlobsRead` operation and written
-        // out by `serveResolvedBlob` (headers, deprecated-alias warning header,
-        // and the raw bytes). `matchedByInstance.size === 0` was handled above,
-        // so the iterator yields at least one entry here.
-        const [selectedMatch] = matchedByInstance.values() as IterableIterator<{
-          binding: BlobBindingRow;
-          record: unknown;
-        }>;
-        const resolvedMatch = selectedMatch as { binding: BlobBindingRow; record: unknown };
         await serveResolvedBlob(res, {
           actorConnectorId,
           blobId,
           blobRow,
-          rangeHeader: requestRangeHeader(req),
+          range,
           resolvedMatch,
           resolverWarnings,
+          totalSize,
         });
       } catch (err) {
         ctx.handleError(res, err);

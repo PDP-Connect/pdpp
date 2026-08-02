@@ -8,7 +8,9 @@
  * the route adapter and the canonical `rs.blobs.read` operation depend on
  * this interface rather than reaching into raw `blobs` / `blob_bindings`
  * SQLite rows or registry queries themselves. The interface speaks blob
- * lookup: `loadContentAddressedBlob` returns the row by id (or null);
+ * lookup: `loadContentAddressedBlobMetadata` returns metadata by id without
+ * selecting `data`; `loadContentAddressedBlob` returns the row by id (or null)
+ * and can ask the backend for one byte range;
  * `listBlobBindings` returns the union of `blob_bindings` rows and the
  * originating `blobs` row reduced to
  * `(connector_id, connector_instance_id, stream, record_key)`
@@ -19,8 +21,38 @@
  */
 
 import { getMany, getOne, referenceQueries } from "../../lib/db.ts";
-import { postgresListBlobBindings, postgresLoadContentAddressedBlob } from "../postgres-records.ts";
+import {
+  postgresListBlobBindings,
+  postgresLoadContentAddressedBlob,
+  postgresLoadContentAddressedBlobMetadata,
+} from "../postgres-records.ts";
 import { isPostgresStorageBackend } from "../postgres-storage.ts";
+
+export interface BlobByteRange {
+  end: number;
+  start: number;
+}
+
+export interface BlobMetadata {
+  blob_id: string;
+  mime_type: string;
+  sha256: string;
+  size_bytes: number | string;
+}
+
+/**
+ * Visibility cannot be proven when a bounded binding read overflows. This is
+ * deliberately a distinct error instead of treating the bounded page as the
+ * complete candidate set.
+ */
+export class BlobVisibilityIncompleteError extends Error {
+  readonly code = "blob_visibility_incomplete";
+
+  constructor() {
+    super("Blob visibility could not be established completely.");
+    this.name = "BlobVisibilityIncompleteError";
+  }
+}
 
 /**
  * Row shape returned by `loadContentAddressedBlob`. The `data` field carries
@@ -59,18 +91,24 @@ type MaybeAsync<T> = T | Promise<T>;
 
 export interface BlobStore {
   listBlobBindings: (blobId: string, opts?: { limit?: number }) => MaybeAsync<readonly BlobBinding[]>;
-  loadContentAddressedBlob: (blobId: string) => MaybeAsync<BlobRow | null>;
+  loadContentAddressedBlob: (blobId: string, range?: BlobByteRange) => MaybeAsync<BlobRow | null>;
+  loadContentAddressedBlobMetadata: (blobId: string) => MaybeAsync<BlobMetadata | null>;
 }
 
 /**
- * Default cap for `listBlobBindings`. Bindings per blob are domain-bounded
- * in practice (a content-addressed blob is referenced by the records that
- * emit those bytes — usually one, sometimes a small handful when the same
- * payload is shared across records). The cap is a defensive ceiling on the
- * `LIMIT ?` placeholder, not a paging boundary; if we ever need to page,
- * the call site should switch to a cursor-shaped read.
+ * Default cap for `listBlobBindings`. This is a defensive bounded probe, not
+ * a claim about the schema's maximum number of references. Both backends
+ * fetch one extra row and fail closed when the probe overflows, so an
+ * ambiguity/visibility decision is never made from a silently truncated set.
  */
 const DEFAULT_BINDING_LIMIT = 1024;
+
+function completeBindingPage(rows: readonly BlobBinding[], limit: number): readonly BlobBinding[] {
+  if (rows.length > limit) {
+    throw new BlobVisibilityIncompleteError();
+  }
+  return rows;
+}
 
 /**
  * Construct the storage-backed `BlobStore`.
@@ -87,10 +125,15 @@ export function createBlobStore(): BlobStore {
         blobId: string,
         { limit = DEFAULT_BINDING_LIMIT }: { limit?: number } = {}
       ): MaybeAsync<readonly BlobBinding[]> {
-        return postgresListBlobBindings(blobId, { limit }) as unknown as Promise<readonly BlobBinding[]>;
+        return postgresListBlobBindings(blobId, { limit }).then((rows) =>
+          completeBindingPage(rows as unknown as readonly BlobBinding[], limit)
+        );
       },
-      loadContentAddressedBlob(blobId: string): MaybeAsync<BlobRow | null> {
-        return postgresLoadContentAddressedBlob(blobId) as unknown as Promise<BlobRow | null>;
+      loadContentAddressedBlob(blobId: string, range?: BlobByteRange): MaybeAsync<BlobRow | null> {
+        return postgresLoadContentAddressedBlob(blobId, range) as unknown as Promise<BlobRow | null>;
+      },
+      loadContentAddressedBlobMetadata(blobId: string): MaybeAsync<BlobMetadata | null> {
+        return postgresLoadContentAddressedBlobMetadata(blobId) as unknown as Promise<BlobMetadata | null>;
       },
     };
   }
@@ -100,11 +143,21 @@ export function createBlobStore(): BlobStore {
       blobId: string,
       { limit = DEFAULT_BINDING_LIMIT }: { limit?: number } = {}
     ): readonly BlobBinding[] {
-      const { rows } = getMany<BlobBinding>(referenceQueries.blobsListBindingsById, [blobId, blobId], { limit });
-      return rows;
+      const page = getMany<BlobBinding>(referenceQueries.blobsListBindingsById, [blobId, blobId], { limit });
+      if (page.truncated) {
+        throw new BlobVisibilityIncompleteError();
+      }
+      return page.rows;
     },
-    loadContentAddressedBlob(blobId: string): BlobRow | null {
-      const row = getOne<BlobRow>(referenceQueries.blobsGetRowById, [blobId]);
+    loadContentAddressedBlob(blobId: string, range?: BlobByteRange): BlobRow | null {
+      const row = getOne<BlobRow>(
+        range ? referenceQueries.blobsGetRowByRange : referenceQueries.blobsGetRowById,
+        range ? [range.start + 1, range.end - range.start + 1, blobId] : [blobId]
+      );
+      return row ?? null;
+    },
+    loadContentAddressedBlobMetadata(blobId: string): BlobMetadata | null {
+      const row = getOne<BlobMetadata>(referenceQueries.blobsGetStoredById, [blobId]);
       return row ?? null;
     },
   };

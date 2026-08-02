@@ -2977,12 +2977,30 @@ async function postgresPersistContentAddressedBlobWithinFence({
   };
 }
 
-export async function postgresLoadContentAddressedBlob(blobId: string): Promise<PgRow | null> {
+export async function postgresLoadContentAddressedBlobMetadata(blobId: string): Promise<PgRow | null> {
   const result = await postgresQuery(
-    `SELECT blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data
+    `SELECT blob_id, mime_type, size_bytes, sha256
      FROM blobs
      WHERE blob_id = $1`,
     [blobId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function postgresLoadContentAddressedBlob(
+  blobId: string,
+  range?: { end: number; start: number }
+): Promise<PgRow | null> {
+  const result = await postgresQuery(
+    range
+      ? `SELECT blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256,
+                substring(data FROM $2 FOR $3) AS data
+         FROM blobs
+         WHERE blob_id = $1`
+      : `SELECT blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data
+         FROM blobs
+         WHERE blob_id = $1`,
+    range ? [blobId, range.start + 1, range.end - range.start + 1] : [blobId]
   );
   return result.rows[0] || null;
 }
@@ -3000,7 +3018,7 @@ export async function postgresListBlobBindings(
      ) bindings
      ORDER BY connector_id, connector_instance_id, stream, record_key
      LIMIT $2`,
-    [blobId, limit]
+    [blobId, limit + 1]
   );
   return result.rows;
 }

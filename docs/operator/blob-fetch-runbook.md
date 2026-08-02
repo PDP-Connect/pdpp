@@ -248,8 +248,12 @@ sha256sum invoice_downloaded.pdf
 
 For a bounded read, send one explicit range such as `Range: bytes=0-1023`; the
 response is `206` with `Content-Range` and the selected raw bytes. `HEAD` on the
-same authorized URL is the size probe and returns no body. Invalid, suffix, or
-multi-range requests fail closed with `416`.
+same authorized URL is the size probe and returns no body; `HEAD` ignores
+`Range`. Invalid, suffix, or multi-range `GET` requests fail closed with `416`.
+The reference server rejects any one `GET` response larger than 25 MiB with
+`400 invalid_request` before loading or encoding blob bytes. This cap applies to
+the full response or the selected range; `HEAD` is metadata-only and is not
+subject to the body cap.
 
 ### Step 6 — Grant enforcement: blob is invisible without a matching token
 
@@ -271,7 +275,9 @@ curl -s "${RS_URL}${FETCH_URL}" \
 HTTP status: `404`.
 
 The enforcement logic:
-1. The RS loads all `blob_bindings` for the requested `blob_id`.
+1. The RS reads blob metadata without selecting `data`, then performs a bounded
+   binding probe for the requested `blob_id`; an overflow fails closed rather
+   than silently truncating the visibility proof.
 2. For each binding whose `connector_id` matches the token's resolved storage
    binding, it attempts to load the bound record under the token's grant.
 3. If the grant projection does not include `blob_ref`, the field is stripped
@@ -293,6 +299,7 @@ The enforcement logic:
 | `Cache-Control` | `private, no-store` (always) |
 | `Content-Length` | Exact stored byte length (equal to `size_bytes` for a valid blob) |
 | `Accept-Ranges` | `bytes`; one bounded range is supported |
+| `GET` response cap | 25 MiB (`400 invalid_request` before byte loading); `HEAD` is metadata-only |
 | Grant enforcement | Token's grant must grant visibility to the record that carries the `blob_ref`; otherwise `404 blob_not_found` |
 | `fetch_url` shape | Relative path `/v1/blobs/<blob_id>` — prepend RS base URL |
 
@@ -300,13 +307,14 @@ The enforcement logic:
 
 ## Conformance note
 
-`query-contract.test.js` in `reference-implementation/test/` contains the
+`query-contract.test.ts` in `reference-implementation/test/` contains the
 authoritative conformance test for this surface:
 
 - `gmail messages expand hydrated attachments with grant-visible blob_ref fetch_url`
   — proves Steps 3-5 above using an in-process harness
-- The test at L2913 proves the `blob_not_found` enforcement from Step 6
+- `blob-store-route-regression.test.ts` proves the route-level `blob_not_found`
+  enforcement and the SQLite metadata/range store primitives
 
-The tests in `reference-implementation/test/b4-blob-fetch-conformance.test.js`
+The tests in `reference-implementation/test/b4-blob-fetch-conformance.test.ts`
 prove the documented contract shapes in isolation (upload → record query → blob
 fetch → header assertions → grant enforcement).

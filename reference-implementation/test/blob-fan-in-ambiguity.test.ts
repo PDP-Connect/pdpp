@@ -15,6 +15,13 @@
  *       grant pinned to connection A for stream S must not expose blob
  *       bytes reachable only from connection B for stream S.
  *
+ *   P1 follow-up: rejected/mismatched/inactive grant addressability is an
+ *       explicit deny, while same-scope resolution remains an allow.
+ *
+ *   P2 follow-up: a bounded binding probe must fail closed when it overflows;
+ *       it may not silently make ambiguity/visibility decisions from 1024
+ *       rows.
+ *
  * The tests drive the actual Fastify route through the public surface so a
  * regression at the route adapter (not just the helper) is caught.
  */
@@ -26,6 +33,7 @@ import { registerConnector } from "../server/auth.ts";
 import { startServer } from "../server/index.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "../server/owner-auth.ts";
 import { ingestRecord } from "../server/records.ts";
+import { MAX_BLOB_RESPONSE_BYTES } from "../server/routes/rs-read.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const CONNECTOR_ID = "blob-fan-in";
@@ -33,6 +41,9 @@ const STREAM_A = "photos";
 const STREAM_B = "videos";
 const INSTANCE_A = "cin_blob_account_a";
 const INSTANCE_B = "cin_blob_account_b";
+const INACTIVE_SECRET_PATTERN = /inactive-pinned-secret/;
+const OVERSIZED_RESPONSE_PATTERN = /26214400/;
+const PINNED_SECRET_PATTERN = /pinned-a-secret/;
 
 const baseManifest = {
   capabilities: { human_interaction: [] },
@@ -100,7 +111,12 @@ function target(instanceId: string) {
   return { connector_id: CONNECTOR_ID, connector_instance_id: instanceId };
 }
 
-async function seedInstance(instanceId: string, displayName: string, sourceBindingKey: string) {
+async function seedInstance(
+  instanceId: string,
+  displayName: string,
+  sourceBindingKey: string,
+  status: "active" | "paused" | "revoked" = "active"
+) {
   const store = createSqliteConnectorInstanceStore();
   const now = new Date().toISOString();
   await store.upsert({
@@ -112,9 +128,19 @@ async function seedInstance(instanceId: string, displayName: string, sourceBindi
     sourceBinding: { account: sourceBindingKey },
     sourceBindingKey,
     sourceKind: "account",
-    status: "active",
+    status,
     updatedAt: now,
   });
+}
+
+function setInstanceStatus(instanceId: string, status: "active" | "paused" | "revoked") {
+  const store = createSqliteConnectorInstanceStore();
+  const updated = store.updateStatus(instanceId, {
+    revokedAt: status === "revoked" ? new Date().toISOString() : null,
+    status,
+    updatedAt: new Date().toISOString(),
+  });
+  assert.ok(updated, `connector instance ${instanceId} must exist before status update`);
 }
 
 // Insert a blob row + binding directly into the SQLite tables so we
@@ -127,10 +153,11 @@ interface SeedBlobParams {
   data: Buffer;
   mimeType: string;
   recordKey: string;
+  sizeBytes?: number;
   stream: string;
 }
 
-function seedBlob({ blobId, connectorInstanceId, stream, recordKey, mimeType, data }: SeedBlobParams) {
+function seedBlob({ blobId, connectorInstanceId, stream, recordKey, mimeType, data, sizeBytes }: SeedBlobParams) {
   exec(referenceQueries.blobsInsertBlob, [
     blobId,
     CONNECTOR_ID,
@@ -138,7 +165,7 @@ function seedBlob({ blobId, connectorInstanceId, stream, recordKey, mimeType, da
     stream,
     recordKey,
     mimeType,
-    data.length,
+    sizeBytes ?? data.length,
     "sha256_test",
     data,
   ]);
@@ -499,7 +526,7 @@ test("GET /v1/blobs/:blob_id (client mode) 404s when grant pins stream to a conn
       connector_id: CONNECTOR_ID,
       purpose_code: "https://pdpp.org/purpose/analytics",
       purpose_description: "blob route grant-scope narrowing test",
-      streams: [{ connection_id: INSTANCE_A, fields: ["id", "received_at"], name: STREAM_A }],
+      streams: [{ connection_id: INSTANCE_A, fields: ["blob_ref", "id", "received_at"], name: STREAM_A }],
     });
 
     const resp = await fetch(`${rsUrl}/v1/blobs/${encodeURIComponent(blobId)}`, {
@@ -512,6 +539,198 @@ test("GET /v1/blobs/:blob_id (client mode) 404s when grant pins stream to a conn
     // into the response envelope.
     const serialized = JSON.stringify(body);
     assert.equal(serialized.includes(INSTANCE_B), false, "non-granted connection_id leaked into blob 404 envelope");
+  });
+});
+
+test("GET /v1/blobs/:blob_id (client mode) denies pinned A when the request asks for B", async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    const blobId = "blob_sha256_grant_scope_pinned_mismatch_006";
+    const bytes = Buffer.from("pinned-a-secret");
+    seedBlob({
+      blobId,
+      connectorInstanceId: INSTANCE_A,
+      data: bytes,
+      mimeType: "application/octet-stream",
+      recordKey: "rec-a-pinned-mismatch",
+      stream: STREAM_A,
+    });
+    await ingestRecord(target(INSTANCE_A), {
+      data: { blob_ref: { blob_id: blobId }, id: "rec-a-pinned-mismatch", received_at: "2026-05-19T00:00:00.000Z" },
+      emitted_at: "2026-05-19T00:00:00.000Z",
+      key: "rec-a-pinned-mismatch",
+      stream: STREAM_A,
+    });
+
+    const approved = await approveGrant(`http://localhost:${server.asPort}`, OWNER_AUTH_DEFAULT_SUBJECT_ID, {
+      access_mode: "continuous",
+      client_id: "longview",
+      connector_id: CONNECTOR_ID,
+      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_description: "pinned A request B must deny",
+      streams: [{ connection_id: INSTANCE_A, fields: ["blob_ref", "id", "received_at"], name: STREAM_A }],
+    });
+    const resp = await fetch(
+      `http://localhost:${server.rsPort}/v1/blobs/${encodeURIComponent(blobId)}?connection_id=${encodeURIComponent(INSTANCE_B)}`,
+      { headers: { Authorization: `Bearer ${approved.token}` } }
+    );
+    assert.equal(resp.status, 404, `pinned-A/request-B must deny, got ${resp.status}`);
+    const body = (await resp.json()) as { error?: { code?: string } };
+    assert.equal(body.error?.code, "blob_not_found");
+    assert.doesNotMatch(JSON.stringify(body), PINNED_SECRET_PATTERN);
+  });
+});
+
+test("GET /v1/blobs/:blob_id (client mode) allows a same-scope pinned connection", async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    const blobId = "blob_sha256_grant_scope_same_007";
+    const bytes = Buffer.from("same-scope-bytes");
+    seedBlob({
+      blobId,
+      connectorInstanceId: INSTANCE_A,
+      data: bytes,
+      mimeType: "application/octet-stream",
+      recordKey: "rec-a-same-scope",
+      stream: STREAM_A,
+    });
+    await ingestRecord(target(INSTANCE_A), {
+      data: { blob_ref: { blob_id: blobId }, id: "rec-a-same-scope", received_at: "2026-05-19T00:00:00.000Z" },
+      emitted_at: "2026-05-19T00:00:00.000Z",
+      key: "rec-a-same-scope",
+      stream: STREAM_A,
+    });
+
+    const approved = await approveGrant(`http://localhost:${server.asPort}`, OWNER_AUTH_DEFAULT_SUBJECT_ID, {
+      access_mode: "continuous",
+      client_id: "longview",
+      connector_id: CONNECTOR_ID,
+      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_description: "same-scope pinned read",
+      streams: [{ connection_id: INSTANCE_A, fields: ["blob_ref", "id", "received_at"], name: STREAM_A }],
+    });
+    const resp = await fetch(
+      `http://localhost:${server.rsPort}/v1/blobs/${encodeURIComponent(blobId)}?connection_id=${encodeURIComponent(INSTANCE_A)}`,
+      { headers: { Authorization: `Bearer ${approved.token}` } }
+    );
+    assert.equal(resp.status, 200, `same-scope pinned read must allow, got ${resp.status}`);
+    assert.deepEqual(Buffer.from(await resp.arrayBuffer()), bytes);
+  });
+});
+
+test("GET /v1/blobs/:blob_id denies an inactive pinned connection", async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    const blobId = "blob_sha256_grant_scope_inactive_008";
+    const bytes = Buffer.from("inactive-pinned-secret");
+    seedBlob({
+      blobId,
+      connectorInstanceId: INSTANCE_A,
+      data: bytes,
+      mimeType: "application/octet-stream",
+      recordKey: "rec-a-inactive-pinned",
+      stream: STREAM_A,
+    });
+    await ingestRecord(target(INSTANCE_A), {
+      data: { blob_ref: { blob_id: blobId }, id: "rec-a-inactive-pinned", received_at: "2026-05-19T00:00:00.000Z" },
+      emitted_at: "2026-05-19T00:00:00.000Z",
+      key: "rec-a-inactive-pinned",
+      stream: STREAM_A,
+    });
+
+    const approved = await approveGrant(`http://localhost:${server.asPort}`, OWNER_AUTH_DEFAULT_SUBJECT_ID, {
+      access_mode: "continuous",
+      client_id: "longview",
+      connector_id: CONNECTOR_ID,
+      purpose_code: "https://pdpp.org/purpose/analytics",
+      purpose_description: "inactive pinned read",
+      streams: [{ connection_id: INSTANCE_A, fields: ["blob_ref", "id", "received_at"], name: STREAM_A }],
+    });
+    setInstanceStatus(INSTANCE_A, "revoked");
+
+    const resp = await fetch(`http://localhost:${server.rsPort}/v1/blobs/${encodeURIComponent(blobId)}`, {
+      headers: { Authorization: `Bearer ${approved.token}` },
+    });
+    assert.equal(resp.status, 404, `inactive pinned read must deny, got ${resp.status}`);
+    const body = (await resp.json()) as { error?: { code?: string } };
+    assert.equal(body.error?.code, "blob_not_found");
+    assert.doesNotMatch(JSON.stringify(body), INACTIVE_SECRET_PATTERN);
+  });
+});
+
+test("GET /v1/blobs/:blob_id fails closed when binding visibility exceeds the bounded probe", async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    const blobId = "blob_sha256_binding_overflow_009";
+    seedBlob({
+      blobId,
+      connectorInstanceId: INSTANCE_A,
+      data: Buffer.from("overflow-proof"),
+      mimeType: "application/octet-stream",
+      recordKey: "visible-a",
+      stream: STREAM_A,
+    });
+    // The originating row plus 1023 filler bindings under A and one binding
+    // under B produce 1025 distinct candidates. No first-page answer is a
+    // complete ambiguity/visibility proof.
+    for (let i = 0; i < 1023; i += 1) {
+      seedBlobBinding({
+        blobId,
+        connectorInstanceId: INSTANCE_A,
+        recordKey: `filler-${String(i).padStart(4, "0")}`,
+        stream: STREAM_A,
+      });
+    }
+    seedBlobBinding({ blobId, connectorInstanceId: INSTANCE_B, recordKey: "visible-b", stream: STREAM_A });
+    await ingestRecord(target(INSTANCE_A), {
+      data: { blob_ref: { blob_id: blobId }, id: "visible-a", received_at: "2026-05-19T00:00:00.000Z" },
+      emitted_at: "2026-05-19T00:00:00.000Z",
+      key: "visible-a",
+      stream: STREAM_A,
+    });
+    await ingestRecord(target(INSTANCE_B), {
+      data: { blob_ref: { blob_id: blobId }, id: "visible-b", received_at: "2026-05-19T00:00:00.000Z" },
+      emitted_at: "2026-05-19T00:00:00.000Z",
+      key: "visible-b",
+      stream: STREAM_A,
+    });
+
+    const ownerToken = await getOwnerToken(server);
+    const resp = await fetch(
+      `http://localhost:${server.rsPort}/v1/blobs/${encodeURIComponent(blobId)}?connector_id=${encodeURIComponent(CONNECTOR_ID)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(resp.status, 500, `overflow must not choose a truncated candidate set, got ${resp.status}`);
+    const body = (await resp.json()) as { error?: { code?: string } };
+    assert.equal(body.error?.code, "blob_visibility_incomplete");
+  });
+});
+
+test("GET /v1/blobs/:blob_id rejects an oversized full response before loading blob bytes", async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    const blobId = "blob_sha256_response_cap_010";
+    const bytes = Buffer.from("stored-bytes-are-small-for-this-cap-proof");
+    seedBlob({
+      blobId,
+      connectorInstanceId: INSTANCE_A,
+      data: bytes,
+      mimeType: "application/octet-stream",
+      recordKey: "oversized-metadata",
+      sizeBytes: MAX_BLOB_RESPONSE_BYTES + 1,
+      stream: STREAM_A,
+    });
+    await ingestRecord(target(INSTANCE_A), {
+      data: { blob_ref: { blob_id: blobId }, id: "oversized-metadata", received_at: "2026-05-19T00:00:00.000Z" },
+      emitted_at: "2026-05-19T00:00:00.000Z",
+      key: "oversized-metadata",
+      stream: STREAM_A,
+    });
+
+    const ownerToken = await getOwnerToken(server);
+    const resp = await fetch(
+      `http://localhost:${server.rsPort}/v1/blobs/${encodeURIComponent(blobId)}?connector_id=${encodeURIComponent(CONNECTOR_ID)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(resp.status, 400, `oversized full response must be rejected before loading bytes, got ${resp.status}`);
+    const body = (await resp.json()) as { error?: { code?: string; message?: string } };
+    assert.equal(body.error?.code, "invalid_request");
+    assert.match(body.error?.message ?? "", OVERSIZED_RESPONSE_PATTERN);
   });
 });
 

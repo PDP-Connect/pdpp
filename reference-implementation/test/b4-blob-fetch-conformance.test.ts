@@ -419,6 +419,15 @@ test("blob lifecycle: upload → seed record → grant with blob_ref → fetch b
     assert.equal(head.headers.get("Accept-Ranges"), "bytes");
     assert.equal(await head.text(), "");
 
+    const headWithRange = await fetch(fetchUrl, {
+      headers: { Authorization: `Bearer ${approved.token}`, Range: "bytes=1-3" },
+      method: "HEAD",
+    });
+    assert.equal(headWithRange.status, 200, "HEAD ignores Range and remains a full-size metadata probe");
+    assert.equal(headWithRange.headers.get("Content-Range"), null);
+    assert.equal(headWithRange.headers.get("Content-Length"), String(bytes.length));
+    assert.equal(await headWithRange.text(), "");
+
     const unsatisfiable = await fetch(fetchUrl, {
       headers: { Authorization: `Bearer ${approved.token}`, Range: `bytes=${bytes.length}-` },
     });

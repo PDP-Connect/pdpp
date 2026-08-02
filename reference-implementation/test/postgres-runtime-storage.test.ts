@@ -1059,9 +1059,15 @@ if (POSTGRES_URL) {
         stream,
       });
       const blobStore = createBlobStore();
+      const blobMetadata = await blobStore.loadContentAddressedBlobMetadata(blob.blob_id);
+      assert.ok(blobMetadata, "Postgres metadata lookup must find the blob");
+      assert.equal(Object.hasOwn(blobMetadata, "data"), false, "Postgres metadata lookup must not select blob bytes");
       const blobRow = await blobStore.loadContentAddressedBlob(blob.blob_id);
       assert.ok(blobRow, "blob must be persisted");
       assert.equal(blobRow.sha256, blob.sha256);
+      const blobRange = await blobStore.loadContentAddressedBlob(blob.blob_id, { end: 5, start: 2 });
+      assert.ok(blobRange, "Postgres range lookup must find the blob");
+      assert.deepEqual(Buffer.from(blobRange.data ?? []), Buffer.from("stgr", "utf8"));
       const bindings = await blobStore.listBlobBindings(blob.blob_id);
       assert.ok(bindings.some((binding) => binding.connector_id === connectorId && binding.record_key === "a"));
       const accountBlob = await postgresPersistContentAddressedBlob({
