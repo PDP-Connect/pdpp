@@ -589,11 +589,21 @@ const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
   "surface_failed",
 ]);
 
+const CONTROLLER_RUN_NOW_FAILED_REASON = "controller_run_now_failed";
+
 function controllerRunNowDeferReason(err: unknown): string | null {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
   if (code === "run_already_active") {
     return "run_already_active";
+  }
+  // A controller-run invocation can race an already-pending browser-surface
+  // launch after a restart. The controller deliberately exposes this as a
+  // typed lifecycle collision, not a connector failure. Preserve that meaning
+  // here so the scheduler coalesces onto the incumbent run instead of
+  // recording an untyped failed attempt from the error message.
+  if (code === "run_browser_surface_queued") {
+    return "run_browser_surface_queued";
   }
   const message = err instanceof Error ? err.message : String(err);
   const normalized = message.toLowerCase();
@@ -1052,7 +1062,6 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     connectorId: string,
     connectorInstanceId: string,
     startedAt: string,
-    message: string,
     attempt = 1,
     revalidationProbe = false
   ): RunRecord {
@@ -1063,12 +1072,18 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       connectorId,
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       connectorInstanceId: connectorInstanceId ?? null,
-      error: `controller_run_now_failed: ${message}`,
+      // The caught exception is a controller-boundary failure, not a provider
+      // terminal result. Keep only this stable, server-authored cause in
+      // scheduler history; genuine provider failures arrive through
+      // buildManagedRunTerminalRecord with their runtime-authored evidence.
+      error: CONTROLLER_RUN_NOW_FAILED_REASON,
+      failureReason: CONTROLLER_RUN_NOW_FAILED_REASON,
       knownGaps: [],
       recordsEmitted: 0,
       source: buildScheduledRunSource(connectorId, revalidationProbe),
       startedAt,
       status: "failed",
+      terminalReason: CONTROLLER_RUN_NOW_FAILED_REASON,
     };
   }
 
@@ -1140,17 +1155,9 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         if (deferReason) {
           return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, deferReason, connectorInstanceId));
         }
-        const message = err instanceof Error ? err.message : String(err);
         persistLastRunTime(connectorId, connectorInstanceId, Date.now());
         return finalizeManagedRunTerminal(
-          buildManagedRunControllerFailure(
-            connectorId,
-            connectorInstanceId,
-            startedAt,
-            message,
-            attempt,
-            revalidationProbe
-          )
+          buildManagedRunControllerFailure(connectorId, connectorInstanceId, startedAt, attempt, revalidationProbe)
         );
       }
 

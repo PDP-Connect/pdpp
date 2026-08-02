@@ -62,6 +62,27 @@ and recovery-continuation paths SHALL all use the same admission gate.
 - **AND** it SHALL NOT overwrite the live row or emit a run failure solely for
   the conflict
 
+#### Scenario: A scheduled browser-surface collision is coalesced
+
+- **WHEN** a scheduled managed invocation encounters a controller-owned
+  `run_browser_surface_queued` admission collision for an already-pending
+  browser-surface run
+- **THEN** the scheduler SHALL record a skipped coalesced lifecycle outcome
+- **AND** it SHALL NOT add a failed run, failure reason, terminal reason, or
+  owner-attention state for that collision
+- **AND** it SHALL NOT persist the incumbent run identifier or raw controller
+  error message in scheduler history
+
+#### Scenario: A controller invocation failure has a stable safe cause
+
+- **WHEN** a scheduled managed invocation fails at the controller boundary for
+  a reason other than a typed coalesced admission collision
+- **THEN** the scheduler SHALL record the typed failure and terminal reason
+  `controller_run_now_failed`
+- **AND** it SHALL NOT persist the raw thrown error as scheduler-history error
+- **AND** a controller-returned connector terminal SHALL retain its own
+  runtime-authored failure evidence unchanged
+
 ### Requirement: Active-run cleanup SHALL remain run-id-scoped
 
 The reference runtime SHALL clear `controller_active_runs` rows using both

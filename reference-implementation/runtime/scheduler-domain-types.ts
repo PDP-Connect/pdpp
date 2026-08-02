@@ -31,6 +31,7 @@ export type TerminalGrantFailureReason = "grant_consumed" | "grant_expired" | "g
 
 export type TerminalNonGrantReason =
   | "authentication_error"
+  | "controller_run_now_failed"
   | "connector_protocol_violation"
   | "connector_reported_cancelled"
   | "connector_reported_failed"

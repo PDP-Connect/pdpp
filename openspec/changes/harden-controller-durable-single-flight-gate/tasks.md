@@ -22,6 +22,9 @@
 - [ ] Verify a still-live logical invocation can retain the reservation, while
       any returned queued/deferred/failed outcome clears the reservation and
       nonce.
+- [x] Translate typed scheduled browser-surface admission collisions into
+      coalesced skips, and preserve a stable redaction-safe cause for genuine
+      controller invocation failures.
 
 ## 4. Regression coverage
 
@@ -31,6 +34,8 @@
       bypass the same gate.
 - [ ] Add store regressions proving cleanup is run-id-scoped and cannot delete a
       newer row.
+- [x] Add discriminating scheduler regressions for a typed pending
+      browser-surface collision and raw controller-error redaction.
 
 ## 5. Validation
 

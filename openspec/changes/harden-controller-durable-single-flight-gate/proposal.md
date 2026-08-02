@@ -24,6 +24,9 @@ The lifecycle split is intentional:
   replacing the incumbent row.
 - Apply the same gate to scheduled runs, manual run-now, and
   recovery-continuation admission.
+- Translate typed controller/browser-surface admission collisions at the
+  scheduler boundary into a coalesced skip, and persist only a stable
+  controller-owned cause for a genuine controller invocation failure.
 - Preserve run-id-scoped cleanup so an old runner cannot delete a newer row.
 - Preserve boot/restart reconciliation for genuinely stale orphaned rows only.
 - Tighten the connector-state/scheduler conformance harness so the durable

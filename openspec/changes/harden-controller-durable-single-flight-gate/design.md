@@ -21,6 +21,13 @@ only while the logical invocation itself is still live:
 - the incumbent row remains intact
 - scheduled/manual/recovery conflict paths are reported as neutral skip/defer
   outcomes, not as run failures or health regressions
+- the scheduled managed-run bridge preserves typed admission collisions
+  (`run_already_active` and `run_browser_surface_queued`) as a coalesced
+  lifecycle skip; it does not parse or persist the controller's raw message
+- a non-coalescable controller invocation failure records the stable,
+  redaction-safe `controller_run_now_failed` reason in scheduler history;
+  a controller-returned connector terminal remains unchanged so real provider
+  failure evidence is not hidden
 - a managed invocation may keep the reservation while it is still waiting for
   browser-surface readiness before `runNow()` resolves
 - any `early_return` or returned queued/deferred/failed outcome clears the

@@ -494,6 +494,121 @@ test("T3c: run_already_active controller contention maps to skipped RunRecord", 
   }
 });
 
+test("T3d: a pending browser-surface collision is coalesced without persisting its raw error", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns: RunRecord[] = [];
+
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
+          connectorPath,
+          intervalMs: 25,
+          manifest: BACKGROUND_SAFE_MANIFEST,
+          maxRetries: 0,
+          ownerToken: "owner-token",
+        },
+      ],
+      onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: "http://localhost.invalid",
+      runManagedConnectorViaController: () => {
+        const err: Error & { code?: string; runId?: string } = new Error(
+          "Connector already has a pending browser-surface run: run_existing"
+        );
+        err.code = "run_browser_surface_queued";
+        err.runId = "run_existing";
+        throw err;
+      },
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      const [record] = completedRuns;
+      assert.ok(record, "a coalesced run record was captured");
+      assert.equal(record.status, "skipped", "a pending browser-surface run must not become a collection failure");
+      assert.equal(record.failureReason, undefined, "coalesced work does not add a health failure reason");
+      assert.equal(record.terminalReason, undefined, "coalesced work does not fabricate a terminal connector reason");
+      assert.equal(record.error, "browser_surface_unavailable: run_browser_surface_queued");
+      assert.ok(!record.error?.includes("run_existing"), "the incumbent run id must not leak into scheduler history");
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
+test("T3e: a controller-restart pending-run collision does not poison the next scheduler lifecycle", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const firstLifecycle: RunRecord[] = [];
+    const restartedLifecycle: RunRecord[] = [];
+    const schedule = {
+      connectorId: "chatgpt",
+      connectorInstanceId: "chatgpt",
+      connectorPath,
+      intervalMs: 25,
+      manifest: BACKGROUND_SAFE_MANIFEST,
+      maxRetries: 0,
+      ownerToken: "owner-token",
+    };
+    const coalescedScheduler = createScheduler({
+      connectors: [schedule],
+      onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+      onRunComplete: (record) => firstLifecycle.push(record),
+      rsUrl: "http://localhost.invalid",
+      runManagedConnectorViaController: () => {
+        const err: Error & { code?: string } = new Error(
+          "Connector already has a pending browser-surface run: run_live"
+        );
+        err.code = "run_browser_surface_queued";
+        throw err;
+      },
+    });
+
+    try {
+      coalescedScheduler.start();
+      await waitFor(() => firstLifecycle.length >= 1, 5000);
+    } finally {
+      coalescedScheduler.stop();
+    }
+
+    const restartedScheduler = createScheduler({
+      connectors: [schedule],
+      onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+      onRunComplete: (record) => restartedLifecycle.push(record),
+      rsUrl: "http://localhost.invalid",
+      runManagedConnectorViaController: () => ({
+        run_id: "run_after_restart",
+        status: "succeeded",
+        trace_id: "trace_after_restart",
+      }),
+    });
+
+    try {
+      restartedScheduler.start();
+      await waitFor(() => restartedLifecycle.length >= 1, 5000);
+      const [coalesced] = firstLifecycle;
+      const [resumed] = restartedLifecycle;
+      assert.equal(coalesced?.status, "skipped", "the restored pending lifecycle remains a neutral skip");
+      assert.equal(resumed?.status, "succeeded", "a later scheduler lifecycle can run after the pending owner settles");
+      assert.equal(resumed?.runId, "run_after_restart");
+    } finally {
+      restartedScheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
 // ── T3b: surface_failed and browser_surface_probe_failed also → SKIP ───────
 
 test("T3b: surface_failed status also maps to skipped RunRecord", async () => {
@@ -698,9 +813,12 @@ test("T6: controller.runNow throw produces a failed RunRecord (scheduler stays a
       const [record] = completedRuns;
       assert.ok(record, "a completed run record was captured");
       assert.equal(record.status, "failed", "controller throw must produce a failed RunRecord");
+      assert.equal(record.error, "controller_run_now_failed", "scheduled history must store only the stable cause");
+      assert.equal(record.failureReason, "controller_run_now_failed");
+      assert.equal(record.terminalReason, "controller_run_now_failed");
       assert.ok(
-        typeof record.error === "string" && record.error.includes("controller_run_now_failed"),
-        `error should include controller_run_now_failed, got: ${record.error}`
+        !record.error?.includes("provider_pressure_cooldown"),
+        "raw controller errors must not enter scheduler history"
       );
     } finally {
       scheduler.stop();
@@ -739,7 +857,14 @@ test("T7: a managed run that DISPATCHES but FAILS records a failed RunRecord (no
       rsUrl: "http://localhost.invalid",
       runManagedConnectorViaController: () => {
         // Run dispatched + awaited to its REAL terminal outcome = failed.
-        return { run_id: "run-failed-001", status: "failed", trace_id: "trace-fail" };
+        return {
+          connector_error: { message: "provider terminal evidence", retryable: false },
+          failure_reason: "connector_reported_failed",
+          run_id: "run-failed-001",
+          status: "failed",
+          terminal_reason: "connector_reported_failed",
+          trace_id: "trace-fail",
+        };
       },
     });
 
@@ -755,6 +880,9 @@ test("T7: a managed run that DISPATCHES but FAILS records a failed RunRecord (no
         "failed",
         "a dispatched-but-failed managed run must record failed, not synthetic succeeded"
       );
+      assert.equal(record.failureReason, "connector_reported_failed", "real provider terminal causes remain distinct");
+      assert.equal(record.terminalReason, "connector_reported_failed");
+      assert.deepEqual(record.connectorError, { message: "provider terminal evidence", retryable: false });
     } finally {
       scheduler.stop();
     }
