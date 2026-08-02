@@ -81,8 +81,14 @@ function writeManifestFile(root: string, manifestValue: Manifest): void {
 
 test("e2e: a real mcp-server .test.ts renamed to .test.js (N->N-1, sibling glob still matches) fails closed on the runAuthority path", async () => {
   await withRealWorktree(async (root) => {
-    const before = trackedFiles(root).filter((path) => path.startsWith("packages/mcp-server/test/"));
-    assert.equal(before.length, 23, "expected the real mcp-server suite to start at 23 tracked files");
+    // Measure the baseline count from the manifest's real include globs, not a hardcoded magic number.
+    // This way, future test additions (like blob-tool.test.ts) do not require churn to this oracle.
+    const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+    const allFiles = trackedFiles(root);
+    const suite = manifestValue.suites.find((entry) => entry.id === "mcp-server");
+    assert.ok(suite, "mcp-server must exist in the real manifest");
+    const before = planFor(manifestValue, allFiles, ["mcp-server"]).plans.get("mcp-server") || [];
+    const beforeCount = before.length;
 
     execFileSync("git", ["mv", "packages/mcp-server/test/bin.test.ts", "packages/mcp-server/test/bin.test.js"], {
       cwd: root,
@@ -97,13 +103,13 @@ test("e2e: a real mcp-server .test.ts renamed to .test.js (N->N-1, sibling glob 
 
     // Lower-level confirmation of the exact pre-wiring gap R1 found: with the
     // real mutated manifest/files, `selectedRuns`/`planFor` alone — what
-    // `runAuthority` called BEFORE this fix — silently drop the plan from 23
-    // to 22 files and do not throw. This is not the assertion under test; it
+    // `runAuthority` called BEFORE this fix — silently drop the plan by one file
+    // (N to N-1) and do not throw. This is not the assertion under test; it
     // documents why a bare `selectedRuns` call is not a sufficient gate.
-    const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
-    const silentPlan = planFor(manifestValue, files, ["mcp-server"]);
-    assert.equal(silentPlan.plans.get("mcp-server")?.length, 22);
-    assert.doesNotThrow(() => selectedRuns(manifestValue, files, { suites: ["mcp-server"] }));
+    const manifestValueAfter = await readManifest(join(root, "test-accounting.manifest.json"), { root });
+    const silentPlan = planFor(manifestValueAfter, files, ["mcp-server"]);
+    assert.equal(silentPlan.plans.get("mcp-server")?.length, beforeCount - 1);
+    assert.doesNotThrow(() => selectedRuns(manifestValueAfter, files, { suites: ["mcp-server"] }));
 
     // The actual assertion: the real authority entry point now fails closed.
     await assert.rejects(runAuthority({ root, suites: ["mcp-server"] }), MULTI_GLOB_PARTIAL_RENAME_PATTERN);
