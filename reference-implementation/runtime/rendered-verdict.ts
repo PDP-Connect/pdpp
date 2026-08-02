@@ -1495,6 +1495,18 @@ function terminalForwardStatement(
   return "This data can't be recovered by a future run.";
 }
 
+function defaultForwardStatement(
+  snapshot: ConnectionHealthSnapshot,
+  refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null,
+  progress: ProgressEvidence | null
+): string {
+  if (snapshot.axes.freshness === "stale") {
+    return staleRefreshPolicyText(refresh, scheduleEvidence, progress);
+  }
+  return "Current and collecting normally.";
+}
+
 /**
  * Single sentence DERIVED from disposition + primary action. NEVER claims resumed
  * collection while the disposition is terminal (honesty invariant 3 / spec scenario).
@@ -1502,7 +1514,10 @@ function terminalForwardStatement(
 function buildForwardStatement(
   disposition: ForwardDisposition,
   actions: readonly RequiredAction[],
-  snapshot: ConnectionHealthSnapshot
+  snapshot: ConnectionHealthSnapshot,
+  refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null,
+  progress: ProgressEvidence | null
 ): string {
   const primary = actions[0] ?? null;
 
@@ -1555,7 +1570,7 @@ function buildForwardStatement(
       if (snapshot.axes.freshness === "unknown") {
         return "Freshness has not been measured yet.";
       }
-      return "Current and collecting normally.";
+      return defaultForwardStatement(snapshot, refresh, scheduleEvidence, progress);
   }
 }
 
@@ -2058,7 +2073,7 @@ export function synthesizeRenderedVerdict(
 
   // ── annotations, statement, streams, progress ──
   const annotations = buildAnnotations(snapshot, channel, tone, refresh, scheduleEvidence, progress, actions);
-  const forwardStatement = buildForwardStatement(disposition, actions, snapshot);
+  const forwardStatement = buildForwardStatement(disposition, actions, snapshot, refresh, scheduleEvidence, progress);
   const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
   const renderedProgress = buildProgress(progress, disposition, actions, snapshot.badges.syncing);
 

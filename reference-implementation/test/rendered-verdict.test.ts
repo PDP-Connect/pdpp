@@ -532,6 +532,82 @@ test("freshness annotation describes an explicit manual-default schedule as sche
   assert.doesNotMatch(freshness, /manual/i);
 });
 
+test("forward_statement: stale local-device evidence reuses stale refresh-policy copy", () => {
+  const refresh: ConnectionRefreshEvidence = {
+    backgroundSafe: true,
+    interactionPosture: "none",
+    recommendedMode: "automatic",
+  };
+  const mode = progressMode({
+    hasRecoveredDetailGaps: false,
+    localDeviceBacked: true,
+    refresh,
+    schedule: null,
+  });
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "complete", freshness: "stale", outbox: "idle" },
+      forward_disposition: "complete",
+      last_success_at: "2026-08-02T04:15:02.235Z",
+      state: "degraded",
+    }),
+    [stream()],
+    refresh,
+    true,
+    {
+      last_refreshed_at: "2026-08-02T04:15:02.235Z",
+      mode,
+      observed_at: "2026-08-02T13:34:36.000Z",
+      retained_records: 20_203,
+    }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text;
+  assert.equal(mode, "local_device");
+  assert.deepEqual(v.pill, { label: "Degraded", tone: "amber" });
+  assert.deepEqual(v.required_actions, []);
+  assert.equal(freshness, "Stale for this connection's freshness policy.");
+  assert.equal(v.forward_statement, freshness);
+  assert.notEqual(v.forward_statement, "Current and collecting normally.");
+});
+
+test("forward_statement: stale scheduled evidence reuses scheduled refresh-policy copy", () => {
+  const refresh: ConnectionRefreshEvidence = {
+    backgroundSafe: true,
+    interactionPosture: "none",
+    recommendedMode: "automatic",
+  };
+  const mode = progressMode({
+    hasRecoveredDetailGaps: false,
+    localDeviceBacked: false,
+    refresh,
+    schedule: { enabled: true },
+  });
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "complete", freshness: "stale", outbox: "idle" },
+      forward_disposition: "complete",
+      last_success_at: "2026-08-01T12:00:00.000Z",
+      state: "degraded",
+    }),
+    [stream()],
+    refresh,
+    true,
+    {
+      last_refreshed_at: "2026-08-01T12:00:00.000Z",
+      mode,
+      observed_at: "2026-08-02T12:00:00.000Z",
+      retained_records: 100,
+    },
+    { hasPriorSuccess: true, mode: "scheduled-active" }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === "freshness")?.text;
+  assert.equal(mode, "scheduled");
+  assert.deepEqual(v.required_actions, []);
+  assert.equal(freshness, "Last refreshed yesterday. Refreshes on schedule.");
+  assert.equal(v.forward_statement, freshness);
+  assert.notEqual(v.forward_statement, "Current and collecting normally.");
+});
+
 test("tone: unknown freshness renders Not measured rather than Healthy, Degraded, or Checking", () => {
   const snap = snapshot({
     axes: { freshness: "unknown" },
