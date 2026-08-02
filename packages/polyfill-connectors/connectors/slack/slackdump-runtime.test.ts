@@ -13,6 +13,9 @@ import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import {
   formatSlackdumpMissingError,
+  loadSlackdumpProviderAuth,
+  parseSlackdumpProviderAuth,
+  resolveSlackApiCredentials,
   runSlackdump,
   SLACK_RETRYABLE_FAILURE_RE,
   slackdumpProgressChanged,
@@ -119,6 +122,43 @@ test("runSlackdump: maps ENOENT to actionable missing-binary guidance", async ()
 test("slack retry classification treats slackdump exit 6 as resumable", () => {
   assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("slackdump failed: slackdump_exit_6: conversations.history 500"), true);
   assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("parser error: unexpected token in archive"), false);
+});
+
+test("Slackdump provider bridge accepts only the official token and d-cookie fields without logging them", async () => {
+  assert.deepEqual(
+    parseSlackdumpProviderAuth(
+      JSON.stringify({
+        Token: "xoxc-test-token",
+        Cookie: [
+          { Name: "d-s", Value: "synthetic-d-s", Domain: ".slack.com", Path: "/" },
+          { Name: "d", Value: "synthetic-d", Domain: ".slack.com", Path: "/" },
+        ],
+      })
+    ),
+    { token: "xoxc-test-token", cookie: "synthetic-d" }
+  );
+  assert.equal(parseSlackdumpProviderAuth("encrypted-provider-by-slackdump"), null);
+
+  const cacheDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-provider-"));
+  try {
+    await writeFile(join(cacheDir, "workspace.txt"), "default\n", "utf8");
+    await writeFile(
+      join(cacheDir, "provider.bin"),
+      JSON.stringify({ Token: "xoxc-cached-token", Cookie: [{ Name: "d", Value: "cached-d" }] }),
+      "utf8"
+    );
+    const env = { CACHE_DIR: cacheDir };
+    assert.deepEqual(await loadSlackdumpProviderAuth(env), { token: "xoxc-cached-token", cookie: "cached-d" });
+    assert.deepEqual(
+      await resolveSlackApiCredentials(
+        { workspace: "synthetic-workspace", token: "xoxc-injected-token", cookie: "injected-d" },
+        env
+      ),
+      { workspace: "synthetic-workspace", token: "xoxc-cached-token", cookie: "cached-d" }
+    );
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test("runSlackdump: emits safe archive-growth progress while child is running", async () => {

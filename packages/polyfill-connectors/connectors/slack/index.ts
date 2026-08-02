@@ -17,11 +17,11 @@
  *   - dm_read_states: `conversations.info` — archived channel DATA blobs
  *     strip `last_read`/`unread_count_display`.
  *
- * All four are reachable with the SAME session credential (`SLACK_TOKEN`
- * xoxc token + `SLACK_COOKIE` `d` cookie) already captured for slackdump —
- * "slackdump's CLI doesn't call this" was never a source-availability
- * claim. See openspec/changes/complete-slack-bundled-connector-coverage
- * for the evidence trail.
+ * All four use the same Slackdump provider credential (`xoxc` token + `d`
+ * cookie) as the successful archive. After Slackdump selects/authenticates
+ * its provider, the connector reuses that provider state in memory for the
+ * browser transport; the supplied env credential is only the existing
+ * bootstrap/fallback path.
  *
 
  * Slackdump is AGPL-3.0; we spawn it as a subprocess (arms-length) rather
@@ -55,7 +55,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -560,6 +560,81 @@ interface SlackCredentials {
   cookie: string;
   token: string;
   workspace: string;
+}
+
+interface SlackdumpProviderFile {
+  Cookie?: unknown;
+  Token?: unknown;
+}
+
+const SLACKDUMP_WORKSPACE_NAME_RE = /^[A-Za-z0-9_-]+$/u;
+
+/**
+ * Parse only the credential fields that Slackdump's official provider cache
+ * exposes. Values stay in memory and are never logged or written by PDPP.
+ * Encrypted provider files are intentionally not interpreted here; Slackdump
+ * remains the only component allowed to decrypt them.
+ */
+export function parseSlackdumpProviderAuth(raw: string): Pick<SlackCredentials, "cookie" | "token"> | null {
+  let provider: SlackdumpProviderFile;
+  try {
+    provider = JSON.parse(raw) as SlackdumpProviderFile;
+  } catch {
+    return null;
+  }
+  const token = typeof provider.Token === "string" ? provider.Token : null;
+  const cookies = Array.isArray(provider.Cookie) ? provider.Cookie : [];
+  const dCookie = cookies.find(
+    (cookieEntry): cookieEntry is { Name?: unknown; Value?: unknown } =>
+      typeof cookieEntry === "object" && cookieEntry !== null && (cookieEntry as { Name?: unknown }).Name === "d"
+  );
+  const dCookieValue = typeof dCookie?.Value === "string" ? dCookie.Value : null;
+  if (!(token && dCookieValue)) {
+    return null;
+  }
+  return { cookie: dCookieValue, token };
+}
+
+function slackdumpCacheDir(env: NodeJS.ProcessEnv): string {
+  const cacheRoot = env.CACHE_DIR || env.XDG_CACHE_HOME || join(homedir(), ".cache");
+  return env.CACHE_DIR ? cacheRoot : join(cacheRoot, "slackdump");
+}
+
+/**
+ * Reuse the provider that the Slackdump archive just proved usable. The
+ * connector's existing `workspace list`/`resume` subprocess is the authority
+ * for selecting and validating this provider; this read only bridges its
+ * already-plain provider representation into the existing browser transport.
+ * If the provider is encrypted or absent, return null and preserve the
+ * existing explicitly supplied credential path.
+ */
+export async function loadSlackdumpProviderAuth(
+  env: NodeJS.ProcessEnv = process.env
+): Promise<Pick<SlackCredentials, "cookie" | "token"> | null> {
+  const cacheDir = slackdumpCacheDir(env);
+  let workspace = "default";
+  try {
+    const marker = (await readFile(join(cacheDir, "workspace.txt"), "utf8")).trim();
+    if (SLACKDUMP_WORKSPACE_NAME_RE.test(marker)) {
+      workspace = marker;
+    }
+  } catch {
+    // Slackdump's historical default provider is selected when the marker is absent.
+  }
+  const filename = workspace === "default" ? "provider.bin" : `${workspace}.bin`;
+  try {
+    return parseSlackdumpProviderAuth(await readFile(join(cacheDir, filename), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveSlackApiCredentials(
+  credentials: SlackCredentials,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<SlackCredentials> {
+  const provider = await loadSlackdumpProviderAuth(env);
+  return provider ? { ...credentials, ...provider } : credentials;
 }
 
 interface SlackOpts {
@@ -2776,6 +2851,11 @@ if (isMainModule(import.meta.url)) {
         token,
         useResume,
       });
+      // Slackdump has just selected and authenticated its official provider
+      // for the archive. Reuse that provider's in-memory token/cookie pair
+      // for the supplementary Web API calls so they cannot drift from the
+      // credentials that made the archive request succeed.
+      const apiCredentials = await resolveSlackApiCredentials({ workspace, token, cookie }, childEnv);
 
       const db = await timedPhase(progress, "archive-open", () =>
         Promise.resolve(new DatabaseSync(sqlitePath, { readOnly: true }))
@@ -2869,7 +2949,7 @@ if (isMainModule(import.meta.url)) {
         : null;
 
       let messageResult = await timedPhase(progress, "read-and-emit", () =>
-        runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
+        runRequestedStreams(deps, state, apiCredentials, emit, {
           allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
           ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
         })

@@ -169,7 +169,10 @@ See `openspec/changes/complete-slack-bundled-connector-coverage` for the evidenc
 
 ## Auth
 
-Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK_TOKEN` (an `xoxc-` token) and `SLACK_COOKIE` (the `d=...` cookie value) from a logged-in browser session against your workspace.
+Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env to bootstrap
+Slackdump. After the archive subprocess selects and authenticates Slackdump's
+provider, the four Web API streams reuse that provider's token and `d` cookie
+in memory; PDPP does not create a second credential store or log those values.
 
 Slackdump resolution:
 
