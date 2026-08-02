@@ -1074,7 +1074,7 @@ test("SQLite scoped pending lookup survives a store/controller restart", async (
 });
 
 test("Postgres replacement ledger matches SQLite append/order/selection contract", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });

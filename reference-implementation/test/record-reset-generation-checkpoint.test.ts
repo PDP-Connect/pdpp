@@ -295,7 +295,7 @@ test("reinsertion after reset can never reproduce the earlier composite checkpoi
 });
 
 test("real disposable PostgreSQL reset-generation matches the SQLite union-rule contract", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const connectorId = SPOTIFY_CONNECTOR_KEY;
   const instanceId = "cin_reset_gen_pg";
@@ -342,7 +342,7 @@ test("real disposable PostgreSQL reset-generation matches the SQLite union-rule 
 });
 
 test("real disposable PostgreSQL: connector-wide reset discovers and clears a counter-only namespace on production connector invalidation (Sol third-verdict P2.2)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const connectorId = SPOTIFY_CONNECTOR_KEY;
   const instanceId = "cin_reset_gen_counter_only_pg";

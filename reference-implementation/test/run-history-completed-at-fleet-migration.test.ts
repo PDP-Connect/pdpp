@@ -191,7 +191,7 @@ test("SQLite: a fresh install is unaffected by the fleet-migration repair", () =
 });
 
 test("PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(

@@ -273,7 +273,7 @@ async function cleanupPostgres(connectorInstanceIds: string[]): Promise<void> {
 }
 
 test("real PostgreSQL: a connection whose only forward evidence is 3 days old reads debt=true through the real wired pipeline (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   if (!POSTGRES_URL) {
     return;
@@ -301,7 +301,7 @@ test("real PostgreSQL: a connection whose only forward evidence is 3 days old re
 });
 
 test("real PostgreSQL: a connection whose only forward evidence is fresh reads debt=false through the real wired pipeline (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   if (!POSTGRES_URL) {
     return;
@@ -326,7 +326,7 @@ test("real PostgreSQL: a connection whose only forward evidence is fresh reads d
 });
 
 test("real PostgreSQL: a connection with current-but-empty terminal facts reads debt=true (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   if (!POSTGRES_URL) {
     return;

@@ -149,7 +149,7 @@ async function factsFor(instanceId = INSTANCE_ID): Promise<StreamFactsByStream |
 }
 
 test("real PostgreSQL: a later cancelled/not_committed attempt does not regress an already-durably-proven stream", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -191,7 +191,7 @@ test("real PostgreSQL: a later cancelled/not_committed attempt does not regress 
 });
 
 test("real PostgreSQL: a later committed success still advances past a prior committed proof (forward progress unaffected)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -232,7 +232,7 @@ test("real PostgreSQL: a later committed success still advances past a prior com
 });
 
 test("real PostgreSQL: recovery-only interaction — genuine success -> recovery-only successes -> interleaved cancelled attempt -> stored fact still reads the original committed proof", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -312,7 +312,7 @@ test("real PostgreSQL: recovery-only interaction — genuine success -> recovery
 // reconcile call heals it via the `stream_facts_fold_version` invalidation
 // lever — no Gmail-specific code path.
 test("real PostgreSQL: existing-row self-heal — a row pre-seeded in the exact pre-fix corrupted shape heals via an ordinary reconcile call", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -438,7 +438,7 @@ test("real PostgreSQL: existing-row self-heal — a row pre-seeded in the exact 
 });
 
 test("real PostgreSQL: recompute/self-heal — a full rebuild from existing event history reproduces the same monotonic result as the incremental fold", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {

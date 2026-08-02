@@ -472,7 +472,7 @@ async function withPostgresScopedFixture<T>(
 }
 
 test("Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = mustExist(POSTGRES_URL ?? null, "PDPP_TEST_POSTGRES_URL is set (test is skipped otherwise)");
   const runPrefix = `scoped_observation_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -1384,7 +1384,7 @@ test("Postgres browser_surface_leases DDL admits retained_capacity_reserved with
 });
 
 test("Postgres simultaneous empty public bootstraps use polling without concurrent-index deadlock", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const postgresUrl = mustExist(POSTGRES_URL ?? null, "PDPP_TEST_POSTGRES_URL is set (test is skipped otherwise)");
   const admin = new Pool({ connectionString: postgresUrl });
@@ -1674,7 +1674,7 @@ if (POSTGRES_URL) {
 }
 
 test("Postgres simultaneous legacy boots serialize priority migration before catalog discovery", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const postgresUrl = mustExist(POSTGRES_URL ?? null, "PDPP_TEST_POSTGRES_URL is set (test is skipped otherwise)");
   const admin = new Pool({ connectionString: postgresUrl });
@@ -1732,7 +1732,7 @@ test("Postgres simultaneous legacy boots serialize priority migration before cat
 });
 
 test("Postgres browser generation hash upsert preserves same-container state and clears on container replacement", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const postgresUrl = mustExist(POSTGRES_URL ?? null, "PDPP_TEST_POSTGRES_URL is set (test is skipped otherwise)");
   await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
@@ -1753,7 +1753,7 @@ test("Postgres browser generation hash upsert preserves same-container state and
 });
 
 test("Postgres clears stale profile provenance on a profile-key change and accepts an explicit replacement", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const postgresUrl = mustExist(POSTGRES_URL ?? null, "PDPP_TEST_POSTGRES_URL is set (test is skipped otherwise)");
   await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });

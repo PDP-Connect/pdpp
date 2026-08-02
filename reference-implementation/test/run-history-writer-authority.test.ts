@@ -563,7 +563,7 @@ test("SQLite: a run.started write succeeds against a database migrated from lega
 });
 
 test("PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });

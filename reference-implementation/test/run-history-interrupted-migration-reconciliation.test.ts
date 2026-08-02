@@ -562,7 +562,7 @@ const PG_LEGACY_SCHEDULER_RUN_HISTORY_DDL = `
 `;
 
 test("PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(
@@ -677,7 +677,7 @@ test("PostgreSQL: interrupted migration reconciles losslessly against real Postg
 });
 
 test("PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(
@@ -732,7 +732,7 @@ test("PostgreSQL: a crash before the reconciliation transaction commits leaves s
 });
 
 test("PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(

@@ -434,7 +434,7 @@ async function cleanupPostgres() {
 }
 
 test("real PostgreSQL: foldConnectorSummaryStreamFacts respects an explicit maxEvents budget, reports incomplete, and a follow-up call resumes to the unbounded oracle value", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -478,7 +478,7 @@ test("real PostgreSQL: foldConnectorSummaryStreamFacts respects an explicit maxE
 });
 
 test("real PostgreSQL: runBoundedSummaryEvidenceSweep reports incomplete and skips complete pruning when a page's fold does not converge, then resumes", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -540,7 +540,7 @@ test("real PostgreSQL: runBoundedSummaryEvidenceSweep reports incomplete and ski
 });
 
 test("real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   const triggerName = "test_summary_starvation_slow_generic";
@@ -610,7 +610,7 @@ test("real PostgreSQL: the 25-row first-page starvation shape folds before slow 
 });
 
 test("real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   const triggerName = "test_summary_cold_deadline_slow_repair";
@@ -673,7 +673,7 @@ test("real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow r
 });
 
 test("real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -716,7 +716,7 @@ test("real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes fro
 });
 
 test("real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   const triggerName = "test_summary_deadline_checkpoint_tail";

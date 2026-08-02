@@ -94,7 +94,7 @@ function projectionReliable(summary: JsonRecord): JsonRecord | undefined {
 }
 
 test("real PostgreSQL probe 3: simultaneous fold failure AND terminal-facts-failed-marker write failure still fails closed through the real production read", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   if (!POSTGRES_URL) {
     return;
@@ -275,7 +275,7 @@ test("real PostgreSQL probe 3: simultaneous fold failure AND terminal-facts-fail
 });
 
 test("real PostgreSQL probe 4: simultaneous discovery failure AND discovery-failed-marker write failure still fails closed through the real production read", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   if (!POSTGRES_URL) {
     return;

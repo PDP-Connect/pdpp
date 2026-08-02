@@ -277,7 +277,7 @@ test("SQLite: zero spine_events statements for a connection with no run at all",
 });
 
 test("PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(
@@ -376,7 +376,7 @@ test("PostgreSQL: zero spine_events statements for a terminal run's GET", { skip
 });
 
 test("PostgreSQL: zero spine_events statements for a connection with no run at all", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(

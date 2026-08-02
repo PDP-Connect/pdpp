@@ -26,7 +26,7 @@ function postgresStorageConfig(): { backend: "postgres"; databaseUrl: string } {
 }
 
 test("real PostgreSQL persisted private coverage STATE fails closed and does not echo the sentinel", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {

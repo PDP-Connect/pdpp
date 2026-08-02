@@ -246,7 +246,7 @@ function countPoolQueries<T>(fn: () => Promise<T>): Promise<{ calls: number; res
 }
 
 test("real PostgreSQL: getConnectorSummaryForRoute (discovery + fold + synthesis) query count for N=25 stays within a small constant factor of N=1", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });

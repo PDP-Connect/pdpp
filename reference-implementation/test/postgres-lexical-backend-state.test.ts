@@ -59,7 +59,7 @@ test("lexical backend state reports SQLite FTS when Postgres storage is inactive
 });
 
 test("Postgres startup does not require pg_search and keeps native FTS as fallback", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = POSTGRES_URL ?? "";
   await initPostgresStorage({ backend: "postgres", databaseUrl });

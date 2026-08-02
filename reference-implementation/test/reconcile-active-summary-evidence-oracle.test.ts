@@ -1312,7 +1312,7 @@ test("warm list and scoped consumers converge after canonical state changes", ()
   }));
 
 test("dedicated PostgreSQL manifest generations fence historical facts and undeclared-write provenance", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: requirePostgresUrl() });
   try {
@@ -1504,7 +1504,7 @@ test("dedicated PostgreSQL manifest generations fence historical facts and undec
 });
 
 test("dedicated PostgreSQL warm v3 terminal projection is invalidated and replayed, now accepting generationless history for a never-advanced connection (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: requirePostgresUrl() });
   try {
@@ -1645,7 +1645,7 @@ test("dedicated PostgreSQL warm v3 terminal projection is invalidated and replay
 });
 
 test("dedicated PostgreSQL route retries a lost v4 replay before trusting a mixed-version v2 terminal map (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: requirePostgresUrl() });
   try {

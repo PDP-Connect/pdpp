@@ -82,7 +82,7 @@ function countPoolQueries<T>(fn: () => Promise<T>): Promise<{ calls: number; res
 }
 
 test("real PostgreSQL: discovery query count for N=25 is within a small constant factor of N=1, never N=25x", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
@@ -116,7 +116,7 @@ test("real PostgreSQL: discovery query count for N=25 is within a small constant
 });
 
 test("real PostgreSQL: repair work is proportional to K candidates, not N total connections", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });

@@ -127,7 +127,7 @@ test("real PostgreSQL rejects a null cursor that would lose non-null progress", 
 });
 
 test("real PostgreSQL dual runners fence a stale incomplete cursor after a later complete owner clears it (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL ?? "" });
   try {

@@ -526,7 +526,7 @@ async function cleanupPostgres() {
 }
 
 test("real PostgreSQL: migration backfills identity and a never-advanced connection consumes pre-generation terminal facts as current (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/suspicious/noEvolvingTypes: test fixture inference is intentionally widened
   // biome-ignore lint/suspicious/noImplicitAnyLet: value is assigned after backend initialization
@@ -590,7 +590,7 @@ test("real PostgreSQL: migration backfills identity and a never-advanced connect
 });
 
 test("real PostgreSQL: a genuine generation transition permanently refuses prior unstamped history (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl() });
   try {
@@ -675,7 +675,7 @@ test("real PostgreSQL: a genuine generation transition permanently refuses prior
 });
 
 test("real PostgreSQL: the backfill does not cross connections and leaves genuinely unattributable legacy events NULL", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl() });
   let targetEventId = "";

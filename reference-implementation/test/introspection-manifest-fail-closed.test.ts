@@ -151,7 +151,7 @@ test("SQLite introspection fails closed on an unexpected manifest-storage fault"
 });
 
 test("Postgres introspection fails closed on an unexpected manifest-storage fault", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async (t) => {
   await runFailClosedCases(t, "postgres");
 });

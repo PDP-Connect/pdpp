@@ -270,7 +270,7 @@ test("SQLite: backfill discovers two connections sharing a run_id as two separat
 });
 
 test("PostgreSQL: migration builds the composite unique index over live duplicate-run_id data (the exact 42P10 failure this fix closes), preserving both connections' rows", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(
@@ -360,7 +360,7 @@ test("PostgreSQL: migration builds the composite unique index over live duplicat
 });
 
 test("PostgreSQL: two different connections sharing a run_id each get their own run_history row via the live spine writer", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(

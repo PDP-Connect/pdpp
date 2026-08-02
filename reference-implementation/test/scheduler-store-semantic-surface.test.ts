@@ -673,7 +673,7 @@ test("SQLite scheduler page batches issue one statement per page axis and two sa
 });
 
 test("PostgreSQL scheduler page batches match SQLite semantics and use one typed-array query per non-empty axis", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   const fixtures = [

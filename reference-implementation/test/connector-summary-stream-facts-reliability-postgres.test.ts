@@ -123,7 +123,7 @@ async function evidenceRow(): Promise<EvidenceRow> {
 }
 
 test("real PostgreSQL: a bounded pass (maxEvents:1) processes AT MOST one event and stays stale/incomplete, never current", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -169,7 +169,7 @@ test("real PostgreSQL: a bounded pass (maxEvents:1) processes AT MOST one event 
 });
 
 test("real PostgreSQL: multi-round resume — bounded rounds accumulate and only the genuinely converged final round reads current", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -212,7 +212,7 @@ test("real PostgreSQL: multi-round resume — bounded rounds accumulate and only
 });
 
 test("real PostgreSQL: exact-boundary convergence — a maxEvents budget equal to the remaining history reads current, not falsely incomplete", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -245,7 +245,7 @@ test("real PostgreSQL: exact-boundary convergence — a maxEvents budget equal t
 });
 
 test("real PostgreSQL: a future-version row is never folded/replayed/mutated durably — this binary fails it closed at read time only", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {

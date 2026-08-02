@@ -390,7 +390,7 @@ async function countPostgresRowsReturned<T>(fn: () => Promise<T>): Promise<{ res
 }
 
 test("real PostgreSQL: scoped fold reads/folds ONLY the target connection's terminal history despite 4,001 unrelated terminal events", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: mustPostgresUrl() });
   try {
@@ -441,7 +441,7 @@ test("real PostgreSQL: scoped fold reads/folds ONLY the target connection's term
 });
 
 test("real PostgreSQL: the real mounted route resolves correctly despite thousands of unrelated terminal events", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: mustPostgresUrl() });
   try {
