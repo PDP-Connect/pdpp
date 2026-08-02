@@ -23,3 +23,12 @@ timer tick. Owner read routes SHALL remain read-only.
 - **THEN** the startup walker SHALL complete at least that first round
 - **AND** the periodic attempt SHALL NOT start a second evidence writer
 - **AND** later timer ticks SHALL retain their normal periodic cadence.
+
+#### Scenario: Startup-order proof uses the server's actual wiring
+
+- **WHEN** an integration test enables an immediate competing tick through
+  the connector-maintenance timer constructor used by `startServer`
+- **AND** the real first startup fold is held in progress
+- **THEN** the startup walker SHALL record at least one round
+- **AND** reverting the production launch order so the timer claims the
+  coordinator first SHALL make that integration test fail.

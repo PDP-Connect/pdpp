@@ -47,6 +47,7 @@ import { connectorRetainsSurfaceProcess } from "../runtime/browser-surface/retai
 import {
   type BrowserSurfaceLeaseSweepCloseSource,
   type BrowserSurfaceLeaseSweepTimer,
+  type BrowserSurfaceLeaseSweepTimerOptions,
   createBrowserSurfaceLeaseSweepTimer,
 } from "../runtime/browser-surface-lease-sweep-timer.ts";
 import {
@@ -650,6 +651,15 @@ interface ServerOpts {
   clientEventSubscriptionsSupported?: boolean;
   configuredProviderAuthConnectorKeys?: readonly string[];
   connectorInstanceId?: string;
+  /**
+   * Injectable timer constructor for the connector-maintenance startup
+   * boundary. Production uses `createBrowserSurfaceLeaseSweepTimer`; tests
+   * use this one narrow seam to force and observe a competing immediate tick
+   * through the same `startServer` ordering.
+   */
+  connectorMaintenanceSweepTimerFactory?: (
+    options: BrowserSurfaceLeaseSweepTimerOptions
+  ) => BrowserSurfaceLeaseSweepTimer;
   connectorPathResolver?: ((connectorId: string, manifest?: ConnectorManifest) => string | null) | null;
   controller?: Controller | null;
   dbPath?: string;
@@ -675,6 +685,8 @@ interface ServerOpts {
   nekoProxyAutoLogin?: boolean;
   nekoWindowSettleProbe?: ((url: string) => Promise<unknown>) | null;
   onScheduleMutation?: (() => void) | null;
+  /** Test/integration observer for every bounded startup evidence round. */
+  onStartupSummaryEvidenceSweepRound?: ((summary: SweepSummary, round: number) => void) | null;
   ownerAuthForceSecureCookies?: boolean;
   ownerAuthPassword?: string;
   ownerAuthSameSite?: string;
@@ -6695,7 +6707,9 @@ export async function startServer(opts: ServerOpts = {}) {
     },
     runHistoryBackfillStage,
   });
-  const connectorMaintenanceSweepTimer = createBrowserSurfaceLeaseSweepTimer({
+  const connectorMaintenanceSweepTimer = (
+    opts.connectorMaintenanceSweepTimerFactory ?? createBrowserSurfaceLeaseSweepTimer
+  )({
     intervalMs: CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS,
     onSweepError: (err: unknown) => {
       logger.warn?.(
@@ -7068,6 +7082,7 @@ export async function startServer(opts: ServerOpts = {}) {
     maxDurationMs: STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
     maxRounds: STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS,
     onRound: (summary: SweepSummary, round: number) => {
+      opts.onStartupSummaryEvidenceSweepRound?.(summary, round);
       if (
         ((summary as unknown as Record<string, unknown>).repaired as number) > 0 ||
         ((summary as unknown as Record<string, unknown>).skipped as number) > 0 ||
