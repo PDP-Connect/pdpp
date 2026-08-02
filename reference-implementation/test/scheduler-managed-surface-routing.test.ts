@@ -516,11 +516,11 @@ test("T3d: a pending browser-surface collision is coalesced without persisting i
       onRunComplete: (record) => completedRuns.push(record),
       rsUrl: "http://localhost.invalid",
       runManagedConnectorViaController: () => {
-        const err: Error & { code?: string; runId?: string } = new Error(
-          "Connector already has a pending browser-surface run: run_existing"
-        );
-        err.code = "run_browser_surface_queued";
-        err.runId = "run_existing";
+        const err = Object.assign(Object.create(null), {
+          code: "run_browser_surface_queued",
+          message: "Connector already has a pending browser-surface run: run_existing",
+          runId: "run_existing",
+        });
         throw err;
       },
     });
@@ -779,7 +779,7 @@ test("T5: connectorInstanceId matches connectorId when not explicitly set (profi
 
 // ── T6: controller throw → failed RunRecord (not crash) ────────────────────
 
-test("T6: controller.runNow throw produces a failed RunRecord (scheduler stays alive)", async () => {
+async function captureControllerThrowRecord(thrown: unknown): Promise<RunRecord> {
   const tmpDir = mkdtempSync(join(tmpdir(), "sched-managed-"));
   try {
     const connectorPath = writeDummyConnector(tmpDir);
@@ -801,30 +801,74 @@ test("T6: controller.runNow throw produces a failed RunRecord (scheduler stays a
       onRunComplete: (record) => completedRuns.push(record),
       rsUrl: "http://localhost.invalid",
       runManagedConnectorViaController: () => {
-        throw new Error("provider_pressure_cooldown: simulated controller error");
+        throw thrown;
       },
     });
 
     try {
       scheduler.start();
       await waitFor(() => completedRuns.length >= 1, 5000);
-      scheduler.stop();
-
       const [record] = completedRuns;
       assert.ok(record, "a completed run record was captured");
-      assert.equal(record.status, "failed", "controller throw must produce a failed RunRecord");
-      assert.equal(record.error, "controller_run_now_failed", "scheduled history must store only the stable cause");
-      assert.equal(record.failureReason, "controller_run_now_failed");
-      assert.equal(record.terminalReason, "controller_run_now_failed");
-      assert.ok(
-        !record.error?.includes("provider_pressure_cooldown"),
-        "raw controller errors must not enter scheduler history"
-      );
+      return record;
     } finally {
       scheduler.stop();
     }
   } finally {
     rmSync(tmpDir, { force: true, recursive: true });
+  }
+}
+
+test("T6: controller.runNow throw produces a failed RunRecord (scheduler stays alive)", async () => {
+  const record = await captureControllerThrowRecord(
+    new Error("provider_pressure_cooldown: simulated controller error")
+  );
+  assert.equal(record.status, "failed", "controller throw must produce a failed RunRecord");
+  assert.equal(record.error, "controller_run_now_failed", "scheduled history must store only the stable cause");
+  assert.equal(record.failureReason, "controller_run_now_failed");
+  assert.equal(record.terminalReason, "controller_run_now_failed");
+  assert.ok(
+    !record.error?.includes("provider_pressure_cooldown"),
+    "raw controller errors must not enter scheduler history"
+  );
+});
+
+test("T6b: arbitrary controller throw values remain terminal and redacted", async () => {
+  const hostileGetter = Object.create(null, {
+    code: {
+      get() {
+        throw new Error("code getter must not escape");
+      },
+    },
+  });
+  const hostileProxy = new Proxy(Object.create(null), {
+    get() {
+      throw new Error("proxy get must not escape");
+    },
+    getPrototypeOf() {
+      throw new Error("proxy prototype lookup must not escape");
+    },
+  });
+  const cases: readonly (readonly [string, unknown])[] = [
+    ["null-prototype object", Object.create(null)],
+    ["null", null],
+    ["undefined", undefined],
+    ["string", "legacy controller failure"],
+    ["Error", new Error("legacy controller failure")],
+    ["symbol", Symbol("controller failure")],
+    ["bigint", 1n],
+    ["hostile code getter", hostileGetter],
+    ["hostile proxy", hostileProxy],
+  ];
+  const records = await Promise.all(
+    cases.map(async ([caseName, thrown]) => ({ caseName, record: await captureControllerThrowRecord(thrown) }))
+  );
+
+  for (const { caseName, record } of records) {
+    assert.equal(record.status, "failed", `${caseName} must not escape the scheduler`);
+    assert.equal(record.error, "controller_run_now_failed", `${caseName} must stay redacted`);
+    assert.equal(record.failureReason, "controller_run_now_failed", `${caseName} must have a stable failure reason`);
+    assert.equal(record.terminalReason, "controller_run_now_failed", `${caseName} must have a stable terminal reason`);
   }
 });
 

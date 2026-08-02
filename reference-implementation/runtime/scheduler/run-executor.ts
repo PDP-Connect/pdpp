@@ -591,9 +591,39 @@ const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
 
 const CONTROLLER_RUN_NOW_FAILED_REASON = "controller_run_now_failed";
 
+function controllerRunNowErrorCode(err: unknown): string | null {
+  if (err !== null && (typeof err === "object" || typeof err === "function")) {
+    try {
+      const { code: candidateCode } = err as { code?: unknown };
+      return typeof candidateCode === "string" ? candidateCode : null;
+    } catch {
+      // A hostile thrown value is not lifecycle evidence. Fall through to the
+      // stable controller-boundary failure without coercing or serializing it.
+    }
+  }
+  return null;
+}
+
+function controllerRunNowLegacyMessage(err: unknown): string | null {
+  if (typeof err === "string") {
+    return err;
+  }
+  if (err === null || typeof err !== "object") {
+    return null;
+  }
+  try {
+    if (err instanceof Error) {
+      const { message: candidateMessage } = err;
+      return typeof candidateMessage === "string" ? candidateMessage : null;
+    }
+  } catch {
+    // Error identity/message access can itself be hostile for a Proxy.
+  }
+  return null;
+}
+
 function controllerRunNowDeferReason(err: unknown): string | null {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-  const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
+  const code = controllerRunNowErrorCode(err);
   if (code === "run_already_active") {
     return "run_already_active";
   }
@@ -605,7 +635,10 @@ function controllerRunNowDeferReason(err: unknown): string | null {
   if (code === "run_browser_surface_queued") {
     return "run_browser_surface_queued";
   }
-  const message = err instanceof Error ? err.message : String(err);
+  const message = controllerRunNowLegacyMessage(err);
+  if (message === null) {
+    return null;
+  }
   const normalized = message.toLowerCase();
   if (normalized.includes("run_already_active") || normalized.includes("already has an active run")) {
     return "run_already_active";

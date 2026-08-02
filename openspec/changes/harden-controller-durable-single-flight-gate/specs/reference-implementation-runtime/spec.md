@@ -80,6 +80,9 @@ and recovery-continuation paths SHALL all use the same admission gate.
 - **THEN** the scheduler SHALL record the typed failure and terminal reason
   `controller_run_now_failed`
 - **AND** it SHALL NOT persist the raw thrown error as scheduler-history error
+- **AND** it SHALL classify arbitrary thrown values without coercing or
+  serializing them; only a safely-readable typed collision code or legacy
+  string/Error text MAY affect lifecycle classification
 - **AND** a controller-returned connector terminal SHALL retain its own
   runtime-authored failure evidence unchanged
 

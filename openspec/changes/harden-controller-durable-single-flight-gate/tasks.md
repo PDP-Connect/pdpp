@@ -35,7 +35,8 @@
 - [ ] Add store regressions proving cleanup is run-id-scoped and cannot delete a
       newer row.
 - [x] Add discriminating scheduler regressions for a typed pending
-      browser-surface collision and raw controller-error redaction.
+      browser-surface collision, raw controller-error redaction, and arbitrary
+      thrown values including null-prototype and hostile-object shapes.
 
 ## 5. Validation
 
