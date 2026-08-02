@@ -34,6 +34,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { listSpineEventsPage } from "../lib/spine.ts";
 import { type RuntimeRunConnectorResult, runConnector } from "../runtime/index.ts";
+import { DEFAULT_QUARANTINE_POLICY } from "../runtime/recovery-quarantine.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
@@ -807,4 +808,150 @@ test("a truly pending gap still surfaces as a retryable known_gap", async (t) =>
   const [detailGapKnownGap] = detailGapKnownGaps;
   assert.ok(detailGapKnownGap, "one detail_gap known_gap was found");
   assert.equal(detailGapKnownGap.recovery_hint?.action, "retry_by_runtime");
+});
+
+// Live incident (run_ac0f15a193a449e99b2f69830aaba467, Gmail connection
+// cin_12407c1afb78d56848fe0b20, 2026-08-02): a required attachments key whose
+// durable gap crosses the per-item no-progress quarantine budget ON THIS SAME
+// RUN threw "Connector detail coverage incomplete ... missing_required_keys=5"
+// and aborted an otherwise-successful run at the commit gate, even though the
+// runtime had just durably recorded that exact key as `terminal`/`quarantined`
+// (§10-A: "terminal is always sticky" — a real, final resolution, not a
+// missing one). Root cause: `assertDetailCoverageSatisfiedBeforeCommit`'s
+// `accountedGapKeys` set only credited `status === 'pending' || 'recovered'`,
+// so a gap that quarantined mid-run (via `maybeQuarantineDetailGap` ->
+// `settleDetailGapMessage`) fell into neither: not hydrated, not
+// optional-skipped, not pending, not recovered. The runtime's own quarantine
+// decision made a required key "missing" in its own eyes half a function
+// later. Fix: the gate now also credits `status === 'terminal'` — the item is
+// durably, permanently accounted for either way (success or exhausted
+// no-progress budget), and the commit-gate's job is to catch UNACCOUNTED
+// evidence, not to re-litigate a same-run terminal decision the runtime
+// itself just made.
+test("a gap quarantined to terminal on THIS run satisfies the commit gate, not just pending/recovered", async (t) => {
+  const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  t.after(() => closeServer(server));
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  await fetchJson(`${asUrl}/connectors`, {
+    body: JSON.stringify(MANIFEST),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const ownerToken = await issueOwnerToken(asUrl);
+  const connectorId = MANIFEST.connector_id;
+  const store = getTestDetailGapStore();
+  const threshold = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
+
+  // Seed a gap already sitting AT the quarantine no-progress budget (as if it
+  // had already survived `threshold` prior real attempts across earlier
+  // runs) — mirrors the live gaps, which had attempt_count 8 (== the default
+  // threshold) at the moment they quarantined.
+  const LOCATOR = { conversation_id: "POISON", kind: "chatgpt.conversation" };
+  let poison = await store.upsertPendingGap({
+    connectorId,
+    connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", connectorId),
+    detailLocator: LOCATOR,
+    discoveredRunId: "prior",
+    grantId: null,
+    lastError: null,
+    lastRunId: "prior",
+    listCursor: null,
+    parentStream: null,
+    reason: "temporary_unavailable",
+    recordKey: "POISON",
+    scope: null,
+    source: { id: connectorId, kind: "connector" },
+    stream: "messages",
+  });
+  assert.ok(poison, "seeded gap is persisted");
+  // biome-ignore lint/style/noIncrementDecrement: the loop counter is local, unambiguous test setup state.
+  for (let i = 0; i < threshold; i++) {
+    // biome-ignore lint/performance/noAwaitInLoops: ordered setup is intentionally sequential because each iteration advances shared test state.
+    await store.markGapStatus(poison.gap_id, "in_progress", { runId: `seed_${i}` });
+    poison = (await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: makeDefaultAccountConnectorInstanceId("test_user", connectorId),
+      detailLocator: LOCATOR,
+      discoveredRunId: "prior",
+      grantId: null,
+      lastError: null,
+      lastRunId: `seed_${i}`,
+      listCursor: null,
+      parentStream: null,
+      reason: "temporary_unavailable",
+      recordKey: "POISON",
+      scope: null,
+      source: { id: connectorId, kind: "connector" },
+      stream: "messages",
+    })) as typeof poison;
+    assert.ok(poison, "seeded gap still present after re-defer");
+  }
+  const seededRow = await store.getGapById(poison.gap_id);
+  assert.equal(seededRow?.status, "pending", "seed loop leaves the gap pending, at the threshold, not yet quarantined");
+
+  // This run's forward pass rediscovers POISON as still missing (a genuine
+  // required key) and re-defers it with a NON-transient-looking failure —
+  // the exact re-defer that crosses the budget and quarantines it THIS run,
+  // inline, before the commit gate runs.
+  const messages = [
+    {
+      detail_locator: LOCATOR,
+      reason: "temporary_unavailable",
+      record_key: "POISON",
+      retryable: true,
+      stream: "messages",
+      type: "DETAIL_GAP",
+    },
+    {
+      gap_keys: ["POISON"],
+      hydrated_keys: [],
+      reference_only: true,
+      required_keys: ["POISON"],
+      state_stream: "conversations",
+      stream: "messages",
+      type: "DETAIL_COVERAGE",
+    },
+    { cursor: { last_update_time: "2026-08-02T09:55:01.700Z" }, stream: "messages", type: "STATE" },
+    { cursor: { last_update_time: "2026-08-02T09:55:01.700Z" }, stream: "conversations", type: "STATE" },
+    { records_emitted: 0, status: "succeeded", type: "DONE" },
+  ];
+  const { connectorPath, cleanup } = createCannedConnector(messages);
+
+  let result: RuntimeRunConnectorResult | null = null;
+  let thrown: unknown = null;
+  try {
+    result = await runConnectorWithGapStore({
+      admitRunConnection: fakeAdmitRunConnection(),
+      collectionMode: "full_refresh",
+      connectorId,
+      connectorPath,
+      detailGapStore: store,
+      manifest: MANIFEST,
+      onInteraction: async () => ({}),
+      ownerToken,
+      persistState: true,
+      rsUrl: `http://localhost:${rsPort}`,
+      scope: { streams: [{ name: "conversations" }, { name: "messages" }] },
+      state: null,
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    cleanup();
+  }
+
+  assert.equal(thrown, null, "the run must not throw connector_protocol_violation");
+  assert.ok(result, "runConnector returned a result");
+  assert.equal(result.status, "succeeded");
+  assert.ok(result.checkpoint_summary, "result carries a checkpoint_summary");
+  assert.equal(
+    result.checkpoint_summary.state_streams_committed,
+    2,
+    "both state streams commit despite the same-run quarantine"
+  );
+
+  const storedRow = await store.getGapById(poison.gap_id);
+  assert.ok(storedRow, "durable gap row still exists");
+  assert.equal(storedRow.status, "terminal", "the gap quarantined to terminal, exactly as the live incident showed");
 });

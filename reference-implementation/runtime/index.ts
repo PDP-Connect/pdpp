@@ -3078,7 +3078,18 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
             .filter(
               (gap) =>
                 gap.stream === coverage.stream &&
-                (gap.status === "pending" || gap.status === "recovered") &&
+                // `pending`/`recovered` are the ordinary durable-gap outcomes.
+                // `terminal` is included too: `maybeTerminateGap`/`maybeQuarantineGap`
+                // (this same run, via `settleDetailGapMessage` ->
+                // `maybeTerminalizeDetailGap`/`maybeQuarantineDetailGap`) write status
+                // `terminal` for a non-transient error or a no-progress budget
+                // exhaustion — a real, durable, sticky resolution (§10-A: "terminal is
+                // always sticky"), not a missing one. Excluding it here made the gate
+                // reject an otherwise-successful run the instant it quarantined an item
+                // ON THE SAME RUN, even though the runtime had just durably recorded
+                // that exact key as permanently accounted for. See
+                // docs/uat-gmail-coverage-0802.md for the live incident this closes.
+                (gap.status === "pending" || gap.status === "recovered" || gap.status === "terminal") &&
                 !isNullish(gap.record_key)
             )
             .map((gap) => normalizeCoverageKey(gap.record_key as string | number))

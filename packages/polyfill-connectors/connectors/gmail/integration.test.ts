@@ -3911,6 +3911,94 @@ test("buildAttachmentDetailGap: bounded, non-secret gap whose record_key matches
   assert.ok(!serialized.includes("ETIMEDOUT"), "no raw error text crosses the wire");
 });
 
+test("buildAttachmentDetailGap: HTTP failure evidence carries status + typed error code, never body text", () => {
+  const attachment: AttachmentRecord = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: "application/pdf",
+    encoding: "base64",
+    filename: "invoice.pdf",
+    hydration_error: "blob upload failed (403): not_found",
+    hydration_status: "failed",
+    id: "gmmsgid-9999:2",
+    is_inline: false,
+    message_id: "gmmsgid-9999",
+    message_received_at: FROZEN_NOW,
+    part_index: "2",
+    size_bytes: 4096,
+  };
+
+  const gap = buildAttachmentDetailGap(attachment, "blob_upload_http_4xx", {
+    errorCode: "not_found",
+    httpStatus: 403,
+  });
+
+  assert.equal(gap.last_error?.class, "blob_upload_http_4xx");
+  assert.equal(gap.last_error?.http_status, 403);
+  assert.equal(gap.last_error?.message, "error_code=not_found");
+  const serialized = JSON.stringify(gap);
+  assert.ok(!serialized.includes("invoice.pdf"), "no filename crosses the wire");
+});
+
+test("buildAttachmentDetailGap: integrity-mismatch evidence carries local/server digest+size, never raw bytes", () => {
+  const attachment: AttachmentRecord = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: "application/pdf",
+    encoding: "base64",
+    filename: "invoice.pdf",
+    hydration_error: "blob upload hash/size mismatch",
+    hydration_status: "failed",
+    id: "gmmsgid-9999:2",
+    is_inline: false,
+    message_id: "gmmsgid-9999",
+    message_received_at: FROZEN_NOW,
+    part_index: "2",
+    size_bytes: 4096,
+  };
+  const localSha256 = "a".repeat(64);
+  const serverSha256 = "b".repeat(64);
+
+  const gap = buildAttachmentDetailGap(attachment, "blob_upload_integrity_failed", {
+    localSha256,
+    localSizeBytes: 4096,
+    serverSha256,
+    serverSizeBytes: 4090,
+  });
+
+  assert.equal(gap.last_error?.class, "blob_upload_integrity_failed");
+  assert.equal(gap.last_error?.http_status, undefined);
+  assert.equal(
+    gap.last_error?.message,
+    `local_sha256=${localSha256} local_size_bytes=4096 server_sha256=${serverSha256} server_size_bytes=4090`
+  );
+});
+
+test("buildAttachmentDetailGap: no evidence supplied omits http_status/message, matching the no-evidence gap", () => {
+  const attachment: AttachmentRecord = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: "application/pdf",
+    encoding: "base64",
+    filename: "invoice.pdf",
+    hydration_error: "imap timeout",
+    hydration_status: "failed",
+    id: "gmmsgid-9999:2",
+    is_inline: false,
+    message_id: "gmmsgid-9999",
+    message_received_at: FROZEN_NOW,
+    part_index: "2",
+    size_bytes: 4096,
+  };
+
+  const gap = buildAttachmentDetailGap(attachment, "imap_download_failed");
+
+  assert.deepEqual(gap.last_error, { class: "imap_download_failed" });
+});
+
 test("processMessage: records an attempted attachment into the coverage accumulator", async () => {
   const coverage = makeAttachmentDetailCoverage();
   const { deps } = makeHarness({

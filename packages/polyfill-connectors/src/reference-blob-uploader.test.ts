@@ -271,6 +271,126 @@ test("makeAttachmentHydrator + makeReferenceBlobUploader: preserves streamed siz
   releaseSourceFailure();
 });
 
+test("makeReferenceBlobUploader: HTTP failure evidence carries status + typed error.code, never message/body text", async () => {
+  const upload = makeReferenceBlobUploader({
+    fetchFn: async () =>
+      new Response(JSON.stringify({ error: { code: "not_found", message: "connection cin_secret not found" } }), {
+        status: 403,
+      }),
+    ownerToken: "test-token",
+    rsUrl: "https://pdpp.example.test",
+  });
+  await assert.rejects(
+    () => upload(baseArgs),
+    (err) => {
+      expectFailureKind(err, "http_4xx");
+      assert.deepEqual(err.evidence, { errorCode: "not_found", httpStatus: 403 });
+      assert.ok(
+        !err.message.includes("cin_secret"),
+        "the server's free-text error.message must never reach the client-side Error.message"
+      );
+      return true;
+    }
+  );
+});
+
+test("makeReferenceBlobUploader: a body with no typed error.code omits errorCode but still carries httpStatus", async () => {
+  const upload = makeReferenceBlobUploader({
+    fetchFn: async () => new Response("not json", { status: 502 }),
+    ownerToken: "test-token",
+    rsUrl: "https://pdpp.example.test",
+  });
+  await assert.rejects(
+    () => upload(baseArgs),
+    (err) => {
+      expectFailureKind(err, "http_5xx");
+      assert.deepEqual(err.evidence, { httpStatus: 502 });
+      return true;
+    }
+  );
+});
+
+test("makeReferenceBlobUploader: integrity-mismatch evidence carries local (client-hashed) vs server (response-reported) digest+size", async () => {
+  const serverSha256 = "b".repeat(64);
+  const upload = makeReferenceBlobUploader({
+    fetchFn: async (_input, init) => {
+      await consumeBody(init as RequestInit);
+      return new Response(
+        JSON.stringify({
+          blob_id: "blob-1",
+          mime_type: "text/plain",
+          object: "blob",
+          sha256: serverSha256,
+          size_bytes: 999,
+        }),
+        { status: 200 }
+      );
+    },
+    ownerToken: "test-token",
+    rsUrl: "https://pdpp.example.test",
+  });
+  await assert.rejects(
+    () => upload(baseArgs),
+    (err) => {
+      expectFailureKind(err, "integrity_mismatch");
+      const localSha256 = createHash("sha256").update("attachment").digest("hex");
+      assert.deepEqual(err.evidence, {
+        localSha256,
+        localSizeBytes: "attachment".length,
+        serverSha256,
+        serverSizeBytes: 999,
+      });
+      return true;
+    }
+  );
+});
+
+test("makeReferenceBlobUploader: malformed/out-of-bounds evidence values are dropped, never smuggled through", async () => {
+  // Not lowercase-64-hex -> the sha fields must be absent, not present-but-wrong.
+  const badHashUpload = makeReferenceBlobUploader({
+    fetchFn: async (_input, init) => {
+      await consumeBody(init as RequestInit);
+      return new Response(
+        JSON.stringify({
+          blob_id: "blob-1",
+          mime_type: "text/plain",
+          object: "blob",
+          sha256: "NOT-HEX",
+          size_bytes: -5,
+        }),
+        { status: 200 }
+      );
+    },
+    ownerToken: "test-token",
+    rsUrl: "https://pdpp.example.test",
+  });
+  await assert.rejects(
+    () => badHashUpload(baseArgs),
+    (err) => {
+      expectFailureKind(err, "integrity_mismatch");
+      assert.equal(err.evidence?.serverSha256, undefined, "malformed hex must not reach evidence");
+      assert.equal(err.evidence?.serverSizeBytes, undefined, "negative size must not reach evidence");
+      assert.ok(err.evidence?.localSha256, "the client's own valid digest is still carried");
+      return true;
+    }
+  );
+
+  // An oversized error.code (past the defensive cap) must not reach evidence.
+  const oversizedCodeUpload = makeReferenceBlobUploader({
+    fetchFn: async () => new Response(JSON.stringify({ error: { code: "x".repeat(500) } }), { status: 400 }),
+    ownerToken: "test-token",
+    rsUrl: "https://pdpp.example.test",
+  });
+  await assert.rejects(
+    () => oversizedCodeUpload(baseArgs),
+    (err) => {
+      expectFailureKind(err, "http_4xx");
+      assert.deepEqual(err.evidence, { httpStatus: 400 });
+      return true;
+    }
+  );
+});
+
 test("makeReferenceBlobUploader: source proximity never replaces an independent transport cause", async () => {
   const upload = makeReferenceBlobUploader({
     ownerToken: "test-token",

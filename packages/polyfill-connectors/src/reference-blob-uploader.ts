@@ -36,13 +36,64 @@ export type ReferenceBlobUploadFailureKind =
   | "source_content_failed"
   | "transport";
 
+/**
+ * Bounded, secret-safe diagnostic evidence captured at the exact failure
+ * boundary. Every field here is a closed enum, a small bounded integer, or a
+ * short server-declared code string (`error.code` from the RS's own
+ * `pdppError` envelope, e.g. `not_found` / `invalid_request` / `api_error`)
+ * — never a raw response body, header, URL, or byte payload. This is what
+ * lets `http_4xx` / `integrity_mismatch` carry real root-cause signal instead
+ * of collapsing to a bare class with no way to tell "server rejected the
+ * stream" from "digest genuinely didn't match" without re-reproducing the
+ * failure from scratch.
+ *
+ * `local_*` / `server_*` name WHERE each value was computed, not which one is
+ * "expected" — the client hashes the exact bytes it streamed (`local_*`); the
+ * server reports what it received/stored, read back from its own response
+ * body (`server_*`). Either side can be the one that's wrong, so the names
+ * must not presuppose it.
+ */
+export interface ReferenceBlobUploadFailureEvidence {
+  /** RS's own typed error code from the response envelope (`error.code`), when present. */
+  readonly errorCode?: string;
+  /** Exact HTTP status for `http_4xx` / `http_5xx` / `invalid_response`. */
+  readonly httpStatus?: number;
+  /** SHA-256 the client computed over the exact bytes it streamed, for `integrity_mismatch`. */
+  readonly localSha256?: string;
+  /** Size in bytes the client actually streamed, for `integrity_mismatch`. */
+  readonly localSizeBytes?: number;
+  /** SHA-256 the server's response body reports it stored, for `integrity_mismatch`. */
+  readonly serverSha256?: string;
+  /** Size in bytes the server's response body reports it received/stored, for `integrity_mismatch`. */
+  readonly serverSizeBytes?: number;
+}
+
+const HEX_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+/** A lowercase 64-hex string, or `undefined` for anything else — never a partial/malformed value. */
+function validatedSha256(value: string): string | undefined {
+  return HEX_SHA256_PATTERN.test(value) ? value : undefined;
+}
+
+/** A safe non-negative integer byte count, or `undefined` for anything else (negative, fractional, non-finite, > MAX_SAFE_INTEGER). */
+function validatedByteCount(value: number): number | undefined {
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 export class ReferenceBlobUploadFailure extends Error {
   readonly kind: ReferenceBlobUploadFailureKind;
+  readonly evidence: ReferenceBlobUploadFailureEvidence | null;
 
-  constructor(kind: ReferenceBlobUploadFailureKind, message: string, cause?: unknown) {
+  constructor(
+    kind: ReferenceBlobUploadFailureKind,
+    message: string,
+    cause?: unknown,
+    evidence: ReferenceBlobUploadFailureEvidence | null = null
+  ) {
     super(message, { cause });
     this.name = "ReferenceBlobUploadFailure";
     this.kind = kind;
+    this.evidence = evidence;
   }
 }
 
@@ -246,20 +297,50 @@ async function fetchUploadResponse(args: {
   }
 }
 
+// RS-declared error codes are short identifiers by contract (see
+// `codeToStatus`/`pdppError` call sites in server/index.ts — "not_found",
+// "invalid_request", "api_error", etc). This is a defensive upper bound, not
+// a real-world limit, so a misbehaving/compromised server response can never
+// smuggle an oversized string into durable gap evidence through this field.
+const MAX_ERROR_CODE_LENGTH = 64;
+
+/**
+ * The RS's own `pdppError` envelope shape (`server/request-helpers.ts`):
+ * `{ error: { code, message, type, request_id, ... } }`. Only `code` is
+ * extracted — a short, closed, server-declared string (`not_found` /
+ * `invalid_request` / `api_error` / ...), never the free-text `message`.
+ */
+function errorCodeFromBody(body: unknown): string | undefined {
+  if (!(body && typeof body === "object" && !Array.isArray(body))) {
+    return;
+  }
+  const errorField = (body as Record<string, unknown>).error;
+  if (!(errorField && typeof errorField === "object" && !Array.isArray(errorField))) {
+    return;
+  }
+  const { code } = errorField as Record<string, unknown>;
+  if (typeof code !== "string") {
+    return;
+  }
+  const trimmed = code.trim();
+  return trimmed && trimmed.length <= MAX_ERROR_CODE_LENGTH ? trimmed : undefined;
+}
+
 async function validatedBlobUploadResponse(response: Response, upload: HashingUploadBody): Promise<ReferenceBlobRef> {
   const body = (await response.json().catch((): unknown => null)) as unknown;
   if (!response.ok) {
-    const message =
-      body && typeof body === "object" && !Array.isArray(body)
-        ? String((body as Record<string, unknown>).error ?? response.statusText)
-        : response.statusText;
+    const errorCode = errorCodeFromBody(body);
     throw new ReferenceBlobUploadFailure(
       httpFailureKind(response.status),
-      `blob upload failed (${response.status}): ${message}`
+      `blob upload failed (${response.status})${errorCode ? `: ${errorCode}` : ""}`,
+      undefined,
+      { httpStatus: response.status, ...(errorCode ? { errorCode } : {}) }
     );
   }
   if (!isBlobUploadResponse(body)) {
-    throw new ReferenceBlobUploadFailure("invalid_response", "blob upload returned an invalid response");
+    throw new ReferenceBlobUploadFailure("invalid_response", "blob upload returned an invalid response", undefined, {
+      httpStatus: response.status,
+    });
   }
   let localHash: { sha256: string; sizeBytes: number };
   try {
@@ -272,7 +353,16 @@ async function validatedBlobUploadResponse(response: Response, upload: HashingUp
     throw new ReferenceBlobUploadFailure("source_content_failed", errorMessage(err), err);
   }
   if (body.sha256 !== localHash.sha256 || body.size_bytes !== localHash.sizeBytes) {
-    throw new ReferenceBlobUploadFailure("integrity_mismatch", "blob upload hash/size mismatch");
+    const localSha256 = validatedSha256(localHash.sha256);
+    const localSizeBytes = validatedByteCount(localHash.sizeBytes);
+    const serverSha256 = validatedSha256(body.sha256);
+    const serverSizeBytes = validatedByteCount(body.size_bytes);
+    throw new ReferenceBlobUploadFailure("integrity_mismatch", "blob upload hash/size mismatch", undefined, {
+      ...(localSha256 === undefined ? {} : { localSha256 }),
+      ...(localSizeBytes === undefined ? {} : { localSizeBytes }),
+      ...(serverSha256 === undefined ? {} : { serverSha256 }),
+      ...(serverSizeBytes === undefined ? {} : { serverSizeBytes }),
+    });
   }
   return {
     blob_id: body.blob_id,

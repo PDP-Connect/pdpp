@@ -46,6 +46,7 @@ import { isMainModule } from "../../src/is-main-module.ts";
 import {
   makeReferenceBlobUploader as makeSharedReferenceBlobUploader,
   ReferenceBlobUploadFailure,
+  type ReferenceBlobUploadFailureEvidence,
   runtimeBlobUploadAvailable as sharedRuntimeBlobUploadAvailable,
 } from "../../src/reference-blob-uploader.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
@@ -434,8 +435,15 @@ type AttachmentHydrationFailureStage =
   | "blob_upload_transport_failed"
   | "imap_download_failed";
 
-/** Aggregate-safe taxonomy retained only until recovery telemetry settles. */
+/**
+ * Aggregate-safe taxonomy retained only until recovery telemetry settles.
+ * `evidence` (present only for the `blob_upload_*` stages) is the bounded,
+ * secret-safe diagnostic captured at the blob-upload boundary — see
+ * `ReferenceBlobUploadFailureEvidence`'s doc comment for exactly what it can
+ * and cannot carry.
+ */
 interface AttachmentHydrationFailure {
+  readonly evidence?: ReferenceBlobUploadFailureEvidence;
   readonly stage: AttachmentHydrationFailureStage;
 }
 
@@ -531,6 +539,7 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  * with zero secret-leak surface when it later rides `DETAIL_GAP.last_error`.
  */
 interface FailedAttachmentRecord {
+  evidence?: ReferenceBlobUploadFailureEvidence;
   record: AttachmentRecord;
   stage: AttachmentHydrationFailureStage | null;
 }
@@ -562,16 +571,17 @@ export function makeAttachmentDetailCoverage(): AttachmentDetailCoverage {
  * run) is still a considered key but has no terminal outcome bucket, so it
  * counts only toward the denominator. Pure: mutates the passed accumulator.
  *
- * `failureStage` is the coarse cause bucket from `hydrateAttachment`'s
- * `AttachmentHydrationResult.failure` (IMAP download vs. blob-upload variant),
- * carried alongside the record so `emitAttachmentDetailGaps` can put it on the
- * DETAIL_GAP's `last_error.class` instead of discarding it. Omit for a caller
- * with no `hydration.failure` available (never populated on `hydrated`).
+ * `failure` is `hydrateAttachment`'s own `AttachmentHydrationResult.failure`
+ * (IMAP download vs. blob-upload variant, with bounded evidence for the
+ * latter), carried alongside the record so `emitAttachmentDetailGaps` can put
+ * its `stage` on the DETAIL_GAP's `last_error.class` and its `evidence` on
+ * `last_error.http_status`/`message` instead of discarding them. Omit for a
+ * caller with no `hydration.failure` available (never populated on `hydrated`).
  */
 export function recordAttachmentCoverage(
   coverage: AttachmentDetailCoverage,
   record: AttachmentRecord,
-  failureStage: AttachmentHydrationFailureStage | null = null
+  failure: AttachmentHydrationFailure | null = null
 ): void {
   coverage.requiredKeys.push(record.id);
   switch (record.hydration_status) {
@@ -583,7 +593,11 @@ export function recordAttachmentCoverage(
       // Retain the record so a matching DETAIL_GAP is emitted for this key.
       // `gap_keys` on DETAIL_COVERAGE are not enough on their own: the host
       // commit-gate requires a durable pending DETAIL_GAP to credit the key.
-      coverage.failedRecords.push({ record, stage: failureStage });
+      coverage.failedRecords.push({
+        ...(failure?.evidence ? { evidence: failure.evidence } : {}),
+        record,
+        stage: failure?.stage ?? null,
+      });
       return;
     case "too_large":
       coverage.optionalSkipKeys.push(record.id);
@@ -656,15 +670,23 @@ async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage |
  * re-defers) see WHICH stage kept failing instead of a bare `class: "quarantined"`
  * with no cause — see `runtime/index.ts`'s `recordQuarantinedDetailGap`.
  *
- * Reference-only and bounded: only opaque message and part identifiers cross
- * (X-GM-MSGID, the BODYSTRUCTURE part index, and the attachment id). No
- * filename, content, blob bytes, raw error text, tokens, cookies, URLs, request
- * bodies, or payload snippets are carried.
+ * `evidence` (present only for `blob_upload_*` stages) rides `last_error.http_status`
+ * (the shared helper's first-class field) plus a compact, bounded `last_error.message`
+ * built by `formatBlobUploadEvidenceMessage` — see that function's doc comment for the
+ * exact fields and why each is safe to carry.
+ *
+ * Reference-only and bounded: only opaque message and part identifiers, an HTTP
+ * status, an RS-declared short error code, and content hashes/sizes cross (X-GM-MSGID,
+ * the BODYSTRUCTURE part index, the attachment id, and the blob-upload evidence
+ * fields above). No filename, content, blob bytes, raw response body text, tokens,
+ * cookies, URLs, request bodies, or payload snippets are carried.
  */
 export function buildAttachmentDetailGap(
   attachment: AttachmentRecord,
-  failureStage: AttachmentHydrationFailureStage | null = null
+  failureStage: AttachmentHydrationFailureStage | null = null,
+  evidence?: ReferenceBlobUploadFailureEvidence
 ): DetailGapMessage {
+  const message = evidence ? formatBlobUploadEvidenceMessage(evidence) : undefined;
   return buildDetailGap({
     stream: "attachments",
     parentStream: "messages",
@@ -676,8 +698,46 @@ export function buildAttachmentDetailGap(
       part_index: attachment.part_index,
       attachment_id: attachment.id,
     },
-    ...(failureStage ? { error: { class: failureStage } } : {}),
+    ...(failureStage
+      ? {
+          error: {
+            class: failureStage,
+            ...(evidence?.httpStatus === undefined ? {} : { httpStatus: evidence.httpStatus }),
+            ...(message === undefined ? {} : { message }),
+          },
+        }
+      : {}),
   });
+}
+
+/**
+ * Render `ReferenceBlobUploadFailureEvidence` into a single compact,
+ * fixed-shape string for `DETAIL_GAP.last_error.message` — the shared
+ * `buildDetailGap` helper has no dedicated slot for this evidence, and this
+ * stays comfortably within the store's `last_error` string-length bound
+ * (`MAX_STRING_LENGTH=300`, `server/stores/connector-detail-gap-store.ts`).
+ * Every value here already passed `validatedSha256`/`validatedByteCount`/the
+ * error-code length cap at the blob-uploader boundary — this function only
+ * formats, it does not re-validate. `http_status` is carried separately via
+ * `last_error.http_status` (the shared helper's own first-class field), so it
+ * is intentionally omitted here to avoid duplicating it in the message text.
+ */
+function formatBlobUploadEvidenceMessage(evidence: ReferenceBlobUploadFailureEvidence): string | undefined {
+  const parts: string[] = [];
+  if (evidence.errorCode) {
+    parts.push(`error_code=${evidence.errorCode}`);
+  }
+  if (evidence.localSha256 !== undefined || evidence.localSizeBytes !== undefined) {
+    parts.push(
+      `local_sha256=${evidence.localSha256 ?? "unknown"} local_size_bytes=${evidence.localSizeBytes ?? "unknown"}`
+    );
+  }
+  if (evidence.serverSha256 !== undefined || evidence.serverSizeBytes !== undefined) {
+    parts.push(
+      `server_sha256=${evidence.serverSha256 ?? "unknown"} server_size_bytes=${evidence.serverSizeBytes ?? "unknown"}`
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 function normalizeAttachmentRecoveryKey(recordKey: string | number | null | undefined): string | null {
@@ -814,7 +874,7 @@ async function emitAttachmentRecords(
     // attachment-emission call sites in this connector must agree on when
     // "considered" becomes real.)
     if (emitted && deps.attachmentCoverage) {
-      recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure?.stage ?? null);
+      recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure ?? null);
     }
     // `emitted` only proves the record landed, not that hydration succeeded —
     // a `failed` (and `deferred`) attachment still emits a record, and IF
@@ -867,7 +927,7 @@ async function emitAttachmentDetailGaps(coverage: AttachmentDetailCoverage | und
     return;
   }
   for (const failed of coverage.failedRecords) {
-    await emit(buildAttachmentDetailGap(failed.record, failed.stage));
+    await emit(buildAttachmentDetailGap(failed.record, failed.stage, failed.evidence));
   }
 }
 
@@ -2116,7 +2176,7 @@ async function settleServedAttachmentRecoveryAttempt(
   const hydrated = hydration.record;
   const emitted = await deps.emitRecord("attachments", { ...hydrated });
   if (emitted && deps.attachmentCoverage) {
-    recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure?.stage ?? null);
+    recordAttachmentCoverage(deps.attachmentCoverage, hydrated, hydration.failure ?? null);
   }
   // THIS served gap's own lease settles below via exactly one branch:
   // recovered (a matching DETAIL_GAP_RECOVERED, hydrated + emitted) or
@@ -2174,7 +2234,8 @@ async function settleServedAttachmentRecoveryAttempt(
       "hydration_failed",
       state,
       deps.emitProtocol,
-      hydration.failure?.stage ?? null
+      hydration.failure?.stage ?? null,
+      hydration.failure?.evidence
     );
   }
   // Emit bounded, non-secret progress as each admitted attempt settles so a
@@ -2216,12 +2277,14 @@ type ServedAttachmentRecoveryDeferReason =
 function buildServedAttachmentRecoveryDeferredGap(
   gap: DetailGapStartEntry,
   errorClass: ServedAttachmentRecoveryDeferReason,
-  failureStage: AttachmentHydrationFailureStage | null = null
+  failureStage: AttachmentHydrationFailureStage | null = null,
+  evidence?: ReferenceBlobUploadFailureEvidence
 ): EmittedMessage {
   const locator =
     gap.detail_locator && typeof gap.detail_locator === "object" && !Array.isArray(gap.detail_locator)
       ? (gap.detail_locator as DetailGapMessage["detail_locator"])
       : { kind: "gmail.attachment_detail" };
+  const message = evidence ? formatBlobUploadEvidenceMessage(evidence) : undefined;
   return {
     type: "DETAIL_GAP",
     reference_only: true,
@@ -2232,7 +2295,11 @@ function buildServedAttachmentRecoveryDeferredGap(
     detail_locator: locator,
     reason: "temporary_unavailable",
     retryable: true,
-    last_error: { class: failureStage ?? errorClass },
+    last_error: {
+      class: failureStage ?? errorClass,
+      ...(evidence?.httpStatus === undefined ? {} : { http_status: evidence.httpStatus }),
+      ...(message === undefined ? {} : { message }),
+    },
     gap_id: gap.gap_id,
     ...(gap.lease_id ? { lease_id: gap.lease_id } : {}),
   };
@@ -2258,7 +2325,8 @@ async function settleServedAttachmentRecoveryDeferral(
   reason: ServedAttachmentRecoveryDeferReason,
   state: ServedAttachmentRecoveryState,
   emitProtocol: (msg: EmittedMessage) => Promise<void>,
-  failureStage: AttachmentHydrationFailureStage | null = null
+  failureStage: AttachmentHydrationFailureStage | null = null,
+  evidence?: ReferenceBlobUploadFailureEvidence
 ): Promise<void> {
   // Marked settled BEFORE emitting, matching the recovered branch's
   // ordering in settleServedAttachmentRecoveryAttempt — this gap's lease is
@@ -2266,7 +2334,7 @@ async function settleServedAttachmentRecoveryDeferral(
   // hydration this same tick could still find it as an eligible recovery
   // candidate.
   state.settledGapIds.add(gap.gap_id);
-  await emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, reason, failureStage));
+  await emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, reason, failureStage, evidence));
 }
 
 async function markServedAttachmentRecoveryAttempt(
@@ -2867,15 +2935,16 @@ function hydrationFailureForBlobUpload(err: unknown): AttachmentHydrationFailure
   if (!(err instanceof ReferenceBlobUploadFailure)) {
     return null;
   }
+  const evidenceField = err.evidence ? { evidence: err.evidence } : {};
   switch (err.kind) {
     case "http_4xx":
-      return { stage: "blob_upload_http_4xx" };
+      return { ...evidenceField, stage: "blob_upload_http_4xx" };
     case "http_5xx":
-      return { stage: "blob_upload_http_5xx" };
+      return { ...evidenceField, stage: "blob_upload_http_5xx" };
     case "invalid_response":
-      return { stage: "blob_upload_invalid_response" };
+      return { ...evidenceField, stage: "blob_upload_invalid_response" };
     case "integrity_mismatch":
-      return { stage: "blob_upload_integrity_failed" };
+      return { ...evidenceField, stage: "blob_upload_integrity_failed" };
     case "source_content_failed":
       return { stage: "imap_download_failed" };
     case "transport":
