@@ -6,6 +6,10 @@
   diagnostics from it.
 - [x] 1.4 Fail closed for malformed, duplicate, failed, or inconsistent
   terminal aggregates.
+- [x] 1.5 Clear the settlement-only proof on every generic status/reason/error
+  transition and on exits from terminal state.
+- [x] 1.6 Put the fresh-schema field only on `connector_detail_gaps` while
+  retaining additive SQLite/PostgreSQL upgrades.
 
 ## 2. Verification
 
@@ -13,3 +17,5 @@
   defect, normalization, scope, and generic-mutation regressions.
 - [x] 2.2 Run focused tests, typecheck delta, Ultracite, strict OpenSpec
   validation, and diff checks.
+- [x] 2.3 Add SQLite/PostgreSQL valid-policy-to-`not_found`, malformed-proof,
+  fresh-schema, and upgrade-schema regressions.

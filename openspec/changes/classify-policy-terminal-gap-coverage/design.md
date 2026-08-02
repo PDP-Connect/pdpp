@@ -1,23 +1,27 @@
 ## Decision
 
 The existing `connector_detail_gaps` row remains authoritative. Its terminal
-count is retained for diagnostics and truthful history. A new nullable,
-immutable `policy_disposition_json` column is written only by terminal lease
-settlement. The only accepted value is `gmail_attachment_too_large`, with
+count is retained for diagnostics and truthful history. A new nullable
+`policy_disposition_json` column is written only by terminal lease settlement.
+Every generic status/reason/error transition and every transition out of
+terminal clears it, so a non-null proof is bound to that settlement rather
+than to mutable row fields. The only accepted value is
+`gmail_attachment_too_large`, with
 positive safe-integer `observed_size_bytes` greater than
 `configured_limit_bytes`. Settlement also validates the Gmail connector,
 `attachments` stream, Gmail attachment locator, terminal `too_large` reason,
 and terminal `too_large` error class. Historical rows remain null; they are
 not inferred or rewritten from free text.
 
-The store gains an optional disposition-kind filter on its existing bounded
-per-stream status aggregates. The projection obtains both all terminal rows
-and the whitelisted disposition subset, then subtracts counts by connection
-and stream. Owner diagnostics read the same parsed disposition. A non-policy
-terminal row therefore remains repair-blocking; a policy row is neither
-deleted nor relabelled. Any malformed row, duplicate stream, failed aggregate,
-or policy stream absent from the total, or a policy count greater than the
-total leaves the repair count unmeasured.
+The store gains an optional disposition filter on its existing bounded
+per-stream status aggregates. It groups only non-null candidate proofs and
+uses the exact closed parser used by owner diagnostics before counting any of
+them. The projection obtains both all terminal rows and the validated
+whitelisted subset, then subtracts counts by connection and stream. A
+non-policy terminal row therefore remains repair-blocking; a policy row is
+neither deleted nor relabelled. Any malformed row, duplicate stream, failed
+aggregate, or policy stream absent from the total, or a policy count greater
+than the total leaves the repair count unmeasured.
 
 ## Alternatives
 
@@ -33,5 +37,9 @@ total leaves the repair count unmeasured.
   diagnostics but does not produce a per-stream `terminal_gap` count.
 - A terminal `not_found` row remains blocking even when generic mutation sets
   its reason to `too_large`.
+- A valid policy row changed through generic `markGapStatus` to `not_found`
+  has no proof, no policy diagnostic, and remains repair-blocking.
+- A kind-only or otherwise malformed persisted JSON value is excluded by both
+  coverage and diagnostics.
 - Both storage backends apply the same disposition filter and historical rows
   with no disposition remain blocking.

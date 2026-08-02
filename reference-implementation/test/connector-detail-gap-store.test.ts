@@ -13,7 +13,9 @@ import type { RuntimeRunConnectorOptions, RuntimeRunConnectorResult } from "../r
 import { runConnector } from "../runtime/index.ts";
 import { DEFAULT_QUARANTINE_POLICY } from "../runtime/recovery-quarantine.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
+import { getOwnerConnectionDetailGapPage } from "../server/owner-detail-gap-projection.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { getRepairBlockingTerminalGapCountsByStream } from "../server/ref-control.ts";
 import {
   createPostgresConnectorDetailGapStore,
   createSqliteConnectorDetailGapStore,
@@ -3667,7 +3669,8 @@ test(
     initDb(databasePath);
     const after = getDb()
       .prepare(`
-    SELECT status, attempt_count, last_attempt_at, lease_run_id, lease_id, lease_attempted, lease_expires_at
+    SELECT status, attempt_count, last_attempt_at, lease_run_id, lease_id, lease_attempted, lease_expires_at,
+           policy_disposition_json
     FROM connector_detail_gaps WHERE gap_id = 'gap_legacy_lease_less'
   `)
       .get();
@@ -3678,6 +3681,7 @@ test(
       lease_expires_at: null,
       lease_id: null,
       lease_run_id: null,
+      policy_disposition_json: null,
       status: "pending",
     });
   })
@@ -3766,6 +3770,24 @@ test(
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (POSTGRES_URL) {
+  test("fresh Postgres schema keeps policy disposition on connector detail gaps only", async () => {
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const columns = await postgresQuery<{ column_name: string; table_name: string }>(
+        `SELECT table_name, column_name
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name IN ('connector_detail_gaps', 'device_exporters')
+           AND column_name = 'policy_disposition_json'`
+      );
+      assert.deepEqual(columns.rows, [{ column_name: "policy_disposition_json", table_name: "connector_detail_gaps" }]);
+    } finally {
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
   test("Postgres terminal policy disposition matches SQLite's immutable coverage filter", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = "gmail";
@@ -3776,7 +3798,10 @@ if (POSTGRES_URL) {
       kind: "gmail_attachment_too_large",
       observed_size_bytes: 26,
     } as const;
-    const seedPolicy = async (store: ReturnType<typeof createPostgresConnectorDetailGapStore>, id: string) => {
+    const seedPolicy = async (
+      store: ReturnType<typeof createPostgresConnectorDetailGapStore>,
+      id: string
+    ): Promise<string> => {
       const detailLocator = { attachment_id: id, kind: "gmail.attachment_detail" };
       const lastError = { class: "too_large", message: "attachment exceeds configured size" };
       const pending = await store.upsertPendingGap({
@@ -3797,28 +3822,28 @@ if (POSTGRES_URL) {
         leaseId,
         runId,
       });
-      assert.ok(
-        await store.settleLeasedGapTerminal(
-          { gapId: pending.gap_id, leaseId, runId },
-          {
-            connectorId,
-            connectorInstanceId: id === "policy-sibling" ? siblingInstanceId : connectorInstanceId,
-            detailLocator,
-            gapId: pending.gap_id,
-            lastError,
-            reason: "too_large",
-            recordKey: id,
-            stream: "attachments",
-          },
-          policyProof
-        )
+      const terminal = await store.settleLeasedGapTerminal(
+        { gapId: pending.gap_id, leaseId, runId },
+        {
+          connectorId,
+          connectorInstanceId: id === "policy-sibling" ? siblingInstanceId : connectorInstanceId,
+          detailLocator,
+          gapId: pending.gap_id,
+          lastError,
+          reason: "too_large",
+          recordKey: id,
+          stream: "attachments",
+        },
+        policyProof
       );
+      assert.ok(terminal);
+      return pending.gap_id;
     };
     initDb(":memory:");
     await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
     try {
       const store = createPostgresConnectorDetailGapStore();
-      await seedPolicy(store, "policy");
+      const policyGapId = await seedPolicy(store, "policy");
       await seedPolicy(store, "policy-sibling");
       const notFound = await store.upsertPendingGap({
         connectorId,
@@ -3835,18 +3860,60 @@ if (POSTGRES_URL) {
         lastError: { class: "not_found", message: "generic mutation" },
         reason: "too_large",
       });
+      await store.markGapStatus(policyGapId, "terminal", {
+        lastError: { class: "not_found", message: "generic policy-to-not-found mutation" },
+        reason: "not_found",
+      });
+      assert.equal((await store.getGapById(policyGapId))?.policy_disposition, null);
       assert.deepEqual(
         await store.countGapsByStatusByStreamForConnector(connectorId, {
           connectorInstanceId,
           policyDisposition: "gmail_attachment_too_large",
           status: "terminal",
         }),
-        [{ count: 1, stream: "attachments" }]
+        []
       );
       assert.equal(
         await store.countGapsByStatusForConnector(connectorId, { connectorInstanceId, status: "terminal" }),
         2
       );
+      assert.deepEqual(
+        await getRepairBlockingTerminalGapCountsByStream(store, connectorId, connectorInstanceId),
+        new Map([["attachments", 2]])
+      );
+      const diagnostics = await getOwnerConnectionDetailGapPage({
+        connectionId: connectorInstanceId,
+        connectorId,
+        connectorInstanceId,
+        store,
+      });
+      assert.ok(diagnostics.data.every((gap) => gap.disposition.policy_class === null));
+
+      const malformedGapId = await seedPolicy(store, "policy-malformed");
+      await postgresQuery("UPDATE connector_detail_gaps SET policy_disposition_json = $1::jsonb WHERE gap_id = $2", [
+        JSON.stringify({ kind: "gmail_attachment_too_large" }),
+        malformedGapId,
+      ]);
+      assert.deepEqual(
+        await store.countGapsByStatusByStreamForConnector(connectorId, {
+          connectorInstanceId,
+          policyDisposition: "gmail_attachment_too_large",
+          status: "terminal",
+        }),
+        [],
+        "Postgres coverage rejects the same malformed proof diagnostics rejects"
+      );
+      assert.deepEqual(
+        await getRepairBlockingTerminalGapCountsByStream(store, connectorId, connectorInstanceId),
+        new Map([["attachments", 3]])
+      );
+      const malformedDiagnostics = await getOwnerConnectionDetailGapPage({
+        connectionId: connectorInstanceId,
+        connectorId,
+        connectorInstanceId,
+        store,
+      });
+      assert.ok(malformedDiagnostics.data.every((gap) => gap.disposition.policy_class === null));
     } finally {
       await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = ANY($1::text[])", [
         [connectorInstanceId, siblingInstanceId],
@@ -4109,7 +4176,8 @@ if (POSTGRES_URL) {
       await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
       const result = await postgresQuery(
         `
-        SELECT status, attempt_count, last_attempt_at, lease_run_id, lease_id, lease_attempted, lease_expires_at
+        SELECT status, attempt_count, last_attempt_at, lease_run_id, lease_id, lease_attempted, lease_expires_at,
+               policy_disposition_json
         FROM connector_detail_gaps WHERE gap_id = $1
       `,
         ["gap_legacy_lease_less_pg"]
@@ -4121,6 +4189,7 @@ if (POSTGRES_URL) {
         lease_expires_at: null,
         lease_id: null,
         lease_run_id: null,
+        policy_disposition_json: null,
         status: "pending",
       });
     } finally {

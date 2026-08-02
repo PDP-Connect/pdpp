@@ -1127,7 +1127,6 @@ export async function bootstrapPostgresSchema({
         collector_protocol_version TEXT,
         last_heartbeat_at TEXT,
         last_error_json JSONB,
-        policy_disposition_json JSONB,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revoked_at TEXT
@@ -1261,6 +1260,7 @@ export async function bootstrapPostgresSchema({
         last_attempt_at TEXT,
         next_attempt_after TEXT,
         last_error_json JSONB,
+        policy_disposition_json JSONB,
         discovered_run_id TEXT,
         last_run_id TEXT,
         recovered_run_id TEXT,
@@ -2703,7 +2703,7 @@ async function migratePostgresConnectorDetailGapInstanceColumns(client: PoolClie
   }
   await client.query(`
     UPDATE connector_detail_gaps
-    SET status = 'pending', lease_attempted = 0
+    SET status = 'pending', lease_attempted = 0, policy_disposition_json = NULL
     WHERE status = 'in_progress'
       AND lease_run_id IS NULL AND lease_id IS NULL AND lease_expires_at IS NULL
   `);

@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION } from "../runtime/terminal-policy-disposition.ts";
-import { closeDb, initDb } from "../server/db.ts";
+import { closeDb, getDb, initDb } from "../server/db.ts";
+import { getOwnerConnectionDetailGapPage } from "../server/owner-detail-gap-projection.ts";
 import { buildCollectionReport, getRepairBlockingTerminalGapCountsByStream } from "../server/ref-control.ts";
 import { createSqliteConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
 
@@ -111,11 +112,20 @@ async function settleValidatedPolicy(
 }
 
 test(
-  "SQLite policy coverage requires immutable validated terminal settlement and respects instance scope",
+  "SQLite generic status mutation clears terminal policy disposition before not_found coverage and diagnostics",
   withTempDb(async () => {
     const store = createSqliteConnectorDetailGapStore();
     await settleValidatedPolicy(store, CONNECTION_ID, "gap_valid_policy");
     await settleValidatedPolicy(store, SIBLING_CONNECTION_ID, "gap_sibling_policy");
+
+    await store.markGapStatus("gap_valid_policy", "terminal", {
+      lastError: { class: "not_found", message: "provider no longer has attachment" },
+      now: NOW,
+      reason: "not_found",
+    });
+    const transitioned = await store.getGapById("gap_valid_policy");
+    assert.ok(transitioned);
+    assert.equal(transitioned.policy_disposition, null, "generic terminal mutation removes settlement-only proof");
 
     const notFound = await store.upsertPendingGap({
       connectorId: CONNECTOR_ID,
@@ -141,8 +151,17 @@ test(
         policyDisposition: GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION,
         status: "terminal",
       }),
+      [],
+      "a valid proof cannot survive a generic not_found status mutation"
+    );
+    assert.deepEqual(
+      await store.countGapsByStatusByStreamForConnector(CONNECTOR_ID, {
+        connectorInstanceId: SIBLING_CONNECTION_ID,
+        policyDisposition: GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION,
+        status: "terminal",
+      }),
       [{ count: 1, stream: "attachments" }],
-      "generic status mutation cannot write or fabricate policy disposition"
+      "the same connector's sibling instance remains independently scoped"
     );
     assert.equal(
       await store.countGapsByStatusForConnector(CONNECTOR_ID, {
@@ -153,8 +172,22 @@ test(
       "all terminal inventory is preserved"
     );
     const repairBlocking = await getRepairBlockingTerminalGapCountsByStream(store, CONNECTOR_ID, CONNECTION_ID);
-    assert.deepEqual(repairBlocking, new Map([["attachments", 1]]));
+    assert.deepEqual(repairBlocking, new Map([["attachments", 2]]));
     assert.equal(collectionCoverage(repairBlocking ?? new Map()), "terminal_gap");
+    const diagnostics = await getOwnerConnectionDetailGapPage({
+      connectionId: CONNECTION_ID,
+      connectorId: CONNECTOR_ID,
+      connectorInstanceId: CONNECTION_ID,
+      store,
+    });
+    assert.deepEqual(
+      diagnostics.data.map((gap) => [gap.gap_id, gap.disposition.policy_class]),
+      [
+        ["gap_not_found", null],
+        ["gap_valid_policy", null],
+      ],
+      "generic not_found rows have no policy diagnostic"
+    );
 
     const invalid = await store.upsertPendingGap({
       connectorId: CONNECTOR_ID,
@@ -190,6 +223,54 @@ test(
       ),
       INVALID_POLICY_DISPOSITION
     );
+  })
+);
+
+test(
+  "SQLite policy coverage and diagnostics reject a malformed kind-only disposition",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    await settleValidatedPolicy(store, CONNECTION_ID, "gap_malformed_policy");
+    getDb()
+      .prepare("UPDATE connector_detail_gaps SET policy_disposition_json = ? WHERE gap_id = ?")
+      .run(JSON.stringify({ kind: GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION }), "gap_malformed_policy");
+
+    assert.deepEqual(
+      await store.countGapsByStatusByStreamForConnector(CONNECTOR_ID, {
+        connectorInstanceId: CONNECTION_ID,
+        policyDisposition: GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION,
+        status: "terminal",
+      }),
+      [],
+      "coverage accepts only the same closed proof shape as diagnostics"
+    );
+    assert.deepEqual(
+      await getRepairBlockingTerminalGapCountsByStream(store, CONNECTOR_ID, CONNECTION_ID),
+      new Map([["attachments", 1]])
+    );
+    const diagnostics = await getOwnerConnectionDetailGapPage({
+      connectionId: CONNECTION_ID,
+      connectorId: CONNECTOR_ID,
+      connectorInstanceId: CONNECTION_ID,
+      store,
+    });
+    assert.equal(diagnostics.data[0]?.disposition.policy_class, null);
+  })
+);
+
+test(
+  "fresh SQLite schema keeps policy disposition on connector detail gaps only",
+  withTempDb(() => {
+    const detailGapColumns = getDb().prepare("PRAGMA table_info(connector_detail_gaps)").all() as { name: string }[];
+    const sourceInstanceColumns = getDb().prepare("PRAGMA table_info(device_source_instances)").all() as {
+      name: string;
+    }[];
+    assert.ok(detailGapColumns.some((column) => column.name === "policy_disposition_json"));
+    assert.equal(
+      sourceInstanceColumns.some((column) => column.name === "policy_disposition_json"),
+      false
+    );
+    return Promise.resolve();
   })
 );
 

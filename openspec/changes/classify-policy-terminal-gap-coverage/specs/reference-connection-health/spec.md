@@ -26,6 +26,21 @@ disposition SHALL remain repair-blocking.
 - **THEN** the affected stream SHALL remain `terminal_gap`
 - **AND** the projection SHALL retain the maintainer repair action.
 
+#### Scenario: A generic transition invalidates a prior policy proof
+
+- **WHEN** a terminal gap with validated policy evidence is changed by a
+  generic status, reason, or error transition, or leaves terminal state
+- **THEN** the policy disposition SHALL be cleared
+- **AND** the resulting row SHALL remain repair-blocking unless a later valid
+  terminal settlement writes a new proof.
+
+#### Scenario: Coverage and diagnostics reject the same malformed proof
+
+- **WHEN** persisted policy disposition JSON has only a `kind` or otherwise
+  fails the closed observed-size/configured-limit proof shape
+- **THEN** neither coverage nor owner diagnostics SHALL treat it as policy
+- **AND** the terminal row SHALL remain repair-blocking.
+
 #### Scenario: Historical rows without the disposition remain repair-blocking
 
 - **WHEN** a terminal row has no validated policy disposition

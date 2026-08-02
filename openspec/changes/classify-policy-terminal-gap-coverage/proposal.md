@@ -12,8 +12,13 @@ row while excluding only a validated terminal-settlement policy fact.
 - Write one immutable `gmail_attachment_too_large` disposition only during
   terminal lease settlement after validating Gmail attachment context and
   observed-size/configured-limit evidence.
+- Clear that disposition in every generic status, reason, or error transition
+  and whenever the row exits terminal state, so a proof cannot outlive its
+  settled tuple.
 - Exclude only that stored disposition from the repair-blocking per-stream
-  terminal aggregate and derive owner diagnostics from the same field.
+  terminal aggregate and derive owner diagnostics from the same closed parser.
+- Declare the column on fresh `connector_detail_gaps` schemas and preserve the
+  additive upgrade path; do not add it to unrelated device tables.
 - Keep terminal resource/connector defects repair-blocking.
 - Fail closed when either aggregate is malformed, duplicated, or inconsistent.
 - Add SQLite/PostgreSQL parity and mutation regressions for policy versus
