@@ -12,10 +12,10 @@ const BLESSED_ARTIFACT_PATHS = [
   ["self-host quickstart", new URL("../../../docs/operator/selfhost-quickstart.md", import.meta.url)],
   ["Docker deployment runbook", new URL("../../../deploy/docker/README.md", import.meta.url)],
   ["deployment copy proposal", new URL("../../../deploy/docker/site-copy-proposal.md", import.meta.url)],
+  ["blessed Compose stack", new URL("../../../deploy/docker/docker-compose.yml", import.meta.url)],
 ] as const;
 
 const TOUCHED_SURFACE_PATHS = [
-  ["CEO landing path", new URL("../../../CEO-LANDING-PATH.md", import.meta.url)],
   ["public reference page", new URL("../src/app/reference/page.tsx", import.meta.url)],
   ["artifact consistency oracle", new URL("./reference-artifact-consistency.test.ts", import.meta.url)],
   ["no-hardcoded-host oracle", new URL("./reference-page-no-hardcoded-host.test.ts", import.meta.url)],
@@ -112,6 +112,60 @@ test("artifact oracle rejects the previously advertised nonexistent tag class", 
   assert.throws(() => assertRegistryProven("reference", NONEXISTENT_TAG, "synthetic regression input"), {
     message: ORACLE_REJECTION_RE,
   });
+});
+
+test("artifact oracle mutation-proof: nonexistent tag in source text", () => {
+  assert.throws(
+    () =>
+      assertSourceArtifactsConsistent(
+        "synthetic regression input",
+        `image: ghcr.io/pdp-connect/pdpp/reference:${NONEXISTENT_TAG}`
+      ),
+    { message: /rejected nonexistent tag class/ }
+  );
+});
+
+test("artifact oracle mutation-proof: mutable main tag in source text", () => {
+  assert.throws(
+    () =>
+      assertSourceArtifactsConsistent(
+        "synthetic regression input",
+        "image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}"
+      ),
+    { message: /must not use mutable main\/latest image tags/ }
+  );
+});
+
+test("artifact oracle mutation-proof: mutable latest tag in source text", () => {
+  assert.throws(
+    () => assertSourceArtifactsConsistent("synthetic regression input", "ghcr.io/pdp-connect/pdpp/web:latest"),
+    { message: /must not use mutable main\/latest image tags/ }
+  );
+});
+
+test("artifact oracle mutation-proof: cross-lineage tag mismatch between reference and web", () => {
+  assert.throws(
+    () =>
+      assertSourceArtifactsConsistent(
+        "synthetic regression input",
+        [
+          "ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a",
+          `ghcr.io/pdp-connect/pdpp/web:${UNVERIFIED_ALTERNATE_TAG}`,
+        ].join("\n")
+      ),
+    { message: /an unverified alternate image tag/ }
+  );
+});
+
+test("artifact oracle mutation-proof: unknown repository under the same org is rejected", () => {
+  assert.throws(
+    () =>
+      assertSourceArtifactsConsistent(
+        "synthetic regression input",
+        "ghcr.io/pdp-connect/pdpp/railway-core:sha-cc07e3a"
+      ),
+    { message: /unknown PDPP image repository/ }
+  );
 });
 
 test("legacy owner path oracle rejects synthetic input", () => {

@@ -44,74 +44,49 @@ You do not need:
 
 ## Lane A — Docker host
 
-### 1. Fetch the compose stack
+### 1. Fetch the blessed compose stack
+
+Lane A uses the same pinned, registry-proven Compose stack as
+[`self-service-gmail-mcp.md`](self-service-gmail-mcp.md) — the
+`reference:sha-cc07e3a` and `web:sha-cc07e3a` images, published on port `3000`.
+No repository clone is required:
 
 ```sh
-git clone https://github.com/PDP-Connect/pdpp
-cd pdpp
-cp .env.docker.example .env.docker
-cat >> .env.docker <<'EOF'
-PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a
-PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a
-PDPP_REFERENCE_ORIGIN=http://localhost:3000
-PDPP_WEB_PORT=3000
-EOF
+mkdir pdpp && cd pdpp
+curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
 ```
 
-Or, without cloning: download
-[`docker-compose.yml`](../../docker-compose.yml) and
-[`.env.docker.example`](../../.env.docker.example) to an empty directory and
-rename the example to `.env.docker`.
+This is [`deploy/docker/docker-compose.yml`](../../deploy/docker/docker-compose.yml)
+— the small, pinned self-service stack. It is a different file from the
+repository-root `docker-compose.yml`, which is the development/owner stack
+(connector credentials, fixtures, browser services) and is not the blessed
+self-host entry point.
 
-### 2. Generate secrets
-
-Run the helper script to fill the required secrets into `.env.docker`:
+### 2. Generate secrets and set the required variables
 
 ```sh
-bash scripts/generate-secrets.sh --write
+printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 ```
 
-This sets `PDPP_OWNER_PASSWORD`, `PDPP_CREDENTIAL_ENCRYPTION_KEY`, and the VAPID
-key pair for browser push notifications. It never overwrites a value you have
-already set. The generated output is printed if you prefer to review it before
-writing:
+The compose file refuses to boot until `PDPP_OWNER_PASSWORD` and
+`PDPP_CREDENTIAL_ENCRYPTION_KEY` exist in `.env` — the password gates the
+dashboard, and the encryption key seals any connector credentials you store.
+Keep `.env` with your backups.
 
-```sh
-bash scripts/generate-secrets.sh          # print to stdout; no files modified
-bash scripts/generate-secrets.sh --write  # patch .env.docker in place
-```
+Set `PDPP_REFERENCE_ORIGIN` to the external URL your dashboard will be reached
+at (e.g. `https://pdpp.example.com`, or leave the `http://localhost:3000`
+default for a local trial). This is used by the OAuth and MCP flows to compose
+callback URLs — a mismatch silently breaks Claude / ChatGPT login.
 
-### 3. Set the remaining required variable
+You do not need connector-specific source credentials in `.env` to start.
+Normal connection setup happens through owner-mediated setup once the instance
+is up — see [`docs/operator/add-connection.md`](add-connection.md).
 
-Open `.env.docker` and set:
-
-| Variable | Set to | Why |
-|---|---|---|
-| `PDPP_REFERENCE_ORIGIN` | the external URL your dashboard will be reached at (e.g. `https://pdpp.example.com` or `http://localhost:3000`) | Used by the OAuth and MCP flows to compose callback URLs. A mismatch silently breaks Claude / ChatGPT login. |
-
-`PDPP_OWNER_PASSWORD` and `PDPP_CREDENTIAL_ENCRYPTION_KEY` were set by the
-script in the previous step. If you skipped the script, set them here.
-
-The default Postgres credentials in the compose file (`pdpp` / `pdpp`) are
-intentionally weak and bound to loopback only (`127.0.0.1:55432`). **Do not
-change `PDPP_POSTGRES_BIND_HOST` unless you also set
-`PDPP_POSTGRES_PASSWORD` to something non-default.**
-
-You can leave every other variable blank. Normal connection setup does **not**
-require connector-specific source credentials in `.env.docker`: you add a Gmail
-mailbox, GitHub account, or local-collector device through owner-mediated setup
-once the instance is up — see
-[`docs/operator/add-connection.md`](add-connection.md). The per-connector source
-variables (`GMAIL_APP_PASSWORD`, `GITHUB_PERSONAL_ACCESS_TOKEN`, etc.) in
-`.env.docker.example` are a fallback/dev escape hatch for Docker-managed
-connector runs, not the normal path; leave them blank unless you are
-deliberately driving that connector from this stack.
-
-One credential variable is instance-level, not per-connection:
-`PDPP_CREDENTIAL_ENCRYPTION_KEY` seals captured static-secret credentials at
-rest. The setup form blocks before asking for a provider credential if neither
-that env var nor `PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE` is configured. It is not
-a per-mailbox or per-account variable.
+The Postgres credentials in the compose file (`pdpp` / `pdpp`) are private to
+the Compose network only — no Postgres port is published. **Do not publish a
+Postgres port without also setting `PDPP_POSTGRES_PASSWORD` to something
+non-default.**
 
 ### Optional: "no domain, no open ports" with Cloudflare Tunnel
 
@@ -142,7 +117,7 @@ services:
 
 4. In the Cloudflare dashboard, add a public hostname for the tunnel pointing to
    `http://web:3000` (the `web` service on the internal Compose network).
-5. Set the env vars in `.env.docker`:
+5. Set the env vars in `.env`:
 
 ```sh
 CLOUDFLARE_TUNNEL_TOKEN=<your-tunnel-token>
@@ -152,18 +127,18 @@ PDPP_REFERENCE_ORIGIN=https://<your-hostname>.trycloudflare.com  # or your custo
 6. Start the full stack:
 
 ```sh
-docker compose --env-file .env.docker up -d
+docker compose up -d
 ```
 
 The tunnel service connects outbound to Cloudflare; no inbound ports need to be
 opened. `PDPP_REFERENCE_ORIGIN` is the only PDPP-protocol-relevant output of
 this step — set it to the stable HTTPS URL the tunnel provides.
 
-### 4. Pull and start
+### 3. Pull and start
 
 ```sh
-docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+docker compose pull
+docker compose up -d
 ```
 
 First boot downloads the default embedding model (~500 MB) into the
@@ -172,14 +147,13 @@ as the authorization server (`:7662`) and resource server (`:7663`) are
 listening — embedding download continues in the background.
 
 If you do not need semantic search yet, set
-`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` in `.env.docker` to skip the download.
+`PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` in `.env` to skip the download.
 
-### 5. Verify in the dashboard
+### 4. Verify in the dashboard
 
 Open the dashboard at `PDPP_REFERENCE_ORIGIN` (default
 `http://localhost:3000`), then `/owner/login`. Enter your owner password
-(printed by the script in step 2, or find it in `.env.docker` as
-`PDPP_OWNER_PASSWORD`). You should land on `/`.
+(the value you generated into `.env` in step 2). You should land on `/`.
 
 Visit `/deployment` and confirm:
 
@@ -192,28 +166,24 @@ The in-dashboard *deployment readiness* panel flags the most common first-boot
 misconfigurations here: missing owner password, public-origin mismatch, storage
 state, embedding cache state, and hosted MCP refresh-token metadata.
 
-### 6. Updating
+### 5. Updating
 
 ```sh
-docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+docker compose pull
+docker compose up -d
 ```
 
-The named volumes (`pdpp-transformers`, `pdpp-home`, `pdpp-postgres-data`)
-persist across `up -d` runs. Do not auto-update on a schedule; database
-migrations land between releases and require an operator-driven re-pull.
+The named volumes (`pdpp-transformers`, `pdpp-postgres-data`) persist across
+`up -d` runs. Do not auto-update on a schedule; database migrations land
+between releases and require an operator-driven re-pull. Update the
+`reference` and `web` image tags together, and run the registry manifest check
+before moving to another published Compose release.
 
-### 7. Backup
+### 6. Backup
 
-The two pieces of state you care about:
-
-- `pdpp-postgres-data` — Postgres data, including grants and collected
-  records.
-- `pdpp-home` — the operator's runtime state, owner key material, and
-  browser profile cache.
-
-A minimal SLVP backup is a `pg_dump` and a `docker run --volumes-from` tarball
-of `pdpp-home`. A dashboard backup UI is deferred.
+Records live in the `pdpp-postgres-data` volume; secrets live in `.env`. Back
+up both together. A minimal SLVP backup is a `pg_dump` of the volume. A
+dashboard backup UI is deferred.
 
 ---
 
@@ -257,9 +227,9 @@ Choose any CPU Pod template that includes a Docker daemon (the official
 - **Expose HTTP port:** `3000` (the operator dashboard). RunPod will publish
   it at `https://<podid>-3000.proxy.runpod.net`.
 - **Env vars (set on the template):** none required — `PDPP_OWNER_PASSWORD` and
-  `PDPP_CREDENTIAL_ENCRYPTION_KEY` are generated by the script in step 2 and
-  written to `.env.docker`. Set `PDPP_REFERENCE_ORIGIN` once the Pod is up (you
-  need the proxy URL to know what to set it to).
+  `PDPP_CREDENTIAL_ENCRYPTION_KEY` are generated in step 2 and written to
+  `.env`. Set `PDPP_REFERENCE_ORIGIN` once the Pod is up (you need the proxy
+  URL to know what to set it to).
 
 ### 2. Boot the stack on the Pod
 
@@ -267,24 +237,15 @@ Once the Pod is running, open the web terminal (Console → Pods → Connect →
 Web Terminal) and:
 
 ```sh
-cd /workspace
-git clone https://github.com/PDP-Connect/pdpp
-cd pdpp
-cp .env.docker.example .env.docker
-cat >> .env.docker <<'EOF'
-PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a
-PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a
-PDPP_WEB_PORT=3000
-EOF
+mkdir -p /workspace/pdpp && cd /workspace/pdpp
+curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
 
-# Generate required secrets (owner password, credential key, VAPID keys):
-bash scripts/generate-secrets.sh --write
+# Generate required secrets and set the origin to the proxy URL RunPod gave you:
+printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_WEB_PORT=3000\nPDPP_REFERENCE_ORIGIN=https://<podid>-3000.proxy.runpod.net\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 
-# Set the origin to the proxy URL RunPod gave you:
-sed -i 's|^PDPP_REFERENCE_ORIGIN=.*|PDPP_REFERENCE_ORIGIN=https://<podid>-3000.proxy.runpod.net|' .env.docker
-
-docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+docker compose pull
+docker compose up -d
 ```
 
 The first-boot embedding download runs from inside the Pod's container; the
@@ -294,8 +255,8 @@ Pod's `/workspace` mount.
 ### 3. Verify
 
 In a browser, open `https://<podid>-3000.proxy.runpod.net/owner/login`, sign
-in with your owner password (printed by `generate-secrets.sh --write` in step
-2), and walk through `/deployment` as in Lane A step 4.
+in with your owner password (the value you generated into `.env` in step 2),
+and walk through `/deployment` as in Lane A step 4.
 
 ### 4. Updating
 
@@ -306,8 +267,7 @@ checkout in `/workspace`. The compose volumes persist on `/workspace`.
 
 Stopped Pods retain the volume disk but the proxy URL changes when the Pod
 restarts on a different host. After resuming a stopped Pod, update
-`PDPP_REFERENCE_ORIGIN` in `.env.docker` to the new proxy URL and restart the
-stack.
+`PDPP_REFERENCE_ORIGIN` in `.env` to the new proxy URL and restart the stack.
 
 ---
 
@@ -372,9 +332,10 @@ short:
   <connector-id>` to preview without minting setup material, and `pdpp
   owner-agent setup <connector-id> --display-name <name>` to start setup.
 
-Connector-specific source credential variables in `.env.docker` (Lane A) or on
-the Pod's template env-var form (Lane B) are a **compatibility fallback and local
-development escape hatch** for Docker-managed connector runs — not the normal
+Connector-specific source credential variables set directly on the Docker host
+(Lane A) or on the Pod's template env-var form (Lane B) are a **compatibility
+fallback and local development escape hatch** for Docker-managed connector
+runs on the repository-root development stack — not the normal
 setup path. The instance-level `PDPP_CREDENTIAL_ENCRYPTION_KEY` is the exception:
 it is a deployment variable that seals owner-captured static-secret credentials
 at rest, set once for the instance rather than per connection.

@@ -34,6 +34,10 @@ const FIRST_BOOT_ENV_SPREAD_PATTERN = /\.\.\.firstBoot\.env/g;
 const FIRST_BOOT_BANNER_LINES_PATTERN = /firstBoot\.bannerLines/;
 const RAILWAY_TEMPLATE_URL_PATTERN = /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/;
 const GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN = /ghcr\.io\/pdp-connect\/pdpp\/railway-core/;
+const IMAGE_SHORTCUT_WITHDRAWN_PATTERN = /withdrawn/i;
+const PINNED_COMPOSE_HANDOFF_PATTERN = /reference\/web:sha-cc07e3a/;
+const PINNED_SOURCE_BUILD_PATTERN = /Pinned source build from the repository/;
+const NO_REGISTRY_PROVEN_CANDIDATE_PATTERN = /no current registry-proven image candidate/i;
 const ONE_PUBLIC_CORE_APP_SERVICE_PATTERN = /one public Core app service/i;
 const SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN = /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i;
 const RAILWAY_BUTTON_SVG_PATTERN = /https:\/\/railway\.com\/button\.svg/;
@@ -50,7 +54,6 @@ const CORE_CREDENTIAL_ENCRYPTION_KEY_PATTERN = /core\.PDPP_CREDENTIAL_ENCRYPTION
 const AS_URL_REFERENCE_PRIVATE_DOMAIN_PATTERN = /PDPP_AS_URL=http:\/\/\$\{\{reference\.RAILWAY_PRIVATE_DOMAIN\}\}/;
 const REFERENCE_PORT_PATTERN = /reference\.PORT/;
 const ONE_APPLICATION_SERVICE_POSTGRES_PLUGIN_PATTERN = /one application service plus a Postgres plugin/i;
-const NEVER_LATEST_PATTERN = /never\s+`?latest`?/i;
 const VERSION_TAG_PLACEHOLDER_PATTERN = /<version-tag>/;
 const CONSOLE_RAILWAY_PORT_PATTERN = /console[\s\S]*Railway[\s\S]*\$PORT/i;
 const RAILWAY_GHCR_PUBLIC_COMMAND_PATTERN = /pnpm railway:ghcr-public/;
@@ -135,13 +138,15 @@ test("Core image carries the Docker quickstart defaults and first-boot bootstrap
   assert.match(supervisor, FIRST_BOOT_BANNER_LINES_PATTERN);
 });
 
-test("Railway runbook and template handoff use the one-service core button shape", () => {
+test("Railway runbook and template handoff use the one-service core button shape and withdraw the unproven image", () => {
   const readme = read("deploy/railway/README.md");
   const handoff = read("deploy/railway/template.md");
 
   assert.match(readme, RAILWAY_TEMPLATE_URL_PATTERN);
-  assert.match(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
   assert.match(readme, ONE_PUBLIC_CORE_APP_SERVICE_PATTERN);
+  assert.match(readme, IMAGE_SHORTCUT_WITHDRAWN_PATTERN);
+  assert.match(readme, PINNED_COMPOSE_HANDOFF_PATTERN);
+  assert.doesNotMatch(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
   assert.doesNotMatch(readme, SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN);
 
   assert.match(handoff, RAILWAY_BUTTON_SVG_PATTERN);
@@ -157,26 +162,29 @@ test("Railway runbook and template handoff use the one-service core button shape
   assert.doesNotMatch(handoff, AS_URL_REFERENCE_PRIVATE_DOMAIN_PATTERN);
   assert.doesNotMatch(handoff, REFERENCE_PORT_PATTERN);
   assert.doesNotMatch(handoff, SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN);
+  assert.doesNotMatch(handoff, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
 });
 
-test("Railway handoff documents the public railway-core image-source template shape", () => {
+test("Railway handoff documents the pinned source-build template shape with no unproven image candidate", () => {
   const handoff = read("deploy/railway/template.md");
 
-  assert.match(handoff, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
+  assert.match(handoff, PINNED_SOURCE_BUILD_PATTERN);
   assert.match(handoff, ONE_APPLICATION_SERVICE_POSTGRES_PLUGIN_PATTERN);
+  assert.match(handoff, NO_REGISTRY_PROVEN_CANDIDATE_PATTERN);
+  assert.doesNotMatch(handoff, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
 
-  // A concrete version tag must be pinned; latest/moving tags are disallowed.
-  assert.match(handoff, NEVER_LATEST_PATTERN);
+  // A concrete version tag placeholder must be pinned for any future image.
   assert.match(handoff, VERSION_TAG_PLACEHOLDER_PATTERN);
 });
 
-test("Railway runbook documents the public railway-core image-source mapping", () => {
+test("Railway runbook documents the pinned source-build core topology, not an unproven image", () => {
   const readme = read("deploy/railway/README.md");
 
-  assert.match(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
+  assert.match(readme, PINNED_SOURCE_BUILD_PATTERN);
   assert.match(readme, CONSOLE_RAILWAY_PORT_PATTERN);
   assert.match(readme, LOOPBACK_7662_PATTERN);
   assert.match(readme, LOOPBACK_7663_PATTERN);
+  assert.doesNotMatch(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
 });
 
 test("Railway handoff wires the runnable GHCR public-image probe into the publish gate", () => {
