@@ -490,6 +490,40 @@ process.stdin.on("end", () => {
     assert.equal(firstRunOutput.includes(VALID_SLACKDUMP_TOKEN), false, "provider token must never be logged");
     assert.equal(firstRunOutput.includes(VALID_SLACKDUMP_COOKIE), false, "provider cookie must never be logged");
 
+    const argsBeforeSkip = await readFile(argsPath, "utf8");
+    const skipResult = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        CACHE_DIR: cacheDir,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACKDUMP_BIN: fakeSlackdump,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
+        ARGS_PATH: argsPath,
+        HELPER_OBSERVATION_PATH: helperObservationPath,
+        SNAPSHOT_PATH_FILE: snapshotPathFile,
+        SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
+        ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
+        ARCHIVE_URL: `https://${workspace}.slack.com`,
+        ARCHIVE_TEAM_ID: "T_PROOF_COLLECT",
+        SLACK_COOKIE: "d=supplied",
+        SLACK_TOKEN: "xoxc-supplied",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+      },
+    });
+    assert.equal(skipResult.messages.findLast((message) => message.type === "DONE")?.status, "succeeded");
+    assert.deepEqual(JSON.parse(await readFile(helperObservationPath, "utf8")), {
+      argv_has_secret: false,
+      env_has_secret: false,
+      stdin_is_json: true,
+    });
+    assert.equal(await readFile(argsPath, "utf8"), argsBeforeSkip, "skip mode must not invoke Slackdump");
+
     const mutatedResult = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,

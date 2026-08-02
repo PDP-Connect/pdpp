@@ -2886,6 +2886,21 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<SlackdumpAu
       if (!existsSync(sqlitePath)) {
         throw new Error(`PDPP_SLACK_SKIP_SLACKDUMP=1 but no archive found at ${sqlitePath}`);
       }
+      // Skip mode does not authorize cache reuse merely because an archive is
+      // present. A separately authenticated helper run may provide a
+      // same-run candidate, but resolveSlackApiCredentials still requires the
+      // requested archive identity and a current provider proof before the
+      // optional browser streams can consume it. Any unavailable/mismatched
+      // cache proof leaves the explicitly supplied credentials in force.
+      const proof = await loadSlackdumpProviderAuth(deps.childEnv);
+      if (proof && providerAliasMatchesRequested(proof, deps.workspace)) {
+        try {
+          await runSlackdumpIdentityHelper(proof, deps.childEnv, deps.workspace);
+          authProof = proof;
+        } catch {
+          progress("Slackdump skip cache identity proof unavailable; retaining supplied connection credentials");
+        }
+      }
     } else {
       progress(`Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || "<unset>"})`);
       // The snapshot handoff keeps the exact provider bytes used by archive
