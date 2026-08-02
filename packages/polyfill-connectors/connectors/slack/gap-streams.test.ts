@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, before, test } from "node:test";
 import type { BrowserSurfacePhaseResult, EmittedMessage } from "../../src/connector-runtime.ts";
+import { RetryExhaustedError } from "../../src/http-retry.ts";
 import {
   acquireSlackApiBrowserTransport,
   runDmReadStatesStream,
@@ -256,6 +257,61 @@ test("runOptionalStream: an exhausted retryable HTTP status keeps its retry acti
   const hint = (msg as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
   assert.equal(hint?.retryable, true);
   assert.equal(hint?.action, "retry_by_runtime");
+});
+
+test("runOptionalStream: nested exhausted network causes keep retry_by_runtime", async () => {
+  const { emit, messages } = captureEmitted();
+  const exhausted = new RetryExhaustedError("HTTP request failed after retry budget was exhausted", 4, {
+    code: "ECONNRESET",
+    message: "socket reset by peer",
+  });
+
+  await runOptionalStream(emit, "reminders", () => Promise.reject(exhausted));
+
+  const [msg] = messages;
+  const typed = msg as {
+    message?: string;
+    recovery_hint?: { action?: string; retryable?: boolean };
+  };
+  assert.match(typed.message ?? "", /ECONNRESET/u);
+  assert.equal(typed.recovery_hint?.retryable, true);
+  assert.equal(typed.recovery_hint?.action, "retry_by_runtime");
+});
+
+test("runOptionalStream: nested fetch failure is transient while auth and browser causes stay terminal", async () => {
+  const network = captureEmitted();
+  await runOptionalStream(network.emit, "reminders", () =>
+    Promise.reject(
+      new RetryExhaustedError("HTTP request failed after retry budget was exhausted", 4, new TypeError("fetch failed"))
+    )
+  );
+  const networkHint = (network.messages[0] as { recovery_hint?: { action?: string; retryable?: boolean } })
+    .recovery_hint;
+  assert.deepEqual(networkHint, { action: "retry_by_runtime", retryable: true });
+
+  const auth = captureEmitted();
+  await runOptionalStream(auth.emit, "reminders", () =>
+    Promise.reject(
+      new RetryExhaustedError("HTTP request failed after retry budget was exhausted", 4, { code: "slack_auth_failed" })
+    )
+  );
+  const authHint = (auth.messages[0] as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
+  assert.deepEqual(authHint, { retryable: false });
+
+  const browser = captureEmitted();
+  await runOptionalStream(browser.emit, "reminders", () =>
+    Promise.reject(
+      new RetryExhaustedError("HTTP request failed after retry budget was exhausted", 4, {
+        code: "slack_api_browser_unavailable",
+      })
+    )
+  );
+  const browserMessage = browser.messages[0] as {
+    reason?: string;
+    recovery_hint?: { action?: string; retryable?: boolean };
+  };
+  assert.equal(browserMessage.reason, "optional_stream_capability_missing");
+  assert.deepEqual(browserMessage.recovery_hint, { action: "requires_browser_runtime", retryable: false });
 });
 
 test("runOptionalStream: an auth failure is flagged non-retryable and omits retry_by_runtime", async () => {

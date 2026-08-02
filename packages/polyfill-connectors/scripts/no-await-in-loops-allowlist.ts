@@ -762,8 +762,8 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/gmail/index.ts",
-    line: 2444,
-    column: 18,
+    line: 2550,
+    column: 20,
     category: "provider_pacing_backpressure",
     note: "processServedAttachmentRecoveryGap(): rate-limited/budget-gated external call",
   },

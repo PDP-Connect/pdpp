@@ -689,15 +689,12 @@ function normalizeAttachmentRecoveryKey(recordKey: string | number | null | unde
   return key.length > 0 ? key : null;
 }
 
-function attachmentDetailGapMatches(
-  gap: DetailGapStartEntry,
-  attachment: AttachmentRecord,
-  normalizedAttachmentKey: string
-): boolean {
+function attachmentDetailGapMatches(gap: DetailGapStartEntry, attachment: AttachmentRecord): boolean {
   if (gap.stream !== "attachments" || gap.status !== "pending") {
     return false;
   }
-  if (normalizeAttachmentRecoveryKey(gap.record_key) !== normalizedAttachmentKey) {
+  const normalizedRecordKey = normalizeAttachmentRecoveryKey(gap.record_key);
+  if (normalizedRecordKey && normalizedRecordKey !== attachment.id) {
     return false;
   }
   const locator = gap.detail_locator;
@@ -709,16 +706,23 @@ function attachmentDetailGapMatches(
     return false;
   }
   // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  if (typedLocator.attachment_id != null && typedLocator.attachment_id !== attachment.id) {
+  if (typedLocator.attachment_id != null && String(typedLocator.attachment_id).trim() !== attachment.id) {
     return false;
   }
   // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  if (typedLocator.message_id != null && typedLocator.message_id !== attachment.message_id) {
+  if (typedLocator.message_id != null && String(typedLocator.message_id).trim() !== attachment.message_id) {
     return false;
   }
   // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  if (typedLocator.part_index != null && typedLocator.part_index !== attachment.part_index) {
+  if (typedLocator.part_index != null && String(typedLocator.part_index).trim() !== attachment.part_index) {
     return false;
+  }
+  if (!(normalizedRecordKey || typedLocator.attachment_id)) {
+    const messageId = String(typedLocator.message_id ?? "").trim();
+    const partIndex = String(typedLocator.part_index ?? "").trim();
+    if (`${messageId}:${partIndex}` !== attachment.id) {
+      return false;
+    }
   }
   return true;
 }
@@ -780,7 +784,7 @@ function findRecoveredAttachmentDetailGaps(
       // will find ITS attachment already cached and recover cleanly).
       continue;
     }
-    if (attachmentDetailGapMatches(gap, attachment, normalizedAttachmentKey)) {
+    if (attachmentDetailGapMatches(gap, attachment)) {
       matches.push(gap);
     }
   }
@@ -1926,14 +1930,7 @@ function servedAttachmentDetailGaps(
     if (!locator || typeof locator !== "object" || Array.isArray(locator)) {
       return false;
     }
-    const typedLocator = locator as Record<string, unknown>;
-    return (
-      typedLocator.kind === "gmail.attachment_detail" &&
-      // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-      typedLocator.message_id != null &&
-      // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-      typedLocator.part_index != null
-    );
+    return normalizeGmailAttachmentRecoveryLocator(gap) !== null;
   });
 }
 
@@ -1951,14 +1948,24 @@ function normalizeGmailAttachmentRecoveryLocator(gap: DetailGapStartEntry): {
     return null;
   }
   // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  const messageId = typedLocator.message_id == null ? "" : String(typedLocator.message_id).trim();
+  const attachmentId = typedLocator.attachment_id == null ? null : String(typedLocator.attachment_id).trim() || null;
   // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  const partIndex = typedLocator.part_index == null ? "" : String(typedLocator.part_index).trim();
+  let messageId = typedLocator.message_id == null ? "" : String(typedLocator.message_id).trim();
+  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
+  let partIndex = typedLocator.part_index == null ? "" : String(typedLocator.part_index).trim();
+  if (attachmentId && !(messageId && partIndex)) {
+    const separator = attachmentId.lastIndexOf(":");
+    if (separator <= 0 || separator === attachmentId.length - 1) {
+      return null;
+    }
+    const derivedMessageId = attachmentId.slice(0, separator);
+    const derivedPartIndex = attachmentId.slice(separator + 1);
+    messageId ||= derivedMessageId;
+    partIndex ||= derivedPartIndex;
+  }
   if (!(messageId && partIndex)) {
     return null;
   }
-  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  const attachmentId = typedLocator.attachment_id == null ? null : String(typedLocator.attachment_id).trim() || null;
   return { attachmentId, messageId, partIndex };
 }
 
@@ -2050,6 +2057,7 @@ interface PreparedServedAttachmentRecoveryCandidate {
   gap: DetailGapStartEntry;
   loadedMessage: FetchMessageObject;
   oversized: boolean;
+  policySkip: boolean;
 }
 
 // The first candidate may be larger than the entire run budget. It is held as
@@ -2155,12 +2163,11 @@ async function settleServedAttachmentRecoveryAttempt(
       state.attachmentHydrationFailureOutcome.unclassified_failed += 1;
     }
   }
-  // Uphold the settlement invariant for THIS gap's own lease regardless of
-  // why it wasn't recovered above: a genuine hydration failure, a "hydrated"
-  // record the host declined to emit (scope filter), or any other
-  // non-"hydrated" status all leave the served gap retryable next run —
-  // exactly the same honest outcome the lookup-miss/byte-budget branches
-  // already report, just reached via a different failure mode.
+  // Uphold the settlement invariant for THIS attempted gap regardless of why
+  // it wasn't recovered above: a genuine hydration failure, a "hydrated"
+  // record the host declined to emit (scope filter), or another non-policy
+  // status all leave the served gap retryable next run. `too_large` is handled
+  // before this function because it is a permanent policy skip, not a retry.
   if (!ownGapRecovered) {
     await settleServedAttachmentRecoveryDeferral(
       gap,
@@ -2278,6 +2285,56 @@ async function markServedAttachmentRecoveryAttempt(
   });
 }
 
+async function markAndCountServedAttachmentRecoveryAttempt(
+  gap: DetailGapStartEntry,
+  state: ServedAttachmentRecoveryState,
+  emitProtocol: (msg: EmittedMessage) => Promise<void>
+): Promise<void> {
+  if (state.attemptedGapIds.has(gap.gap_id)) {
+    return;
+  }
+  state.attempted += 1;
+  state.attemptedGapIds.add(gap.gap_id);
+  await markServedAttachmentRecoveryAttempt(gap, emitProtocol);
+}
+
+async function settleServedAttachmentRecoveryPolicySkip(
+  deps: {
+    attachmentCoverage?: AttachmentDetailCoverage;
+    emitRecord: EmitRecordFn;
+  },
+  hydration: AttachmentHydrationResult
+): Promise<void> {
+  const emitted = await deps.emitRecord("attachments", { ...hydration.record });
+  if (emitted && deps.attachmentCoverage) {
+    recordAttachmentCoverage(deps.attachmentCoverage, hydration.record);
+  }
+}
+
+async function settleServedAttachmentRecoveryHydration(
+  deps: {
+    attachmentCoverage?: AttachmentDetailCoverage;
+    detailGaps?: readonly DetailGapStartEntry[] | undefined;
+    emitProtocol: (msg: EmittedMessage) => Promise<void>;
+    emitRecord: EmitRecordFn;
+  },
+  gap: DetailGapStartEntry,
+  state: ServedAttachmentRecoveryState,
+  hydration: AttachmentHydrationResult
+): Promise<void> {
+  if (hydration.record.hydration_status === "too_large") {
+    // `too_large` is a permanent policy skip. It is credited through
+    // optional_skip_keys, but it must not mark the served lease attempted or
+    // emit a retryable DETAIL_GAP. The runtime can release this untouched
+    // lease without increasing durable attempt_count.
+    await settleServedAttachmentRecoveryPolicySkip(deps, hydration);
+    state.settledGapIds.add(gap.gap_id);
+    return;
+  }
+  await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
+  await settleServedAttachmentRecoveryAttempt(deps, gap, state, hydration);
+}
+
 async function hydratePreparedServedAttachmentRecoveryCandidate(
   deps: {
     attachmentCoverage?: AttachmentDetailCoverage;
@@ -2289,19 +2346,29 @@ async function hydratePreparedServedAttachmentRecoveryCandidate(
   candidate: PreparedServedAttachmentRecoveryCandidate,
   state: ServedAttachmentRecoveryState
 ): Promise<void> {
-  state.admitted += 1;
-  state.admittedBytesTotal += candidate.attachmentBytes;
+  if (!candidate.policySkip) {
+    state.admitted += 1;
+    state.admittedBytesTotal += candidate.attachmentBytes;
 
-  await emitServedAttachmentRecoveryProgress(deps.emitProtocol, {
-    admitted: state.admitted,
-    metadataLookups: state.metadataLookups,
-    phase: "hydrating",
-    recovered: state.recovered,
-  });
+    await emitServedAttachmentRecoveryProgress(deps.emitProtocol, {
+      admitted: state.admitted,
+      metadataLookups: state.metadataLookups,
+      phase: "hydrating",
+      recovered: state.recovered,
+    });
+  }
 
   const hydration = await deps.hydrateAttachment(candidate.loadedMessage, candidate.attachment);
   state.hydratedAttachments.set(candidate.attachment.id, hydration);
-  await settleServedAttachmentRecoveryAttempt(deps, candidate.gap, state, hydration);
+  if (candidate.policySkip && hydration.record.hydration_status !== "too_large") {
+    // The production hydrator and its size policy are one contract. Keep a
+    // defensive fallback for injected/test hydrators that violate it: such a
+    // result becomes a normal admitted attempt instead of silently losing the
+    // served lease.
+    state.admitted += 1;
+    state.admittedBytesTotal += candidate.attachmentBytes;
+  }
+  await settleServedAttachmentRecoveryHydration(deps, candidate.gap, state, hydration);
 }
 
 async function processServedAttachmentRecoveryGap(
@@ -2335,42 +2402,34 @@ async function processServedAttachmentRecoveryGap(
   ) {
     return "metadata_lookup_cap";
   }
-  state.attempted += 1;
-  state.attemptedGapIds.add(gap.gap_id);
-  await markServedAttachmentRecoveryAttempt(gap, deps.emitProtocol);
-  // From this point on, the lease is attempted and MUST reach an explicit
-  // settlement before the recovery pass returns. The one exception is a
-  // first oversized candidate returned as a bounded fallback below; the
-  // caller settles it before hydrating a fitting sibling or hydrates it as
-  // the final at-least-one fallback.
+  // A candidate is not marked attempted until its hydration outcome is known:
+  // the hydrator can resolve `too_large`, which is a permanent policy skip and
+  // must leave the runtime-owned lease untouched. Lookup misses and budget
+  // deferrals still mark here at the exact branch that emits their settlement.
   const loadedMessage = await loadServedAttachmentRecoveryMessage(client, locator.messageId, state);
   if (loadedMessage === "metadata_lookup_limit_reached") {
+    await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
     await settleServedAttachmentRecoveryDeferral(gap, "metadata_lookup_cap", state, deps.emitProtocol);
     return "metadata_lookup_cap";
   }
   if (!loadedMessage) {
+    await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
     state.lookupMiss += 1;
-    await settleServedAttachmentRecoveryDeferral(gap, "attachment_lookup_miss", state, deps.emitProtocol);
-    return false;
-  }
-
-  const normalizedAttachmentKey = normalizeAttachmentRecoveryKey(gap.record_key);
-  if (!normalizedAttachmentKey) {
-    // No usable record_key to match a decoded attachment against: this is a
-    // malformed served gap, not a transient miss, but the lease is still
-    // attempted and durable — re-defer it the same way as a lookup miss
-    // rather than leaving it dangling.
     await settleServedAttachmentRecoveryDeferral(gap, "attachment_lookup_miss", state, deps.emitProtocol);
     return false;
   }
 
   const messageKey = String(loadedMessage.emailId ?? locator.messageId);
   const receivedAt = perMessageInternalDateToIso(loadedMessage.internalDate, nowIso);
+  if (Object.hasOwn(gap, "record_key") && !normalizeAttachmentRecoveryKey(gap.record_key)) {
+    await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
+    await settleServedAttachmentRecoveryDeferral(gap, "attachment_lookup_miss", state, deps.emitProtocol);
+    return false;
+  }
   const attachments = decodeBodystructureForAttachments(loadedMessage.bodyStructure, messageKey, receivedAt);
-  const attachment = attachments.find((candidate) =>
-    attachmentDetailGapMatches(gap, candidate, normalizedAttachmentKey)
-  );
+  const attachment = attachments.find((candidate) => attachmentDetailGapMatches(gap, candidate));
   if (!attachment) {
+    await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
     state.lookupMiss += 1;
     await settleServedAttachmentRecoveryDeferral(gap, "attachment_lookup_miss", state, deps.emitProtocol);
     return false;
@@ -2390,23 +2449,37 @@ async function processServedAttachmentRecoveryGap(
   // accept/reject outcome.
   const memoizedHydration = state.hydratedAttachments.get(attachment.id);
   if (memoizedHydration) {
-    await settleServedAttachmentRecoveryAttempt(deps, gap, state, memoizedHydration);
+    await settleServedAttachmentRecoveryHydration(deps, gap, state, memoizedHydration);
     return false;
   }
 
   const attachmentBytes =
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
+  const policySkip = typeof attachment.size_bytes === "number" && attachment.size_bytes > resolveMaxAttachmentBytes();
+  if (policySkip) {
+    return {
+      attachment,
+      attachmentBytes,
+      gap,
+      loadedMessage,
+      policySkip: true,
+      oversized: false,
+    };
+  }
   const oversized = state.admittedBytesTotal + attachmentBytes > byteBudget;
   if (oversized) {
     if (state.admitted === 0 && canReserveOversizedFallback) {
+      await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
       return {
         attachment,
         attachmentBytes,
         gap,
         loadedMessage,
+        policySkip: false,
         oversized: true,
       };
     }
+    await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
     await settleServedAttachmentRecoveryDeferral(gap, "run_cap_deferred", state, deps.emitProtocol);
     return "oversized_for_remaining_budget";
   }
@@ -2416,6 +2489,7 @@ async function processServedAttachmentRecoveryGap(
     attachmentBytes,
     gap,
     loadedMessage,
+    policySkip: false,
     oversized: false,
   };
 }
@@ -2491,6 +2565,11 @@ export async function recoverServedAttachmentGaps(
         // sibling's successful hydration could find and recover the held gap
         // through same-attachment matching, producing two outcomes for one
         // lease. The held item is a truthful planned defer, not a recovery.
+        await markAndCountServedAttachmentRecoveryAttempt(
+          oversizedFallback.gap,
+          recoveryState,
+          recoveryAttemptDeps.emitProtocol
+        );
         await settleServedAttachmentRecoveryDeferral(
           oversizedFallback.gap,
           "run_cap_deferred",

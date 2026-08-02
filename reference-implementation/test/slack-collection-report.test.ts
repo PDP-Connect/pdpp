@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runOptionalStream } from "../../packages/polyfill-connectors/connectors/slack/index.ts";
 import type { EmittedMessage } from "../../packages/polyfill-connectors/src/connector-runtime.ts";
+import { RetryExhaustedError } from "../../packages/polyfill-connectors/src/http-retry.ts";
 import type { CollectionReportEntry, RuntimeCollectionFact, RuntimeCollectionFactSkip } from "../server/ref-control.ts";
 import { buildCollectionReport } from "../server/ref-control.ts";
 
@@ -277,6 +278,23 @@ test("slack optional-stream transient failure: SKIP_RESULT with retry_by_runtime
   ]);
   const entry = entryFor(entries, "reminders");
   assert.equal(entry.coverage_condition, "retryable_gap", "a transient failure still reads as self-healing");
+});
+
+test("slack nested exhausted network failure: real connector output projects to retryable_gap", async () => {
+  const skip = await skipFromRealRunOptionalStream(
+    new RetryExhaustedError("HTTP request failed after retry budget was exhausted", 4, {
+      code: "EAI_AGAIN",
+      message: "temporary DNS failure",
+    })
+  );
+  assert.equal(skip.recovery_action, "retry_by_runtime");
+
+  const entries = report([fact({ collected: 0, skipped: skip, stream: "reminders" })]);
+  assert.equal(
+    entryFor(entries, "reminders").coverage_condition,
+    "retryable_gap",
+    "a nested transient cause must survive the connector and downstream coverage projection"
+  );
 });
 
 test("slack optional-stream exhausted request without a retry signal -> terminal_gap", async () => {

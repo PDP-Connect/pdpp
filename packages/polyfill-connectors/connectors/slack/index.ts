@@ -142,13 +142,33 @@ function resolveSlackdumpBin(): string {
  */
 function collectSlackErrorMessages(error: unknown): string[] {
   const messages: string[] = [];
-  const seen = new Set<Error>();
+  const seen = new Set<object>();
   let current: unknown = error;
-  while (current instanceof Error && !seen.has(current)) {
-    seen.add(current);
-    messages.push(current.message);
-    const wrapped = current as Error & { cause?: unknown; originalCause?: unknown };
-    current = wrapped.originalCause ?? wrapped.cause;
+  while (current !== null && current !== undefined) {
+    if (typeof current === "object") {
+      if (seen.has(current)) {
+        break;
+      }
+      seen.add(current);
+      const wrapped = current as {
+        cause?: unknown;
+        code?: unknown;
+        message?: unknown;
+        originalCause?: unknown;
+      };
+      if (typeof wrapped.code === "string") {
+        messages.push(wrapped.code);
+      }
+      if (typeof wrapped.message === "string") {
+        messages.push(wrapped.message);
+      } else if (current instanceof Error) {
+        messages.push(current.name);
+      }
+      current = wrapped.originalCause ?? wrapped.cause;
+      continue;
+    }
+    messages.push(String(current));
+    break;
   }
   return messages.length > 0 ? messages : [String(error)];
 }

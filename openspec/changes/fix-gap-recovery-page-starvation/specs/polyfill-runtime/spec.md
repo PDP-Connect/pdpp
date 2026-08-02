@@ -82,6 +82,22 @@ SHALL NOT be acknowledged as recovered — it SHALL remain on the ordinary
   `failed` attempt, before a size cap began applying) is already satisfied by
   the coverage skip and is left to age or terminalize on its own; it is
   neither recovered nor required to be.
+- **AND** the connector SHALL NOT emit `DETAIL_GAP_ATTEMPTED` or a new
+  retryable `DETAIL_GAP` for that policy skip, so the untouched lease can be
+  released without increasing durable attempt accounting.
+
+#### Scenario: An unambiguous attachment-id-only locator is recoverable
+
+- **WHEN** the runtime serves a pending Gmail attachment detail gap whose
+  locator has `kind: "gmail.attachment_detail"` and a canonical
+  `attachment_id` of `<X-GM-MSGID>:<part_index>`
+- **AND** `message_id`, `part_index`, and `record_key` are absent because the
+  row was written by an older producer
+- **THEN** the connector SHALL derive the message id and part index from the
+  final `:` separator and recover only the exact matching attachment
+- **AND** a malformed attachment id or a locator whose explicit fields
+  conflict with the derived identity SHALL not recover an attachment and
+  SHALL remain pending.
 
 #### Scenario: Recovery-only Gmail runs stop after served attachment recovery
 

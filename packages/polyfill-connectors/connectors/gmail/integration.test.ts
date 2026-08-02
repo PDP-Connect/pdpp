@@ -1117,6 +1117,157 @@ test("recoverServedAttachmentGaps: a completed historical cursor still drains a 
   assert.equal(attachments[0]?.data.id, "gmmsgid-recovery:2");
 });
 
+test("recoverServedAttachmentGaps: resolves an attachment-id-only historical locator safely", async () => {
+  const message = makeServedRecoveryMsg({ attachments: [16], emailId: "gmmsgid-legacy", uid: 7001 });
+  const validLegacyGap: DetailGapStartEntry = {
+    gap_id: "gap-legacy-attachment-id-only",
+    lease_id: "lease-legacy-attachment-id-only",
+    reference_only: true,
+    status: "pending",
+    stream: "attachments",
+    detail_locator: {
+      kind: "gmail.attachment_detail",
+      attachment_id: "gmmsgid-legacy:1",
+    },
+  };
+  const malformedGap: DetailGapStartEntry = {
+    gap_id: "gap-malformed-attachment-id-only",
+    lease_id: "lease-malformed-attachment-id-only",
+    reference_only: true,
+    status: "pending",
+    stream: "attachments",
+    detail_locator: {
+      kind: "gmail.attachment_detail",
+      attachment_id: "gmmsgid-legacy",
+    },
+  };
+  const attachmentCoverage = makeAttachmentDetailCoverage();
+  const emitHarness = makeRecordingEmit();
+  const search = mock.fn((query: { emailId?: string }) => {
+    assert.equal(query.emailId, "gmmsgid-legacy");
+    return Promise.resolve([message.uid ?? 7001]);
+  });
+  const fetchOne = mock.fn(() => Promise.resolve(message));
+
+  const summary = await recoverServedAttachmentGaps(
+    { search, fetchOne },
+    {
+      attachmentCoverage,
+      detailGaps: [validLegacyGap, malformedGap],
+      emitProtocol: emitHarness.emit,
+      emitRecord: async (stream, data) => {
+        await emitHarness.emitRecord(stream, data);
+        return true;
+      },
+      hydrateAttachment: async (_loadedMessage, attachment) =>
+        hydratedResult({
+          ...attachment,
+          blob_ref: {
+            blob_id: `blob-${attachment.id}`,
+            mime_type: attachment.content_type ?? "application/pdf",
+            sha256: `sha-${attachment.id}`,
+            size_bytes: attachment.size_bytes ?? 0,
+          },
+          content_sha256: `sha-${attachment.id}`,
+          hydration_error: null,
+          hydration_status: "hydrated",
+        }),
+    }
+  );
+
+  assert.equal(summary.served, 1, "only the unambiguous historical locator enters the recovery lane");
+  assert.equal(summary.attempted, 1);
+  assert.equal(summary.recovered, 1);
+  assert.equal(search.mock.callCount(), 1);
+  assert.deepEqual(
+    emitHarness.protocolMessages
+      .filter((protocolMessage) => protocolMessage.type !== "PROGRESS")
+      .map((protocolMessage) => `${protocolMessage.type}:${(protocolMessage as { gap_id?: string }).gap_id ?? ""}`),
+    ["DETAIL_GAP_ATTEMPTED:gap-legacy-attachment-id-only", "DETAIL_GAP_RECOVERED:gap-legacy-attachment-id-only"]
+  );
+  assert.deepEqual(attachmentCoverage.requiredKeys, ["gmmsgid-legacy:1"]);
+  assert.deepEqual(attachmentCoverage.hydratedKeys, ["gmmsgid-legacy:1"]);
+});
+
+test("recoverServedAttachmentGaps: too_large is a permanent policy skip without lease attempt inflation", async () => {
+  const originalMax = process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
+  process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES = "8";
+  try {
+    const message = makeServedRecoveryMsg({ attachments: [16], emailId: "gmmsgid-too-large", uid: 7002 });
+    const gap = makeServedRecoveryGap({
+      gapId: "gap-too-large-policy",
+      leaseId: "lease-too-large-policy",
+      messageId: "gmmsgid-too-large",
+      partIndex: 1,
+    });
+    const attachmentCoverage = makeAttachmentDetailCoverage();
+    const emitHarness = makeRecordingEmit();
+    const fetchAttachment = mock.fn(() =>
+      Promise.resolve({
+        content: Readable.from([Buffer.from("must not download")]),
+        expectedSize: 16,
+        mimeType: "application/pdf",
+      })
+    );
+    const uploadBlob = mock.fn(() => Promise.reject(new Error("must not upload a policy skip")));
+    const hydrateAttachment = makeAttachmentHydrator({
+      connectorId: "https://registry.pdpp.org/connectors/gmail",
+      fetchAttachment,
+      maxBytes: 8,
+      uploadBlob,
+    });
+
+    const summary = await recoverServedAttachmentGaps(
+      {
+        search: mock.fn(() => Promise.resolve([message.uid ?? 7002])),
+        fetchOne: mock.fn(() => Promise.resolve(message)),
+      },
+      {
+        attachmentCoverage,
+        detailGaps: [gap],
+        emitProtocol: emitHarness.emit,
+        emitRecord: async (stream, data) => {
+          await emitHarness.emitRecord(stream, data);
+          return true;
+        },
+        hydrateAttachment,
+      }
+    );
+
+    assert.equal(summary.metadata_lookups, 1);
+    assert.equal(summary.admitted, 0);
+    assert.equal(summary.attempted, 0, "a permanent policy skip must not claim a recovery attempt");
+    assert.equal(summary.hydration_failed, 0);
+    assert.equal(summary.recovered, 0);
+    assert.equal(fetchAttachment.mock.callCount(), 0);
+    assert.equal(uploadBlob.mock.callCount(), 0);
+    assert.deepEqual(attachmentCoverage.requiredKeys, ["gmmsgid-too-large:1"]);
+    assert.deepEqual(attachmentCoverage.optionalSkipKeys, ["gmmsgid-too-large:1"]);
+    assert.deepEqual(attachmentCoverage.gapKeys, []);
+    assert.equal(
+      emitHarness.protocolMessages.some((protocolMessage) => protocolMessage.type === "DETAIL_GAP_ATTEMPTED"),
+      false,
+      "the runtime-owned lease remains untouched for release without attempt_count inflation"
+    );
+    assert.equal(
+      emitHarness.protocolMessages.some((protocolMessage) => protocolMessage.type === "DETAIL_GAP"),
+      false,
+      "too_large must not become a retryable DETAIL_GAP"
+    );
+    assert.equal(
+      emitHarness.protocolMessages.some((protocolMessage) => protocolMessage.type === "DETAIL_GAP_RECOVERED"),
+      false
+    );
+    assert.equal(emitHarness.emitted[0]?.data.hydration_status, "too_large");
+  } finally {
+    if (originalMax === undefined) {
+      delete process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES = originalMax;
+    }
+  }
+});
+
 // Regression coverage for the live-canary root cause (2026-07-31): gmail
 // run_1785535147325_1 and its retry run_1785535845977_2 each emitted exactly
 // 206 records with no committed messages/attachments STATE cursor between

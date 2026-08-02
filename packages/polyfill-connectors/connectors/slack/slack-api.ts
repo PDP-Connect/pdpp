@@ -64,7 +64,7 @@ function slackBrowserUserAgent(): string {
 const USER_AGENT = slackBrowserUserAgent();
 
 export const SLACK_API_RETRYABLE_FAILURE_RE =
-  /slack_rate_limited|ECONN|ETIMEDOUT|timeout|HTTP request got retryable status \d+/i;
+  /slack_rate_limited|ECONN|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT|fetch failed|network (?:error|failure)|socket hang up|timeout|HTTP request got retryable status \d+/i;
 
 /**
  * A failure whose error message identifies it as an auth/session problem
