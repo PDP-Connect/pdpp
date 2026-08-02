@@ -327,6 +327,8 @@ test("createBrowserSlackApiTransport: dispatches through page.evaluate(slackApiF
       evaluatedArg = arg;
       return Promise.resolve({ status: 200, body: '{"ok":true}' } as R);
     },
+    goto: () => Promise.resolve(),
+    url: () => "https://slack.com/api/api.test",
   };
   const transport = createBrowserSlackApiTransport(fakePage);
   const req: SlackApiRequestInit = {

@@ -109,6 +109,7 @@ import {
   parseSlackApiErrorCode,
   SLACK_API_AUTH_FAILURE_RE,
   SLACK_API_BROWSER_CAPABILITY_FAILURE_RE,
+  SLACK_API_BROWSER_ORIGIN_MISMATCH_RE,
   SLACK_API_RETRYABLE_FAILURE_RE,
   type SlackApiBrowserPage,
   type SlackApiTransport,
@@ -2320,6 +2321,9 @@ export async function runOptionalStream(
 
 const SLACK_API_BROWSER_PROFILE_NAME = "slack";
 const SLACK_COOKIE_DOMAIN = ".slack.com";
+const SLACK_API_ORIGIN = "https://slack.com";
+const SLACK_API_BOOTSTRAP_URL = `${SLACK_API_ORIGIN}/api/api.test`;
+const SLACK_ORIGIN_NAVIGATION_TIMEOUT_MS = 15_000;
 const D_S_COOKIE_BACKDATE_SECONDS = 10;
 
 interface SlackApiBrowserTransportHandle {
@@ -2342,6 +2346,19 @@ export interface SlackApiIsolatedBrowser {
     newPage: () => Promise<SlackApiBrowserPage>;
   };
   release: () => Promise<void>;
+}
+
+function assertSlackApiPageOrigin(page: SlackApiBrowserPage): void {
+  const finalUrl = page.url();
+  let finalOrigin = "<invalid-url>";
+  try {
+    finalOrigin = new URL(finalUrl).origin;
+  } catch {
+    // Keep the original URL in the diagnostic below; it is the useful evidence.
+  }
+  if (finalOrigin !== SLACK_API_ORIGIN) {
+    throw new Error(`slack_api_browser_origin_mismatch: expected ${SLACK_API_ORIGIN}, got ${finalUrl}`);
+  }
 }
 
 /**
@@ -2386,6 +2403,12 @@ export function withResolvedRemoteCdpUrl(
  * operator to see or do. This also means the in-container
  * headed-browser-visibility gate (`decideContainerHeadedBrowserGate`) never
  * fires for this path.
+ *
+ * The page navigates to Slack's documented `api.test` endpoint rather than
+ * the consumer root, then asserts the final page origin is exactly
+ * `https://slack.com`. An authenticated Slack session may redirect the root
+ * to `app.slack.com`; that is not a safe transport origin, so the mismatch is
+ * surfaced as a retryable setup failure after releasing the browser.
  *
  * NEVER throws: a browser-acquisition failure (missing Chromium, launch
  * error, cookie-seed failure) must stay isolated to these four optional
@@ -2449,6 +2472,11 @@ export async function acquireSlackApiBrowserTransport(
       },
     ]);
     const page = await browser.context.newPage();
+    await page.goto(SLACK_API_BOOTSTRAP_URL, {
+      waitUntil: "commit",
+      timeout: SLACK_ORIGIN_NAVIGATION_TIMEOUT_MS,
+    });
+    assertSlackApiPageOrigin(page);
     return {
       release: browser.release,
       transport: createBrowserSlackApiTransport(page),
@@ -2456,7 +2484,10 @@ export async function acquireSlackApiBrowserTransport(
   } catch (e) {
     await browser.release();
     const message = e instanceof Error ? e.message : String(e);
-    const failure = new Error(`slack_api_browser_setup_failed: ${message}`, { cause: e });
+    const failureMessage = SLACK_API_BROWSER_ORIGIN_MISMATCH_RE.test(message)
+      ? message
+      : `slack_api_browser_setup_failed: ${message}`;
+    const failure = new Error(failureMessage, { cause: e });
     return {
       release: () => Promise.resolve(),
       transport: () => Promise.reject(failure),

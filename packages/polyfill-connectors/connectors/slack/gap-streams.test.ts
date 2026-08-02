@@ -24,7 +24,7 @@ import {
   type StreamDeps,
   withResolvedRemoteCdpUrl,
 } from "./index.ts";
-import { nodeFetchSlackApiTransport, resetSlackApiGovernor } from "./slack-api.ts";
+import { nodeFetchSlackApiTransport, resetSlackApiGovernor, type SlackApiBrowserPage } from "./slack-api.ts";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_SET_TIMEOUT = globalThis.setTimeout;
@@ -314,6 +314,17 @@ test("runOptionalStream: nested fetch failure is transient while auth and browse
   assert.deepEqual(browserMessage.recovery_hint, { action: "requires_browser_runtime", retryable: false });
 });
 
+test("runOptionalStream: Chromium's Failed to fetch error remains retryable", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "reminders", () =>
+    Promise.reject(new Error("page.evaluate: TypeError: Failed to fetch"))
+  );
+
+  const hint = (messages[0] as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
+  assert.deepEqual(hint, { action: "retry_by_runtime", retryable: true });
+});
+
 test("runOptionalStream: an auth failure is flagged non-retryable and omits retry_by_runtime", async () => {
   // Regression for a real evidence gap: `mapSkipCoverageCondition`
   // (reference-implementation/server/connector-coverage-policy.ts) reads
@@ -431,6 +442,8 @@ interface FakeCookie {
 
 type AcquireFn = (options: { headless?: boolean; profileName: string }) => Promise<SlackApiIsolatedBrowser>;
 
+type FakePage = Pick<SlackApiBrowserPage, "evaluate" | "goto" | "url">;
+
 // `SlackApiIsolatedBrowser` (index.ts) is ALREADY the minimal surface
 // `acquireSlackApiBrowserTransport` depends on — the fake below satisfies it
 // directly, with no cast needed at all (unlike a fake built against the full
@@ -438,7 +451,7 @@ type AcquireFn = (options: { headless?: boolean; profileName: string }) => Promi
 function fakeIsolatedBrowser(
   overrides: {
     addCookies?: (cookies: readonly FakeCookie[]) => Promise<void>;
-    newPage?: () => Promise<{ evaluate: () => Promise<never> }>;
+    newPage?: () => Promise<FakePage>;
     release?: () => Promise<void>;
   } = {}
 ): { addCookiesCalls: FakeCookie[][]; browser: AcquireFn } {
@@ -452,12 +465,88 @@ function fakeIsolatedBrowser(
         },
         newPage:
           overrides.newPage ??
-          (() => Promise.resolve({ evaluate: () => Promise.resolve({ status: 200, body: "{}" } as never) })),
+          (() =>
+            Promise.resolve({
+              evaluate: () => Promise.resolve({ status: 200, body: "{}" } as never),
+              goto: () => Promise.resolve(),
+              url: () => "https://slack.com/api/api.test",
+            })),
       },
       release: overrides.release ?? (() => Promise.resolve()),
     });
   return { addCookiesCalls, browser };
 }
+
+test("acquireSlackApiBrowserTransport: reaches the exact Slack-origin API bootstrap document", async () => {
+  let currentUrl = "about:blank";
+  let navigation: { url: string; options?: Parameters<SlackApiBrowserPage["goto"]>[1] } | undefined;
+  const { browser } = fakeIsolatedBrowser({
+    newPage: () =>
+      Promise.resolve({
+        evaluate: () => Promise.resolve({ status: 200, body: "{}" } as never),
+        goto: (url, options) => {
+          navigation = { url, options };
+          currentUrl = url;
+          return Promise.resolve();
+        },
+        url: () => currentUrl,
+      }),
+  });
+
+  const handle = await acquireSlackApiBrowserTransport(() => Promise.resolve(), "d-cookie-value", browser);
+  await assert.doesNotReject(() =>
+    handle.transport({ url: "https://slack.com/api/api.test", method: "GET", headers: {} })
+  );
+  await handle.release();
+
+  assert.deepEqual(navigation, {
+    url: "https://slack.com/api/api.test",
+    options: { waitUntil: "commit", timeout: 15_000 },
+  });
+  assert.equal(new URL(currentUrl).origin, "https://slack.com");
+});
+
+test("acquireSlackApiBrowserTransport: an authenticated-style app redirect is retryable and releases the browser", async () => {
+  let currentUrl = "about:blank";
+  let releaseCalls = 0;
+  const { browser } = fakeIsolatedBrowser({
+    newPage: () =>
+      Promise.resolve({
+        evaluate: () => Promise.resolve({ status: 200, body: "{}" } as never),
+        goto: () => {
+          currentUrl = "https://app.slack.com/client/T01";
+          return Promise.resolve();
+        },
+        url: () => currentUrl,
+      }),
+    release: () => {
+      releaseCalls += 1;
+      return Promise.resolve();
+    },
+  });
+
+  const handle = await acquireSlackApiBrowserTransport(() => Promise.resolve(), "d-cookie-value", browser);
+  await assert.rejects(
+    () => handle.transport({ url: "https://slack.com/api/stars.list", method: "GET", headers: {} }),
+    /slack_api_browser_origin_mismatch/
+  );
+  assert.equal(releaseCalls, 1, "an origin mismatch must release the browser before returning the failed handle");
+
+  const { emit, messages } = captureEmitted();
+  await runOptionalStream(emit, "stars", async () => {
+    await handle.transport({ url: "https://slack.com/api/stars.list", method: "GET", headers: {} });
+  });
+  const msg = messages[0] as {
+    diagnostics?: { error_code?: string };
+    reason?: string;
+    recovery_hint?: { action?: string; retryable?: boolean };
+  };
+  assert.equal(msg.reason, "optional_stream_failed");
+  assert.deepEqual(msg.recovery_hint, { action: "retry_by_runtime", retryable: true });
+  assert.equal(msg.diagnostics?.error_code, "slack_api_browser_origin_mismatch");
+  await handle.release();
+  assert.equal(releaseCalls, 1, "the failed handle release must remain a no-op");
+});
 
 test("acquireSlackApiBrowserTransport: seeds the d/d-s cookies on .slack.com before returning a transport", async () => {
   const { addCookiesCalls, browser } = fakeIsolatedBrowser();
@@ -706,6 +795,8 @@ function fakeGrantedBrowser(seen: { addCookiesCalls: FakeCookie2[][] }): SlackAp
       newPage: () =>
         Promise.resolve({
           evaluate: <R, Arg>(fn: (arg: Arg) => R | Promise<R>, arg: Arg) => Promise.resolve(fn(arg)),
+          goto: () => Promise.resolve(),
+          url: () => "https://slack.com/api/api.test",
         }),
     },
     release: () => Promise.resolve(),

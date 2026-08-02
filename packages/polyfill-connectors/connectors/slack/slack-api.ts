@@ -33,7 +33,11 @@
  * Chromium page (`page.evaluate(fetch)`, the same mechanism the ChatGPT
  * connector already uses to preserve Cloudflare's TLS fingerprint check —
  * see `connectors/chatgpt/index.ts` `chatGptBackendFetchInBrowser`) so the
- * TLS handshake is genuinely Chromium's, not reimplemented/spoofed.
+ * TLS handshake is genuinely Chromium's, not reimplemented/spoofed. Before
+ * those requests, the page is navigated to Slack's documented `api.test`
+ * document and its final URL is checked: a credentialed fetch from the
+ * launcher's initial `about:blank` page is cross-origin, and Slack's wildcard
+ * CORS response cannot authorize that credentialed mode.
  */
 
 import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
@@ -64,7 +68,7 @@ function slackBrowserUserAgent(): string {
 const USER_AGENT = slackBrowserUserAgent();
 
 export const SLACK_API_RETRYABLE_FAILURE_RE =
-  /slack_rate_limited|ECONN|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT|fetch failed|network (?:error|failure)|socket hang up|timeout|HTTP request got retryable status \d+/i;
+  /slack_rate_limited|slack_api_browser_origin_mismatch|ECONN|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|EPIPE|ETIMEDOUT|fetch failed|failed to fetch|network (?:error|failure)|socket hang up|timeout|HTTP request got retryable status \d+/i;
 
 /**
  * A failure whose error message identifies it as an auth/session problem
@@ -94,6 +98,9 @@ export const SLACK_API_AUTH_FAILURE_RE = /slack_auth_failed/;
  */
 export const SLACK_API_BROWSER_CAPABILITY_FAILURE_RE = /slack_api_browser_(unavailable|setup_failed)/;
 
+/** A browser reached a different origin after the Slack API bootstrap navigation. */
+export const SLACK_API_BROWSER_ORIGIN_MISMATCH_RE = /slack_api_browser_origin_mismatch/;
+
 /**
  * Extract the stable, coded prefix an error message carries, for structured
  * `SKIP_RESULT.diagnostics` — evidence a downstream report/health rollup can
@@ -102,12 +109,13 @@ export const SLACK_API_BROWSER_CAPABILITY_FAILURE_RE = /slack_api_browser_(unava
  * `parseSlackApiResponse`'s own throw shapes (`slack_auth_failed`,
  * `slack_api_http_<status>`, `slack_api_error_<code>`,
  * `slack_api_invalid_json`) or `acquireSlackApiBrowserTransport`'s own throw
- * shapes (`slack_api_browser_unavailable`, `slack_api_browser_setup_failed`,
- * see `SLACK_API_BROWSER_CAPABILITY_FAILURE_RE`); `null` for anything else
- * (a network-layer error, a thrown non-Slack-API exception).
+ * shapes (`slack_api_browser_unavailable`, `slack_api_browser_setup_failed`
+ * — see `SLACK_API_BROWSER_CAPABILITY_FAILURE_RE` — and
+ * `slack_api_browser_origin_mismatch`); `null` for anything else (a
+ * network-layer error, a thrown non-Slack-API exception).
  */
 const SLACK_API_ERROR_CODE_RE =
-  /^(slack_auth_failed|slack_api_http_\d+|slack_api_error_\S+|slack_api_invalid_json|slack_api_browser_unavailable|slack_api_browser_setup_failed)\b/;
+  /^(slack_auth_failed|slack_api_http_\d+|slack_api_error_\S+|slack_api_invalid_json|slack_api_browser_unavailable|slack_api_browser_setup_failed|slack_api_browser_origin_mismatch)\b/;
 
 export function parseSlackApiErrorCode(message: string): string | null {
   const match = SLACK_API_ERROR_CODE_RE.exec(message);
@@ -208,6 +216,14 @@ export async function slackApiFetchInBrowser(req: SlackApiRequestInit): Promise<
 /** The minimal Playwright `Page` surface this module depends on. */
 export interface SlackApiBrowserPage {
   evaluate: <R, Arg>(pageFunction: (arg: Arg) => R | Promise<R>, arg: Arg) => Promise<R>;
+  goto: (
+    url: string,
+    options?: {
+      timeout?: number;
+      waitUntil?: "commit" | "domcontentloaded" | "load" | "networkidle";
+    }
+  ) => Promise<unknown>;
+  url: () => string;
 }
 
 /**
