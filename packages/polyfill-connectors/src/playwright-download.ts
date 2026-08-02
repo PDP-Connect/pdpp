@@ -20,6 +20,8 @@ import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { Download } from "playwright";
 
+const DOWNLOAD_FILENAME_SEPARATOR_RE = /[\\/\0]/u;
+
 export type PlaywrightDownloadLike = Pick<Download, "saveAs"> &
   Partial<Pick<Download, "createReadStream" | "failure" | "suggestedFilename" | "url">>;
 
@@ -38,10 +40,21 @@ export interface PlaywrightDownloadOutcome {
   streamError?: string;
 }
 
+/** Reject names that can escape the caller-owned temporary directory. */
+export function safeSuggestedFilename(value: string | null | undefined, fallback = "download.bin"): string {
+  if (value === undefined || value === null || value.length === 0) {
+    return fallback;
+  }
+  if (value === "." || value === ".." || DOWNLOAD_FILENAME_SEPARATOR_RE.test(value)) {
+    throw new Error("invalid_download_filename");
+  }
+  return value;
+}
+
 export async function readPlaywrightDownloadBuffer(download: PlaywrightDownloadLike): Promise<Buffer> {
   const tempDir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-"));
   try {
-    const target = join(tempDir, download.suggestedFilename?.() || "download.bin");
+    const target = join(tempDir, safeSuggestedFilename(download.suggestedFilename?.()));
     await savePlaywrightDownload(download, target);
     return await readFile(target);
   } finally {
@@ -60,7 +73,7 @@ export async function readPlaywrightDownloadBufferDetailed(
 ): Promise<{ buffer: Buffer; outcome: PlaywrightDownloadOutcome }> {
   const tempDir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-"));
   try {
-    const target = join(tempDir, download.suggestedFilename?.() || "download.bin");
+    const target = join(tempDir, safeSuggestedFilename(download.suggestedFilename?.()));
     const outcome = await savePlaywrightDownloadDetailed(download, target);
     const buffer = await readFile(target);
     return { buffer, outcome: { ...outcome, bytes: buffer.length } };

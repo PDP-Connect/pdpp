@@ -21,23 +21,22 @@
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
   attachBodyResponseQueue,
-  type BodyResponseCandidateDiagnostic,
   type BodyResponseDiagnostics,
   type BodyResponseQueue,
-  type SafeArtifactResponseMetadata,
   sanitizeArtifactResponseMetadata,
   waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
 import {
   type BrowserSurfaceCandidateManifest,
   type BrowserSurfaceCapturePhase,
+  type BrowserSurfaceDiagnostic,
   type BrowserSurfaceManagedState,
   browserSurfaceManagedState,
   buildBrowserSurfaceCandidateManifest,
@@ -58,7 +57,7 @@ import {
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
-import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
+import { readPlaywrightDownloadBufferDetailed, safeSuggestedFilename } from "../../src/playwright-download.ts";
 import { statementFingerprintExcludeKeys } from "../../src/statement-content-fingerprint.ts";
 import {
   openStatementHydrationCursor,
@@ -93,6 +92,7 @@ import type {
   DocRow,
   DownloadDiagnostics,
   DriveExportOptions,
+  ExportAffordanceCandidate,
   HydrationResult,
   HydrationResultSuccess,
   InboxRow,
@@ -117,7 +117,6 @@ const LOGON_REDIRECT_RE = /\/my\/logon|\/access-management\/oauth2\/member\/auth
 const TRANSACTION_ACCOUNT_TYPE_RE = /checking|savings|credit-card/;
 const CREDIT_CARD_TYPE_RE = /credit-card/;
 const TEMP_DIR_PREFIX_RE = /\/[^/]+$/;
-const UNSAFE_FILENAME_RE = /[\\/]/g;
 const EXPORT_BUTTON_TEXT_RE = /^\s*Export\s*$/i;
 const CSV_DOWNLOAD_HINT_RE = /filename|attachment|octet-stream|csv|export/iu;
 const CSV_HEAD_RE = /date|description|amount|transaction/iu;
@@ -157,6 +156,7 @@ const EXPORT_ENABLED_CHECK_TIMEOUT_MS = EXPORT_CLICK_TIMEOUT_MS;
 const DOWNLOAD_TIMEOUT_MS = 45_000;
 const RESPONSE_FALLBACK_GRACE_MS = 3000;
 const KEY_TYPE_DELAY_MS = 30;
+export const MAX_EXPORT_LADDER_ATTEMPTS = 8;
 const BACKFILL_17MO = PARSERS_BACKFILL_17MO;
 const INCREMENTAL_OVERLAP_MS = PARSERS_INCREMENTAL_OVERLAP_MS;
 const ID_TEXT_SNIP = 160;
@@ -168,7 +168,7 @@ const ID_TEXT_SNIP = 160;
 // covered) — the actual cause of the timeout — ever appeared. Sized like
 // CLICK_ERROR_SNIP so the full call log survives into diagnostics.
 const CLICK_ERROR_SNIP = 600;
-export const USAA_FALLBACK_SERIALIZED_BYTES_MAX = 8 * 1024;
+const MAX_SURFACE_DOM_ELEMENTS = 128;
 const USAA_ORIGIN = "https://www.usaa.com";
 
 // Pure helpers — hashId, currencyToCents, isoDate, mmddyyyy, parseCsv,
@@ -189,7 +189,7 @@ const NON_STATEMENT_TITLE_RE = /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDI
 /** Per-run dependency bag for the emit-path helpers. */
 export interface EmitDeps {
   browserSurface?: BrowserSurfaceManagedState;
-  capture?: BrowserCollectContext["capture"];
+  capture?: DriveExportOptions["capture"];
   emit: EmitFn;
   emitRecord: EmitRecordFn;
   reauthenticate?: (input: {
@@ -201,6 +201,247 @@ export interface EmitDeps {
    * A reached account emits recovery for its supplied gap id; this prevents a
    * successful later export from leaving the durable gap pending forever. */
   servedAccountTransactionGaps?: ReadonlyMap<string, string>;
+}
+
+const SAFE_USAA_STREAMS = new Set([
+  "account_stats",
+  "accounts",
+  "bill_payments",
+  "credit_card_billing",
+  "credit_card_billing_stats",
+  "external_accounts",
+  "inbox_messages",
+  "scheduled_transactions",
+  "statements",
+  "transactions",
+  "transfers",
+]);
+const SAFE_USAA_REASONS = new Set([
+  "credit_card_export_unverified",
+  "csv_no_data_rows",
+  "csv_no_usable_transactions",
+  "export_affordance_disabled",
+  "export_affordance_missing",
+  "export_error",
+  "export_no_download",
+  "hydrate_crashed",
+  "navigation_drifted",
+  "pdf_download_failed",
+  "pdf_parse_failed",
+  "pdf_template_unknown",
+  "scrape_failed",
+  "selectors_pending",
+  "session_dead_reauth_failed",
+  "shape_check_failed",
+  "temporary_unavailable",
+]);
+const SAFE_USAA_OUTCOMES = new Set(["export_pressure", "navigation_drifted", "source_structure_changed", "unknown"]);
+const SAFE_USAA_TERMINAL_FAILURES = new Set(["export_affordance_disabled", "source_structure_changed"]);
+
+function safeUsaaStream(value: unknown): string {
+  return typeof value === "string" && SAFE_USAA_STREAMS.has(value) ? value : "unknown";
+}
+
+function safeUsaaReason(value: unknown): string {
+  return typeof value === "string" && SAFE_USAA_REASONS.has(value) ? value : "diagnostic_sanitized";
+}
+
+function safeUsaaProgressMessage(value: unknown): string {
+  if (typeof value !== "string") {
+    return "USAA progress";
+  }
+  if (value.startsWith("Extracting accounts")) {
+    return "Extracting accounts";
+  }
+  if (value.startsWith("Found ")) {
+    return "Accounts enumerated";
+  }
+  if (value.startsWith("Export wait:")) {
+    return "Export wait";
+  }
+  if (value.startsWith("Export complete:")) {
+    return "Export complete";
+  }
+  if (value.startsWith("Export diagnostic:")) {
+    return "Export diagnostic";
+  }
+  if (value.startsWith("Retrying export")) {
+    return "Retrying export";
+  }
+  if (value.startsWith("Session died")) {
+    return "Session recovery";
+  }
+  if (value.startsWith("Hydrated ")) {
+    return "Statements hydration";
+  }
+  if (value.startsWith("Parsed ")) {
+    return "Statement parsing";
+  }
+  return "USAA progress";
+}
+
+function addSafeUsaaClassification(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
+  if (typeof raw.outcome === "string" && SAFE_USAA_OUTCOMES.has(raw.outcome)) {
+    safe.outcome = raw.outcome;
+  }
+  if (typeof raw.terminal_failure === "string" && SAFE_USAA_TERMINAL_FAILURES.has(raw.terminal_failure)) {
+    safe.terminal_failure = raw.terminal_failure;
+  }
+  if (
+    raw.account_page_identity === "exact" ||
+    raw.account_page_identity === "mismatch" ||
+    raw.account_page_identity === "unverified"
+  ) {
+    safe.account_page_identity = raw.account_page_identity;
+  }
+}
+
+function addSafeUsaaSurfaceEvidence(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
+  const browserSurface = sanitizeBrowserSurfaceDiagnostic(raw.browser_surface as BrowserSurfaceDiagnostic | undefined);
+  if (browserSurface) {
+    safe.browser_surface = browserSurface;
+  }
+  const surfaceManifest = raw.surface_manifest as BrowserSurfaceCandidateManifest | undefined;
+  if (surfaceManifest) {
+    safe.surface_manifest = buildBrowserSurfaceCandidateManifest({
+      captureState: surfaceManifest.capture_state,
+      candidateCount: surfaceManifest.candidate_count,
+      candidates: surfaceManifest.candidates,
+      controlCount: surfaceManifest.control_count,
+      controls: surfaceManifest.controls,
+      phase: surfaceManifest.phase,
+    });
+  }
+  const observation = sanitizeNoExportObservation(
+    raw.no_export_observation as NoExportAffordanceObservation | undefined
+  );
+  if (observation) {
+    safe.no_export_observation = observation;
+  }
+  if (Array.isArray(raw.export_affordance_candidates)) {
+    safe.export_affordance_candidates = raw.export_affordance_candidates
+      .slice(0, 8)
+      .map((candidate) =>
+        sanitizeExportAffordanceCandidate(
+          candidate as NoExportAffordanceObservation["export_affordance_candidates"][number]
+        )
+      );
+  }
+}
+
+function addSafeUsaaArtifactEvidence(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
+  const artifact = sanitizeArtifactDiagnostics((raw.artifact as BodyResponseDiagnostics | null | undefined) ?? null);
+  if (artifact) {
+    safe.artifact = artifact;
+  }
+  const download = sanitizeDownloadDiagnostics((raw.download as DownloadDiagnostics | null | undefined) ?? null);
+  if (download) {
+    safe.download = download;
+  }
+}
+
+function addSafeUsaaPhaseAndCounts(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
+  const phase = safeDiagnosticPhase(raw.phase);
+  if (phase !== "unknown") {
+    safe.phase = phase;
+  }
+  if (Object.hasOwn(raw, "diag")) {
+    safe.page = raw.diag !== null && typeof raw.diag === "object" ? "captured" : "unavailable";
+  }
+  for (const key of ["account_ordinal", "account_total", "data_rows"]) {
+    if (Object.hasOwn(raw, key)) {
+      safe[key] = boundedDiagnosticCount(raw[key]);
+    }
+  }
+}
+
+function sanitizeUsaaDiagnosticPayload(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { diagnostic: "sanitized" };
+  }
+  const raw = value as Record<string, unknown>;
+  const safe: Record<string, unknown> = {};
+  addSafeUsaaClassification(safe, raw);
+  addSafeUsaaSurfaceEvidence(safe, raw);
+  addSafeUsaaArtifactEvidence(safe, raw);
+  addSafeUsaaPhaseAndCounts(safe, raw);
+  return Object.keys(safe).length > 0 ? safe : { diagnostic: "sanitized" };
+}
+
+function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown> | undefined): string {
+  switch (reason) {
+    case "export_affordance_disabled":
+      return "USAA transaction export affordance was found but remained disabled after the bounded actionability wait";
+    case "export_affordance_missing":
+      return "USAA transaction export affordance was not found on the confirmed account page";
+    case "credit_card_export_unverified":
+      return "USAA credit-card export flow remains live-unverified";
+    case "export_no_download":
+      if (diagnostics?.phase === "export_artifact_wait_failed") {
+        const artifact = diagnostics.artifact as { candidates?: unknown[] } | undefined;
+        const download = diagnostics.download as { bytes?: number | null; source?: string | null } | undefined;
+        const artifactCount = Array.isArray(artifact?.candidates) ? artifact.candidates.length : 0;
+        const downloadPart = download
+          ? `; download bytes=${download.bytes ?? 0}, source=${download.source ?? "unknown"}`
+          : "";
+        return `USAA export_artifact_wait_failed (export_pressure): page=${diagnostics.page ?? "unavailable"}; artifact candidates=${artifactCount}${downloadPart}`;
+      }
+      if (diagnostics?.outcome === "export_pressure") {
+        return "USAA export pressure (export_pressure): the submitted export produced no durable artifact";
+      }
+      if (diagnostics?.outcome === "unknown") {
+        return "USAA export outcome unknown (outcome unknown) after the bounded ladder";
+      }
+      return "USAA export did not produce a downloadable artifact";
+    case "export_error":
+      return "USAA export attempt failed with a bounded diagnostic class";
+    case "selectors_pending":
+      return "USAA selector wiring is pending for this stream";
+    default:
+      return `USAA diagnostic: ${reason}`;
+  }
+}
+
+function sanitizeUsaaEmission(message: EmittedMessage): EmittedMessage {
+  if (message.type === "PROGRESS") {
+    const safe: Extract<EmittedMessage, { type: "PROGRESS" }> = {
+      type: "PROGRESS",
+      message: safeUsaaProgressMessage(message.message),
+    };
+    if (message.count !== undefined) {
+      safe.count = boundedDiagnosticCount(message.count);
+    }
+    if (message.stream !== undefined) {
+      safe.stream = safeUsaaStream(message.stream);
+    }
+    if (message.total !== undefined) {
+      safe.total = boundedDiagnosticCount(message.total);
+    }
+    return safe;
+  }
+  if (message.type === "SKIP_RESULT") {
+    const reason = safeUsaaReason(message.reason);
+    const diagnostics =
+      message.diagnostics === undefined ? undefined : sanitizeUsaaDiagnosticPayload(message.diagnostics);
+    const safe: Extract<EmittedMessage, { type: "SKIP_RESULT" }> = {
+      type: "SKIP_RESULT",
+      message: safeUsaaSkipMessage(reason, diagnostics),
+      reason,
+      stream: safeUsaaStream(message.stream),
+    };
+    if (diagnostics !== undefined) {
+      safe.diagnostics = diagnostics;
+    }
+    if (typeof message.recovery_hint === "object" && message.recovery_hint?.action === "capture_live_surface") {
+      safe.recovery_hint = { action: "capture_live_surface", retryable: message.recovery_hint.retryable === true };
+    }
+    return safe;
+  }
+  return message;
+}
+
+function emitUsaa(deps: EmitDeps, message: EmittedMessage): Promise<void> {
+  return deps.emit(sanitizeUsaaEmission(message));
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -349,7 +590,7 @@ export async function emitAccountsStream(
       considered: accounts.length,
       covered: statsCovered,
     });
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "STATE",
       stream: "account_stats",
       cursor: { observed_on: observedOn, fetched_at: nowIso() },
@@ -359,7 +600,7 @@ export async function emitAccountsStream(
     return;
   }
   if (!fingerprintCursor) {
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "STATE",
       stream: "accounts",
       cursor: { fetched_at: nowIso() },
@@ -394,7 +635,7 @@ export async function emitAccountsStream(
   if (fingerprintCursor.size() > 0) {
     cursor.fingerprints = fingerprintCursor.toState();
   }
-  await deps.emit({
+  await emitUsaa(deps, {
     type: "STATE",
     stream: "accounts",
     cursor,
@@ -464,7 +705,7 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
         reason: "selectors_pending",
         message: `${s} stream scaffolded in design-notes; click-chain or SPA-component wiring deferred.`,
       };
-      await emit(msg);
+      await emit(sanitizeUsaaEmission(msg));
     }
   }
 }
@@ -609,14 +850,15 @@ export async function emitExportFailure(
   const effectiveTerminalFailure =
     terminalFailure && terminalFailure === verifiedTerminalFailure ? terminalFailure : verifiedTerminalFailure;
   const outcome = classifyExportLadderOutcome(lastDiag);
-  const reason = exportFailureReason(a, lastDiag, outcome, effectiveTerminalFailure);
-  await deps.emit({
+  const safeLastDiag = lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null;
+  const reason = exportFailureReason(a, safeLastDiag, outcome, effectiveTerminalFailure);
+  await emitUsaa(deps, {
     type: "SKIP_RESULT",
     stream: "transactions",
     reason,
-    message: exportFailureMessage(a, lastDiag, outcome, effectiveTerminalFailure),
+    message: exportFailureMessage(a, safeLastDiag, outcome, effectiveTerminalFailure),
     ...(effectiveTerminalFailure ? { recovery_hint: { action: "capture_live_surface", retryable: false } } : {}),
-    diagnostics: exportFailureDiagnostics(deps, lastDiag, outcome, effectiveTerminalFailure),
+    diagnostics: exportFailureDiagnostics(deps, safeLastDiag, outcome, effectiveTerminalFailure),
   });
 }
 
@@ -681,14 +923,14 @@ function exportFailureDiagnostics(
   terminalFailure: TerminalExportFailure | null
 ): Record<string, unknown> {
   const isNoExportAffordance = lastDiag?.phase === "no_export_affordance";
+  const safeLastDiag = lastDiag ? sanitizeDiagnosticInfo(lastDiag) : null;
   const terminal = terminalFailure ? { terminal_failure: terminalFailure } : {};
   if (isNoExportAffordance) {
-    const browserSurface = noExportAffordanceDiagnostic(lastDiag, deps.browserSurface ?? "unknown");
-    const candidates = sanitizeExportAffordanceCandidates(
-      lastDiag?.no_export_observation?.export_affordance_candidates
-    );
-    const surfaceManifest = lastDiag?.no_export_observation?.surface_manifest;
-    const accountPageIdentity = lastDiag ? diagnosticAccountPageIdentity(lastDiag) : null;
+    const observation = safeLastDiag?.no_export_observation;
+    const browserSurface = noExportAffordanceDiagnostic(safeLastDiag, deps.browserSurface ?? "unknown");
+    const candidates = observation?.export_affordance_candidates ?? [];
+    const surfaceManifest = observation?.surface_manifest;
+    const accountPageIdentity = safeLastDiag ? diagnosticAccountPageIdentity(safeLastDiag) : null;
     return {
       ...terminal,
       ...(accountPageIdentity ? { account_page_identity: accountPageIdentity } : {}),
@@ -700,74 +942,281 @@ function exportFailureDiagnostics(
   return {
     outcome,
     ...terminal,
-    ...(lastDiag ? sanitizeDiagnosticInfo(lastDiag) : {}),
+    ...(safeLastDiag ?? {}),
   };
+}
+
+const SAFE_DIAGNOSTIC_PHASES = new Set([
+  "export_artifact_wait_failed",
+  "export_click_failed",
+  "export_dialog_error",
+  "export_dialog_unexpected_shape",
+  "no_export_affordance",
+]);
+const SAFE_DIAGNOSTIC_TAGS = new Set(["a", "button", "input", "option", "select", "textarea"]);
+const SAFE_DOWNLOAD_SOURCES = new Set(["createReadStream", "dataUrl", "saveAs"]);
+
+function boundedDiagnosticCount(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 1_000_000) : 0;
+}
+
+function safeDiagnosticPhase(value: unknown): string {
+  return typeof value === "string" && SAFE_DIAGNOSTIC_PHASES.has(value) ? value : "unknown";
+}
+
+function safeDiagnosticErrorClass(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) {
+    return;
+  }
+  const lower = value.toLowerCase();
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return "timeout";
+  }
+  if (lower.includes("download") || lower.includes("stream") || lower.includes("saveas")) {
+    return "download";
+  }
+  if (lower.includes("dialog")) {
+    return "dialog";
+  }
+  if (lower.includes("capture")) {
+    return "capture";
+  }
+  if (lower.includes("network") || lower.includes("econn") || lower.includes("http")) {
+    return "network";
+  }
+  return "unknown";
+}
+
+function safeDiagnosticTag(value: unknown): string {
+  if (typeof value !== "string") {
+    return "unknown";
+  }
+  const tag = value.trim().toLowerCase();
+  return SAFE_DIAGNOSTIC_TAGS.has(tag) ? tag : "unknown";
+}
+
+function sanitizePageDiagnostics(diag: PageDiagnostics | null): PageDiagnostics | null {
+  if (!diag) {
+    return null;
+  }
+  const sanitizeCandidate = (candidate: DiagnosticCandidate): DiagnosticCandidate => ({
+    cls: "",
+    id: null,
+    tag: safeDiagnosticTag(candidate.tag),
+    text: "",
+  });
+  return {
+    dialog_html_preview: null,
+    dialogs_open: boundedDiagnosticCount(diag.dialogs_open),
+    export_candidates: Array.isArray(diag.export_candidates)
+      ? diag.export_candidates.slice(0, 8).map(sanitizeCandidate)
+      : [],
+    has_utility_bar: diag.has_utility_bar === true,
+    nav_candidates: Array.isArray(diag.nav_candidates) ? diag.nav_candidates.slice(0, 8).map(sanitizeCandidate) : [],
+    title: "",
+    url: "",
+  };
+}
+
+function sanitizeArtifactDiagnostics(artifact: BodyResponseDiagnostics | null): BodyResponseDiagnostics | null {
+  if (!artifact) {
+    return null;
+  }
+  const candidates = Array.isArray(artifact.candidates) ? artifact.candidates.slice(0, 20) : [];
+  return {
+    candidates: candidates.map((candidate) => {
+      const metadata = sanitizeArtifactResponseMetadata({
+        bytes: candidate.bodyBytes,
+        contentDisposition: candidate.contentDisposition,
+        contentType: candidate.contentType,
+        csvHeader: candidate.csvHeader,
+        method: candidate.method,
+        pdfMagic: candidate.pdfMagic,
+        status: candidate.status,
+        url: candidate.url,
+      });
+      return {
+        ...(metadata.byte_count === null ? {} : { bodyBytes: metadata.byte_count }),
+        contentDisposition: metadata.content_disposition ?? "",
+        contentType: metadata.content_type ?? "",
+        csvHeader: metadata.csv_header,
+        method: metadata.method ?? "",
+        pdfMagic: metadata.pdf_magic,
+        reason:
+          candidate.reason === "body_error" || candidate.reason === "matched" ? candidate.reason : "not_expected_body",
+        source: candidate.source === "cdp" ? "cdp" : "playwright",
+        status: metadata.status ?? 0,
+        url: "",
+      };
+    }),
+    cdpError: null,
+    cdpReady: artifact.cdpReady === true,
+    totalCdpRequestsStarted: boundedDiagnosticCount(artifact.totalCdpRequestsStarted),
+    totalCdpResponsesSeen: boundedDiagnosticCount(artifact.totalCdpResponsesSeen),
+    totalResponsesSeen: boundedDiagnosticCount(artifact.totalResponsesSeen),
+  };
+}
+
+function sanitizeDownloadDiagnostics(download: DownloadDiagnostics | null): DownloadDiagnostics | null {
+  if (!download) {
+    return null;
+  }
+  const source: "createReadStream" | "dataUrl" | "saveAs" | null =
+    typeof download.source === "string" && SAFE_DOWNLOAD_SOURCES.has(download.source)
+      ? (download.source as "createReadStream" | "dataUrl" | "saveAs")
+      : null;
+  return {
+    bytes: download.bytes === null || download.bytes === undefined ? null : boundedDiagnosticCount(download.bytes),
+    source,
+    suggestedFilename: null,
+    url: null,
+  };
+}
+
+function sanitizeExportAffordanceCandidate(
+  candidate: NoExportAffordanceObservation["export_affordance_candidates"][number]
+): NoExportAffordanceObservation["export_affordance_candidates"][number] {
+  const [surfaceCandidate] = buildBrowserSurfaceCandidateManifest({
+    candidates: [
+      {
+        aria_disabled: candidate.aria_disabled,
+        class_tokens: candidate.cls,
+        disabled: candidate.disabled,
+        kind: "export",
+        role: candidate.role,
+        tag: candidate.tag,
+        text: candidate.text,
+        type: candidate.type,
+        visible: candidate.visible,
+      },
+    ],
+    phase: "after_export_affordance_probe",
+  }).candidates;
+  return {
+    aria_disabled: candidate.aria_disabled === true,
+    cls: surfaceCandidate?.class_tokens.join(" ") ?? "",
+    disabled: candidate.disabled === true,
+    id: null,
+    role: surfaceCandidate?.role ?? null,
+    tag: surfaceCandidate?.tag ?? "unknown",
+    text: "",
+    type: surfaceCandidate?.type ?? null,
+    visible: candidate.visible === true,
+  };
+}
+
+function sanitizeNoExportObservation(
+  observation: NoExportAffordanceObservation | undefined
+): NoExportAffordanceObservation | undefined {
+  if (!observation) {
+    return;
+  }
+  const surfaceManifest = observation.surface_manifest
+    ? buildBrowserSurfaceCandidateManifest({
+        captureState: observation.surface_manifest.capture_state,
+        candidateCount: observation.surface_manifest.candidate_count,
+        candidates: observation.surface_manifest.candidates,
+        controlCount: observation.surface_manifest.control_count,
+        controls: observation.surface_manifest.controls,
+        phase: observation.surface_manifest.phase,
+      })
+    : undefined;
+  return {
+    account_detail_marker_count: boundedDiagnosticCount(observation.account_detail_marker_count),
+    ...(observation.account_page_identity === "exact" ||
+    observation.account_page_identity === "mismatch" ||
+    observation.account_page_identity === "unverified"
+      ? { account_page_identity: observation.account_page_identity }
+      : {}),
+    affordance_disabled: observation.affordance_disabled === true,
+    export_affordance_candidates: Array.isArray(observation.export_affordance_candidates)
+      ? observation.export_affordance_candidates.slice(0, 8).map(sanitizeExportAffordanceCandidate)
+      : [],
+    navigation_marker_count: boundedDiagnosticCount(observation.navigation_marker_count),
+    route:
+      observation.route === "expected" || observation.route === "interstitial" || observation.route === "unknown"
+        ? observation.route
+        : "unknown",
+    ...(surfaceManifest ? { surface_manifest: surfaceManifest } : {}),
+    target_count: boundedDiagnosticCount(observation.target_count),
+    transaction_marker_count: boundedDiagnosticCount(observation.transaction_marker_count),
+  };
+}
+
+function sanitizeBrowserSurfaceDiagnostic(
+  diag: BrowserSurfaceDiagnostic | undefined
+): BrowserSurfaceDiagnostic | undefined {
+  if (!diag) {
+    return;
+  }
+  return (
+    buildBrowserSurfaceDiagnostic({
+      accountDetailMarkerCount: diag.account_detail_marker_count,
+      activityTableMarkerCount: diag.activity_table_marker_count,
+      dashboardMarkerCount: diag.dashboard_marker_count,
+      kind: diag.surface,
+      managedSurface: diag.managed_surface,
+      navigationMarkerCount: diag.navigation_marker_count,
+      parserCount: diag.parser_count,
+      readCount: diag.read_count,
+      route: diag.route,
+      targetCount: diag.target_count,
+      transactionMarkerCount: diag.transaction_marker_count,
+      verifiedEmptyMarkerCount: diag.verified_empty_marker_count,
+      waitOutcome: diag.wait_outcome,
+    }) ?? undefined
+  );
 }
 
 function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
   const sanitized: DiagnosticInfo = {
-    ...diag,
-    diag: diag.diag
-      ? {
-          ...diag.diag,
-          dialog_html_preview: null,
-          export_candidates: diag.diag.export_candidates.map((candidate) => ({
-            ...candidate,
-            id: null,
-            text: "",
-          })),
-          nav_candidates: diag.diag.nav_candidates.map((candidate) => ({
-            ...candidate,
-            id: null,
-            text: "",
-          })),
-          title: "",
-          url: "",
-        }
-      : diag.diag,
+    diag: sanitizePageDiagnostics(diag.diag),
+    phase: safeDiagnosticPhase(diag.phase),
   };
-  if (diag.artifact !== undefined) {
-    sanitized.artifact = diag.artifact
-      ? {
-          ...diag.artifact,
-          candidates: diag.artifact.candidates.map((candidate) => ({
-            ...candidate,
-            contentDisposition: "",
-            url: "",
-          })),
-        }
-      : diag.artifact;
+  const accountPageIdentity =
+    diag.account_page_identity === "exact" ||
+    diag.account_page_identity === "mismatch" ||
+    diag.account_page_identity === "unverified"
+      ? diag.account_page_identity
+      : undefined;
+  if (accountPageIdentity) {
+    sanitized.account_page_identity = accountPageIdentity;
   }
-  if (diag.download !== undefined) {
-    sanitized.download = diag.download
-      ? {
-          ...diag.download,
-          suggestedFilename: null,
-          url: null,
-        }
-      : diag.download;
+  const artifact = diag.artifact === undefined ? undefined : sanitizeArtifactDiagnostics(diag.artifact);
+  if (artifact !== undefined) {
+    sanitized.artifact = artifact;
+  }
+  const browserSurface = sanitizeBrowserSurfaceDiagnostic(diag.browser_surface);
+  if (browserSurface) {
+    sanitized.browser_surface = browserSurface;
+  }
+  const download = diag.download === undefined ? undefined : sanitizeDownloadDiagnostics(diag.download);
+  if (download !== undefined) {
+    sanitized.download = download;
+  }
+  const errorClass = safeDiagnosticErrorClass(diag.error);
+  if (errorClass) {
+    sanitized.error = errorClass;
+  }
+  const noExportObservation = sanitizeNoExportObservation(diag.no_export_observation);
+  if (noExportObservation) {
+    sanitized.no_export_observation = noExportObservation;
+  }
+  if (diag.surface_manifest) {
+    sanitized.surface_manifest = buildBrowserSurfaceCandidateManifest({
+      captureState: diag.surface_manifest.capture_state,
+      candidateCount: diag.surface_manifest.candidate_count,
+      candidates: diag.surface_manifest.candidates,
+      controlCount: diag.surface_manifest.control_count,
+      controls: diag.surface_manifest.controls,
+      phase: diag.surface_manifest.phase,
+    });
   }
   return sanitized;
 }
 
-/**
- * Redact export-affordance candidates the same way `sanitizeDiagnosticInfo`
- * redacts `export_candidates`/`nav_candidates` — `id` and free-text `text`
- * never reach durable storage, but the bounded actionability facts
- * (tag/role/type/disabled/aria_disabled/visible) survive, since those are
- * the evidence a no-affordance diagnostic exists to carry.
- */
-function sanitizeExportAffordanceCandidates(
-  candidates: NoExportAffordanceObservation["export_affordance_candidates"] | undefined
-): NoExportAffordanceObservation["export_affordance_candidates"] {
-  if (!candidates) {
-    return [];
-  }
-  return candidates.map((candidate) => ({
-    ...candidate,
-    id: null,
-    text: "",
-  }));
+function emitDiagnostic(onDiagnostics: NonNullable<DriveExportOptions["onDiagnostics"]>, info: DiagnosticInfo): void {
+  onDiagnostics(sanitizeDiagnosticInfo(info));
 }
 
 function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
@@ -952,7 +1401,7 @@ export async function emitStatementRecords(
     count: summary.successes,
     total: summary.attempts || indexRows.length,
   } as const;
-  await deps.emit(progressMsg);
+  await emitUsaa(deps, progressMsg);
   const cursor: Record<string, unknown> = { fetched_at: nowIso() };
   if (fingerprintCursor && fingerprintCursor.size() > 0) {
     cursor.fingerprints = fingerprintCursor.toState();
@@ -960,7 +1409,7 @@ export async function emitStatementRecords(
   if (hydrationCursor && hydrationCursor.size() > 0) {
     cursor.hydration = hydrationCursor.toState();
   }
-  await deps.emit({
+  await emitUsaa(deps, {
     type: "STATE",
     stream: "statements",
     cursor,
@@ -992,7 +1441,7 @@ export async function emitStatementCoverage(
 ): Promise<void> {
   const result = computeStatementCoverage(coverageRows);
   for (const gap of result.gaps) {
-    await deps.emit(gap);
+    await emitUsaa(deps, gap);
   }
   await emitDetailCoverage(deps, result.coverage);
 }
@@ -1236,32 +1685,42 @@ async function captureNoExportAffordanceObservation(
   };
   const rawCounts = await page
     .evaluate(
-      ({ accountDetail, exportAffordance, navigation, transaction }) => {
+      ({ accountDetail, exportAffordance, maxElements, navigation, transaction }) => {
         // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
         const WS_RE = /\s+/g;
         // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-        const candidates = [...document.querySelectorAll<HTMLElement>(exportAffordance)].slice(0, 8).map((el) => ({
-          aria_disabled: el.getAttribute("aria-disabled") === "true",
-          cls: (el.className ? String(el.className) : "").slice(0, 80),
-          disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
-          id: el.id || null,
-          role: el.getAttribute("role"),
-          tag: el.tagName,
-          text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 50),
-          type: el.getAttribute("type"),
-          visible: el.offsetParent !== null,
-        }));
+        const candidateElements = document.querySelectorAll<HTMLElement>(exportAffordance);
+        const candidates: ExportAffordanceCandidate[] = [];
+        const candidateLimit = Math.min(candidateElements.length, 8);
+        for (let index = 0; index < candidateLimit; index += 1) {
+          const el = candidateElements[index];
+          if (!el) {
+            continue;
+          }
+          candidates.push({
+            aria_disabled: el.getAttribute("aria-disabled") === "true",
+            cls: (el.className ? String(el.className) : "").slice(0, 256),
+            disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
+            id: null,
+            role: el.getAttribute("role"),
+            tag: el.tagName,
+            text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 128),
+            type: el.getAttribute("type"),
+            visible: el.offsetParent !== null,
+          });
+        }
         return {
-          account_detail_marker_count: document.querySelectorAll(accountDetail).length,
+          account_detail_marker_count: Math.min(document.querySelectorAll(accountDetail).length, maxElements),
           export_affordance_candidates: candidates,
-          navigation_marker_count: document.querySelectorAll(navigation).length,
-          target_count: document.querySelectorAll(exportAffordance).length,
-          transaction_marker_count: document.querySelectorAll(transaction).length,
+          navigation_marker_count: Math.min(document.querySelectorAll(navigation).length, maxElements),
+          target_count: Math.min(candidateElements.length, maxElements),
+          transaction_marker_count: Math.min(document.querySelectorAll(transaction).length, maxElements),
         };
       },
       {
         accountDetail: USAA_ACCOUNT_DETAIL_MARKER_SELECTOR,
         exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR,
+        maxElements: MAX_SURFACE_DOM_ELEMENTS,
         navigation: USAA_NAVIGATION_MARKER_SELECTOR,
         transaction: USAA_TRANSACTION_MARKER_SELECTOR,
       }
@@ -1325,13 +1784,22 @@ function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
       // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
 
       const take = (sel: string, max = 8): DiagnosticCandidate[] => {
-        const els = [...document.querySelectorAll<HTMLElement>(sel)];
-        return els.slice(0, max).map((el) => ({
-          tag: el.tagName,
-          text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 50),
-          cls: (el.className ? String(el.className) : "").slice(0, 80),
-          id: el.id || null,
-        }));
+        const els = document.querySelectorAll<HTMLElement>(sel);
+        const out: DiagnosticCandidate[] = [];
+        const limit = Math.min(els.length, max);
+        for (let index = 0; index < limit; index += 1) {
+          const el = els[index];
+          if (!el) {
+            continue;
+          }
+          out.push({
+            tag: el.tagName,
+            text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 128),
+            cls: (el.className ? String(el.className) : "").slice(0, 256),
+            id: null,
+          });
+        }
+        return out;
       };
       return {
         url: location.href,
@@ -1347,150 +1815,84 @@ function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
 
 /**
  * Capture only bounded selector-state evidence from the current page. The
- * browser-side probe converts labels to fixed categories and drops identifiers,
- * hrefs, and text before the result crosses the Playwright boundary. The
- * shared manifest builder applies the same closed shape again in Node.
+ * browser-side probe returns only bounded raw fields needed for structural
+ * evidence; the shared Node manifest builder is the sole policy boundary and
+ * drops sensitive values before durable emission.
  */
 async function captureSafeSurfaceManifest(
   page: Page,
   capture: DriveExportOptions["capture"],
-  phase: BrowserSurfaceCapturePhase,
-  labelSuffix?: string
+  phase: BrowserSurfaceCapturePhase
 ): Promise<BrowserSurfaceCandidateManifest> {
   const raw = await page
     .evaluate(
-      ({ exportAffordance }) => {
-        // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context; module-scoped regexes cannot cross the Playwright bridge.
-        const SAFE_TOKEN_RE = /^[A-Za-z][A-Za-z_-]{0,47}$/u;
-        // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context; module-scoped regexes cannot cross the Playwright bridge.
-
-        const safeToken = (value: string | null): string | null => {
-          if (!value) {
-            return null;
-          }
-          const token = value.trim();
-          return SAFE_TOKEN_RE.test(token) ? token.toLowerCase() : null;
-        };
-        const safeName = (value: string | null): string | null => {
-          if (!value) {
-            return null;
-          }
-          const name = value.trim();
-          return SAFE_TOKEN_RE.test(name) ? name : null;
-        };
-        const classTokens = (element: HTMLElement): string[] => {
-          const out: string[] = [];
-          for (const rawToken of [...element.classList].slice(0, 12)) {
-            const token = safeToken(rawToken);
-            if (token && !out.includes(token)) {
-              out.push(token);
-            }
-            if (out.length >= 8) {
-              break;
-            }
-          }
-          return out;
-        };
-        const textCategory = (value: string | null): string => {
-          const text = value?.trim().toLowerCase() ?? "";
-          if (!text) {
-            return "empty";
-          }
-          if (text.includes("export")) {
-            return "export";
-          }
-          if (text.includes("download")) {
-            return "download";
-          }
-          if (text.includes("option") || text.includes("more")) {
-            return "options";
-          }
-          if (text.includes("csv")) {
-            return "csv";
-          }
-          if (text.includes("pdf")) {
-            return "pdf";
-          }
-          return "other";
-        };
+      ({ exportAffordance, maxElements }) => {
         const visible = (element: HTMLElement): boolean => {
           const style = window.getComputedStyle(element);
           return element.getClientRects().length > 0 && style.display !== "none" && style.visibility !== "hidden";
         };
         const controlText = (element: HTMLElement): string | null =>
-          element.getAttribute("aria-label") ?? element.getAttribute("title") ?? element.textContent;
-        const candidateElements = [
-          ...document.querySelectorAll<HTMLElement>(
-            'button, [role="button"], a, input[type="button"], input[type="submit"], [role="menuitem"]'
-          ),
-        ];
-        const candidates = candidateElements
-          .map((element) => {
-            const category = textCategory(controlText(element));
-            const classTokensValue = classTokens(element);
-            const classHint = classTokensValue.some(
-              (token) =>
-                token.includes("export") ||
-                token.includes("download") ||
-                token.includes("csv") ||
-                token.includes("pdf") ||
-                token.includes("option")
-            );
-            const href = element.getAttribute("href")?.toLowerCase() ?? "";
-            const hrefPath = href.split("?")[0]?.split("#")[0] ?? "";
-            const isExport =
-              element.matches(exportAffordance) ||
-              category === "export" ||
-              classTokensValue.some((token) => token.includes("export"));
-            const isDownload =
-              category === "download" ||
-              category === "csv" ||
-              category === "pdf" ||
-              category === "options" ||
-              classHint ||
-              element.hasAttribute("download") ||
-              hrefPath.endsWith(".csv") ||
-              hrefPath.endsWith(".pdf");
-            if (!(isExport || isDownload)) {
-              return null;
-            }
-            return {
-              aria_disabled: element.getAttribute("aria-disabled") === "true",
-              class_tokens: classTokensValue,
-              disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
-              kind: isExport ? "export" : "download",
-              role: safeToken(element.getAttribute("role")),
-              tag: safeToken(element.tagName),
-              text_category: category,
-              type: safeToken(element.getAttribute("type")),
-              visible: visible(element),
-            };
-          })
-          .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
-        const dialogElements = [
-          ...document.querySelectorAll<HTMLElement>(
-            '[role="dialog"] button, [role="dialog"] [role="button"], [role="dialog"] input, [role="dialog"] select, [role="dialog"] [role="menuitem"], [role="dialog"] a'
-          ),
-        ];
-        const controls = dialogElements.map((element) => ({
-          aria_disabled: element.getAttribute("aria-disabled") === "true",
-          class_tokens: classTokens(element),
-          disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
-          name: safeName(element.getAttribute("name") ?? element.getAttribute("aria-label")),
-          role: safeToken(element.getAttribute("role")),
-          tag: safeToken(element.tagName),
-          text_category: textCategory(controlText(element)),
-          type: safeToken(element.getAttribute("type")),
-          visible: visible(element),
-        }));
+          (element.getAttribute("aria-label") ?? element.getAttribute("title") ?? element.textContent ?? "").slice(
+            0,
+            256
+          );
+        const classValue = (element: HTMLElement): string =>
+          (element.className ? String(element.className) : "").slice(0, 256);
+        const candidateElements = document.querySelectorAll<HTMLElement>(
+          'button, [role="button"], a, input[type="button"], input[type="submit"], [role="menuitem"]'
+        );
+        const candidates: Record<string, unknown>[] = [];
+        const candidateLimit = Math.min(candidateElements.length, maxElements);
+        for (let index = 0; index < candidateLimit; index += 1) {
+          const element = candidateElements[index];
+          if (!element) {
+            continue;
+          }
+          const href = element.getAttribute("href")?.toLowerCase() ?? "";
+          const hrefPath = href.split("?", 1)[0]?.split("#", 1)[0] ?? "";
+          candidates.push({
+            aria_disabled: element.getAttribute("aria-disabled") === "true",
+            class_tokens: classValue(element),
+            disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
+            download_hint: element.hasAttribute("download") || hrefPath.endsWith(".csv") || hrefPath.endsWith(".pdf"),
+            export_hint: element.matches(exportAffordance),
+            role: element.getAttribute("role"),
+            tag: element.tagName,
+            text: controlText(element),
+            type: element.getAttribute("type"),
+            visible: visible(element),
+          });
+        }
+        const dialogElements = document.querySelectorAll<HTMLElement>(
+          '[role="dialog"] button, [role="dialog"] [role="button"], [role="dialog"] input, [role="dialog"] select, [role="dialog"] [role="menuitem"], [role="dialog"] a'
+        );
+        const controls: Record<string, unknown>[] = [];
+        const controlLimit = Math.min(dialogElements.length, maxElements);
+        for (let index = 0; index < controlLimit; index += 1) {
+          const element = dialogElements[index];
+          if (!element) {
+            continue;
+          }
+          controls.push({
+            aria_disabled: element.getAttribute("aria-disabled") === "true",
+            class_tokens: classValue(element),
+            disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
+            name: (element.getAttribute("name") ?? element.getAttribute("aria-label") ?? "").slice(0, 128),
+            role: element.getAttribute("role"),
+            tag: element.tagName,
+            text: controlText(element),
+            type: element.getAttribute("type"),
+            visible: visible(element),
+          });
+        }
         return {
-          candidateCount: candidates.length,
-          candidates: candidates.slice(0, 32),
-          controlCount: controls.length,
-          controls: controls.slice(0, 24),
+          candidateCount: Math.min(candidateElements.length, maxElements),
+          candidates,
+          controlCount: Math.min(dialogElements.length, maxElements),
+          controls,
         };
       },
-      { exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR }
+      { exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR, maxElements: MAX_SURFACE_DOM_ELEMENTS }
     )
     .catch((): null => null);
   const manifest = buildBrowserSurfaceCandidateManifest({
@@ -1503,7 +1905,7 @@ async function captureSafeSurfaceManifest(
   });
   if (capture) {
     try {
-      capture.captureHttp(`usaa-surface-${phase}${labelSuffix ? `-${labelSuffix}` : ""}`, manifest);
+      capture.captureSafe({ kind: "surface_manifest", payload: manifest });
     } catch {
       // Capture is best-effort and must never change connector behavior.
     }
@@ -1561,170 +1963,11 @@ async function emitExportClickFailedDiagnostic(
   }
   const diag = await capturePageDiagnostics(page);
   const msg = err instanceof Error ? err.message : String(err);
-  onDiagnostics({
+  emitDiagnostic(onDiagnostics, {
     phase: "export_click_failed",
     diag,
     error: msg.slice(0, CLICK_ERROR_SNIP),
   });
-}
-
-/** Write one bounded structural receipt for an unexpected dialog shape. */
-const DEFAULT_FALLBACK_DIAGNOSTIC_ROOT = join(new URL("../../fixtures", import.meta.url).pathname);
-
-/** Read at call time (not module load) so PDPP_CAPTURE_ROOT_DIR set after
- *  import is honored, matching how createCaptureSession reads the same env
- *  var in fixture-capture.ts. `override` lets a test supply an explicit
- *  root instead of mutating global process.env — this file's tests run as
- *  concurrent top-level test() calls by default, so a shared env mutation
- *  would race with unrelated tests in the same process. */
-function fallbackDiagnosticRoot(override: string | undefined): string {
-  return override ?? process.env.PDPP_CAPTURE_ROOT_DIR?.trim() ?? DEFAULT_FALLBACK_DIAGNOSTIC_ROOT;
-}
-
-function serializeFallbackPayload(phase: string, payload: Record<string, unknown>): string {
-  const minimal = JSON.stringify({ phase, truncated: true });
-  try {
-    const serialized = JSON.stringify(payload, null, 2);
-    if (serialized && Buffer.byteLength(serialized, "utf8") <= USAA_FALLBACK_SERIALIZED_BYTES_MAX) {
-      return serialized;
-    }
-  } catch {
-    // Fall through to the minimal valid receipt.
-  }
-  return minimal;
-}
-
-function redactFallbackObservation(observation: NoExportAffordanceObservation): NoExportAffordanceObservation {
-  return {
-    account_detail_marker_count: observation.account_detail_marker_count,
-    ...(observation.account_page_identity ? { account_page_identity: observation.account_page_identity } : {}),
-    affordance_disabled: observation.affordance_disabled,
-    export_affordance_candidates: observation.export_affordance_candidates.map((candidate) => ({
-      aria_disabled: candidate.aria_disabled,
-      cls: "",
-      disabled: candidate.disabled,
-      id: null,
-      role: null,
-      tag: "",
-      text: "",
-      type: null,
-      visible: candidate.visible,
-    })),
-    navigation_marker_count: observation.navigation_marker_count,
-    route: observation.route,
-    ...(observation.surface_manifest ? { surface_manifest: observation.surface_manifest } : {}),
-    target_count: observation.target_count,
-    transaction_marker_count: observation.transaction_marker_count,
-  };
-}
-
-function redactFallbackSurfaceControls(controls: BoundedSurfaceControl[]): BoundedSurfaceControl[] {
-  return controls.map((control) => ({
-    aria_disabled: control.aria_disabled,
-    class_name: "",
-    disabled: control.disabled,
-    href_path: null,
-    label: "",
-    role: null,
-    tag: "",
-    type: null,
-    visible: control.visible,
-  }));
-}
-
-async function writeExportDialogUnexpectedShapeFallback(
-  rootOverride: string | undefined,
-  surfaceManifest: BrowserSurfaceCandidateManifest
-): Promise<void> {
-  try {
-    const dir = join(fallbackDiagnosticRoot(rootOverride), "usaa", "diagnostics");
-    await mkdir(dir, { recursive: true });
-    await writeFile(
-      join(dir, "export-dialog-unexpected-shape.json"),
-      serializeFallbackPayload("export_dialog_unexpected_shape", {
-        captured_at: nowIso(),
-        dialog_html_preview: null,
-        page_title: null,
-        phase: "export_dialog_unexpected_shape",
-        surface_manifest: surfaceManifest,
-        note: "Redacted structural fallback; overwritten on every occurrence.",
-      })
-    );
-  } catch {
-    // Best-effort, matching every other capture call in this file: a
-    // filesystem error here must never fail the connector run.
-  }
-}
-
-interface BoundedSurfaceControl {
-  aria_disabled: boolean;
-  class_name: string;
-  disabled: boolean;
-  href_path: string | null;
-  label: string;
-  role: string | null;
-  tag: string;
-  type: string | null;
-  visible: boolean;
-}
-
-/** Capture only booleans for the legacy fallback field; useful selector facts
- * live in the shared safe surface manifest above. */
-async function captureBoundedSurfaceControls(page: Page): Promise<BoundedSurfaceControl[]> {
-  const controls = await page
-    .evaluate(() =>
-      [...document.querySelectorAll<HTMLElement>('button, [role="button"], a')].slice(0, 24).map((el) => ({
-        aria_disabled: el.getAttribute("aria-disabled") === "true",
-        disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
-        visible: el.getClientRects().length > 0,
-      }))
-    )
-    .catch((): BoundedSurfaceControl[] => []);
-  if (!Array.isArray(controls)) {
-    return [];
-  }
-  return controls.map((control) => ({
-    aria_disabled: control.aria_disabled === true,
-    class_name: "",
-    disabled: control.disabled === true,
-    href_path: null,
-    label: "",
-    role: null,
-    tag: "",
-    type: null,
-    visible: control.visible === true,
-  }));
-}
-
-/**
- * Persist one bounded, path-fixed structural receipt whenever the export
- * affordance is absent or disabled. It is separate from durable SKIP_RESULT
- * diagnostics, local, git-ignored, overwritten on every occurrence, strictly
- * redacted, and byte-capped; the next authenticated UAT run must inspect the
- * live surface directly rather than treating this receipt as selector proof.
- */
-async function writeNoExportAffordanceFallback(
-  page: Page,
-  observation: NoExportAffordanceObservation,
-  rootOverride: string | undefined
-): Promise<void> {
-  try {
-    const dir = join(fallbackDiagnosticRoot(rootOverride), "usaa", "diagnostics");
-    await mkdir(dir, { recursive: true });
-    await writeFile(
-      join(dir, "no-export-affordance.json"),
-      serializeFallbackPayload("no_export_affordance", {
-        captured_at: nowIso(),
-        observation: redactFallbackObservation(observation),
-        page_title: null,
-        phase: "no_export_affordance",
-        surface_controls: redactFallbackSurfaceControls(await captureBoundedSurfaceControls(page)),
-        note: "Redacted structural fallback; overwritten on every occurrence.",
-      })
-    );
-  } catch {
-    // A diagnostic fallback must never fail the collection run.
-  }
 }
 
 function emitDialogUnexpectedShapeDiagnostic(
@@ -1733,7 +1976,7 @@ function emitDialogUnexpectedShapeDiagnostic(
   accountPageIdentity: UsaaAccountPageIdentity,
   surfaceManifest: BrowserSurfaceCandidateManifest
 ): void {
-  onDiagnostics({
+  emitDiagnostic(onDiagnostics, {
     account_page_identity: accountPageIdentity,
     phase: "export_dialog_unexpected_shape",
     surface_manifest: surfaceManifest,
@@ -1788,7 +2031,6 @@ async function openExportDialog(
     .catch((): number => 0);
   const dialogManifest = await captureSafeSurfaceManifest(page, options.capture ?? null, "export_dialog");
   if (!selectCount) {
-    await writeExportDialogUnexpectedShapeFallback(options.fallbackDiagnosticRootOverride, dialogManifest);
     if (onDiagnostics) {
       const base = await capturePageDiagnostics(page);
       emitDialogUnexpectedShapeDiagnostic(
@@ -1829,12 +2071,12 @@ async function fillExportDateRange(page: Page, sinceDate: string, untilDate: str
 function captureExportCheckpoint(
   page: Page,
   options: DriveExportOptions,
-  suffix: string
+  _suffix: string
 ): Promise<BrowserSurfaceCandidateManifest | null> {
   if (!options.capture) {
     return Promise.resolve(null);
   }
-  return captureSafeSurfaceManifest(page, options.capture, "export_checkpoint", suffix);
+  return captureSafeSurfaceManifest(page, options.capture, "export_checkpoint");
 }
 
 type ExportSubmitOutcome =
@@ -2058,60 +2300,41 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
   }
 }
 
-function safeResponseCandidateMetadata(candidate: BodyResponseCandidateDiagnostic): SafeArtifactResponseMetadata {
-  return sanitizeArtifactResponseMetadata({
-    bytes: candidate.bodyBytes,
-    contentDisposition: candidate.contentDisposition,
-    contentType: candidate.contentType,
-    csvHeader: candidate.csvHeader,
-    method: candidate.method,
-    pdfMagic: candidate.pdfMagic,
-    status: candidate.status,
-    url: candidate.url,
-  });
-}
-
-/** Persist only closed response/download metadata; never the artifact body. */
+/** Send only bounded artifact evidence to the safe capture boundary. */
 function captureExportArtifactEvidence(capture: DriveExportOptions["capture"], outcome: ExportSubmitOutcome): void {
   if (!capture) {
     return;
   }
-  const responseCandidates = outcome.artifact.candidates.slice(0, 20).map(safeResponseCandidateMetadata);
   const matched = outcome.artifact.candidates.find((candidate) => candidate.reason === "matched");
-  const artifact =
-    outcome.kind === "artifact"
-      ? sanitizeArtifactResponseMetadata({
-          body: outcome.buffer,
-          contentDisposition: matched?.contentDisposition,
-          contentType: matched?.contentType,
-          csvHeader: matched?.csvHeader,
-          filename: outcome.suggestedFilename,
-          method: matched?.method,
-          pdfMagic: matched?.pdfMagic,
-          status: matched?.status,
-          url: matched?.url,
-        })
-      : null;
   const downloadOutcome = outcome.kind === "artifact" || outcome.kind === "artifact_failed" ? outcome.download : null;
-  const download = downloadOutcome
-    ? sanitizeArtifactResponseMetadata({
-        bytes: downloadOutcome.bytes,
-        filename: downloadOutcome.suggestedFilename,
-        url: downloadOutcome.url,
-      })
-    : null;
   try {
-    capture.captureHttp("usaa-export-artifact-metadata", {
-      artifact,
-      download,
-      phase: outcome.kind,
-      response_candidates: responseCandidates,
-      response_summary: {
-        candidate_count: outcome.artifact.candidates.length,
-        cdp_ready: outcome.artifact.cdpReady,
-        total_cdp_requests_started: outcome.artifact.totalCdpRequestsStarted,
-        total_cdp_responses_seen: outcome.artifact.totalCdpResponsesSeen,
-        total_responses_seen: outcome.artifact.totalResponsesSeen,
+    capture.captureSafe({
+      kind: "artifact_metadata",
+      payload: {
+        artifact:
+          outcome.kind === "artifact"
+            ? {
+                body: outcome.buffer,
+                contentDisposition: matched?.contentDisposition,
+                contentType: matched?.contentType,
+                csvHeader: matched?.csvHeader,
+                filename: outcome.suggestedFilename,
+                method: matched?.method,
+                pdfMagic: matched?.pdfMagic,
+                status: matched?.status,
+                url: matched?.url,
+              }
+            : null,
+        download: downloadOutcome,
+        phase: outcome.kind,
+        response_candidates: outcome.artifact.candidates.slice(0, 20),
+        response_summary: {
+          candidate_count: outcome.artifact.candidates.length,
+          cdp_ready: outcome.artifact.cdpReady,
+          total_cdp_requests_started: outcome.artifact.totalCdpRequestsStarted,
+          total_cdp_responses_seen: outcome.artifact.totalCdpResponsesSeen,
+          total_responses_seen: outcome.artifact.totalResponsesSeen,
+        },
       },
     });
   } catch {
@@ -2127,9 +2350,8 @@ async function emitNoExportAffordanceDiagnostic(
 ): Promise<void> {
   await captureExportCheckpoint(page, options, checkpointSuffix);
   const noExportObservation = await captureNoExportAffordanceObservation(page, requestedUrl, options.capture ?? null);
-  await writeNoExportAffordanceFallback(page, noExportObservation, options.fallbackDiagnosticRootOverride);
   if (options.onDiagnostics) {
-    options.onDiagnostics({
+    emitDiagnostic(options.onDiagnostics, {
       diag: null,
       no_export_observation: noExportObservation,
       phase: "no_export_affordance",
@@ -2172,7 +2394,7 @@ async function finishDialogExportOutcome(
     .click()
     .catch((): undefined => undefined);
   if (outcome.kind === "dialog_error" && options.onDiagnostics) {
-    options.onDiagnostics({
+    emitDiagnostic(options.onDiagnostics, {
       diag: dialogDiag,
       error: outcome.message,
       phase: "export_dialog_error",
@@ -2192,7 +2414,7 @@ async function finishFailedExportOutcome(
   const surfaceManifest = await captureExportCheckpoint(page, options, "artifact-failed");
   if (options.onDiagnostics) {
     const diag = await capturePageDiagnostics(page);
-    options.onDiagnostics({
+    emitDiagnostic(options.onDiagnostics, {
       artifact: outcome.artifact,
       diag,
       download: outcome.download,
@@ -2217,7 +2439,13 @@ async function finishExportOutcome(
   if (outcome.kind === "artifact_failed") {
     return finishFailedExportOutcome(page, options, tempDir, outcome);
   }
-  const suggested = (outcome.suggestedFilename || "usaa-export.csv").replace(UNSAFE_FILENAME_RE, "_");
+  let suggested: string;
+  try {
+    suggested = safeSuggestedFilename(outcome.suggestedFilename, "usaa-export.csv");
+  } catch (err) {
+    rmSync(tempDir, { recursive: true, force: true });
+    throw err;
+  }
   const targetPath = join(tempDir, suggested);
   await writeFile(targetPath, outcome.buffer);
   return { kind: "artifact", path: targetPath };
@@ -2272,7 +2500,7 @@ async function reauthAfterSessionLapse(
   _accountName: string | null,
   observation?: NoExportAffordanceObservation
 ): Promise<boolean> {
-  await deps.emit({
+  await emitUsaa(deps, {
     type: "PROGRESS",
     stream: "transactions",
     message: "Session lapsed during transactions; re-authenticating before retry",
@@ -2281,7 +2509,7 @@ async function reauthAfterSessionLapse(
     if (deps.reauthenticate) {
       await deps.reauthenticate({ context, page, sendInteraction });
     } else {
-      await ensureUsaaSession({ capture: deps.capture ?? null, context, page, sendInteraction });
+      await ensureUsaaSession({ capture: null, context, page, sendInteraction });
     }
     return true;
   } catch {
@@ -2291,7 +2519,7 @@ async function reauthAfterSessionLapse(
           deps.browserSurface ?? "unknown"
         )
       : null;
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "session_dead_reauth_failed",
@@ -2351,7 +2579,7 @@ export async function runSingleLadderAttempt({
   onSessionDead,
   settleDelayMs,
 }: LadderAttemptArgs): Promise<AttemptOutcome> {
-  await deps.emit({
+  await emitUsaa(deps, {
     type: "PROGRESS",
     stream: "transactions",
     message: `Export wait: account ${accountOrdinal}/${accountTotal}, window ${attemptOrdinal}/${attemptTotal}`,
@@ -2379,7 +2607,7 @@ export async function runSingleLadderAttempt({
       return { kind: "session_dead" };
     }
     const msg = err instanceof Error ? err.message : String(err);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "export_error",
@@ -2420,6 +2648,18 @@ function classifyTerminalExportFailureWithoutRecursion(diag: DiagnosticInfo | nu
   return null;
 }
 
+function boundedExportLadderStarts(candidateStarts: readonly string[]): string[] {
+  const boundedStarts: string[] = [];
+  const limit = Math.min(candidateStarts.length, MAX_EXPORT_LADDER_ATTEMPTS);
+  for (let index = 0; index < limit; index += 1) {
+    const candidate = candidateStarts[index];
+    if (typeof candidate === "string" && candidate.length > 0) {
+      boundedStarts.push(candidate);
+    }
+  }
+  return boundedStarts;
+}
+
 export async function tryExportLadder(
   deps: EmitDeps,
   context: BrowserContext,
@@ -2432,14 +2672,15 @@ export async function tryExportLadder(
   todayIso: string,
   onSessionDead: () => void
 ): Promise<ExportLadderResult> {
+  const boundedStarts = boundedExportLadderStarts(candidateStarts);
   // Wrap in an object so TS tracks the mutation performed by the onDiagnostics
   // closure; a bare `let lastDiag` would narrow to `null` at read sites.
   const diagBox: { current: DiagnosticInfo | null } = { current: null };
   const onDiagnostics = (info: DiagnosticInfo): void => {
-    diagBox.current = info;
+    diagBox.current = sanitizeDiagnosticInfo(info);
   };
-  for (let i = 0; i < candidateStarts.length; i += 1) {
-    const sinceDate = candidateStarts[i];
+  for (let i = 0; i < boundedStarts.length; i += 1) {
+    const sinceDate = boundedStarts[i];
     if (!sinceDate) {
       continue;
     }
@@ -2452,7 +2693,7 @@ export async function tryExportLadder(
       accountOrdinal,
       accountTotal,
       attemptOrdinal: i + 1,
-      attemptTotal: candidateStarts.length,
+      attemptTotal: boundedStarts.length,
       sinceDate,
       todayIso,
       onDiagnostics,
@@ -2471,10 +2712,10 @@ export async function tryExportLadder(
       };
     }
     if (outcome.kind === "empty") {
-      await deps.emit({
+      await emitUsaa(deps, {
         type: "PROGRESS",
         stream: "transactions",
-        message: `Export complete: no transactions for account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}`,
+        message: `Export complete: no transactions for account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${boundedStarts.length}`,
       });
       return {
         csvPath: null,
@@ -2486,15 +2727,15 @@ export async function tryExportLadder(
     }
     const diagNow = diagBox.current;
     if (diagNow) {
-      await deps.emit({
+      await emitUsaa(deps, {
         type: "PROGRESS",
         stream: "transactions",
-        message: `Export diagnostic: account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${candidateStarts.length}, ${formatDiagnosticInfo(diagNow)}`,
+        message: `Export diagnostic: account ${accountOrdinal}/${accountTotal}, window ${i + 1}/${boundedStarts.length}, ${formatDiagnosticInfo(diagNow)}`,
       });
     }
     const terminalFailure = classifyTerminalExportFailureWithoutRecursion(diagNow);
     if (terminalFailure) {
-      await deps.emit({
+      await emitUsaa(deps, {
         type: "PROGRESS",
         stream: "transactions",
         message:
@@ -2510,7 +2751,7 @@ export async function tryExportLadder(
         usedSince: null,
       };
     }
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "PROGRESS",
       stream: "transactions",
       message: `Retrying export with shorter range for account ${accountOrdinal}/${accountTotal}`,
@@ -2560,7 +2801,7 @@ export async function emitCsvTransactions(
   // (rows beyond the header) to keep the number meaningful.
   const dataRows = Math.max(0, rows.length - 1);
   if (txns.length === 0) {
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: dataRows > 0 ? "csv_no_usable_transactions" : "csv_no_data_rows",
@@ -2754,7 +2995,7 @@ export async function recoverServedAccountTransactionGaps(
     if (!gapId) {
       continue;
     }
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "DETAIL_GAP_RECOVERED",
       reference_only: true,
       gap_id: gapId,
@@ -2997,7 +3238,7 @@ async function runTransactionsStream(
       continue;
     }
     if (streamState.sessionDeadMidRun) {
-      await deps.emit({
+      await emitUsaa(deps, {
         type: "PROGRESS",
         stream: "transactions",
         message: `Session died mid-run; skipping remaining ${transactionAccounts.length - i} account(s)`,
@@ -3038,7 +3279,7 @@ async function runTransactionsStream(
       continue;
     }
     transactionsCursor[accountKey || a.last_four || "unknown"] = { last_date: result.last_date };
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "STATE",
       stream: "transactions",
       cursor: withTransactionFingerprints(transactionsCursor, fingerprintCursor),
@@ -3073,7 +3314,7 @@ export async function finalizeTransactionsStream(
       await emitExportFailure(deps, failure.account, failure.lastDiag, failure.terminalFailure);
     }
     if (outcome.kind === "gap") {
-      await deps.emit(buildAccountTransactionDetailGap(outcome));
+      await emitUsaa(deps, buildAccountTransactionDetailGap(outcome));
     }
   }
   await recoverServedAccountTransactionGaps(deps, outcomes);
@@ -3141,33 +3382,29 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
         // Fire-and-forget: hydrateStatementPdfs signature is sync callback.
         // Swallowing the promise keeps the emit ordering best-effort; a
         // failed write would be caught by the outer try/catch on next await.
-        deps
-          .emit({
-            type: "PROGRESS",
-            stream: "statements",
-            message: `Downloading statement PDF ${index + 1}/${total}`,
-          })
-          .catch((): undefined => undefined);
+        emitUsaa(deps, {
+          type: "PROGRESS",
+          stream: "statements",
+          message: `Downloading statement PDF ${index + 1}/${total}`,
+        }).catch((): undefined => undefined);
       },
       onSkip: ({ statement, reason, diag }) => {
         results.set(statement.rowIndex, { err: reason, diag });
-        deps
-          .emit({
-            type: "SKIP_RESULT",
-            stream: "statements",
-            reason: `pdf_download_${reason}`,
-            message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
-            // row_id is statement.rowIndex, a plain ordinal position within
-            // this run's /my/documents table scrape — not derived from
-            // account reference, date, or title. Unlike a content hash it
-            // carries no information about the statement itself and cannot
-            // be correlated across runs (row order can shift between
-            // scrapes), only within this run's failure set. Always
-            // included, even when there are no other diagnostics, so every
-            // failure is correlatable back to its row for this run.
-            diagnostics: { ...diag, row_id: statement.rowIndex },
-          })
-          .catch((): undefined => undefined);
+        emitUsaa(deps, {
+          type: "SKIP_RESULT",
+          stream: "statements",
+          reason: `pdf_download_${reason}`,
+          message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
+          // row_id is statement.rowIndex, a plain ordinal position within
+          // this run's /my/documents table scrape — not derived from
+          // account reference, date, or title. Unlike a content hash it
+          // carries no information about the statement itself and cannot
+          // be correlated across runs (row order can shift between
+          // scrapes), only within this run's failure set. Always
+          // included, even when there are no other diagnostics, so every
+          // failure is correlatable back to its row for this run.
+          diagnostics: { ...diag, row_id: statement.rowIndex },
+        }).catch((): undefined => undefined);
       },
     });
     for (const h of hydrated) {
@@ -3181,7 +3418,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "hydrate_crashed",
@@ -3224,7 +3461,7 @@ async function processPdfStatementRow(
     });
     if (!txns.length) {
       counters.unknownTemplates += 1;
-      await deps.emit({
+      await emitUsaa(deps, {
         type: "SKIP_RESULT",
         stream: "transactions",
         reason: "pdf_template_unknown",
@@ -3253,7 +3490,7 @@ async function processPdfStatementRow(
     return row.account_id && accountById.has(row.account_id) ? row.account_id : null;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "transactions",
       reason: "pdf_parse_failed",
@@ -3292,7 +3529,7 @@ export async function emitPdfStatementTransactions(
       coveredAccountIds.add(accountId);
     }
   }
-  await deps.emit({
+  await emitUsaa(deps, {
     type: "PROGRESS",
     stream: "transactions",
     message: `PDF parse complete: ${counters.pdfTxnCount} transaction(s) across ${counters.parsedStatements} statement(s) (${counters.unknownTemplates} unknown templates)`,
@@ -3310,7 +3547,7 @@ async function runStatementsStream(
 ): Promise<Set<string>> {
   const alternateSurfaceAccountIds = new Set<string>();
   try {
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "PROGRESS",
       stream: "statements",
       message: "Fetching statements index",
@@ -3323,7 +3560,7 @@ async function runStatementsStream(
 
     const docs = await scrapeStatementsIndex(deps.page);
     const indexRows = buildIndexRows(docs, accounts);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "PROGRESS",
       stream: "statements",
       message: `Found ${indexRows.length} statement index row(s)`,
@@ -3354,7 +3591,7 @@ async function runStatementsStream(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "statements",
       reason: "scrape_failed",
@@ -3399,7 +3636,7 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
 
 export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, unknown>): Promise<void> {
   try {
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "PROGRESS",
       stream: "inbox_messages",
       message: "Fetching inbox",
@@ -3410,7 +3647,7 @@ export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<s
     });
     await politeDelay(DOCUMENTS_SETTLE_DELAY_MS);
     const msgs = await scrapeInboxRows(page);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "PROGRESS",
       stream: "inbox_messages",
       message: `Found ${msgs.length} inbox row(s)`,
@@ -3465,14 +3702,14 @@ export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<s
     if (fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();
     }
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "STATE",
       stream: "inbox_messages",
       cursor,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "inbox_messages",
       reason: "scrape_failed",
@@ -3598,7 +3835,7 @@ export async function runCreditCardBillingStream(
 ): Promise<void> {
   const { emitEntity, emitStats, fingerprintCursor, observedOn } = options;
   try {
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "PROGRESS",
       stream: "credit_card_billing",
       message: "Fetching credit card billing details",
@@ -3635,7 +3872,7 @@ export async function runCreditCardBillingStream(
         considered: cards.length,
         covered: statsCovered,
       });
-      await deps.emit({
+      await emitUsaa(deps, {
         type: "STATE",
         stream: "credit_card_billing_stats",
         cursor: { observed_on: observedOn, fetched_at: nowIso() },
@@ -3645,7 +3882,7 @@ export async function runCreditCardBillingStream(
       return;
     }
     if (!fingerprintCursor) {
-      await deps.emit({
+      await emitUsaa(deps, {
         type: "STATE",
         stream: "credit_card_billing",
         cursor: { fetched_at: nowIso() },
@@ -3676,14 +3913,14 @@ export async function runCreditCardBillingStream(
     if (fingerprintCursor.size() > 0) {
       cursor.fingerprints = fingerprintCursor.toState();
     }
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "STATE",
       stream: "credit_card_billing",
       cursor,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await deps.emit({
+    await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "credit_card_billing",
       reason: "scrape_failed",
@@ -3738,6 +3975,7 @@ export const USAA_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout|source_unavailabl
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "usaa",
+    captureMode: "safe",
     retryablePattern: USAA_RETRYABLE_PATTERN,
     validateRecord,
     // USAA rejects headless Chromium before the login form loads
@@ -3750,7 +3988,7 @@ if (isMainModule(import.meta.url)) {
       page,
       sendInteraction,
     }: {
-      capture?: EmitDeps["capture"];
+      capture?: BrowserCollectContext["capture"];
       context: BrowserContext;
       page: Page;
       sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -3770,27 +4008,23 @@ if (isMainModule(import.meta.url)) {
         page,
         emit,
         emitRecord,
-        progress,
-        capture,
+        safeCapture,
         sendInteraction,
         emittedAt,
         browserSurface,
       } = ctx;
       const deps: EmitDeps = {
         browserSurface: browserSurfaceManagedState(browserSurface),
-        capture,
+        capture: safeCapture,
         emit,
         emitRecord,
         servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
       };
 
       // ACCOUNTS — extract from dashboard; emit optionally based on requested.
-      await progress("Extracting accounts from dashboard");
-      if (capture) {
-        await capture.captureDom(page, "dashboard-accounts");
-      }
+      await emitUsaa(deps, { type: "PROGRESS", stream: "accounts", message: "Extracting accounts from dashboard" });
       const accounts = await extractAccounts(page);
-      await progress(`Found ${accounts.length} account(s)`);
+      await emitUsaa(deps, { type: "PROGRESS", stream: "accounts", message: `Found ${accounts.length} account(s)` });
 
       await maybeRunAccountsStreams(deps, accounts, state, requested, emittedAt);
 
@@ -3884,7 +4118,7 @@ if (isMainModule(import.meta.url)) {
       // Skipped if the session died mid-run so we never narrow a map a
       // partial run could not fully rebuild.
       if (requested.has("transactions") && !streamState.sessionDeadMidRun && transactionsFingerprintCursor) {
-        await emit({
+        await emitUsaa(deps, {
           type: "STATE",
           stream: "transactions",
           cursor: withTransactionFingerprints(transactionsCursorAfterCsv, transactionsFingerprintCursor),

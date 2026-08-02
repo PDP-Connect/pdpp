@@ -12,9 +12,19 @@ const CSV_HEADER_HINT_RE = /(?:^|,)\s*(?:date|description|amount|transaction)\b/
 const SAFE_PATH_SEGMENT_RE = /^[a-z]+(?:[-_][a-z]+)*$/iu;
 const SAFE_FILENAME_EXTENSION_RE = /\.([a-z0-9]{1,8})$/iu;
 const CSV_FIRST_LINE_RE = /\r?\n/u;
-const SAFE_METHOD_RE = /^[A-Z]{3,12}$/u;
-const SAFE_MEDIA_TYPE_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u;
 const FILENAME_PATH_SEPARATOR_RE = /[\\/]/u;
+const MAX_SAFE_PATH_SEGMENTS = 8;
+const MAX_SAFE_RESPONSE_CANDIDATES = 20;
+const SAFE_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
+const SAFE_MEDIA_TYPES = new Set([
+  "application/json",
+  "application/octet-stream",
+  "application/pdf",
+  "application/zip",
+  "text/csv",
+  "text/plain",
+]);
+const SAFE_FILENAME_EXTENSIONS = new Set(["bin", "csv", "json", "pdf", "zip"]);
 const SAFE_PATH_SEGMENTS = new Set([
   "api",
   "csv",
@@ -47,6 +57,20 @@ export interface SafeArtifactResponseMetadata {
   path_shape: string | null;
   pdf_magic: ArtifactClassification;
   status: number | null;
+}
+
+export interface SafeArtifactCaptureRecord {
+  artifact: SafeArtifactResponseMetadata | null;
+  download: SafeArtifactResponseMetadata | null;
+  phase: "artifact" | "artifact_failed" | "dialog_error" | "empty";
+  response_candidates: SafeArtifactResponseMetadata[];
+  response_summary: {
+    candidate_count: number;
+    cdp_ready: boolean;
+    total_cdp_requests_started: number;
+    total_cdp_responses_seen: number;
+    total_responses_seen: number;
+  };
 }
 
 export interface CapturedBodyResponse {
@@ -181,10 +205,11 @@ function artifactClassification(value: unknown): ArtifactClassification | null {
 }
 
 function safeMethod(value: unknown): string | null {
-  if (typeof value !== "string" || !SAFE_METHOD_RE.test(value.trim().toUpperCase())) {
+  if (typeof value !== "string") {
     return null;
   }
-  return value.trim().toUpperCase();
+  const method = value.trim().toUpperCase();
+  return SAFE_METHODS.has(method) ? method : null;
 }
 
 function safeStatus(value: unknown): number | null {
@@ -200,7 +225,7 @@ function safeContentType(value: unknown): string | null {
     return null;
   }
   const mediaType = value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  return SAFE_MEDIA_TYPE_RE.test(mediaType) ? mediaType : null;
+  return SAFE_MEDIA_TYPES.has(mediaType) ? mediaType : null;
 }
 
 function safeContentDisposition(value: unknown): SafeArtifactResponseMetadata["content_disposition"] {
@@ -221,9 +246,12 @@ function safeFilenameShape(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0) {
     return null;
   }
-  const filename = value.split(FILENAME_PATH_SEPARATOR_RE).pop() ?? "";
+  if (value === "." || value === ".." || FILENAME_PATH_SEPARATOR_RE.test(value)) {
+    return null;
+  }
+  const filename = value;
   const extension = filename.match(SAFE_FILENAME_EXTENSION_RE)?.[1];
-  return extension ? `.${extension.toLowerCase()}` : "[named]";
+  return extension && SAFE_FILENAME_EXTENSIONS.has(extension.toLowerCase()) ? `.${extension.toLowerCase()}` : null;
 }
 
 function filenameFromContentDisposition(value: unknown): string | null {
@@ -248,15 +276,16 @@ export function redactedResponsePathShape(value: unknown): string | null {
   }
   try {
     const { pathname } = new URL(value);
-    const segments = pathname
-      .split("/")
-      .filter(Boolean)
-      .map((segment) => {
-        const normalized = segment.toLowerCase();
-        return segment.length <= 40 && SAFE_PATH_SEGMENT_RE.test(segment) && SAFE_PATH_SEGMENTS.has(normalized)
-          ? normalized
-          : "[id]";
-      });
+    const sourceSegments = pathname.split("/").filter(Boolean);
+    if (sourceSegments.length > MAX_SAFE_PATH_SEGMENTS) {
+      return null;
+    }
+    const segments = sourceSegments.map((segment) => {
+      const normalized = segment.toLowerCase();
+      return segment.length <= 40 && SAFE_PATH_SEGMENT_RE.test(segment) && SAFE_PATH_SEGMENTS.has(normalized)
+        ? normalized
+        : "[id]";
+    });
     return segments.length ? `/${segments.join("/")}` : "/";
   } catch {
     return null;
@@ -288,6 +317,69 @@ export function sanitizeArtifactResponseMetadata(input: {
     path_shape: redactedResponsePathShape(input.url),
     pdf_magic: pdfMagic,
     status: safeStatus(input.status),
+  };
+}
+
+interface UnknownRecord {
+  [key: string]: unknown;
+}
+
+function asRecord(value: unknown): UnknownRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as UnknownRecord) : {};
+}
+
+function boundedDiagnosticCount(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 1_000_000) : 0;
+}
+
+function safeCapturePhase(value: unknown): SafeArtifactCaptureRecord["phase"] {
+  return value === "artifact" || value === "artifact_failed" || value === "dialog_error" || value === "empty"
+    ? value
+    : "artifact_failed";
+}
+
+function safeMetadataRecord(value: unknown): SafeArtifactResponseMetadata {
+  const raw = asRecord(value);
+  return sanitizeArtifactResponseMetadata({
+    body: Buffer.isBuffer(raw.body) ? raw.body : null,
+    bytes: raw.bytes ?? raw.byte_count ?? raw.bodyBytes,
+    contentDisposition: raw.contentDisposition ?? raw.content_disposition,
+    contentType: raw.contentType ?? raw.content_type,
+    csvHeader: raw.csvHeader ?? raw.csv_header,
+    filename: raw.filename ?? raw.filename_shape ?? raw.suggestedFilename,
+    method: raw.method,
+    pdfMagic: raw.pdfMagic ?? raw.pdf_magic,
+    status: raw.status,
+    url: raw.url,
+  });
+}
+
+/**
+ * Canonical post-boundary sanitizer for safe capture. It accepts arbitrary
+ * producer input but emits only the finite metadata contract above; bodies,
+ * URLs, names, errors, and filenames are never copied into the result.
+ */
+export function sanitizeArtifactCapturePayload(value: unknown): SafeArtifactCaptureRecord {
+  const raw = asRecord(value);
+  const summary = asRecord(raw.response_summary ?? raw.responseSummary);
+  let rawCandidates: unknown[] = [];
+  if (Array.isArray(raw.response_candidates)) {
+    rawCandidates = raw.response_candidates;
+  } else if (Array.isArray(raw.responseCandidates)) {
+    rawCandidates = raw.responseCandidates;
+  }
+  return {
+    artifact: raw.artifact === null || raw.artifact === undefined ? null : safeMetadataRecord(raw.artifact),
+    download: raw.download === null || raw.download === undefined ? null : safeMetadataRecord(raw.download),
+    phase: safeCapturePhase(raw.phase),
+    response_candidates: rawCandidates.slice(0, MAX_SAFE_RESPONSE_CANDIDATES).map(safeMetadataRecord),
+    response_summary: {
+      candidate_count: boundedDiagnosticCount(summary.candidate_count ?? rawCandidates.length),
+      cdp_ready: summary.cdp_ready === true,
+      total_cdp_requests_started: boundedDiagnosticCount(summary.total_cdp_requests_started),
+      total_cdp_responses_seen: boundedDiagnosticCount(summary.total_cdp_responses_seen),
+      total_responses_seen: boundedDiagnosticCount(summary.total_responses_seen),
+    },
   };
 }
 

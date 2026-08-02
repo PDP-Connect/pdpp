@@ -8,6 +8,7 @@ import type { BrowserContext, CDPSession, Page, Response } from "playwright";
 import {
   attachBodyResponseQueue,
   isLikelyPdfResponseBody,
+  sanitizeArtifactCapturePayload,
   sanitizeArtifactResponseMetadata,
 } from "./browser-artifact-response.ts";
 
@@ -268,4 +269,58 @@ test("artifact metadata preserves response shape while dropping URLs, identifier
   });
   const serialized = JSON.stringify(metadata);
   assert.doesNotMatch(serialized, /PRIVATE MERCHANT|account-123|SECRET|COOKIE|https?:\/\//);
+});
+
+test("artifact capture sanitizer uses finite metadata and drops mutation payloads", () => {
+  const payload = sanitizeArtifactCapturePayload({
+    artifact: {
+      body: Buffer.from("Date,Description\nPRIVATE MERCHANT,token=SECRET\n"),
+      contentDisposition: 'attachment; filename="../../account-123.csv"',
+      contentType: "application/x-private-token",
+      method: "TRACE",
+      status: 200,
+      url: "https://www.usaa.com/export/account-123?token=SECRET",
+    },
+    download: {
+      bytes: 12,
+      downloadFailure: "raw failure body=SECRET",
+      suggestedFilename: "../account-123.csv",
+      url: "https://www.usaa.com/download/account-123?token=SECRET",
+    },
+    phase: "artifact",
+    response_candidates: [
+      {
+        bodyBytes: 12,
+        bodyError: "raw error body=SECRET",
+        contentDisposition: "attachment; filename=account-123.csv",
+        contentType: "text/csv",
+        method: "GET",
+        reason: "body_error",
+        source: "playwright",
+        status: 200,
+        url: "https://www.usaa.com/export/account-123?token=SECRET",
+      },
+    ],
+    response_summary: {
+      candidate_count: 99_999_999,
+      cdp_ready: true,
+      total_cdp_requests_started: 99_999_999,
+      total_cdp_responses_seen: 99_999_999,
+      total_responses_seen: 99_999_999,
+    },
+  });
+
+  assert.equal(payload.artifact?.method, null);
+  assert.equal(payload.artifact?.content_type, null);
+  assert.equal(payload.artifact?.filename_shape, null);
+  assert.equal(payload.artifact?.path_shape, "/export/[id]");
+  assert.equal(payload.download?.filename_shape, null);
+  assert.equal(payload.response_candidates[0]?.method, "GET");
+  assert.equal(payload.response_candidates[0]?.filename_shape, ".csv");
+  assert.equal(payload.response_summary.candidate_count, 1_000_000);
+  const serialized = JSON.stringify(payload);
+  assert.doesNotMatch(
+    serialized,
+    /PRIVATE MERCHANT|account-123|SECRET|https?:\/\/|raw error|bodyError|downloadFailure/
+  );
 });

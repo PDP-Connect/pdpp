@@ -66,7 +66,12 @@ import type {
   StreamScope,
   ValidateRecord,
 } from "./connector-runtime-protocol.ts";
-import { type CaptureSession, createCaptureSession } from "./fixture-capture.ts";
+import {
+  type CaptureSession,
+  createCaptureSession,
+  createSafeCaptureSession,
+  type SafeCaptureSession,
+} from "./fixture-capture.ts";
 import { emitToStdout } from "./safe-emit.ts";
 import { resourceSet } from "./scope-filters.ts";
 
@@ -178,6 +183,7 @@ interface BaseCollectContext {
     streams?: readonly string[];
   }) => Promise<readonly DetailGapStartEntry[]>;
   requested: Map<string, StreamScope>;
+  safeCapture?: SafeCaptureSession | null;
   scope: StartMessage["scope"];
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
   state: Record<string, unknown>;
@@ -278,6 +284,8 @@ export type NormalizeTerminalError = (error: TerminalErrorDetails) => TerminalEr
 /** Fields shared by browser and non-browser configs. */
 interface BaseRunConnectorConfig {
   auth?: AuthConfig;
+  /** Use the closed, selector-diagnostic capture capability for this connector. */
+  captureMode?: "raw" | "safe";
   /** Marks a record as a tombstone; runtime strips to { id } + op:'delete'. */
   isTombstone?: (stream: string, data: RecordData) => boolean;
   name: string;
@@ -666,8 +674,10 @@ export function runConnector(config: RunConnectorConfig): void {
   const timeRangeFieldFor: (stream: string) => string =
     typeof timeRangeField === "function" ? timeRangeField : (): string => timeRangeField;
 
-  // Capture session: null unless PDPP_CAPTURE_FIXTURES=1.
-  const capture = createCaptureSession(name);
+  // The safe mode is an explicit capability split: a connector configured for
+  // safe evidence never receives the raw session at all.
+  const capture = config.captureMode === "safe" ? null : createCaptureSession(name);
+  const safeCapture = config.captureMode === "safe" ? createSafeCaptureSession(name) : null;
 
   // stdin reader for START + INTERACTION_RESPONSE.
   const rl = createInterface({ input: process.stdin, terminal: false });
@@ -680,14 +690,28 @@ export function runConnector(config: RunConnectorConfig): void {
     return emitToStdout(msg);
   };
 
-  if (capture) {
-    const modeLabel = capture.keepOnSuccess
-      ? "PDPP_CAPTURE_FIXTURES=1 (always retain)"
-      : "PDPP_CAPTURE_ON_FAILURE=1 (retain on failure only)";
-    process.stderr.write(`[capture] ${modeLabel}; writing to ${capture.baseDir}\n`);
+  const activeCapture = capture ?? safeCapture;
+  if (activeCapture) {
+    let modeLabel = "safe capture (selector/artifact metadata only)";
+    if (capture) {
+      modeLabel = capture.keepOnSuccess
+        ? "PDPP_CAPTURE_FIXTURES=1 (always retain)"
+        : "PDPP_CAPTURE_ON_FAILURE=1 (retain on failure only)";
+    }
+    process.stderr.write(`[capture] ${modeLabel}; writing to ${activeCapture.baseDir}\n`);
   }
 
+  const finalizeCapture = (success: boolean): void => {
+    if (success) {
+      capture?.markSucceeded?.();
+      safeCapture?.markSucceeded();
+    }
+    capture?.finalize?.();
+    safeCapture?.finalize();
+  };
+
   const flushAndExit = (code: number): void => {
+    finalizeCapture(code === 0);
     // On a successful run, run the optional durable-commit hook after the
     // runtime acknowledges ingest (the `exit` callback fires post-ack) and
     // before the real process exit. Best-effort: a hook failure never changes
@@ -1013,6 +1037,7 @@ export function runConnector(config: RunConnectorConfig): void {
       completeAssistance,
       progress,
       capture,
+      safeCapture,
       sendInteraction,
       emittedAt,
       detailGaps: startMsg.detail_gaps ?? [],
@@ -1035,6 +1060,7 @@ export function runConnector(config: RunConnectorConfig): void {
         probeSession,
         collect,
         baseCtx,
+        ...(config.captureMode === undefined ? {} : { captureMode: config.captureMode }),
         retryablePattern,
       });
     } else {
@@ -1042,6 +1068,7 @@ export function runConnector(config: RunConnectorConfig): void {
     }
 
     await finalizeRun(emitRecord.counters, progress, emit);
+    safeCapture?.markSucceeded();
     flushAndExit(0);
   }
 }
@@ -1168,6 +1195,7 @@ async function runInBrowser(args: {
   probeSession: BrowserConnectorConfig["probeSession"];
   collect: BrowserConnectorConfig["collect"];
   baseCtx: BaseCollectContext;
+  captureMode?: "raw" | "safe";
   retryablePattern: RegExp;
 }): Promise<void> {
   const {
@@ -1181,6 +1209,7 @@ async function runInBrowser(args: {
     probeSession,
     collect,
     baseCtx,
+    captureMode,
     retryablePattern,
   } = args;
   const { context: ctx, release } = await acquireBrowser(browser, name);
@@ -1194,7 +1223,7 @@ async function runInBrowser(args: {
   // `shutdown-hook.ts` for the design and `profile-lock.ts` for the
   // correction-layer counterpart.
   const { withShutdownRelease } = await import("./shutdown-hook.ts");
-  const tracer = makeTracer(ctx, name, baseCtx.capture);
+  const tracer = makeTracer(ctx, name, baseCtx.capture, captureMode !== "safe");
   // Finalization runs before release(). On SIGTERM/SIGINT this is what
   // gives the operator a usable trace/capture artifact for the in-flight
   // run; without it, Docker stop / scheduler restart drops the trace.
@@ -1270,6 +1299,7 @@ async function runInBrowser(args: {
     // release/page-close) is treated as benign teardown.
     tracer.markSucceeded();
     baseCtx.capture?.markSucceeded?.();
+    baseCtx.safeCapture?.markSucceeded();
     runSucceeded = true;
   } catch (err) {
     if (page) {
@@ -1284,6 +1314,7 @@ async function runInBrowser(args: {
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
     baseCtx.capture?.finalize?.();
+    baseCtx.safeCapture?.finalize();
   }
 }
 
@@ -2199,8 +2230,13 @@ export function isContextDisconnected(context: Pick<BrowserContext, "browser">):
  * after a clean run (markSucceeded() called before stop()) and retained on
  * failure for post-mortem debugging.
  */
-export function makeTracer(context: BrowserContext, name: string, capture: CaptureSession | null): Tracer {
-  const enabled = process.env.PDPP_TRACE === "1" || capture !== null;
+export function makeTracer(
+  context: BrowserContext,
+  name: string,
+  capture: CaptureSession | null,
+  traceAllowed = true
+): Tracer {
+  const enabled = traceAllowed && (process.env.PDPP_TRACE === "1" || capture !== null);
   const traceName = `${name}-${new Date().toISOString().replace(TRACE_TIMESTAMP_UNSAFE, "-")}`;
   const tracePath = capture ? join(capture.baseDir, "traces", `${traceName}.zip`) : `/tmp/${traceName}.zip`;
   const traceBaseDir = capture ? join(capture.baseDir, "traces") : null;

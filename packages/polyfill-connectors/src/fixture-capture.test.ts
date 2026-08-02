@@ -2,14 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 
 import type { Page } from "playwright";
 
-import { createCaptureSession, type LocatorProbePage } from "./fixture-capture.ts";
+import {
+  createCaptureSession,
+  createSafeCaptureSession,
+  type LocatorProbePage,
+  SAFE_CAPTURE_MAX_BYTES,
+  SAFE_CAPTURE_MAX_FILE_BYTES,
+  SAFE_CAPTURE_MAX_FILES,
+} from "./fixture-capture.ts";
 
 function withEnv<T>(vars: Record<string, string | undefined>, body: () => T): T {
   const previous: Record<string, string | undefined> = {};
@@ -297,5 +304,150 @@ test("PDPP_CAPTURE_FIXTURES finalize() retains raw dir on success (always-retain
     } finally {
       rmSync(capture.baseDir, { force: true, recursive: true });
     }
+  });
+});
+
+function walkFiles(root: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...walkFiles(path));
+    } else if (entry.isFile()) {
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+test("safe capture inventory contains only bounded redacted evidence and deletes its temp run", () => {
+  const root = mkdtempSync(join(tmpdir(), "pdpp-safe-capture-inventory-"));
+  const connectorName = `safe_inventory_${process.pid}_${Date.now()}`;
+  withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: "1", PDPP_CAPTURE_ROOT_DIR: root }, () => {
+    const capture = createSafeCaptureSession(connectorName);
+    assert.ok(capture);
+    try {
+      for (const forbiddenMethod of [
+        "captureDom",
+        "captureHttp",
+        "captureLocatorProbe",
+        "recordRecord",
+        "setTraceCheckpointHook",
+      ]) {
+        assert.equal(forbiddenMethod in capture, false, `${forbiddenMethod} must not be reachable from safe mode`);
+        assert.equal(typeof Reflect.get(capture, forbiddenMethod), "undefined");
+      }
+      assert.deepEqual(Object.keys(capture).sort(), [
+        "baseDir",
+        "captureSafe",
+        "finalize",
+        "inventory",
+        "keepOnSuccess",
+        "markSucceeded",
+        "mode",
+        "runId",
+      ]);
+
+      const surfacePayload = {
+        capture_state: "captured",
+        candidate_count: 10_000_000,
+        candidates: [
+          {
+            aria_disabled: false,
+            class_tokens: "as_credit__utility-bar-item as_credit__export account-123456 token=SECRET",
+            disabled: false,
+            kind: "export",
+            role: "button",
+            tag: "BUTTON",
+            text: "Export account ACCT-123456 transaction PRIVATE MERCHANT token=SECRET",
+            type: "button",
+            visible: true,
+          },
+        ],
+        control_count: 1000,
+        controls: [
+          {
+            aria_disabled: false,
+            class_tokens: "dialog-control account-123456",
+            disabled: false,
+            name: "selectionType",
+            role: "combobox",
+            tag: "SELECT",
+            text: "transaction text PRIVATE MERCHANT",
+            type: null,
+            visible: true,
+          },
+        ],
+        phase: "after_export_affordance_probe",
+      };
+      const rawBody = Buffer.from("Date,Description,Amount\nPRIVATE MERCHANT,10.00,token=SECRET\n", "utf8");
+      const artifactPayload = {
+        artifact: {
+          body: rawBody,
+          contentDisposition: 'attachment; filename="../../account-123.csv"',
+          contentType: "text/csv; charset=utf-8",
+          method: "TRACE",
+          status: 200,
+          url: "https://www.usaa.com/export/account-123?token=SECRET",
+        },
+        download: {
+          bytes: rawBody.length,
+          downloadFailure: "raw download error token=SECRET",
+          saveAsError: "raw save error body=PRIVATE MERCHANT",
+          source: "saveAs",
+          suggestedFilename: "../account-123.csv",
+          url: "https://www.usaa.com/download/account-123?token=SECRET",
+        },
+        phase: "artifact_failed",
+        response_candidates: [],
+        response_summary: { candidate_count: 1, cdp_ready: true },
+      };
+
+      capture.captureSafe({ kind: "surface_manifest", payload: surfacePayload });
+      capture.captureSafe({ kind: "artifact_metadata", payload: artifactPayload });
+      for (let index = 0; index < SAFE_CAPTURE_MAX_FILES + 8; index += 1) {
+        capture.captureSafe({ kind: "surface_manifest", payload: surfacePayload });
+      }
+
+      const inventory = capture.inventory();
+      assert.ok(inventory.files > 0);
+      assert.ok(inventory.files <= SAFE_CAPTURE_MAX_FILES);
+      assert.ok(inventory.bytes <= SAFE_CAPTURE_MAX_BYTES);
+      assert.ok(inventory.rejected > 0, "file cap must reject excess safe events");
+      const files = walkFiles(capture.baseDir);
+      assert.equal(files.length, inventory.files);
+      assert.ok(files.every((path) => path.endsWith(".json")));
+      assert.ok(
+        files.every((path) => /^(?:\d{4})-(?:artifact|surface)\.json$/u.test(relative(capture.baseDir, path))),
+        "safe mode may only write fixed safe evidence filenames"
+      );
+      assert.ok(files.every((path) => !/(?:dom|pages|aria|screenshots|traces|records|http)/u.test(path)));
+      assert.equal(
+        files.reduce((total, path) => total + statSync(path).size, 0),
+        inventory.bytes,
+        "inventory bytes must cover the recursive safe-file inventory"
+      );
+      for (const path of files) {
+        const info = statSync(path);
+        assert.ok(info.size <= SAFE_CAPTURE_MAX_FILE_BYTES);
+        const content = readFileSync(path, "utf8");
+        assert.doesNotMatch(
+          content,
+          /ACCT-123456|PRIVATE MERCHANT|token=SECRET|raw download error|raw save error|https?:\/\//
+        );
+        assert.doesNotMatch(content, /account-123/);
+      }
+      const serialized = files.map((path) => readFileSync(path, "utf8")).join("\n");
+      assert.match(serialized, /selectionType/);
+      assert.match(serialized, /as_credit__export/);
+      assert.match(serialized, /"byte_count":\d+/u);
+
+      capture.markSucceeded();
+      capture.finalize();
+      assert.equal(existsSync(capture.baseDir), false, "success must delete the safe run directory");
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+    assert.equal(existsSync(root), false, "the temporary inventory root must be deleted");
   });
 });

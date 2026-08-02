@@ -13,13 +13,51 @@ const MAX_SURFACE_CANDIDATES = 32;
 const MAX_SURFACE_CONTROLS = 24;
 const MAX_CLASS_TOKENS = 8;
 const MAX_TOKEN_LENGTH = 48;
-const SAFE_TOKEN_RE = /^[A-Za-z][A-Za-z_-]{0,47}$/u;
 const CLASS_TOKEN_SPLIT_RE = /\s+/u;
 const SURFACE_EXPORT_TEXT_RE = /\bexport\b/u;
 const SURFACE_DOWNLOAD_TEXT_RE = /\bdownload\b/u;
 const SURFACE_OPTIONS_TEXT_RE = /\boptions?\b|\bmore\b/u;
 const SURFACE_CSV_TEXT_RE = /\bcsv\b/u;
 const SURFACE_PDF_TEXT_RE = /\bpdf\b/u;
+const SAFE_SURFACE_CLASS_TOKENS = new Set([
+  "as_credit__export",
+  "as_credit__utility-bar-item",
+  "dialog-control",
+  "download",
+  "download-button",
+  "download-link",
+  "ent-as-utility-bar__item",
+  "export",
+  "export-button",
+  "option",
+  "options",
+  "pdf",
+  "utility-bar",
+]);
+const SAFE_SURFACE_TAGS = new Set(["a", "button", "input", "option", "select", "textarea"]);
+const SAFE_SURFACE_ROLES = new Set([
+  "button",
+  "combobox",
+  "dialog",
+  "link",
+  "listbox",
+  "menuitem",
+  "option",
+  "tab",
+  "textbox",
+]);
+const SAFE_SURFACE_TYPES = new Set(["button", "checkbox", "date", "hidden", "radio", "reset", "submit", "text"]);
+const SAFE_SURFACE_NAMES = new Map([
+  ["cancel", "cancel"],
+  ["enddate", "endDate"],
+  ["export", "export"],
+  ["fromdate", "fromDate"],
+  ["more", "more"],
+  ["options", "options"],
+  ["selectiontype", "selectionType"],
+  ["startdate", "startDate"],
+  ["submit", "submit"],
+]);
 
 export type BrowserSurfaceKind = "chase_current_activity" | "usaa_transaction_export";
 export type BrowserSurfacePosture = "recognized" | "verified_empty" | "parser_zero" | "unexpected";
@@ -84,12 +122,16 @@ function boundedSurfaceCount(value: unknown): number {
   return boundedCount(value);
 }
 
-function safeToken(value: unknown): string | null {
+function safeToken(value: unknown, allowed: ReadonlySet<string>): string | null {
   if (typeof value !== "string") {
     return null;
   }
   const token = value.trim();
-  return SAFE_TOKEN_RE.test(token) ? token.toLowerCase() : null;
+  if (token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
+    return null;
+  }
+  const normalized = token.toLowerCase();
+  return allowed.has(normalized) ? normalized : null;
 }
 
 function safeName(value: unknown): string | null {
@@ -97,7 +139,7 @@ function safeName(value: unknown): string | null {
     return null;
   }
   const name = value.trim();
-  return SAFE_TOKEN_RE.test(name) ? name : null;
+  return SAFE_SURFACE_NAMES.get(name.toLowerCase()) ?? null;
 }
 
 function normalizedClassTokens(value: unknown): string[] {
@@ -109,7 +151,7 @@ function normalizedClassTokens(value: unknown): string[] {
   }
   const seen = new Set<string>();
   for (const item of values) {
-    const token = safeToken(item);
+    const token = safeToken(item, SAFE_SURFACE_CLASS_TOKENS);
     if (token && token.length <= MAX_TOKEN_LENGTH) {
       seen.add(token);
     }
@@ -182,14 +224,22 @@ function safeBoolean(value: unknown): boolean {
 
 function sanitizeCandidate(value: unknown): BrowserSurfaceCandidate | null {
   const raw = asRecord(value);
-  const kind = isCandidateKind(raw.kind) ? raw.kind : null;
+  const { kind: rawKind } = raw;
+  let kind: BrowserSurfaceCandidateKind | null = null;
+  if (isCandidateKind(rawKind)) {
+    kind = rawKind;
+  } else if (raw.export_hint === true) {
+    kind = "export";
+  } else if (raw.download_hint === true) {
+    kind = "download";
+  }
   if (!kind) {
     return null;
   }
-  const tag = safeToken(raw.tag) ?? "unknown";
-  const role = safeToken(raw.role);
-  const type = safeToken(raw.type);
-  const textCategory = isTextCategory(raw.text_category) ? raw.text_category : browserSurfaceTextCategory(raw.text);
+  const tag = safeToken(raw.tag, SAFE_SURFACE_TAGS) ?? "unknown";
+  const role = safeToken(raw.role, SAFE_SURFACE_ROLES);
+  const type = safeToken(raw.type, SAFE_SURFACE_TYPES);
+  const textCategory = safeTextCategory(raw);
   return {
     aria_disabled: safeBoolean(raw.aria_disabled),
     class_tokens: normalizedClassTokens(raw.class_tokens ?? raw.cls),
@@ -205,10 +255,10 @@ function sanitizeCandidate(value: unknown): BrowserSurfaceCandidate | null {
 
 function sanitizeDialogControl(value: unknown): BrowserSurfaceDialogControl | null {
   const raw = asRecord(value);
-  const tag = safeToken(raw.tag) ?? "unknown";
-  const role = safeToken(raw.role);
-  const type = safeToken(raw.type);
-  const textCategory = isTextCategory(raw.text_category) ? raw.text_category : browserSurfaceTextCategory(raw.text);
+  const tag = safeToken(raw.tag, SAFE_SURFACE_TAGS) ?? "unknown";
+  const role = safeToken(raw.role, SAFE_SURFACE_ROLES);
+  const type = safeToken(raw.type, SAFE_SURFACE_TYPES);
+  const textCategory = safeTextCategory(raw);
   return {
     aria_disabled: safeBoolean(raw.aria_disabled),
     class_tokens: normalizedClassTokens(raw.class_tokens ?? raw.cls),
@@ -220,6 +270,13 @@ function sanitizeDialogControl(value: unknown): BrowserSurfaceDialogControl | nu
     type,
     visible: safeBoolean(raw.visible),
   };
+}
+
+function safeTextCategory(raw: UnknownRecord): BrowserSurfaceTextCategory {
+  if (typeof raw.text === "string") {
+    return browserSurfaceTextCategory(raw.text);
+  }
+  return isTextCategory(raw.text_category) ? raw.text_category : "empty";
 }
 
 /**

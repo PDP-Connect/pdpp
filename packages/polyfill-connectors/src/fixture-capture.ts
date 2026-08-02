@@ -22,7 +22,7 @@
  * neither is set, `createCaptureSession` returns null and the runtime
  * makes no automatic capture calls.
  *
- * Active sessions write under `PDPP_CAPTURE_ROOT_DIR/<connector>/raw/<runId>/`.
+ * Raw sessions write under `PDPP_CAPTURE_ROOT_DIR/<connector>/raw/<runId>/`.
  * When `PDPP_CAPTURE_ROOT_DIR` is unset, local development defaults to
  * `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/`.
  * Captured raw kinds:
@@ -41,6 +41,10 @@
  *   traces/*.zip               Playwright traces when a browser connector runs
  *   http/<nnnn>-<label>.json   HTTP response bodies for API connectors
  *
+ * Connectors configured with runtime `captureMode: "safe"` receive only
+ * `createSafeCaptureSession`. Safe sessions write fixed, bounded JSON files
+ * under `<connector>/safe/<runId>/` and never expose the raw writers above.
+ *
  * The "raw" side is gitignored. A companion scrubber (bin/scrub-fixtures.mjs)
  * consumes a run's raw/ and writes sanitized files to scrubbed/ for commit.
  *
@@ -58,6 +62,11 @@ import { fileURLToPath } from "node:url";
 
 import type { Page } from "playwright";
 
+import { type SafeArtifactCaptureRecord, sanitizeArtifactCapturePayload } from "./browser-artifact-response.ts";
+import {
+  type BrowserSurfaceCandidateManifest,
+  buildBrowserSurfaceCandidateManifest,
+} from "./browser-surface-diagnostic.ts";
 import type { RecordData } from "./connector-runtime.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -65,6 +74,10 @@ const DEFAULT_CAPTURE_ROOT = join(PACKAGE_ROOT, "fixtures");
 const ARIA_SNAPSHOT_TIMEOUT_MS = 2000;
 const LOCATOR_PROBE_TIMEOUT_MS = 1000;
 const LOCATOR_PROBE_ARIA_DEPTH = 2;
+export const SAFE_CAPTURE_MAX_BYTES = 64 * 1024;
+export const SAFE_CAPTURE_MAX_FILE_BYTES = 8 * 1024;
+export const SAFE_CAPTURE_MAX_FILES = 32;
+export const SAFE_CAPTURE_DEADLINE_MS = 2000;
 
 const safeLabel = (s: string): string =>
   String(s)
@@ -180,9 +193,100 @@ export interface CaptureSession {
    * always-retain default), calling this has no effect.
    */
   markSucceeded: () => void;
+  readonly mode?: "raw";
   recordRecord: (msg: { stream: string; data: RecordData }) => void;
   readonly runId: string;
   setTraceCheckpointHook?: (hook: ((label: string) => Promise<void>) | null) => void;
+}
+
+export type SafeCaptureEvent =
+  | { kind: "artifact_metadata"; payload: unknown }
+  | { kind: "surface_manifest"; payload: unknown };
+
+export type SafeCaptureRecord =
+  | { kind: "artifact_metadata"; payload: SafeArtifactCaptureRecord }
+  | { kind: "surface_manifest"; payload: BrowserSurfaceCandidateManifest };
+
+export interface SafeCaptureInventory {
+  bytes: number;
+  deadline_at_ms: number;
+  deadline_exceeded: boolean;
+  files: number;
+  rejected: number;
+}
+
+/** Safe-only capability. It has no DOM, page, ARIA, screenshot, trace, or record writer. */
+export interface SafeCaptureSession {
+  readonly baseDir: string;
+  captureSafe: (event: SafeCaptureEvent) => void;
+  finalize: () => void;
+  inventory: () => SafeCaptureInventory;
+  readonly keepOnSuccess: boolean;
+  markSucceeded: () => void;
+  readonly mode: "safe";
+  readonly runId: string;
+}
+
+interface CaptureActivation {
+  captureRoot: string;
+  keepOnSuccess: boolean;
+}
+
+interface UnknownRecord {
+  [key: string]: unknown;
+}
+
+function asRecord(value: unknown): UnknownRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as UnknownRecord) : {};
+}
+
+function resolveCaptureActivation(): CaptureActivation | null {
+  const alwaysRetain = process.env.PDPP_CAPTURE_FIXTURES === "1";
+  const onFailureOnly = process.env.PDPP_CAPTURE_ON_FAILURE === "1";
+  if (!(alwaysRetain || onFailureOnly)) {
+    return null;
+  }
+  const configuredRoot = process.env.PDPP_CAPTURE_ROOT_DIR?.trim();
+  return {
+    captureRoot: configuredRoot && configuredRoot.length > 0 ? configuredRoot : DEFAULT_CAPTURE_ROOT,
+    keepOnSuccess: alwaysRetain,
+  };
+}
+
+function captureRunId(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function captureBaseDir(
+  connectorName: string,
+  mode: "raw" | "safe",
+  activation: CaptureActivation,
+  runId: string
+): string {
+  return join(activation.captureRoot, connectorName, mode, runId);
+}
+
+function sanitizeSafeCaptureEvent(event: SafeCaptureEvent): SafeCaptureRecord | null {
+  const raw = asRecord(event);
+  if (raw.kind === "surface_manifest") {
+    const payload = asRecord(raw.payload);
+    return {
+      kind: "surface_manifest",
+      payload: buildBrowserSurfaceCandidateManifest({
+        captureState: payload.capture_state ?? payload.captureState,
+        candidateCount: payload.candidate_count ?? payload.candidateCount,
+        candidates: payload.candidates,
+        controlCount: payload.control_count ?? payload.controlCount,
+        controls: payload.controls,
+        phase: payload.phase,
+      }),
+    };
+  }
+  if (raw.kind === "artifact_metadata") {
+    const payload = sanitizeArtifactCapturePayload(raw.payload);
+    return payload ? { kind: "artifact_metadata", payload } : null;
+  }
+  return null;
 }
 
 function requireProbeMethod<K extends keyof LocatorProbePage>(
@@ -350,18 +454,15 @@ async function writeLocatorProbeReport(
 }
 
 export function createCaptureSession(connectorName: string): CaptureSession | null {
-  const alwaysRetain = process.env.PDPP_CAPTURE_FIXTURES === "1";
-  const onFailureOnly = process.env.PDPP_CAPTURE_ON_FAILURE === "1";
-  if (!(alwaysRetain || onFailureOnly)) {
+  const activation = resolveCaptureActivation();
+  if (!activation) {
     return null;
   }
   // PDPP_CAPTURE_FIXTURES wins over PDPP_CAPTURE_ON_FAILURE if both set —
   // explicit always-retain trumps conditional retain.
-  const keepOnSuccess = alwaysRetain;
-  const runId = new Date().toISOString().replace(/[:.]/g, "-");
-  const configuredRoot = process.env.PDPP_CAPTURE_ROOT_DIR?.trim();
-  const captureRoot = configuredRoot && configuredRoot.length > 0 ? configuredRoot : DEFAULT_CAPTURE_ROOT;
-  const baseDir = join(captureRoot, connectorName, "raw", runId);
+  const { keepOnSuccess } = activation;
+  const runId = captureRunId();
+  const baseDir = captureBaseDir(connectorName, "raw", activation, runId);
   try {
     mkdirSync(join(baseDir, "records"), { recursive: true });
     mkdirSync(join(baseDir, "aria"), { recursive: true });
@@ -383,6 +484,7 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
   let finalized = false;
 
   return {
+    mode: "raw",
     runId,
     baseDir,
     keepOnSuccess,
@@ -445,6 +547,116 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[capture] http write failed for ${label}: ${message}\n`);
+      }
+    },
+  };
+}
+
+/**
+ * Create the only capture capability exposed to connectors that need selector
+ * diagnostics. The input is revalidated here, immediately before durable
+ * persistence; no page, DOM, ARIA, screenshot, trace, record, or raw HTTP
+ * writer is reachable from this object.
+ */
+export function createSafeCaptureSession(connectorName: string): SafeCaptureSession | null {
+  const activation = resolveCaptureActivation();
+  if (!activation) {
+    return null;
+  }
+
+  const runId = captureRunId();
+  const baseDir = captureBaseDir(connectorName, "safe", activation, runId);
+  try {
+    mkdirSync(baseDir, { recursive: true });
+  } catch {
+    process.stderr.write("[capture] safe capture directory unavailable\n");
+    return null;
+  }
+
+  const deadlineAt = Date.now() + SAFE_CAPTURE_DEADLINE_MS;
+  let bytes = 0;
+  let files = 0;
+  let rejected = 0;
+  let deadlineExceeded = false;
+  let succeeded = false;
+  let finalized = false;
+
+  const inventory = (): SafeCaptureInventory => ({
+    bytes,
+    deadline_at_ms: deadlineAt,
+    deadline_exceeded: deadlineExceeded,
+    files,
+    rejected,
+  });
+
+  return {
+    mode: "safe",
+    runId,
+    baseDir,
+    keepOnSuccess: activation.keepOnSuccess,
+    captureSafe(event): void {
+      if (finalized || Date.now() >= deadlineAt) {
+        deadlineExceeded = true;
+        rejected += 1;
+        return;
+      }
+      let record: SafeCaptureRecord | null;
+      try {
+        record = sanitizeSafeCaptureEvent(event);
+      } catch {
+        rejected += 1;
+        return;
+      }
+      if (!record) {
+        rejected += 1;
+        return;
+      }
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(record);
+      } catch {
+        rejected += 1;
+        return;
+      }
+      const recordBytes = Buffer.byteLength(serialized, "utf8");
+      if (
+        recordBytes > SAFE_CAPTURE_MAX_FILE_BYTES ||
+        files >= SAFE_CAPTURE_MAX_FILES ||
+        bytes + recordBytes > SAFE_CAPTURE_MAX_BYTES
+      ) {
+        rejected += 1;
+        return;
+      }
+      const label = record.kind === "artifact_metadata" ? "artifact" : "surface";
+      const file = join(baseDir, `${String(files + 1).padStart(4, "0")}-${label}.json`);
+      try {
+        writeFileSync(file, serialized, "utf8");
+        files += 1;
+        bytes += recordBytes;
+        if (Date.now() >= deadlineAt) {
+          deadlineExceeded = true;
+        }
+      } catch {
+        rejected += 1;
+        process.stderr.write("[capture] safe capture write failed\n");
+      }
+    },
+    inventory,
+    markSucceeded(): void {
+      succeeded = true;
+    },
+    finalize(): void {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
+      if (activation.keepOnSuccess || !succeeded) {
+        return;
+      }
+      try {
+        rmSync(baseDir, { force: true, recursive: true });
+      } catch {
+        process.stderr.write("[capture] safe capture cleanup failed\n");
       }
     },
   };

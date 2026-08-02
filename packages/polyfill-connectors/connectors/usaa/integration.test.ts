@@ -42,14 +42,12 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "playwright";
+import type { BodyResponseCandidateDiagnostic } from "../../src/browser-artifact-response.ts";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
-import type { CaptureSession } from "../../src/fixture-capture.ts";
+import type { SafeCaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildIndexRows,
@@ -72,7 +70,6 @@ import {
   runSingleLadderAttempt,
   shouldParseStatementTitle,
   tryExportLadder,
-  USAA_FALLBACK_SERIALIZED_BYTES_MAX,
   USAA_RETRYABLE_PATTERN,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -219,57 +216,6 @@ function makeNoExportPage(
     },
     url() {
       return finalUrl;
-    },
-  });
-}
-
-function makeNoExportFallbackPage(controlLabel: string): Page {
-  return Object.assign({} as Page, {
-    evaluate(_fn: (...args: unknown[]) => unknown, arg?: unknown) {
-      if (arg && typeof arg === "object" && "accountDetail" in (arg as Record<string, unknown>)) {
-        return Promise.resolve({
-          account_detail_marker_count: 1,
-          export_affordance_candidates: [],
-          navigation_marker_count: 2,
-          target_count: 0,
-          transaction_marker_count: 1,
-        });
-      }
-      if (arg && typeof arg === "object" && "exportAffordance" in (arg as Record<string, unknown>)) {
-        return Promise.resolve({ candidateCount: 0, candidates: [], controlCount: 0, controls: [] });
-      }
-      return Promise.resolve([
-        {
-          aria_disabled: false,
-          class_name: "activity-control",
-          disabled: false,
-          href_path: "/my/activity?accountId=ACCT-CHK-0001&email=owner@example.com",
-          label: controlLabel,
-          role: "button",
-          tag: "BUTTON",
-          type: "button",
-          visible: true,
-        },
-      ]);
-    },
-    goto() {
-      return Promise.resolve(null);
-    },
-    locator() {
-      return {
-        count() {
-          return Promise.resolve(0);
-        },
-        filter() {
-          return this;
-        },
-      };
-    },
-    title() {
-      return Promise.resolve("OTP 123456 owner@example.com ACCT-CHK-0001");
-    },
-    url() {
-      return "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001";
     },
   });
 }
@@ -1035,36 +981,30 @@ test("driveExport records account, challenge, and unrelated routes through the a
 });
 
 test("driveExport keeps a wrong-account route retryable instead of classifying terminal absence", async () => {
-  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-wrong-route-"));
-  try {
-    const diagnostics: DiagnosticInfo[] = [];
-    const outcome = await driveExport(
-      makeNoExportPage("https://www.usaa.com/my/checking?accountId=ACCT-CC-0001", {
-        account_detail_marker_count: 1,
-        export_affordance_candidates: [],
-        navigation_marker_count: 2,
-        target_count: 0,
-        transaction_marker_count: 1,
-      }),
-      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
-      {
-        fallbackDiagnosticRootOverride: captureRoot,
-        onDiagnostics: (info) => diagnostics.push(info),
-        settleDelayMs: 0,
-        sinceDate: "2026-01-01",
-        untilDate: "2026-07-16",
-      }
-    );
-    assert.deepEqual(outcome, { kind: "failed" });
-    const [diag] = diagnostics;
-    assert.ok(diag);
-    assert.equal(diag.account_page_identity, "mismatch");
-    assert.equal(diag.no_export_observation?.route, "unknown");
-    assert.equal(classifyTerminalExportFailure(diag), null);
-    assert.equal(classifyExportLadderOutcome(diag), "navigation_drifted");
-  } finally {
-    rmSync(captureRoot, { force: true, recursive: true });
-  }
+  const diagnostics: DiagnosticInfo[] = [];
+  const outcome = await driveExport(
+    makeNoExportPage("https://www.usaa.com/my/checking?accountId=ACCT-CC-0001", {
+      account_detail_marker_count: 1,
+      export_affordance_candidates: [],
+      navigation_marker_count: 2,
+      target_count: 0,
+      transaction_marker_count: 1,
+    }),
+    "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+    {
+      onDiagnostics: (info) => diagnostics.push(info),
+      settleDelayMs: 0,
+      sinceDate: "2026-01-01",
+      untilDate: "2026-07-16",
+    }
+  );
+  assert.deepEqual(outcome, { kind: "failed" });
+  const [diag] = diagnostics;
+  assert.ok(diag);
+  assert.equal(diag.account_page_identity, "mismatch");
+  assert.equal(diag.no_export_observation?.route, "unknown");
+  assert.equal(classifyTerminalExportFailure(diag), null);
+  assert.equal(classifyExportLadderOutcome(diag), "navigation_drifted");
 });
 
 test("terminal classifiers require exact page identity even when route evidence claims expected", () => {
@@ -1096,56 +1036,6 @@ test("terminal classifiers require exact page identity even when route evidence 
   };
   assert.equal(classifyTerminalExportFailure(wrongDialog), null);
   assert.equal(classifyExportLadderOutcome(wrongDialog), "navigation_drifted");
-});
-
-test("driveExport writes a redacted, byte-bounded alternate-surface receipt for a terminal no-export observation", async () => {
-  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-no-export-capture-"));
-  try {
-    const first = await driveExport(
-      makeNoExportFallbackPage("View activity"),
-      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
-      {
-        fallbackDiagnosticRootOverride: captureRoot,
-        settleDelayMs: 0,
-        sinceDate: "2026-01-01",
-        untilDate: "2026-07-16",
-      }
-    );
-    assert.deepEqual(first, { kind: "failed" });
-
-    const fallbackPath = join(captureRoot, "usaa", "diagnostics", "no-export-affordance.json");
-    const written = JSON.parse(await readFile(fallbackPath, "utf8"));
-    assert.equal(written.phase, "no_export_affordance");
-    assert.equal(written.observation.route, "expected");
-    assert.equal(written.observation.target_count, 0);
-    assert.equal(written.surface_controls.length, 1);
-    assert.equal(written.page_title, null);
-    assert.equal(written.surface_controls[0].label, "");
-    assert.equal(written.surface_controls[0].href_path, null);
-    assert.equal(written.surface_controls[0].class_name, "");
-    assert.ok(
-      Buffer.byteLength(await readFile(fallbackPath, "utf8"), "utf8") <= USAA_FALLBACK_SERIALIZED_BYTES_MAX,
-      "fallback JSON must stay below the serialized-byte cap"
-    );
-    assert.doesNotMatch(JSON.stringify(written), /OTP 123456|owner@example\.com|ACCT-CHK-0001|View activity/);
-
-    const second = await driveExport(
-      makeNoExportFallbackPage("Statements"),
-      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
-      {
-        fallbackDiagnosticRootOverride: captureRoot,
-        settleDelayMs: 0,
-        sinceDate: "2026-01-01",
-        untilDate: "2026-07-16",
-      }
-    );
-    assert.deepEqual(second, { kind: "failed" });
-    const rewritten = JSON.parse(await readFile(fallbackPath, "utf8"));
-    assert.equal(rewritten.surface_controls[0].label, "");
-    assert.doesNotMatch(JSON.stringify(rewritten), /View activity|Statements/);
-  } finally {
-    rmSync(captureRoot, { force: true, recursive: true });
-  }
 });
 
 // ─── Regression: navigation-drift no-export-affordance (2026-07-14 live capture) ─
@@ -1336,81 +1226,6 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
   });
 }
 
-/** Same shape as makeDialogNotOpenPage, but the dialog DOES render (a
- *  `[role="dialog"]` element with real innerHTML) — just never gets the
- *  expected `select[name="selectionType"]`, so it still falls into the
- *  unexpected-shape branch, but this time with a real (non-null)
- *  `dialog_html_preview`. The fixture supports the in-memory diagnostic path;
- *  the durable fallback receipt must still contain no DOM/title evidence. */
-function makeDialogWrongShapePage(dialogHtml: string, pageTitle = "Bank Account Summary | USAA"): Page {
-  return Object.assign({} as Page, {
-    evaluate() {
-      return Promise.resolve({
-        dialog_html_preview: null,
-        dialogs_open: 1,
-        export_candidates: [],
-        has_utility_bar: false,
-        nav_candidates: [],
-        title: pageTitle,
-        url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
-      });
-    },
-    goto() {
-      return Promise.resolve(null);
-    },
-    keyboard: {
-      press() {
-        return Promise.resolve();
-      },
-    },
-    locator(selector: string) {
-      if (selector === "button.ent-as-utility-bar__item.export") {
-        return {
-          click() {
-            return Promise.resolve();
-          },
-          count() {
-            return Promise.resolve(1);
-          },
-          first() {
-            return this;
-          },
-          isEnabled() {
-            return Promise.resolve(true);
-          },
-        };
-      }
-      if (selector === '[role="dialog"]') {
-        return {
-          first() {
-            return this;
-          },
-          innerHTML() {
-            return Promise.resolve(dialogHtml);
-          },
-        };
-      }
-      return {
-        count() {
-          return Promise.resolve(0);
-        },
-        filter() {
-          return this;
-        },
-        first() {
-          return this;
-        },
-      };
-    },
-    title() {
-      return Promise.resolve(pageTitle);
-    },
-    url() {
-      return "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001";
-    },
-  });
-}
-
 test("driveExport captures the dialog-not-open checkpoint before pressing Escape", async () => {
   const callOrder: string[] = [];
   const outcome = await driveExport(
@@ -1419,19 +1234,22 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
     {
       capture: {
         baseDir: "/tmp/unused",
-        captureDom: (_page: Page, label: string) => {
-          callOrder.push(`capture:${label}`);
-          return Promise.resolve();
-        },
-        captureHttp: (label: string): void => {
-          callOrder.push(`capture:${label}`);
+        captureSafe: (event): void => {
+          callOrder.push(`capture:${event.kind}`);
         },
         finalize: (): void => undefined,
+        inventory: () => ({
+          bytes: 0,
+          deadline_at_ms: Date.now() + 1000,
+          deadline_exceeded: false,
+          files: 0,
+          rejected: 0,
+        }),
         keepOnSuccess: true,
         markSucceeded: (): void => undefined,
-        recordRecord: (): void => undefined,
+        mode: "safe",
         runId: "test-dialog-not-open",
-      } satisfies CaptureSession,
+      } satisfies SafeCaptureSession,
       captureLabel: "usaa-export",
       settleDelayMs: 0,
       sinceDate: "2026-01-01",
@@ -1440,7 +1258,7 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
   );
 
   assert.deepEqual(outcome, { kind: "failed" });
-  const captureIdx = callOrder.indexOf("capture:usaa-surface-export_checkpoint-dialog-not-open");
+  const captureIdx = callOrder.indexOf("capture:surface_manifest");
   const escapeIdx = callOrder.indexOf("keyboard:Escape");
   assert.notEqual(captureIdx, -1, "expected a dialog-not-open checkpoint capture");
   assert.notEqual(escapeIdx, -1, "expected an Escape keypress to dismiss the dialog");
@@ -1463,8 +1281,8 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
  * reports itself enabled (proving this is the "click timed out despite
  * being enabled" path, distinct from the disabled-button short-circuit
  * covered by the "export-affordance-disabled" test below) — and asserts the
- * full call log survives into both the raw `onDiagnostics` payload and the
- * ladder-exhausted SKIP_RESULT message.
+ * only the finite error class survives both diagnostic emissions; the raw
+ * Playwright call log must not cross the diagnostic boundary.
  */
 test("driveExport surfaces the full call log on an export-click timeout, not just the first 160 chars", async () => {
   const realisticTimeoutMessage =
@@ -1526,21 +1344,14 @@ test("driveExport surfaces the full call log on an export-click timeout, not jus
   assert.deepEqual(outcome, { kind: "failed" });
   const clickFailed = diagnostics.find((d) => d.phase === "export_click_failed");
   assert.ok(clickFailed, "expected an export_click_failed diagnostic");
-  assert.match(
-    clickFailed?.error ?? "",
-    /element is covered by another element/,
-    "the actionability call log must survive truncation"
-  );
+  assert.equal(clickFailed?.error, "timeout", "only the closed error class survives diagnostic emission");
+  assert.doesNotMatch(JSON.stringify(clickFailed), /element is covered by another element|accountId=/);
 
   const { deps, messages } = makeHarness();
   await emitExportFailure(deps, makeAccount(), clickFailed ?? null);
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
-  assert.match(
-    skip.message,
-    /element is covered by another element/,
-    "the actionability evidence must reach the emitted SKIP_RESULT message, not just the in-memory diagnostic"
-  );
+  assert.doesNotMatch(skip.message, /element is covered by another element|locator\.click|accountId=/);
 });
 
 /**
@@ -1672,61 +1483,58 @@ test("driveExport short-circuits a disabled-but-present export affordance to a p
 });
 
 test("driveExport capture keeps selector state while dropping page values and raw DOM capture", async () => {
-  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-safe-surface-capture-"));
   const captured: Array<{ body: unknown; label: string }> = [];
-  let rawDomCaptureAttempted = false;
-  try {
-    const diagnostics: DiagnosticInfo[] = [];
-    const outcome = await driveExport(
-      makeCapturedDisabledExportPage(),
-      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-987654",
-      {
-        capture: {
-          baseDir: "/tmp/unused",
-          captureDom: (): Promise<void> => {
-            rawDomCaptureAttempted = true;
-            return Promise.resolve();
-          },
-          captureHttp: (label: string, body: unknown): void => {
-            captured.push({ body, label });
-          },
-          finalize: (): void => undefined,
-          keepOnSuccess: true,
-          markSucceeded: (): void => undefined,
-          recordRecord: (): void => undefined,
-          runId: "test-safe-surface-capture",
-        } satisfies CaptureSession,
-        fallbackDiagnosticRootOverride: captureRoot,
-        onDiagnostics: (info) => diagnostics.push(info),
-        settleDelayMs: 0,
-        sinceDate: "2026-01-01",
-        untilDate: "2026-07-16",
-      }
-    );
+  const diagnostics: DiagnosticInfo[] = [];
+  const outcome = await driveExport(
+    makeCapturedDisabledExportPage(),
+    "https://www.usaa.com/my/checking?accountId=ACCT-CHK-987654",
+    {
+      capture: {
+        baseDir: "/tmp/unused",
+        captureSafe: (event): void => {
+          captured.push({ body: event.payload, label: event.kind });
+        },
+        finalize: (): void => undefined,
+        inventory: () => ({
+          bytes: 0,
+          deadline_at_ms: Date.now() + 1000,
+          deadline_exceeded: false,
+          files: 0,
+          rejected: 0,
+        }),
+        keepOnSuccess: true,
+        markSucceeded: (): void => undefined,
+        mode: "safe",
+        runId: "test-safe-surface-capture",
+      } satisfies SafeCaptureSession,
+      onDiagnostics: (info) => diagnostics.push(info),
+      settleDelayMs: 0,
+      sinceDate: "2026-01-01",
+      untilDate: "2026-07-16",
+    }
+  );
 
-    assert.deepEqual(outcome, { kind: "failed" });
-    assert.equal(rawDomCaptureAttempted, false);
-    assert.ok(captured.some(({ label }) => label === "usaa-surface-account_page_settled"));
-    assert.ok(captured.some(({ label }) => label === "usaa-surface-after_export_affordance_probe"));
-    const probeCapture = captured.find(({ label }) => label === "usaa-surface-after_export_affordance_probe");
-    assert.ok(probeCapture);
-    const probe = probeCapture?.body as {
-      candidates: Record<string, unknown>[];
-      controls: Record<string, unknown>[];
-    };
-    assert.deepEqual(probe.candidates[0]?.class_tokens, ["as_credit__utility-bar-item", "as_credit__export"]);
-    assert.equal(probe.candidates[0]?.disabled, true);
-    assert.equal(probe.candidates[0]?.visible, false);
-    assert.equal(probe.candidates[1]?.text_category, "csv");
-    assert.equal(probe.controls[0]?.name, "selectionType");
-    const serialized = JSON.stringify(captured);
-    assert.doesNotMatch(serialized, /987654|PRIVATE MERCHANT|account-/);
-    assert.doesNotMatch(serialized, /"(?:text|id|href|url)"/);
-    const diagnostic = diagnostics.find((info) => info.phase === "no_export_affordance");
-    assert.equal(diagnostic?.no_export_observation?.surface_manifest?.candidates[0]?.disabled, true);
-  } finally {
-    rmSync(captureRoot, { force: true, recursive: true });
-  }
+  assert.deepEqual(outcome, { kind: "failed" });
+  assert.ok(captured.some(({ label }) => label === "surface_manifest"));
+  const probeCapture = captured.find(
+    ({ label, body }) =>
+      label === "surface_manifest" && (body as { phase?: string }).phase === "after_export_affordance_probe"
+  );
+  assert.ok(probeCapture);
+  const probe = probeCapture?.body as {
+    candidates: Record<string, unknown>[];
+    controls: Record<string, unknown>[];
+  };
+  assert.deepEqual(probe.candidates[0]?.class_tokens, ["as_credit__utility-bar-item", "as_credit__export"]);
+  assert.equal(probe.candidates[0]?.disabled, true);
+  assert.equal(probe.candidates[0]?.visible, false);
+  assert.equal(probe.candidates[1]?.text_category, "csv");
+  assert.equal(probe.controls[0]?.name, "selectionType");
+  const serialized = JSON.stringify(captured);
+  assert.doesNotMatch(serialized, /987654|PRIVATE MERCHANT|account-/);
+  assert.doesNotMatch(serialized, /"(?:text|id|href|url)"/);
+  const diagnostic = diagnostics.find((info) => info.phase === "no_export_affordance");
+  assert.equal(diagnostic?.no_export_observation?.surface_manifest?.candidates[0]?.disabled, true);
 });
 
 /**
@@ -1808,86 +1616,6 @@ test("driveExport surfaces export_affordance_disabled as its own reason for a no
   assert.equal(skip.reason, "export_affordance_disabled");
   assert.match(skip.message, /remained disabled/);
   assert.deepEqual(skip.recovery_hint, { action: "capture_live_surface", retryable: false });
-});
-
-/**
- * Regression for the 2026-07-31 gate finding: the live pending gap on
- * 0002-qjnDfcbON1LHLxlg2AtzmEHo failed with phase=export_dialog_unexpected_shape,
- * and neither PDPP_CAPTURE_FIXTURES nor PDPP_CAPTURE_ON_FAILURE was set for
- * that run, so no dom/*.html checkpoint exists and the durable diagnostic
- * (`sanitizeDiagnosticInfo`) nulls dialog_html_preview before it reaches the
- * DB — the DOM shape that caused the failure is unrecoverable after the
- * fact. The bounded fallback write in `openExportDialog`'s !selectCount
- * branch fires unconditionally (not gated on `options.capture` or even
- * `onDiagnostics`) and closes that gap for the *next* occurrence. This test
- * drives driveExport with no `capture`/`onDiagnostics` at all (matching the
- * live run's actual configuration — this file's other tests always pass at
- * least a fake capture session or onDiagnostics callback; this one
- * deliberately passes neither) and asserts the fallback file lands anyway,
- * bounded to a single fixed filename (proving it can't grow unbounded
- * across repeated failures), strictly redacted, and hard-capped by serialized
- * UTF-8 bytes (proving hostile titles and DOM cannot reach disk).
- *
- * Uses `fallbackDiagnosticRootOverride` rather than mutating
- * `process.env.PDPP_CAPTURE_ROOT_DIR`: this file's tests run as concurrent
- * top-level test() calls by default, so a shared env mutation races with
- * unrelated tests in the same process.
- */
-test("driveExport writes a bounded fallback capture for export_dialog_unexpected_shape even with no capture session configured", async () => {
-  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-fallback-capture-"));
-  try {
-    const longDialogHtml = `<div data-otp="123456" data-email="owner@example.com" data-account-id="ACCT-CHK-0001">${"x".repeat(2000)}</div>`;
-    const hostileTitle = `OTP 123456 owner@example.com ACCT-CHK-0001 ${"T".repeat(1_000_000)}`;
-    const outcome = await driveExport(
-      makeDialogWrongShapePage(longDialogHtml, hostileTitle),
-      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
-      {
-        // Deliberately no `capture` and no `onDiagnostics` — matches
-        // PDPP_CAPTURE_FIXTURES / PDPP_CAPTURE_ON_FAILURE both being unset
-        // and no live diagnostics listener, as on the live 07-31 run.
-        fallbackDiagnosticRootOverride: captureRoot,
-        settleDelayMs: 0,
-        sinceDate: "2026-01-01",
-        untilDate: "2026-07-16",
-      }
-    );
-    assert.deepEqual(outcome, { kind: "failed" });
-
-    const fallbackPath = join(captureRoot, "usaa", "diagnostics", "export-dialog-unexpected-shape.json");
-    const written = JSON.parse(await readFile(fallbackPath, "utf8"));
-    assert.equal(written.phase, "export_dialog_unexpected_shape");
-    assert.equal(written.page_title, null);
-    assert.equal(written.dialog_html_preview, null);
-    assert.ok(
-      Buffer.byteLength(await readFile(fallbackPath, "utf8"), "utf8") <= USAA_FALLBACK_SERIALIZED_BYTES_MAX,
-      "fallback JSON must stay below the serialized-byte cap"
-    );
-    assert.doesNotMatch(
-      JSON.stringify(written),
-      /123456|owner@example\.com|ACCT-CHK-0001|unexpected-promo-dialog|x{601}/,
-      "fallback must not persist OTP, email, account id, DOM, or hostile title evidence"
-    );
-
-    // A second occurrence overwrites, not accumulates — the whole point of
-    // "bounded" is a fixed single file, not one per run.
-    const secondOutcome = await driveExport(
-      makeDialogWrongShapePage(`<div>${"y".repeat(2000)}</div>`, `SECOND ${"Y".repeat(1_000_000)}`),
-      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
-      {
-        fallbackDiagnosticRootOverride: captureRoot,
-        settleDelayMs: 0,
-        sinceDate: "2026-01-01",
-        untilDate: "2026-07-16",
-      }
-    );
-    assert.deepEqual(secondOutcome, { kind: "failed" });
-    const rewritten = JSON.parse(await readFile(fallbackPath, "utf8"));
-    assert.equal(rewritten.page_title, null);
-    assert.equal(rewritten.dialog_html_preview, null);
-    assert.doesNotMatch(JSON.stringify(rewritten), /x{20}|y{20}|SECOND/);
-  } finally {
-    rmSync(captureRoot, { force: true, recursive: true });
-  }
 });
 
 test("runSingleLadderAttempt retains a logon interstitial on the existing re-auth failure outcome", async () => {
@@ -2059,12 +1787,11 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
   assert.ok(skip);
   assert.match(skip.message, /export_artifact_wait_failed/);
   assert.match(skip.message, /page=unavailable/);
-  assert.match(skip.message, /artifact cdpReady=true candidates=2 matched=0 bodyErrors=1/);
-  assert.match(skip.message, /firstCandidate=cdp,200,not_expected_body,128B,text\/plain/);
-  assert.doesNotMatch(skip.message, /url=https?:\/\//);
-  assert.match(skip.message, /body_response_timeout/);
+  assert.match(skip.message, /artifact candidates=2/);
+  assert.doesNotMatch(skip.message, /firstCandidate|body_response_timeout|Protocol error|url=https?:\/\//);
   const emittedDiag = skip.diagnostics as DiagnosticInfo;
   assert.equal(emittedDiag.artifact?.candidates[0]?.url, "", "artifact candidate URL is redacted before emission");
+  assert.doesNotMatch(JSON.stringify(emittedDiag), /Protocol error|body_response_timeout|www\.usaa\.com/);
 });
 
 test("emitExportFailure: download diagnostics surface non-PII wait evidence when present", async () => {
@@ -2104,11 +1831,141 @@ test("emitExportFailure: download diagnostics surface non-PII wait evidence when
   assert.doesNotMatch(skip.message, /https?:\/\/|transaction_history\.csv/);
   assert.match(skip.message, /bytes=0/);
   assert.match(skip.message, /source=createReadStream/);
-  assert.match(skip.message, /saveAsError=saveAs_returned_zero_bytes/);
-  assert.match(skip.message, /downloadFailure=Download canceled by remote/);
+  assert.doesNotMatch(skip.message, /saveAs_returned_zero_bytes|Download canceled by remote/);
   const emittedDiag = skip.diagnostics as DiagnosticInfo;
   assert.equal(emittedDiag.download?.url, null, "download URL is redacted before emission");
   assert.equal(emittedDiag.download?.suggestedFilename, null, "download filename is redacted before emission");
+  assert.doesNotMatch(
+    JSON.stringify(emittedDiag),
+    /saveAs_returned_zero_bytes|Download canceled by remote|transactionDownload/
+  );
+});
+
+test("USAA emission sanitizer drops mutated selector, artifact, URL, token, and error values", async () => {
+  const rawValues = [
+    "raw-class-account-123",
+    "raw-name-account-123",
+    "raw-error-body-token=SECRET",
+    "raw-body-PRIVATE-MERCHANT",
+    "https://www.usaa.com/export/account-123?token=SECRET",
+    "token=SECRET",
+  ] as const;
+  const hostileCandidate: BodyResponseCandidateDiagnostic & { body: string } = {
+    body: rawValues[3],
+    bodyBytes: 42,
+    bodyError: rawValues[2],
+    contentDisposition: 'attachment; filename="account-123.csv"',
+    contentType: "text/csv; charset=utf-8",
+    csvHeader: "present",
+    method: "TRACE",
+    pdfMagic: "absent",
+    reason: "body_error",
+    source: "cdp",
+    status: 200,
+    url: rawValues[4],
+  };
+  const diag: DiagnosticInfo = {
+    artifact: {
+      cdpError: rawValues[2],
+      cdpReady: true,
+      candidates: [hostileCandidate],
+      totalCdpRequestsStarted: 1,
+      totalCdpResponsesSeen: 1,
+      totalResponsesSeen: 1,
+    },
+    diag: {
+      dialog_html_preview: `<div>${rawValues[3]}</div>`,
+      dialogs_open: 1,
+      export_candidates: [{ cls: rawValues[0], id: rawValues[5], tag: "BUTTON", text: rawValues[3] }],
+      has_utility_bar: true,
+      nav_candidates: [],
+      title: rawValues[3],
+      url: rawValues[4],
+    },
+    download: {
+      bytes: 42,
+      downloadFailure: rawValues[2],
+      saveAsError: rawValues[2],
+      source: "saveAs",
+      suggestedFilename: "account-123.csv",
+      url: rawValues[4],
+    },
+    error: rawValues[2],
+    phase: "export_artifact_wait_failed",
+    surface_manifest: {
+      capture_state: "captured",
+      candidate_count: 1,
+      candidates: [
+        {
+          aria_disabled: false,
+          class_tokens: ["dialog-control", rawValues[0]],
+          disabled: false,
+          kind: "export",
+          role: "button",
+          tag: "BUTTON",
+          text_category: "export",
+          type: "button",
+          visible: true,
+        },
+      ],
+      control_count: 2,
+      controls: [
+        {
+          aria_disabled: false,
+          class_tokens: ["dialog-control", rawValues[0]],
+          disabled: false,
+          name: rawValues[1],
+          role: "combobox",
+          tag: "SELECT",
+          text_category: "other",
+          type: null,
+          visible: true,
+        },
+        {
+          aria_disabled: false,
+          class_tokens: ["dialog-control"],
+          disabled: false,
+          name: "selectionType",
+          role: "combobox",
+          tag: "SELECT",
+          text_category: "other",
+          type: null,
+          visible: true,
+        },
+      ],
+      phase: "export_dialog",
+    },
+  };
+
+  const { deps, messages } = makeHarness();
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => message.type === "SKIP_RESULT"
+  );
+  assert.ok(skip);
+  const serialized = JSON.stringify(skip);
+  for (const rawValue of rawValues) {
+    assert.doesNotMatch(serialized, new RegExp(rawValue.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  }
+  const safe = skip.diagnostics as {
+    artifact: { candidates: Array<{ method: string; url: string }> };
+    download: { source: string | null; url: string | null };
+    surface_manifest: {
+      candidates: Array<{ class_tokens: string[] }>;
+      controls: Array<{ name: string | null }>;
+    };
+  };
+  const [rawControl, safeControl] = safe.surface_manifest.controls;
+  const [safeCandidate] = safe.surface_manifest.candidates;
+  const [safeArtifact] = safe.artifact.candidates;
+  assert.ok(rawControl && safeControl && safeCandidate && safeArtifact);
+  assert.equal(rawControl.name, null);
+  assert.equal(safeControl.name, "selectionType");
+  assert.deepEqual(safeCandidate.class_tokens, ["dialog-control"]);
+  assert.equal(safeArtifact.method, "");
+  assert.equal(safeArtifact.url, "");
+  assert.equal(safe.download.source, "saveAs");
+  assert.equal(safe.download.url, null);
 });
 
 test("emitExportFailure: credit-card account uses credit_card_export_unverified reason", async () => {
@@ -2199,7 +2056,7 @@ test("driveExport surfaces bounded export-affordance actionability evidence on a
   assert.equal(candidate.aria_disabled, true);
   assert.equal(candidate.visible, false);
   assert.equal(candidate.role, "button");
-  assert.equal(candidate.tag, "BUTTON");
+  assert.equal(candidate.tag, "button");
   assert.equal(
     noAffordance?.no_export_observation?.affordance_disabled,
     false,
@@ -2228,7 +2085,7 @@ test("driveExport surfaces bounded export-affordance actionability evidence on a
   assert.equal(storedCandidate.aria_disabled, true);
   assert.equal(storedCandidate.visible, false);
   assert.equal(storedCandidate.role, "button");
-  assert.equal(storedCandidate.tag, "BUTTON");
+  assert.equal(storedCandidate.tag, "button");
   assert.equal(storedCandidate.id, null, "raw id must be redacted before durable storage");
   assert.equal(storedCandidate.text, "", "free-text (which could carry account data) must be redacted");
   assert.equal(

@@ -12,9 +12,33 @@ import {
   type PlaywrightDownloadLike,
   readPlaywrightDownloadBuffer,
   readPlaywrightDownloadBufferDetailed,
+  safeSuggestedFilename,
   savePlaywrightDownload,
   savePlaywrightDownloadDetailed,
 } from "./playwright-download.ts";
+
+test("safeSuggestedFilename rejects dot segments and path separators before any write", async () => {
+  const outside = join(tmpdir(), `pdpp-download-traversal-${process.pid}-${Date.now()}.txt`);
+  for (const filename of [".", "..", "../escape.csv", "..\\escape.csv", "nested/escape.csv", "nested\\escape.csv"]) {
+    assert.throws(() => safeSuggestedFilename(filename), /invalid_download_filename/);
+  }
+  const mock: PlaywrightDownloadLike = {
+    suggestedFilename: () => "../escape.csv",
+    saveAs: async () => {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(outside, "must not be written");
+    },
+  };
+  await assert.rejects(readPlaywrightDownloadBufferDetailed(mock), /invalid_download_filename/);
+  assert.equal(
+    await (await import("node:fs/promises")).access(outside).then(
+      () => true,
+      () => false
+    ),
+    false
+  );
+  await rm(outside, { force: true });
+});
 
 test("savePlaywrightDownload: delegates artifact waiting to saveAs without reading path()", async () => {
   const calls: string[] = [];
