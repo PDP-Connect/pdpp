@@ -54,8 +54,8 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { existsSync, readdirSync, type Stats, statSync } from "node:fs";
+import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -531,19 +531,24 @@ export function runSlackdump(
 async function ensureWorkspaceCached({
   token,
   cookie,
+  workspace,
   env,
 }: {
   token: string;
   cookie: string;
+  workspace: string;
   env: NodeJS.ProcessEnv;
-}): Promise<void> {
+}): Promise<SlackdumpAuthProof | null> {
   try {
     const { stdout } = await runSlackdump(["workspace", "list"], {
       env,
       timeoutMs: 10_000,
     });
     if (WORKSPACE_LIST_ARROW.test(stdout)) {
-      return;
+      const provider = await loadSlackdumpProviderAuth(env, workspace);
+      if (provider) {
+        return provider;
+      }
     }
   } catch {
     /* fall through to register */
@@ -552,6 +557,7 @@ async function ensureWorkspaceCached({
     env,
     timeoutMs: 30_000,
   });
+  return loadSlackdumpProviderAuth(env, workspace);
 }
 
 // ─── Option parsing / credentials ──────────────────────────────────────
@@ -568,6 +574,79 @@ interface SlackdumpProviderFile {
 }
 
 const SLACKDUMP_WORKSPACE_NAME_RE = /^[A-Za-z0-9_-]+$/u;
+const SLACKDUMP_PROVIDER_MAX_BYTES = 16 * 1024;
+const SLACKDUMP_MARKER_MAX_BYTES = 256;
+const SLACKDUMP_TOKEN_MAX_LENGTH = 256;
+const SLACKDUMP_COOKIE_MAX_LENGTH = 4096;
+const SLACKDUMP_CLIENT_TOKEN_RE = /^xoxc-[0-9]+-[0-9]+-[0-9]+-[0-9a-z]{64}$/u;
+const SLACKDUMP_D_COOKIE_RE = /^xoxd-[A-Za-z0-9%._~-]+$/u;
+
+interface SlackdumpProviderFileStat {
+  dev: number;
+  ino: number;
+  mtimeMs: number;
+  size: number;
+}
+
+export interface SlackdumpAuthProof {
+  cookie: string;
+  providerName: string;
+  providerPath: string;
+  providerStat: SlackdumpProviderFileStat;
+  token: string;
+}
+
+interface BoundedRegularFile {
+  raw: string;
+  stat: SlackdumpProviderFileStat;
+}
+
+async function readBoundedRegularFile(filePath: string, maxBytes: number): Promise<BoundedRegularFile | null> {
+  let fileStat: Stats;
+  try {
+    fileStat = await lstat(filePath);
+  } catch {
+    return null;
+  }
+  if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > maxBytes) {
+    return null;
+  }
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
+  if (new TextEncoder().encode(raw).byteLength > maxBytes) {
+    return null;
+  }
+  return {
+    raw,
+    stat: {
+      dev: fileStat.dev,
+      ino: fileStat.ino,
+      mtimeMs: fileStat.mtimeMs,
+      size: fileStat.size,
+    },
+  };
+}
+
+async function providerFileStillCurrent(proof: SlackdumpAuthProof): Promise<boolean> {
+  let fileStat: Stats;
+  try {
+    fileStat = await lstat(proof.providerPath);
+  } catch {
+    return false;
+  }
+  return (
+    fileStat.isFile() &&
+    !fileStat.isSymbolicLink() &&
+    fileStat.dev === proof.providerStat.dev &&
+    fileStat.ino === proof.providerStat.ino &&
+    fileStat.mtimeMs === proof.providerStat.mtimeMs &&
+    fileStat.size === proof.providerStat.size
+  );
+}
 
 /**
  * Parse only the credential fields that Slackdump's official provider cache
@@ -576,19 +655,36 @@ const SLACKDUMP_WORKSPACE_NAME_RE = /^[A-Za-z0-9_-]+$/u;
  * remains the only component allowed to decrypt them.
  */
 export function parseSlackdumpProviderAuth(raw: string): Pick<SlackCredentials, "cookie" | "token"> | null {
-  let provider: SlackdumpProviderFile;
+  if (new TextEncoder().encode(raw).byteLength > SLACKDUMP_PROVIDER_MAX_BYTES) {
+    return null;
+  }
+  let parsed: unknown;
   try {
-    provider = JSON.parse(raw) as SlackdumpProviderFile;
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }
-  const token = typeof provider.Token === "string" ? provider.Token : null;
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+  const provider = parsed as SlackdumpProviderFile;
+  const token =
+    typeof provider.Token === "string" &&
+    provider.Token.length <= SLACKDUMP_TOKEN_MAX_LENGTH &&
+    SLACKDUMP_CLIENT_TOKEN_RE.test(provider.Token)
+      ? provider.Token
+      : null;
   const cookies = Array.isArray(provider.Cookie) ? provider.Cookie : [];
   const dCookie = cookies.find(
     (cookieEntry): cookieEntry is { Name?: unknown; Value?: unknown } =>
       typeof cookieEntry === "object" && cookieEntry !== null && (cookieEntry as { Name?: unknown }).Name === "d"
   );
-  const dCookieValue = typeof dCookie?.Value === "string" ? dCookie.Value : null;
+  const dCookieValue =
+    typeof dCookie?.Value === "string" &&
+    dCookie.Value.length <= SLACKDUMP_COOKIE_MAX_LENGTH &&
+    SLACKDUMP_D_COOKIE_RE.test(dCookie.Value)
+      ? dCookie.Value
+      : null;
   if (!(token && dCookieValue)) {
     return null;
   }
@@ -601,40 +697,70 @@ function slackdumpCacheDir(env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Reuse the provider that the Slackdump archive just proved usable. The
- * connector's existing `workspace list`/`resume` subprocess is the authority
- * for selecting and validating this provider; this read only bridges its
- * already-plain provider representation into the existing browser transport.
- * If the provider is encrypted or absent, return null and preserve the
- * existing explicitly supplied credential path.
+ * Load the already-selected plain provider as a pre-invocation candidate. The
+ * caller pins its name into the same Slackdump archive/resume invocation and
+ * carries this proof forward; the archive WORKSPACE URL is the separate
+ * identity check before the browser transport can consume it. If the provider
+ * is encrypted or absent, return null and preserve explicit credentials.
  */
 export async function loadSlackdumpProviderAuth(
-  env: NodeJS.ProcessEnv = process.env
-): Promise<Pick<SlackCredentials, "cookie" | "token"> | null> {
+  env: NodeJS.ProcessEnv = process.env,
+  requestedWorkspace?: string
+): Promise<SlackdumpAuthProof | null> {
   const cacheDir = slackdumpCacheDir(env);
-  let workspace = "default";
-  try {
-    const marker = (await readFile(join(cacheDir, "workspace.txt"), "utf8")).trim();
-    if (SLACKDUMP_WORKSPACE_NAME_RE.test(marker)) {
-      workspace = marker;
-    }
-  } catch {
-    // Slackdump's historical default provider is selected when the marker is absent.
+  const markerFile = await readBoundedRegularFile(join(cacheDir, "workspace.txt"), SLACKDUMP_MARKER_MAX_BYTES);
+  const marker = markerFile?.raw.trim() ?? "";
+  let workspace: string | null = null;
+  if (SLACKDUMP_WORKSPACE_NAME_RE.test(marker)) {
+    workspace = marker;
+  } else if (requestedWorkspace === "default") {
+    workspace = "default";
+  }
+  if (!workspace) {
+    return null;
   }
   const filename = workspace === "default" ? "provider.bin" : `${workspace}.bin`;
-  try {
-    return parseSlackdumpProviderAuth(await readFile(join(cacheDir, filename), "utf8"));
-  } catch {
+  const providerPath = join(cacheDir, filename);
+  const providerFile = await readBoundedRegularFile(providerPath, SLACKDUMP_PROVIDER_MAX_BYTES);
+  if (!providerFile) {
     return null;
+  }
+  const provider = parseSlackdumpProviderAuth(providerFile.raw);
+  if (!provider) {
+    return null;
+  }
+  return {
+    ...provider,
+    providerName: workspace,
+    providerPath,
+    providerStat: providerFile.stat,
+  };
+}
+
+function archiveWorkspaceMatches(archiveWorkspaceUrl: string | null, requestedWorkspace: string): boolean {
+  if (!archiveWorkspaceUrl) {
+    return false;
+  }
+  try {
+    const hostname = new URL(archiveWorkspaceUrl).hostname.toLowerCase();
+    return hostname === `${requestedWorkspace.toLowerCase()}.slack.com`;
+  } catch {
+    return false;
   }
 }
 
 export async function resolveSlackApiCredentials(
   credentials: SlackCredentials,
-  env: NodeJS.ProcessEnv = process.env
+  proof: SlackdumpAuthProof | null,
+  archiveWorkspaceUrl: string | null
 ): Promise<SlackCredentials> {
-  const provider = await loadSlackdumpProviderAuth(env);
-  return provider ? { ...credentials, ...provider } : credentials;
+  if (!(proof && archiveWorkspaceMatches(archiveWorkspaceUrl, credentials.workspace))) {
+    return credentials;
+  }
+  if (!(await providerFileStillCurrent(proof))) {
+    return credentials;
+  }
+  return { ...credentials, cookie: proof.cookie, token: proof.token };
 }
 
 interface SlackOpts {
@@ -692,10 +818,9 @@ function readSlackOptions(): SlackOpts {
 /**
  * Build a slackdump child env, pruning SLACK_WORKSPACE / SLACK_TOKEN /
  * SLACK_COOKIE from the parent env (they were extracted from `credentials`).
- * IMPORTANT: we do NOT pass SLACK_WORKSPACE to slackdump — slackdump names
- * its cached workspaces by auto-detection (usually "default"), and setting
- * SLACK_WORKSPACE to the subdomain makes slackdump look for a cached
- * workspace with that literal name and fail.
+ * The selected provider name is passed explicitly as the Slackdump
+ * `-workspace` flag after the cache proof is captured; the mutable workspace
+ * environment variable is never used as provider identity.
  */
 function buildChildEnv(token: string, cookie: string): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
@@ -883,6 +1008,7 @@ interface ArchiveRuntimeDeps {
   timeFrom: string | null;
   timeTo: string | null;
   token: string;
+  workspace: string;
 }
 
 interface MessageSourceCacheReconciliation {
@@ -988,7 +1114,7 @@ async function refreshScopedArchive(
   deps: ArchiveRuntimeDeps,
   options: { dueForResume: boolean }
 ): Promise<RefreshScopedArchiveResult> {
-  const { childEnv, cookie, opts, progress, timeFrom, timeTo, token } = deps;
+  const { childEnv, cookie, opts, progress, timeFrom, timeTo, token, workspace } = deps;
   if (!options.dueForResume) {
     progress(
       `Slack: scoped archive at ${archive.paths.archivePath} not due for resume yet ` +
@@ -1013,6 +1139,7 @@ async function refreshScopedArchive(
       timeTo,
       token,
       useResume,
+      workspace,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1059,7 +1186,7 @@ async function repairMissingScopedArchive(
   missingChannelIds: readonly string[],
   deps: ArchiveRuntimeDeps
 ): Promise<ScopedArchiveRepairResult> {
-  const { childEnv, cookie, opts, progress, timeFrom, timeTo, token } = deps;
+  const { childEnv, cookie, opts, progress, timeFrom, timeTo, token, workspace } = deps;
   const repairPaths = resolveScopedArchivePaths(baseArchivePaths, missingChannelIds);
   const useResume = existsSync(repairPaths.archivePath);
   try {
@@ -1077,6 +1204,7 @@ async function repairMissingScopedArchive(
       timeTo,
       token,
       useResume,
+      workspace,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1393,13 +1521,17 @@ interface ArchiveArgsInput {
   archivePath: string;
   opts: SlackOpts;
   positionalChannels: string[];
+  providerName: string | null;
   timeFrom: string | null;
   timeTo: string | null;
 }
 
 function buildArchiveArgs(input: ArchiveArgsInput): string[] {
-  const { apiConfigPath, archivePath, opts, positionalChannels, timeFrom, timeTo } = input;
+  const { apiConfigPath, archivePath, opts, positionalChannels, providerName, timeFrom, timeTo } = input;
   const args = ["archive", "-y", "-no-encryption", "-api-config", apiConfigPath, "-o", archivePath];
+  if (providerName) {
+    args.splice(3, 0, "-workspace", providerName);
+  }
   const tf = toSlackTime(timeFrom);
   const tt = toSlackTime(timeTo);
   if (tf) {
@@ -1428,6 +1560,7 @@ interface RunArchiveDeps {
   positionalChannels: string[];
   priorArchive: string | undefined;
   progress: CollectContext["progress"];
+  providerName: string | null;
   resumeTarget: string | null;
   sqlitePath: string;
   timeFrom: string | null;
@@ -1456,6 +1589,9 @@ async function runArchiveOrResume(deps: RunArchiveDeps): Promise<void> {
       `p${opts.LOOKBACK_DAYS}d`,
       resumeTarget,
     ];
+    if (deps.providerName) {
+      args.splice(2, 0, "-workspace", deps.providerName);
+    }
     await runSlackdump(args, {
       env: childEnv,
       progress,
@@ -1469,6 +1605,7 @@ async function runArchiveOrResume(deps: RunArchiveDeps): Promise<void> {
     archivePath,
     opts,
     positionalChannels: deps.positionalChannels,
+    providerName: deps.providerName,
     timeFrom: deps.timeFrom,
     timeTo: deps.timeTo,
   });
@@ -1797,6 +1934,12 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
     buildWorkspaceRecord(r, deps.emittedAt)
   );
   await declareListConsidered(deps, "workspace", considered, covered);
+}
+
+function readArchiveWorkspaceUrl(db: DatabaseSync): string | null {
+  const rows = safeAll<{ URL?: unknown }>(db, "SELECT URL FROM WORKSPACE ORDER BY CHUNK_ID DESC LIMIT 1");
+  const urls = rows.map((row) => row.URL).filter((url): url is string => typeof url === "string");
+  return urls.length === 1 ? (urls[0] ?? null) : null;
 }
 
 export async function runChannelsStream(deps: StreamDeps): Promise<void> {
@@ -2241,6 +2384,7 @@ interface EnsureArchiveDeps {
   timeTo: string | null;
   token: string;
   useResume: boolean;
+  workspace: string;
 }
 
 /**
@@ -2254,9 +2398,10 @@ interface EnsureArchiveDeps {
  * touching the network. This salvages a partial archive into PDPP records
  * instead of leaving the data stranded.
  */
-async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
+async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<SlackdumpAuthProof | null> {
   const { archivePath, sqlitePath, progress, childEnv, token, cookie } = deps;
   const skipSlackdump = process.env.PDPP_SLACK_SKIP_SLACKDUMP === "1";
+  let authProof: SlackdumpAuthProof | null = null;
   try {
     if (skipSlackdump) {
       progress(`Skipping slackdump refresh (PDPP_SLACK_SKIP_SLACKDUMP=1); reading existing archive at ${archivePath}`);
@@ -2265,7 +2410,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
       }
     } else {
       progress(`Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || "<unset>"})`);
-      await ensureWorkspaceCached({ token, cookie, env: childEnv });
+      authProof = await ensureWorkspaceCached({ token, cookie, workspace: deps.workspace, env: childEnv });
       // WHY we ship an API-limits config: slackdump's defaults set tier_3 /
       // tier_4 retries to 3, which exhausts quickly on bot-heavy channels
       // (thousands of threads × even a low rate of 500 Internal Server Errors
@@ -2280,6 +2425,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
         childEnv,
         opts: deps.opts,
         positionalChannels: deps.positionalChannels,
+        providerName: authProof?.providerName ?? null,
         priorArchive: deps.priorArchive,
         progress,
         resumeTarget: deps.resumeTarget,
@@ -2296,6 +2442,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
   if (!existsSync(sqlitePath)) {
     throw new Error(`slackdump output not found at ${sqlitePath}`);
   }
+  return authProof;
 }
 
 /**
@@ -2311,8 +2458,8 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
  * below: they are a separate, genuinely expensive historical-backfill path
  * with its own reconciliation lifecycle, and that bound is unchanged here.
  */
-async function refreshBaseArchive(deps: EnsureArchiveDeps): Promise<void> {
-  await timedPhase(deps.progress, "slackdump-subprocess", () => ensureArchiveOnDisk(deps));
+function refreshBaseArchive(deps: EnsureArchiveDeps): Promise<SlackdumpAuthProof | null> {
+  return timedPhase(deps.progress, "slackdump-subprocess", () => ensureArchiveOnDisk(deps));
 }
 
 /**
@@ -2836,7 +2983,7 @@ if (isMainModule(import.meta.url)) {
       // no cost throttle. See refreshBaseArchive's doc comment: the
       // scheduler already owns cadence, and the base resume is cheap
       // (~1.6 min live).
-      await refreshBaseArchive({
+      const archiveAuthProof = await refreshBaseArchive({
         archivePath,
         childEnv,
         cookie,
@@ -2850,15 +2997,20 @@ if (isMainModule(import.meta.url)) {
         timeTo,
         token,
         useResume,
+        workspace,
       });
-      // Slackdump has just selected and authenticated its official provider
-      // for the archive. Reuse that provider's in-memory token/cookie pair
-      // for the supplementary Web API calls so they cannot drift from the
-      // credentials that made the archive request succeed.
-      const apiCredentials = await resolveSlackApiCredentials({ workspace, token, cookie }, childEnv);
 
       const db = await timedPhase(progress, "archive-open", () =>
         Promise.resolve(new DatabaseSync(sqlitePath, { readOnly: true }))
+      );
+      // Only a successful same-run Slackdump invocation can authorize cache
+      // reuse. The archive's WORKSPACE URL proves the selected provider was
+      // for this connection; skip mode returns no proof and therefore keeps
+      // the explicitly supplied credentials.
+      const apiCredentials = await resolveSlackApiCredentials(
+        { workspace, token, cookie },
+        archiveAuthProof,
+        readArchiveWorkspaceUrl(db)
       );
       // One per-record fingerprint cursor per fingerprinted stream. The
       // primitive seeds itself from the prior cursor so a record we skip
@@ -2910,7 +3062,7 @@ if (isMainModule(import.meta.url)) {
       // growing channel's archive doesn't get a full resync every run.
       const reconciledSourceCache = await timedPhase(progress, "scoped-archive-reconcile", () =>
         reconcileMessageSourceCache({
-          archiveRuntime: { childEnv, cookie, opts, progress, timeFrom, timeTo, token },
+          archiveRuntime: { childEnv, cookie, opts, progress, timeFrom, timeTo, token, workspace },
           baseArchivePaths,
           baseChannelIds,
           detailGaps: ctx.detailGaps,
