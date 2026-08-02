@@ -1094,26 +1094,27 @@ test("recoverServedAttachmentGaps: a completed historical cursor still drains a 
 
   assert.equal(search.mock.callCount(), 1, "the recovery pass should search the message only once");
   assert.equal(fetchOne.mock.callCount(), 1, "the recovery pass should fetch the message only once");
-  assert.equal(summary.admitted, 1, "the positional prefix should admit only the oversized first gap");
-  assert.equal(summary.recovered, 1, "the admitted gap should recover");
-  assert.equal(hydrateAttachmentMock.mock.callCount(), 1, "the unadmitted gap must remain untouched");
+  assert.equal(summary.admitted, 1, "the fitting sibling should be the one admitted");
+  assert.equal(summary.recovered, 1, "the fitting sibling should recover");
+  assert.equal(summary.run_cap_deferred, 1, "the oversized first gap should receive a planned defer");
+  assert.equal(hydrateAttachmentMock.mock.callCount(), 1, "only the fitting sibling should hydrate");
 
   const recovered = harness.protocolMessages.filter((msg) => msg.type === "DETAIL_GAP_RECOVERED");
   assert.deepEqual(
     recovered.map((msg) => (msg as { gap_id?: string }).gap_id),
-    ["gap-served-oversized"],
-    "only the admitted served gap should be acknowledged as recovered"
+    ["gap-served-admitted"],
+    "only the fitting served gap should be acknowledged as recovered"
   );
 
   const coverage = buildAttachmentDetailCoverageMessage(attachmentCoverage);
   assert.equal(coverage.considered, 1, "only the admitted gap should count toward considered");
   assert.equal(coverage.covered, 1, "the admitted gap hydrated successfully");
-  assert.deepEqual(coverage.required_keys, ["gmmsgid-recovery:1"]);
-  assert.equal(coverage.gap_keys, undefined, "no retryable gap should be recorded for the recovered attachment");
+  assert.deepEqual(coverage.required_keys, ["gmmsgid-recovery:2"]);
+  assert.equal(coverage.gap_keys, undefined, "the planned defer is not an attachment hydration failure");
 
   const attachments = harness.emitted.filter((record) => record.stream === "attachments");
   assert.equal(attachments.length, 1, "the unadmitted gap must not emit an attachment record");
-  assert.equal(attachments[0]?.data.id, "gmmsgid-recovery:1");
+  assert.equal(attachments[0]?.data.id, "gmmsgid-recovery:2");
 });
 
 // Regression coverage for the live-canary root cause (2026-07-31): gmail
@@ -1592,7 +1593,7 @@ test("runAttachmentBackfillAndRecoveryPass: recoveryOnly=true recovers served ga
   );
 });
 
-test("recoverServedAttachmentGaps: an oversized first candidate admits exactly one lookup, fetch, and hydration", async () => {
+test("recoverServedAttachmentGaps: an all-oversized page keeps exactly one bounded fallback hydration", async () => {
   const originalBudget = process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
   process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = String(ATTACHMENT_BACKFILL_PAGE_MIN_BYTES);
   try {
@@ -1600,7 +1601,7 @@ test("recoverServedAttachmentGaps: an oversized first candidate admits exactly o
     const servedGaps = Array.from({ length: 256 }, (_unused, index) => {
       const messageId = `gmmsgid-${String(index).padStart(3, "0")}`;
       const message = makeServedRecoveryMsg({
-        attachments: [index === 0 ? 2 * 1024 * 1024 : 16],
+        attachments: [2 * 1024 * 1024],
         emailId: messageId,
         threadId: `gmthrid-${index}`,
         uid: 1000 + index,
@@ -1656,15 +1657,19 @@ test("recoverServedAttachmentGaps: an oversized first candidate admits exactly o
       }
     );
 
-    assert.equal(search.mock.callCount(), 1, "the oversized first admitted candidate should stop the probe lane");
-    assert.equal(fetchOne.mock.callCount(), 1, "the oversized first admitted candidate should fetch once");
+    assert.equal(search.mock.callCount(), 32, "the metadata lane remains bounded by the unique-message cap");
+    assert.equal(fetchOne.mock.callCount(), 32, "only the bounded metadata prefix should fetch");
     assert.equal(
       hydrateAttachmentMock.mock.callCount(),
       1,
-      "the oversized first admitted candidate should hydrate once"
+      "an all-oversized page should hydrate only its one-item fallback"
     );
     assert.equal(summary.admitted, 1);
     assert.equal(summary.recovered, 1);
+    assert.equal(summary.admitted_bytes, 2 * 1024 * 1024);
+    assert.equal(summary.attempted, 32);
+    assert.equal(summary.metadata_lookups, 32);
+    assert.equal(summary.run_cap_deferred, 31);
     const progressMessages = emitHarness.protocolMessages.filter((msg) => msg.type === "PROGRESS");
     assert.equal(
       progressMessages.length,
@@ -1675,7 +1680,7 @@ test("recoverServedAttachmentGaps: an oversized first candidate admits exactly o
     assert.match(progressMessages[1]?.message ?? "", /phase=settled/u);
     assert.match(
       progressMessages[1]?.message ?? "",
-      /admitted=1 recovered=1 metadata_lookups=1/u,
+      /admitted=1 recovered=1 metadata_lookups=32/u,
       "the progress message should stay bounded and non-secret"
     );
   } finally {
@@ -1683,6 +1688,187 @@ test("recoverServedAttachmentGaps: an oversized first candidate admits exactly o
       delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
     } else {
       process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = originalBudget;
+    }
+  }
+});
+
+test("recoverServedAttachmentGaps: repeated live-shaped pages cannot let an oversized first item starve a smaller sibling", async () => {
+  // Read-only live evidence recorded 4.7–8.9 MB first-ranked attachments
+  // against the 4 MiB recovery budget, with repeated runs showing
+  // served=45, admitted=1, recovered=0. Reproduce that exact ordering twice:
+  // two oversized rows first, then a small sibling. The old top-of-function
+  // byte-budget stop admits/fails the first row and never even looks up the
+  // sibling. The oversized lane must inspect and attempt every bounded row,
+  // defer the two large rows honestly, and recover the small sibling on each
+  // run. This is mutation-sensitive against both the old hard stop and any
+  // accidental false recovery of the failed large hydration.
+  const originalRecoveryBudget = process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+  const originalBackfillBudget = process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+  delete process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+  delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+  try {
+    const messagesById = new Map<string, FetchMessageObject>();
+    const largeSizes = [4_700_000, 8_900_000];
+    const makeRunGaps = (smallIndex: number): DetailGapStartEntry[] => {
+      const candidates = [
+        ...largeSizes.map((size, index) => ({
+          gapId: `gap-live-large-${index}`,
+          messageId: `gmmsgid-live-large-${index}`,
+          size,
+        })),
+        {
+          gapId: `gap-live-small-${smallIndex}`,
+          messageId: `gmmsgid-live-small-${smallIndex}`,
+          size: 16_000,
+        },
+      ];
+      return candidates.map((candidate, index) => {
+        const message = makeServedRecoveryMsg({
+          attachments: [candidate.size],
+          emailId: candidate.messageId,
+          threadId: `gmthrid-live-${candidate.messageId}`,
+          uid: 9000 + smallIndex * 10 + index,
+        });
+        messagesById.set(candidate.messageId, message);
+        return makeServedRecoveryGap({
+          gapId: candidate.gapId,
+          leaseId: `lease-live-${smallIndex}-${index}`,
+          messageId: candidate.messageId,
+          partIndex: 1,
+        });
+      });
+    };
+    const firstRunGaps = makeRunGaps(0);
+    const secondRunGaps = makeRunGaps(1);
+    const search = mock.fn((query: { emailId?: string }) => {
+      const message = query.emailId ? messagesById.get(query.emailId) : undefined;
+      return Promise.resolve(message ? [message.uid ?? 0] : []);
+    });
+    const fetchOne = mock.fn((range: string) => {
+      const message = [...messagesById.values()].find((candidate) => candidate.uid === Number(range));
+      assert.ok(message, `unexpected uid lookup: ${range}`);
+      return Promise.resolve(message);
+    });
+    const hydratedIds: string[] = [];
+    const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) => {
+      hydratedIds.push(attachment.id);
+      if ((attachment.size_bytes ?? 0) > ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES) {
+        return Promise.resolve(
+          failedResult({
+            ...attachment,
+            hydration_error: "synthetic large-item hydration failure",
+            hydration_status: "failed" as const,
+          })
+        );
+      }
+      return Promise.resolve(
+        hydratedResult({
+          ...attachment,
+          blob_ref: {
+            blob_id: `blob-${attachment.id}`,
+            mime_type: attachment.content_type ?? "application/octet-stream",
+            sha256: `sha-${attachment.id}`,
+            size_bytes: attachment.size_bytes ?? 0,
+          },
+          content_sha256: `sha-${attachment.id}`,
+          content_type: attachment.content_type,
+          hydration_error: null,
+          hydration_status: "hydrated" as const,
+          size_bytes: attachment.size_bytes,
+        })
+      );
+    });
+
+    const runRecovery = async (detailGaps: readonly DetailGapStartEntry[]) => {
+      const emitHarness = makeRecordingEmit();
+      const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
+        await emitHarness.emitRecord(stream, data);
+        return true;
+      };
+      const summary = await recoverServedAttachmentGaps(
+        { search, fetchOne },
+        {
+          detailGaps,
+          emitProtocol: emitHarness.emit,
+          emitRecord,
+          hydrateAttachment: hydrateAttachmentMock as HydrateAttachmentFn,
+          recoveredAttachmentGapIds: new Set<string>(),
+        }
+      );
+      return { protocolMessages: emitHarness.protocolMessages, summary };
+    };
+
+    const firstRun = await runRecovery(firstRunGaps);
+    const secondRun = await runRecovery(secondRunGaps);
+    for (const [runNumber, run, smallGapId] of [
+      [1, firstRun, "gap-live-small-0"],
+      [2, secondRun, "gap-live-small-1"],
+    ] as const) {
+      assert.deepEqual(
+        run.summary,
+        {
+          admitted: 1,
+          admitted_bytes: 16_000,
+          attachment_hydration_failure_outcome: {
+            blob_upload_http_4xx: 0,
+            blob_upload_http_5xx: 0,
+            blob_upload_integrity_failed: 0,
+            blob_upload_invalid_response: 0,
+            blob_upload_transport_failed: 0,
+            imap_download_failed: 0,
+            unclassified_failed: 0,
+          },
+          attempted: 3,
+          hydration_failed: 0,
+          lookup_miss: 0,
+          metadata_lookups: 3,
+          recovered: 1,
+          run_cap_deferred: 2,
+          served: 3,
+        },
+        `run ${runNumber}: the bounded lane must recover the smaller sibling`
+      );
+      assert.deepEqual(
+        run.protocolMessages
+          .filter((message) => message.type === "DETAIL_GAP_RECOVERED")
+          .map((message) => (message as { gap_id?: string }).gap_id),
+        [smallGapId],
+        `run ${runNumber}: only the small sibling may recover`
+      );
+      assert.deepEqual(
+        new Set(
+          run.protocolMessages
+            .filter(
+              (message) =>
+                message.type === "DETAIL_GAP" &&
+                (message as { last_error?: { class?: string } }).last_error?.class === "run_cap_deferred"
+            )
+            .map((message) => (message as { gap_id?: string }).gap_id)
+        ),
+        new Set(["gap-live-large-0", "gap-live-large-1"]),
+        `run ${runNumber}: both oversized leases receive truthful planned settlements`
+      );
+      assert.deepEqual(
+        run.protocolMessages
+          .filter((message) => message.type === "DETAIL_GAP_ATTEMPTED")
+          .map((message) => (message as { gap_id?: string }).gap_id),
+        ["gap-live-large-0", "gap-live-large-1", smallGapId],
+        `run ${runNumber}: every served sibling is actually attempted before settlement`
+      );
+    }
+    assert.deepEqual(hydratedIds, ["gmmsgid-live-small-0:1", "gmmsgid-live-small-1:1"]);
+    assert.equal(search.mock.callCount(), 6, "both repeated pages must inspect all three unique messages");
+    assert.equal(fetchOne.mock.callCount(), 6, "both repeated pages must fetch all three metadata envelopes");
+  } finally {
+    if (originalRecoveryBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES = originalRecoveryBudget;
+    }
+    if (originalBackfillBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = originalBackfillBudget;
     }
   }
 });

@@ -224,3 +224,25 @@ and Postgres (`LEAST`) clamp branches; only the SQLite branch was proven.
       unclassified failure.
 - [x] Run focused connector/runtime oracles, typecheck, lint, strict OpenSpec
       validation, and final diff review.
+
+## 15. Revision (owner review: live-shape first-item starvation, 2026-08-01)
+
+- [x] Re-inspect the read-only live evidence and exact Gmail recovery control
+      flow; prove that an admitted 4.7–8.9 MB first item exhausts the 4 MiB
+      run budget before the mid-page overflow continuation can inspect a
+      smaller sibling.
+- [x] Keep the generic recovery governor and durable store semantics unchanged;
+      add a Gmail-local bounded oversized-item lane that probes later siblings
+      under the existing 32-message metadata cap, prioritizes a fitting
+      sibling, and retains only one oversized fallback when no fitting work is
+      available.
+- [x] Preserve truthful `DETAIL_GAP` settlement for planned defers and failed
+      hydration; never emit `DETAIL_GAP_RECOVERED` without a successful,
+      accepted hydrated record.
+- [x] Add a mutation-sensitive repeated-run regression with 4.7 MB, 8.9 MB,
+      and smaller sibling attachments proving the sibling is attempted and
+      recovered on both ordered runs while bytes and metadata lookups stay
+      bounded.
+- [x] Run Gmail/recovery tests, connector and reference typechecks, Biome,
+      mass-ratchet checks, and final diff/old-pattern review; commit a new
+      signed DCO follow-up without live mutation, deploy, push, PR, or merge.

@@ -285,3 +285,30 @@ acknowledgement, cancellation, and privacy behavior. A composed Gmail
 hydrator/recovery regression uses a plain `Error` from `uploadBlob` to prove
 the recovery function completes, leaves the item retryable, emits no recovery
 acknowledgement, and reports one unclassified failure.
+
+### Revision (owner review: live-shape first-item starvation, 2026-08-01)
+
+The owner-review closure re-inspected the available durable read-only evidence
+for `cin_12407c1afb78d56848fe0b20`: the attachment recovery spine repeatedly
+reported `served=45`, `admitted=1`, and `recovered=0`; the first-ranked MIME
+parts were approximately 4.7–8.9 MB against the 4 MiB recovery budget. The
+exact code path in `recoverServedAttachmentGaps` admitted the first candidate
+unconditionally. After a failed hydration, `admittedBytesTotal` was already
+over budget, so the next iteration returned from the top-level fully-spent
+guard before locator normalization, `DETAIL_GAP_ATTEMPTED`, metadata lookup, or
+settlement. The earlier mid-page overflow continuation therefore could not
+reach the smaller siblings in this live shape. Untouched leases were released
+without changing `last_attempt_at`, so the store's existing fair ordering had
+no new service event with which to rotate them.
+
+The follow-up keeps the generic recovery governor, store ordering, byte budget,
+lease accounting, and quarantine semantics unchanged. Gmail now holds the
+first candidate when its known cost exceeds the whole run budget, probes later
+siblings through the existing 32-unique-message cap, and gives a fitting
+candidate priority. The held candidate is settled as `run_cap_deferred` before
+that sibling hydrates, or is the sole oversized fallback when no fitting
+candidate is found. Thus metadata work remains bounded, attachment bytes do
+not become unbounded, and a failed hydration cannot emit a recovery
+acknowledgement. The exact repeated-page regression uses 4,700,000 and
+8,900,000-byte candidates plus a 16,000-byte sibling and proves the same
+smaller sibling recovers on two ordered runs.

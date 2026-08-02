@@ -2044,19 +2044,27 @@ interface ServedAttachmentRecoveryState {
 }
 
 type ServedAttachmentRecoveryLookupResult = FetchMessageObject | null | "metadata_lookup_limit_reached";
-// `byte_budget` (the pre-check at the top of `processServedAttachmentRecoveryGap`:
-// the running total has already reached the budget) is a genuine hard stop —
-// every remaining candidate, of any size, is guaranteed to hit the same wall,
-// so the caller halts the whole pass. `oversized_for_remaining_budget` (this
-// specific candidate's own byte cost would push the total over budget, but the
-// budget itself is not yet full) is NOT a hard stop: a smaller sibling later in
-// the served-gap order may still fit the remaining room. Distinguishing the two
-// is the fix for the live starvation defect where a handful of multi-MB
-// attachments — always ranked first by recency/age — perpetually reject every
-// smaller sibling behind them by halting the pass outright, so `admitted=1,
-// recovered=0` every run while 44 siblings starve untouched indefinitely (see
-// `gmail-attachment-recovery-starvation-0801.md`).
-type ServedAttachmentRecoveryStop = "byte_budget" | "metadata_lookup_cap" | "oversized_for_remaining_budget" | false;
+interface PreparedServedAttachmentRecoveryCandidate {
+  attachment: AttachmentRecord;
+  attachmentBytes: number;
+  gap: DetailGapStartEntry;
+  loadedMessage: FetchMessageObject;
+  oversized: boolean;
+}
+
+// The first candidate may be larger than the entire run budget. It is held as
+// a bounded at-least-one fallback while the existing metadata lookup lane
+// checks later candidates. A fitting sibling wins the run; the held candidate
+// is hydrated only when no fitting sibling exists. This prevents an oversized
+// first row from monopolizing every run while retaining liveness for a page
+// containing only oversized work. The candidate is deliberately not settled
+// while held: it must either be re-deferred before a sibling is hydrated or be
+// hydrated as the fallback, and every path remains truthful about hydration.
+type ServedAttachmentRecoveryResult =
+  | PreparedServedAttachmentRecoveryCandidate
+  | "metadata_lookup_cap"
+  | "oversized_for_remaining_budget"
+  | false;
 
 async function loadServedAttachmentRecoveryMessage(
   client: GmailMessageLookupClient,
@@ -2228,8 +2236,10 @@ function buildServedAttachmentRecoveryDeferredGap(
  * attempt was marked (`DETAIL_GAP_ATTEMPTED` sent, runtime-owned lease now
  * `attempted=true`) must reach EXACTLY ONE explicit, lease_id-bearing
  * terminal outcome — `DETAIL_GAP_RECOVERED` (settleServedAttachmentRecoveryAttempt's
- * hydrated branch) or a `DETAIL_GAP` re-defer via this function — before
- * `processServedAttachmentRecoveryGap` returns. The runtime's
+ * hydrated branch) or a `DETAIL_GAP` re-defer via this function — before the
+ * recovery pass returns. `processServedAttachmentRecoveryGap` may return one
+ * held first oversized candidate to its caller, but that candidate is settled
+ * before any sibling hydration or hydrated as the final fallback. The runtime's
  * `awaitLeaseAccounting` hard-fails a nominally successful run if any
  * attempted lease reaches DONE without one (reference-implementation/runtime/
  * index.ts). Route every post-attempt exit through this function (or the
@@ -2268,6 +2278,32 @@ async function markServedAttachmentRecoveryAttempt(
   });
 }
 
+async function hydratePreparedServedAttachmentRecoveryCandidate(
+  deps: {
+    attachmentCoverage?: AttachmentDetailCoverage;
+    detailGaps?: readonly DetailGapStartEntry[] | undefined;
+    emitProtocol: (msg: EmittedMessage) => Promise<void>;
+    emitRecord: EmitRecordFn;
+    hydrateAttachment: HydrateAttachmentFn;
+  },
+  candidate: PreparedServedAttachmentRecoveryCandidate,
+  state: ServedAttachmentRecoveryState
+): Promise<void> {
+  state.admitted += 1;
+  state.admittedBytesTotal += candidate.attachmentBytes;
+
+  await emitServedAttachmentRecoveryProgress(deps.emitProtocol, {
+    admitted: state.admitted,
+    metadataLookups: state.metadataLookups,
+    phase: "hydrating",
+    recovered: state.recovered,
+  });
+
+  const hydration = await deps.hydrateAttachment(candidate.loadedMessage, candidate.attachment);
+  state.hydratedAttachments.set(candidate.attachment.id, hydration);
+  await settleServedAttachmentRecoveryAttempt(deps, candidate.gap, state, hydration);
+}
+
 async function processServedAttachmentRecoveryGap(
   client: GmailMessageLookupClient,
   gap: DetailGapStartEntry,
@@ -2279,12 +2315,9 @@ async function processServedAttachmentRecoveryGap(
     hydrateAttachment: HydrateAttachmentFn;
   },
   state: ServedAttachmentRecoveryState,
-  byteBudget: number
-): Promise<ServedAttachmentRecoveryStop> {
-  if (state.admitted > 0 && state.admittedBytesTotal >= byteBudget) {
-    return "byte_budget";
-  }
-
+  byteBudget: number,
+  canReserveOversizedFallback: boolean
+): Promise<ServedAttachmentRecoveryResult> {
   const locator = normalizeGmailAttachmentRecoveryLocator(gap);
   if (!locator) {
     return false;
@@ -2306,11 +2339,10 @@ async function processServedAttachmentRecoveryGap(
   state.attemptedGapIds.add(gap.gap_id);
   await markServedAttachmentRecoveryAttempt(gap, deps.emitProtocol);
   // From this point on, the lease is attempted and MUST reach an explicit
-  // settlement before this function returns — every remaining branch below
-  // (including the cap hit mid-lookup, which the pre-check above cannot
-  // catch when a DIFFERENT gap's cache-miss lookup consumes the last slot)
-  // routes through settleServedAttachmentRecoveryDeferral or
-  // settleServedAttachmentRecoveryAttempt's DETAIL_GAP_RECOVERED emit.
+  // settlement before the recovery pass returns. The one exception is a
+  // first oversized candidate returned as a bounded fallback below; the
+  // caller settles it before hydrating a fitting sibling or hydrates it as
+  // the final at-least-one fallback.
   const loadedMessage = await loadServedAttachmentRecoveryMessage(client, locator.messageId, state);
   if (loadedMessage === "metadata_lookup_limit_reached") {
     await settleServedAttachmentRecoveryDeferral(gap, "metadata_lookup_cap", state, deps.emitProtocol);
@@ -2364,29 +2396,28 @@ async function processServedAttachmentRecoveryGap(
 
   const attachmentBytes =
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
-  if (state.admitted > 0 && state.admittedBytesTotal + attachmentBytes > byteBudget) {
+  const oversized = state.admittedBytesTotal + attachmentBytes > byteBudget;
+  if (oversized) {
+    if (state.admitted === 0 && canReserveOversizedFallback) {
+      return {
+        attachment,
+        attachmentBytes,
+        gap,
+        loadedMessage,
+        oversized: true,
+      };
+    }
     await settleServedAttachmentRecoveryDeferral(gap, "run_cap_deferred", state, deps.emitProtocol);
-    // This candidate alone doesn't fit the REMAINING budget — not the same as
-    // the budget being fully spent (the top-of-function pre-check already
-    // covers that hard stop). A smaller sibling later in the served order may
-    // still fit, so the caller continues the pass instead of halting it.
     return "oversized_for_remaining_budget";
   }
 
-  state.admitted += 1;
-  state.admittedBytesTotal += attachmentBytes;
-
-  await emitServedAttachmentRecoveryProgress(deps.emitProtocol, {
-    admitted: state.admitted,
-    metadataLookups: state.metadataLookups,
-    phase: "hydrating",
-    recovered: state.recovered,
-  });
-
-  const hydration = await deps.hydrateAttachment(loadedMessage, attachment);
-  state.hydratedAttachments.set(attachment.id, hydration);
-  await settleServedAttachmentRecoveryAttempt(deps, gap, state, hydration);
-  return false;
+  return {
+    attachment,
+    attachmentBytes,
+    gap,
+    loadedMessage,
+    oversized: false,
+  };
 }
 
 export async function recoverServedAttachmentGaps(
@@ -2440,22 +2471,54 @@ export async function recoverServedAttachmentGaps(
     hydrateAttachment: deps.hydrateAttachment,
   };
 
-  for (const [index, gap] of servedGaps.entries()) {
-    const stop = await processServedAttachmentRecoveryGap(client, gap, recoveryAttemptDeps, recoveryState, byteBudget);
-    if (stop === "oversized_for_remaining_budget") {
+  let oversizedFallback: PreparedServedAttachmentRecoveryCandidate | null = null;
+  for (const gap of servedGaps) {
+    const result = await processServedAttachmentRecoveryGap(
+      client,
+      gap,
+      recoveryAttemptDeps,
+      recoveryState,
+      byteBudget,
+      oversizedFallback === null
+    );
+    if (typeof result === "object") {
+      if (result.oversized) {
+        oversizedFallback = result;
+        continue;
+      }
+      if (oversizedFallback) {
+        // Settle the held lease before hydrating the sibling. Otherwise the
+        // sibling's successful hydration could find and recover the held gap
+        // through same-attachment matching, producing two outcomes for one
+        // lease. The held item is a truthful planned defer, not a recovery.
+        await settleServedAttachmentRecoveryDeferral(
+          oversizedFallback.gap,
+          "run_cap_deferred",
+          recoveryState,
+          recoveryAttemptDeps.emitProtocol
+        );
+        recoveryState.runCapDeferred += 1;
+        oversizedFallback = null;
+      }
+      await hydratePreparedServedAttachmentRecoveryCandidate(recoveryAttemptDeps, result, recoveryState);
+      continue;
+    }
+    if (result === "oversized_for_remaining_budget") {
       // This candidate alone doesn't fit what's left of the budget, but the
       // budget isn't fully spent — a smaller sibling further down the served
       // order may still fit, so keep going instead of abandoning the rest of
-      // the page (see `ServedAttachmentRecoveryStop`'s doc comment).
+      // the page (see `ServedAttachmentRecoveryResult`'s doc comment).
       recoveryState.runCapDeferred += 1;
       continue;
     }
-    if (stop) {
-      if (stop === "byte_budget") {
-        recoveryState.runCapDeferred += servedGaps.length - index;
-      }
+    if (result) {
       break;
     }
+  }
+  if (oversizedFallback) {
+    // No fitting sibling was found within the served page / metadata cap. The
+    // single reserved oversized item is the bounded at-least-one lane.
+    await hydratePreparedServedAttachmentRecoveryCandidate(recoveryAttemptDeps, oversizedFallback, recoveryState);
   }
   return {
     admitted: recoveryState.admitted,

@@ -163,13 +163,36 @@ or attachment-size safety.
 - **AND** a valid recovery-specific value SHALL take precedence when both are
   present.
 
-#### Scenario: An oversized first attachment still makes bounded progress
+#### Scenario: An oversized first attachment uses a bounded fallback lane
 
 - **WHEN** the first served attachment is larger than the 4 MiB recovery
   budget
-- **THEN** the connector SHALL admit and attempt that one attachment
-- **AND** it SHALL not hydrate a following attachment solely because the first
-  attachment exceeded the budget.
+- **AND** a later served attachment fits the remaining budget
+- **THEN** the connector SHALL metadata-attempt and planned-defer the oversized
+  first gap
+- **AND** it SHALL admit and attempt the later fitting attachment
+- **AND** it SHALL NOT hydrate the oversized first attachment in that run
+
+#### Scenario: An oversized-only page retains one bounded fallback
+
+- **WHEN** no fitting attachment is found within the existing 32-unique-
+  message metadata cap
+- **THEN** the connector SHALL admit and attempt at most that one held
+  oversized attachment as the bounded at-least-one fallback
+- **AND** it SHALL NOT hydrate any additional oversized attachment
+
+#### Scenario: Live-shaped repeated pages do not let oversized rows starve a sibling
+
+- **WHEN** repeated ordered recovery pages begin with attachments larger than
+  the 4 MiB budget (for example, 4.7 MB and 8.9 MB) and contain a smaller
+  sibling later in the page
+- **THEN** each run SHALL metadata-attempt the bounded page prefix
+- **AND** the oversized rows SHALL receive truthful `run_cap_deferred`
+  settlements unless one is the single fallback
+- **AND** the smaller sibling SHALL be eligible for hydration and recovery in
+  that run
+- **AND** a failed hydration SHALL remain on `DETAIL_GAP`, never
+  `DETAIL_GAP_RECOVERED`.
 
 ### Requirement: Gmail SHALL emit typed and unclassified aggregate hydration failure stages without changing recovery behavior
 
