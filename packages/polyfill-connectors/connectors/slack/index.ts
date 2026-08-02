@@ -270,6 +270,27 @@ export async function runSlackdumpIdentityHelper(
 }
 
 /**
+ * Authenticate a selected cache provider for skip mode without authorizing
+ * it by presence alone. The caller still has to pass this proof through the
+ * archive-identity and source-current checks before optional streams adopt it.
+ */
+export async function loadSlackdumpSkipAuthProof(
+  env: NodeJS.ProcessEnv,
+  requestedWorkspace: string
+): Promise<SlackdumpAuthProof | null> {
+  const proof = await loadSlackdumpProviderAuth(env);
+  if (!(proof && providerAliasMatchesRequested(proof, requestedWorkspace))) {
+    return null;
+  }
+  try {
+    await runSlackdumpIdentityHelper(proof, env, requestedWorkspace);
+    return proof;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Keep the root transport error visible when the shared HTTP governor wraps it
  * in `RetryExhaustedError.originalCause`. Without this, a coded browser
  * acquisition failure becomes only "HTTP request failed after retry budget
@@ -2876,7 +2897,7 @@ async function runArchiveWithAuthSnapshot(deps: EnsureArchiveDeps): Promise<Slac
  * touching the network. This salvages a partial archive into PDPP records
  * instead of leaving the data stranded.
  */
-async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<SlackdumpAuthProof | null> {
+export async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<SlackdumpAuthProof | null> {
   const { archivePath, progress, sqlitePath } = deps;
   const skipSlackdump = process.env.PDPP_SLACK_SKIP_SLACKDUMP === "1";
   let authProof: SlackdumpAuthProof | null = null;
@@ -2892,14 +2913,11 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<SlackdumpAu
       // requested archive identity and a current provider proof before the
       // optional browser streams can consume it. Any unavailable/mismatched
       // cache proof leaves the explicitly supplied credentials in force.
-      const proof = await loadSlackdumpProviderAuth(deps.childEnv);
-      if (proof && providerAliasMatchesRequested(proof, deps.workspace)) {
-        try {
-          await runSlackdumpIdentityHelper(proof, deps.childEnv, deps.workspace);
-          authProof = proof;
-        } catch {
-          progress("Slackdump skip cache identity proof unavailable; retaining supplied connection credentials");
-        }
+      const proof = await loadSlackdumpSkipAuthProof(deps.childEnv, deps.workspace);
+      if (proof) {
+        authProof = proof;
+      } else {
+        progress("Slackdump skip cache identity proof unavailable; retaining supplied connection credentials");
       }
     } else {
       progress(`Ensuring slackdump workspace is cached (SLACKDUMP_BIN=${process.env.SLACKDUMP_BIN || "<unset>"})`);

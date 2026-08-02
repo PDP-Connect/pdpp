@@ -9,16 +9,20 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import type { BrowserSurfacePhaseResult, EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import {
+  ensureArchiveOnDisk,
   formatSlackdumpMissingError,
   loadSlackdumpProviderAuth,
   parseSlackdumpProviderAuth,
   resolveSlackApiCredentials,
+  runGapStreamsIfRequested,
   runSlackdump,
   runSlackdumpIdentityHelper,
   SLACK_RETRYABLE_FAILURE_RE,
+  type SlackApiIsolatedBrowser,
+  type StreamDeps,
   slackdumpProgressChanged,
 } from "./index.ts";
 
@@ -367,6 +371,160 @@ if (process.env.HELPER_MODE === "timeout") {
       delete process.env.HELPER_MODE;
     } else {
       process.env.HELPER_MODE = priorMode;
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("skip cache proof feeds the freshly authenticated provider into an optional browser API call", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-skip-gap-"));
+  const cacheDir = join(homeDir, "cache");
+  const helper = join(homeDir, "identity-helper.mjs");
+  const observationPath = join(homeDir, "helper-observation.json");
+  const providerToken = `xoxc-1-2-3-${"a".repeat(64)}`;
+  const providerCookie = `xoxd-${"b".repeat(32)}`;
+  const explicitToken = "xoxc-explicit-stale";
+  const explicitCookie = "xoxd-explicit-stale";
+  const priorHelper = process.env.SLACKDUMP_IDENTITY_BIN;
+  const priorSkip = process.env.PDPP_SLACK_SKIP_SLACKDUMP;
+  const priorFetch = globalThis.fetch;
+  const seen = { cookie: "unset", fetches: 0, token: "unset" };
+  const archivePath = join(homeDir, "archive");
+  const sqlitePath = join(archivePath, "slackdump.sqlite");
+  await mkdir(cacheDir, { recursive: true });
+  await mkdir(archivePath, { recursive: true });
+  const archiveDb = new DatabaseSync(sqlitePath);
+  archiveDb.exec("CREATE TABLE WORKSPACE (TEAM_ID TEXT, URL TEXT, CHUNK_ID INTEGER)");
+  archiveDb
+    .prepare("INSERT INTO WORKSPACE (TEAM_ID, URL, CHUNK_ID) VALUES (?, ?, ?)")
+    .run("T_SKIP_PROVIDER", "https://skip-provider.slack.com/", 1);
+  archiveDb.close();
+  await writeFile(join(cacheDir, "workspace.txt"), "skip-provider\n", "utf8");
+  await writeFile(
+    join(cacheDir, "skip-provider.bin"),
+    JSON.stringify({ Token: providerToken, Cookie: [{ Name: "d", Value: providerCookie }] }),
+    "utf8"
+  );
+  await writeFile(
+    helper,
+    `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+if (process.argv.includes("--version")) {
+  process.stdout.write("pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13" + String.fromCharCode(10));
+  process.exit(0);
+}
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  let parsed;
+  try { parsed = JSON.parse(input); } catch { parsed = null; }
+  writeFileSync(process.env.HELPER_OBSERVATION_PATH, JSON.stringify({
+    stdin_is_expected: parsed?.token === ${JSON.stringify(providerToken)} && parsed?.cookie === ${JSON.stringify(providerCookie)},
+  }));
+  process.stdout.write(JSON.stringify({ team_id: "T_SKIP_PROVIDER", url: "https://skip-provider.slack.com/" }) + "\\n");
+});
+`,
+    "utf8"
+  );
+  await chmod(helper, 0o755);
+  await rm(observationPath, { force: true });
+  process.env.SLACKDUMP_IDENTITY_BIN = helper;
+  process.env.PDPP_SLACK_SKIP_SLACKDUMP = "1";
+  globalThis.fetch = () => {
+    seen.fetches += 1;
+    return Promise.resolve(Response.json({ ok: true, items: [] }));
+  };
+  try {
+    const env = { CACHE_DIR: cacheDir, HELPER_OBSERVATION_PATH: observationPath };
+    const proof = await ensureArchiveOnDisk({
+      archivePath,
+      childEnv: env,
+      cookie: explicitCookie,
+      opts: {
+        CHANNEL_ALLOWLIST: [],
+        CHANNEL_TYPES: [],
+        LOOKBACK_DAYS: 7,
+        MEMBER_ONLY: false,
+        RECLAIM_UPLOADS: false,
+        SKIP_FILES: false,
+      },
+      positionalChannels: [],
+      priorArchive: undefined,
+      progress: () => Promise.resolve(),
+      resumeTarget: null,
+      sqlitePath,
+      timeFrom: null,
+      timeTo: null,
+      token: explicitToken,
+      useResume: false,
+      workspace: "skip-provider",
+    });
+    assert.ok(proof, "skip mode must require a fresh helper-authenticated provider proof");
+    assert.deepEqual(JSON.parse(await readFile(observationPath, "utf8")), { stdin_is_expected: true });
+    const credentials = await resolveSlackApiCredentials(
+      { workspace: "skip-provider", token: explicitToken, cookie: explicitCookie },
+      proof,
+      { teamId: "T_SKIP_PROVIDER", url: "https://skip-provider.slack.com/" }
+    );
+
+    const deps: StreamDeps = {
+      db: new DatabaseSync(":memory:"),
+      emit: () => Promise.resolve(),
+      emitRecord: () => Promise.resolve(),
+      emittedAt: "2026-08-02T00:00:00.000Z",
+      fingerprintCursors: new Map(),
+      progress: () => Promise.resolve(),
+      requestBrowserSurfacePhase: () =>
+        Promise.resolve({
+          kind: "granted",
+          handle: {
+            env: { PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://managed-neko:9223" },
+            leaseId: "skip-gap-lease",
+            release: () => Promise.resolve(),
+            remoteCdpUrl: "http://managed-neko:9223",
+          },
+        } as BrowserSurfacePhaseResult),
+      requested: new Map([["stars", { name: "stars" }]]),
+    };
+    const acquire = async (): Promise<SlackApiIsolatedBrowser> => ({
+      context: {
+        addCookies: () => Promise.resolve(),
+        newPage: () =>
+          Promise.resolve({
+            evaluate: async <R, Arg>(fn: (arg: Arg) => R | Promise<R>, arg: Arg): Promise<R> => {
+              const request = arg as Arg & { body?: string; headers: Record<string, string> };
+              const token = new URLSearchParams(request.body ?? "").get("token");
+              if (token === providerToken) {
+                seen.token = "provider";
+              } else if (token === explicitToken) {
+                seen.token = "explicit";
+              } else {
+                seen.token = "other";
+              }
+              const cookieHeader = request.headers.Cookie ?? "";
+              seen.cookie = cookieHeader.includes(`d=${providerCookie};`) ? "provider" : "other";
+              return await fn(arg);
+            },
+            goto: () => Promise.resolve(),
+            url: () => "https://slack.com/api/api.test",
+          }),
+      },
+      release: () => Promise.resolve(),
+    });
+    await runGapStreamsIfRequested(deps, credentials, () => Promise.resolve(), acquire);
+    assert.deepEqual(seen, { cookie: "provider", fetches: 1, token: "provider" });
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorHelper === undefined) {
+      delete process.env.SLACKDUMP_IDENTITY_BIN;
+    } else {
+      process.env.SLACKDUMP_IDENTITY_BIN = priorHelper;
+    }
+    if (priorSkip === undefined) {
+      delete process.env.PDPP_SLACK_SKIP_SLACKDUMP;
+    } else {
+      process.env.PDPP_SLACK_SKIP_SLACKDUMP = priorSkip;
     }
     await rm(homeDir, { recursive: true, force: true });
   }
