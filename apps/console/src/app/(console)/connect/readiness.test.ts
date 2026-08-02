@@ -21,6 +21,7 @@ const EVIDENCE_RE = /not yet provide enough evidence/;
 const NEXT_PAGE_RE = /next page/;
 const ADD_SOURCE_RE = /Add a source/;
 const MISSING_SOURCE_READ_RE = /missing source read/;
+const FRESHNESS_RE = /freshness/i;
 
 const EMPTY_AXES = {
   attention: "none",
@@ -29,9 +30,12 @@ const EMPTY_AXES = {
   outbox: "idle",
 } as const;
 
-function health(state: RefConnectionHealthSnapshot["state"] = "healthy"): RefConnectionHealthSnapshot {
+function health(
+  state: RefConnectionHealthSnapshot["state"] = "healthy",
+  freshness: RefConnectionHealthSnapshot["axes"]["freshness"] = "fresh"
+): RefConnectionHealthSnapshot {
   return {
-    axes: EMPTY_AXES,
+    axes: { ...EMPTY_AXES, freshness },
     badges: { stale: false, syncing: false },
     last_success_at: "2026-07-31T12:00:00Z",
     next_action: null,
@@ -99,13 +103,47 @@ function summary(overrides: Partial<RefConnectorSummary> = {}): RefConnectorSumm
   };
 }
 
-test("sourceReadinessRow is ready only when one source proves all required evidence", () => {
+test("sourceReadinessRow is ready only when one source proves fresh required evidence", () => {
   const row = sourceReadinessRow({ hasMore: false, summaries: [summary()] });
 
   assert.equal(row.status, "ok");
   assert.match(row.detail, HEALTHY_RE);
   assert.match(row.detail, SUCCESSFUL_SYNC_RE);
   assert.match(row.detail, THREE_RECORDS_RE);
+});
+
+test("sourceReadinessRow keeps a healthy-but-stale source from claiming readiness", () => {
+  const row = sourceReadinessRow({
+    hasMore: false,
+    summaries: [
+      summary({
+        connection_health: health("healthy", "stale"),
+        rendered_verdict: renderedVerdict({
+          annotations: [{ kind: "freshness", text: "Stale — refresh is due." }],
+        }),
+      }),
+    ],
+  });
+
+  assert.equal(row.status, "unknown");
+  assert.match(row.hint ?? "", FRESHNESS_RE);
+});
+
+test("sourceReadinessRow keeps a healthy source with unknown freshness from claiming readiness", () => {
+  const row = sourceReadinessRow({
+    hasMore: false,
+    summaries: [
+      summary({
+        connection_health: health("healthy", "unknown"),
+        rendered_verdict: renderedVerdict({
+          annotations: [{ kind: "freshness", text: "Freshness has not been measured yet." }],
+        }),
+      }),
+    ],
+  });
+
+  assert.equal(row.status, "unknown");
+  assert.match(row.hint ?? "", FRESHNESS_RE);
 });
 
 test("sourceReadinessRow is blocked when a source has not completed a successful sync", () => {

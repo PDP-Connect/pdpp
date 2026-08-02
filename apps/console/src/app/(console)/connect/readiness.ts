@@ -15,8 +15,11 @@ export interface SourceReadinessEvidence {
  * Project the existing owner connection summaries into one MCP prerequisite
  * row. This is not a second source-health model: status comes from the
  * server-owned actionability projection, sync success comes from
- * `last_successful_run`, and record presence is accepted only when the
- * summary's count evidence is authoritative.
+ * `last_successful_run`, freshness comes from the summary's canonical
+ * connection-health axis, and record presence is accepted only when the
+ * summary's count evidence is authoritative. The rendered freshness note is
+ * presentation copy from that same projection; it is not parsed into a new
+ * readiness state here.
  */
 export function sourceReadinessRow(evidence: SourceReadinessEvidence): ReadinessRow {
   if (evidence.summaries === null) {
@@ -49,12 +52,12 @@ export function sourceReadinessRow(evidence: SourceReadinessEvidence): Readiness
     };
   }
 
-  if (evidence.summaries.some(hasUnknownSourceEvidence)) {
+  if (evidence.summaries.some(hasInsufficientSourceEvidence)) {
     return {
       check: "Usable source data",
       detail:
-        "The source projection does not yet provide enough evidence to prove a healthy, synced source with retained records.",
-      hint: "Wait for source summary evidence to settle, then refresh. A stale or unobserved count is not retained-record proof.",
+        "The source projection does not yet provide enough evidence to prove a healthy, synced source with fresh retained records.",
+      hint: "Wait for source summary evidence to settle, then refresh. Freshness must be fresh; stale or unknown freshness and stale or unobserved counts are not readiness proof.",
       status: "unknown",
     };
   }
@@ -82,13 +85,18 @@ function isUsableSource(summary: RefConnectorSummary): boolean {
     !projection.revoked &&
     projection.renderedStatus.kind === "healthy" &&
     summary.last_successful_run !== null &&
+    summary.connection_health.axes.freshness === "fresh" &&
     isTotalRecordsAuthoritative(summary.total_records_state) &&
     Number.isInteger(summary.total_records) &&
     summary.total_records > 0
   );
 }
 
-function hasUnknownSourceEvidence(summary: RefConnectorSummary): boolean {
+function hasInsufficientSourceEvidence(summary: RefConnectorSummary): boolean {
   const projection = projectSourceActionability(summary);
-  return projection.renderedStatus.kind === "unknown" || !isTotalRecordsAuthoritative(summary.total_records_state);
+  return (
+    projection.renderedStatus.kind === "unknown" ||
+    summary.connection_health.axes.freshness !== "fresh" ||
+    !isTotalRecordsAuthoritative(summary.total_records_state)
+  );
 }
