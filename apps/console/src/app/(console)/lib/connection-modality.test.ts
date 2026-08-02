@@ -101,11 +101,16 @@ function canonicalKeyFromManifestId(connectorId: string): string {
 
 test("BROWSER_BOUND_CONNECTORS exactly matches the canonical keys of browser-binding manifests", async () => {
   // The backend intent route classifies `browser_bound` from a `browser`
-  // binding (browser wins over a co-present network binding). The console key
-  // set must equal the canonical keys of the connectors whose committed
-  // manifest declares that binding — no more (a falsely-suppressed Sync now),
-  // no less (a dead button that returns). Pinning against the manifests keeps
-  // this from drifting from the real connector bindings.
+  // binding, but `filesystem` wins first (`classifyConnectorIntentModality`:
+  // filesystem → browser → network). Slack declares `filesystem` AND `browser`
+  // (the browser leg is a phase-scoped, optional transport for four archive
+  // streams; see manifests/slack.json + connection-setup-plan.ts) and so
+  // classifies as `local_collector`, not `browser_bound` — it must NOT appear
+  // in this set. The console key set must equal the canonical keys of the
+  // connectors whose committed manifest declares a `browser` binding AND no
+  // `filesystem` binding — no more (a falsely-suppressed Sync now), no less (a
+  // dead button that returns). Pinning against the manifests keeps this from
+  // drifting from the real connector bindings.
   const repoRoot = new URL("../../../../../../", import.meta.url);
   const manifestsDir = new URL("packages/polyfill-connectors/manifests/", repoRoot);
   const files = await readdir(fileURLToPath(manifestsDir));
@@ -122,7 +127,12 @@ test("BROWSER_BOUND_CONNECTORS exactly matches the canonical keys of browser-bin
   const browserBoundFromManifests: string[] = [];
   for (const manifest of manifests) {
     const bindings = manifest.runtime_requirements?.bindings;
-    if (manifest.connector_id && bindings && Object.hasOwn(bindings, "browser")) {
+    if (
+      manifest.connector_id &&
+      bindings &&
+      Object.hasOwn(bindings, "browser") &&
+      !Object.hasOwn(bindings, "filesystem")
+    ) {
       browserBoundFromManifests.push(canonicalKeyFromManifestId(manifest.connector_id));
     }
   }

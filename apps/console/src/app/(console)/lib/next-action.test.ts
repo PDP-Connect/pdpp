@@ -7,7 +7,12 @@ import { formatNextAction, humanizeReasonCode } from "./next-action.ts";
 import type { RefNextAction } from "./ref-client.ts";
 
 const DETAILS_UNAVAILABLE = /Details unavailable/;
-const NOTIFICATION_SENT_RE = /sent/i;
+// `notification_state: "sent"` means the push service ACCEPTED the message,
+// not that it reached the device (see ref-client.ts's `RefNextAction.notification_state`
+// doc comment). The hint copy says "accepted for delivery", never "sent" —
+// overclaiming delivery was the exact gap the 2026-08-01 canary-push REVISE
+// closure eliminated.
+const NOTIFICATION_ACCEPTED_RE = /accepted for delivery/i;
 const NOTIFICATION_FAILED_RE = /failed/i;
 const NOTIFICATION_PAUSED_OR_SUPPRESSED_RE = /paused|suppress/i;
 
@@ -129,7 +134,7 @@ test("formatNextAction emits no notification hint for pending state (default chr
 test("formatNextAction emits a confidence-positive hint for sent state", () => {
   const out = formatNextAction(structuredAction({ notification_state: "sent" }));
   assert.ok(out);
-  assert.match(out.notificationHint ?? "", NOTIFICATION_SENT_RE);
+  assert.match(out.notificationHint ?? "", NOTIFICATION_ACCEPTED_RE);
 });
 
 test("formatNextAction emits an action-required hint for failed delivery — must remain visible", () => {
