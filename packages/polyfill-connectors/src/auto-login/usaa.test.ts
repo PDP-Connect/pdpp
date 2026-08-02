@@ -325,6 +325,108 @@ function makePostPasswordSourceUnavailablePage(bodyText: string): Page {
   return fake as Page;
 }
 
+/**
+ * Models the modal *recurring* after a proven recovery+resubmit: each Log On
+ * click advances a `recurrences` counter; while it's below
+ * `recurrencesBeforeSuccess`, the resubmit lands back on the exact same
+ * source-unavailable modal (with the Log On button visible again) instead of
+ * the password field. At `recurrencesBeforeSuccess` the password field
+ * finally appears, and a subsequent password submit authenticates.
+ */
+function makeRecurringSourceUnavailablePage(recurrencesBeforeSuccess: number): {
+  actionClicks: number;
+  authenticated: boolean;
+  page: Page;
+} {
+  let actionClicks = 0;
+  let passwordFieldReady = false;
+  let authenticated = false;
+  let currentUrl = LOGIN_URL;
+  const memberIdLocator: Pick<Locator, "press"> = {
+    press: (): Promise<void> => Promise.resolve(),
+  };
+  const nextButtonLocator: Pick<Locator, "waitFor"> = {
+    waitFor: (): Promise<void> => Promise.resolve(),
+  };
+  const bodyLocator: Pick<Locator, "innerText"> = {
+    innerText: (): Promise<string> => {
+      if (currentUrl === DASHBOARD_URL) {
+        return Promise.resolve("Log Off");
+      }
+      if (passwordFieldReady) {
+        return Promise.resolve("Member Account Login Username Password Next");
+      }
+      return Promise.resolve("We are unable to complete your request. Our system is currently unavailable.");
+    },
+  };
+  const actionLocatorImpl: Pick<Locator, "click" | "count" | "isVisible" | "nth"> = {
+    click: (): Promise<void> => {
+      actionClicks += 1;
+      return Promise.resolve();
+    },
+    count: (): Promise<number> => Promise.resolve(1),
+    isVisible: (): Promise<boolean> => Promise.resolve(true),
+    nth: (): Locator => actionLocatorImpl as Locator,
+  };
+  const actionLocator = actionLocatorImpl as Locator;
+  const fake: Partial<Page> = {};
+  fake.click = ((selector: string): Promise<void> => {
+    if (selector === "#next-button" && passwordFieldReady) {
+      authenticated = true;
+    }
+    return Promise.resolve();
+  }) as Page["click"];
+  fake.evaluate = (async (): Promise<Array<{ name: string; placeholder: string; type: string }>> => [
+    { name: "memberId", placeholder: "", type: "text" },
+  ]) as Page["evaluate"];
+  fake.fill = (): Promise<void> => Promise.resolve();
+  fake.getByRole = ((role: "button" | "link"): Locator => {
+    const empty: Pick<Locator, "count" | "isVisible" | "nth"> = {
+      count: (): Promise<number> => Promise.resolve(0),
+      isVisible: (): Promise<boolean> => Promise.resolve(false),
+      nth: (): Locator => empty as Locator,
+    };
+    return role === "button" ? actionLocator : (empty as Locator);
+  }) as Page["getByRole"];
+  fake.goto = ((url: string): ReturnType<Page["goto"]> => {
+    currentUrl = url;
+    return Promise.resolve(null);
+  }) as Page["goto"];
+  fake.locator = ((selector: string): Locator => {
+    if (selector === "#next-button:not([disabled])") {
+      return nextButtonLocator as Locator;
+    }
+    if (selector === 'input[name="memberId"]') {
+      return memberIdLocator as Locator;
+    }
+    return bodyLocator as Locator;
+  }) as Page["locator"];
+  fake.waitForLoadState = ((): Promise<void> => Promise.resolve()) as Page["waitForLoadState"];
+  fake.waitForSelector = ((selector: string): Promise<unknown> => {
+    if (selector === 'input[name="memberId"]') {
+      return Promise.resolve({});
+    }
+    if (selector === 'input[name="password"]') {
+      // Each resubmit "advances" the recurrence count by one Log On click;
+      // the password field only appears once that count reaches the target.
+      passwordFieldReady = actionClicks > recurrencesBeforeSuccess;
+      return passwordFieldReady ? Promise.resolve({}) : Promise.reject(new Error("password field unavailable"));
+    }
+    return Promise.resolve({});
+  }) as Page["waitForSelector"];
+  fake.waitForTimeout = (): Promise<void> => Promise.resolve();
+  fake.url = (): string => currentUrl;
+  return {
+    get actionClicks(): number {
+      return actionClicks;
+    },
+    get authenticated(): boolean {
+      return authenticated;
+    },
+    page: fake as Page,
+  };
+}
+
 async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
   const priorUsername = process.env.USAA_USERNAME;
   const priorPassword = process.env.USAA_PASSWORD;
@@ -598,6 +700,58 @@ for (const [fixture, expectedOutcome] of [
     });
   });
 }
+
+test("ensureUsaaSession recovers when the source-unavailable modal recurs once after a proven recovery, then succeeds on retry", async () => {
+  // Live evidence (run run_662e27c389394d9f8b28754adcf53766): the exact
+  // same-origin modal recurred after a proven recovery+resubmit. The
+  // connector must retry the same exact-one-visible-Log-On transition again
+  // (not fall straight to manual_action) and succeed once the second
+  // resubmit lands on the password field.
+  await withUsaaCredentials(async () => {
+    const fixturePage = makeRecurringSourceUnavailablePage(1);
+    const { page } = fixturePage;
+    const context = makeContext([[]], () => fixturePage.authenticated);
+    const interactions = makeInteractionHarness();
+
+    const ok = await ensureUsaaSession({
+      context,
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(fixturePage.actionClicks, 2, "recovery retries the semantic action after one recurrence");
+    assert.equal(interactions.requests.length, 0, "no owner handoff when the bounded retry succeeds");
+  });
+});
+
+test("ensureUsaaSession bounds the source-unavailable retry and falls to manual_action when the modal persistently recurs", async () => {
+  // The modal recurring every single time (well beyond the bound) must not
+  // hammer USAA indefinitely — it must stop at a small fixed cap and hand off
+  // to the owner, with an honest (not stale "recovered") diagnostic.
+  await withUsaaCredentials(async () => {
+    const fixturePage = makeRecurringSourceUnavailablePage(1000);
+    const { page } = fixturePage;
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const interactions = makeInteractionHarness();
+
+    const ok = await ensureUsaaSession({
+      context,
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(interactions.requests.length, 1);
+    assert.equal(interactions.requests[0]?.kind, "manual_action");
+    assert.equal(fixturePage.actionClicks, 3, "recovery retries are bounded to the fixed small cap");
+    assert.match(
+      interactions.requests[0]?.message ?? "",
+      /source_unavailable_login_action=recovered/,
+      "the final attempt did in fact recover the Log On transition; the modal recurring after it is a separate fact from whether the transition itself was ever proven"
+    );
+  });
+});
 
 test("ensureUsaaSession still routes a delayed USAA source-unavailable page after member-id submit to genuine manual_action, with an owner-visible diagnostic note", async () => {
   // Corrected 2026-07-10: this exact page (source-unavailable copy after the

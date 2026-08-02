@@ -38,6 +38,7 @@ const USAA_LOGIN_ACTION_NAME = /^(Log in|Log On)$/i;
 const USAA_ORIGIN = "https://www.usaa.com";
 const MEMBER_ID_INPUT = 'input[name="memberId"]';
 const MAX_OTP_ATTEMPTS = 3;
+const MAX_SOURCE_UNAVAILABLE_LOGIN_RECOVERY_ATTEMPTS = 3;
 const MANUAL_LOGIN_MESSAGE =
   "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
 // `classifyUsaaLoginStepFailure` returning `source_unavailable` proves only
@@ -351,30 +352,48 @@ async function handlePasswordFieldStall(
     .locator("body")
     .innerText()
     .catch((): string => "");
-  const initialClassification = classifyUsaaLoginStepFailure(initialBody);
+  let classification = classifyUsaaLoginStepFailure(initialBody);
+  const sawSourceUnavailable = classification === "source_unavailable";
   let recoveryOutcome: SourceUnavailableLoginRecoveryOutcome | null = null;
-  if (initialClassification === "source_unavailable") {
+  // Each pass re-observes the page rather than trusting the prior pass's
+  // outcome: the same exact same-origin, single-Log-On-button modal can
+  // recur after a proven recovery+resubmit, and only a fresh classification
+  // can tell a second recurrence apart from genuine progress. Bounded small
+  // so a persistently-recurring modal still reaches manual_action instead of
+  // hammering USAA.
+  for (
+    let attempt = 1;
+    attempt <= MAX_SOURCE_UNAVAILABLE_LOGIN_RECOVERY_ATTEMPTS && classification === "source_unavailable";
+    attempt += 1
+  ) {
     recoveryOutcome = await attemptSourceUnavailableLoginRecovery(capture, page);
-    if (recoveryOutcome === "recovered") {
-      try {
-        if (await submitMemberId(page, username)) {
-          return "password_ready";
-        }
-      } catch {
-        recoveryOutcome = "resume_error";
-      }
+    if (recoveryOutcome !== "recovered") {
+      break;
     }
+    try {
+      if (await submitMemberId(page, username)) {
+        return "password_ready";
+      }
+    } catch {
+      recoveryOutcome = "resume_error";
+      break;
+    }
+    const retryBody = await page
+      .locator("body")
+      .innerText()
+      .catch((): string => "");
+    classification = classifyUsaaLoginStepFailure(retryBody);
   }
 
   const body = await page
     .locator("body")
     .innerText()
     .catch((): string => "");
-  const classification = classifyUsaaLoginStepFailure(body);
+  classification = classifyUsaaLoginStepFailure(body);
   // The source-unavailable branch already captured only fixed semantic
   // locator probes before the transition. Do not add a raw DOM snapshot after
   // the member ID was filled; it could retain credential-adjacent data.
-  if (initialClassification !== "source_unavailable") {
+  if (!sawSourceUnavailable) {
     await capture?.captureDom(page, "usaa-password-field-stall").catch((): undefined => undefined);
   }
   const inputs = await page
