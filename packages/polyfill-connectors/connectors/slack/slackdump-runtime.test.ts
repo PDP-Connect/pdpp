@@ -127,6 +127,10 @@ test("slack retry classification treats slackdump exit 6 as resumable", () => {
 const VALID_SLACKDUMP_TOKEN = `xoxc-1-2-3-${"a".repeat(64)}`;
 const VALID_SLACKDUMP_COOKIE = `xoxd-${"a".repeat(32)}`;
 
+function archiveIdentity(url: string): { teamId: string; url: string } {
+  return { teamId: "T_SYNTHETIC", url };
+}
+
 test("Slackdump provider bridge accepts only bounded official xoxc/d credentials", async () => {
   assert.deepEqual(
     parseSlackdumpProviderAuth(
@@ -171,13 +175,48 @@ test("Slackdump provider bridge accepts only bounded official xoxc/d credentials
     assert.equal(proof.providerName, "default");
     assert.equal(proof.token, VALID_SLACKDUMP_TOKEN);
     assert.equal(proof.cookie, VALID_SLACKDUMP_COOKIE);
+    const explicit = { workspace: "synthetic-workspace", token: "xoxc-injected-token", cookie: "injected-d" };
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity("https://synthetic-workspace.slack.com/")),
+      { workspace: "synthetic-workspace", token: VALID_SLACKDUMP_TOKEN, cookie: VALID_SLACKDUMP_COOKIE }
+    );
     assert.deepEqual(
       await resolveSlackApiCredentials(
-        { workspace: "synthetic-workspace", token: "xoxc-injected-token", cookie: "injected-d" },
+        { workspace: "default", token: "xoxc-default-supplied", cookie: "d-default-supplied" },
         proof,
-        "https://synthetic-workspace.slack.com"
+        archiveIdentity("https://synthetic-workspace.slack.com/")
       ),
-      { workspace: "synthetic-workspace", token: VALID_SLACKDUMP_TOKEN, cookie: VALID_SLACKDUMP_COOKIE }
+      { workspace: "default", token: "xoxc-default-supplied", cookie: "d-default-supplied" },
+      "default is a provider alias, never a requested connection identity"
+    );
+    for (const url of [
+      "http://synthetic-workspace.slack.com/",
+      "https://synthetic-workspace.slack.com/path",
+      "https://synthetic-workspace.slack.com/?query=1",
+      "https://synthetic-workspace.slack.com/#fragment",
+      "https://synthetic-workspace.slack.com:444/",
+    ]) {
+      assert.deepEqual(
+        await resolveSlackApiCredentials(explicit, proof, archiveIdentity(url)),
+        explicit,
+        `archive identity must reject ${url}`
+      );
+    }
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity("https://other.slack.com/")),
+      explicit,
+      "the default provider alias cannot authorize another workspace"
+    );
+    await writeFile(join(cacheDir, "workspace.txt"), "other\n", "utf8");
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity("https://synthetic-workspace.slack.com/")),
+      explicit,
+      "marker drift after capture must fail closed"
+    );
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, { teamId: "", url: "https://synthetic-workspace.slack.com/" }),
+      explicit,
+      "an archive without stable team identity must retain supplied credentials"
     );
   } finally {
     await rm(cacheDir, { recursive: true, force: true });
@@ -194,18 +233,35 @@ test("Slackdump auth proof fails closed for wrong archive identity, skip mode, a
       JSON.stringify({ Token: VALID_SLACKDUMP_TOKEN, Cookie: [{ Name: "d", Value: VALID_SLACKDUMP_COOKIE }] }),
       "utf8"
     );
-    const proof = await loadSlackdumpProviderAuth({ CACHE_DIR: cacheDir }, "requested");
+    const wrongProviderProof = await loadSlackdumpProviderAuth({ CACHE_DIR: cacheDir });
+    assert.ok(wrongProviderProof);
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, wrongProviderProof, archiveIdentity("https://other.slack.com/")),
+      explicit
+    );
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, wrongProviderProof, archiveIdentity("https://requested.slack.com/")),
+      explicit
+    );
+    await writeFile(join(cacheDir, "workspace.txt"), "requested\n", "utf8");
+    await writeFile(
+      join(cacheDir, "requested.bin"),
+      JSON.stringify({ Token: VALID_SLACKDUMP_TOKEN, Cookie: [{ Name: "d", Value: VALID_SLACKDUMP_COOKIE }] }),
+      "utf8"
+    );
+    const proof = await loadSlackdumpProviderAuth({ CACHE_DIR: cacheDir });
     assert.ok(proof);
-    assert.deepEqual(await resolveSlackApiCredentials(explicit, proof, "https://other.slack.com"), explicit);
-    assert.deepEqual(await resolveSlackApiCredentials(explicit, null, "https://requested.slack.com"), explicit);
-    assert.deepEqual(await resolveSlackApiCredentials(explicit, proof, "https://requested.slack.com"), {
-      workspace: "requested",
-      token: VALID_SLACKDUMP_TOKEN,
-      cookie: VALID_SLACKDUMP_COOKIE,
-    });
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity("https://requested.slack.com/")),
+      {
+        workspace: "requested",
+        token: VALID_SLACKDUMP_TOKEN,
+        cookie: VALID_SLACKDUMP_COOKIE,
+      }
+    );
 
     await writeFile(
-      join(cacheDir, "other.bin"),
+      join(cacheDir, "requested.bin"),
       JSON.stringify({
         Token: `xoxc-1-2-3-${"b".repeat(64)}`,
         Cookie: [{ Name: "d", Value: `xoxd-${"b".repeat(32)}` }],
@@ -213,9 +269,16 @@ test("Slackdump auth proof fails closed for wrong archive identity, skip mode, a
       "utf8"
     );
     assert.deepEqual(
-      await resolveSlackApiCredentials(explicit, proof, "https://requested.slack.com"),
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity("https://requested.slack.com/")),
       explicit,
       "a provider changed after archive success must not replace supplied credentials"
+    );
+    await rm(join(cacheDir, "requested.bin"));
+    await symlink(join(cacheDir, "missing-provider.bin"), join(cacheDir, "requested.bin"));
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity("https://requested.slack.com/")),
+      explicit,
+      "provider replacement with a symlink must fail closed"
     );
   } finally {
     await rm(cacheDir, { recursive: true, force: true });
@@ -231,9 +294,7 @@ test("Slackdump provider bridge rejects invalid markers, oversized/truncated fil
   try {
     await writeFile(join(cacheDir, "workspace.txt"), "../other\n", "utf8");
     await writeFile(join(cacheDir, "provider.bin"), provider, "utf8");
-    assert.equal(await loadSlackdumpProviderAuth({ CACHE_DIR: cacheDir }, "requested"), null);
-    const defaultProof = await loadSlackdumpProviderAuth({ CACHE_DIR: cacheDir }, "default");
-    assert.ok(defaultProof, "explicit default identity may prove provider.bin after an invalid marker");
+    assert.equal(await loadSlackdumpProviderAuth({ CACHE_DIR: cacheDir }), null);
 
     await writeFile(join(cacheDir, "workspace.txt"), "default\n", "utf8");
     await writeFile(join(cacheDir, "provider.bin"), "{", "utf8");
@@ -256,6 +317,7 @@ test("full collect pins the proved Slackdump provider before opening the archive
   const cacheDir = join(homeDir, "cache");
   const fakeSlackdump = join(homeDir, "fake-slackdump.mjs");
   const argsPath = join(homeDir, "args.json");
+  const snapshotPathFile = join(homeDir, "snapshot-path.txt");
   const workspace = "proof-collect";
   await mkdir(cacheDir, { recursive: true });
   await writeFile(join(cacheDir, "workspace.txt"), "default\n", "utf8");
@@ -267,21 +329,32 @@ test("full collect pins the proved Slackdump provider before opening the archive
   await writeFile(
     fakeSlackdump,
     `#!/usr/bin/env node
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 const args = process.argv.slice(2);
 writeFileSync(process.env.ARGS_PATH, JSON.stringify(args));
+writeFileSync(process.env.SNAPSHOT_PATH_FILE, process.env.CACHE_DIR);
+writeFileSync(process.env.SNAPSHOT_MODE_FILE, JSON.stringify({
+  directory: statSync(process.env.CACHE_DIR).mode & 0o777,
+  provider: statSync(process.env.CACHE_DIR + "/provider.bin").mode & 0o777,
+}));
 if (args[0] === "workspace" && args[1] === "list") {
   process.stdout.write("default =>\\n");
   process.exit(0);
 }
 const outputIndex = args.indexOf("-o");
-const output = args[outputIndex + 1];
-mkdirSync(output, { recursive: true });
-const db = new DatabaseSync(output + "/slackdump.sqlite");
-db.exec("CREATE TABLE MESSAGE (CHANNEL_ID TEXT NOT NULL, TS TEXT NOT NULL, THREAD_TS TEXT, IS_PARENT INTEGER, TXT TEXT, NUM_FILES INTEGER, DATA BLOB, CHUNK_ID INTEGER NOT NULL); CREATE TABLE WORKSPACE (URL TEXT, CHUNK_ID INTEGER);");
-db.prepare("INSERT INTO WORKSPACE (URL, CHUNK_ID) VALUES (?, ?)").run(process.env.ARCHIVE_URL, 1);
-db.close();
+const output = outputIndex === -1 ? process.env.ARCHIVE_PATH : args[outputIndex + 1];
+if (outputIndex !== -1) {
+  mkdirSync(output, { recursive: true });
+  const db = new DatabaseSync(output + "/slackdump.sqlite");
+  db.exec("CREATE TABLE MESSAGE (CHANNEL_ID TEXT NOT NULL, TS TEXT NOT NULL, THREAD_TS TEXT, IS_PARENT INTEGER, TXT TEXT, NUM_FILES INTEGER, DATA BLOB, CHUNK_ID INTEGER NOT NULL); CREATE TABLE WORKSPACE (TEAM_ID TEXT, URL TEXT, CHUNK_ID INTEGER);");
+  db.prepare("INSERT INTO WORKSPACE (TEAM_ID, URL, CHUNK_ID) VALUES (?, ?, ?)").run(process.env.ARCHIVE_TEAM_ID, process.env.ARCHIVE_URL, 1);
+  db.close();
+}
+if (process.env.MUTATE_SNAPSHOT === "1") {
+  unlinkSync(process.env.CACHE_DIR + "/provider.bin");
+  symlinkSync("/dev/null", process.env.CACHE_DIR + "/provider.bin");
+}
 `,
     "utf8"
   );
@@ -296,7 +369,11 @@ db.close();
         CACHE_DIR: cacheDir,
         SLACKDUMP_BIN: fakeSlackdump,
         ARGS_PATH: argsPath,
+        SNAPSHOT_PATH_FILE: snapshotPathFile,
+        SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
+        ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
         ARCHIVE_URL: `https://${workspace}.slack.com`,
+        ARCHIVE_TEAM_ID: "T_PROOF_COLLECT",
         SLACK_COOKIE: "d=supplied",
         SLACK_TOKEN: "xoxc-supplied",
         SLACK_WORKSPACE: workspace,
@@ -308,7 +385,59 @@ db.close();
     });
     const args = JSON.parse(await readFile(argsPath, "utf8")) as string[];
     assert.deepEqual(args.slice(0, 5), ["archive", "-y", "-no-encryption", "-workspace", "default"]);
+    const snapshotPath = (await readFile(snapshotPathFile, "utf8")).trim();
+    await assert.rejects(readFile(join(snapshotPath, "provider.bin")), /ENOENT/);
+    assert.deepEqual(JSON.parse(await readFile(join(homeDir, "snapshot-mode.json"), "utf8")), {
+      directory: 0o700,
+      provider: 0o600,
+    });
     assert.equal(result.messages.findLast((message) => message.type === "DONE")?.status, "succeeded");
+    const firstRunOutput = JSON.stringify(result.messages);
+    assert.equal(firstRunOutput.includes(VALID_SLACKDUMP_TOKEN), false, "provider token must never be logged");
+    assert.equal(firstRunOutput.includes(VALID_SLACKDUMP_COOKIE), false, "provider cookie must never be logged");
+
+    const mutatedResult = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        CACHE_DIR: cacheDir,
+        SLACKDUMP_BIN: fakeSlackdump,
+        ARGS_PATH: argsPath,
+        SNAPSHOT_PATH_FILE: snapshotPathFile,
+        SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
+        ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
+        ARCHIVE_URL: `https://${workspace}.slack.com`,
+        ARCHIVE_TEAM_ID: "T_PROOF_COLLECT",
+        MUTATE_SNAPSHOT: "1",
+        SLACK_COOKIE: "d=supplied",
+        SLACK_TOKEN: "xoxc-supplied",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+      },
+    });
+    assert.ok(
+      mutatedResult.messages.some(
+        (message) => message.type === "PROGRESS" && message.message.includes("auth snapshot changed during archive")
+      ),
+      "snapshot replacement during resume must retain supplied credentials"
+    );
+    const mutatedRunOutput = JSON.stringify(mutatedResult.messages);
+    assert.equal(
+      mutatedRunOutput.includes(VALID_SLACKDUMP_TOKEN),
+      false,
+      "mutated provider token must never be logged"
+    );
+    assert.equal(
+      mutatedRunOutput.includes(VALID_SLACKDUMP_COOKIE),
+      false,
+      "mutated provider cookie must never be logged"
+    );
+    const mutatedSnapshotPath = (await readFile(snapshotPathFile, "utf8")).trim();
+    await assert.rejects(readFile(join(mutatedSnapshotPath, "provider.bin")), /ENOENT/);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }
