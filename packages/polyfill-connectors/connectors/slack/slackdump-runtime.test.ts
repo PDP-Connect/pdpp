@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -376,9 +376,11 @@ if (process.env.HELPER_MODE === "timeout") {
   }
 });
 
-test("skip cache proof feeds the freshly authenticated provider into an optional browser API call", async () => {
+test("cold skip bootstrap after container replacement authenticates optional browser streams", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-skip-gap-"));
   const cacheDir = join(homeDir, "cache");
+  const fakeSlackdump = join(homeDir, "fake-slackdump.mjs");
+  const invocationPath = join(homeDir, "slackdump-invocations.log");
   const helper = join(homeDir, "identity-helper.mjs");
   const observationPath = join(homeDir, "helper-observation.json");
   const providerToken = `xoxc-1-2-3-${"a".repeat(64)}`;
@@ -386,6 +388,7 @@ test("skip cache proof feeds the freshly authenticated provider into an optional
   const explicitToken = "xoxc-explicit-stale";
   const explicitCookie = "xoxd-explicit-stale";
   const priorHelper = process.env.SLACKDUMP_IDENTITY_BIN;
+  const priorSlackdump = process.env.SLACKDUMP_BIN;
   const priorSkip = process.env.PDPP_SLACK_SKIP_SLACKDUMP;
   const priorFetch = globalThis.fetch;
   const seen = { cookie: "unset", fetches: 0, token: "unset" };
@@ -399,12 +402,29 @@ test("skip cache proof feeds the freshly authenticated provider into an optional
     .prepare("INSERT INTO WORKSPACE (TEAM_ID, URL, CHUNK_ID) VALUES (?, ?, ?)")
     .run("T_SKIP_PROVIDER", "https://skip-provider.slack.com/", 1);
   archiveDb.close();
-  await writeFile(join(cacheDir, "workspace.txt"), "skip-provider\n", "utf8");
   await writeFile(
-    join(cacheDir, "skip-provider.bin"),
-    JSON.stringify({ Token: providerToken, Cookie: [{ Name: "d", Value: providerCookie }] }),
+    fakeSlackdump,
+    `#!${process.execPath}
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(process.env.INVOCATION_PATH, args.slice(0, 2).join(" ") + "\\n");
+if (args[0] === "workspace" && args[1] === "list") process.exit(0);
+if (args[0] === "workspace" && args[1] === "new") {
+  const cacheDir = process.env.CACHE_DIR;
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(cacheDir + "/workspace.txt", "skip-provider\\n");
+  writeFileSync(cacheDir + "/skip-provider.bin", JSON.stringify({
+    Token: ${JSON.stringify(providerToken)},
+    Cookie: [{ Name: "d", Value: ${JSON.stringify(providerCookie)} }]
+  }));
+  chmodSync(cacheDir, 0o755);
+  process.exit(0);
+}
+process.exit(12);
+`,
     "utf8"
   );
+  await chmod(fakeSlackdump, 0o755);
   await writeFile(
     helper,
     `#!${process.execPath}
@@ -436,7 +456,10 @@ process.stdin.on("end", () => {
     return Promise.resolve(Response.json({ ok: true, items: [] }));
   };
   try {
-    const env = { CACHE_DIR: cacheDir, HELPER_OBSERVATION_PATH: observationPath };
+    const env = { CACHE_DIR: cacheDir, HELPER_OBSERVATION_PATH: observationPath, INVOCATION_PATH: invocationPath };
+    const progressMessages: string[] = [];
+    process.env.SLACKDUMP_BIN = fakeSlackdump;
+    process.env.SLACKDUMP_IDENTITY_BIN = helper;
     const proof = await ensureArchiveOnDisk({
       archivePath,
       childEnv: env,
@@ -451,7 +474,10 @@ process.stdin.on("end", () => {
       },
       positionalChannels: [],
       priorArchive: undefined,
-      progress: () => Promise.resolve(),
+      progress: (message) => {
+        progressMessages.push(message);
+        return Promise.resolve();
+      },
       resumeTarget: null,
       sqlitePath,
       timeFrom: null,
@@ -460,8 +486,26 @@ process.stdin.on("end", () => {
       useResume: false,
       workspace: "skip-provider",
     });
-    assert.ok(proof, "skip mode must require a fresh helper-authenticated provider proof");
+    assert.ok(
+      proof,
+      `cold skip mode must bootstrap a fresh helper-authenticated provider proof: ${progressMessages.join(" | ")}`
+    );
     assert.deepEqual(JSON.parse(await readFile(observationPath, "utf8")), { stdin_is_expected: true });
+    assert.deepEqual(await readFile(invocationPath, "utf8"), "workspace list\nworkspace new\n");
+    assert.equal((await stat(cacheDir)).mode % 0o1000, 0o700);
+    assert.equal((await stat(join(cacheDir, "workspace.txt"))).mode % 0o1000, 0o600);
+    assert.equal((await stat(join(cacheDir, "skip-provider.bin"))).mode % 0o1000, 0o600);
+    const ownerUid = process.getuid?.();
+    if (ownerUid !== undefined) {
+      assert.equal((await stat(cacheDir)).uid, ownerUid);
+      assert.equal((await stat(join(cacheDir, "workspace.txt"))).uid, ownerUid);
+      assert.equal((await stat(join(cacheDir, "skip-provider.bin"))).uid, ownerUid);
+    }
+    assert.equal(
+      await stat(sqlitePath).then((value) => value.isFile()),
+      true,
+      "archive remains the pre-existing target"
+    );
     const credentials = await resolveSlackApiCredentials(
       { workspace: "skip-provider", token: explicitToken, cookie: explicitCookie },
       proof,
@@ -520,6 +564,11 @@ process.stdin.on("end", () => {
       delete process.env.SLACKDUMP_IDENTITY_BIN;
     } else {
       process.env.SLACKDUMP_IDENTITY_BIN = priorHelper;
+    }
+    if (priorSlackdump === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = priorSlackdump;
     }
     if (priorSkip === undefined) {
       delete process.env.PDPP_SLACK_SKIP_SLACKDUMP;
@@ -1288,6 +1337,7 @@ test("slack connector reports DONE.records_emitted from runtime-counted RECORDs"
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1375,6 +1425,7 @@ test("slack connector counts channel-scoped message RECORDs in DONE.records_emit
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1422,6 +1473,7 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1499,6 +1551,7 @@ test("slack connector heals a missing prior channel from an existing scoped arch
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1572,6 +1625,7 @@ test("slack connector does not emit a missing-partition diagnostic when prior ch
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1626,6 +1680,7 @@ test("slack connector uses per-channel message cursors with legacy global fallba
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1711,6 +1766,7 @@ test("slack connector uses an isolated scoped archive for targeted channel backf
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1773,6 +1829,7 @@ test("slack connector emits scoped archive rows even when they are older than th
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",

@@ -25,6 +25,8 @@ import { reclaimUploads } from "./index.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
+const VALID_SLACKDUMP_TOKEN = `xoxc-1-2-3-${"a".repeat(64)}`;
+const VALID_SLACKDUMP_COOKIE = `xoxd-${"a".repeat(32)}`;
 
 function scopedArchiveDigest(channels: readonly string[]): string {
   return createHash("sha256")
@@ -153,6 +155,7 @@ test("base archive resume invokes slackdump exactly once on the 90-minute follow
     const workspace = "base-cadence-followup-ws";
     const archiveDir = await seedArchive(homeDir, workspace, false);
     const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const fakeIdentityHelper = await writeArchiveIdentityHelper(homeDir, workspace);
     const resumedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
@@ -163,7 +166,9 @@ test("base archive resume invokes slackdump exactly once on the 90-minute follow
         SLACK_TOKEN: "xoxc-fake",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+        TEST_SLACKDUMP_WORKSPACE: workspace,
       },
       start: {
         type: "START",
@@ -211,6 +216,7 @@ test("a new base archive resume advances the committed messages cursor past the 
     // MESSAGE row before exiting 0, mirroring what a real resume does: fetch
     // fresh rows into the same on-disk archive.
     const fakeSlackdump = await writeGrowingSlackdump(homeDir, join(archiveDir, "slackdump.sqlite"));
+    const fakeIdentityHelper = await writeArchiveIdentityHelper(homeDir, workspace);
     const staleCursor = "1714032849.123456"; // matches seedArchive's only pre-existing row
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
@@ -221,7 +227,9 @@ test("a new base archive resume advances the committed messages cursor past the 
         SLACK_TOKEN: "xoxc-fake",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+        TEST_SLACKDUMP_WORKSPACE: workspace,
       },
       start: {
         type: "START",
@@ -258,6 +266,7 @@ test("a failed base archive resume fails the run and retries on the next attempt
     const workspace = "base-cadence-retry-ws";
     await seedArchive(homeDir, workspace, false);
     const fakeSlackdump = await writeCountingSlackdump(homeDir, true);
+    const fakeIdentityHelper = await writeArchiveIdentityHelper(homeDir, workspace);
     const options = {
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
@@ -267,7 +276,9 @@ test("a failed base archive resume fails the run and retries on the next attempt
         SLACK_TOKEN: "xoxc-fake",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
+        TEST_SLACKDUMP_WORKSPACE: workspace,
       },
       start: { type: "START" as const, scope: { streams: [{ name: "messages" }] } },
     };
@@ -313,8 +324,16 @@ async function writeCountingSlackdump(homeDir: string, failFirst = false): Promi
   await writeFile(
     path,
     `#!/usr/bin/env node
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 const isResume = process.argv[2] === "resume";
+if (process.argv[2] === "workspace" && process.argv[3] === "new") {
+  const cacheDir = process.env.CACHE_DIR;
+  const workspace = process.env.TEST_SLACKDUMP_WORKSPACE;
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(cacheDir + "/workspace.txt", workspace + "\\n");
+  writeFileSync(cacheDir + "/" + workspace + ".bin", JSON.stringify({ Token: "${VALID_SLACKDUMP_TOKEN}", Cookie: [{ Name: "d", Value: "${VALID_SLACKDUMP_COOKIE}" }] }));
+  process.exit(0);
+}
 if (isResume) writeFileSync(process.env.TEST_SLACKDUMP_CALL_LOG, process.argv.slice(2).join(" ") + "\\n", { flag: "a" });
 if (isResume && ${String(failFirst)} && !existsSync(${JSON.stringify(failedMarker)})) {
   writeFileSync(${JSON.stringify(failedMarker)}, "failed");
@@ -338,9 +357,17 @@ async function writeGrowingSlackdump(homeDir: string, sqlitePath: string): Promi
   await writeFile(
     path,
     `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 const isResume = process.argv[2] === "resume";
+if (process.argv[2] === "workspace" && process.argv[3] === "new") {
+  const cacheDir = process.env.CACHE_DIR;
+  const workspace = process.env.TEST_SLACKDUMP_WORKSPACE;
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(cacheDir + "/workspace.txt", workspace + "\\n");
+  writeFileSync(cacheDir + "/" + workspace + ".bin", JSON.stringify({ Token: "${VALID_SLACKDUMP_TOKEN}", Cookie: [{ Name: "d", Value: "${VALID_SLACKDUMP_COOKIE}" }] }));
+  process.exit(0);
+}
 if (isResume) {
   writeFileSync(process.env.TEST_SLACKDUMP_CALL_LOG, process.argv.slice(2).join(" ") + "\\n", { flag: "a" });
   const db = new DatabaseSync(${JSON.stringify(sqlitePath)});
@@ -355,6 +382,23 @@ process.exit(0);
   );
   await chmod(path, 0o755);
   return { callLog, path };
+}
+
+async function writeArchiveIdentityHelper(homeDir: string, workspace: string): Promise<string> {
+  const path = join(homeDir, "fake-slackdump-identity.mjs");
+  await writeFile(
+    path,
+    `#!${process.execPath}
+if (process.argv[2] === "--version") {
+  process.stdout.write("pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({ team_id: "T_ARCHIVE_FIXTURE", url: "https://${workspace}.slack.com/" }) + "\\n");
+`,
+    "utf8"
+  );
+  await chmod(path, 0o755);
+  return path;
 }
 
 function baseArchiveState(archivePath: string, baseArchiveResumedAt?: string): Record<string, unknown> {
@@ -375,6 +419,7 @@ test("connector emits phase-timing and archive-size PROGRESS every run", async (
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -413,6 +458,7 @@ test("__uploads reclaim is OFF by default: a normal run leaves __uploads intact"
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -443,6 +489,7 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim when the run fails (gate honored)
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -468,6 +515,7 @@ test("SLACK_RECLAIM_UPLOADS=1 removes __uploads after a successful run, sqlite i
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -548,6 +596,7 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims __uploads/ in every archive the run actua
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -639,6 +688,7 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims a repair archive that was successfully cr
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -715,6 +765,7 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim a repair archive when the repair 
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -794,6 +845,7 @@ test("scoped-archive-reconcile phase timing is reported when source-cache healin
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -871,6 +923,7 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -950,6 +1003,7 @@ test("scoped-archive-reconcile throttles a scoped archive's resume to at most on
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1050,6 +1104,7 @@ test("scoped-archive-reconcile resumes a scoped archive again once its lookback 
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1143,9 +1198,19 @@ test("a failed scoped-archive resume does not advance the success cursor, emits 
     // from the seeding above, so a no-op success is a valid "did nothing new
     // but completed cleanly" outcome for the base archive).
     const fakeSlackdumpPath = join(homeDir, "fake-slackdump.mjs");
+    const fakeIdentityHelper = await writeArchiveIdentityHelper(homeDir, workspace);
     await writeFile(
       fakeSlackdumpPath,
       `#!/usr/bin/env node
+import { mkdirSync, writeFileSync } from "node:fs";
+if (process.argv[2] === "workspace" && process.argv[3] === "new") {
+  const cacheDir = process.env.CACHE_DIR;
+  const selectedWorkspace = process.env.TEST_SLACKDUMP_WORKSPACE;
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(cacheDir + "/workspace.txt", selectedWorkspace + "\\n");
+  writeFileSync(cacheDir + "/" + selectedWorkspace + ".bin", JSON.stringify({ Token: "${VALID_SLACKDUMP_TOKEN}", Cookie: [{ Name: "d", Value: "${VALID_SLACKDUMP_COOKIE}" }] }));
+  process.exit(0);
+}
 const target = process.argv.at(-1) ?? "";
 if (target.includes("archive-scoped")) {
   process.stderr.write("simulated: slackdump resume failed for scoped archive\\n");
@@ -1168,6 +1233,8 @@ process.exit(0);
         SLACK_TOKEN: "xoxc-fake",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdumpPath,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
+        TEST_SLACKDUMP_WORKSPACE: workspace,
       },
       start: {
         type: "START",
@@ -1276,6 +1343,7 @@ test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-fail
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",
@@ -1371,11 +1439,20 @@ test("a failed NEW-repair attempt for an uncovered missing channel emits the sam
     // (unlike "resume", where the path IS the last arg). The archive path
     // instead follows the "-o" flag, so the fake binary locates it there.
     const fakeSlackdumpPath = join(homeDir, "fake-slackdump.mjs");
+    const fakeIdentityHelper = await writeArchiveIdentityHelper(homeDir, workspace);
     await writeFile(
       fakeSlackdumpPath,
       `#!/usr/bin/env node
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+if (process.argv[2] === "workspace" && process.argv[3] === "new") {
+  const cacheDir = process.env.CACHE_DIR;
+  const selectedWorkspace = process.env.TEST_SLACKDUMP_WORKSPACE;
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(cacheDir + "/workspace.txt", selectedWorkspace + "\\n");
+  writeFileSync(cacheDir + "/" + selectedWorkspace + ".bin", JSON.stringify({ Token: "${VALID_SLACKDUMP_TOKEN}", Cookie: [{ Name: "d", Value: "${VALID_SLACKDUMP_COOKIE}" }] }));
+  process.exit(0);
+}
 const oIndex = process.argv.indexOf("-o");
 const target = oIndex >= 0 ? (process.argv[oIndex + 1] ?? "") : "";
 if (target.includes("archive-scoped")) {
@@ -1402,6 +1479,8 @@ process.exit(0);
         SLACK_TOKEN: "xoxc-fake",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdumpPath,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
+        TEST_SLACKDUMP_WORKSPACE: workspace,
       },
       start: {
         type: "START",
@@ -1521,6 +1600,7 @@ test("a later successful NEW-repair attempt emits DETAIL_GAP_RECOVERED for a pre
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
+        SLACKDUMP_BIN: join(homeDir, "unavailable-slackdump"),
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "d=fake",
         SLACK_TOKEN: "xoxc-fake",

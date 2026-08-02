@@ -55,7 +55,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, constants as fsConstants, readdirSync, statSync } from "node:fs";
-import { chmod, type FileHandle, mkdtemp, open, rm } from "node:fs/promises";
+import { chmod, type FileHandle, mkdir, mkdtemp, open, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -286,6 +286,43 @@ export async function loadSlackdumpSkipAuthProof(
     await runSlackdumpIdentityHelper(proof, env, requestedWorkspace);
     return proof;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Cold-start skip mode has a durable archive but may have lost Slackdump's
+ * official marker/provider during an image replacement. Use the normal
+ * official workspace selection/new flow to recreate that cache from the
+ * explicitly supplied credentials, prove it with the pinned helper, and
+ * immediately scrub only the private handoff. The archive child is never
+ * reached from this function. Any unavailable/uncertain step preserves the
+ * caller's explicit credentials by returning null.
+ */
+async function bootstrapSlackdumpSkipAuthProof(deps: EnsureArchiveDeps): Promise<SlackdumpAuthProof | null> {
+  try {
+    await hardenSlackdumpCacheFiles(deps.childEnv);
+    const existing = await loadSlackdumpSkipAuthProof(deps.childEnv, deps.workspace);
+    if (existing) {
+      return existing;
+    }
+
+    const handoff = await ensureWorkspaceCached({
+      token: deps.token,
+      cookie: deps.cookie,
+      env: deps.childEnv,
+      requestedWorkspace: deps.workspace,
+    });
+    try {
+      return handoff.proof;
+    } finally {
+      await cleanupSlackdumpAuthHandoff(handoff);
+    }
+  } catch (error) {
+    const category = error instanceof Error ? error.message : "unknown";
+    deps.progress(
+      `Slackdump skip cache bootstrap unavailable (${category}); retaining supplied connection credentials`
+    );
     return null;
   }
 }
@@ -695,6 +732,7 @@ async function ensureWorkspaceCached({
   env: NodeJS.ProcessEnv;
   requestedWorkspace: string;
 }): Promise<SlackdumpAuthHandoff> {
+  await hardenSlackdumpCacheDirectory(env);
   let listOutput: string | null = null;
   try {
     listOutput = (
@@ -712,8 +750,13 @@ async function ensureWorkspaceCached({
       if (!providerAliasMatchesRequested(proof, requestedWorkspace)) {
         throw new Error("slackdump_identity_mismatch");
       }
-      const identity = await runSlackdumpIdentityHelper(proof, env, requestedWorkspace);
-      return createSlackdumpAuthHandoff(proof, env, identity);
+      await hardenSlackdumpCacheFiles(env);
+      const hardenedProof = await loadSlackdumpProviderAuth(env);
+      if (!(hardenedProof && providerAliasMatchesRequested(hardenedProof, requestedWorkspace))) {
+        throw new Error("slackdump_identity_unavailable");
+      }
+      const identity = await runSlackdumpIdentityHelper(hardenedProof, env, requestedWorkspace);
+      return createSlackdumpAuthHandoff(hardenedProof, env, identity);
     }
   }
   await runSlackdump(["workspace", "new", "-token", token, "-cookie", cookie, "-no-encryption"], {
@@ -724,8 +767,13 @@ async function ensureWorkspaceCached({
   if (!(proof && providerAliasMatchesRequested(proof, requestedWorkspace))) {
     throw new Error("slackdump_identity_unavailable");
   }
-  const identity = await runSlackdumpIdentityHelper(proof, env, requestedWorkspace);
-  return createSlackdumpAuthHandoff(proof, env, identity);
+  await hardenSlackdumpCacheFiles(env);
+  const hardenedProof = await loadSlackdumpProviderAuth(env);
+  if (!(hardenedProof && providerAliasMatchesRequested(hardenedProof, requestedWorkspace))) {
+    throw new Error("slackdump_identity_unavailable");
+  }
+  const identity = await runSlackdumpIdentityHelper(hardenedProof, env, requestedWorkspace);
+  return createSlackdumpAuthHandoff(hardenedProof, env, identity);
 }
 
 // ─── Option parsing / credentials ──────────────────────────────────────
@@ -755,10 +803,16 @@ const SLACKDUMP_READ_FLAGS = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
 const SLACKDUMP_WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
 // biome-ignore lint/suspicious/noBitwiseOperators: file-open flags are bit masks.
 const SLACKDUMP_SCRUB_FLAGS = fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW;
+// biome-ignore lint/suspicious/noBitwiseOperators: directory-open flags are bit masks.
+const SLACKDUMP_DIRECTORY_FLAGS = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+
+const SLACKDUMP_CACHE_DIRECTORY_MODE = 0o700;
+const SLACKDUMP_CACHE_FILE_MODE = 0o600;
 
 export interface SlackdumpProviderFileStat {
   dev: number;
   ino: number;
+  mode: number;
   mtimeMs: number;
   size: number;
 }
@@ -829,6 +883,7 @@ async function readBoundedRegularFile(filePath: string, maxBytes: number): Promi
         dev: after.dev,
         ino: after.ino,
         mtimeMs: after.mtimeMs,
+        mode: permissionBits(after.mode),
         size: after.size,
       },
     };
@@ -840,7 +895,13 @@ async function readBoundedRegularFile(filePath: string, maxBytes: number): Promi
 }
 
 function sameProviderFileSnapshot(left: SlackdumpProviderFileStat, right: SlackdumpProviderFileStat): boolean {
-  return left.dev === right.dev && left.ino === right.ino && left.mtimeMs === right.mtimeMs && left.size === right.size;
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mtimeMs === right.mtimeMs &&
+    left.mode === right.mode &&
+    left.size === right.size
+  );
 }
 
 async function sourceProofStillCurrent(proof: SlackdumpAuthProof): Promise<boolean> {
@@ -1040,6 +1101,115 @@ export function parseSlackdumpProviderAuth(raw: string): Pick<SlackCredentials, 
 function slackdumpCacheDir(env: NodeJS.ProcessEnv): string {
   const cacheRoot = env.CACHE_DIR || env.XDG_CACHE_HOME || join(homedir(), ".cache");
   return env.CACHE_DIR ? cacheRoot : join(cacheRoot, "slackdump");
+}
+
+function currentProcessUid(): number | null {
+  return typeof process.getuid === "function" ? process.getuid() : null;
+}
+
+function cacheEntryOwnedByCurrentProcess(stat: { uid: number }): boolean {
+  const uid = currentProcessUid();
+  return uid === null || stat.uid === uid;
+}
+
+function permissionBits(mode: number): number {
+  return mode % 0o1000;
+}
+
+/**
+ * Establish the official Slackdump cache directory through a directory
+ * descriptor. `mkdir(..., recursive)` creates missing components, but the
+ * descriptor open is the authority check: a replacement symlink or
+ * non-directory cannot be accepted, and chmod/stat operate on that exact
+ * object rather than a later pathname lookup.
+ */
+async function hardenSlackdumpCacheDirectory(env: NodeJS.ProcessEnv): Promise<void> {
+  const cacheDir = slackdumpCacheDir(env);
+  await mkdir(cacheDir, { recursive: true, mode: SLACKDUMP_CACHE_DIRECTORY_MODE });
+  let handle: FileHandle;
+  try {
+    handle = await open(cacheDir, SLACKDUMP_DIRECTORY_FLAGS);
+  } catch (error) {
+    throw new Error("slackdump_auth_cache_directory_unsafe", { cause: error });
+  }
+  try {
+    const before = await handle.stat();
+    if (!(before.isDirectory() && cacheEntryOwnedByCurrentProcess(before))) {
+      throw new Error("slackdump_auth_cache_directory_unsafe");
+    }
+    await handle.chmod(SLACKDUMP_CACHE_DIRECTORY_MODE);
+    const after = await handle.stat();
+    if (
+      !(after.isDirectory() && cacheEntryOwnedByCurrentProcess(after)) ||
+      permissionBits(after.mode) !== SLACKDUMP_CACHE_DIRECTORY_MODE
+    ) {
+      throw new Error("slackdump_auth_cache_directory_unsafe");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "slackdump_auth_cache_directory_unsafe") {
+      throw error;
+    }
+    throw new Error("slackdump_auth_cache_directory_unsafe", { cause: error });
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Enforce the durable marker/provider file mode on the descriptor that was
+ * opened without following symlinks. Missing files remain a normal
+ * pre-bootstrap state; malformed content is rejected by the bounded parser
+ * after this ownership/mode check.
+ */
+async function hardenSlackdumpCacheFile(filePath: string, maxBytes: number): Promise<boolean> {
+  let handle: FileHandle;
+  try {
+    handle = await open(filePath, SLACKDUMP_READ_FLAGS);
+  } catch (error) {
+    if (isErrnoException(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw new Error("slackdump_auth_cache_file_unsafe", { cause: error });
+  }
+  try {
+    const before = await handle.stat();
+    if (!(before.isFile() && cacheEntryOwnedByCurrentProcess(before)) || before.size > maxBytes) {
+      throw new Error("slackdump_auth_cache_file_unsafe");
+    }
+    await handle.chmod(SLACKDUMP_CACHE_FILE_MODE);
+    const after = await handle.stat();
+    if (
+      !(after.isFile() && cacheEntryOwnedByCurrentProcess(after)) ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      permissionBits(after.mode) !== SLACKDUMP_CACHE_FILE_MODE
+    ) {
+      throw new Error("slackdump_auth_cache_file_unsafe");
+    }
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message === "slackdump_auth_cache_file_unsafe") {
+      throw error;
+    }
+    throw new Error("slackdump_auth_cache_file_unsafe", { cause: error });
+  } finally {
+    await handle.close();
+  }
+}
+
+async function hardenSlackdumpCacheFiles(env: NodeJS.ProcessEnv): Promise<void> {
+  await hardenSlackdumpCacheDirectory(env);
+  const cacheDir = slackdumpCacheDir(env);
+  const markerPath = join(cacheDir, "workspace.txt");
+  if (!(await hardenSlackdumpCacheFile(markerPath, SLACKDUMP_MARKER_MAX_BYTES))) {
+    return;
+  }
+  const marker = await readBoundedRegularFile(markerPath, SLACKDUMP_MARKER_MAX_BYTES);
+  if (!(marker && SLACKDUMP_WORKSPACE_NAME_RE.test(marker.raw.trim()))) {
+    return;
+  }
+  const providerFilename = marker.raw.trim() === "default" ? "provider.bin" : `${marker.raw.trim()}.bin`;
+  await hardenSlackdumpCacheFile(join(cacheDir, providerFilename), SLACKDUMP_PROVIDER_MAX_BYTES);
 }
 
 /**
@@ -2915,12 +3085,11 @@ export async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<Slac
         throw new Error(`PDPP_SLACK_SKIP_SLACKDUMP=1 but no archive found at ${sqlitePath}`);
       }
       // Skip mode does not authorize cache reuse merely because an archive is
-      // present. A separately authenticated helper run may provide a
-      // same-run candidate, but resolveSlackApiCredentials still requires the
-      // requested archive identity and a current provider proof before the
-      // optional browser streams can consume it. Any unavailable/mismatched
-      // cache proof leaves the explicitly supplied credentials in force.
-      const proof = await loadSlackdumpSkipAuthProof(deps.childEnv, deps.workspace);
+      // present. A missing durable marker/provider is cold-bootstrapped via
+      // official workspace selection/new plus the pinned identity helper;
+      // this path never invokes archive/resume. Any unavailable/mismatched
+      // proof leaves the explicitly supplied credentials in force.
+      const proof = await bootstrapSlackdumpSkipAuthProof(deps);
       if (proof) {
         authProof = proof;
       } else {
@@ -3498,10 +3667,11 @@ if (isMainModule(import.meta.url)) {
       const db = await timedPhase(progress, "archive-open", () =>
         Promise.resolve(new DatabaseSync(sqlitePath, { readOnly: true }))
       );
-      // Only a successful same-run Slackdump invocation can authorize cache
+      // Only a successful same-run Slackdump archive invocation or a
+      // successful skip-mode official cache bootstrap can authorize cache
       // reuse. The archive's WORKSPACE URL proves the selected provider was
-      // for this connection; skip mode returns no proof and therefore keeps
-      // the explicitly supplied credentials.
+      // for this connection; any failed/uncertain proof keeps the explicitly
+      // supplied credentials.
       const apiCredentials = await resolveSlackApiCredentials(
         { workspace, token, cookie },
         archiveAuthProof,
