@@ -152,6 +152,7 @@ export const PDPP_MCP_TOOL_NAMES = Object.freeze([
   "aggregate",
   "search",
   "fetch",
+  "fetch_blob",
   "read_record_field",
 ]);
 
@@ -548,6 +549,16 @@ const FETCH_OUTPUT_SCHEMA_SHAPE = {
   content_ladder: z.unknown().optional(),
 };
 
+const BLOB_OUTPUT_SCHEMA_SHAPE = {
+  provider_url: z.string(),
+  request_id: z.string().nullable(),
+  bytes_base64: z.string(),
+  mime_type: z.string(),
+  size: z.number().int().nonnegative(),
+};
+
+const BLOB_RANGE_PATTERN = /^bytes=\d+-\d*$/;
+
 const READ_RECORD_FIELD_OUTPUT_SCHEMA_SHAPE = {
   record: z
     .object({
@@ -898,6 +909,34 @@ export function buildTools({ rs, providerUrl }: { rs: RsClient; providerUrl: str
           { query }
         );
         return toFetchToolResult(response, providerUrl, requestedId);
+      },
+    },
+    {
+      name: "fetch_blob",
+      title: "Fetch PDPP blob",
+      description:
+        "Fetch authorized blob bytes via existing `GET /v1/blobs/{blob_id}` using the same scoped bearer. Pass a `blob_id` from a visible `blob_ref`; metadata alone is not access. Optional `range` is bounded; retry a 409 with `connection_id` and its canonical `connector_key` candidate. Read-only.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          blob_id: z.string().min(1).describe("Stable blob identifier returned in a visible `blob_ref`."),
+          range: z
+            .string()
+            .regex(BLOB_RANGE_PATTERN, { message: "range must look like bytes=0-1023" })
+            .optional()
+            .describe("Single byte range, for example `bytes=0-1023`."),
+          ...ConnectionIdInputShape,
+        })
+        .strict(),
+      outputSchema: z.object(BLOB_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args: JsonObject) => {
+        const blobId = requireSafeName(args.blob_id, "blob_id");
+        const headers = typeof args.range === "string" ? { Range: args.range } : undefined;
+        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
+        const response = headers
+          ? await rs.getRaw(`/v1/blobs/${encodeURIComponent(blobId)}`, { headers, query })
+          : await rs.getRaw(`/v1/blobs/${encodeURIComponent(blobId)}`, { query });
+        return toBlobToolResult(response, providerUrl);
       },
     },
     {
@@ -3695,12 +3734,35 @@ function errorToolResult(response: RsErrorResponse, providerUrl: string): McpToo
   };
 }
 
+function toBlobToolResult(response: RsResponse<Buffer>, providerUrl: string): McpToolResult {
+  if (response.ok) {
+    const bytes = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Fetched ${bytes.length} bytes (${response.contentType || "application/octet-stream"}).`,
+        },
+      ],
+      structuredContent: {
+        provider_url: providerUrl,
+        request_id: response.requestId,
+        bytes_base64: bytes.toString("base64"),
+        mime_type: response.contentType || "application/octet-stream",
+        size: bytes.length,
+      },
+    };
+  }
+  return errorToolResult(response, providerUrl);
+}
+
 export const __internal = {
   requireSafeName,
   pickQuery,
   toToolResult,
   toSearchToolResult,
   toFetchToolResult,
+  toBlobToolResult,
   resolveStreamName,
   resolveSchemaDetail,
   assertExpandCapabilities,

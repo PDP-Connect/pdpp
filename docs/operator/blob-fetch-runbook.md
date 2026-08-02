@@ -236,6 +236,7 @@ HTTP/1.1 200 OK
 Content-Type: application/pdf
 Content-Length: 42317
 Cache-Control: private, no-store
+Accept-Ranges: bytes
 ```
 
 The bytes are the raw content uploaded in Step 1. Verify integrity:
@@ -244,6 +245,11 @@ The bytes are the raw content uploaded in Step 1. Verify integrity:
 sha256sum invoice_downloaded.pdf
 # must match $BLOB_SHA256
 ```
+
+For a bounded read, send one explicit range such as `Range: bytes=0-1023`; the
+response is `206` with `Content-Range` and the selected raw bytes. `HEAD` on the
+same authorized URL is the size probe and returns no body. Invalid, suffix, or
+multi-range requests fail closed with `416`.
 
 ### Step 6 — Grant enforcement: blob is invisible without a matching token
 
@@ -285,7 +291,8 @@ The enforcement logic:
 | `blob_ref` visibility | Only present on records when the grant includes the `blob_ref` field in the stream projection |
 | Response `Content-Type` | The `mime_type` stored at upload time |
 | `Cache-Control` | `private, no-store` (always) |
-| `Content-Length` | Exact `size_bytes` stored at upload time |
+| `Content-Length` | Exact stored byte length (equal to `size_bytes` for a valid blob) |
+| `Accept-Ranges` | `bytes`; one bounded range is supported |
 | Grant enforcement | Token's grant must grant visibility to the record that carries the `blob_ref`; otherwise `404 blob_not_found` |
 | `fetch_url` shape | Relative path `/v1/blobs/<blob_id>` — prepend RS base URL |
 

@@ -39,7 +39,9 @@ const EVENT_SUBSCRIPTION_MANAGEMENT_STAYS_IN =
   /event-subscription management stays in\s+the operator console and REST\/control-plane docs/i;
 const PDPP_RECORD = /pdpp:\/\/record/;
 
-const NORMAL_SURFACE_BYTE_BUDGET = 24 * 1024;
+// `fetch_blob` restores the already-specified Core binary continuation. Keep
+// the surface bounded while allowing that required tool to be discoverable.
+const NORMAL_SURFACE_BYTE_BUDGET = 26 * 1024;
 
 function propertyDescription(properties: { [x: string]: unknown } | undefined, name: string): string {
   const property = properties?.[name] as { description?: string } | undefined;
@@ -255,7 +257,6 @@ test("normal surface does not expose event or developer/test tools", async () =>
     const names = new Set(result.tools.map((t) => t.name));
     for (const disallowed of [
       "list_streams",
-      "fetch_blob",
       "discover_event_subscription_capabilities",
       "create_event_subscription",
       "list_event_subscriptions",

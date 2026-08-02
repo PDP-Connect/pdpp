@@ -391,6 +391,7 @@ test("blob lifecycle: upload → seed record → grant with blob_ref → fetch b
       "private, no-store",
       "Cache-Control: private, no-store (always)"
     );
+    assert.equal(blobResp.headers.get("Accept-Ranges"), "bytes", "range capability is explicit");
     assert.equal(blobResp.headers.get("Content-Length"), String(bytes.length), "Content-Length = exact size_bytes");
 
     // Byte integrity
@@ -398,6 +399,32 @@ test("blob lifecycle: upload → seed record → grant with blob_ref → fetch b
     assert.deepEqual(fetched, bytes, "fetched bytes are byte-identical to uploaded bytes");
     const sha256Actual = createHash("sha256").update(fetched).digest("hex");
     assert.equal(sha256Actual, sha256Expected, "sha256 of fetched bytes matches upload");
+
+    // Mutation-sensitive range proof: the server must return the selected
+    // stored bytes, not the metadata's declared size or an unbounded full body.
+    const ranged = await fetch(fetchUrl, {
+      headers: { Authorization: `Bearer ${approved.token}`, Range: "bytes=1-3" },
+    });
+    assert.equal(ranged.status, 206, "a supported single byte range returns 206");
+    assert.equal(ranged.headers.get("Content-Range"), `bytes 1-3/${bytes.length}`);
+    assert.equal(ranged.headers.get("Content-Length"), "3");
+    assert.deepEqual(Buffer.from(await ranged.arrayBuffer()), bytes.subarray(1, 4));
+
+    const head = await fetch(fetchUrl, {
+      headers: { Authorization: `Bearer ${approved.token}` },
+      method: "HEAD",
+    });
+    assert.equal(head.status, 200, "HEAD remains an authorized size probe");
+    assert.equal(head.headers.get("Content-Length"), String(bytes.length));
+    assert.equal(head.headers.get("Accept-Ranges"), "bytes");
+    assert.equal(await head.text(), "");
+
+    const unsatisfiable = await fetch(fetchUrl, {
+      headers: { Authorization: `Bearer ${approved.token}`, Range: `bytes=${bytes.length}-` },
+    });
+    assert.equal(unsatisfiable.status, 416, "an out-of-bounds range fails closed");
+    assert.equal(unsatisfiable.headers.get("Content-Range"), `bytes */${bytes.length}`);
+    assert.equal(await unsatisfiable.text(), "");
   });
 });
 

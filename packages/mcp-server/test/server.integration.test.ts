@@ -562,9 +562,25 @@ test("lists the expected tools and annotates read-only tools as read-only", asyn
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ["aggregate", "fetch", "query_records", "read_record_field", "schema", "search"]);
+  assert.deepEqual(names, [
+    "aggregate",
+    "fetch",
+    "fetch_blob",
+    "query_records",
+    "read_record_field",
+    "schema",
+    "search",
+  ]);
 
-  const READ_ONLY = new Set(["aggregate", "schema", "query_records", "search", "fetch", "read_record_field"]);
+  const READ_ONLY = new Set([
+    "aggregate",
+    "schema",
+    "query_records",
+    "search",
+    "fetch",
+    "fetch_blob",
+    "read_record_field",
+  ]);
   for (const tool of tools.tools) {
     assert.ok(READ_ONLY.has(tool.name), `${tool.name} must be part of the read-only normal surface`);
     assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} must be readOnlyHint=true`);
@@ -1524,12 +1540,13 @@ test("tool output never contains the bearer token", async () => {
   const { fetch } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
-  const tools = ["schema", "query_records", "aggregate", "search", "fetch"];
+  const tools = ["schema", "query_records", "aggregate", "search", "fetch", "fetch_blob"];
   const argsByTool: Record<string, Record<string, unknown>> = {
     query_records: { stream: "orders" },
     aggregate: { stream: "orders", metric: "count" },
     search: { q: "orders" },
     fetch: { id: "orders:o1" },
+    fetch_blob: { blob_id: "blob-1" },
   };
   for (const name of tools) {
     const args = argsByTool[name] ?? {};
@@ -1588,9 +1605,19 @@ test("Streamable HTTP helper handles initialize and tools/list statelessly", asy
   // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — listed.result is genuinely optional (JSON-RPC only includes it on success); dropping ?. fails tsc (TS18048).
   // biome-ignore lint/suspicious/useArraySortCompare: tool names are ASCII identifiers, so default lexicographic string sort is correct and stable here.
   const names = listed.result?.tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ["aggregate", "fetch", "query_records", "read_record_field", "schema", "search"]);
+  assert.deepEqual(names, [
+    "aggregate",
+    "fetch",
+    "fetch_blob",
+    "query_records",
+    "read_record_field",
+    "schema",
+    "search",
+  ]);
   // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — listed.result is genuinely optional (JSON-RPC only includes it on success); dropping ?. fails tsc (TS18048).
   assert.ok(listed.result?.tools.some((tool) => tool.name === "fetch"));
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — listed.result is genuinely optional (JSON-RPC only includes it on success); dropping ?. fails tsc (TS18048).
+  assert.ok(listed.result?.tools.some((tool) => tool.name === "fetch_blob"));
   // biome-ignore lint/suspicious/noUnnecessaryConditions: tsc disagrees — listed.result is genuinely optional (JSON-RPC only includes it on success); dropping ?. fails tsc (TS18048).
   assert.ok(listed.result?.tools.some((tool) => tool.name === "search"));
 });

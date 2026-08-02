@@ -65,6 +65,7 @@ The adapter writes only MCP protocol messages to stdout. Diagnostics go to stder
 | `aggregate` | `GET /v1/streams/{stream}/aggregate` |
 | `search` | `GET /v1/search` |
 | `fetch` | `GET /v1/streams/{stream}/records/{record_id}` |
+| `fetch_blob` | `GET /v1/blobs/{blob_id}` |
 | `read_record_field` | `GET /v1/streams/{stream}/records/{record_id}/field-window` |
 
 `read_record_field` is separate from `fetch` intentionally. `fetch` returns a
@@ -101,6 +102,13 @@ every text-like field (`text`, `content`, `body`, `summary`), the document
 `text` contains compact JSON for the projected record rather than the full
 document body; source handles such as stream, `connection_id`, and
 `connector_key` remain in `metadata`.
+
+`fetch_blob` is the binary continuation for an authorized record's `blob_ref`.
+It calls the same grant-scoped RS blob endpoint with the configured client bearer
+and returns raw bytes as `bytes_base64`, plus `mime_type` and `size`; it does not
+turn attachment metadata into inline bytes or construct a source-specific URL.
+Use its optional single-byte `range` for bounded retrievals and pass
+`connection_id` only when the RS reports an ambiguous blob binding.
 
 ### Content ladder for large fields
 

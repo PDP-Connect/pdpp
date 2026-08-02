@@ -109,6 +109,13 @@ on a loopback callback that cannot arrive.
 - The hosted MCP surface is read-only and does not run connectors, schedules,
   browser sessions, or operator-console actions.
 
+The normal read surface includes `schema`, `query_records`, `aggregate`,
+`search`, `fetch`, `fetch_blob`, and `read_record_field`. For an attachment,
+first query the authorized record and use the returned `blob_ref.blob_id` (or
+`fetch_url`) with `fetch_blob`; it reuses the same scoped bearer against
+`GET /v1/blobs/{blob_id}` and returns the raw bytes as base64. A `blob_ref` with
+`hydration_status: "deferred"` or a null `blob_ref` has no retrievable bytes yet.
+
 ## Trusted local agents (operator-side)
 
 Trusted local owner agents are a separate REST/control-plane surface for the
@@ -178,7 +185,8 @@ without pasting large payloads into a chat transcript.
    advertises the current `schema` tool (with `detail` and `stream` inputs).
 2. **Confirm the tool surface.** Ask the agent to list its PDPP tools, or inspect
    the connector's tool list. Confirm the exact tools are `schema`,
-   `query_records`, `aggregate`, `search`, `fetch`, and `read_record_field`;
+   `query_records`, `aggregate`, `search`, `fetch`, `fetch_blob`, and
+   `read_record_field`;
    confirm `schema` exposes `detail` (`compact|full`), `stream`, and
    `connection_id`. `read_record_field` is the model-callable bounded-read path
    when a search preview is not enough; generic resource reads are optional. If

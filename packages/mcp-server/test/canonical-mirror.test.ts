@@ -228,7 +228,7 @@ test("5.1 descriptions prefer connection_id and connector_key source identity", 
 
   const tools = await client.listTools();
   const byName = new Map(tools.tools.map((tool) => [tool.name, tool]));
-  for (const name of ["schema", "query_records", "aggregate", "search", "fetch"]) {
+  for (const name of ["schema", "query_records", "aggregate", "search", "fetch", "fetch_blob"]) {
     const tool = byName.get(name);
     assert.ok(tool, `${name} tool must be registered`);
     assert.match(tool.description ?? "", CONNECTION_ID, `${name} must prefer connection_id for source selection`);

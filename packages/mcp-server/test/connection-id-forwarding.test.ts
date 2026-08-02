@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { createPdppMcpServer } from "../src/server.ts";
+import { createPdppMcpServer, PDPP_MCP_TOOL_NAMES } from "../src/server.ts";
 
 // Asserts the local @pdpp/mcp-server forwards canonical `connection_id` to the
 // RS so multi-connection callers can disambiguate without an extra round trip.
@@ -249,7 +249,7 @@ test("every normal read tool input schema declares optional connection_id and no
   const { fetch } = makeRecordingFetch();
   const { client, server } = await connectClient(fetch);
 
-  const expected = ["schema", "query_records", "aggregate", "search", "fetch"];
+  const expected = [...PDPP_MCP_TOOL_NAMES];
   const tools = await client.listTools();
   for (const toolName of expected) {
     const tool = tools.tools.find((t) => t.name === toolName);

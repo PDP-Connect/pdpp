@@ -128,7 +128,7 @@ See `references/query-cookbook.md`. Quick map:
 - "give me the last N items": `GET /v1/streams/<stream>/records?limit=N&order=desc` — `limit` defaults to 25 and is capped at 100. Asking for more returns at most 100 plus a non-fatal `meta.warnings[]` entry with `code: "limit_clamped"`; page forward with the returned cursor rather than expecting a larger page. Exact/range filters use the canonical bracket syntax `filter[<field>]=<value>` and `filter[<field>][gte|gt|lte|lt]=<value>` only; flat shapes like `<field>.gte`, `<field>_gte`, or `min_<field>` are rejected with 400.
 - "show changes since cursor X": `GET /v1/streams/<stream>/records?changes_since=<cursor>` (bootstrap with `changes_since=beginning`)
 - "find records matching free text": `GET /v1/search?q=…` or, when the server advertises it, `GET /v1/search/hybrid?q=…` (experimental hybrid retrieval extension; scope with repeated `streams=` or `streams[]=` values, not CSV)
-- "fetch an attachment": follow `blob_ref.fetch_url` from the record body, never construct it
+- "fetch an attachment": REST clients follow `blob_ref.fetch_url` from the record body, never construct it; MCP clients use `fetch_blob` with the same visible `blob_id`
 - "count or sum": `GET /v1/streams/<stream>/aggregate?metric=count` or `metric=sum&field=<field>` (when advertised)
 
 Default to filtered queries over full-table scans. If `/v1/schema` declares a filter or `expand[]` that answers the task, prefer it.
@@ -165,8 +165,10 @@ credentials, scopes, or wire contracts.
 
 Run `pdpp connect <provider-url>` first so a scoped client token is cached. The
 normal MCP surface exposes exactly `schema`, `query_records`, `aggregate`,
-`search`, and `fetch`. These tools are backed by the RS endpoints described in
-§7.
+`search`, `fetch`, `fetch_blob`, and `read_record_field`. These tools are backed
+by the RS endpoints described in §7. For binary records, query the authorized
+record first, then use `fetch_blob` with its visible stable `blob_id`; a null or
+deferred `blob_ref` has no bytes to retrieve.
 
 Constraints (these mirror the hard rules above):
 
@@ -203,7 +205,8 @@ which returns an owner bearer for REST/control-plane use and is rejected by
 
 **Stale hosted-MCP tool surface.** External MCP hosts (ChatGPT, Claude, etc.)
 cache the tool surface at registration time. If the tool list is not exactly
-`schema`, `query_records`, `aggregate`, `search`, and `fetch`, or `schema` is
+`schema`, `query_records`, `aggregate`, `search`, `fetch`, `fetch_blob`, and
+`read_record_field`, or `schema` is
 missing the `detail` or `stream` inputs, the client is holding a stale
 registration. This is an external host cache reality, not a PDPP bug. The
 reference server publishes the current tool surface on every connection via the

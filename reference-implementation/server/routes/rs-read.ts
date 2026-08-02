@@ -99,6 +99,7 @@ interface RouteResponse {
   json: (body: unknown) => unknown;
   send: (body: unknown) => unknown;
   setHeader: (name: string, value: string) => unknown;
+  status: (code: number) => RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
@@ -2570,11 +2571,12 @@ async function serveResolvedBlob(
     blobId: string;
     blobRow: BlobRow;
     actorConnectorId: string | null;
+    rangeHeader: unknown;
     resolvedMatch: { binding: BlobBindingRow; record: unknown };
     resolverWarnings: ResolverWarning[] | undefined;
   }
 ): Promise<void> {
-  const { blobId, blobRow, actorConnectorId, resolvedMatch, resolverWarnings } = args;
+  const { blobId, blobRow, actorConnectorId, rangeHeader, resolvedMatch, resolverWarnings } = args;
   const dependencies = {
     getActorConnectorId: () => actorConnectorId,
     getVisibleRecord: () => resolvedMatch.record,
@@ -2598,14 +2600,91 @@ async function serveResolvedBlob(
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const blob = output.blob;
   res.setHeader("Content-Type", blob.mime_type);
-  res.setHeader("Content-Length", String(blob.size_bytes));
   res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Accept-Ranges", "bytes");
   // P3: when the resolver observed deprecated alias use, surface it as a
   // structured response header so callers see migration signal.
   if (Array.isArray(resolverWarnings) && resolverWarnings.some((w) => w?.code === "deprecated_alias_used")) {
     res.setHeader("PDPP-Warning", "deprecated_alias_used: connector_instance_id");
   }
-  res.send(Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || ""));
+  const bytes = Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || "");
+  sendBlobBytes(res, bytes, rangeHeader);
+}
+
+function sendBlobBytes(res: RouteResponse, bytes: Buffer, rangeHeader: unknown): void {
+  const range = resolveBlobByteRange(rangeHeader, bytes.length);
+  if (range === "unsatisfiable") {
+    res.setHeader("Content-Range", `bytes */${bytes.length}`);
+    res.setHeader("Content-Length", "0");
+    res.status(416).send(Buffer.alloc(0));
+    return;
+  }
+  if (range) {
+    const rangedBytes = bytes.subarray(range.start, range.end + 1);
+    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${bytes.length}`);
+    res.setHeader("Content-Length", String(rangedBytes.length));
+    res.status(206).send(rangedBytes);
+    return;
+  }
+  res.setHeader("Content-Length", String(bytes.length));
+  res.send(bytes);
+}
+
+interface BlobByteRange {
+  end: number;
+  start: number;
+}
+
+interface ParsedBlobByteRange {
+  requestedEnd: number;
+  start: number;
+}
+
+const BLOB_RANGE_PATTERN = /^bytes=(\d+)-(\d*)$/;
+
+/**
+ * Resolve the single-range form the MCP adapter advertises. The route keeps
+ * range handling deliberately narrow: one explicit start with an optional
+ * end, bounded by the stored byte length. Invalid, suffix, and multi-range
+ * requests fail closed with 416 instead of silently returning the full blob.
+ */
+function resolveBlobByteRange(value: unknown, size: number): BlobByteRange | "unsatisfiable" | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const parsed = parseBlobByteRange(value, size);
+  if (!(parsed && isValidBlobByteRange(parsed, size))) {
+    return "unsatisfiable";
+  }
+  return { end: Math.min(parsed.requestedEnd, size - 1), start: parsed.start };
+}
+
+function parseBlobByteRange(value: unknown, size: number): ParsedBlobByteRange | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const match = BLOB_RANGE_PATTERN.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  return {
+    requestedEnd: match[2] === "" ? size - 1 : Number(match[2]),
+    start: Number(match[1]),
+  };
+}
+
+function isValidBlobByteRange(range: ParsedBlobByteRange, size: number): boolean {
+  return (
+    Number.isSafeInteger(range.start) &&
+    Number.isSafeInteger(range.requestedEnd) &&
+    range.start >= 0 &&
+    range.start < size &&
+    range.requestedEnd >= range.start
+  );
+}
+
+function requestRangeHeader(req: RouteRequest): unknown {
+  return req.headers.range ?? req.headers.Range;
 }
 
 // GET /v1/blobs/:blob_id — per-binding blob-visibility read. Storage reads
@@ -2715,6 +2794,7 @@ export function mountRsBlobRead(app: AppLike, ctx: MountRsReadContext): void {
           actorConnectorId,
           blobId,
           blobRow,
+          rangeHeader: requestRangeHeader(req),
           resolvedMatch,
           resolverWarnings,
         });
