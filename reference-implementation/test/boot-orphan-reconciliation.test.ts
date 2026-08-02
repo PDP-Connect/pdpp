@@ -1218,7 +1218,7 @@ test("SQLite: caused_by_event_id pointing at a DIFFERENT run's run.started must 
 });
 
 test("Postgres parity old-fail/new-pass: terminal spine already exists + stale running run_history converges without re-emitting a spine event", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1314,7 +1314,7 @@ test("Postgres parity old-fail/new-pass: terminal spine already exists + stale r
 });
 
 test("Postgres parity: terminal spine event with NULL connector_instance_id/source_kind/source_id (the exact live run_1785516896273_1 shape) still converges", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1366,7 +1366,7 @@ test("Postgres parity: terminal spine event with NULL connector_instance_id/sour
 });
 
 test("Postgres parity: a NULL-identity terminal spine event must NOT converge the wrong row when two connections share its run_id", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1419,7 +1419,7 @@ test("Postgres parity: a NULL-identity terminal spine event must NOT converge th
 });
 
 test("Postgres parity: connection A already terminal + connection B still running, sharing a run_id — A's legacy NULL-identity event must NOT converge B's row", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1501,7 +1501,7 @@ test("Postgres parity: connection A already terminal + connection B still runnin
 });
 
 test("Postgres parity: multiple NULL-identity legacy terminal events across colliding run_id histories converge only the unambiguous singleton", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1577,7 +1577,7 @@ test("Postgres parity: multiple NULL-identity legacy terminal events across coll
 });
 
 test("Postgres parity: caused_by_event_id resolves true identity even when two connections collide on run_id (primary recovery path)", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1650,7 +1650,7 @@ test("Postgres parity: caused_by_event_id resolves true identity even when two c
 });
 
 test("Postgres parity: caused_by_event_id pointing at a DIFFERENT run's run.started must NOT resolve identity or converge either colliding row", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1807,7 +1807,7 @@ test("SQLite: backfill replay carries the terminal event's own data_json — rec
 });
 
 test("Postgres parity: backfill replay carries the terminal event's own data_json", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -1941,7 +1941,7 @@ test("SQLite: equal occurred_at terminal events break ties on recorded_at, then 
 });
 
 test("Postgres parity: equal occurred_at terminal events break ties on recorded_at deterministically", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
@@ -2100,7 +2100,7 @@ test("SQLite: a full RUN_HISTORY_BACKFILL_LIMIT cohort of source_kind='connector
 });
 
 test("Postgres parity: a full RUN_HISTORY_BACKFILL_LIMIT cohort of source_kind='connector'+source_id=NULL rows drains to zero, not repeated forever", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
