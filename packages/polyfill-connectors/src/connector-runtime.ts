@@ -72,6 +72,12 @@ import {
   createSafeCaptureSession,
   type SafeCaptureSession,
 } from "./fixture-capture.ts";
+import {
+  DEFAULT_SAFE_DIAGNOSTICS_POLICY,
+  type SafeDiagnosticsPolicy,
+  safeErrorCategory,
+  sanitizeSafeEmission,
+} from "./safe-diagnostics.ts";
 import { emitToStdout } from "./safe-emit.ts";
 import { resourceSet } from "./scope-filters.ts";
 
@@ -117,6 +123,7 @@ export type {
   TerminalDetailGapMessage,
   ValidateRecord,
 } from "./connector-runtime-protocol.ts";
+export type { SafeDiagnosticsPolicy } from "./safe-diagnostics.ts";
 
 // ─── Collect context ────────────────────────────────────────────────────
 
@@ -309,6 +316,8 @@ interface BaseRunConnectorConfig {
    */
   onDurableCommit?: (log: (message: string) => void) => void | Promise<void>;
   retryablePattern?: RegExp;
+  /** Connector vocabulary for the shared safe diagnostic emission boundary. */
+  safeDiagnosticsPolicy?: SafeDiagnosticsPolicy;
   /** Record field that scope.time_range filters on. Default 'date'. */
   timeRangeField?: string | ((stream: string) => string);
   validateRecord?: ValidateRecord;
@@ -678,6 +687,7 @@ export function runConnector(config: RunConnectorConfig): void {
   // safe evidence never receives the raw session at all.
   const capture = config.captureMode === "safe" ? null : createCaptureSession(name);
   const safeCapture = config.captureMode === "safe" ? createSafeCaptureSession(name) : null;
+  const safeDiagnosticsPolicy = config.safeDiagnosticsPolicy ?? DEFAULT_SAFE_DIAGNOSTICS_POLICY;
 
   // stdin reader for START + INTERACTION_RESPONSE.
   const rl = createInterface({ input: process.stdin, terminal: false });
@@ -687,7 +697,8 @@ export function runConnector(config: RunConnectorConfig): void {
     if (capture && msg.type === "RECORD") {
       capture.recordRecord(msg);
     }
-    return emitToStdout(msg);
+    const safeMessage = config.captureMode === "safe" ? sanitizeSafeEmission(msg, safeDiagnosticsPolicy) : msg;
+    return emitToStdout(safeMessage);
   };
 
   const activeCapture = capture ?? safeCapture;
@@ -1522,34 +1533,27 @@ async function emitBrowserSurfaceDiagnostic(args: {
   if (!(diagnostics && progress)) {
     return;
   }
-  let errorMessage: string | null = null;
-  if (error instanceof Error) {
-    errorMessage = error.message;
-    // biome-ignore lint/suspicious/noEqualsToNull: error is optional (may be undefined, not just null); === null would wrongly stringify an absent error as "undefined"
-  } else if (error != null) {
-    errorMessage = String(error);
-  }
+  const errorClass = error === undefined || error === null ? null : safeErrorCategory(error);
   const payload = {
     phase,
     interaction_kind: req.kind,
-    request_id: req.request_id ?? null,
+    request_id: req.request_id ? "present" : null,
     response_status: responseStatus ?? null,
     surface: describeBrowserSurface(context),
     keepalive: keepalive ?? null,
-    error: errorMessage,
+    error: errorClass,
   };
   try {
     await progress(`browser_surface.diagnostic ${JSON.stringify(payload)}`);
   } catch (progressError) {
-    const message = progressError instanceof Error ? progressError.message : String(progressError);
-    process.stderr.write(`[browser-surface-diagnostics] progress emit failed: ${message}\n`);
+    process.stderr.write(`[browser-surface-diagnostics] progress emit failed (${safeErrorCategory(progressError)})\n`);
   }
 }
 
 function describeBrowserSurface(context: BrowserSurfaceDiagnosticContext): {
   browser_connected: boolean;
   page_count: number | null;
-  pages: Array<{ closed: boolean; url: string | null }>;
+  pages: Array<{ closed: boolean; url: "blank" | "present" | "unavailable" }>;
 } {
   const browser = context.browser();
   let pages: Page[] = [];
@@ -1560,33 +1564,24 @@ function describeBrowserSurface(context: BrowserSurfaceDiagnosticContext): {
   }
   return {
     browser_connected: Boolean(browser?.isConnected()),
-    page_count: typeof context.pages === "function" ? pages.length : null,
+    page_count: typeof context.pages === "function" ? Math.min(pages.length, 5) : null,
     pages: pages.slice(0, 5).map((page) => ({
       closed: page.isClosed(),
-      url: sanitizeDiagnosticUrl(page),
+      url: safeDiagnosticUrlPosture(page),
     })),
   };
 }
 
-function sanitizeDiagnosticUrl(page: Page): string | null {
+function safeDiagnosticUrlPosture(page: Page): "blank" | "present" | "unavailable" {
   if (page.isClosed()) {
-    return null;
+    return "unavailable";
   }
   try {
     const rawUrl = page.url();
-    if (!rawUrl || rawUrl === "about:blank") {
-      return rawUrl || null;
-    }
-    const url = new URL(rawUrl);
-    return `${url.origin}${url.pathname}`;
+    return !rawUrl || rawUrl === "about:blank" ? "blank" : "present";
   } catch {
-    return "unparseable";
+    return "unavailable";
   }
-}
-
-function normalizeDiagnosticError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.slice(0, 300);
 }
 
 function summarizeInactiveKeepalive(
@@ -1622,7 +1617,7 @@ function startBrowserConnectionKeepalive(
   let pingSuccesses = 0;
   let skippedDisconnected = 0;
   let stopped = false;
-  let lastError: string | undefined;
+  let lastError: ReturnType<typeof safeErrorCategory> | undefined;
   let lastSuccessfulPingElapsedMs: number | undefined;
   let firstObservedDisconnectedElapsedMs: number | undefined;
   let disconnectEventElapsedMs: number | undefined;
@@ -1658,8 +1653,8 @@ function startBrowserConnectionKeepalive(
     } catch (err) {
       sessionPromise = null;
       pingFailures += 1;
-      lastError = normalizeDiagnosticError(err);
-      process.stderr.write(`[browser-keepalive] Browser.getVersion failed: ${lastError}\n`);
+      lastError = safeErrorCategory(err);
+      process.stderr.write(`[browser-keepalive] Browser.getVersion failed (${lastError})\n`);
     } finally {
       pingInFlight = false;
     }

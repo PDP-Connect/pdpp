@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
@@ -413,6 +413,8 @@ test("safe capture inventory contains only bounded redacted evidence and deletes
       assert.ok(inventory.files > 0);
       assert.ok(inventory.files <= SAFE_CAPTURE_MAX_FILES);
       assert.ok(inventory.bytes <= SAFE_CAPTURE_MAX_BYTES);
+      assert.equal(inventory.cleanup_failures, 0);
+      assert.equal(inventory.partial_writes, 0);
       assert.ok(inventory.rejected > 0, "file cap must reject excess safe events");
       const files = walkFiles(capture.baseDir);
       assert.equal(files.length, inventory.files);
@@ -449,5 +451,89 @@ test("safe capture inventory contains only bounded redacted evidence and deletes
       rmSync(root, { force: true, recursive: true });
     }
     assert.equal(existsSync(root), false, "the temporary inventory root must be deleted");
+  });
+});
+
+test("safe capture rejects a write after the deadline without invoking the writer", () => {
+  const root = mkdtempSync(join(tmpdir(), "pdpp-safe-capture-deadline-"));
+  let nowMs = 1000;
+  let writes = 0;
+  withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: "1", PDPP_CAPTURE_ROOT_DIR: root }, () => {
+    const capture = createSafeCaptureSession(`safe_deadline_${process.pid}_${Date.now()}`, {
+      now: () => nowMs,
+      writeFile: () => {
+        writes += 1;
+      },
+    });
+    assert.ok(capture);
+    try {
+      nowMs = 3000;
+      capture.captureSafe({ kind: "surface_manifest", payload: { phase: "account_page_settled" } });
+      assert.equal(writes, 0, "no filesystem write may begin after the capture deadline");
+      assert.deepEqual(capture.inventory(), {
+        bytes: 0,
+        cleanup_failures: 0,
+        deadline_at_ms: 3000,
+        deadline_exceeded: true,
+        files: 0,
+        partial_writes: 0,
+        rejected: 1,
+      });
+      assert.deepEqual(walkFiles(capture.baseDir), []);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+});
+
+test("safe capture inventory accounts for partial writes and removes the partial file", () => {
+  const root = mkdtempSync(join(tmpdir(), "pdpp-safe-capture-partial-"));
+  withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: "1", PDPP_CAPTURE_ROOT_DIR: root }, () => {
+    const capture = createSafeCaptureSession(`safe_partial_${process.pid}_${Date.now()}`, {
+      writeFile: (path, data) => {
+        writeFileSync(path, data, "utf8");
+        throw new Error("synthetic partial write");
+      },
+    });
+    assert.ok(capture);
+    try {
+      capture.captureSafe({ kind: "surface_manifest", payload: { phase: "account_page_settled" } });
+      assert.deepEqual(capture.inventory(), {
+        bytes: 0,
+        cleanup_failures: 0,
+        deadline_at_ms: capture.inventory().deadline_at_ms,
+        deadline_exceeded: false,
+        files: 0,
+        partial_writes: 1,
+        rejected: 1,
+      });
+      assert.deepEqual(walkFiles(capture.baseDir), [], "a failed write must not remain in the safe inventory");
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+});
+
+test("safe capture inventory records cleanup failure and closes the session", () => {
+  const root = mkdtempSync(join(tmpdir(), "pdpp-safe-capture-cleanup-"));
+  withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: "1", PDPP_CAPTURE_ROOT_DIR: root }, () => {
+    const capture = createSafeCaptureSession(`safe_cleanup_${process.pid}_${Date.now()}`, {
+      removeDirectory: () => {
+        throw new Error("synthetic cleanup failure");
+      },
+    });
+    assert.ok(capture);
+    try {
+      capture.markSucceeded();
+      capture.finalize();
+      assert.equal(capture.inventory().cleanup_failures, 1);
+      assert.equal(existsSync(capture.baseDir), true);
+      capture.captureSafe({ kind: "surface_manifest", payload: { phase: "account_page_settled" } });
+      assert.equal(capture.inventory().files, 0, "a finalized session cannot write after cleanup failure");
+      capture.finalize();
+      assert.equal(capture.inventory().cleanup_failures, 1, "cleanup failure is recorded once");
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 });

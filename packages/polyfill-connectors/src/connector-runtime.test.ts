@@ -516,7 +516,7 @@ test("makeBrowserInteractionKeepalive emits gated browser-surface diagnostics ar
       keepalive: null | { pingAttempts: number; pingSuccesses: number };
       phase: string;
       response_status: string | null;
-      surface: { pages: Array<{ url: string | null }> };
+      surface: { pages: Array<{ url: string }> };
     };
   });
   assert.equal(diagnostics[0]?.phase, "interaction_start");
@@ -524,7 +524,8 @@ test("makeBrowserInteractionKeepalive emits gated browser-surface diagnostics ar
   assert.equal(diagnostics[1]?.phase, "interaction_response");
   assert.equal(diagnostics[1]?.response_status, "success");
   assert.ok((diagnostics[1]?.keepalive?.pingAttempts ?? 0) > 0);
-  assert.equal(diagnostics[1]?.surface.pages[0]?.url, "https://secure.chase.com/web/auth/");
+  assert.equal(diagnostics[1]?.surface.pages[0]?.url, "present");
+  assert.doesNotMatch(JSON.stringify(diagnostics), /secure\.chase\.com|secret=|int_test/u);
 });
 
 test("makeBrowserInteractionKeepalive records browser disconnect timing in diagnostics", async () => {
@@ -603,6 +604,38 @@ test("makeBrowserInteractionKeepalive records browser disconnect timing in diagn
   assert.equal(typeof responseDiagnostic.keepalive?.lastSuccessfulPingElapsedMs, "number");
   assert.equal(detachCalls, 1);
   assert.equal(disconnectedListener, undefined);
+});
+
+test("browser-surface runtime diagnostics reduce request, URL, and error mutations to categories", async () => {
+  const progressMessages: string[] = [];
+  const wrapped = makeBrowserInteractionKeepalive({
+    context: makeKeepaliveContext(
+      {
+        isConnected: () => true,
+        newBrowserCDPSession: () =>
+          Promise.resolve({
+            detach: () => Promise.resolve(),
+            send: () => Promise.resolve({}),
+          }),
+      },
+      [makeDiagnosticPage("https://secure.chase.com/accounts/ACCT-123?token=SECRET")]
+    ),
+    diagnostics: true,
+    intervalMs: 0,
+    progress: (message) => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    sendInteraction: () => Promise.reject(new Error("raw request_id=REQ-123 token=SECRET")),
+  });
+
+  await assert.rejects(wrapped({ kind: "otp", message: "raw account ACCT-123", request_id: "REQ-123" }));
+
+  const serialized = progressMessages.join("\n");
+  assert.doesNotMatch(serialized, /ACCT-123|REQ-123|SECRET|secure\.chase\.com/u);
+  assert.match(serialized, /"request_id":"present"/u);
+  assert.match(serialized, /"error":"unknown"/u);
+  assert.match(serialized, /"url":"present"/u);
 });
 
 function delay(ms: number): Promise<void> {

@@ -30,13 +30,11 @@ import {
   attachBodyResponseQueue,
   type BodyResponseDiagnostics,
   type BodyResponseQueue,
-  sanitizeArtifactResponseMetadata,
   waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
 import {
   type BrowserSurfaceCandidateManifest,
   type BrowserSurfaceCapturePhase,
-  type BrowserSurfaceDiagnostic,
   type BrowserSurfaceManagedState,
   browserSurfaceManagedState,
   buildBrowserSurfaceCandidateManifest,
@@ -58,6 +56,13 @@ import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queu
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { readPlaywrightDownloadBufferDetailed, safeSuggestedFilename } from "../../src/playwright-download.ts";
+import {
+  SAFE_DIAGNOSTIC_OPERATION_DEADLINE_MS,
+  type SafeDiagnosticsPolicy,
+  sanitizeSafeDiagnosticInfo,
+  sanitizeSafeEmission,
+  withDiagnosticDeadline,
+} from "../../src/safe-diagnostics.ts";
 import { statementFingerprintExcludeKeys } from "../../src/statement-content-fingerprint.ts";
 import {
   openStatementHydrationCursor,
@@ -237,136 +242,25 @@ const SAFE_USAA_REASONS = new Set([
 ]);
 const SAFE_USAA_OUTCOMES = new Set(["export_pressure", "navigation_drifted", "source_structure_changed", "unknown"]);
 const SAFE_USAA_TERMINAL_FAILURES = new Set(["export_affordance_disabled", "source_structure_changed"]);
-
-function safeUsaaStream(value: unknown): string {
-  return typeof value === "string" && SAFE_USAA_STREAMS.has(value) ? value : "unknown";
-}
-
-function safeUsaaReason(value: unknown): string {
-  return typeof value === "string" && SAFE_USAA_REASONS.has(value) ? value : "diagnostic_sanitized";
-}
-
-function safeUsaaProgressMessage(value: unknown): string {
-  if (typeof value !== "string") {
-    return "USAA progress";
-  }
-  if (value.startsWith("Extracting accounts")) {
-    return "Extracting accounts";
-  }
-  if (value.startsWith("Found ")) {
-    return "Accounts enumerated";
-  }
-  if (value.startsWith("Export wait:")) {
-    return "Export wait";
-  }
-  if (value.startsWith("Export complete:")) {
-    return "Export complete";
-  }
-  if (value.startsWith("Export diagnostic:")) {
-    return "Export diagnostic";
-  }
-  if (value.startsWith("Retrying export")) {
-    return "Retrying export";
-  }
-  if (value.startsWith("Session died")) {
-    return "Session recovery";
-  }
-  if (value.startsWith("Hydrated ")) {
-    return "Statements hydration";
-  }
-  if (value.startsWith("Parsed ")) {
-    return "Statement parsing";
-  }
-  return "USAA progress";
-}
-
-function addSafeUsaaClassification(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
-  if (typeof raw.outcome === "string" && SAFE_USAA_OUTCOMES.has(raw.outcome)) {
-    safe.outcome = raw.outcome;
-  }
-  if (typeof raw.terminal_failure === "string" && SAFE_USAA_TERMINAL_FAILURES.has(raw.terminal_failure)) {
-    safe.terminal_failure = raw.terminal_failure;
-  }
-  if (
-    raw.account_page_identity === "exact" ||
-    raw.account_page_identity === "mismatch" ||
-    raw.account_page_identity === "unverified"
-  ) {
-    safe.account_page_identity = raw.account_page_identity;
-  }
-}
-
-function addSafeUsaaSurfaceEvidence(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
-  const browserSurface = sanitizeBrowserSurfaceDiagnostic(raw.browser_surface as BrowserSurfaceDiagnostic | undefined);
-  if (browserSurface) {
-    safe.browser_surface = browserSurface;
-  }
-  const surfaceManifest = raw.surface_manifest as BrowserSurfaceCandidateManifest | undefined;
-  if (surfaceManifest) {
-    safe.surface_manifest = buildBrowserSurfaceCandidateManifest({
-      captureState: surfaceManifest.capture_state,
-      candidateCount: surfaceManifest.candidate_count,
-      candidates: surfaceManifest.candidates,
-      controlCount: surfaceManifest.control_count,
-      controls: surfaceManifest.controls,
-      phase: surfaceManifest.phase,
-    });
-  }
-  const observation = sanitizeNoExportObservation(
-    raw.no_export_observation as NoExportAffordanceObservation | undefined
-  );
-  if (observation) {
-    safe.no_export_observation = observation;
-  }
-  if (Array.isArray(raw.export_affordance_candidates)) {
-    safe.export_affordance_candidates = raw.export_affordance_candidates
-      .slice(0, 8)
-      .map((candidate) =>
-        sanitizeExportAffordanceCandidate(
-          candidate as NoExportAffordanceObservation["export_affordance_candidates"][number]
-        )
-      );
-  }
-}
-
-function addSafeUsaaArtifactEvidence(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
-  const artifact = sanitizeArtifactDiagnostics((raw.artifact as BodyResponseDiagnostics | null | undefined) ?? null);
-  if (artifact) {
-    safe.artifact = artifact;
-  }
-  const download = sanitizeDownloadDiagnostics((raw.download as DownloadDiagnostics | null | undefined) ?? null);
-  if (download) {
-    safe.download = download;
-  }
-}
-
-function addSafeUsaaPhaseAndCounts(safe: Record<string, unknown>, raw: Record<string, unknown>): void {
-  const phase = safeDiagnosticPhase(raw.phase);
-  if (phase !== "unknown") {
-    safe.phase = phase;
-  }
-  if (Object.hasOwn(raw, "diag")) {
-    safe.page = raw.diag !== null && typeof raw.diag === "object" ? "captured" : "unavailable";
-  }
-  for (const key of ["account_ordinal", "account_total", "data_rows"]) {
-    if (Object.hasOwn(raw, key)) {
-      safe[key] = boundedDiagnosticCount(raw[key]);
-    }
-  }
-}
-
-function sanitizeUsaaDiagnosticPayload(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return { diagnostic: "sanitized" };
-  }
-  const raw = value as Record<string, unknown>;
-  const safe: Record<string, unknown> = {};
-  addSafeUsaaClassification(safe, raw);
-  addSafeUsaaSurfaceEvidence(safe, raw);
-  addSafeUsaaArtifactEvidence(safe, raw);
-  addSafeUsaaPhaseAndCounts(safe, raw);
-  return Object.keys(safe).length > 0 ? safe : { diagnostic: "sanitized" };
-}
+const SAFE_USAA_PHASES = new Set([
+  "export_artifact_wait_failed",
+  "export_click_failed",
+  "export_dialog_error",
+  "export_dialog_unexpected_shape",
+  "no_export_affordance",
+]);
+const SAFE_USAA_CODES = new Set(["unknown", "credential_rejected", "session_required"]);
+const SAFE_USAA_PROGRESS_CATEGORIES = [
+  { message: "Extracting accounts", prefix: "Extracting accounts" },
+  { message: "Accounts enumerated", prefix: "Found " },
+  { message: "Export wait", prefix: "Export wait:" },
+  { message: "Export complete", prefix: "Export complete:" },
+  { message: "Export diagnostic", prefix: "Export diagnostic:" },
+  { message: "Retrying export", prefix: "Retrying export" },
+  { message: "Session recovery", prefix: "Session died" },
+  { message: "Statements hydration", prefix: "Hydrated " },
+  { message: "Statement parsing", prefix: "Parsed " },
+] as const;
 
 function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown> | undefined): string {
   switch (reason) {
@@ -402,46 +296,24 @@ function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown
   }
 }
 
-function sanitizeUsaaEmission(message: EmittedMessage): EmittedMessage {
-  if (message.type === "PROGRESS") {
-    const safe: Extract<EmittedMessage, { type: "PROGRESS" }> = {
-      type: "PROGRESS",
-      message: safeUsaaProgressMessage(message.message),
-    };
-    if (message.count !== undefined) {
-      safe.count = boundedDiagnosticCount(message.count);
-    }
-    if (message.stream !== undefined) {
-      safe.stream = safeUsaaStream(message.stream);
-    }
-    if (message.total !== undefined) {
-      safe.total = boundedDiagnosticCount(message.total);
-    }
-    return safe;
-  }
-  if (message.type === "SKIP_RESULT") {
-    const reason = safeUsaaReason(message.reason);
-    const diagnostics =
-      message.diagnostics === undefined ? undefined : sanitizeUsaaDiagnosticPayload(message.diagnostics);
-    const safe: Extract<EmittedMessage, { type: "SKIP_RESULT" }> = {
-      type: "SKIP_RESULT",
-      message: safeUsaaSkipMessage(reason, diagnostics),
-      reason,
-      stream: safeUsaaStream(message.stream),
-    };
-    if (diagnostics !== undefined) {
-      safe.diagnostics = diagnostics;
-    }
-    if (typeof message.recovery_hint === "object" && message.recovery_hint?.action === "capture_live_surface") {
-      safe.recovery_hint = { action: "capture_live_surface", retryable: message.recovery_hint.retryable === true };
-    }
-    return safe;
-  }
-  return message;
+const USAA_SAFE_DIAGNOSTICS_POLICY: SafeDiagnosticsPolicy = {
+  codeAllowlist: SAFE_USAA_CODES,
+  defaultProgressMessage: "USAA progress",
+  formatSkipMessage: safeUsaaSkipMessage,
+  outcomeAllowlist: SAFE_USAA_OUTCOMES,
+  phaseAllowlist: SAFE_USAA_PHASES,
+  progressCategories: SAFE_USAA_PROGRESS_CATEGORIES,
+  reasonAllowlist: SAFE_USAA_REASONS,
+  streamAllowlist: SAFE_USAA_STREAMS,
+  terminalFailureAllowlist: SAFE_USAA_TERMINAL_FAILURES,
+};
+
+function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
+  return sanitizeSafeDiagnosticInfo(diag, USAA_SAFE_DIAGNOSTICS_POLICY) as DiagnosticInfo;
 }
 
 function emitUsaa(deps: EmitDeps, message: EmittedMessage): Promise<void> {
-  return deps.emit(sanitizeUsaaEmission(message));
+  return deps.emit(sanitizeSafeEmission(message, USAA_SAFE_DIAGNOSTICS_POLICY));
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -705,7 +577,7 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
         reason: "selectors_pending",
         message: `${s} stream scaffolded in design-notes; click-chain or SPA-component wiring deferred.`,
       };
-      await emit(sanitizeUsaaEmission(msg));
+      await emit(sanitizeSafeEmission(msg, USAA_SAFE_DIAGNOSTICS_POLICY));
     }
   }
 }
@@ -944,275 +816,6 @@ function exportFailureDiagnostics(
     ...terminal,
     ...(safeLastDiag ?? {}),
   };
-}
-
-const SAFE_DIAGNOSTIC_PHASES = new Set([
-  "export_artifact_wait_failed",
-  "export_click_failed",
-  "export_dialog_error",
-  "export_dialog_unexpected_shape",
-  "no_export_affordance",
-]);
-const SAFE_DIAGNOSTIC_TAGS = new Set(["a", "button", "input", "option", "select", "textarea"]);
-const SAFE_DOWNLOAD_SOURCES = new Set(["createReadStream", "dataUrl", "saveAs"]);
-
-function boundedDiagnosticCount(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 1_000_000) : 0;
-}
-
-function safeDiagnosticPhase(value: unknown): string {
-  return typeof value === "string" && SAFE_DIAGNOSTIC_PHASES.has(value) ? value : "unknown";
-}
-
-function safeDiagnosticErrorClass(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length === 0) {
-    return;
-  }
-  const lower = value.toLowerCase();
-  if (lower.includes("timeout") || lower.includes("timed out")) {
-    return "timeout";
-  }
-  if (lower.includes("download") || lower.includes("stream") || lower.includes("saveas")) {
-    return "download";
-  }
-  if (lower.includes("dialog")) {
-    return "dialog";
-  }
-  if (lower.includes("capture")) {
-    return "capture";
-  }
-  if (lower.includes("network") || lower.includes("econn") || lower.includes("http")) {
-    return "network";
-  }
-  return "unknown";
-}
-
-function safeDiagnosticTag(value: unknown): string {
-  if (typeof value !== "string") {
-    return "unknown";
-  }
-  const tag = value.trim().toLowerCase();
-  return SAFE_DIAGNOSTIC_TAGS.has(tag) ? tag : "unknown";
-}
-
-function sanitizePageDiagnostics(diag: PageDiagnostics | null): PageDiagnostics | null {
-  if (!diag) {
-    return null;
-  }
-  const sanitizeCandidate = (candidate: DiagnosticCandidate): DiagnosticCandidate => ({
-    cls: "",
-    id: null,
-    tag: safeDiagnosticTag(candidate.tag),
-    text: "",
-  });
-  return {
-    dialog_html_preview: null,
-    dialogs_open: boundedDiagnosticCount(diag.dialogs_open),
-    export_candidates: Array.isArray(diag.export_candidates)
-      ? diag.export_candidates.slice(0, 8).map(sanitizeCandidate)
-      : [],
-    has_utility_bar: diag.has_utility_bar === true,
-    nav_candidates: Array.isArray(diag.nav_candidates) ? diag.nav_candidates.slice(0, 8).map(sanitizeCandidate) : [],
-    title: "",
-    url: "",
-  };
-}
-
-function sanitizeArtifactDiagnostics(artifact: BodyResponseDiagnostics | null): BodyResponseDiagnostics | null {
-  if (!artifact) {
-    return null;
-  }
-  const candidates = Array.isArray(artifact.candidates) ? artifact.candidates.slice(0, 20) : [];
-  return {
-    candidates: candidates.map((candidate) => {
-      const metadata = sanitizeArtifactResponseMetadata({
-        bytes: candidate.bodyBytes,
-        contentDisposition: candidate.contentDisposition,
-        contentType: candidate.contentType,
-        csvHeader: candidate.csvHeader,
-        method: candidate.method,
-        pdfMagic: candidate.pdfMagic,
-        status: candidate.status,
-        url: candidate.url,
-      });
-      return {
-        ...(metadata.byte_count === null ? {} : { bodyBytes: metadata.byte_count }),
-        contentDisposition: metadata.content_disposition ?? "",
-        contentType: metadata.content_type ?? "",
-        csvHeader: metadata.csv_header,
-        method: metadata.method ?? "",
-        pdfMagic: metadata.pdf_magic,
-        reason:
-          candidate.reason === "body_error" || candidate.reason === "matched" ? candidate.reason : "not_expected_body",
-        source: candidate.source === "cdp" ? "cdp" : "playwright",
-        status: metadata.status ?? 0,
-        url: "",
-      };
-    }),
-    cdpError: null,
-    cdpReady: artifact.cdpReady === true,
-    totalCdpRequestsStarted: boundedDiagnosticCount(artifact.totalCdpRequestsStarted),
-    totalCdpResponsesSeen: boundedDiagnosticCount(artifact.totalCdpResponsesSeen),
-    totalResponsesSeen: boundedDiagnosticCount(artifact.totalResponsesSeen),
-  };
-}
-
-function sanitizeDownloadDiagnostics(download: DownloadDiagnostics | null): DownloadDiagnostics | null {
-  if (!download) {
-    return null;
-  }
-  const source: "createReadStream" | "dataUrl" | "saveAs" | null =
-    typeof download.source === "string" && SAFE_DOWNLOAD_SOURCES.has(download.source)
-      ? (download.source as "createReadStream" | "dataUrl" | "saveAs")
-      : null;
-  return {
-    bytes: download.bytes === null || download.bytes === undefined ? null : boundedDiagnosticCount(download.bytes),
-    source,
-    suggestedFilename: null,
-    url: null,
-  };
-}
-
-function sanitizeExportAffordanceCandidate(
-  candidate: NoExportAffordanceObservation["export_affordance_candidates"][number]
-): NoExportAffordanceObservation["export_affordance_candidates"][number] {
-  const [surfaceCandidate] = buildBrowserSurfaceCandidateManifest({
-    candidates: [
-      {
-        aria_disabled: candidate.aria_disabled,
-        class_tokens: candidate.cls,
-        disabled: candidate.disabled,
-        kind: "export",
-        role: candidate.role,
-        tag: candidate.tag,
-        text: candidate.text,
-        type: candidate.type,
-        visible: candidate.visible,
-      },
-    ],
-    phase: "after_export_affordance_probe",
-  }).candidates;
-  return {
-    aria_disabled: candidate.aria_disabled === true,
-    cls: surfaceCandidate?.class_tokens.join(" ") ?? "",
-    disabled: candidate.disabled === true,
-    id: null,
-    role: surfaceCandidate?.role ?? null,
-    tag: surfaceCandidate?.tag ?? "unknown",
-    text: "",
-    type: surfaceCandidate?.type ?? null,
-    visible: candidate.visible === true,
-  };
-}
-
-function sanitizeNoExportObservation(
-  observation: NoExportAffordanceObservation | undefined
-): NoExportAffordanceObservation | undefined {
-  if (!observation) {
-    return;
-  }
-  const surfaceManifest = observation.surface_manifest
-    ? buildBrowserSurfaceCandidateManifest({
-        captureState: observation.surface_manifest.capture_state,
-        candidateCount: observation.surface_manifest.candidate_count,
-        candidates: observation.surface_manifest.candidates,
-        controlCount: observation.surface_manifest.control_count,
-        controls: observation.surface_manifest.controls,
-        phase: observation.surface_manifest.phase,
-      })
-    : undefined;
-  return {
-    account_detail_marker_count: boundedDiagnosticCount(observation.account_detail_marker_count),
-    ...(observation.account_page_identity === "exact" ||
-    observation.account_page_identity === "mismatch" ||
-    observation.account_page_identity === "unverified"
-      ? { account_page_identity: observation.account_page_identity }
-      : {}),
-    affordance_disabled: observation.affordance_disabled === true,
-    export_affordance_candidates: Array.isArray(observation.export_affordance_candidates)
-      ? observation.export_affordance_candidates.slice(0, 8).map(sanitizeExportAffordanceCandidate)
-      : [],
-    navigation_marker_count: boundedDiagnosticCount(observation.navigation_marker_count),
-    route:
-      observation.route === "expected" || observation.route === "interstitial" || observation.route === "unknown"
-        ? observation.route
-        : "unknown",
-    ...(surfaceManifest ? { surface_manifest: surfaceManifest } : {}),
-    target_count: boundedDiagnosticCount(observation.target_count),
-    transaction_marker_count: boundedDiagnosticCount(observation.transaction_marker_count),
-  };
-}
-
-function sanitizeBrowserSurfaceDiagnostic(
-  diag: BrowserSurfaceDiagnostic | undefined
-): BrowserSurfaceDiagnostic | undefined {
-  if (!diag) {
-    return;
-  }
-  return (
-    buildBrowserSurfaceDiagnostic({
-      accountDetailMarkerCount: diag.account_detail_marker_count,
-      activityTableMarkerCount: diag.activity_table_marker_count,
-      dashboardMarkerCount: diag.dashboard_marker_count,
-      kind: diag.surface,
-      managedSurface: diag.managed_surface,
-      navigationMarkerCount: diag.navigation_marker_count,
-      parserCount: diag.parser_count,
-      readCount: diag.read_count,
-      route: diag.route,
-      targetCount: diag.target_count,
-      transactionMarkerCount: diag.transaction_marker_count,
-      verifiedEmptyMarkerCount: diag.verified_empty_marker_count,
-      waitOutcome: diag.wait_outcome,
-    }) ?? undefined
-  );
-}
-
-function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
-  const sanitized: DiagnosticInfo = {
-    diag: sanitizePageDiagnostics(diag.diag),
-    phase: safeDiagnosticPhase(diag.phase),
-  };
-  const accountPageIdentity =
-    diag.account_page_identity === "exact" ||
-    diag.account_page_identity === "mismatch" ||
-    diag.account_page_identity === "unverified"
-      ? diag.account_page_identity
-      : undefined;
-  if (accountPageIdentity) {
-    sanitized.account_page_identity = accountPageIdentity;
-  }
-  const artifact = diag.artifact === undefined ? undefined : sanitizeArtifactDiagnostics(diag.artifact);
-  if (artifact !== undefined) {
-    sanitized.artifact = artifact;
-  }
-  const browserSurface = sanitizeBrowserSurfaceDiagnostic(diag.browser_surface);
-  if (browserSurface) {
-    sanitized.browser_surface = browserSurface;
-  }
-  const download = diag.download === undefined ? undefined : sanitizeDownloadDiagnostics(diag.download);
-  if (download !== undefined) {
-    sanitized.download = download;
-  }
-  const errorClass = safeDiagnosticErrorClass(diag.error);
-  if (errorClass) {
-    sanitized.error = errorClass;
-  }
-  const noExportObservation = sanitizeNoExportObservation(diag.no_export_observation);
-  if (noExportObservation) {
-    sanitized.no_export_observation = noExportObservation;
-  }
-  if (diag.surface_manifest) {
-    sanitized.surface_manifest = buildBrowserSurfaceCandidateManifest({
-      captureState: diag.surface_manifest.capture_state,
-      candidateCount: diag.surface_manifest.candidate_count,
-      candidates: diag.surface_manifest.candidates,
-      controlCount: diag.surface_manifest.control_count,
-      controls: diag.surface_manifest.controls,
-      phase: diag.surface_manifest.phase,
-    });
-  }
-  return sanitized;
 }
 
 function emitDiagnostic(onDiagnostics: NonNullable<DriveExportOptions["onDiagnostics"]>, info: DiagnosticInfo): void {
@@ -1683,49 +1286,70 @@ async function captureNoExportAffordanceObservation(
     target_count: 0,
     transaction_marker_count: 0,
   };
-  const rawCounts = await page
-    .evaluate(
-      ({ accountDetail, exportAffordance, maxElements, navigation, transaction }) => {
-        // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-        const WS_RE = /\s+/g;
-        // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-        const candidateElements = document.querySelectorAll<HTMLElement>(exportAffordance);
-        const candidates: ExportAffordanceCandidate[] = [];
-        const candidateLimit = Math.min(candidateElements.length, 8);
-        for (let index = 0; index < candidateLimit; index += 1) {
-          const el = candidateElements[index];
-          if (!el) {
-            continue;
+  const rawCounts = await withDiagnosticDeadline(
+    () =>
+      page.evaluate(
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: bounded browser traversal with fixed evidence branches.
+        ({ accountDetail, exportAffordance, maxElements, navigation, transaction }) => {
+          // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+          const WS_RE = /\s+/g;
+          // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+          const candidates: ExportAffordanceCandidate[] = [];
+          let accountDetailMarkerCount = 0;
+          let navigationMarkerCount = 0;
+          let targetCount = 0;
+          let transactionMarkerCount = 0;
+          let visited = 0;
+          const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+          let node = walker.nextNode();
+          while (node && visited < maxElements) {
+            visited += 1;
+            const el = node as HTMLElement;
+            if (el.matches(accountDetail)) {
+              accountDetailMarkerCount = Math.min(accountDetailMarkerCount + 1, maxElements);
+            }
+            if (el.matches(navigation)) {
+              navigationMarkerCount = Math.min(navigationMarkerCount + 1, maxElements);
+            }
+            if (el.matches(transaction)) {
+              transactionMarkerCount = Math.min(transactionMarkerCount + 1, maxElements);
+            }
+            if (el.matches(exportAffordance)) {
+              targetCount = Math.min(targetCount + 1, maxElements);
+              if (candidates.length < 8) {
+                candidates.push({
+                  aria_disabled: el.getAttribute("aria-disabled") === "true",
+                  cls: (el.className ? String(el.className) : "").slice(0, 256),
+                  disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
+                  id: null,
+                  role: el.getAttribute("role"),
+                  tag: el.tagName,
+                  text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 128),
+                  type: el.getAttribute("type"),
+                  visible: el.offsetParent !== null,
+                });
+              }
+            }
+            node = walker.nextNode();
           }
-          candidates.push({
-            aria_disabled: el.getAttribute("aria-disabled") === "true",
-            cls: (el.className ? String(el.className) : "").slice(0, 256),
-            disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
-            id: null,
-            role: el.getAttribute("role"),
-            tag: el.tagName,
-            text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 128),
-            type: el.getAttribute("type"),
-            visible: el.offsetParent !== null,
-          });
+          return {
+            account_detail_marker_count: accountDetailMarkerCount,
+            export_affordance_candidates: candidates,
+            navigation_marker_count: navigationMarkerCount,
+            target_count: targetCount,
+            transaction_marker_count: transactionMarkerCount,
+          };
+        },
+        {
+          accountDetail: USAA_ACCOUNT_DETAIL_MARKER_SELECTOR,
+          exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR,
+          maxElements: MAX_SURFACE_DOM_ELEMENTS,
+          navigation: USAA_NAVIGATION_MARKER_SELECTOR,
+          transaction: USAA_TRANSACTION_MARKER_SELECTOR,
         }
-        return {
-          account_detail_marker_count: Math.min(document.querySelectorAll(accountDetail).length, maxElements),
-          export_affordance_candidates: candidates,
-          navigation_marker_count: Math.min(document.querySelectorAll(navigation).length, maxElements),
-          target_count: Math.min(candidateElements.length, maxElements),
-          transaction_marker_count: Math.min(document.querySelectorAll(transaction).length, maxElements),
-        };
-      },
-      {
-        accountDetail: USAA_ACCOUNT_DETAIL_MARKER_SELECTOR,
-        exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR,
-        maxElements: MAX_SURFACE_DOM_ELEMENTS,
-        navigation: USAA_NAVIGATION_MARKER_SELECTOR,
-        transaction: USAA_TRANSACTION_MARKER_SELECTOR,
-      }
-    )
-    .catch((): NoExportObservationCounts | null => null);
+      ),
+    SAFE_DIAGNOSTIC_OPERATION_DEADLINE_MS
+  );
   const counts: NoExportObservationCounts =
     rawCounts && typeof rawCounts === "object" && !Array.isArray(rawCounts) ? rawCounts : emptyCounts;
   const hasKnownAccountOrTransactionMarker =
@@ -1776,41 +1400,60 @@ class SessionDeadRedirectError extends Error {
 }
 
 function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
-  return page
-    .evaluate((): PageDiagnostics => {
-      // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-      const WS_RE = /\s+/g;
-      const EXPORT_OR_DL_RE = /export|download/i;
-      // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
-
-      const take = (sel: string, max = 8): DiagnosticCandidate[] => {
-        const els = document.querySelectorAll<HTMLElement>(sel);
-        const out: DiagnosticCandidate[] = [];
-        const limit = Math.min(els.length, max);
-        for (let index = 0; index < limit; index += 1) {
-          const el = els[index];
-          if (!el) {
-            continue;
+  return withDiagnosticDeadline(
+    () =>
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: bounded browser traversal with fixed evidence branches.
+      page.evaluate((): PageDiagnostics => {
+        // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+        const WS_RE = /\s+/g;
+        const EXPORT_OR_DL_RE = /export|download/i;
+        // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
+        const exportCandidates: DiagnosticCandidate[] = [];
+        const navCandidates: DiagnosticCandidate[] = [];
+        let dialogsOpen = 0;
+        let hasUtilityBar = false;
+        let visited = 0;
+        const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+        let node = walker.nextNode();
+        while (node && visited < 128) {
+          visited += 1;
+          const el = node as HTMLElement;
+          const text = (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 128);
+          if (el.matches('.ent-as-utility-bar, [class*="utility-bar" i]')) {
+            hasUtilityBar = true;
           }
-          out.push({
-            tag: el.tagName,
-            text: (el.innerText || "").replace(WS_RE, " ").trim().slice(0, 128),
-            cls: (el.className ? String(el.className) : "").slice(0, 256),
-            id: null,
-          });
+          if (el.matches('[role="dialog"]')) {
+            dialogsOpen = Math.min(dialogsOpen + 1, 128);
+          }
+          if (el.matches('button, [role="button"]') && EXPORT_OR_DL_RE.test(text) && exportCandidates.length < 8) {
+            exportCandidates.push({
+              tag: el.tagName,
+              text,
+              cls: (el.className ? String(el.className) : "").slice(0, 256),
+              id: null,
+            });
+          }
+          if (el.matches('a[href*="/my/credit-card"], a[role="tab"], [role="tab"]') && navCandidates.length < 8) {
+            navCandidates.push({
+              tag: el.tagName,
+              text,
+              cls: (el.className ? String(el.className) : "").slice(0, 256),
+              id: null,
+            });
+          }
+          node = walker.nextNode();
         }
-        return out;
-      };
-      return {
-        url: location.href,
-        title: document.title,
-        has_utility_bar: Boolean(document.querySelector('.ent-as-utility-bar, [class*="utility-bar" i]')),
-        export_candidates: take('button, [role="button"]').filter((c) => EXPORT_OR_DL_RE.test(c.text)),
-        nav_candidates: take('a[href*="/my/credit-card"], a[role="tab"], [role="tab"]'),
-        dialogs_open: document.querySelectorAll('[role="dialog"]').length,
-      };
-    })
-    .catch((): PageDiagnostics | null => null);
+        return {
+          url: "",
+          title: "",
+          has_utility_bar: hasUtilityBar,
+          export_candidates: exportCandidates,
+          nav_candidates: navCandidates,
+          dialogs_open: dialogsOpen,
+        };
+      }),
+    SAFE_DIAGNOSTIC_OPERATION_DEADLINE_MS
+  );
 }
 
 /**
@@ -1824,77 +1467,84 @@ async function captureSafeSurfaceManifest(
   capture: DriveExportOptions["capture"],
   phase: BrowserSurfaceCapturePhase
 ): Promise<BrowserSurfaceCandidateManifest> {
-  const raw = await page
-    .evaluate(
-      ({ exportAffordance, maxElements }) => {
-        const visible = (element: HTMLElement): boolean => {
-          const style = window.getComputedStyle(element);
-          return element.getClientRects().length > 0 && style.display !== "none" && style.visibility !== "hidden";
-        };
-        const controlText = (element: HTMLElement): string | null =>
-          (element.getAttribute("aria-label") ?? element.getAttribute("title") ?? element.textContent ?? "").slice(
-            0,
-            256
-          );
-        const classValue = (element: HTMLElement): string =>
-          (element.className ? String(element.className) : "").slice(0, 256);
-        const candidateElements = document.querySelectorAll<HTMLElement>(
-          'button, [role="button"], a, input[type="button"], input[type="submit"], [role="menuitem"]'
-        );
-        const candidates: Record<string, unknown>[] = [];
-        const candidateLimit = Math.min(candidateElements.length, maxElements);
-        for (let index = 0; index < candidateLimit; index += 1) {
-          const element = candidateElements[index];
-          if (!element) {
-            continue;
+  const raw = await withDiagnosticDeadline(
+    () =>
+      page.evaluate(
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: bounded browser traversal with fixed evidence branches.
+        ({ exportAffordance, maxElements }) => {
+          const visible = (element: HTMLElement): boolean => {
+            const style = window.getComputedStyle(element);
+            return element.getClientRects().length > 0 && style.display !== "none" && style.visibility !== "hidden";
+          };
+          const controlText = (element: HTMLElement): string | null =>
+            (element.getAttribute("aria-label") ?? element.getAttribute("title") ?? element.textContent ?? "").slice(
+              0,
+              256
+            );
+          const classValue = (element: HTMLElement): string =>
+            (element.className ? String(element.className) : "").slice(0, 256);
+          const candidates: Record<string, unknown>[] = [];
+          const controls: Record<string, unknown>[] = [];
+          let candidateCount = 0;
+          let controlCount = 0;
+          let visited = 0;
+          const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+          let node = walker.nextNode();
+          while (node && visited < maxElements) {
+            visited += 1;
+            const element = node as HTMLElement;
+            const href = element.getAttribute("href")?.toLowerCase() ?? "";
+            const hrefPath = href.split("?", 1)[0]?.split("#", 1)[0] ?? "";
+            if (
+              element.matches(
+                'button, [role="button"], a, input[type="button"], input[type="submit"], [role="menuitem"]'
+              )
+            ) {
+              candidateCount = Math.min(candidateCount + 1, maxElements);
+              if (candidates.length < maxElements) {
+                candidates.push({
+                  aria_disabled: element.getAttribute("aria-disabled") === "true",
+                  class_tokens: classValue(element),
+                  disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
+                  download_hint:
+                    element.hasAttribute("download") || hrefPath.endsWith(".csv") || hrefPath.endsWith(".pdf"),
+                  export_hint: element.matches(exportAffordance),
+                  role: element.getAttribute("role"),
+                  tag: element.tagName,
+                  text: controlText(element),
+                  type: element.getAttribute("type"),
+                  visible: visible(element),
+                });
+              }
+            }
+            if (
+              element.matches(
+                '[role="dialog"] button, [role="dialog"] [role="button"], [role="dialog"] input, [role="dialog"] select, [role="dialog"] [role="menuitem"], [role="dialog"] a'
+              )
+            ) {
+              controlCount = Math.min(controlCount + 1, maxElements);
+              if (controls.length < maxElements) {
+                controls.push({
+                  aria_disabled: element.getAttribute("aria-disabled") === "true",
+                  class_tokens: classValue(element),
+                  disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
+                  name: (element.getAttribute("name") ?? element.getAttribute("aria-label") ?? "").slice(0, 128),
+                  role: element.getAttribute("role"),
+                  tag: element.tagName,
+                  text: controlText(element),
+                  type: element.getAttribute("type"),
+                  visible: visible(element),
+                });
+              }
+            }
+            node = walker.nextNode();
           }
-          const href = element.getAttribute("href")?.toLowerCase() ?? "";
-          const hrefPath = href.split("?", 1)[0]?.split("#", 1)[0] ?? "";
-          candidates.push({
-            aria_disabled: element.getAttribute("aria-disabled") === "true",
-            class_tokens: classValue(element),
-            disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
-            download_hint: element.hasAttribute("download") || hrefPath.endsWith(".csv") || hrefPath.endsWith(".pdf"),
-            export_hint: element.matches(exportAffordance),
-            role: element.getAttribute("role"),
-            tag: element.tagName,
-            text: controlText(element),
-            type: element.getAttribute("type"),
-            visible: visible(element),
-          });
-        }
-        const dialogElements = document.querySelectorAll<HTMLElement>(
-          '[role="dialog"] button, [role="dialog"] [role="button"], [role="dialog"] input, [role="dialog"] select, [role="dialog"] [role="menuitem"], [role="dialog"] a'
-        );
-        const controls: Record<string, unknown>[] = [];
-        const controlLimit = Math.min(dialogElements.length, maxElements);
-        for (let index = 0; index < controlLimit; index += 1) {
-          const element = dialogElements[index];
-          if (!element) {
-            continue;
-          }
-          controls.push({
-            aria_disabled: element.getAttribute("aria-disabled") === "true",
-            class_tokens: classValue(element),
-            disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
-            name: (element.getAttribute("name") ?? element.getAttribute("aria-label") ?? "").slice(0, 128),
-            role: element.getAttribute("role"),
-            tag: element.tagName,
-            text: controlText(element),
-            type: element.getAttribute("type"),
-            visible: visible(element),
-          });
-        }
-        return {
-          candidateCount: Math.min(candidateElements.length, maxElements),
-          candidates,
-          controlCount: Math.min(dialogElements.length, maxElements),
-          controls,
-        };
-      },
-      { exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR, maxElements: MAX_SURFACE_DOM_ELEMENTS }
-    )
-    .catch((): null => null);
+          return { candidateCount, candidates, controlCount, controls };
+        },
+        { exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR, maxElements: MAX_SURFACE_DOM_ELEMENTS }
+      ),
+    SAFE_DIAGNOSTIC_OPERATION_DEADLINE_MS
+  );
   const manifest = buildBrowserSurfaceCandidateManifest({
     captureState: raw ? "captured" : "unavailable",
     candidateCount: raw?.candidateCount,
@@ -3976,6 +3626,7 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "usaa",
     captureMode: "safe",
+    safeDiagnosticsPolicy: USAA_SAFE_DIAGNOSTICS_POLICY,
     retryablePattern: USAA_RETRYABLE_PATTERN,
     validateRecord,
     // USAA rejects headless Chromium before the login form loads

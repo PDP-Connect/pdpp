@@ -56,18 +56,17 @@
  * never make a connector fail.
  */
 
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Page } from "playwright";
-
-import { type SafeArtifactCaptureRecord, sanitizeArtifactCapturePayload } from "./browser-artifact-response.ts";
-import {
-  type BrowserSurfaceCandidateManifest,
-  buildBrowserSurfaceCandidateManifest,
-} from "./browser-surface-diagnostic.ts";
 import type { RecordData } from "./connector-runtime.ts";
+import {
+  type SafeCaptureBoundaryEvent,
+  type SafeCaptureBoundaryRecord,
+  sanitizeSafeCaptureEvent as sanitizeSafeCaptureBoundaryEvent,
+} from "./safe-diagnostics.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const DEFAULT_CAPTURE_ROOT = join(PACKAGE_ROOT, "fixtures");
@@ -199,19 +198,16 @@ export interface CaptureSession {
   setTraceCheckpointHook?: (hook: ((label: string) => Promise<void>) | null) => void;
 }
 
-export type SafeCaptureEvent =
-  | { kind: "artifact_metadata"; payload: unknown }
-  | { kind: "surface_manifest"; payload: unknown };
-
-export type SafeCaptureRecord =
-  | { kind: "artifact_metadata"; payload: SafeArtifactCaptureRecord }
-  | { kind: "surface_manifest"; payload: BrowserSurfaceCandidateManifest };
+export type SafeCaptureEvent = SafeCaptureBoundaryEvent;
+export type SafeCaptureRecord = SafeCaptureBoundaryRecord;
 
 export interface SafeCaptureInventory {
   bytes: number;
+  cleanup_failures: number;
   deadline_at_ms: number;
   deadline_exceeded: boolean;
   files: number;
+  partial_writes: number;
   rejected: number;
 }
 
@@ -227,17 +223,17 @@ export interface SafeCaptureSession {
   readonly runId: string;
 }
 
+/** Test-only I/O clock seam; never becomes part of the returned safe capability. */
+export interface SafeCaptureTestHooks {
+  now?: () => number;
+  removeDirectory?: (path: string) => void;
+  removeFile?: (path: string) => void;
+  writeFile?: (path: string, data: string) => void;
+}
+
 interface CaptureActivation {
   captureRoot: string;
   keepOnSuccess: boolean;
-}
-
-interface UnknownRecord {
-  [key: string]: unknown;
-}
-
-function asRecord(value: unknown): UnknownRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as UnknownRecord) : {};
 }
 
 function resolveCaptureActivation(): CaptureActivation | null {
@@ -267,26 +263,7 @@ function captureBaseDir(
 }
 
 function sanitizeSafeCaptureEvent(event: SafeCaptureEvent): SafeCaptureRecord | null {
-  const raw = asRecord(event);
-  if (raw.kind === "surface_manifest") {
-    const payload = asRecord(raw.payload);
-    return {
-      kind: "surface_manifest",
-      payload: buildBrowserSurfaceCandidateManifest({
-        captureState: payload.capture_state ?? payload.captureState,
-        candidateCount: payload.candidate_count ?? payload.candidateCount,
-        candidates: payload.candidates,
-        controlCount: payload.control_count ?? payload.controlCount,
-        controls: payload.controls,
-        phase: payload.phase,
-      }),
-    };
-  }
-  if (raw.kind === "artifact_metadata") {
-    const payload = sanitizeArtifactCapturePayload(raw.payload);
-    return payload ? { kind: "artifact_metadata", payload } : null;
-  }
-  return null;
+  return sanitizeSafeCaptureBoundaryEvent(event);
 }
 
 function requireProbeMethod<K extends keyof LocatorProbePage>(
@@ -558,7 +535,10 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
  * persistence; no page, DOM, ARIA, screenshot, trace, record, or raw HTTP
  * writer is reachable from this object.
  */
-export function createSafeCaptureSession(connectorName: string): SafeCaptureSession | null {
+export function createSafeCaptureSession(
+  connectorName: string,
+  hooks: SafeCaptureTestHooks = {}
+): SafeCaptureSession | null {
   const activation = resolveCaptureActivation();
   if (!activation) {
     return null;
@@ -573,8 +553,15 @@ export function createSafeCaptureSession(connectorName: string): SafeCaptureSess
     return null;
   }
 
-  const deadlineAt = Date.now() + SAFE_CAPTURE_DEADLINE_MS;
+  const now = hooks.now ?? Date.now;
+  const writeFile = hooks.writeFile ?? ((path: string, data: string): void => writeFileSync(path, data, "utf8"));
+  const removeFile = hooks.removeFile ?? unlinkSync;
+  const removeDirectory =
+    hooks.removeDirectory ?? ((path: string): void => rmSync(path, { force: true, recursive: true }));
+  const deadlineAt = now() + SAFE_CAPTURE_DEADLINE_MS;
   let bytes = 0;
+  let cleanupFailures = 0;
+  let partialWrites = 0;
   let files = 0;
   let rejected = 0;
   let deadlineExceeded = false;
@@ -583,9 +570,11 @@ export function createSafeCaptureSession(connectorName: string): SafeCaptureSess
 
   const inventory = (): SafeCaptureInventory => ({
     bytes,
+    cleanup_failures: cleanupFailures,
     deadline_at_ms: deadlineAt,
     deadline_exceeded: deadlineExceeded,
     files,
+    partial_writes: partialWrites,
     rejected,
   });
 
@@ -594,8 +583,9 @@ export function createSafeCaptureSession(connectorName: string): SafeCaptureSess
     runId,
     baseDir,
     keepOnSuccess: activation.keepOnSuccess,
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this is the single fail-closed write state machine.
     captureSafe(event): void {
-      if (finalized || Date.now() >= deadlineAt) {
+      if (finalized || now() >= deadlineAt) {
         deadlineExceeded = true;
         rejected += 1;
         return;
@@ -629,14 +619,27 @@ export function createSafeCaptureSession(connectorName: string): SafeCaptureSess
       }
       const label = record.kind === "artifact_metadata" ? "artifact" : "surface";
       const file = join(baseDir, `${String(files + 1).padStart(4, "0")}-${label}.json`);
+      if (now() >= deadlineAt) {
+        deadlineExceeded = true;
+        rejected += 1;
+        return;
+      }
       try {
-        writeFileSync(file, serialized, "utf8");
+        writeFile(file, serialized);
         files += 1;
         bytes += recordBytes;
-        if (Date.now() >= deadlineAt) {
+        if (now() >= deadlineAt) {
           deadlineExceeded = true;
         }
       } catch {
+        partialWrites += 1;
+        try {
+          if (existsSync(file)) {
+            removeFile(file);
+          }
+        } catch {
+          cleanupFailures += 1;
+        }
         rejected += 1;
         process.stderr.write("[capture] safe capture write failed\n");
       }
@@ -654,8 +657,9 @@ export function createSafeCaptureSession(connectorName: string): SafeCaptureSess
         return;
       }
       try {
-        rmSync(baseDir, { force: true, recursive: true });
+        removeDirectory(baseDir);
       } catch {
+        cleanupFailures += 1;
         process.stderr.write("[capture] safe capture cleanup failed\n");
       }
     },

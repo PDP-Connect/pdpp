@@ -1240,9 +1240,11 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
         finalize: (): void => undefined,
         inventory: () => ({
           bytes: 0,
+          cleanup_failures: 0,
           deadline_at_ms: Date.now() + 1000,
           deadline_exceeded: false,
           files: 0,
+          partial_writes: 0,
           rejected: 0,
         }),
         keepOnSuccess: true,
@@ -1497,9 +1499,11 @@ test("driveExport capture keeps selector state while dropping page values and ra
         finalize: (): void => undefined,
         inventory: () => ({
           bytes: 0,
+          cleanup_failures: 0,
           deadline_at_ms: Date.now() + 1000,
           deadline_exceeded: false,
           files: 0,
+          partial_writes: 0,
           rejected: 0,
         }),
         keepOnSuccess: true,
