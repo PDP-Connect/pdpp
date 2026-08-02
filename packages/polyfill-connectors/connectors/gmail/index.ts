@@ -2480,7 +2480,18 @@ async function hydratePreparedServedAttachmentRecoveryCandidate(
     });
   }
 
-  const hydration = await deps.hydrateAttachment(candidate.loadedMessage, candidate.attachment);
+  // BODYSTRUCTURE already proved this part exceeds the connector's durable
+  // size policy. Keep that policy decision in the preflight lane: it must not
+  // call the hydrator, mark a provider attempt, or reserve run-byte budget.
+  // The record still goes through emitRecord so coverage and the lease-owned
+  // terminal outcome remain ordered and independently accepted.
+  const hydration = candidate.policySkip
+    ? hydrationFailureResult(
+        candidate.attachment,
+        "too_large",
+        new AttachmentTooLargeError(candidate.attachment.size_bytes as number, resolveMaxAttachmentBytes())
+      )
+    : await deps.hydrateAttachment(candidate.loadedMessage, candidate.attachment);
   state.hydratedAttachments.set(candidate.attachment.id, hydration);
   if (candidate.policySkip && hydration.record.hydration_status !== "too_large") {
     // The production hydrator and its size policy are one contract. Keep a

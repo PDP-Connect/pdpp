@@ -1342,6 +1342,133 @@ test("recoverServedAttachmentGaps: rejected too_large record fails closed to a r
   }
 });
 
+test("recoverServedAttachmentGaps: preflights a bounded page of known-too-large parts without starving a fitting sibling", async () => {
+  const originalMax = process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
+  const originalRecoveryBudget = process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+  process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES = "8";
+  process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES = String(ATTACHMENT_BACKFILL_PAGE_MIN_BYTES);
+  try {
+    const messagesById = new Map<string, FetchMessageObject>();
+    const tooLargeGaps = Array.from({ length: 31 }, (_unused, index) => {
+      const messageId = `gmmsgid-preflight-too-large-${index}`;
+      const message = makeServedRecoveryMsg({
+        attachments: [16],
+        emailId: messageId,
+        uid: 8000 + index,
+      });
+      messagesById.set(messageId, message);
+      return makeServedRecoveryGap({
+        gapId: `gap-preflight-too-large-${index}`,
+        leaseId: `lease-preflight-too-large-${index}`,
+        messageId,
+        partIndex: 1,
+      });
+    });
+    const fittingMessage = makeServedRecoveryMsg({
+      attachments: [4],
+      emailId: "gmmsgid-preflight-fitting",
+      uid: 8031,
+    });
+    messagesById.set("gmmsgid-preflight-fitting", fittingMessage);
+    const fittingGap = makeServedRecoveryGap({
+      gapId: "gap-preflight-fitting",
+      leaseId: "lease-preflight-fitting",
+      messageId: "gmmsgid-preflight-fitting",
+      partIndex: 1,
+    });
+    const detailGaps = [...tooLargeGaps, fittingGap];
+    const attachmentCoverage = makeAttachmentDetailCoverage();
+    const search = mock.fn((query: { emailId?: string }) => {
+      const message = query.emailId ? messagesById.get(query.emailId) : undefined;
+      return Promise.resolve(message ? [message.uid ?? 0] : []);
+    });
+    const fetchOne = mock.fn((range: string) => {
+      const message = [...messagesById.values()].find((candidate) => candidate.uid === Number(range));
+      assert.ok(message, `unexpected uid lookup: ${range}`);
+      return Promise.resolve(message);
+    });
+    const emitHarness = makeRecordingEmit();
+    const hydrateAttachment = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
+      Promise.resolve(
+        hydratedResult({
+          ...attachment,
+          blob_ref: {
+            blob_id: `blob-${attachment.id}`,
+            mime_type: attachment.content_type ?? "application/octet-stream",
+            sha256: `sha-${attachment.id}`,
+            size_bytes: attachment.size_bytes ?? 0,
+          },
+          content_sha256: `sha-${attachment.id}`,
+          hydration_error: null,
+          hydration_status: "hydrated" as const,
+          size_bytes: attachment.size_bytes,
+        })
+      )
+    );
+
+    const summary = await recoverServedAttachmentGaps(
+      { search, fetchOne },
+      {
+        attachmentCoverage,
+        detailGaps,
+        emitProtocol: emitHarness.emit,
+        emitRecord: async (stream, data) => {
+          await emitHarness.emitRecord(stream, data);
+          return true;
+        },
+        hydrateAttachment,
+      }
+    );
+
+    assert.equal(summary.served, 32);
+    assert.equal(summary.metadata_lookups, 32, "metadata classification is bounded to this served page");
+    assert.equal(summary.admitted, 1, "the fitting sibling remains admitted");
+    assert.equal(summary.admitted_bytes, 4, "known-too-large parts consume no run-byte budget");
+    assert.equal(summary.attempted, 1, "only the fitting sibling declares a provider attempt");
+    assert.equal(summary.recovered, 1);
+    assert.equal(summary.run_cap_deferred, 0);
+    assert.equal(hydrateAttachment.mock.callCount(), 1, "known-too-large parts bypass hydration entirely");
+    assert.deepEqual(
+      attachmentCoverage.optionalSkipKeys,
+      tooLargeGaps.map((gap) => gap.record_key)
+    );
+    assert.deepEqual(attachmentCoverage.hydratedKeys, [fittingGap.record_key]);
+    assert.deepEqual(attachmentCoverage.gapKeys, []);
+
+    const terminalMessages = emitHarness.protocolMessages.filter(
+      (message) => message.type === "DETAIL_GAP" && message.status === "terminal"
+    );
+    assert.equal(terminalMessages.length, 31);
+    assert.deepEqual(
+      new Set(terminalMessages.map((message) => message.gap_id)),
+      new Set(tooLargeGaps.map((gap) => gap.gap_id))
+    );
+    assert.deepEqual(
+      emitHarness.protocolMessages
+        .filter((message) => message.type === "DETAIL_GAP_ATTEMPTED")
+        .map((message) => message.gap_id),
+      [fittingGap.gap_id]
+    );
+    assert.deepEqual(
+      emitHarness.protocolMessages
+        .filter((message) => message.type === "DETAIL_GAP_RECOVERED")
+        .map((message) => message.gap_id),
+      [fittingGap.gap_id]
+    );
+  } finally {
+    if (originalMax === undefined) {
+      delete process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES = originalMax;
+    }
+    if (originalRecoveryBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_RECOVERY_PAGE_BYTES = originalRecoveryBudget;
+    }
+  }
+});
+
 // Regression coverage for the live-canary root cause (2026-07-31): gmail
 // run_1785535147325_1 and its retry run_1785535845977_2 each emitted exactly
 // 206 records with no committed messages/attachments STATE cursor between
