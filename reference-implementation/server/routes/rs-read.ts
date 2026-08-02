@@ -2832,7 +2832,13 @@ async function resolveBlobVisibility(
     tokenInfo,
   });
 
-  const resolvedMatch = selectResolvedBlobMatch(ctx, blobId, matchedByInstance, requestConnectionId, defaultBindings);
+  const resolvedMatch = selectResolvedBlobMatch(
+    ctx,
+    blobId,
+    matchedByInstance,
+    requestConnectionId ?? null,
+    defaultBindings
+  );
   return {
     actorConnectorId,
     blobId,
