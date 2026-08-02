@@ -17,7 +17,7 @@ export const DEFAULT_SERVER_VERSION = "0.0.0";
 export const PDPP_MCP_INSTRUCTIONS =
   "PDPP tools are grant-scoped. Start with `schema`, then call `schema(stream)` after choosing a stream; add `connection_id` when a stream name appears under multiple sources or before full schema. Use `connection_id` from schema results or `available_connections` errors to disambiguate sources. Filters must be typed objects, not bracket strings. Page and narrow with `limit`, `cursor`, and `fields`; prefer `aggregate` or lexical `search` for exact terms. " +
   "The configured bearer limits every result; do not use owner or control-plane tokens for normal MCP access. Schema advertises valid fields, filter operators, expand relations, sort/count support, connection identities, and connector keys. Persist `connection_id`, not `grant_id`, across reconnects. Search result ids are self-contained handles; pass them to `fetch` for projected records or to `read_record_field` for bounded field windows. " +
-  "Attachment `blob_ref` metadata is not inline bytes; after an authorized record query, use the discoverable `fetch_blob` tool with its stable `blob_id` to retrieve authorized bytes, or stop when the ref is null/deferred. " +
+  "Attachment `blob_ref` metadata is not inline bytes; after an authorized record query, use the discoverable `fetch_blob` tool with its stable `blob_id` to retrieve authorized bytes as an MCP embedded binary resource, or stop when the ref is null/deferred. The bounded `structuredContent.bytes_base64` value is a fallback for hosts that do not render embedded resources. " +
   "When a preview is not enough, follow `structuredContent.content_ladder`: call `read_record_field` with the supplied arguments. Resource-aware hosts may also read hidden/returned resource URIs, but generic resource reads are not required for ordinary text evidence. " +
   "`content[]` is the reliable model-visible guide and includes next cursors/bookmarks when present; `structuredContent` is a host-dependent machine envelope, not the only place to find next-step handles.";
 
@@ -40,8 +40,8 @@ interface CreatePdppMcpServerOptions {
 /**
  * Build an MCP server wired to a PDPP resource server through the supplied scoped token.
  *
- * The server registers the profile-free normal PDPP read surface plus one resource
- * template. It does not auto-connect to a transport — callers pass the transport
+ * The server registers the profile-free normal PDPP read surface plus resource
+ * templates. It does not auto-connect to a transport — callers pass the transport
  * explicitly so tests can use the in-memory pair and CLI use can pass
  * StdioServerTransport.
  */

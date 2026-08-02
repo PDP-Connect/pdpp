@@ -8,12 +8,15 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createPdppMcpServer } from "../src/server.ts";
+import { MCP_BLOB_MAX_BYTES } from "../src/tools.ts";
 
 const BLOB_ID = "blob_sha256_attachment_fixture";
 const CONNECTION_ID = "conn_gmail_fixture";
 const BYTES = Buffer.from([0, 255, 17, 128, 42, 9]);
 const SCOPED_BEARER_PATTERN = /same scoped bearer|scoped/i;
 const METADATA_ONLY_PATTERN = /metadata alone is not access/i;
+const EMBEDDED_RESOURCE_PATTERN = /embedded resource/;
+const RANGE_TOO_LARGE_PATTERN = /range must not exceed/;
 
 interface FetchCall {
   authorization: string | undefined;
@@ -128,6 +131,28 @@ test("fetch_blob discovers the canonical tool and returns authorized range bytes
     assert.equal(output.bytes_base64, BYTES.subarray(1, 4).toString("base64"));
     assert.equal(output.mime_type, "application/octet-stream");
     assert.equal(output.size, 3);
+    const content = result.content as Record<string, unknown>[];
+    const resourceBlock = content.find((block) => block.type === "resource") as
+      | { resource?: Record<string, unknown> }
+      | undefined;
+    assert.equal(resourceBlock?.resource?.mimeType, "application/octet-stream");
+    assert.equal(resourceBlock?.resource?.blob, BYTES.subarray(1, 4).toString("base64"));
+    assert.match(
+      content
+        .filter((block) => block.type === "text")
+        .map((block) => String(block.text ?? ""))
+        .join("\n"),
+      EMBEDDED_RESOURCE_PATTERN
+    );
+    assert.equal(JSON.stringify(result).includes("scoped-client-token"), false);
+    assert.equal(JSON.stringify(result).includes("/v1/blobs/"), false);
+
+    const oversizedRange = await client.callTool({
+      name: "fetch_blob",
+      arguments: { blob_id: BLOB_ID, range: `bytes=0-${MCP_BLOB_MAX_BYTES}` },
+    });
+    assert.equal(oversizedRange.isError, true);
+    assert.match(JSON.stringify(oversizedRange.content), RANGE_TOO_LARGE_PATTERN);
     assert.equal(calls.length, 2, "record discovery and byte retrieval each make one RS call");
     assert.ok(calls.every((call) => call.authorization === "Bearer scoped-client-token"));
     assert.equal(calls[1]?.range, "bytes=1-3");
@@ -172,6 +197,25 @@ test("deferred attachment metadata stays deferred and blob_not_found stays an er
     const missing = await client.callTool({ name: "fetch_blob", arguments: { blob_id: BLOB_ID } });
     assert.equal(missing.isError, true);
     assert.equal((missing.structuredContent as { error?: { code?: string } }).error?.code, "blob_not_found");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("fetch_blob fails closed when the binary response exceeds the MCP cap", async () => {
+  const fetch = async () =>
+    new Response(new Uint8Array(MCP_BLOB_MAX_BYTES + 1), {
+      status: 200,
+      headers: { "content-length": String(MCP_BLOB_MAX_BYTES + 1), "content-type": "application/pdf" },
+    });
+
+  const { client, server } = await connect(fetch);
+  try {
+    const result = await client.callTool({ name: "fetch_blob", arguments: { blob_id: BLOB_ID } });
+    assert.equal(result.isError, true);
+    assert.equal((result.structuredContent as { error?: { code?: string } }).error?.code, "response_too_large");
+    assert.equal(result.content.some((block) => block.type === "resource"), false);
   } finally {
     await client.close();
     await server.close();

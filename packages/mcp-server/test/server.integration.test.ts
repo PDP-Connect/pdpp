@@ -1327,6 +1327,27 @@ test("record resource uri is readable through resources/read for capable clients
   await server.close();
 });
 
+test("embedded blob resource uri is readable through resources/read for capable clients", async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  const blobUri = __internal.encodeResourceUri("blob", {
+    blob_id: "blob-1",
+    connection_id: "conn_media",
+    range: "bytes=0-4",
+  });
+
+  const resource = await client.readResource({ uri: blobUri });
+
+  assert.equal(resource.contents.length, 1);
+  assert.equal(resource.contents[0]?.mimeType, "image/png");
+  assert.equal(resource.contents[0]?.blob, Buffer.from([10, 20, 30, 40, 50]).toString("base64"));
+  const resourceCall = calls.find((call) => call.url.includes("/v1/blobs/blob-1"));
+  assert.ok(resourceCall, "blob resource read must call the blob route");
+  assert.equal(new URL(resourceCall.url).searchParams.get("connection_id"), "conn_media");
+
+  await server.close();
+});
+
 test("canonical base64url pdpp://record URI is accepted by read_record_field, fetch, and resources/read", async () => {
   // The record_uri the model actually sees in content ladders and resource
   // templates is `pdpp://record/{base64url-JSON}` — NOT the human-readable
@@ -1509,6 +1530,7 @@ test("resource template returns stream metadata", async () => {
   assert.ok(templates.resourceTemplates.some((t) => t.uriTemplate === "pdpp://stream/{name}"));
   assert.ok(templates.resourceTemplates.some((t) => t.uriTemplate === "pdpp://record/{handle}"));
   assert.ok(templates.resourceTemplates.some((t) => t.uriTemplate === "pdpp://field-window/{handle}"));
+  assert.ok(templates.resourceTemplates.some((t) => t.uriTemplate === "pdpp://blob/{handle}"));
 
   const result = await client.readResource({ uri: "pdpp://stream/orders" });
   assert.equal(result.contents.length, 1);

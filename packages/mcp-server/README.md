@@ -79,6 +79,7 @@ Resource templates:
 - `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
 - `pdpp://record/{handle}` → one grant-scoped record read.
 - `pdpp://field-window/{handle}` → one grant-scoped bounded field window.
+- `pdpp://blob/{handle}` → one bounded grant-scoped binary read.
 
 `search` preserves the RS envelope in `structuredContent.data` and also returns
 ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, `url`,
@@ -105,10 +106,13 @@ document body; source handles such as stream, `connection_id`, and
 
 `fetch_blob` is the binary continuation for an authorized record's `blob_ref`.
 It calls the same grant-scoped RS blob endpoint with the configured client bearer
-and returns raw bytes as `bytes_base64`, plus `mime_type` and `size`; it does not
-turn attachment metadata into inline bytes or construct a source-specific URL.
-Use its optional single-byte `range` for bounded retrievals and pass
-`connection_id` only when the RS reports an ambiguous blob binding.
+and returns the bytes as a standard MCP embedded `BlobResourceContents` block in
+`content[]`, plus `mime_type`, `size`, and an opaque `pdpp://blob/{handle}` resource
+URI. `structuredContent.bytes_base64` remains a bounded fallback for hosts that
+do not render embedded resources. The MCP byte/range cap is 4 MiB; use its
+optional single-byte `range` for a smaller retrieval and pass `connection_id`
+only when the RS reports an ambiguous blob binding. The handle contains no
+bearer token or unauthenticated source URL.
 
 ### Content ladder for large fields
 
@@ -119,7 +123,7 @@ The adapter exposes long-field navigation in layers:
 3. `read_record_field` reads a bounded text window by `offset_chars`, returned `cursor`, or first-match `q` plus optional `before_chars` / `after_chars`.
 4. Resource-aware clients can follow `resource_link` blocks through `resources/read`; the same scoped PDPP client token is still required. Handles are continuation state, not bearer authorization.
 
-The MCP SDK version used here is `@modelcontextprotocol/sdk` 1.29.0. The implementation uses `resource_link` content blocks and `resources/read` resource templates from that SDK. The package tests cover three client behavior classes: content-only clients, structured-content-aware clients, and resource-aware clients. Live hosted-client behavior is not claimed here unless separately smoke-tested.
+The MCP SDK version used here is `@modelcontextprotocol/sdk` 1.30.0. The implementation uses embedded binary resource blocks, `resource_link` content blocks, and `resources/read` resource templates from that SDK. The package tests cover content-only text navigation, structured-content-aware clients, and resource-aware clients. A host that hides both embedded resources and `structuredContent` can see the blob summary but cannot inspect arbitrary binary bytes; it must render the MCP resource or expose the bounded fallback. Live hosted-client behavior is claimed only where the hosted OAuth canary is separately smoke-tested.
 
 Compatibility notes:
 
@@ -128,7 +132,7 @@ Compatibility notes:
 | Content-only clients, including hosts that hide `structuredContent` | Read compact `content[]` summaries, then call `fetch` or `read_record_field` with visible ids/cursors. |
 | Structured-content-aware clients, including common agent harnesses | Use `structuredContent.results`, `structuredContent.data`, and `content_ladder` without parsing prose. |
 | Resource-aware clients, including MCP clients that expose `resources/read` | Follow `resource_link` URIs such as `pdpp://field-window/{handle}`. |
-| Clients whose renderer hides resources or wrapper metadata | Use the normal tools; no data is available only through an opaque resource marker. |
+| Clients whose renderer hides resources or wrapper metadata | Text navigation remains available; binary inspection requires embedded-resource rendering or structured-content access. |
 
 The `schema` tool includes concise parseable text with stream
 names, `connection_id`, `connector_key`, display labels, and schema field-capability

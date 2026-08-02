@@ -156,6 +156,20 @@ function structuredContentData(result: Record<string, unknown>): Record<string, 
   return structuredContent.data as Record<string, unknown>;
 }
 
+function recordRows(body: unknown): unknown[] {
+  if (Array.isArray(body)) {
+    return body;
+  }
+  if (!body || typeof body !== "object") {
+    return [];
+  }
+  const object = body as Record<string, unknown>;
+  if (Array.isArray(object.records)) {
+    return object.records;
+  }
+  return Array.isArray(object.data) ? object.data : [];
+}
+
 interface GrantPackageMember extends Record<string, unknown> {
   connection_id: string | null;
   grant: {
@@ -214,7 +228,11 @@ function canonicalizeManifestForRegistration(manifest: ConnectorManifest): Conne
 }
 
 async function registerFirstPartyConnectorFixture(asUrl: string, fixtureName: string): Promise<ConnectorManifest> {
-  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${fixtureName}.json`), "utf8"));
+  return registerConnectorManifestFile(asUrl, join(REFERENCE_IMPL_DIR, `manifests/${fixtureName}.json`));
+}
+
+async function registerConnectorManifestFile(asUrl: string, path: string): Promise<ConnectorManifest> {
+  const raw = JSON.parse(readFileSync(path, "utf8"));
   const manifest = canonicalizeManifestForRegistration(raw);
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     body: JSON.stringify(manifest),
@@ -227,6 +245,13 @@ async function registerFirstPartyConnectorFixture(asUrl: string, fixtureName: st
 
 async function registerSpotify(asUrl: string): Promise<ConnectorManifest> {
   return registerFirstPartyConnectorFixture(asUrl, "spotify");
+}
+
+async function registerGmail(asUrl: string): Promise<ConnectorManifest> {
+  return registerConnectorManifestFile(
+    asUrl,
+    join(REFERENCE_IMPL_DIR, "../packages/polyfill-connectors/manifests/gmail.json")
+  );
 }
 
 async function registerGithub(asUrl: string): Promise<ConnectorManifest> {
@@ -326,6 +351,66 @@ async function issueOwnerToken(asUrl: string): Promise<string> {
     method: "POST",
   });
   return stringField(tokenBody, "access_token");
+}
+
+interface UploadedBlob {
+  blob_id: string;
+  mime_type: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+async function uploadHostedBlob(
+  rsUrl: string,
+  ownerToken: string,
+  connectorId: string,
+  recordKey: string,
+  bytes: Buffer
+): Promise<UploadedBlob> {
+  const query = new URLSearchParams({ connector_id: connectorId, record_key: recordKey, stream: "attachments" });
+  const { status, body } = await fetchJson(`${rsUrl}/v1/blobs?${query.toString()}`, {
+    body: bytes,
+    headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/pdf" },
+    method: "POST",
+  });
+  assert.equal(status, 200, `hosted blob upload failed: ${JSON.stringify(body)}`);
+  return body as unknown as UploadedBlob;
+}
+
+async function seedHostedAttachment(
+  rsUrl: string,
+  ownerToken: string,
+  connectorId: string,
+  recordKey: string,
+  blob: UploadedBlob
+): Promise<void> {
+  const record = {
+    blob_ref: {
+      blob_id: blob.blob_id,
+      mime_type: blob.mime_type,
+      sha256: blob.sha256,
+      size_bytes: blob.size_bytes,
+    },
+    content_id: null,
+    content_sha256: blob.sha256,
+    content_type: "application/pdf",
+    encoding: "binary",
+    filename: "hosted-mcp-canary.pdf",
+    hydration_error: null,
+    hydration_status: "hydrated",
+    id: recordKey,
+    is_inline: false,
+    message_id: "hosted-mcp-canary-message",
+    message_received_at: "2026-01-10T12:00:00Z",
+    part_index: "2",
+    size_bytes: blob.size_bytes,
+  };
+  const response = await fetch(`${rsUrl}/v1/ingest/attachments?connector_id=${encodeURIComponent(connectorId)}`, {
+    body: JSON.stringify({ data: record, emitted_at: "2026-01-10T12:00:00Z", key: recordKey }),
+    headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/x-ndjson" },
+    method: "POST",
+  });
+  assert.equal(response.status, 200, "hosted attachment seed must succeed");
 }
 
 interface OauthCodeFlowResult {
@@ -658,7 +743,12 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
-    const manifest = await registerSpotify(asUrl);
+    const manifest = await registerGmail(asUrl);
+    const ownerToken = await issueOwnerToken(asUrl);
+    const pdfBytes = Buffer.from("%PDF-1.4\nHosted MCP attachment canary\n%%EOF\n");
+    const attachmentId = "hosted-mcp-canary-message:2";
+    const uploadedBlob = await uploadHostedBlob(rsUrl, ownerToken, manifest.connector_id, attachmentId, pdfBytes);
+    await seedHostedAttachment(rsUrl, ownerToken, manifest.connector_id, attachmentId, uploadedBlob);
     const client = await registerAuthCodeClient(asUrl);
     const {
       accessToken,
@@ -746,9 +836,17 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
     assert.equal(tools.status, 200);
     const toolList = resultOf(tools).tools as Array<{ name: string }>;
     const toolNames = toolList.map((tool) => tool.name).sort((a, b) => a.localeCompare(b));
-    assert.deepEqual(toolNames, ["aggregate", "fetch", "query_records", "read_record_field", "schema", "search"]);
+    assert.deepEqual(toolNames, [
+      "aggregate",
+      "fetch",
+      "fetch_blob",
+      "query_records",
+      "read_record_field",
+      "schema",
+      "search",
+    ]);
     assert.equal(toolNames.includes("list_streams"), false);
-    assert.equal(toolNames.includes("fetch_blob"), false);
+    assert.equal(toolNames.includes("fetch_blob"), true);
     assert.equal(
       toolNames.some((name) => name.includes("event_subscription")),
       false
@@ -770,6 +868,65 @@ test("hosted MCP OAuth code flow issues a scoped client token usable at /mcp", a
     });
     assert.equal(schema.status, 200);
     assert.equal(resultOf(schema).isError, undefined);
+
+    const attachments = await postMcpJson(rsUrl, accessToken, {
+      id: 5,
+      jsonrpc: "2.0",
+      method: "tools/call",
+      params: { arguments: { stream: "attachments" }, name: "query_records" },
+    });
+    assert.equal(attachments.status, 200);
+    const attachmentResult = resultOf(attachments);
+    assert.equal(attachmentResult.isError, undefined);
+    const attachmentStructured = attachmentResult.structuredContent as { data?: unknown };
+    const attachmentBody = attachmentStructured.data;
+    const rows = recordRows(attachmentBody);
+    const attachmentData = (rows[0] as Record<string, unknown> | undefined)?.data as
+      | Record<string, unknown>
+      | undefined;
+    const blobRef = attachmentData?.blob_ref as Record<string, unknown> | undefined;
+    assert.equal(blobRef?.blob_id, uploadedBlob.blob_id, "the visible attachment record must carry the blob id");
+
+    const fetchBlob = await postMcpJson(rsUrl, accessToken, {
+      id: 6,
+      jsonrpc: "2.0",
+      method: "tools/call",
+      params: { arguments: { blob_id: blobRef?.blob_id }, name: "fetch_blob" },
+    });
+    assert.equal(fetchBlob.status, 200);
+    const fetchBlobResult = resultOf(fetchBlob);
+    assert.equal(fetchBlobResult.isError, undefined);
+    const content = fetchBlobResult.content as Record<string, unknown>[];
+    const resourceBlock = content.find((block) => block.type === "resource") as
+      | { resource?: Record<string, unknown> }
+      | undefined;
+    assert.equal(resourceBlock?.resource?.mimeType, "application/pdf");
+    assert.equal(resourceBlock?.resource?.blob, pdfBytes.toString("base64"));
+    assert.match(
+      content
+        .filter((block) => block.type === "text")
+        .map((block) => String(block.text ?? ""))
+        .join("\n"),
+      /embedded resource/
+    );
+    const fetchBlobStructured = fetchBlobResult.structuredContent as Record<string, unknown>;
+    assert.equal(fetchBlobStructured.bytes_base64, pdfBytes.toString("base64"));
+    const resourceUri = String(resourceBlock?.resource?.uri ?? "");
+    assert.match(resourceUri, /^pdpp:\/\/blob\//);
+    assert.equal(JSON.stringify(fetchBlob.body).includes(ownerToken), false);
+    assert.equal(JSON.stringify(fetchBlob.body).includes(`/v1/blobs/${uploadedBlob.blob_id}`), false);
+
+    const resourceRead = await postMcpJson(rsUrl, accessToken, {
+      id: 7,
+      jsonrpc: "2.0",
+      method: "resources/read",
+      params: { uri: resourceUri },
+    });
+    assert.equal(resourceRead.status, 200);
+    const resourceReadResult = resultOf(resourceRead);
+    const resourceContents = resourceReadResult.contents as Record<string, unknown>[];
+    assert.equal(resourceContents[0]?.mimeType, "application/pdf");
+    assert.equal(resourceContents[0]?.blob, pdfBytes.toString("base64"));
 
     const untrustedHost = await postMcpWithHostHeader({
       host: "attacker.example",
@@ -1054,7 +1211,7 @@ test("grant-scoped MCP device authorization issues a client token usable at /mcp
     const toolList = resultOf(tools).tools as Array<{ name: string }>;
     assert.deepEqual(
       toolList.map((tool) => tool.name).sort((a, b) => a.localeCompare(b)),
-      ["aggregate", "fetch", "query_records", "read_record_field", "schema", "search"]
+      ["aggregate", "fetch", "fetch_blob", "query_records", "read_record_field", "schema", "search"]
     );
   } finally {
     await closeServer(server);

@@ -1755,7 +1755,7 @@ test("PDPP reference implementation integration", async (t) => {
         parseMcpToolsResponse(tools.body)
           .result.tools.map((tool) => tool.name)
           .sort(),
-        ["aggregate", "fetch", "query_records", "read_record_field", "schema", "search"]
+        ["aggregate", "fetch", "fetch_blob", "query_records", "read_record_field", "schema", "search"]
       );
 
       await Reflect.apply(revokeCimdClientAccessForSecurityMetadataChange, undefined, [

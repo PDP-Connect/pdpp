@@ -68,6 +68,7 @@ interface PackageChild {
 interface RequestOptions {
   body?: unknown;
   headers?: HeaderParams | undefined;
+  maxBytes?: number | undefined;
   query?: QueryParams | undefined;
 }
 interface PackageClientOptions {
@@ -129,14 +130,16 @@ interface SchemaResponseContract {
 }
 type SchemaSourceOption = ReturnType<typeof schemaSourceOptions>[number];
 
-function rsRequestOptions({ body, headers, query }: RequestOptions): {
+function rsRequestOptions({ body, headers, maxBytes, query }: RequestOptions): {
   body?: unknown;
   headers?: HeaderParams;
+  maxBytes?: number;
   query?: QueryParams;
 } {
   return {
     ...(body === undefined ? {} : { body }),
     ...(headers === undefined ? {} : { headers }),
+    ...(maxBytes === undefined ? {} : { maxBytes }),
     ...(query === undefined ? {} : { query }),
   };
 }
@@ -250,9 +253,9 @@ class PackageRsClient {
     return child.client.getJson(path, rsRequestOptions({ headers, query }));
   }
 
-  getRaw(path: string, { query, headers }: RequestOptions = {}): Promise<PackageRsResponse> {
+  getRaw(path: string, { query, headers, maxBytes }: RequestOptions = {}): Promise<PackageRsResponse> {
     // Blob / binary reads always require a source selector.
-    return this.sourceRequiredRaw("GET", path, { headers, query });
+    return this.sourceRequiredRaw("GET", path, { headers, maxBytes, query });
   }
 
   postJson(path: string, { body, query, headers }: RequestOptions = {}): Promise<PackageRsResponse> {

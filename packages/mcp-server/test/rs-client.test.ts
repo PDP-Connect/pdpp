@@ -134,3 +134,17 @@ test("getRaw returns a Buffer for binary payloads", async () => {
   assert.equal(result.body.length, 4);
   assert.deepEqual([...result.body], [1, 2, 3, 4]);
 });
+
+test("getRaw stops reading a binary response at the caller-supplied byte limit", async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+  const fetch = async () => new Response(bytes, { status: 200, headers: { "content-type": "application/pdf" } });
+
+  const rs = new RsClient({ providerUrl: "https://x", accessToken: "t", fetch });
+  const result = await rs.getRaw("/v1/blobs/abc", { maxBytes: 4 });
+
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    throw new Error("expected an oversized response error");
+  }
+  assert.equal(result.error.code, "response_too_large");
+});

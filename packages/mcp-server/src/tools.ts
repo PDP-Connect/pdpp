@@ -37,6 +37,15 @@ interface ToolTextContent {
   text: string;
   type: "text";
 }
+
+interface ToolEmbeddedResourceContent {
+  resource: {
+    blob: string;
+    mimeType: string;
+    uri: string;
+  };
+  type: "resource";
+}
 // Kept as a `type` (not `interface`) on purpose — the MCP SDK's
 // `CallToolResult` return type carries an index signature (`[x: string]:
 // unknown`), which only a structurally-open `type` alias satisfies when
@@ -45,7 +54,7 @@ interface ToolTextContent {
 // match, and the SDK signature isn't ours to widen.
 // biome-ignore lint/style/useConsistentTypeDefinitions: see comment above.
 type McpToolResult = {
-  content: ToolTextContent[];
+  content: Array<ToolTextContent | ToolEmbeddedResourceContent>;
   isError?: boolean;
   structuredContent?: JsonObject;
 };
@@ -73,7 +82,7 @@ interface ToolDefinition {
 // satisfies.
 // biome-ignore lint/style/useConsistentTypeDefinitions: see comment above.
 type ResourceReadResult = {
-  contents: Array<{ uri: string; mimeType: string; text: string }>;
+  contents: Array<{ uri: string; mimeType: string; text: string } | { uri: string; mimeType: string; blob: string }>;
 };
 
 interface ResourceTemplateDefinition {
@@ -555,9 +564,48 @@ const BLOB_OUTPUT_SCHEMA_SHAPE = {
   bytes_base64: z.string(),
   mime_type: z.string(),
   size: z.number().int().nonnegative(),
+  resource_uri: z.string(),
+  range: z.string().nullable(),
 };
 
-const BLOB_RANGE_PATTERN = /^bytes=\d+-\d*$/;
+export const MCP_BLOB_MAX_BYTES = 4 * 1024 * 1024;
+const BLOB_RANGE_PATTERN = /^bytes=(\d+)-(\d*)$/;
+
+interface BlobRangeOptions {
+  range?: string;
+}
+
+function boundedBlobRange(value: unknown): string | undefined {
+  if (value === undefined) {
+    return;
+  }
+  if (typeof value !== "string") {
+    throw new Error("range must be a single byte range such as bytes=0-1023");
+  }
+  const match = BLOB_RANGE_PATTERN.exec(value);
+  if (!match) {
+    throw new Error("range must be a single byte range such as bytes=0-1023");
+  }
+  const start = Number(match[1]);
+  const end = match[2] === "" ? undefined : Number(match[2]);
+  if (!Number.isSafeInteger(start) || (end !== undefined && !Number.isSafeInteger(end))) {
+    throw new Error("range offsets must be safe integers");
+  }
+  if (end !== undefined && end < start) {
+    throw new Error("range end must be greater than or equal to range start");
+  }
+  if (end !== undefined && end - start + 1 > MCP_BLOB_MAX_BYTES) {
+    throw new Error(`range must not exceed ${MCP_BLOB_MAX_BYTES} bytes`);
+  }
+  if (end === undefined) {
+    const cappedEnd = start + MCP_BLOB_MAX_BYTES - 1;
+    if (!Number.isSafeInteger(cappedEnd)) {
+      throw new Error(`range start must leave room for a ${MCP_BLOB_MAX_BYTES}-byte window`);
+    }
+    return `bytes=${start}-${cappedEnd}`;
+  }
+  return value;
+}
 
 const READ_RECORD_FIELD_OUTPUT_SCHEMA_SHAPE = {
   record: z
@@ -914,8 +962,7 @@ export function buildTools({ rs, providerUrl }: { rs: RsClient; providerUrl: str
     {
       name: "fetch_blob",
       title: "Fetch PDPP blob",
-      description:
-        "Fetch authorized blob bytes via existing `GET /v1/blobs/{blob_id}` using the same scoped bearer. Pass a `blob_id` from a visible `blob_ref`; metadata alone is not access. Optional `range` is bounded; retry a 409 with `connection_id` and its canonical `connector_key` candidate. Read-only.",
+      description: `Fetch authorized blob bytes via existing \`GET /v1/blobs/{blob_id}\` using the same scoped bearer. Pass a \`blob_id\` from a visible \`blob_ref\`; metadata alone is not access. The result includes the bytes as a standard MCP embedded binary resource in \`content[]\`, plus a bounded \`structuredContent.bytes_base64\` fallback. Optional \`range\` is a single range capped at ${MCP_BLOB_MAX_BYTES} bytes; retry a 409 with \`connection_id\` and its canonical \`connector_key\` candidate. Read-only.`,
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -931,12 +978,29 @@ export function buildTools({ rs, providerUrl }: { rs: RsClient; providerUrl: str
       outputSchema: z.object(BLOB_OUTPUT_SCHEMA_SHAPE),
       handler: async (args: JsonObject) => {
         const blobId = requireSafeName(args.blob_id, "blob_id");
-        const headers = typeof args.range === "string" ? { Range: args.range } : undefined;
+        let range: string | undefined;
+        try {
+          range = boundedBlobRange(args.range);
+        } catch (error) {
+          return invalidBlobRangeToolResult(error);
+        }
+        const connectionId =
+          typeof args.connection_id === "string" ? requireSafeName(args.connection_id, "connection_id") : undefined;
+        const headers = range ? { Range: range } : undefined;
         const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
-        const response = headers
-          ? await rs.getRaw(`/v1/blobs/${encodeURIComponent(blobId)}`, { headers, query })
-          : await rs.getRaw(`/v1/blobs/${encodeURIComponent(blobId)}`, { query });
-        return toBlobToolResult(response, providerUrl);
+        if (connectionId) {
+          query.connection_id = connectionId;
+        }
+        const response = await rs.getRaw(`/v1/blobs/${encodeURIComponent(blobId)}`, {
+          ...(headers ? { headers } : {}),
+          maxBytes: MCP_BLOB_MAX_BYTES,
+          query,
+        });
+        return toBlobToolResult(response, providerUrl, {
+          blobId,
+          ...(connectionId ? { connectionId } : {}),
+          ...(range ? { range } : {}),
+        });
       },
     },
     {
@@ -1084,6 +1148,7 @@ export function buildResourceTemplates({
     buildStreamResourceTemplate({ rs, providerUrl }),
     buildRecordResourceTemplate({ rs, providerUrl }),
     buildRecordFieldResourceTemplate({ rs, providerUrl }),
+    buildBlobResourceTemplate({ rs, providerUrl }),
   ];
 }
 
@@ -1160,8 +1225,50 @@ function buildRecordFieldResourceTemplate({
           {
             uri,
             mimeType: "text/plain",
-            // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive — under noUncheckedIndexedAccess, array index [0] is `ToolTextContent | undefined`, so the ?. and ?? are load-bearing, not redundant.
-            text: result.content[0]?.text ?? "",
+            text: result.content.find((content) => content.type === "text")?.text ?? "",
+          },
+        ],
+      };
+    },
+  };
+}
+
+function buildBlobResourceTemplate({
+  rs,
+  providerUrl,
+}: {
+  rs: RsClient;
+  providerUrl: string;
+}): ResourceTemplateDefinition {
+  return {
+    uriTemplate: "pdpp://blob/{handle}",
+    name: "pdpp-blob",
+    title: "PDPP blob",
+    description:
+      "Returns bounded grant-scoped binary content for a blob_ref. The handle contains no bearer token or public URL. Read-only.",
+    mimeType: "application/octet-stream",
+    read: async (uri, variables) => {
+      const ref = resolveBlobResourceRef(uri, variables);
+      const headers = ref.range ? { Range: ref.range } : undefined;
+      const query: QueryParams = {};
+      if (ref.connectionId) {
+        query.connection_id = ref.connectionId;
+      }
+      const response = await rs.getRaw(`/v1/blobs/${encodeURIComponent(ref.blobId)}`, {
+        ...(headers ? { headers } : {}),
+        maxBytes: MCP_BLOB_MAX_BYTES,
+        query,
+      });
+      if (!response.ok) {
+        return resourceErrorContents(uri, response, providerUrl);
+      }
+      const bytes = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body);
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: response.contentType || "application/octet-stream",
+            blob: bytes.toString("base64"),
           },
         ],
       };
@@ -1264,6 +1371,27 @@ function resolveFieldWindowResourceRef(uri: string, variables: Record<string, st
   }
   if (payload.after_chars !== undefined) {
     ref.after_chars = payload.after_chars as number;
+  }
+  return ref;
+}
+
+interface BlobResourceRef {
+  blobId: string;
+  connectionId?: string;
+  range?: string;
+}
+
+function resolveBlobResourceRef(uri: string, variables: Record<string, string | string[]>): BlobResourceRef {
+  const payload = decodeResourceHandle(resolveResourceHandle(uri, variables, "blob"), "blob");
+  const ref: BlobResourceRef = { blobId: requireSafeName(payload.blob_id, "blob_id") };
+  if (payload.connection_id !== undefined) {
+    ref.connectionId = requireSafeName(payload.connection_id, "connection_id");
+  }
+  if (payload.range !== undefined) {
+    const range = boundedBlobRange(payload.range);
+    if (range !== undefined) {
+      ref.range = range;
+    }
   }
   return ref;
 }
@@ -3734,22 +3862,60 @@ function errorToolResult(response: RsErrorResponse, providerUrl: string): McpToo
   };
 }
 
-function toBlobToolResult(response: RsResponse<Buffer>, providerUrl: string): McpToolResult {
+function invalidBlobRangeToolResult(error: unknown): McpToolResult {
+  const message = error instanceof Error ? error.message : "range is invalid";
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ type: "invalid_request", code: "invalid_range", message }, null, 2),
+      },
+    ],
+  };
+}
+
+interface BlobToolResultOptions extends BlobRangeOptions {
+  blobId: string;
+  connectionId?: string;
+}
+
+function toBlobToolResult(
+  response: RsResponse<Buffer>,
+  providerUrl: string,
+  { blobId, connectionId, range }: BlobToolResultOptions
+): McpToolResult {
   if (response.ok) {
     const bytes = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body);
+    const resourceUri = encodeResourceUri("blob", {
+      blob_id: blobId,
+      ...(connectionId ? { connection_id: connectionId } : {}),
+      ...(range ? { range } : {}),
+    });
+    const mimeType = response.contentType || "application/octet-stream";
     return {
       content: [
         {
           type: "text",
-          text: `Fetched ${bytes.length} bytes (${response.contentType || "application/octet-stream"}).`,
+          text: `Fetched ${bytes.length} bytes (${mimeType}) as an MCP embedded resource at ${resourceUri}. Hosts that do not render embedded resources can use the bounded structuredContent.bytes_base64 fallback.`,
+        },
+        {
+          type: "resource",
+          resource: {
+            blob: bytes.toString("base64"),
+            mimeType,
+            uri: resourceUri,
+          },
         },
       ],
       structuredContent: {
         provider_url: providerUrl,
         request_id: response.requestId,
         bytes_base64: bytes.toString("base64"),
-        mime_type: response.contentType || "application/octet-stream",
+        mime_type: mimeType,
         size: bytes.length,
+        resource_uri: resourceUri,
+        range: range ?? null,
       },
     };
   }
@@ -3769,4 +3935,5 @@ export const __internal = {
   UnadvertisedExpandError,
   parseRecordResultId,
   encodeResourceUri,
+  boundedBlobRange,
 };

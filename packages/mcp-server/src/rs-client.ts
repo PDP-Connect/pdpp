@@ -34,6 +34,7 @@ export type RsResponse<Body = unknown> = RsSuccessResponse<Body> | RsErrorRespon
 
 interface RequestOptions {
   headers?: HeaderParams;
+  maxBytes?: number;
   query?: QueryParams;
 }
 
@@ -90,7 +91,7 @@ export class RsClient {
     return parseRsResponse<Body>(response, { expectJson: true });
   }
 
-  async getRaw(path: string, { query, headers }: RequestOptions = {}): Promise<RsResponse<Buffer>> {
+  async getRaw(path: string, { query, headers, maxBytes }: RequestOptions = {}): Promise<RsResponse<Buffer>> {
     const url = this.buildUrl(path, query);
     const response = await this.fetch(url, {
       method: "GET",
@@ -100,7 +101,10 @@ export class RsClient {
         ...(headers ?? {}),
       },
     });
-    return parseRsResponse<Buffer>(response, { expectJson: false });
+    return parseRsResponse<Buffer>(response, {
+      expectJson: false,
+      ...(maxBytes === undefined ? {} : { maxBytes }),
+    });
   }
 
   postJson<Body = unknown>(path: string, options: SendJsonOptions = {}): Promise<RsResponse<Body>> {
@@ -176,7 +180,7 @@ function appendQuery(url: URL, key: string, value: QueryValue): void {
 
 async function parseRsResponse<Body>(
   response: Response,
-  { expectJson }: { expectJson: boolean }
+  { expectJson, maxBytes }: { expectJson: boolean; maxBytes?: number }
 ): Promise<RsResponse<Body>> {
   const { status } = response;
   const contentType = response.headers?.get?.("content-type") ?? "";
@@ -192,7 +196,20 @@ async function parseRsResponse<Body>(
         : ((await response.text()) as Body);
       return { ok: true, status, body, requestId, contentType };
     }
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = await readRawBody(response, maxBytes);
+    if (buffer === null) {
+      return {
+        ok: false,
+        status,
+        error: {
+          type: "invalid_request",
+          code: "response_too_large",
+          message: `Binary response exceeds the ${maxBytes}-byte MCP limit`,
+        },
+        requestId,
+        contentType,
+      };
+    }
     return { ok: true, status, body: buffer as Body, requestId, contentType };
   }
 
@@ -213,6 +230,46 @@ async function parseRsResponse<Body>(
   }
 
   return { ok: false, status, error: envelope, requestId, contentType };
+}
+
+async function readRawBody(response: Response, maxBytes?: number): Promise<Buffer | null> {
+  if (maxBytes === undefined) {
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  const contentLength = Number.parseInt(response.headers?.get?.("content-length") ?? "", 10);
+  if (Number.isSafeInteger(contentLength) && contentLength > maxBytes) {
+    await response.body?.cancel();
+    return null;
+  }
+
+  const { body } = response;
+  if (!body) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.length > maxBytes ? null : buffer;
+  }
+
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      // biome-ignore lint/performance/noAwaitInLoops: response chunks must be read sequentially to enforce the byte cap without buffering an unbounded body.
+      const { done, value } = await reader.read();
+      if (done) {
+        return Buffer.concat(chunks, total);
+      }
+      const chunk = Buffer.from(value);
+      total += chunk.length;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function normalizeErrorEnvelope(body: unknown, status: number): RsErrorEnvelope {

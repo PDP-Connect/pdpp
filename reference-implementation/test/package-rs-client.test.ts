@@ -80,7 +80,8 @@ function createPackageRsClient(opts: Parameters<typeof createPackageRsClientUnty
     deleteJson: async (path: string) => resultWithError(await client.deleteJson(path)),
     getJson: async (path: string, options?: Parameters<typeof client.getJson>[1]) =>
       resultWithError(await client.getJson(path, options)),
-    getRaw: async (path: string) => resultWithError(await client.getRaw(path)),
+    getRaw: async (path: string, options?: Parameters<typeof client.getRaw>[1]) =>
+      resultWithError(await client.getRaw(path, options)),
     patchJson: async (path: string, options: { body: Record<string, unknown> }) =>
       resultWithError(await client.patchJson(path, options)),
     postJson: async (path: string, options: { body: Record<string, unknown> }) =>
@@ -849,6 +850,23 @@ test("fetch_blob (getRaw) requires selector and never returns multi-source defau
   assert.equal(out.ok, false);
   assert.equal(out.status, 409);
   assert.deepEqual(calls, [], "blob ambiguity is computed without child health probes");
+});
+
+test("fetch_blob (getRaw) carries the bounded byte limit through the selected package child", async () => {
+  const calls: { path: string; token: string }[] = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ path: req.path, token: req.token });
+    return new Response(new Uint8Array([1, 2, 3, 4, 5]), {
+      status: 200,
+      headers: { "content-type": "application/pdf" },
+    });
+  });
+  const rs = createPackageRsClient({ fetch, members: [memberA(), memberB()], providerUrl: PROVIDER });
+  const out = await rs.getRaw("/v1/blobs/blob-xyz", { maxBytes: 4, query: { connection_id: "gh_main" } });
+
+  assert.equal(out.ok, false);
+  assert.equal((out.error as PackageRsErrorEnvelope).code, "response_too_large");
+  assert.deepEqual(calls, [{ path: "/v1/blobs/blob-xyz", token: "tok_A" }]);
 });
 
 test("create_event_subscription with multi-source package requires connection_id", async () => {

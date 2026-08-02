@@ -15,10 +15,10 @@
 //   - `requireTrustedHostedMcpResource` — host-based guard identical to the
 //     one that guards the canonical provider protected-resource metadata.
 //
-// `handleStreamableHttpRequest` and `createPackageRsClient` are injected via
-// context because `@pdpp/mcp-server` ships as a JS-only workspace package
-// without `.d.ts` declarations, so they cannot be imported directly from a
-// strict-mode `.ts` file.
+// `handleStreamableHttpRequest` and the client factories are injected via
+// context so this route keeps the hosted runtime/build boundary explicit: the
+// reference server supplies the built package entrypoint and its internal RS
+// fetch base without duplicating the MCP adapter's tool/resource registry.
 
 import {
   isTrustedMetadataRequestOrigin,
@@ -87,7 +87,7 @@ interface McpServerOptions {
 export interface MountRsHostedMcpContext {
   /**
    * `createPackageRsClient` from `./package-rs-client.js`.
-   * Injected for the same reason — called with a JS-only signature.
+   * Injected at the hosted runtime boundary.
    */
   createPackageRsClient: (options: {
     providerUrl: string;
@@ -96,7 +96,7 @@ export interface MountRsHostedMcpContext {
   }) => unknown;
   /**
    * `createRsClient` from `./package-rs-client.js` — builds one single-bearer
-   * RsClient against a chosen fetch base. Injected for the same JS-only reason.
+   * RsClient against a chosen fetch base. Injected at the hosted runtime boundary.
    * Used for the standalone (`client`-token) path so its self-calls can use the
    * internal RS base too (parity with the package path's child clients).
    */
@@ -107,7 +107,8 @@ export interface MountRsHostedMcpContext {
   getGrantPackageAccess: (packageId: string) => Promise<GrantPackageAccess | null>;
   /**
    * `handleStreamableHttpRequest` from `@pdpp/mcp-server/server`.
-   * Injected because the package is JS-only without type declarations.
+   * Injected so the route uses the built package entrypoint while retaining its
+   * strict local route types.
    */
   handleStreamableHttpRequest: (request: Request, options: McpServerOptions) => Promise<Response>;
   /**
