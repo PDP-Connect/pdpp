@@ -1919,12 +1919,12 @@ function seedFoldState(participants: readonly Row[]): {
     //
     // Deliberately NARROW: this must NOT catch every non-`current` state.
     // `terminal_fold_incomplete` (a still-in-progress BUDGETED replay of a
-    // generation-CURRENT row) is an orthogonal reason — seeding `false` for
-    // it would make `writeParticipantStreamFacts` floor the checkpoint at
-    // its stale baseline every resumption round (`sourceGenerationCurrent ?
-    // writeSeq : checkpointByInstance.get(...)`), which never advances and
-    // starves the bounded-resume contract's own convergence. Only the two
-    // generation-refusal reason codes seed `false`; every other reason
+    // generation-CURRENT row) is an orthogonal reason: seeding `false` for it
+    // would misreport a merely-incomplete replay as generation-refused
+    // (wrong `terminal_facts_reason_code` on the next write), even though the
+    // checkpoint write itself (`writeSeq`, unconditional — see the write loop
+    // below) advances correctly either way. Only the two generation-refusal
+    // reason codes seed `false`; every other reason
     // (`terminal_fold_incomplete`, `terminal_fold_failed`,
     // `terminal_fold_contention`, `unobserved`, or simply `current`) seeds
     // `true` — the neutral "assume still current, let a real refused event
@@ -2380,12 +2380,31 @@ async function foldConnectorSummaryStreamFactsOnce(
     // `true` on pure silence.
     const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
     const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
+    // The checkpoint write is UNCONDITIONAL on `writeSeq`, never floored back
+    // to the row's stale incoming checkpoint for a generation-refused
+    // participant: a `terminal_facts_historical`/`manifest_generation_changed`
+    // verdict means this pass's drain durably INSPECTED every event up to
+    // `writeSeq` and found none attributable to the current generation — that
+    // is a proven, exhaustive negative, not an unread gap. Pinning the
+    // checkpoint here (the pre-fix bug) made a historical-only participant
+    // re-read the SAME already-inspected event range every pass forever,
+    // multiplying that participant's terminal-event read cost by every
+    // maintenance tick since the last generation transition without ever
+    // making progress — and, when other fleet participants share this fold's
+    // batch/seq scope, dragging their own convergence down to the same
+    // never-advancing floor (`sinceSeq = Math.min(...)` in `seedFoldState`).
+    // `terminalFactsCurrent` (not the checkpoint) is what keeps the row's
+    // FACTS refused: `writeParticipantStreamFacts` stamps
+    // `terminal_facts_state: 'stale'` with this reason code whenever
+    // `terminalFactsCurrent` is false, regardless of how far `eventSeq`
+    // advances — advancing the checkpoint only proves "already inspected
+    // through here," never "current-generation evidence found."
     // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
     const accepted = await writeParticipantStreamFacts(
       foldStore,
       instanceId,
       facts,
-      sourceGenerationCurrent ? writeSeq : (checkpointByInstance.get(instanceId) ?? 0),
+      writeSeq,
       terminalFactsCurrent
         ? null
         : // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
