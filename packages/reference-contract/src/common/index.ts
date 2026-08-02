@@ -152,8 +152,6 @@ export const ErrorObjectSchema: JsonSchema = {
         // protected-resource metadata and what to do next.
         resource_metadata: { type: "string" },
         retry_with: { type: "string" },
-        // Safe incumbent run handle for the typed duplicate-run refusal.
-        run_id: { type: "string" },
         type: { type: "string" },
       },
       required: ["type", "code", "message", "request_id"],

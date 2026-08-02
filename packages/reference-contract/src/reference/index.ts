@@ -7,6 +7,7 @@
 // the full OpenAPI artifact and in reference-implementation docs, but NOT in
 // the public PDPP contract surface.
 
+import type { JsonSchema } from "../common/index.ts";
 import { ErrorObjectSchema, FreshnessSchema } from "../common/index.ts";
 
 const ConnectorSummarySchema = {
@@ -1329,10 +1330,38 @@ const TimelineEntrySchema = {
   type: "object",
 };
 
+function getSharedErrorSchema(schema: JsonSchema | undefined): JsonSchema & { properties: Record<string, JsonSchema> } {
+  if (!schema?.properties) {
+    throw new Error("ErrorObjectSchema must declare nested error properties");
+  }
+  return schema as JsonSchema & { properties: Record<string, JsonSchema> };
+}
+
+const SharedErrorSchema = getSharedErrorSchema(ErrorObjectSchema.properties?.error);
+
+const RunStartConflictErrorSchema = {
+  ...ErrorObjectSchema,
+  properties: {
+    ...ErrorObjectSchema.properties,
+    error: {
+      ...SharedErrorSchema,
+      properties: {
+        ...SharedErrorSchema.properties,
+        run_id: { type: "string" },
+      },
+    },
+  },
+};
+
 const CommonErrors = {
   400: { description: "Invalid request", schema: ErrorObjectSchema },
   404: { description: "Not found", schema: ErrorObjectSchema },
   409: { description: "Conflict (e.g. run_already_active)", schema: ErrorObjectSchema },
+};
+
+const RunStartErrors = {
+  ...CommonErrors,
+  409: { ...CommonErrors[409], schema: RunStartConflictErrorSchema },
 };
 
 const DeviceExporterErrors = {
@@ -2053,7 +2082,7 @@ export const referenceManifests = [
     request: { params: ConnectionIdParamSchema },
     responses: {
       202: { description: "Accepted", schema: RunStartResponseSchema },
-      ...CommonErrors,
+      ...RunStartErrors,
     },
     summary:
       "Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter.",
@@ -2067,7 +2096,7 @@ export const referenceManifests = [
     request: { params: ConnectorIdParamSchema },
     responses: {
       202: { description: "Accepted", schema: RunStartResponseSchema },
-      ...CommonErrors,
+      ...RunStartErrors,
     },
     summary:
       "Owner-agent bearer: start a run-now for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
@@ -2437,7 +2466,7 @@ export const referenceManifests = [
     request: { params: ConnectorIdParamSchema },
     responses: {
       202: { description: "Accepted", schema: RunStartResponseSchema },
-      ...CommonErrors,
+      ...RunStartErrors,
     },
     summary: "Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409 run_already_active.",
     surface: "reference",
@@ -2450,7 +2479,7 @@ export const referenceManifests = [
     request: { params: ConnectorInstanceIdParamSchema },
     responses: {
       202: { description: "Accepted", schema: RunStartResponseSchema },
-      ...CommonErrors,
+      ...RunStartErrors,
     },
     summary:
       "Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.",
