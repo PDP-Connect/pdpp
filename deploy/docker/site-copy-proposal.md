@@ -1,122 +1,64 @@
 # Proposal: deploy section copy for the reference page
 
 **Status:** Proposal only — copy and structure, no component redesign.
-**Target:** `apps/site/src/app/reference/page.tsx` (the `pdpp.dev/reference`
-deploy surface; today a "Deploy on Railway" hero button plus a
-"Self-host with Docker" link into the GitHub README).
-**Basis:** `docs/research/deploy-button-parity-prior-art-2026-06-10.md`.
+**Target:** `apps/site/src/app/reference/page.tsx`.
 
 ## Principle
 
-Progressive disclosure. The research found peers either bury Docker in
-multi-step docs (Plausible, n8n) or offer nothing one-shot at all. PDPP can
-lead with exactly two zero-decision paths — the Railway button and a Docker
-one-liner — and collapse everything else beneath them. A new operator should
-see two choices, not a matrix.
+Progressive disclosure. The public page should present one reproducible,
+registry-backed self-service path: pinned Docker Compose, owner setup, healthy
+data, then the deployed `/connect` handoff. Alternate platform lanes stay out of
+the blessed path until their exact artifacts pass an actual registry manifest
+check.
 
 ## Proposed section
 
-### Tier 1 — always visible: two cards side by side
+### Tier 1 — always visible: one pinned Compose card
 
-A single "Run your own node" section replacing the current scattered deploy
-links. Two equal-weight cards:
-
----
-
-**Card 1 — Cloud, one click**
-
-> #### Deploy on Railway
+> #### Deploy with Docker Compose
 >
-> One click provisions the Core node and Postgres. You choose one thing: your
-> owner password.
->
-> [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core)
-
-**Card 2 — Your machine, one command**
-
-> #### Run with Docker
->
-> One command starts a full node on your laptop. First boot prints your
-> dashboard URL and a generated owner password — nothing to configure.
->
-> ```sh
-> docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
->   ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4
-> docker logs -f pdpp
-> ```
->
-> Open http://localhost:3000/dashboard and sign in with the printed password.
-> Your data persists in the `pdpp_data` volume across restarts and upgrades.
-
----
-
-### Tier 2 — collapsed beneath the cards
-
-Two `<details>`-style disclosures (or the site's accordion equivalent),
-closed by default:
-
----
-
-**Disclosure 1: "Production deployment (Docker Compose)"**
-
-> Running a node you intend to keep? Use the minimal Compose stack — reference
-> + console + Postgres with pgvector — with healthchecks and named volumes:
+> Use the registry-proven `reference` and `web` images at `sha-cc07e3a`. The
+> web service is published on port `3000`; reference services and Postgres
+> remain private.
 >
 > ```sh
 > mkdir pdpp && cd pdpp
 > curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
-> printf 'PDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+> printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \\
 >   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 > docker compose up -d
 > ```
 >
-> Put your HTTPS reverse proxy in front and set `PDPP_REFERENCE_ORIGIN` to
-> your domain. Full runbook: [deploy/docker/README.md](https://github.com/PDP-Connect/pdpp/blob/main/deploy/docker/README.md).
+> Open `http://localhost:3000/owner/login`, add Gmail with a Google app
+> password, and wait for healthy data with `records > 0`.
 
-**Disclosure 2: "Other platforms (Fly.io)"**
+### Tier 2 — collapsed beneath the card
 
-> Fly.io has no deploy button; its honest equivalent is one `fly launch`
-> command that creates the app, provisions Postgres, and deploys the same
-> Core image:
->
-> ```sh
-> APP="pdpp-core-$(openssl rand -hex 3)"
-> OWNER_PASSWORD="$(openssl rand -base64 24)"
-> fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4 \
->   --name "$APP" --internal-port 3000 --db \
->   --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \
->   --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \
->   --no-github-workflow --no-object-storage --no-redis --now --yes
-> printf 'Origin: https://%s.fly.dev\nOwner password: %s\n' "$APP" "$OWNER_PASSWORD"
-> ```
->
-> Requires a payment method on the Fly org (trial orgs are refused at release).
-> Details and a source-build fallback: [deploy/flyio/README.md](https://github.com/PDP-Connect/pdpp/blob/main/deploy/flyio/README.md).
+**Disclosure: "Connect after healthy data"**
 
----
+> Open the deployed `<your-deployment-origin>/connect` surface only after the
+> deployment is healthy, the first sync has succeeded, and `records > 0`.
+> Add `<your-deployment-origin>/mcp` to Claude Code, complete OAuth, and query
+> a known record.
+
+Full copy belongs in
+[`docs/operator/self-service-gmail-mcp.md`](../../docs/operator/self-service-gmail-mcp.md).
 
 ## Copy rules baked into the above
 
-- The two Tier-1 paths are phrased as *outcomes* ("one click", "one command"),
-  not technologies. No env-var names appear above the fold except inside the
-  copy-paste block itself.
-- The Docker one-liner carries zero `-e` flags. The first-boot bootstrap in
-  the image (deploy/railway/core-first-boot.ts) generates and persists the
-  owner password and prints the dashboard URL, so the command requires no
-  secret handling, no `openssl`, no shell substitution.
-- `docker logs -f pdpp` is part of the quickstart copy on purpose: the banner
-  *is* the onboarding. Do not move the password into page copy or a generated
-  query string.
-- Fly stays honest: a command block labeled as a command, never a fake button
-  (the research confirmed no Fly button product exists as of June 2026).
-- The existing "Self-host with Docker" hero link should point at
-  `deploy/docker/README.md` instead of the reference README once this section
-  lands.
+- The blessed path uses the same `sha-cc07e3a` tag for both `reference` and
+  `web`; do not substitute mutable tags or an unverified single-image lane.
+- Port `3000` is explicit in the copied Compose environment so local setup and
+  the public page tell the same story.
+- The client handoff names deployed `/connect` and `/mcp`; the public docs site
+  is never presented as the live server.
+- Keep the health/data gate before OAuth. A configured source or saved secret is
+  not proof that MCP can query records.
 
-## Out of scope (deliberately)
+## Out of scope
 
-- No Render/DigitalOcean/Helm tiles — peers ship none of these either; add a
-  third tier only when someone asks.
-- No `curl | bash` installer. The research's security review favors
-  inspectable artifacts (`curl -O` + `compose up`) over piped shell.
-- No component or layout redesign; this is copy + ordering only.
+- Alternate platform buttons or image shortcuts before their concrete image
+  manifests are proven and their live path is separately verified.
+- No `curl | bash` installer. Keep artifacts inspectable with `curl -O` plus
+  `docker compose up`.
+- No component or layout redesign; this is copy and ordering only.

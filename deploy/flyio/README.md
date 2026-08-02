@@ -27,34 +27,12 @@ Trial organizations (no credit card) are refused at the final release step with
 trial organizations`, even though app creation, Postgres provisioning, and IP
 allocation succeed. Add a card at the Fly billing dashboard before launching.
 
-Fast image-backed path, using the current public Core image:
+The image-backed shortcut is withdrawn. No unverified image is advertised or
+pullable from this runbook. The blessed self-service path uses the registry-
+proven Compose `reference/web:sha-cc07e3a` pair on port `3000`, then the
+deployed `/connect` surface.
 
-```sh
-APP="pdpp-core-$(openssl rand -hex 3)"
-OWNER_PASSWORD="$(openssl rand -base64 24)"
-
-fly launch \
-  --image ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4 \
-  --name "$APP" \
-  --region iad \
-  --internal-port 3000 \
-  --db \
-  --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \
-  --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \
-  --no-github-workflow \
-  --no-object-storage \
-  --no-redis \
-  --now \
-  --yes
-
-printf 'Origin: https://%s.fly.dev\nOwner password: %s\n' "$APP" "$OWNER_PASSWORD"
-```
-
-The image-backed path uses the separately published, registry-proven
-Railway/Core `sha-2fbdb4` lineage. It is not the same release as the
-Compose `reference/web:sha-cc07e3a` pair used by the blessed self-service path.
-
-Source-build fallback from the public repository:
+Alternate source-build path from the public repository:
 
 ```sh
 APP="pdpp-core-$(openssl rand -hex 3)"
@@ -79,9 +57,9 @@ fly launch \
 printf 'Origin: https://%s.fly.dev\nOwner password: %s\n' "$APP" "$OWNER_PASSWORD"
 ```
 
-This is the honest Fly equivalent to the Railway button today: one command that
-creates the app, provisions Postgres, deploys the Core runtime, and prints the
-owner password the operator needs for login and smoke checks.
+This is an alternate source-build experiment, not part of the blessed
+self-service path. It creates the app, provisions Postgres, deploys the Core
+runtime, and prints the owner password needed for login and smoke checks.
 
 If `fly launch --from` cannot read the config path in your local flyctl version,
 clone the repository and run the same command from the checkout without the
@@ -147,7 +125,7 @@ After launch, run:
 ORIGIN="https://$APP.fly.dev"
 
 curl -fsS "$ORIGIN/.well-known/oauth-authorization-server" | jq .
-curl -sv "$ORIGIN/dashboard" 2>&1 | grep -i location
+curl -sv "$ORIGIN/connect" 2>&1 | grep -i location
 
 pnpm railway:mcp-query-smoke -- \
   --origin "$ORIGIN" \

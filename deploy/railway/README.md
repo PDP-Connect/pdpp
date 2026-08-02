@@ -4,11 +4,12 @@ This runbook describes the selected Railway pushbutton shape for the PDPP
 reference implementation: one public Core app service, one durable Postgres
 backend, and no browser-backed connector runtime inside the deployed app.
 
-This is operator documentation for someone running their own instance. The
-Docker image at `ghcr.io/pdp-connect/pdpp/railway-core` is the forkable reference
-implementation packaged for Railway. The registry-proven Railway/Core tag is
-`sha-2fbdb4`; it is a separate release lineage from the blessed Compose pair
-`reference/web:sha-cc07e3a`.
+This is retained as an alternate platform handoff, not as the blessed
+self-service path. The previously documented single-image shortcut is withdrawn:
+the current registry manifest has not been proven, so this document does not
+advertise an image as pullable or verified. Use the pinned Compose pair
+`reference/web:sha-cc07e3a` on port `3000`, then continue at the deployed
+`/connect` surface.
 
 ## Pushbutton Railway template
 
@@ -25,11 +26,12 @@ The published template uses:
 
 | Service | Source | Public? | Purpose |
 |---|---|---:|---|
-| `core` | `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS on loopback inside the same container. |
+| `core` | Pinned source build from the repository | yes | Console on Railway `$PORT`; reference AS/RS on loopback inside the same container. |
 | `Postgres` | Railway plugin | no | Durable records, grants, runs, sessions, and tokens. |
 
-Pin a concrete version tag, not `latest`, so the template is reproducible. The
-GHCR package must be anonymously pullable before the template is published:
+Pin a concrete repository revision so the source build is reproducible. If a
+future image is introduced, its exact manifest must pass the registry check
+before the template is published:
 
 ```sh
 pnpm railway:ghcr-public --tag <version-tag>
@@ -52,7 +54,7 @@ internet ──HTTPS──▶ core (public Railway app service)
 Why this is the selected button shape: live Railway testing showed that a
 separate private `reference` image service needs an explicit service `PORT` to
 boot reliably, and Railway turns that `PORT` variable into a required deploy-page
-prompt. The `railway-core` image removes that prompt while preserving the
+prompt. The one-service source build removes that prompt while preserving the
 protocol shape: the public console still fronts the full protocol surface, and
 the AS/RS listeners remain non-public loopback endpoints.
 
@@ -152,8 +154,8 @@ pnpm docker:smoke
 
 For a live source project or scratch template deploy:
 
-1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4` and add
-   Railway Postgres.
+1. Build the `core` service from a pinned repository revision and add Railway
+   Postgres. Do not pull an unverified image from this handoff.
 2. Set `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and
    `PDPP_DATABASE_URL` exactly as above.
 3. Generate a public domain for `core`.
@@ -161,7 +163,7 @@ For a live source project or scratch template deploy:
    public origin.
 5. Confirm AS `issuer`, RS `resource`, and RS `authorization_servers[0]` all
    equal the public origin.
-6. Confirm anonymous `/dashboard` redirects to `/owner/login`.
+6. Confirm anonymous `/connect` redirects to `/owner/login`.
 7. Run the deterministic MCP smoke:
 
    ```sh
@@ -175,12 +177,11 @@ For a live source project or scratch template deploy:
 
 ## Template publication
 
-Use [`template.md`](./template.md) for the publication handoff. The
-registry-proven candidate for the separate Railway/Core image is
-`sha-2fbdb4`. This docs-only closure does not rerun the live template or
-scratch-project gate:
+Use [`template.md`](./template.md) for the publication handoff. Publication is
+blocked until a concrete source revision or image manifest is independently
+proven and the live template/scratch-project gate passes:
 
-- run `pnpm railway:ghcr-public --tag sha-2fbdb4` before publication;
+- run the registry manifest check for the exact artifact before publication;
 - deploy a source project with exactly `core` plus Postgres and run the live gate;
 - generate and publish the template only after that gate;
 - deploy a fresh scratch project from the published template and run the live
@@ -189,7 +190,8 @@ scratch-project gate:
 ## Rollback and cleanup
 
 - Roll back a bad deploy from Railway's Deployments tab by redeploying the prior
-  known-good image tag. Stored data lives in Postgres, not the app container.
+  source revision that passed the gates. Stored data lives in Postgres, not the
+  app container.
 - Tear down by deleting the `core` service and Postgres plugin. Removing
   Postgres removes stored data.
 

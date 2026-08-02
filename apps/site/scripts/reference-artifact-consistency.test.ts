@@ -6,29 +6,53 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const SOURCE_PATHS = [
+const BLESSED_ARTIFACT_PATHS = [
   ["public reference page", new URL("../src/app/reference/page.tsx", import.meta.url)],
   ["blessed self-service runbook", new URL("../../../docs/operator/self-service-gmail-mcp.md", import.meta.url)],
   ["self-host quickstart", new URL("../../../docs/operator/selfhost-quickstart.md", import.meta.url)],
   ["Docker deployment runbook", new URL("../../../deploy/docker/README.md", import.meta.url)],
-  ["Railway deployment runbook", new URL("../../../deploy/railway/README.md", import.meta.url)],
-  ["Railway template handoff", new URL("../../../deploy/railway/template.md", import.meta.url)],
-  ["Fly deployment runbook", new URL("../../../deploy/flyio/README.md", import.meta.url)],
   ["deployment copy proposal", new URL("../../../deploy/docker/site-copy-proposal.md", import.meta.url)],
 ] as const;
 
+const TOUCHED_SURFACE_PATHS = [
+  ["CEO landing path", new URL("../../../CEO-LANDING-PATH.md", import.meta.url)],
+  ["public reference page", new URL("../src/app/reference/page.tsx", import.meta.url)],
+  ["artifact consistency oracle", new URL("./reference-artifact-consistency.test.ts", import.meta.url)],
+  ["no-hardcoded-host oracle", new URL("./reference-page-no-hardcoded-host.test.ts", import.meta.url)],
+  ["self-service journey oracle", new URL("./reference-page-self-service.test.ts", import.meta.url)],
+  ["Docker deployment runbook", new URL("../../../deploy/docker/README.md", import.meta.url)],
+  ["deployment copy proposal", new URL("../../../deploy/docker/site-copy-proposal.md", import.meta.url)],
+  ["Fly deployment runbook", new URL("../../../deploy/flyio/README.md", import.meta.url)],
+  ["Railway deployment runbook", new URL("../../../deploy/railway/README.md", import.meta.url)],
+  ["Railway template handoff", new URL("../../../deploy/railway/template.md", import.meta.url)],
+  ["connection setup guide", new URL("../../../docs/operator/add-connection.md", import.meta.url)],
+  ["hosted MCP runbook", new URL("../../../docs/operator/hosted-mcp-setup.md", import.meta.url)],
+  ["blessed self-service runbook", new URL("../../../docs/operator/self-service-gmail-mcp.md", import.meta.url)],
+  ["self-host quickstart", new URL("../../../docs/operator/selfhost-quickstart.md", import.meta.url)],
+  ["local browser E2E guide", new URL("../../../docs/reference/local-testing-e2e.md", import.meta.url)],
+] as const;
+
 const VERIFIED_TAGS: Readonly<Record<string, ReadonlySet<string>>> = {
-  reference: new Set(["1.0.4", "sha-cc07e3a"]),
-  web: new Set(["1.0.4", "sha-cc07e3a"]),
-  "railway-core": new Set(["sha-2fbdb4"]),
+  reference: new Set(["sha-cc07e3a"]),
+  web: new Set(["sha-cc07e3a"]),
 };
 
 const IMAGE_REFERENCE_RE = /ghcr\.io\/pdp-connect\/pdpp\/([a-z-]+):([A-Za-z0-9._-]+)/g;
 const MUTABLE_IMAGE_TAG_RE = /ghcr\.io\/pdp-connect\/pdpp\/[a-z-]+:(?:main|latest)\b/;
 const NONEXISTENT_TAG = "sha-6581820";
+const UNVERIFIED_ALTERNATE_TAG = ["sha", "2fbdb4"].join("-");
 const PAGE_PINNED_TAG_RE = /const PINNED_IMAGE_TAG = "sha-cc07e3a";/;
-const RAILWAY_CORE_TAG_RE = /const RAILWAY_CORE_IMAGE_TAG = "sha-2fbdb4";/;
+const PAGE_REFERENCE_IMAGE_RE = /ghcr\.io\/pdp-connect\/pdpp\/reference:\$\{PINNED_IMAGE_TAG\}/;
+const PAGE_WEB_IMAGE_RE = /ghcr\.io\/pdp-connect\/pdpp\/web:\$\{PINNED_IMAGE_TAG\}/;
 const ORACLE_REJECTION_RE = /not a registry-proven artifact/;
+const RETIRED_OWNER_PATH_RE = /contains the retired owner path/;
+const LEGACY_OWNER_PATH = ["/", "dashboard"].join("");
+
+function readSources(paths: readonly (readonly [string, URL])[]) {
+  return Promise.all(
+    paths.map(async ([sourceName, path]) => [sourceName, await readFile(fileURLToPath(path), "utf8")] as const)
+  );
+}
 
 function assertRegistryProven(repository: string, tag: string, sourceName: string) {
   const allowedTags = VERIFIED_TAGS[repository];
@@ -41,6 +65,11 @@ function assertRegistryProven(repository: string, tag: string, sourceName: strin
 
 function assertSourceArtifactsConsistent(sourceName: string, source: string) {
   assert.equal(source.includes(NONEXISTENT_TAG), false, `${sourceName} contains the rejected nonexistent tag class`);
+  assert.equal(
+    source.includes(UNVERIFIED_ALTERNATE_TAG),
+    false,
+    `${sourceName} contains an unverified alternate image tag`
+  );
   assert.doesNotMatch(source, MUTABLE_IMAGE_TAG_RE, `${sourceName} must not use mutable main/latest image tags`);
 
   for (const match of source.matchAll(IMAGE_REFERENCE_RE)) {
@@ -60,10 +89,12 @@ function assertSourceArtifactsConsistent(sourceName: string, source: string) {
   }
 }
 
-test("blessed deployment sources use only registry-proven artifact identities", async () => {
-  const sources = await Promise.all(
-    SOURCE_PATHS.map(async ([sourceName, path]) => [sourceName, await readFile(fileURLToPath(path), "utf8")] as const)
-  );
+function assertNoLegacyOwnerPath(sourceName: string, source: string) {
+  assert.equal(source.includes(LEGACY_OWNER_PATH), false, `${sourceName} contains the retired owner path`);
+}
+
+test("blessed deployment sources use only registry-proven reference and web artifacts", async () => {
+  const sources = await readSources(BLESSED_ARTIFACT_PATHS);
 
   for (const [sourceName, source] of sources) {
     assertSourceArtifactsConsistent(sourceName, source);
@@ -73,11 +104,26 @@ test("blessed deployment sources use only registry-proven artifact identities", 
   assert.ok(pageSource);
   const [, page] = pageSource;
   assert.match(page, PAGE_PINNED_TAG_RE);
-  assert.match(page, RAILWAY_CORE_TAG_RE);
+  assert.match(page, PAGE_REFERENCE_IMAGE_RE);
+  assert.match(page, PAGE_WEB_IMAGE_RE);
 });
 
 test("artifact oracle rejects the previously advertised nonexistent tag class", () => {
   assert.throws(() => assertRegistryProven("reference", NONEXISTENT_TAG, "synthetic regression input"), {
     message: ORACLE_REJECTION_RE,
   });
+});
+
+test("legacy owner path oracle rejects synthetic input", () => {
+  assert.throws(() => assertNoLegacyOwnerPath("synthetic regression input", `origin${LEGACY_OWNER_PATH}`), {
+    message: RETIRED_OWNER_PATH_RE,
+  });
+});
+
+test("touched landing/docs/page/test surface has no legacy owner path", async () => {
+  const sources = await readSources(TOUCHED_SURFACE_PATHS);
+
+  for (const [sourceName, source] of sources) {
+    assertNoLegacyOwnerPath(sourceName, source);
+  }
 });

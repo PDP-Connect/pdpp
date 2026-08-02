@@ -10,7 +10,7 @@ connections through owner-mediated setup, not by editing deployment environment
 variables.
 
 Normal setup does **not** require connector-specific per-account environment
-variables. A self-hosted operator — Docker host, RunPod, Railway, Fly, or VPS —
+variables. A self-hosted operator — Docker host, RunPod, or VPS —
 should never have to edit a service's env vars to add one mailbox or one account.
 Source credentials are captured through owner-mediated setup flows and, where
 needed, sealed in encrypted instance-scoped storage. The env-var paths still

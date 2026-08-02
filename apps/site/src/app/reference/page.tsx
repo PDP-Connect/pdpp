@@ -12,12 +12,8 @@ const GITHUB_REFERENCE_README = `${GITHUB_REPO}/blob/main/reference-implementati
 const GITHUB_ROOT_README = `${GITHUB_REPO}/blob/main/README.md`;
 const GITHUB_DOCKER_README = `${GITHUB_REPO}/blob/main/deploy/docker/README.md`;
 const GITHUB_SELF_SERVICE_README = `${GITHUB_REPO}/blob/main/docs/operator/self-service-gmail-mcp.md`;
-const GITHUB_FLY_README = `${GITHUB_REPO}/blob/main/deploy/flyio/README.md`;
-const RAILWAY_DEPLOY_URL =
-  "https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core";
 const PINNED_COMPOSE_REF = "cc07e3a896c2c0df7841da4ec6b2c660ffe1e792";
 const PINNED_IMAGE_TAG = "sha-cc07e3a";
-const RAILWAY_CORE_IMAGE_TAG = "sha-2fbdb4";
 
 export const metadata: Metadata = {
   description:
@@ -54,7 +50,7 @@ const architectureLayers = [
 
 const selfServiceSteps = [
   {
-    body: `Use the pinned Docker Compose stack with reference/web images at ${PINNED_IMAGE_TAG} and the web port set to 3000. Keep the same image tag for both services.`,
+    body: `Use the pinned Docker Compose stack with ghcr.io/pdp-connect/pdpp/reference:${PINNED_IMAGE_TAG} and ghcr.io/pdp-connect/pdpp/web:${PINNED_IMAGE_TAG}. Publish the web service on port 3000.`,
     label: "1",
     title: "Deploy a pinned Docker/Compose stack",
   },
@@ -175,21 +171,10 @@ export default function ReferencePage() {
           <div className="mb-4 flex flex-col gap-1">
             <h2 className="pdpp-heading text-foreground">Run your own node</h2>
             <p className="pdpp-body text-muted-foreground">
-              Start with one click in the cloud or a pinned Compose stack on your machine. Other platforms are available
-              when you need them.
+              Follow the pinned Docker Compose path. It is the single self-service route documented and verified here.
             </p>
           </div>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <DeployCard
-              action={
-                <a className={buttonVariants({ variant: "default" })} href={RAILWAY_DEPLOY_URL}>
-                  Deploy on Railway
-                </a>
-              }
-              body="One click provisions the separate Railway/Core release and Postgres. It is an alternate deployment lane, not the blessed reference/web Compose release."
-              eyebrow="Cloud, one click"
-              title="Deploy on Railway"
-            />
+          <div className="grid gap-4">
             <DeployCard
               action={
                 <a className={buttonVariants({ variant: "outline" })} href={GITHUB_DOCKER_README}>
@@ -224,31 +209,6 @@ docker compose up -d`}
                 that domain. Local loopback HTTP is supported for a local client. Full runbook:{" "}
                 <a className="underline underline-offset-2" href={GITHUB_DOCKER_README}>
                   deploy/docker/README.md
-                </a>
-                .
-              </p>
-            </DeployDisclosure>
-            <DeployDisclosure title="Other platforms (Fly.io)">
-              <p className="pdpp-body text-muted-foreground">
-                Fly.io has no deploy button. Its honest equivalent is one <code>fly launch</code> command that creates
-                the app, provisions Postgres, and deploys the same Core image:
-              </p>
-              <CodeBlock
-                code={`APP="pdpp-core-$(openssl rand -hex 3)"
-OWNER_PASSWORD="$(openssl rand -base64 24)"
-fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:${RAILWAY_CORE_IMAGE_TAG} \\
-  --name "$APP" --internal-port 3000 --db \\
-  --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \\
-  --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \\
-  --no-github-workflow --no-object-storage --no-redis --now --yes
-printf 'Origin: https://%s.fly.dev\\nOwner password: %s\\n' "$APP" "$OWNER_PASSWORD"`}
-              />
-              <p className="pdpp-caption text-muted-foreground">
-                This uses the separately published Railway/Core image lineage at <code>{RAILWAY_CORE_IMAGE_TAG}</code>.
-                it is not the same release as the pinned reference/web Compose images. Requires a payment method on the
-                Fly org. Details and a source-build fallback:{" "}
-                <a className="underline underline-offset-2" href={GITHUB_FLY_README}>
-                  deploy/flyio/README.md
                 </a>
                 .
               </p>

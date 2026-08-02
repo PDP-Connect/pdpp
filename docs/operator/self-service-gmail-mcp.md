@@ -8,8 +8,8 @@ deployment you start.
 ## 1. Deploy a pinned Compose stack
 
 Use the same registry-proven image tag for the reference and web services. The
-current verified public tag is `sha-cc07e3a` (the `v1.0.4` release); update both
-image lines together when you choose a newer published tag.
+current public tag proven by an actual registry manifest is `sha-cc07e3a`; update
+both image lines together only after the replacement pair passes that check.
 
 ```sh
 mkdir pdpp && cd pdpp

@@ -1,8 +1,10 @@
 # Railway template publication handoff
 
-This handoff is for publishing a Railway Template that lets an operator deploy a
-PDPP Core reference node with one button. The deployed node is the operator's own
-instance.
+This handoff describes a possible Railway Template for an operator-owned PDPP
+Core node. It is not the blessed self-service path. The current image shortcut
+is withdrawn until an exact registry manifest is proven; use the pinned
+`reference/web:sha-cc07e3a` Compose pair on port `3000` and deployed `/connect`
+for the supported journey.
 
 ## Selected template shape
 
@@ -10,11 +12,10 @@ The selected template uses one application service plus a Postgres plugin.
 
 | Service | Source | Public networking | Healthcheck path |
 |---|---|---:|---|
-| `core` | `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` | enabled | Railway default; externally probe `/.well-known/oauth-authorization-server` |
+| `core` | Pinned source build from the repository | enabled | Railway default; externally probe `/.well-known/oauth-authorization-server` |
 | `Postgres` | Railway plugin | disabled | n/a |
 
-The `railway-core` image is built from the root `Dockerfile` target
-`railway-core`. It runs:
+The single-service source build runs:
 
 - the operator console on Railway's injected `$PORT`;
 - the Authorization Server on `127.0.0.1:7662`;
@@ -27,13 +28,13 @@ to boot reliably, and Railway turns that `PORT` into an extra required deploy
 prompt. The one-service image preserves one public origin and private AS/RS
 listeners without asking the deploying operator for topology constants.
 
-Pin a concrete version tag, never `latest` or a moving tag, so the template is
-reproducible.
+Pin a concrete repository revision so the source build is reproducible. Do not
+publish an image-backed template without an exact registry manifest.
 
-Current registry-proven candidate tag: `sha-2fbdb4` for the separate
-Railway/Core image lineage. This is not the blessed Compose
-`reference/web:sha-cc07e3a` release. Rerun the live template and scratch-project
-gates before treating it as a current template publication.
+There is no current registry-proven image candidate for this alternate lane.
+Do not advertise or pull an image tag from this handoff. A future candidate must
+pass `docker manifest inspect` for the exact image before the live template and
+scratch-project gates can begin.
 
 Current published template:
 
@@ -52,14 +53,14 @@ source or private image is not a valid public template source unless the
 template intentionally and safely supplies reusable public access; this template
 does not embed registry credentials.
 
-Before publishing the user-facing button:
+Before publishing any user-facing button:
 
 ```sh
 pnpm railway:ghcr-public --tag <version-tag>
 ```
 
-The probe exits `0` only when `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>`
-is anonymously pullable.
+The probe is only a pre-publication gate for a future exact image. A passing
+offline test is not evidence that a registry manifest exists.
 
 The probe's pass/fail logic is unit-tested offline by
 `scripts/check-railway-ghcr-public.test.ts`.
@@ -117,8 +118,7 @@ stay under the Railway volume mount path.
 ## Publish flow
 
 1. Create a source Railway project.
-2. Add the `core` service from Docker Image
-   `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>`.
+2. Add the `core` service from a pinned source revision.
 3. Add a Railway Postgres plugin.
 4. Configure variables exactly as listed above.
 5. Generate a public domain for `core`.
@@ -161,33 +161,20 @@ only after the real template code has been installed and scratch-verified.
 
 ### Template-code replacement checklist
 
-- [x] The registry artifact check covers `railway-core:sha-2fbdb4`.
-- [ ] `pnpm railway:ghcr-public --tag sha-2fbdb4` exits `0` for the
-      current publication.
+- [ ] An exact image manifest passes `docker manifest inspect` for any future
+      image-backed publication.
 - [x] The published template deploys a fresh scratch project.
 - [x] The chosen surface's button URL uses `pdpp-core-template-source` and keeps
       `?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core`.
 - [x] No user-facing surface shows a placeholder template code as a clickable
       button.
 
-## 2026-06-06 scratch proof
+## Prior scratch notes
 
-- Published config contained exactly `core` and `Postgres`.
-- Current registry-proven candidate for the `core` image:
-  `ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4`. The historical scratch proof
-  below must be rerun for this tag before publication.
-- Required app prompt: `core.PDPP_OWNER_PASSWORD`.
-- Generated app secret: `core.PDPP_CREDENTIAL_ENCRYPTION_KEY`.
-- No app prompts for `PORT`, `AS_PORT`, `RS_PORT`, `PDPP_AS_URL`, or
-  `PDPP_RS_URL`.
-- Scratch deploy reached `SUCCESS` for `core` and `Postgres`.
-- `/.well-known/oauth-authorization-server` returned HTTP 200 with issuer
-  `https://<your-app>.up.railway.app`.
-- Anonymous `/dashboard` redirected to `/owner/login`.
-- Full MCP smoke seeded `railway-seed-artist-1` and `railway-seed-artist-2`,
-  refused anonymous `/mcp` with 401, minted a scoped grant, and returned both
-  records through `query_records`.
-- After restarting `core`, the no-seed MCP smoke returned the same two records.
+Historical scratch notes are not current artifact or publication evidence. Do
+not use them to justify pulling an image or presenting a Railway button. Re-run
+the source-build, manifest, live-template, and scratch-project gates for any
+future publication.
 
 ## Template QA
 

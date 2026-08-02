@@ -227,24 +227,27 @@ path. Do not paste the bearer into a chat transcript; store it in a local
 0600 credential file or shell variable, use it for the immediate debug call,
 and clear it afterward.
 
-## View the data in the dashboard
+## View the data in the operator console
 
-Open a fourth terminal and start the web dashboard:
+Open a fourth terminal and start the operator console:
 
 ```bash
 export PDPP_DB_PATH="$HOME/.pdpp/local-test.sqlite"
+export PDPP_WEB_PORT=3000
 pnpm dev
 ```
 
-Next.js starts on `http://localhost:3002`. Open `http://localhost:3002/dashboard` in your browser.
+The console starts on `http://localhost:3000`. Open
+`http://localhost:3000/connect` in your browser after owner login.
 
-The dashboard reads from the same PDPP server you started earlier (at 7662/7663) and shows your connector runs, stream inventory, and record samples.
+The console reads from the same PDPP server you started earlier (at 7662/7663)
+and shows your connector runs, stream inventory, and record samples.
 
 ## Stopping everything
 
 - Connector run already exited — nothing to stop there.
 - Stop the PDPP server: Ctrl+C in terminal 2.
-- Stop the dashboard: Ctrl+C in terminal 4.
+- Stop the operator console: Ctrl+C in terminal 4.
 - The Chrome process exits when the connector run finishes; nothing extra to stop.
 - The sqlite file at `$PDPP_DB_PATH` persists your data. Delete it if you want to start clean.
 

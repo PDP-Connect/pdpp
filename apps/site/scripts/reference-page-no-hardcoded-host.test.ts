@@ -21,7 +21,7 @@ const PAGE_PATH = new URL("../src/app/reference/page.tsx", import.meta.url);
 
 // Match JSX attribute patterns like value="http://localhost:..." or
 // href="http://localhost:..." but not string-fallback defaults in code like
-// ?? "localhost:3002" (which is legitimate for local dev).
+// ?? "localhost:3000" (which is legitimate for local dev).
 const JSX_HARDCODED_LOCALHOST_RE = /(?:value|href|src)="https?:\/\/localhost(?::\d+)?[^"]*"/;
 
 test("reference page has no hardcoded localhost URL as a JSX attribute value", async () => {
