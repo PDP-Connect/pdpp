@@ -802,6 +802,8 @@ const SLACKDUMP_READ_FLAGS = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
 // biome-ignore lint/suspicious/noBitwiseOperators: file-create flags are bit masks.
 const SLACKDUMP_WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
 // biome-ignore lint/suspicious/noBitwiseOperators: file-open flags are bit masks.
+const SLACKDUMP_REPLACE_FLAGS = fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW;
+// biome-ignore lint/suspicious/noBitwiseOperators: file-open flags are bit masks.
 const SLACKDUMP_SCRUB_FLAGS = fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW;
 // biome-ignore lint/suspicious/noBitwiseOperators: directory-open flags are bit masks.
 const SLACKDUMP_DIRECTORY_FLAGS = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
@@ -815,6 +817,7 @@ export interface SlackdumpProviderFileStat {
   mode: number;
   mtimeMs: number;
   size: number;
+  uid: number;
 }
 
 export interface SlackdumpAuthProof {
@@ -846,7 +849,7 @@ async function readBoundedRegularFile(filePath: string, maxBytes: number): Promi
   }
   try {
     const before = await handle.stat();
-    if (!before.isFile() || before.size > maxBytes) {
+    if (!(before.isFile() && cacheEntryOwnedByCurrentProcess(before)) || before.size > maxBytes) {
       return null;
     }
     const bytes = Buffer.alloc(maxBytes + 1);
@@ -860,7 +863,7 @@ async function readBoundedRegularFile(filePath: string, maxBytes: number): Promi
     }
     const after = await handle.stat();
     if (
-      !after.isFile() ||
+      !(after.isFile() && cacheEntryOwnedByCurrentProcess(after)) ||
       after.size > maxBytes ||
       bytesRead !== after.size ||
       before.dev !== after.dev ||
@@ -885,6 +888,7 @@ async function readBoundedRegularFile(filePath: string, maxBytes: number): Promi
         mtimeMs: after.mtimeMs,
         mode: permissionBits(after.mode),
         size: after.size,
+        uid: after.uid,
       },
     };
   } catch {
@@ -900,7 +904,8 @@ function sameProviderFileSnapshot(left: SlackdumpProviderFileStat, right: Slackd
     left.ino === right.ino &&
     left.mtimeMs === right.mtimeMs &&
     left.mode === right.mode &&
-    left.size === right.size
+    left.size === right.size &&
+    left.uid === right.uid
   );
 }
 
@@ -928,6 +933,51 @@ async function writePrivateFile(filePath: string, bytes: Uint8Array): Promise<vo
     }
   } catch (error) {
     throw new Error("slackdump_auth_snapshot_write_failed", { cause: error });
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeHardenedSlackdumpCacheFile(filePath: string, bytes: Uint8Array, maxBytes: number): Promise<void> {
+  if (bytes.byteLength > maxBytes) {
+    throw new Error("slackdump_auth_cache_file_oversized");
+  }
+  let handle: FileHandle;
+  try {
+    handle = await open(filePath, SLACKDUMP_REPLACE_FLAGS, SLACKDUMP_CACHE_FILE_MODE);
+  } catch (error) {
+    throw new Error("slackdump_auth_cache_file_unsafe", { cause: error });
+  }
+  try {
+    const before = await handle.stat();
+    if (!(before.isFile() && cacheEntryOwnedByCurrentProcess(before)) || before.size > maxBytes) {
+      throw new Error("slackdump_auth_cache_file_unsafe");
+    }
+    await handle.truncate(0);
+    await handle.writeFile(bytes);
+    await handle.chmod(SLACKDUMP_CACHE_FILE_MODE);
+    await handle.sync();
+    const after = await handle.stat();
+    if (
+      !(after.isFile() && cacheEntryOwnedByCurrentProcess(after)) ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      permissionBits(after.mode) !== SLACKDUMP_CACHE_FILE_MODE ||
+      after.size !== bytes.byteLength
+    ) {
+      throw new Error("slackdump_auth_cache_file_unsafe");
+    }
+    const check = Buffer.alloc(bytes.byteLength + 1);
+    const result = await handle.read(check, 0, check.byteLength, 0);
+    const readBytes = check.subarray(0, result.bytesRead);
+    if (result.bytesRead !== bytes.byteLength || !readBytes.equals(Buffer.from(bytes))) {
+      throw new Error("slackdump_auth_cache_file_write_mismatch");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("slackdump_auth_cache_file_")) {
+      throw error;
+    }
+    throw new Error("slackdump_auth_cache_file_write_failed", { cause: error });
   } finally {
     await handle.close();
   }
@@ -989,7 +1039,7 @@ async function createSlackdumpAuthHandoff(
   try {
     await chmod(snapshotDir, 0o700);
     const markerPath = join(snapshotDir, "workspace.txt");
-    const providerFilename = proof.providerName === "default" ? "provider.bin" : `${proof.providerName}.bin`;
+    const providerFilename = slackdumpProviderFilename(proof.providerName);
     await writePrivateFile(markerPath, new TextEncoder().encode(`${proof.providerName}\n`));
     await writePrivateFile(join(snapshotDir, providerFilename), proof.providerBytes);
     return handoff;
@@ -1004,27 +1054,77 @@ async function createSlackdumpAuthHandoff(
   }
 }
 
-async function verifySlackdumpAuthSnapshot(handoff: SlackdumpAuthHandoff): Promise<boolean> {
-  const providerFilename =
-    handoff.proof.providerName === "default" ? "provider.bin" : `${handoff.proof.providerName}.bin`;
-  const provider = await readBoundedRegularFile(
-    join(handoff.snapshotDir, providerFilename),
-    SLACKDUMP_PROVIDER_MAX_BYTES
-  );
-  const marker = await readBoundedRegularFile(join(handoff.snapshotDir, "workspace.txt"), SLACKDUMP_MARKER_MAX_BYTES);
-  return Boolean(
-    provider &&
-      marker &&
-      marker.raw.trim() === handoff.proof.providerName &&
-      provider.hash === handoff.proof.providerHash
-  );
+function slackdumpProviderFilename(providerName: string): string {
+  return providerName === "default" ? "provider.bin" : `${providerName}.bin`;
+}
+
+async function adoptPostRunSlackdumpProvider(
+  handoff: SlackdumpAuthHandoff,
+  deps: EnsureArchiveDeps
+): Promise<SlackdumpAuthProof | null> {
+  try {
+    // Slackdump is allowed to refresh the official provider while the trusted
+    // archive/resume child is running. The post-run private snapshot, not the
+    // pre-run global inode, is the authority for that legitimate rotation.
+    await hardenSlackdumpCacheFiles(handoff.archiveEnv);
+    const postRunProof = await loadSlackdumpProviderAuth(handoff.archiveEnv);
+    if (!(postRunProof && providerAliasMatchesRequested(postRunProof, deps.workspace))) {
+      throw new Error("slackdump_auth_postrun_unavailable");
+    }
+    const postRunIdentity = await runSlackdumpIdentityHelper(postRunProof, handoff.archiveEnv, deps.workspace);
+    if (!archiveWorkspaceMatches(postRunIdentity, deps.workspace)) {
+      throw new Error("slackdump_auth_postrun_identity_mismatch");
+    }
+    // A provider replacement after this read is not a second legitimate
+    // rotation: it is drift after proof and must retain explicit credentials.
+    if (!(await sourceProofStillCurrent(postRunProof))) {
+      throw new Error("slackdump_auth_postrun_source_drift");
+    }
+
+    await hardenSlackdumpCacheDirectory(deps.childEnv);
+    const durableDir = slackdumpCacheDir(deps.childEnv);
+    await writeHardenedSlackdumpCacheFile(
+      join(durableDir, slackdumpProviderFilename(postRunProof.providerName)),
+      postRunProof.providerBytes,
+      SLACKDUMP_PROVIDER_MAX_BYTES
+    );
+    await writeHardenedSlackdumpCacheFile(
+      join(durableDir, "workspace.txt"),
+      new TextEncoder().encode(`${postRunProof.providerName}\n`),
+      SLACKDUMP_MARKER_MAX_BYTES
+    );
+    await hardenSlackdumpCacheFiles(deps.childEnv);
+    const durableProof = await loadSlackdumpProviderAuth(deps.childEnv);
+    if (
+      !(
+        durableProof &&
+        providerAliasMatchesRequested(durableProof, deps.workspace) &&
+        durableProof.providerHash === postRunProof.providerHash &&
+        durableProof.token === postRunProof.token &&
+        durableProof.cookie === postRunProof.cookie
+      )
+    ) {
+      throw new Error("slackdump_auth_postrun_persist_mismatch");
+    }
+    const durableIdentity = await runSlackdumpIdentityHelper(durableProof, deps.childEnv, deps.workspace);
+    if (durableIdentity.teamId !== postRunIdentity.teamId || durableIdentity.url !== postRunIdentity.url) {
+      throw new Error("slackdump_auth_postrun_identity_mismatch");
+    }
+    return durableProof;
+  } catch {
+    return null;
+  }
 }
 
 async function cleanupSlackdumpAuthHandoff(handoff: SlackdumpAuthHandoff): Promise<void> {
   let cleanupFailed = false;
-  const providerFilename =
-    handoff.proof.providerName === "default" ? "provider.bin" : `${handoff.proof.providerName}.bin`;
-  for (const filePath of [join(handoff.snapshotDir, providerFilename), join(handoff.snapshotDir, "workspace.txt")]) {
+  const providerPaths = new Set([join(handoff.snapshotDir, slackdumpProviderFilename(handoff.proof.providerName))]);
+  const markerPath = join(handoff.snapshotDir, "workspace.txt");
+  const marker = await readBoundedRegularFile(markerPath, SLACKDUMP_MARKER_MAX_BYTES);
+  if (marker && SLACKDUMP_WORKSPACE_NAME_RE.test(marker.raw.trim())) {
+    providerPaths.add(join(handoff.snapshotDir, slackdumpProviderFilename(marker.raw.trim())));
+  }
+  for (const filePath of [...providerPaths, markerPath]) {
     try {
       await scrubPrivateFile(filePath);
     } catch {
@@ -3036,11 +3136,9 @@ async function runArchiveWithAuthSnapshot(deps: EnsureArchiveDeps): Promise<Slac
       timeTo: deps.timeTo,
       useResume: deps.useResume,
     });
-    if (handoff && !(await verifySlackdumpAuthSnapshot(handoff))) {
+    result = await adoptPostRunSlackdumpProvider(handoff, deps);
+    if (!result) {
       deps.progress("Slackdump auth snapshot changed during archive; retaining supplied connection credentials");
-      result = null;
-    } else {
-      result = handoff.proof;
     }
   } catch (error) {
     primaryFailure = error;

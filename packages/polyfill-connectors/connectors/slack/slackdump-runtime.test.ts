@@ -1011,6 +1011,243 @@ process.stdin.on("end", () => {
   }
 });
 
+test("archive provider rotation is adopted only after post-run proof for every optional stream", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-postrun-rotation-"));
+  const cacheDir = join(homeDir, "cache");
+  const archivePath = join(homeDir, "archive");
+  const sqlitePath = join(archivePath, "slackdump.sqlite");
+  const fakeSlackdump = join(homeDir, "fake-slackdump.mjs");
+  const fakeIdentityHelper = join(homeDir, "fake-slackdump-identity.mjs");
+  const helperObservations = join(homeDir, "helper-observations.json");
+  const workspace = "postrun-rotation";
+  const preToken = VALID_SLACKDUMP_TOKEN;
+  const preCookie = VALID_SLACKDUMP_COOKIE;
+  const postToken = `xoxc-4-5-6-${"c".repeat(64)}`;
+  const postCookie = `xoxd-${"d".repeat(32)}`;
+  const explicit = { workspace, token: "xoxc-explicit", cookie: "xoxd-explicit" };
+  const priorBin = process.env.SLACKDUMP_BIN;
+  const priorHelper = process.env.SLACKDUMP_IDENTITY_BIN;
+  const priorSkip = process.env.PDPP_SLACK_SKIP_SLACKDUMP;
+  const priorFetch = globalThis.fetch;
+
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(join(cacheDir, "workspace.txt"), `${workspace}\n`, "utf8");
+  await writeFile(
+    join(cacheDir, `${workspace}.bin`),
+    JSON.stringify({ Token: preToken, Cookie: [{ Name: "d", Value: preCookie }] }),
+    "utf8"
+  );
+  await writeFile(
+    fakeSlackdump,
+    `#!/usr/bin/env node
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+const args = process.argv.slice(2);
+if (args[0] === "workspace" && args[1] === "list") {
+  process.stdout.write("${workspace} =>\\n");
+  process.exit(0);
+}
+if (args[0] === "archive" || args[0] === "resume") {
+  const providerPath = process.env.CACHE_DIR + "/${workspace}.bin";
+  writeFileSync(providerPath, JSON.stringify({ Token: ${JSON.stringify(postToken)}, Cookie: [{ Name: "d", Value: ${JSON.stringify(postCookie)} }] }));
+  chmodSync(providerPath, 0o600);
+  const outputIndex = args.indexOf("-o");
+  const output = outputIndex === -1 ? process.env.ARCHIVE_PATH : args[outputIndex + 1];
+  mkdirSync(output, { recursive: true });
+  const db = new DatabaseSync(output + "/slackdump.sqlite");
+  db.exec("CREATE TABLE MESSAGE (CHANNEL_ID TEXT NOT NULL, TS TEXT NOT NULL, IS_PARENT INTEGER, THREAD_TS TEXT, TXT TEXT, NUM_FILES INTEGER, DATA BLOB, CHUNK_ID INTEGER NOT NULL); CREATE TABLE CHANNEL (ID TEXT NOT NULL, NAME TEXT, DATA TEXT, CHUNK_ID INTEGER NOT NULL); CREATE TABLE WORKSPACE (TEAM_ID TEXT, URL TEXT, CHUNK_ID INTEGER);");
+  db.prepare("INSERT INTO WORKSPACE (TEAM_ID, URL, CHUNK_ID) VALUES (?, ?, ?)").run("T_POSTRUN_ROTATION", "https://${workspace}.slack.com/", 1);
+  db.prepare("INSERT INTO CHANNEL (ID, NAME, DATA, CHUNK_ID) VALUES (?, ?, ?, ?)").run("D_POSTRUN", "direct", JSON.stringify({ is_im: true }), 1);
+  db.close();
+  process.exit(0);
+}
+process.exit(12);
+`,
+    "utf8"
+  );
+  await chmod(fakeSlackdump, 0o755);
+  await writeFile(
+    fakeIdentityHelper,
+    `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+if (process.argv[2] === "--version") {
+  process.stdout.write("pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13\\n");
+  process.exit(0);
+}
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  let parsed = null;
+  try { parsed = JSON.parse(input); } catch {}
+  const identity = parsed?.token === ${JSON.stringify(postToken)} && parsed?.cookie === ${JSON.stringify(postCookie)} ? "post" : parsed?.token === ${JSON.stringify(preToken)} && parsed?.cookie === ${JSON.stringify(preCookie)} ? "pre" : "other";
+  let observations = [];
+  try { observations = JSON.parse(readFileSync(process.env.HELPER_OBSERVATIONS, "utf8")); } catch {}
+  observations.push(identity);
+  writeFileSync(process.env.HELPER_OBSERVATIONS, JSON.stringify(observations));
+  process.stdout.write(JSON.stringify({ team_id: "T_POSTRUN_ROTATION", url: "https://${workspace}.slack.com/" }) + "\\n");
+});
+`,
+    "utf8"
+  );
+  await chmod(fakeIdentityHelper, 0o755);
+  process.env.SLACKDUMP_BIN = fakeSlackdump;
+  process.env.SLACKDUMP_IDENTITY_BIN = fakeIdentityHelper;
+  delete process.env.PDPP_SLACK_SKIP_SLACKDUMP;
+  const seen = { cookies: [] as string[], methods: [] as string[], tokens: [] as string[] };
+  globalThis.fetch = () =>
+    Promise.resolve(Response.json({ ok: true, items: [], usergroups: [], reminders: [], channel: {} }));
+
+  try {
+    const proof = await ensureArchiveOnDisk({
+      archivePath,
+      childEnv: {
+        ...process.env,
+        CACHE_DIR: cacheDir,
+        HOME: homeDir,
+        HELPER_OBSERVATIONS: helperObservations,
+        ARCHIVE_PATH: archivePath,
+      },
+      cookie: explicit.cookie,
+      opts: {
+        CHANNEL_ALLOWLIST: [],
+        CHANNEL_TYPES: [],
+        LOOKBACK_DAYS: 7,
+        MEMBER_ONLY: false,
+        RECLAIM_UPLOADS: false,
+        SKIP_FILES: false,
+      },
+      positionalChannels: [],
+      priorArchive: undefined,
+      progress: () => Promise.resolve(),
+      resumeTarget: null,
+      sqlitePath,
+      timeFrom: null,
+      timeTo: null,
+      token: explicit.token,
+      useResume: false,
+      workspace,
+    });
+    assert.ok(proof);
+    assert.equal(proof.token, postToken);
+    assert.equal(proof.cookie, postCookie);
+    assert.deepEqual(JSON.parse(await readFile(helperObservations, "utf8")), ["pre", "post", "post"]);
+
+    const credentials = await resolveSlackApiCredentials(explicit, proof, {
+      teamId: "T_POSTRUN_ROTATION",
+      url: `https://${workspace}.slack.com/`,
+    });
+    assert.deepEqual(credentials, { workspace, token: postToken, cookie: postCookie });
+
+    const db = new DatabaseSync(":memory:");
+    db.exec("CREATE TABLE CHANNEL (ID TEXT NOT NULL, DATA TEXT, CHUNK_ID INTEGER NOT NULL)");
+    db.prepare("INSERT INTO CHANNEL (ID, DATA, CHUNK_ID) VALUES (?, ?, ?)").run(
+      "D_POSTRUN",
+      JSON.stringify({ is_im: true }),
+      1
+    );
+    const deps: StreamDeps = {
+      db,
+      emit: () => Promise.resolve(),
+      emitRecord: () => Promise.resolve(),
+      emittedAt: "2026-08-02T00:00:00.000Z",
+      fingerprintCursors: new Map(),
+      progress: () => Promise.resolve(),
+      requestBrowserSurfacePhase: () =>
+        Promise.resolve({
+          kind: "granted",
+          handle: {
+            env: {},
+            leaseId: "postrun-rotation",
+            release: () => Promise.resolve(),
+            remoteCdpUrl: "http://managed-neko:9223",
+          },
+        } as BrowserSurfacePhaseResult),
+      requested: new Map([
+        ["stars", { name: "stars" }],
+        ["user_groups", { name: "user_groups" }],
+        ["reminders", { name: "reminders" }],
+        ["dm_read_states", { name: "dm_read_states" }],
+      ]),
+    };
+    const acquire = async (): Promise<SlackApiIsolatedBrowser> => ({
+      context: {
+        addCookies: (cookies) => {
+          assert.equal(
+            cookies.some((cookie) => cookie.name === "d" && cookie.value === postCookie),
+            true
+          );
+          return Promise.resolve();
+        },
+        newPage: () =>
+          Promise.resolve({
+            evaluate: <R, Arg>(fn: (arg: Arg) => R | Promise<R>, arg: Arg): Promise<R> => {
+              const request = arg as Arg & { body?: string; headers: Record<string, string>; url: string };
+              const token = new URLSearchParams(request.body ?? "").get("token") ?? "";
+              let tokenClass = "other";
+              if (token === postToken) {
+                tokenClass = "post";
+              } else if (token === explicit.token) {
+                tokenClass = "explicit";
+              }
+              seen.tokens.push(tokenClass);
+              seen.cookies.push(request.headers.Cookie?.includes(`d=${postCookie};`) ? "post" : "other");
+              seen.methods.push(request.url.slice(request.url.lastIndexOf("/") + 1));
+              return Promise.resolve(fn(arg));
+            },
+            goto: () => Promise.resolve(),
+            url: () => "https://slack.com/api/api.test",
+          }),
+      },
+      release: () => Promise.resolve(),
+    });
+    await runGapStreamsIfRequested(deps, credentials, () => Promise.resolve(), acquire);
+    assert.deepEqual(
+      seen.methods.toSorted((left, right) => left.localeCompare(right)),
+      ["conversations.info", "reminders.list", "stars.list", "usergroups.list"]
+    );
+    assert.deepEqual(seen.tokens, ["post", "post", "post", "post"]);
+    assert.deepEqual(seen.cookies, ["post", "post", "post", "post"]);
+
+    await writeFile(
+      join(cacheDir, `${workspace}.bin`),
+      JSON.stringify({
+        Token: `xoxc-7-8-9-${"e".repeat(64)}`,
+        Cookie: [{ Name: "d", Value: `xoxd-${"f".repeat(32)}` }],
+      }),
+      "utf8"
+    );
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity(`https://${workspace}.slack.com/`)),
+      explicit
+    );
+    await rm(join(cacheDir, `${workspace}.bin`));
+    assert.deepEqual(
+      await resolveSlackApiCredentials(explicit, proof, archiveIdentity(`https://${workspace}.slack.com/`)),
+      explicit
+    );
+    db.close();
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorBin === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = priorBin;
+    }
+    if (priorHelper === undefined) {
+      delete process.env.SLACKDUMP_IDENTITY_BIN;
+    } else {
+      process.env.SLACKDUMP_IDENTITY_BIN = priorHelper;
+    }
+    if (priorSkip === undefined) {
+      delete process.env.PDPP_SLACK_SKIP_SLACKDUMP;
+    } else {
+      process.env.PDPP_SLACK_SKIP_SLACKDUMP = priorSkip;
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("runSlackdump: emits safe archive-growth progress while child is running", async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-progress-"));
   const fakeSlackdump = join(tmpDir, "fake-slackdump.mjs");
