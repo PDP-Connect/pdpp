@@ -141,6 +141,12 @@ const CC_SETTLE_DELAY_MS = 6000;
 const EXPORT_DIALOG_DELAY_MS = 2500;
 const EXPORT_STATE_DELAY_MS = 1500;
 const EXPORT_CLICK_TIMEOUT_MS = 5000;
+// Same budget as EXPORT_CLICK_TIMEOUT_MS: an explicit isEnabled() check spends
+// no extra wall-clock over the old blind click (which internally polled
+// actionability for this same duration before timing out) — it just replaces
+// an opaque click-timeout error with the exact disabled/aria-disabled facts
+// already captured for no_export_affordance.
+const EXPORT_ENABLED_CHECK_TIMEOUT_MS = EXPORT_CLICK_TIMEOUT_MS;
 const DOWNLOAD_TIMEOUT_MS = 45_000;
 const RESPONSE_FALLBACK_GRACE_MS = 3000;
 const KEY_TYPE_DELAY_MS = 30;
@@ -543,8 +549,12 @@ export async function emitExportFailure(
   const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
   const outcome = classifyExportLadderOutcome(lastDiag);
   const isNoExportAffordance = lastDiag?.phase === "no_export_affordance";
+  const isAffordanceDisabled = Boolean(lastDiag?.no_export_observation?.affordance_disabled);
   let baseMessage = "USAA transaction export affordance was not found on the observed browser surface";
-  if (outcome === "navigation_drifted") {
+  if (isAffordanceDisabled) {
+    baseMessage =
+      "USAA transaction export affordance was found but not actionable (disabled) on the observed browser surface — treating as transient UI-not-ready pressure, not a missing affordance";
+  } else if (outcome === "navigation_drifted") {
     baseMessage =
       "USAA navigation did not confirm reaching the account/transaction page before looking for the export affordance (marketing detour or interstitial) — treating as a recoverable navigation drift, not a source UI change";
   } else if (!isNoExportAffordance) {
@@ -569,9 +579,17 @@ export async function emitExportFailure(
   //     export pressure, and collapsing it into `export_no_download` would
   //     hide the "we don't even know we were on the right page" distinction
   //     that made this case retryable in the first place.
+  //   - an `affordance_disabled` observation (the button exists but was not
+  //     actionable) is reported under its own reason too — collapsing it into
+  //     `export_affordance_missing` would falsely claim the connector's
+  //     selectors are broken, and collapsing it into `export_no_download`
+  //     would lose the "we saw exactly why: it's disabled" evidence that
+  //     distinguishes UI-not-ready from ordinary post-submit pressure.
   let reason: string;
   if (isCreditCard) {
     reason = "credit_card_export_unverified";
+  } else if (isAffordanceDisabled) {
+    reason = "export_affordance_disabled";
   } else if (outcome === "source_structure_changed") {
     reason = "export_affordance_missing";
   } else if (outcome === "navigation_drifted") {
@@ -1106,8 +1124,12 @@ async function captureNoExportAffordanceObservation(page: Page): Promise<NoExpor
     }));
   const hasKnownAccountOrTransactionMarker =
     counts.account_detail_marker_count > 0 || counts.transaction_marker_count > 0;
+  const [firstCandidate] = counts.export_affordance_candidates ?? [];
+  const affordanceDisabled =
+    counts.target_count > 0 && Boolean(firstCandidate?.disabled || firstCandidate?.aria_disabled);
   return {
     ...counts,
+    affordance_disabled: affordanceDisabled,
     route: classifyUsaaNoExportRoute(page.url(), hasKnownAccountOrTransactionMarker),
   };
 }
@@ -1333,6 +1355,21 @@ function emitDialogUnexpectedShapeDiagnostic(
 /** Click Export, then confirm the date-range selector rendered. */
 async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
   const { onDiagnostics } = options;
+  // Check actionability explicitly before clicking rather than letting a
+  // disabled button run out the click's internal actionability poll: the
+  // outcome is identical (the click would never succeed), but a blind click
+  // timeout only leaves an opaque, best-effort Playwright call-log string as
+  // evidence, while the explicit check reuses the same disabled/aria-disabled
+  // facts already captured for no_export_affordance/export_affordance_candidates
+  // — the button is present (target_count > 0) but not yet actionable, which
+  // is categorically different evidence from a genuinely missing affordance.
+  const enabled = await located.export
+    .isEnabled({ timeout: EXPORT_ENABLED_CHECK_TIMEOUT_MS })
+    .catch((): boolean => false);
+  if (!enabled) {
+    await emitNoExportAffordanceDiagnostic(page, options, "export-affordance-disabled");
+    return false;
+  }
   try {
     await located.export.click({ timeout: EXPORT_CLICK_TIMEOUT_MS });
   } catch (err) {
@@ -1590,12 +1627,20 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
   }
 }
 
-async function noExportAffordanceFailure(page: Page, options: DriveExportOptions): Promise<DriveExportResult> {
-  await captureExportCheckpoint(page, options, "no-export-affordance");
+async function emitNoExportAffordanceDiagnostic(
+  page: Page,
+  options: DriveExportOptions,
+  checkpointSuffix: string
+): Promise<void> {
+  await captureExportCheckpoint(page, options, checkpointSuffix);
   if (options.onDiagnostics) {
     const noExportObservation = await captureNoExportAffordanceObservation(page);
     options.onDiagnostics({ diag: null, no_export_observation: noExportObservation, phase: "no_export_affordance" });
   }
+}
+
+async function noExportAffordanceFailure(page: Page, options: DriveExportOptions): Promise<DriveExportResult> {
+  await emitNoExportAffordanceDiagnostic(page, options, "no-export-affordance");
   return { kind: "failed" };
 }
 
@@ -1811,6 +1856,16 @@ export async function runSingleLadderAttempt({
  * — so retrying the remaining candidate windows (and, ultimately, a future
  * run's fresh dashboard scan) stays worthwhile. See `classifyExportLadderOutcome`.
  */
+/**
+ * A confirmed `no_export_affordance` on the account page is fatal (the
+ * source's export UI is genuinely gone) UNLESS the observation shows the
+ * affordance is present but disabled (`affordance_disabled`) — that's
+ * evidence the button exists and the page structure matches expectations,
+ * just that it isn't actionable yet (e.g. still loading, or momentarily
+ * gated by the source). Retrying — this run's remaining candidate windows,
+ * or a future run's fresh dashboard scan — can still recover it, so it must
+ * not be declared a structural break.
+ */
 function isFatalDiagPhase(diag: DiagnosticInfo | null): diag is DiagnosticInfo {
   if (!diag) {
     return false;
@@ -1818,7 +1873,11 @@ function isFatalDiagPhase(diag: DiagnosticInfo | null): diag is DiagnosticInfo {
   if (diag.phase === "export_dialog_unexpected_shape") {
     return true;
   }
-  return diag.phase === "no_export_affordance" && noExportRouteConfirmsAccountPage(diag);
+  return (
+    diag.phase === "no_export_affordance" &&
+    noExportRouteConfirmsAccountPage(diag) &&
+    !diag.no_export_observation?.affordance_disabled
+  );
 }
 
 async function tryExportLadder(
@@ -2261,13 +2320,21 @@ async function processAccountTransactions(
     await emitExportFailure(deps, a, lastDiag);
     // `errorClass` mirrors the ladder outcome so a gap left by a drifted
     // navigation (stale account URL / promo interstitial — recoverable by a
-    // fresh dashboard scan next run) is distinguishable from the generic
-    // no-download pressure case, without inventing a new DETAIL_GAP `reason`
-    // (the protocol's closed reason vocabulary has no "wrong page" value —
+    // fresh dashboard scan next run) or a disabled-but-present export
+    // affordance (UI not ready — recoverable by any later retry, same URL)
+    // is distinguishable from the generic no-download pressure case, without
+    // inventing a new DETAIL_GAP `reason` (the protocol's closed reason
+    // vocabulary has no "wrong page"/"not actionable yet" value —
     // `temporary_unavailable` is still the honest fit: this account is
-    // expected to be reachable again, just not necessarily via this URL).
-    const errorClass =
-      classifyExportLadderOutcome(lastDiag) === "navigation_drifted" ? "navigation_drifted" : "export_no_download";
+    // expected to be reachable again).
+    let errorClass: string;
+    if (lastDiag?.no_export_observation?.affordance_disabled) {
+      errorClass = "export_affordance_disabled";
+    } else if (classifyExportLadderOutcome(lastDiag) === "navigation_drifted") {
+      errorClass = "navigation_drifted";
+    } else {
+      errorClass = "export_no_download";
+    }
     return {
       last_date: priorLastDate,
       outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass },

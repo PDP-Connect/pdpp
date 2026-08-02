@@ -200,6 +200,12 @@ export interface ExportAffordanceCandidate {
 /** Closed facts collected only for the no-export terminal diagnostic. */
 export interface NoExportAffordanceObservation {
   account_detail_marker_count: number;
+  /** True iff at least one matched export-affordance element exists
+   *  (`target_count > 0`) and it reports itself disabled/aria-disabled —
+   *  i.e. the button is present but not yet actionable, as distinct from
+   *  genuinely absent (`target_count === 0`). Derived from
+   *  `export_affordance_candidates`, not a new selector. */
+  affordance_disabled: boolean;
   export_affordance_candidates: ExportAffordanceCandidate[];
   navigation_marker_count: number;
   route: BrowserSurfaceRoute;

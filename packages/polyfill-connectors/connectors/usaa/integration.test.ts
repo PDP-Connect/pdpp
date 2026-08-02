@@ -519,6 +519,7 @@ test("emitExportFailure: a missing export affordance is reported as a structure-
     phase: "no_export_affordance",
     no_export_observation: {
       account_detail_marker_count: 1,
+      affordance_disabled: false,
       export_affordance_candidates: [],
       navigation_marker_count: 2,
       route: "expected",
@@ -621,7 +622,7 @@ test("driveExport records account, challenge, and unrelated routes through the a
     assert.deepEqual(diagnostics, [
       {
         diag: null,
-        no_export_observation: { ...counts, route },
+        no_export_observation: { ...counts, affordance_disabled: false, route },
         phase: "no_export_affordance",
       },
     ]);
@@ -663,6 +664,7 @@ test("classifyExportLadderOutcome: a marketing-detour no_export_affordance is na
     diag: null,
     no_export_observation: {
       account_detail_marker_count: 0,
+      affordance_disabled: false,
       export_affordance_candidates: [],
       navigation_marker_count: 0,
       route: classifyUsaaNoExportRoute(USAA_MARKETING_DETOUR_URL, false),
@@ -724,6 +726,7 @@ test("emitExportFailure: a drifted-navigation no-export-affordance is reported u
     diag: null,
     no_export_observation: {
       account_detail_marker_count: 0,
+      affordance_disabled: false,
       export_affordance_candidates: [],
       navigation_marker_count: 0,
       route: "unknown",
@@ -781,6 +784,9 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
           },
           first() {
             return this;
+          },
+          isEnabled() {
+            return Promise.resolve(true);
           },
         };
       }
@@ -850,6 +856,9 @@ function makeDialogWrongShapePage(dialogHtml: string): Page {
           first() {
             return this;
           },
+          isEnabled() {
+            return Promise.resolve(true);
+          },
         };
       }
       if (selector === '[role="dialog"]') {
@@ -918,26 +927,23 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
 
 /**
  * Regression for the 2026-08-01 live run (run_a6568f40d5004a3f843a2a2b5a73df55,
- * account 1/4): the export button was found but `located.export.click()`
- * timed out after EXPORT_CLICK_TIMEOUT_MS. Playwright's real timeout message
- * for this shape is a multi-line call log — "waiting for locator(...) -
- * locator resolved to <button disabled ...> - element is not enabled -
- * retrying click action ..." — that easily runs past 160 chars, and the
- * actionability state (disabled/hidden/covered) recorded after "resolved to"
- * is the one piece of evidence that would explain *why* the click failed.
- * Before this fix, `emitExportClickFailedDiagnostic` truncated the message
- * to `ID_TEXT_SNIP` (160 chars) — sized for short identifiers, not
- * Playwright call logs — so every occurrence of this error shape lost
- * exactly that evidence before it ever reached `onDiagnostics` (confirmed
- * against the live run's stored `known_gaps_json`, which cuts off mid-tag
- * at "<button di"). This test drives a click() that rejects with a
- * realistically-sized disabled-button call log and asserts the disabled
- * marker survives into both the raw `onDiagnostics` payload and the
+ * account 1/4): `located.export.click()` can still time out for actionability
+ * reasons OTHER than disabled (covered by an overlay, off-screen, etc.), and
+ * Playwright's real timeout message for that shape is a multi-line call log
+ * that easily runs past 160 chars. Before this fix, `emitExportClickFailedDiagnostic`
+ * truncated the message to `ID_TEXT_SNIP` (160 chars) — sized for short
+ * identifiers, not Playwright call logs — so the actionability detail was
+ * lost before it ever reached `onDiagnostics`. This test drives a click()
+ * that rejects with a realistic, >160-char call log — on a button that
+ * reports itself enabled (proving this is the "click timed out despite
+ * being enabled" path, distinct from the disabled-button short-circuit
+ * covered by the "export-affordance-disabled" test below) — and asserts the
+ * full call log survives into both the raw `onDiagnostics` payload and the
  * ladder-exhausted SKIP_RESULT message.
  */
-test("driveExport surfaces the disabled-button call log on an export-click timeout, not just the first 160 chars", async () => {
+test("driveExport surfaces the full call log on an export-click timeout, not just the first 160 chars", async () => {
   const realisticTimeoutMessage =
-    'locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator(\'button.ent-as-utility-bar__item.export\').first()\n    - locator resolved to <button disabled class="ent-as-utility-bar__item export" type="button">Export</button>\n    - element is not enabled\n    - retrying click action\n      - waiting 20ms\n    - waiting for element to be visible, enabled and stable\n    - element is not enabled\n    - retrying click action\n      - waiting 100ms';
+    'locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator(\'button.ent-as-utility-bar__item.export\').first()\n    - locator resolved to <button class="ent-as-utility-bar__item export" type="button">Export</button>\n    - element is not stable\n    - retrying click action\n      - waiting 20ms\n    - waiting for element to be visible, enabled and stable\n    - element is covered by another element\n    - retrying click action\n      - waiting 100ms';
   assert.ok(
     realisticTimeoutMessage.length > 160,
     "the fixture message must exceed the old 160-char cutoff to prove the regression"
@@ -968,6 +974,7 @@ test("driveExport surfaces the disabled-button call log on an export-click timeo
           first(): unknown {
             return this;
           },
+          isEnabled: () => Promise.resolve(true),
         };
       }
       return {
@@ -996,8 +1003,8 @@ test("driveExport surfaces the disabled-button call log on an export-click timeo
   assert.ok(clickFailed, "expected an export_click_failed diagnostic");
   assert.match(
     clickFailed?.error ?? "",
-    /resolved to <button disabled/,
-    "the disabled-button actionability state must survive truncation"
+    /element is covered by another element/,
+    "the actionability call log must survive truncation"
   );
 
   const { deps, messages } = makeHarness();
@@ -1006,9 +1013,215 @@ test("driveExport surfaces the disabled-button call log on an export-click timeo
   assert.ok(skip);
   assert.match(
     skip.message,
-    /resolved to <button disabled/,
-    "the disabled-button evidence must reach the emitted SKIP_RESULT message, not just the in-memory diagnostic"
+    /element is covered by another element/,
+    "the actionability evidence must reach the emitted SKIP_RESULT message, not just the in-memory diagnostic"
   );
+});
+
+/**
+ * Root-cause fix for the 2026-08-01 live run (run_e7a62f3e17a143819f1edca891544dea,
+ * account 3/4, id 0002-PnwSxCt5HLlzn7raPcAK): the export button was located
+ * (`button.as_credit__utility-bar-item.as_credit__export` matched, present in
+ * the DOM) but stayed disabled through the entire EXPORT_CLICK_TIMEOUT_MS
+ * click-actionability wait, for every candidate backfill window — the ladder
+ * exhausted with the generic, evidence-poor `export_no_download`. Before this
+ * fix, `openExportDialog` always attempted `.click()` first and only learned
+ * "disabled" indirectly by parsing Playwright's call-log error string after
+ * the click timed out — burning the full click timeout on an attempt that
+ * was never going to succeed, and (per the test above) risking losing the
+ * disabled marker to truncation. This test drives a located, present button
+ * whose `isEnabled()` resolves `false` and asserts: (1) `.click()` is never
+ * called at all (the wasted actionability wait is skipped), (2) the ladder
+ * gets a precise `no_export_affordance` diagnostic with
+ * `affordance_disabled: true` and `target_count > 0` — present-but-not-ready,
+ * not "missing" — and (3) `classifyExportLadderOutcome` treats this as
+ * `export_pressure` (retryable), never `source_structure_changed`, since a
+ * disabled button is not evidence the source's export UI changed.
+ */
+test("driveExport short-circuits a disabled-but-present export affordance to a precise no_export_affordance diagnostic, never attempting the click", async () => {
+  let clickCalled = false;
+  const diagnostics: DiagnosticInfo[] = [];
+  const page: Page = Object.assign({} as Page, {
+    evaluate(_fn: (...args: unknown[]) => unknown, arg?: unknown) {
+      if (arg && typeof arg === "object" && "exportAffordance" in (arg as Record<string, unknown>)) {
+        return Promise.resolve({
+          account_detail_marker_count: 1,
+          export_affordance_candidates: [
+            {
+              aria_disabled: false,
+              cls: "as_credit__utility-bar-item as_credit__export",
+              disabled: true,
+              id: "export-btn-acct-3",
+              role: "button",
+              tag: "BUTTON",
+              text: "Export",
+              type: "button",
+              visible: true,
+            },
+          ],
+          navigation_marker_count: 2,
+          target_count: 1,
+          transaction_marker_count: 1,
+        });
+      }
+      return Promise.resolve(null);
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    keyboard: { press: () => Promise.resolve() },
+    locator(selector: string) {
+      if (selector === "button.as_credit__utility-bar-item.as_credit__export") {
+        return {
+          click: () => {
+            clickCalled = true;
+            return Promise.resolve();
+          },
+          count: () => Promise.resolve(1),
+          first(): unknown {
+            return this;
+          },
+          isEnabled: () => Promise.resolve(false),
+        };
+      }
+      return {
+        count: () => Promise.resolve(0),
+        filter(): unknown {
+          return this;
+        },
+        first(): unknown {
+          return this;
+        },
+      };
+    },
+    url: () => "https://www.usaa.com/my/credit-card?accountId=0002-PnwSxCt5HLlzn7raPcAK",
+  });
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/credit-card?accountId=0002-PnwSxCt5HLlzn7raPcAK", {
+    onDiagnostics: (d) => diagnostics.push(d),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "failed" });
+  assert.equal(clickCalled, false, "a known-disabled button must never reach .click()");
+
+  const noAffordance = diagnostics.find((d) => d.phase === "no_export_affordance");
+  assert.ok(noAffordance, "expected a no_export_affordance diagnostic, not export_click_failed");
+  assert.equal(noAffordance?.no_export_observation?.affordance_disabled, true);
+  assert.equal(
+    noAffordance?.no_export_observation?.target_count,
+    1,
+    "target_count must stay truthful — the button IS present, just not actionable"
+  );
+
+  const outcomeClass = classifyExportLadderOutcome(noAffordance ?? null);
+  assert.equal(
+    outcomeClass,
+    "export_pressure",
+    "a disabled-but-present affordance must be treated as retryable pressure, not a structural break"
+  );
+
+  // Account 3/4 in the live evidence is a credit-card account (its export
+  // button matched the as_credit__* selector), so the credit-card
+  // unverified-flow reason takes precedence over export_affordance_disabled
+  // (existing, deliberate precedence — see emitExportFailure's reason
+  // ladder). The disabled evidence still reaches the message text and the
+  // stored diagnostics regardless of which `reason` wins.
+  const { deps, messages } = makeHarness();
+  await emitExportFailure(deps, makeAccount({ account_type: "credit-card" }), noAffordance ?? null);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "credit_card_export_unverified");
+  assert.match(skip.message, /found but not actionable \(disabled\)/);
+  const stored = skip.diagnostics as { export_affordance_candidates?: Record<string, unknown>[] };
+  const [storedCandidate] = stored.export_affordance_candidates ?? [];
+  assert.ok(
+    storedCandidate,
+    "disabled-affordance evidence must reach stored diagnostics even for credit-card accounts"
+  );
+  assert.equal(storedCandidate.disabled, true);
+});
+
+/**
+ * Same disabled-affordance shape as above, but on a non-credit-card
+ * (checking) account, where `export_affordance_disabled` is the reason
+ * actually reported (credit-card's unverified-flow reason doesn't apply).
+ */
+test("driveExport surfaces export_affordance_disabled as its own reason for a non-credit-card account", async () => {
+  const diagnostics: DiagnosticInfo[] = [];
+  const page: Page = Object.assign({} as Page, {
+    evaluate(_fn: (...args: unknown[]) => unknown, arg?: unknown) {
+      if (arg && typeof arg === "object" && "exportAffordance" in (arg as Record<string, unknown>)) {
+        return Promise.resolve({
+          account_detail_marker_count: 1,
+          export_affordance_candidates: [
+            {
+              aria_disabled: false,
+              cls: "ent-as-utility-bar__item export",
+              disabled: true,
+              id: "export-btn-acct-checking",
+              role: "button",
+              tag: "BUTTON",
+              text: "Export",
+              type: "button",
+              visible: true,
+            },
+          ],
+          navigation_marker_count: 2,
+          target_count: 1,
+          transaction_marker_count: 1,
+        });
+      }
+      return Promise.resolve(null);
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    keyboard: { press: () => Promise.resolve() },
+    locator(selector: string) {
+      if (selector === "button.ent-as-utility-bar__item.export") {
+        return {
+          click: () => Promise.resolve(),
+          count: () => Promise.resolve(1),
+          first(): unknown {
+            return this;
+          },
+          isEnabled: () => Promise.resolve(false),
+        };
+      }
+      return {
+        count: () => Promise.resolve(0),
+        filter(): unknown {
+          return this;
+        },
+        first(): unknown {
+          return this;
+        },
+      };
+    },
+    url: () => "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0003",
+  });
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0003", {
+    onDiagnostics: (d) => diagnostics.push(d),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+  assert.deepEqual(outcome, { kind: "failed" });
+
+  const noAffordance = diagnostics.find((d) => d.phase === "no_export_affordance");
+  assert.ok(noAffordance);
+  assert.equal(noAffordance?.no_export_observation?.affordance_disabled, true);
+
+  const { deps, messages } = makeHarness();
+  await emitExportFailure(deps, makeAccount({ account_type: "checking" }), noAffordance ?? null);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "export_affordance_disabled");
+  assert.match(skip.message, /found but not actionable \(disabled\)/);
 });
 
 /**
@@ -1393,11 +1606,25 @@ test("driveExport surfaces bounded export-affordance actionability evidence on a
   assert.equal(candidate.visible, false);
   assert.equal(candidate.role, "button");
   assert.equal(candidate.tag, "BUTTON");
+  assert.equal(
+    noAffordance?.no_export_observation?.affordance_disabled,
+    false,
+    "target_count === 0 means the strict export-affordance selector matched nothing — genuinely absent, " +
+      "not the same evidence as a located-but-disabled button (see the export-affordance-disabled test)"
+  );
+
+  const outcomeClass = classifyExportLadderOutcome(noAffordance ?? null);
+  assert.equal(
+    outcomeClass,
+    "source_structure_changed",
+    "a confirmed, genuinely absent export affordance stays fatal/structural"
+  );
 
   const { deps, messages } = makeHarness();
   await emitExportFailure(deps, makeAccount({ account_type: "checking" }), noAffordance ?? null);
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
+  assert.equal(skip.reason, "export_affordance_missing");
   const stored = skip.diagnostics as {
     export_affordance_candidates?: Record<string, unknown>[];
   };
