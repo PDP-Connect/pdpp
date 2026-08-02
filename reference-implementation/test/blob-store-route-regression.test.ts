@@ -20,6 +20,7 @@ const TOP_LEVEL_REGEX_1 = /^blob_sha256_/;
  */
 
 import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -401,6 +402,78 @@ test("GET /v1/blobs/:blob_id returns 200 with bytes when a visible record refere
     assert.equal(headResp.headers.get("content-length"), String(bytes.byteLength));
     assert.equal(headResp.headers.get("cache-control"), "private, no-store");
     assert.equal(await headResp.text(), "");
+  });
+});
+
+// `POST /v1/blobs` accepts any Content-Type an attachment happens to declare
+// (a source can legitimately label binary content `text/plain`). Fastify
+// registers a built-in `text/plain` string-mode content-type parser
+// (`asString: true`) that calls `setEncoding('utf8')` on the raw request
+// stream — lossy for non-UTF-8 byte sequences, which desyncs Fastify's own
+// received-length accounting from the client's declared `Content-Length`
+// (`FST_ERR_CTP_INVALID_CONTENT_LENGTH`) or silently changes the reported
+// byte count without tripping that check. Either way, a binary attachment
+// declared `text/plain` never reached the server as the bytes the client
+// actually sent.
+test("POST /v1/blobs with binary content declared as text/plain round-trips exact bytes, not a UTF-8-decoded reencoding", async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const manifest = loadGmailManifest();
+    await registerConnector(asUrl, manifest);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const local = randomBytes(4096);
+    const localSha256 = createHash("sha256").update(local).digest("hex");
+    const uploadParams = new URLSearchParams({
+      connector_id: manifest.connector_id,
+      record_key: "attach_binary_text_plain",
+      stream: "attachments",
+    });
+    const upload = await fetch(`${rsUrl}/v1/blobs?${uploadParams.toString()}`, {
+      body: local,
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        "Content-Type": "text/plain",
+      },
+      method: "POST",
+    });
+    assert.equal(upload.status, 200, `upload must succeed for arbitrary binary content (got ${upload.status})`);
+    const uploadBody = (await upload.json()) as { blob_id: string; sha256: string; size_bytes: number };
+    assert.equal(uploadBody.size_bytes, local.byteLength, "server-reported size must match the exact local bytes");
+    assert.equal(uploadBody.sha256, localSha256, "server-reported digest must match the exact local bytes");
+
+    // Ingest a record referencing the blob so it is visible for GET (mirrors
+    // the successful-read test above).
+    const ndjson = `${JSON.stringify({
+      data: {
+        blob_ref: { blob_id: uploadBody.blob_id },
+        filename: "attachment.bin",
+        message_id: "msg_binary_1",
+        mime_type: "text/plain",
+        size_bytes: local.byteLength,
+      },
+      emitted_at: "2026-04-01T00:00:00Z",
+      key: "attach_binary_text_plain",
+    })}\n`;
+    const ingestResp = await fetch(
+      `${rsUrl}/v1/ingest/attachments?connector_id=${encodeURIComponent(manifest.connector_id)}`,
+      {
+        body: ndjson,
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          "Content-Type": "application/x-ndjson",
+        },
+        method: "POST",
+      }
+    );
+    assert.equal(ingestResp.status, 200);
+
+    const readResp = await fetch(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(uploadBody.blob_id)}?connector_id=${encodeURIComponent(manifest.connector_id)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(readResp.status, 200);
+    const readBytes = Buffer.from(await readResp.arrayBuffer());
+    assert.deepEqual(readBytes, local, "stored bytes read back byte-for-byte identical to what was uploaded");
   });
 });
 

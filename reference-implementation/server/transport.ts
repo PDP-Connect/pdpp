@@ -264,7 +264,21 @@ function buildRouteSchema(manifest: RouteManifest): Record<string, JsonValue> | 
   return Object.keys(schema).length ? schema : undefined;
 }
 
-const PASSTHROUGH_CONTENT_TYPES = ["application/x-ndjson", "text/plain"];
+// `application/x-ndjson` is the only content type here with a genuine
+// string-mode consumer (`POST /v1/ingest/:stream` line-splits `req.body`).
+// `text/plain` previously shared this list, but nothing reads its body as a
+// string — every real caller either wants raw bytes (`POST /v1/blobs`, where
+// a Gmail/browser-sourced binary attachment can legitimately declare
+// `text/plain`) or never reaches a body-parsing handler at all (CSRF-gated
+// routes, which reject on headers before touching `req.body`). Fastify's
+// string-mode parser calls `payload.setEncoding('utf8')` on the raw socket
+// stream, which is lossy for non-UTF-8 bytes and desyncs the parser's own
+// received-length accounting from `Content-Length` (`FST_ERR_CTP_INVALID_CONTENT_LENGTH`)
+// or silently changes the byte count for a still-consistent case — i.e. any
+// binary body sent as `text/plain` was either rejected outright or corrupted.
+// `text/plain` now falls through to the wildcard buffer parser below, the
+// same path `application/octet-stream` already takes.
+const PASSTHROUGH_CONTENT_TYPES = ["application/x-ndjson"];
 
 /**
  * Build a fresh Fastify instance wired up the way PDPP wants it.
@@ -347,8 +361,8 @@ function buildFastify({ loggerInstance }: { loggerInstance: FastifyBaseLogger })
     );
   });
 
-  // application/x-ndjson + text/plain come in as raw strings. Handlers that
-  // care read `req.body` and parse line-by-line themselves (runtime ingest).
+  // Come in as raw strings; the runtime-ingest handler parses `req.body`
+  // line-by-line itself.
   for (const type of PASSTHROUGH_CONTENT_TYPES) {
     fastify.addContentTypeParser(type, { parseAs: "string" }, (_req, body, done) => {
       done(null, body);
@@ -361,6 +375,14 @@ function buildFastify({ loggerInstance }: { loggerInstance: FastifyBaseLogger })
   fastify.addContentTypeParser(PDPP_MANUAL_UPLOAD_STREAM_CONTENT_TYPE, (_req, payload, done) => {
     done(null, payload);
   });
+
+  // Fastify registers its own built-in `text/plain` string-mode parser
+  // (`asString: true`) at construction, ahead of any `addContentTypeParser`
+  // call here — dropping `text/plain` from `PASSTHROUGH_CONTENT_TYPES` above
+  // is not enough on its own to route it through the wildcard buffer parser
+  // below; the built-in still wins the lookup. Remove it explicitly, the
+  // same pattern already used for `application/json`.
+  fastify.removeContentTypeParser("text/plain");
 
   // Binary upload surfaces (currently `POST /v1/blobs`) need exact bytes.
   // The wildcard parser is a fallback: exact parsers above and JSON below
