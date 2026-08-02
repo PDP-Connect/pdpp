@@ -843,17 +843,23 @@ function shouldOfferRefreshNowAction(
   );
 }
 
+/**
+ * An active run already covers the same "retry it" outcome `retry_gap` would
+ * ask the owner for, so the active-run guard must gate every branch below —
+ * including the manual-refresh-only early return, which used to short-circuit
+ * ahead of it and offer "Retry now" while a run was already collecting.
+ */
 function shouldOfferRetryGapAction(
   snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null,
   scheduleEvidence: ScheduleEvidence | null,
   progress: ProgressEvidence | null
 ): boolean {
-  if (isManualRefreshOnly(refresh) && !hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence)) {
-    return true;
-  }
   if (snapshot.badges.syncing || snapshot.reason_code === "source_pressure") {
     return false;
+  }
+  if (isManualRefreshOnly(refresh) && !hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence)) {
+    return true;
   }
   if (snapshot.state === "degraded" && progress?.mode === "deferred") {
     return true;

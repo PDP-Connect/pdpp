@@ -1369,6 +1369,74 @@ test("channel: explicit manual-default background-safe schedule stays scheduled 
   assert.ok(!v.required_actions.some((a) => a.kind === "retry_gap" || a.audience === "owner"));
 });
 
+test("channel: manual-refresh retryable gap suppresses Retry now while a run is actively syncing", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "idle" },
+      badges: { syncing: true },
+      forward_disposition: "resumable",
+      state: "degraded",
+    }),
+    [stream({ coverage: "retryable_gap", gap_retryable: true, stream_id: "transactions" })],
+    MANUAL_REFRESH,
+    true
+  );
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists");
+  assert.equal(
+    action.kind,
+    "wait",
+    "an active run already covers the retry outcome; retry_gap must not offer an impossible concurrent action"
+  );
+  assert.equal(action.audience, "none");
+  assert.equal(action.cta, "Collecting — no action needed");
+  assert.ok(
+    !v.required_actions.some((a) => a.kind === "retry_gap"),
+    "no retry_gap action anywhere while the run is active, even for a manual-refresh-only connector"
+  );
+});
+
+test("channel: manual-refresh retryable gap restores Retry now once the active run terminalizes", () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "retryable_gap", freshness: "stale", outbox: "idle" },
+      badges: { syncing: false },
+      forward_disposition: "resumable",
+      state: "degraded",
+    }),
+    [stream({ coverage: "retryable_gap", gap_retryable: true, stream_id: "transactions" })],
+    MANUAL_REFRESH,
+    true
+  );
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const action = v.required_actions[0];
+  assert.ok(action, "primary required action exists");
+  assert.equal(action.kind, "retry_gap", "the same durable gap evidence re-surfaces Retry now once the run ends");
+  assert.equal(action.audience, "owner");
+  assert.equal(action.cta, "Retry now");
+});
+
+test("channel: passive catching-up recovery with no retryable gap keeps the calm collecting wait, active run or not", () => {
+  const activeIdle = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { coverage: "partial", freshness: "stale", outbox: "idle" },
+      badges: { syncing: true },
+      forward_disposition: "resumable",
+      state: "idle",
+    }),
+    [stream({ coverage: "partial", gap_retryable: false, stream_id: "messages" })],
+    MANUAL_REFRESH,
+    true
+  );
+  // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+  const idleAction = activeIdle.required_actions[0];
+  assert.ok(idleAction, "primary required action exists");
+  assert.equal(idleAction.kind, "wait");
+  assert.equal(idleAction.audience, "none");
+  assert.equal(idleAction.cta, "Collecting — no action needed");
+});
+
 test("channel: background-unsafe active schedule stays manual and still offers Retry now", () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
