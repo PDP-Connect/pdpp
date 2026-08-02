@@ -147,9 +147,9 @@ test("runDmReadStatesStream: only calls conversations.info for is_im/is_mpim cha
   seedChannel(db, "C01", { is_channel: true });
 
   const seenChannels: string[] = [];
-  globalThis.fetch = (url) => {
-    const parsed = new URL(String(url));
-    const channel = parsed.searchParams.get("channel") ?? "";
+  globalThis.fetch = (_url, init) => {
+    const params = new URLSearchParams(String(init?.body ?? ""));
+    const channel = params.get("channel") ?? "";
     seenChannels.push(channel);
     return Promise.resolve(
       jsonResponse({ ok: true, channel: { id: channel, last_read: "1.1", unread_count: 0, unread_count_display: 0 } })
@@ -421,14 +421,14 @@ test("contrast: a REQUIRED stream's failure is NOT caught by runOptionalStream a
   await assert.rejects(() => runUsersStream(deps), /emitRecord_boom/);
 });
 
-// ─── acquireSlackApiBrowserTransport: TLS-fingerprint fix wiring ───────────
+// ─── acquireSlackApiBrowserTransport: browser transport wiring ─────────────
 //
 // Root cause (see slack-api.ts module header, also documented on
 // acquireSlackApiBrowserTransport itself): a plain Node fetch cannot
 // authenticate stars/user_groups/reminders/dm_read_states against Slack's
 // edge even with a byte-identical, valid token+cookie pair, because it
-// lacks slackdump's real Chromium/uTLS TLS fingerprint. These tests prove
-// the acquisition + cookie-seeding + failure-isolation contract using a
+// lacks a real authenticated Slack browser session. These tests prove the
+// acquisition + cookie-seeding + failure-isolation contract using a
 // fake acquire function (the real one launches actual Chromium, which is
 // out of scope for a fast unit test) — not that Slack's edge accepts the
 // resulting fingerprint, which only a live call can prove.

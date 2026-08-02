@@ -17,27 +17,15 @@
  *
  * Transport: these calls MUST run through a real Chromium page
  * (`SlackApiBrowserTransport`, provided by `index.ts`'s `runOptionalStream`
- * caller), not plain Node `fetch`. Root-caused live: slackdump's own Slack
- * Web API client (`rusq/slackdump`'s `auth.simpleProvider.HTTPClient`,
- * `chttp.New(..., chttp.WithUTLS(&utls.Config{}))`) wraps every live call —
- * including `conversations.info`, exposed on the exact same `Slack`
- * interface slackdump's archive/resume path uses — in a uTLS transport that
- * emulates a real Chrome TLS ClientHello. A plain Node `fetch()` presents a
- * different TLS fingerprint at the handshake layer regardless of any HTTP
- * header (User-Agent, Cookie) it sends, and Slack's edge rejects that
- * fingerprint as `invalid_auth`/401 even for a token+cookie pair slackdump's
- * own concurrent calls prove valid — confirmed by reading slackdump's actual
- * request-construction path (`internal/client/client.go`
- * `newSlackClient`/`auth/auth.go` `simpleProvider.HTTPClient`), not
- * inferred. `SlackApiBrowserTransport` runs the request inside a real
- * Chromium page (`page.evaluate(fetch)`, the same mechanism the ChatGPT
- * connector already uses to preserve Cloudflare's TLS fingerprint check —
- * see `connectors/chatgpt/index.ts` `chatGptBackendFetchInBrowser`) so the
- * TLS handshake is genuinely Chromium's, not reimplemented/spoofed. Before
- * those requests, the page is navigated to Slack's documented `api.test`
- * document and its final URL is checked: a credentialed fetch from the
- * launcher's initial `about:blank` page is cross-origin, and Slack's wildcard
- * CORS response cannot authorize that credentialed mode.
+ * caller), not plain Node `fetch`. Slackdump v3.1.13's
+ * `auth.simpleProvider.HTTPClient` uses `chttp.New`'s cookie jar and the
+ * `rusq/slack` form request methods used by these streams. The browser
+ * handoff mirrors that contract by seeding the page cookie jar and passing
+ * only the form token into page `fetch`. JavaScript `fetch` cannot set the `Cookie` request
+ * header; forwarding that header from Node-shaped request data is an invalid
+ * browser transport boundary and was the live auth failure. Before those
+ * requests, the page is navigated to Slack's documented `api.test` document
+ * and its final URL is checked so credentialed fetches remain same-origin.
  */
 
 import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
@@ -167,7 +155,8 @@ export interface SlackApiRequestInit {
  * ORIGINAL, still-available transport, kept as the fallback for tests and
  * for any caller that hasn't wired a browser page. Every live call from
  * `index.ts`'s `runOptionalStream` MUST use `createBrowserSlackApiTransport`
- * instead (see module header for why: TLS fingerprinting).
+ * instead so the request uses the seeded browser cookie jar and browser-owned
+ * request headers.
  */
 export type SlackApiTransport = (req: SlackApiRequestInit) => Promise<SlackApiRawResponse>;
 
@@ -190,18 +179,23 @@ export async function nodeFetchSlackApiTransport(req: SlackApiRequestInit): Prom
  * `createBrowserSlackApiTransport` (via `page.evaluate`). MUST be a pure,
  * self-contained function — Playwright stringifies it and runs it in the
  * page's own JS context, so it cannot close over any module-scope value
- * (mirrors `chatGptBackendFetchInBrowser` in `connectors/chatgpt/index.ts`,
- * the established pattern for this exact TLS-fingerprint problem). Runs as
+ * (mirrors `chatGptBackendFetchInBrowser` in `connectors/chatgpt/index.ts`).
+ * Runs as
  * `window.fetch` inside the page, riding Chromium's real network stack —
  * the whole reason this function exists instead of calling Node `fetch`
  * directly. The page's cookie jar (seeded by the caller via
  * `context.addCookies` before this ever runs) supplies `d`/`d-s`; only the
- * bearer/form token and non-cookie headers are passed in explicitly.
+ * bearer/form token and browser-permitted headers are passed in explicitly.
+ * `Cookie` and `User-Agent` are deliberately removed here because browser
+ * JavaScript cannot authoritatively set either header.
  */
 export async function slackApiFetchInBrowser(req: SlackApiRequestInit): Promise<SlackApiRawResponse> {
+  const browserHeaders = Object.fromEntries(
+    Object.entries(req.headers).filter(([name]) => !["cookie", "user-agent"].includes(name.toLowerCase()))
+  );
   const res = await fetch(req.url, {
     method: req.method,
-    headers: req.headers,
+    headers: browserHeaders,
     credentials: "include",
     ...(req.body === undefined ? {} : { body: req.body }),
   });
@@ -228,12 +222,10 @@ export interface SlackApiBrowserPage {
 
 /**
  * Build a `SlackApiTransport` that runs every request through `page`
- * (`page.evaluate(slackApiFetchInBrowser, req)`), so the request's TLS
- * handshake is Chromium's real ClientHello, not Node's. The caller
- * (`index.ts`) is responsible for seeding the page's browser context with
- * the `d`/`d-s` session cookies via `context.addCookies` before any call
- * through this transport — this function does not manage cookies, only
- * dispatch.
+ * (`page.evaluate(slackApiFetchInBrowser, req)`). The caller (`index.ts`) is
+ * responsible for seeding the page's browser context with the `d`/`d-s`
+ * session cookies via `context.addCookies` before any call through this
+ * transport — this function does not manage cookies, only dispatch.
  */
 export function createBrowserSlackApiTransport(page: SlackApiBrowserPage): SlackApiTransport {
   return (req) => page.evaluate(slackApiFetchInBrowser, req);
@@ -267,45 +259,6 @@ async function slackApiPost<T extends { error?: string; ok: boolean }>(
             "User-Agent": USER_AGENT,
           },
           body: body.toString(),
-        }),
-      (resp) => ({
-        status: resp.status,
-        ...(resp.retryAfter === undefined ? {} : { headers: { "retry-after": resp.retryAfter } }),
-        value: resp,
-      })
-    );
-    raw = r.value;
-  } catch (error) {
-    throw error instanceof Error ? error : new Error(String(error));
-  }
-  return parseSlackApiResponse<T>(raw);
-}
-
-/**
- * GET a Slack Web API method (query-string params), authenticated with
- * `Authorization: Bearer <token>` (matches `rusq/slack`'s `getResource`)
- * plus the derived session cookie pair (`d` + `d-s`) and browser UA.
- */
-async function slackApiGet<T extends { error?: string; ok: boolean }>(
-  transport: SlackApiTransport,
-  method: string,
-  token: string,
-  cookie: string,
-  params: Record<string, string>
-): Promise<T> {
-  const query = new URLSearchParams(params).toString();
-  let raw: SlackApiRawResponse;
-  try {
-    const r = await httpGovernor.request<SlackApiRawResponse, SlackApiRawResponse>(
-      () =>
-        transport({
-          url: `${API_BASE}${method}?${query}`,
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Cookie: buildSlackSessionCookieHeader(cookie),
-            "User-Agent": USER_AGENT,
-          },
         }),
       (resp) => ({
         status: resp.status,
@@ -414,8 +367,10 @@ export async function fetchDmReadStates(
 ): Promise<DmReadState[]> {
   const out: DmReadState[] = [];
   for (const channelId of channelIds) {
-    const resp = await slackApiGet<SlackConversationInfoResponse>(transport, "conversations.info", token, cookie, {
+    const resp = await slackApiPost<SlackConversationInfoResponse>(transport, "conversations.info", token, cookie, {
       channel: channelId,
+      include_locale: "false",
+      include_num_members: "false",
     });
     const ch = resp.channel;
     out.push({

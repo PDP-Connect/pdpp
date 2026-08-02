@@ -902,10 +902,10 @@ test("slack manifest declares no unsupported-in-mode streams (all four gap strea
   }
 });
 
-test("slack manifest declares an OPTIONAL browser binding for the gap streams' TLS-fingerprint fix", async () => {
+test("slack manifest declares an OPTIONAL browser binding for the gap streams' browser transport", async () => {
   // stars/user_groups/reminders/dm_read_states need a real Chromium page
   // (see slack-api.ts module header + index.ts acquireSlackApiBrowserTransport
-  // for the full root cause: TLS fingerprinting) — but the connector's core
+  // for the full root cause: browser capability) — but the connector's core
   // value (messages/channels/files/etc., all slackdump-archive-derived)
   // must stay fully headless. `required: false` is the load-bearing part:
   // `true` would make the RUNTIME refuse to spawn the whole connector on any

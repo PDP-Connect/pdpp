@@ -3073,9 +3073,9 @@ export function withResolvedRemoteCdpUrl(
  * `acquireBrowserForConnector` primitive already used by the browser-backed
  * connectors) and seed it with the `d`/`d-s` session cookies, so `stars`/
  * `user_groups`/`reminders`/`dm_read_states` can run their Slack Web API
- * calls with a real Chromium TLS fingerprint. See `slack-api.ts`'s module
- * header for why plain Node `fetch` cannot authenticate these calls even
- * with a byte-identical, objectively-valid token+cookie pair.
+ * calls through the seeded Chromium cookie jar and browser-owned headers. See
+ * `slack-api.ts`'s module header for why the browser transport must not be
+ * replaced with plain Node `fetch` for these calls.
  *
  * Headless (never headed): these are non-interactive, already-authenticated
  * API calls — no login UI, no human interaction, so there is nothing for an

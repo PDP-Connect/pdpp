@@ -202,12 +202,17 @@ test("fetchAllReminders returns an empty array when the user has no reminders", 
 
 // ─── conversations.info (dm_read_states) ────────────────────────────────
 
-test("fetchDmReadStates issues one call per channel id and parses read state", async () => {
-  const seenChannels: string[] = [];
-  globalThis.fetch = (url) => {
-    const parsed = new URL(String(url));
-    const channel = parsed.searchParams.get("channel") ?? "";
-    seenChannels.push(channel);
+test("fetchDmReadStates issues official POST form calls per channel id and parses read state", async () => {
+  const seenRequests: Array<{ method: string; channel: string; includeLocale: string; includeNumMembers: string }> = [];
+  globalThis.fetch = (_url, init) => {
+    const body = new URLSearchParams(String(init?.body ?? ""));
+    const channel = body.get("channel") ?? "";
+    seenRequests.push({
+      method: init?.method ?? "",
+      channel,
+      includeLocale: body.get("include_locale") ?? "",
+      includeNumMembers: body.get("include_num_members") ?? "",
+    });
     return Promise.resolve(
       jsonResponse({
         ok: true,
@@ -216,7 +221,10 @@ test("fetchDmReadStates issues one call per channel id and parses read state", a
     );
   };
   const states = await fetchDmReadStates(nodeFetchSlackApiTransport, TOKEN, COOKIE, ["D01", "D02"]);
-  assert.deepEqual(seenChannels, ["D01", "D02"]);
+  assert.deepEqual(seenRequests, [
+    { method: "POST", channel: "D01", includeLocale: "false", includeNumMembers: "false" },
+    { method: "POST", channel: "D02", includeLocale: "false", includeNumMembers: "false" },
+  ]);
   assert.equal(states.length, 2);
   assert.equal(states[0]?.unreadCount, 2);
 });
@@ -227,28 +235,20 @@ test("fetchDmReadStates returns an empty array for an empty channel id list", as
   assert.deepEqual(states, []);
 });
 
-test("fetchDmReadStates uses Authorization: Bearer for the GET call", async () => {
-  const seenAuth = { authorization: "", cookie: "" };
-  let sawRequest = false;
-  const originalNow = Date.now;
-  Date.now = () => 1_714_032_910_000;
+test("fetchDmReadStates uses the Slackdump form token and session cookie", async () => {
+  let seenBody: URLSearchParams | undefined;
+  let seenHeaders: Headers | undefined;
   globalThis.fetch = (_url, init) => {
-    const headers = new Headers(init?.headers);
-    seenAuth.authorization = headers.get("Authorization") ?? "";
-    seenAuth.cookie = headers.get("Cookie") ?? "";
-    sawRequest = true;
+    seenBody = new URLSearchParams(String(init?.body ?? ""));
+    seenHeaders = new Headers(init?.headers);
     return Promise.resolve(jsonResponse({ ok: true, channel: { id: "D01" } }));
   };
-  try {
-    await fetchDmReadStates(nodeFetchSlackApiTransport, TOKEN, COOKIE, ["D01"]);
-    if (!sawRequest) {
-      throw new Error("expected fetchDmReadStates to issue one HTTP request");
-    }
-    assert.equal(seenAuth.authorization, `Bearer ${TOKEN}`);
-    assert.equal(seenAuth.cookie, buildSlackSessionCookieHeader(COOKIE));
-  } finally {
-    Date.now = originalNow;
-  }
+  await fetchDmReadStates(nodeFetchSlackApiTransport, TOKEN, COOKIE, ["D01"]);
+  assert.equal(seenBody?.get("token"), TOKEN);
+  assert.equal(seenBody?.get("channel"), "D01");
+  assert.equal(seenHeaders?.get("Content-Type"), "application/x-www-form-urlencoded");
+  assert.equal(seenHeaders?.get("Cookie"), buildSlackSessionCookieHeader(COOKIE));
+  assert.equal(seenHeaders?.has("Authorization"), false);
 });
 
 // ─── Error classification ────────────────────────────────────────────────
@@ -273,18 +273,13 @@ test("sustained 429s exhaust the governor's retry budget as slack_rate_limited",
   await assert.rejects(fetchAllUserGroups(nodeFetchSlackApiTransport, TOKEN, COOKIE), /slack_rate_limited/);
 });
 
-// ─── Browser transport (TLS-fingerprint fix) ──────────────────────────────
+// ─── Browser transport and request boundary ───────────────────────────────
 //
 // Root cause (see slack-api.ts module header): slackdump's own live Slack
-// Web API client wraps every call in a uTLS transport that emulates a real
-// Chrome TLS ClientHello; a plain Node `fetch()` presents a different
-// fingerprint at the handshake layer and Slack's edge rejects it as
-// invalid_auth/401 even for an objectively valid token+cookie pair. These
-// tests prove the browser-transport plumbing dispatches through a real page
-// (not Node fetch) and does so with the request shape a live call needs —
-// they cannot prove Slack's edge actually accepts a Chromium TLS
-// fingerprint (that requires a live network call, out of scope for a unit
-// test), only that the connector's own code takes the corrected path.
+// Web API calls must use the browser page's cookie jar and browser-owned
+// request headers. These tests prove the browser-transport plumbing dispatches
+// through a page (not Node fetch) and strips the forbidden header boundary;
+// authenticated acceptance by Slack remains a live integration concern.
 
 test("slackApiFetchInBrowser: issues a fetch with credentials:'include' so the page's cookie jar rides the request", async () => {
   let seenInit: RequestInit | undefined;
@@ -299,6 +294,29 @@ test("slackApiFetchInBrowser: issues a fetch with credentials:'include' so the p
     body: "token=xoxc-fake",
   });
   assert.equal(seenInit?.credentials, "include", "must ride the page's cookie jar (the d/d-s cookies), not send none");
+});
+
+test("slackApiFetchInBrowser: drops forbidden Cookie/User-Agent headers and keeps the seeded cookie jar", async () => {
+  let seenHeaders: Headers | undefined;
+  globalThis.fetch = (_url, init) => {
+    seenHeaders = new Headers(init?.headers);
+    return Promise.resolve(jsonResponse({ ok: true, items: [] }));
+  };
+  await slackApiFetchInBrowser({
+    url: "https://slack.com/api/stars.list",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: "d=provider-cookie; d-s=123",
+      "User-Agent": "slackdump-user-agent",
+      Authorization: "Bearer xoxc-fake",
+    },
+    body: "token=xoxc-fake",
+  });
+  assert.equal(seenHeaders?.has("Cookie"), false, "browser JavaScript cannot set Cookie; context.addCookies owns it");
+  assert.equal(seenHeaders?.has("User-Agent"), false, "browser JavaScript cannot set User-Agent; Chromium owns it");
+  assert.equal(seenHeaders?.get("Authorization"), "Bearer xoxc-fake");
+  assert.equal(seenHeaders?.get("Content-Type"), "application/x-www-form-urlencoded");
 });
 
 test("slackApiFetchInBrowser: returns the same {status, body, retryAfter} shape nodeFetchSlackApiTransport does", async () => {
