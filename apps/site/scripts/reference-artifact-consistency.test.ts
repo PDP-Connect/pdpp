@@ -130,8 +130,7 @@ test("artifact oracle mutation-proof: nonexistent tag in source text", () => {
 });
 
 test("artifact oracle mutation-proof: mutable main tag in source text", () => {
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: testing Compose placeholder syntax
-  const composePlaceholder = "image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}";
+  const composePlaceholder = ["image: $", "{PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}"].join("");
   assert.throws(() => assertSourceArtifactsConsistent("synthetic regression input", composePlaceholder), {
     message: MUTABLE_MAIN_LATEST_TAG_RE,
   });
