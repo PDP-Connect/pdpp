@@ -255,11 +255,31 @@ test("classifyPageHandles requires a cursor when has_more=true and accepts visib
 });
 
 test("classifyToolNames requires the exact normal read tool surface", () => {
-  const allCore = ["schema", "query_records", "fetch", "search", "aggregate"];
+  const allCore = ["schema", "query_records", "aggregate", "search", "fetch", "fetch_blob", "read_record_field"];
   assert.equal(classifyToolNames(allCore).ok, true);
   const missing = classifyToolNames(["schema"]);
   assert.equal(missing.ok, false);
-  assert.deepEqual(missing.missingCore, ["query_records", "fetch", "search", "aggregate"]);
+  assert.deepEqual(missing.missingCore, [
+    "query_records",
+    "aggregate",
+    "search",
+    "fetch",
+    "fetch_blob",
+    "read_record_field",
+  ]);
+  const removedAttachment = classifyToolNames([
+    "schema",
+    "query_records",
+    "aggregate",
+    "search",
+    "fetch",
+    "read_record_field",
+  ]);
+  assert.equal(removedAttachment.ok, false);
+  assert.deepEqual(removedAttachment.missingCore, ["fetch_blob"]);
+  const removedField = classifyToolNames(["schema", "query_records", "aggregate", "search", "fetch", "fetch_blob"]);
+  assert.equal(removedField.ok, false);
+  assert.deepEqual(removedField.missingCore, ["read_record_field"]);
   const extra = classifyToolNames([...allCore, "list_streams", "list_event_subscriptions"]);
   assert.equal(extra.ok, false);
   assert.deepEqual(extra.forbiddenPresent, ["list_streams", "list_event_subscriptions"]);

@@ -79,7 +79,7 @@ interface ParsedArgs {
   token?: string;
 }
 
-const CORE_MCP_TOOLS = ["schema", "query_records", "fetch", "search", "aggregate"];
+const CORE_MCP_TOOLS = ["schema", "query_records", "aggregate", "search", "fetch", "fetch_blob", "read_record_field"];
 const FORBIDDEN_NORMAL_MCP_TOOLS = [
   "list_streams",
   "discover_event_subscription_capabilities",
