@@ -651,17 +651,24 @@ export function resolveAccountIdForRef(ref: string, accounts: readonly Dashboard
   const last4Match = ref.match(LAST4_REF_RE);
   const last4 = last4Match?.[1] ?? null;
   if (last4) {
-    const byLast4 = accounts.find((a) => a.last_four === last4);
-    if (byLast4?.account_id_raw) {
-      return byLast4.account_id_raw;
+    const byLast4 = uniqueAccountIds(accounts.filter((a) => a.last_four === last4));
+    if (byLast4.length === 1) {
+      return byLast4[0] ?? null;
+    }
+    if (byLast4.length > 1) {
+      return null;
     }
   }
   const refLower = ref.toLowerCase();
-  const byName = accounts.find((a) => a.name && refLower.includes(a.name.toLowerCase()));
-  if (byName?.account_id_raw) {
-    return byName.account_id_raw;
+  const byName = uniqueAccountIds(accounts.filter((a) => a.name && refLower.includes(a.name.toLowerCase())));
+  if (byName.length === 1) {
+    return byName[0] ?? null;
   }
   return null;
+}
+
+function uniqueAccountIds(accounts: readonly DashboardAccount[]): string[] {
+  return [...new Set(accounts.map((a) => a.account_id_raw).filter((id): id is string => Boolean(id)))];
 }
 
 /**

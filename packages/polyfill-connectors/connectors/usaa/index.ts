@@ -97,6 +97,7 @@ import type {
   StatementRecord,
   TransactionsPriorState,
   TransactionsStreamCursor,
+  UsaaAccountPageIdentity,
 } from "./types.ts";
 
 const validateRecord = validateRecordRaw as ValidateRecord;
@@ -162,6 +163,8 @@ const HTML_PREVIEW_MAX = 600;
 // covered) — the actual cause of the timeout — ever appeared. Sized like
 // HTML_PREVIEW_MAX so the full call log survives into diagnostics.
 const CLICK_ERROR_SNIP = 600;
+export const USAA_FALLBACK_SERIALIZED_BYTES_MAX = 8 * 1024;
+const USAA_ORIGIN = "https://www.usaa.com";
 
 // Pure helpers — hashId, currencyToCents, isoDate, mmddyyyy, parseCsv,
 // rowsToTransactions — live in ./parsers.ts.
@@ -231,7 +234,8 @@ export function hydrationSuccess(h: HydrationResult | undefined): HydrationResul
 
 /** Build `statements` IndexRows from scraped DocRows. Rows missing a
  *  `date_delivered` are dropped — we can't reliably key them. Account
- *  resolution falls through last-four then name substring. */
+ *  resolution accepts only a unique last-four/name match; ambiguous matches
+ *  remain unresolved so no account-keyed PDF evidence can be emitted. */
 export function buildIndexRows(docs: readonly DocRow[], accounts: readonly DashboardAccount[]): IndexRow[] {
   return docs
     .filter((d) => d.date_delivered)
@@ -478,12 +482,13 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
  *     A matched-but-disabled control is also terminal for ladder control, but
  *     remains `export_pressure` here so its evidence is not mislabeled as a
  *     missing source surface.
- *   - `navigation_drifted` — `no_export_affordance` where
- *     `no_export_observation.route` is `"unknown"` or `"interstitial"`: the
- *     page we ended up on was NOT confirmed to be the account/transaction
- *     detail page (e.g. a marketing/promo detour, a stale `accountId` query
- *     param, or a logon/security interstitial). This is a navigation/routing
- *     failure, not evidence the source's export UI changed — so unlike
+ *   - `navigation_drifted` — the page we ended up on was not confirmed to be
+ *     the exact requested account/transaction detail page: this includes
+ *     `no_export_affordance` with an unknown/interstitial route and any
+ *     unexpected dialog shape whose account identity is missing or mismatched
+ *     (e.g. a marketing/promo detour, a stale `accountId` query param, or a
+ *     logon/security interstitial). This is a navigation/routing failure, not
+ *     evidence the source's export UI changed — so unlike
  *     `source_structure_changed` it is NOT ladder-fatal (the ladder keeps
  *     trying remaining candidate windows) and it is NOT reported as
  *     "structure changed". A same-run retry with the same stale URL will
@@ -523,7 +528,20 @@ export type TerminalExportFailure = "export_affordance_disabled" | "source_struc
  * whose UI we'd be judging, so "the button is gone" cannot be concluded.
  */
 function noExportRouteConfirmsAccountPage(diag: DiagnosticInfo): boolean {
-  return diag.no_export_observation?.route === "expected";
+  return diag.no_export_observation?.route === "expected" && diagnosticAccountPageIdentity(diag) === "exact";
+}
+
+function diagnosticAccountPageIdentity(diag: DiagnosticInfo): UsaaAccountPageIdentity | null {
+  const identities = [diag.account_page_identity, diag.no_export_observation?.account_page_identity].filter(
+    (identity): identity is UsaaAccountPageIdentity => Boolean(identity)
+  );
+  if (identities.length === 0) {
+    return null;
+  }
+  if (identities.every((identity) => identity === "exact")) {
+    return "exact";
+  }
+  return identities.some((identity) => identity === "mismatch") ? "mismatch" : "unverified";
 }
 
 /** Map the ladder's last diagnostic phase to a terminal outcome class. */
@@ -531,7 +549,11 @@ export function classifyExportLadderOutcome(lastDiag: DiagnosticInfo | null): Ex
   if (!lastDiag) {
     return "unknown";
   }
+  const accountPageIdentity = diagnosticAccountPageIdentity(lastDiag);
   if (lastDiag.phase === "no_export_affordance" && !noExportRouteConfirmsAccountPage(lastDiag)) {
+    return "navigation_drifted";
+  }
+  if (lastDiag.phase === "export_dialog_unexpected_shape" && accountPageIdentity !== "exact") {
     return "navigation_drifted";
   }
   if (lastDiag.phase === "no_export_affordance" && lastDiag.no_export_observation?.affordance_disabled) {
@@ -578,15 +600,18 @@ export async function emitExportFailure(
   lastDiag: DiagnosticInfo | null,
   terminalFailure: TerminalExportFailure | null = classifyTerminalExportFailure(lastDiag)
 ): Promise<void> {
+  const verifiedTerminalFailure = classifyTerminalExportFailure(lastDiag);
+  const effectiveTerminalFailure =
+    terminalFailure && terminalFailure === verifiedTerminalFailure ? terminalFailure : verifiedTerminalFailure;
   const outcome = classifyExportLadderOutcome(lastDiag);
-  const reason = exportFailureReason(a, lastDiag, outcome, terminalFailure);
+  const reason = exportFailureReason(a, lastDiag, outcome, effectiveTerminalFailure);
   await deps.emit({
     type: "SKIP_RESULT",
     stream: "transactions",
     reason,
-    message: exportFailureMessage(a, lastDiag, outcome, terminalFailure),
-    ...(terminalFailure ? { recovery_hint: { action: "capture_live_surface", retryable: false } } : {}),
-    diagnostics: exportFailureDiagnostics(deps, lastDiag, outcome, terminalFailure),
+    message: exportFailureMessage(a, lastDiag, outcome, effectiveTerminalFailure),
+    ...(effectiveTerminalFailure ? { recovery_hint: { action: "capture_live_surface", retryable: false } } : {}),
+    diagnostics: exportFailureDiagnostics(deps, lastDiag, outcome, effectiveTerminalFailure),
   });
 }
 
@@ -657,8 +682,10 @@ function exportFailureDiagnostics(
     const candidates = sanitizeExportAffordanceCandidates(
       lastDiag?.no_export_observation?.export_affordance_candidates
     );
+    const accountPageIdentity = lastDiag ? diagnosticAccountPageIdentity(lastDiag) : null;
     return {
       ...terminal,
+      ...(accountPageIdentity ? { account_page_identity: accountPageIdentity } : {}),
       browser_surface: browserSurface,
       ...(candidates.length ? { export_affordance_candidates: candidates } : {}),
     };
@@ -1114,19 +1141,64 @@ async function findExportAffordance(page: Page): Promise<Locator | null> {
 }
 
 /** Classify in memory only; no URL or route fragment reaches durable evidence. */
+function parseUsaaAccountPageUrl(value: string): URL | null {
+  try {
+    const url = new URL(value, USAA_ORIGIN);
+    return url.origin === USAA_ORIGIN ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function usaaAccountIdFromUrl(url: URL): string | null {
+  const ids = [url.searchParams.get("accountId"), url.searchParams.get("acctId")].filter((value): value is string =>
+    Boolean(value)
+  );
+  return new Set(ids).size === 1 ? (ids[0] ?? null) : null;
+}
+
+/** Compare the final page to the exact account URL requested by the driver.
+ * This returns only a closed enum so neither URL can leak into diagnostics. */
+export function classifyUsaaAccountPageIdentity(
+  requestedUrl: string | undefined,
+  finalUrl: string
+): UsaaAccountPageIdentity {
+  const actual = parseUsaaAccountPageUrl(finalUrl);
+  if (!(actual && USAA_ACCOUNT_DETAIL_ROUTE_RE.test(actual.pathname))) {
+    return "mismatch";
+  }
+  if (!requestedUrl) {
+    return "unverified";
+  }
+  const requested = parseUsaaAccountPageUrl(requestedUrl);
+  if (!(requested && USAA_ACCOUNT_DETAIL_ROUTE_RE.test(requested.pathname))) {
+    return "unverified";
+  }
+  const requestedId = usaaAccountIdFromUrl(requested);
+  const actualId = usaaAccountIdFromUrl(actual);
+  if (!(requestedId && actualId)) {
+    return "unverified";
+  }
+  return requested.pathname === actual.pathname && requestedId === actualId ? "exact" : "mismatch";
+}
+
 export function classifyUsaaNoExportRoute(
   value: string,
-  hasKnownAccountOrTransactionMarker: boolean
+  hasKnownAccountOrTransactionMarker: boolean,
+  requestedUrl?: string
 ): NoExportAffordanceObservation["route"] {
   try {
-    const url = new URL(value);
-    if (url.hostname !== "www.usaa.com") {
+    const url = parseUsaaAccountPageUrl(value);
+    if (!url) {
       return "unknown";
     }
     if (USAA_INTERSTITIAL_ROUTE_RE.test(url.pathname)) {
       return "interstitial";
     }
-    return USAA_ACCOUNT_DETAIL_ROUTE_RE.test(url.pathname) && hasKnownAccountOrTransactionMarker
+    const identity = requestedUrl ? classifyUsaaAccountPageIdentity(requestedUrl, value) : "unverified";
+    return USAA_ACCOUNT_DETAIL_ROUTE_RE.test(url.pathname) &&
+      hasKnownAccountOrTransactionMarker &&
+      (!requestedUrl || identity === "exact")
       ? "expected"
       : "unknown";
   } catch {
@@ -1134,7 +1206,10 @@ export function classifyUsaaNoExportRoute(
   }
 }
 
-async function captureNoExportAffordanceObservation(page: Page): Promise<NoExportAffordanceObservation> {
+async function captureNoExportAffordanceObservation(
+  page: Page,
+  requestedUrl?: string
+): Promise<NoExportAffordanceObservation> {
   const counts = await page
     .evaluate(
       ({ accountDetail, exportAffordance, navigation, transaction }) => {
@@ -1179,10 +1254,12 @@ async function captureNoExportAffordanceObservation(page: Page): Promise<NoExpor
   const [firstCandidate] = counts.export_affordance_candidates ?? [];
   const affordanceDisabled =
     counts.target_count > 0 && Boolean(firstCandidate?.disabled || firstCandidate?.aria_disabled);
+  const finalUrl = page.url();
   return {
     ...counts,
     affordance_disabled: affordanceDisabled,
-    route: classifyUsaaNoExportRoute(page.url(), hasKnownAccountOrTransactionMarker),
+    account_page_identity: classifyUsaaAccountPageIdentity(requestedUrl, finalUrl),
+    route: classifyUsaaNoExportRoute(finalUrl, hasKnownAccountOrTransactionMarker, requestedUrl),
   };
 }
 
@@ -1272,9 +1349,12 @@ async function locateExportPage(
     if (LOGON_REDIRECT_RE.test(finalUrl)) {
       throw new SessionDeadRedirectError(await captureNoExportAffordanceObservation(page));
     }
+    if (classifyUsaaAccountPageIdentity(accountUrl, finalUrl) !== "exact") {
+      continue;
+    }
     const btn = await findExportAffordance(page);
     if (btn) {
-      return { url, export: btn };
+      return { url: finalUrl, export: btn };
     }
   }
   return null;
@@ -1300,7 +1380,7 @@ async function emitExportClickFailedDiagnostic(
 }
 
 /**
- * Bounded, always-on raw evidence for `export_dialog_unexpected_shape` — the
+ * Redacted, bounded structural evidence for `export_dialog_unexpected_shape` — the
  * one diagnostic phase this file has no retained live DOM evidence for (the
  * 2026-07-31 gate recorded only the redacted phase). Every OTHER diagnostic
  * capture in this file (the
@@ -1326,13 +1406,10 @@ async function emitExportClickFailedDiagnostic(
  * unconditionally at this one boundary (not a general "always capture
  * everything" change), is best-effort (a write failure is swallowed exactly
  * like every other capture call in this file — capture must never fail a
- * run), and reuses the same 600-char `HTML_PREVIEW_MAX` truncation and
- * `capturePageDiagnostics` redaction (no full raw HTML, no cookies/tokens —
- * `dialogHtml` is DOM structure only) already applied to the in-memory
- * diagnostic that reaches `onDiagnostics`. The next live occurrence of this
- * phase leaves a retrievable, git-ignored artifact even with fixture capture
- * off, which is the missing piece for reconstructing the real selector this
- * connector needs.
+ * run). Titles, HTML, labels, classes, paths, and identifiers are redacted
+ * before serialization, and the final UTF-8 JSON is hard-capped. The next
+ * live occurrence leaves a retrievable, git-ignored structural receipt even
+ * with fixture capture off.
  */
 const DEFAULT_FALLBACK_DIAGNOSTIC_ROOT = join(new URL("../../fixtures", import.meta.url).pathname);
 
@@ -1346,27 +1423,69 @@ function fallbackDiagnosticRoot(override: string | undefined): string {
   return override ?? process.env.PDPP_CAPTURE_ROOT_DIR?.trim() ?? DEFAULT_FALLBACK_DIAGNOSTIC_ROOT;
 }
 
-async function writeExportDialogUnexpectedShapeFallback(
-  page: Page,
-  preview: string | null,
-  rootOverride: string | undefined
-): Promise<void> {
+function serializeFallbackPayload(phase: string, payload: Record<string, unknown>): string {
+  const minimal = JSON.stringify({ phase, truncated: true });
+  try {
+    const serialized = JSON.stringify(payload, null, 2);
+    if (serialized && Buffer.byteLength(serialized, "utf8") <= USAA_FALLBACK_SERIALIZED_BYTES_MAX) {
+      return serialized;
+    }
+  } catch {
+    // Fall through to the minimal valid receipt.
+  }
+  return minimal;
+}
+
+function redactFallbackObservation(observation: NoExportAffordanceObservation): NoExportAffordanceObservation {
+  return {
+    account_detail_marker_count: observation.account_detail_marker_count,
+    ...(observation.account_page_identity ? { account_page_identity: observation.account_page_identity } : {}),
+    affordance_disabled: observation.affordance_disabled,
+    export_affordance_candidates: observation.export_affordance_candidates.map((candidate) => ({
+      aria_disabled: candidate.aria_disabled,
+      cls: "",
+      disabled: candidate.disabled,
+      id: null,
+      role: null,
+      tag: "",
+      text: "",
+      type: null,
+      visible: candidate.visible,
+    })),
+    navigation_marker_count: observation.navigation_marker_count,
+    route: observation.route,
+    target_count: observation.target_count,
+    transaction_marker_count: observation.transaction_marker_count,
+  };
+}
+
+function redactFallbackSurfaceControls(controls: BoundedSurfaceControl[]): BoundedSurfaceControl[] {
+  return controls.map((control) => ({
+    aria_disabled: control.aria_disabled,
+    class_name: "",
+    disabled: control.disabled,
+    href_path: null,
+    label: "",
+    role: null,
+    tag: "",
+    type: null,
+    visible: control.visible,
+  }));
+}
+
+async function writeExportDialogUnexpectedShapeFallback(rootOverride: string | undefined): Promise<void> {
   try {
     const dir = join(fallbackDiagnosticRoot(rootOverride), "usaa", "diagnostics");
     await mkdir(dir, { recursive: true });
     await writeFile(
       join(dir, "export-dialog-unexpected-shape.json"),
-      JSON.stringify(
-        {
-          captured_at: nowIso(),
-          phase: "export_dialog_unexpected_shape",
-          page_title: await page.title().catch((): string => ""),
-          dialog_html_preview: preview,
-          note: "Bounded fallback capture — overwritten on every occurrence, not accumulated. See writeExportDialogUnexpectedShapeFallback doc comment.",
-        },
-        null,
-        2
-      )
+      serializeFallbackPayload("export_dialog_unexpected_shape", {
+        captured_at: nowIso(),
+        dialog_html_preview: null,
+        page_title: null,
+        phase: "export_dialog_unexpected_shape",
+        note: "Redacted structural fallback; overwritten on every occurrence.",
+      })
     );
   } catch {
     // Best-effort, matching every other capture call in this file: a
@@ -1386,9 +1505,9 @@ interface BoundedSurfaceControl {
   visible: boolean;
 }
 
-/** Capture only the bounded control inventory needed to identify an alternate
- * account-page surface after an export affordance is absent. Querying this
- * inventory is diagnostic-only; it never drives a new selector or click. */
+/** Capture only bounded structural control facts after an export affordance is
+ * absent. The in-memory probe is diagnostic-only; its durable fallback is
+ * redacted before it is serialized and never drives a selector or click. */
 async function captureBoundedSurfaceControls(page: Page): Promise<BoundedSurfaceControl[]> {
   const controls = await page
     .evaluate(() => {
@@ -1423,12 +1542,11 @@ async function captureBoundedSurfaceControls(page: Page): Promise<BoundedSurface
 }
 
 /**
- * Persist one bounded, path-fixed account-page surface inventory whenever the
- * export affordance is absent or disabled. The inventory is deliberately
- * separate from durable SKIP_RESULT diagnostics: it is local, git-ignored,
- * overwritten on every occurrence, and contains enough labels/routes for the
- * next authenticated UAT run to distinguish an alternate supported surface
- * from a real source-shape change without guessing a selector.
+ * Persist one bounded, path-fixed structural receipt whenever the export
+ * affordance is absent or disabled. It is separate from durable SKIP_RESULT
+ * diagnostics, local, git-ignored, overwritten on every occurrence, strictly
+ * redacted, and byte-capped; the next authenticated UAT run must inspect the
+ * live surface directly rather than treating this receipt as selector proof.
  */
 async function writeNoExportAffordanceFallback(
   page: Page,
@@ -1440,21 +1558,14 @@ async function writeNoExportAffordanceFallback(
     await mkdir(dir, { recursive: true });
     await writeFile(
       join(dir, "no-export-affordance.json"),
-      JSON.stringify(
-        {
-          captured_at: nowIso(),
-          phase: "no_export_affordance",
-          page_title: await page.title().catch((): string => ""),
-          observation: {
-            ...observation,
-            export_affordance_candidates: sanitizeExportAffordanceCandidates(observation.export_affordance_candidates),
-          },
-          surface_controls: await captureBoundedSurfaceControls(page),
-          note: "Bounded fallback capture — overwritten on every occurrence, not accumulated. Use one authenticated UAT run to decide whether a supported alternate surface exists.",
-        },
-        null,
-        2
-      )
+      serializeFallbackPayload("no_export_affordance", {
+        captured_at: nowIso(),
+        observation: redactFallbackObservation(observation),
+        page_title: null,
+        phase: "no_export_affordance",
+        surface_controls: redactFallbackSurfaceControls(await captureBoundedSurfaceControls(page)),
+        note: "Redacted structural fallback; overwritten on every occurrence.",
+      })
     );
   } catch {
     // A diagnostic fallback must never fail the collection run.
@@ -1473,9 +1584,11 @@ async function readDialogHtmlPreview(page: Page): Promise<string | null> {
 function emitDialogUnexpectedShapeDiagnostic(
   base: PageDiagnostics | null,
   preview: string | null,
-  onDiagnostics: NonNullable<DriveExportOptions["onDiagnostics"]>
+  onDiagnostics: NonNullable<DriveExportOptions["onDiagnostics"]>,
+  accountPageIdentity: UsaaAccountPageIdentity
 ): void {
   onDiagnostics({
+    account_page_identity: accountPageIdentity,
     phase: "export_dialog_unexpected_shape",
     diag: base
       ? { ...base, dialog_html_preview: preview }
@@ -1492,7 +1605,12 @@ function emitDialogUnexpectedShapeDiagnostic(
 }
 
 /** Click Export, then confirm the date-range selector rendered. */
-async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
+async function openExportDialog(
+  page: Page,
+  located: LocatedExportPage,
+  accountUrl: string,
+  options: DriveExportOptions
+): Promise<boolean> {
   const { onDiagnostics } = options;
   // Check actionability explicitly before clicking rather than letting a
   // disabled button run out the click's internal actionability poll: the
@@ -1506,7 +1624,7 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     .isEnabled({ timeout: EXPORT_ENABLED_CHECK_TIMEOUT_MS })
     .catch((): boolean => false);
   if (!enabled) {
-    await emitNoExportAffordanceDiagnostic(page, options, "export-affordance-disabled");
+    await emitNoExportAffordanceDiagnostic(page, options, "export-affordance-disabled", accountUrl);
     return false;
   }
   try {
@@ -1522,15 +1640,19 @@ async function openExportDialog(page: Page, located: LocatedExportPage, options:
     .count()
     .catch((): number => 0);
   if (!selectCount) {
-    // The dialog HTML preview is read once and used two ways: the bounded
-    // fallback capture fires unconditionally (must not depend on
-    // onDiagnostics being wired up — see writeExportDialogUnexpectedShapeFallback),
-    // while the in-memory diagnostic only builds when a caller is listening.
+    // The dialog HTML preview is retained only for the bounded in-memory
+    // diagnostic. The fallback capture fires unconditionally but never
+    // receives DOM/title evidence (see writeExportDialogUnexpectedShapeFallback).
     const preview = await readDialogHtmlPreview(page);
-    await writeExportDialogUnexpectedShapeFallback(page, preview, options.fallbackDiagnosticRootOverride);
+    await writeExportDialogUnexpectedShapeFallback(options.fallbackDiagnosticRootOverride);
     if (onDiagnostics) {
       const base = await capturePageDiagnostics(page);
-      emitDialogUnexpectedShapeDiagnostic(base, preview, onDiagnostics);
+      emitDialogUnexpectedShapeDiagnostic(
+        base,
+        preview,
+        onDiagnostics,
+        classifyUsaaAccountPageIdentity(accountUrl, page.url())
+      );
     }
     // Capture before Escape: the keypress below can dismiss/mutate the
     // dialog surface, so the checkpoint must run on the still-intact page.
@@ -1769,18 +1891,30 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
 async function emitNoExportAffordanceDiagnostic(
   page: Page,
   options: DriveExportOptions,
-  checkpointSuffix: string
+  checkpointSuffix: string,
+  requestedUrl?: string
 ): Promise<void> {
   await captureExportCheckpoint(page, options, checkpointSuffix);
-  const noExportObservation = await captureNoExportAffordanceObservation(page);
+  const noExportObservation = await captureNoExportAffordanceObservation(page, requestedUrl);
   await writeNoExportAffordanceFallback(page, noExportObservation, options.fallbackDiagnosticRootOverride);
   if (options.onDiagnostics) {
-    options.onDiagnostics({ diag: null, no_export_observation: noExportObservation, phase: "no_export_affordance" });
+    options.onDiagnostics({
+      diag: null,
+      no_export_observation: noExportObservation,
+      phase: "no_export_affordance",
+      ...(noExportObservation.account_page_identity
+        ? { account_page_identity: noExportObservation.account_page_identity }
+        : {}),
+    });
   }
 }
 
-async function noExportAffordanceFailure(page: Page, options: DriveExportOptions): Promise<DriveExportResult> {
-  await emitNoExportAffordanceDiagnostic(page, options, "no-export-affordance");
+async function noExportAffordanceFailure(
+  page: Page,
+  options: DriveExportOptions,
+  requestedUrl: string
+): Promise<DriveExportResult> {
+  await emitNoExportAffordanceDiagnostic(page, options, "no-export-affordance", requestedUrl);
   return { kind: "failed" };
 }
 
@@ -1792,10 +1926,10 @@ export async function driveExport(
   const { sinceDate, untilDate, onDiagnostics } = options;
   const located = await locateExportPage(page, accountUrl, options.settleDelayMs ?? ACCOUNT_SETTLE_DELAY_MS);
   if (!located) {
-    return noExportAffordanceFailure(page, options);
+    return noExportAffordanceFailure(page, options, accountUrl);
   }
 
-  const dialogOpen = await openExportDialog(page, located, options);
+  const dialogOpen = await openExportDialog(page, located, accountUrl, options);
   if (!dialogOpen) {
     return { kind: "failed" };
   }
@@ -2007,7 +2141,7 @@ function classifyTerminalExportFailureWithoutRecursion(diag: DiagnosticInfo | nu
   ) {
     return "export_affordance_disabled";
   }
-  if (diag.phase === "export_dialog_unexpected_shape") {
+  if (diag.phase === "export_dialog_unexpected_shape" && diagnosticAccountPageIdentity(diag) === "exact") {
     return "source_structure_changed";
   }
   if (diag.phase === "no_export_affordance" && noExportRouteConfirmsAccountPage(diag)) {
@@ -2222,7 +2356,8 @@ export async function emitCsvTransactions(
  *   - `unavailable`: the observed account page supplied terminal evidence of
  *     a disabled control or missing export surface. This is an explicit
  *     optional skip, never a zero-activity claim; a bounded statement-PDF
- *     result can still upgrade it to `hydrated` before coverage is emitted.
+ *     result can still cover it for transaction coverage while the terminal
+ *     CSV/control evidence remains emitted separately.
  * Accounts skipped because the session died mid-run are NOT recorded here
  * at all (see `runTransactionsStream`): they were never reached, so
  * `required_keys` only ever lists accounts the run actually attempted,
@@ -2656,7 +2791,7 @@ async function runTransactionsStream(
 
 /** Emit final transaction coverage only after every supported surface has had
  * a chance to account for the same dashboard-account denominator. */
-async function finalizeTransactionsStream(
+export async function finalizeTransactionsStream(
   deps: EmitDeps,
   result: TransactionsStreamResult,
   alternateSurfaceAccountIds: ReadonlySet<string>
@@ -2664,7 +2799,7 @@ async function finalizeTransactionsStream(
   const outcomes = applyAlternateSurfaceCoverage(result.outcomes, alternateSurfaceAccountIds);
   for (const outcome of outcomes) {
     const failure = result.exportFailures.get(outcome.accountId);
-    if (failure && outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
+    if (failure && (failure.terminalFailure || (outcome.kind !== "hydrated" && outcome.kind !== "no_activity"))) {
       await emitExportFailure(deps, failure.account, failure.lastDiag, failure.terminalFailure);
     }
     if (outcome.kind === "gap") {
@@ -2804,13 +2939,16 @@ async function processPdfStatementRow(
   if (!shouldParseStatementTitle(title)) {
     return null;
   }
+  if (!(row.account_id && accountById.has(row.account_id))) {
+    return null;
+  }
   const period = (row.date_delivered || "").slice(0, 7) || null;
-  const acct = row.account_id ? accountById.get(row.account_id) : null;
-  const accountName = acct?.name ?? row.account_reference ?? null;
+  const acct = accountById.get(row.account_id);
+  const accountName = acct?.name ?? null;
   try {
     const { txns, parseMeta } = await parsePdfStatement({
       buffer: ok.buffer,
-      accountId: row.account_id || row.account_reference || "unknown",
+      accountId: row.account_id,
       accountName,
       period,
     });
@@ -2855,7 +2993,7 @@ async function processPdfStatementRow(
   }
 }
 
-async function emitPdfStatementTransactions(
+export async function emitPdfStatementTransactions(
   deps: EmitDeps,
   indexRows: readonly IndexRow[],
   hydrationResults: Map<number, HydrationResult>,

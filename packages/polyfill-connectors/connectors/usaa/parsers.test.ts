@@ -569,6 +569,22 @@ test("resolveAccountIdForRef: matches by last-four first", () => {
   assert.equal(resolveAccountIdForRef("STMT *9241 Apr 2026", accounts), "A");
 });
 
+test("resolveAccountIdForRef: duplicate last-four stays unresolved instead of choosing the first account", () => {
+  const accounts = [
+    makeAccount({ account_id_raw: "CHECKING", name: "USAA CHECKING", last_four: "9241" }),
+    makeAccount({ account_id_raw: "CARD", name: "USAA CARD", last_four: "9241" }),
+  ];
+  assert.equal(resolveAccountIdForRef("USAA CARD *9241", accounts), null);
+});
+
+test("resolveAccountIdForRef: duplicate name stays unresolved when no last-four disambiguates it", () => {
+  const accounts = [
+    makeAccount({ account_id_raw: "A", name: "USAA SHARED", last_four: null }),
+    makeAccount({ account_id_raw: "B", name: "USAA SHARED", last_four: null }),
+  ];
+  assert.equal(resolveAccountIdForRef("USAA SHARED statement", accounts), null);
+});
+
 test("resolveAccountIdForRef: falls back to name substring match (case-insensitive)", () => {
   const accounts = [makeAccount({ account_id_raw: "A", name: "Total Checking", last_four: null })];
   assert.equal(resolveAccountIdForRef("my total checking document", accounts), "A");

@@ -110,6 +110,7 @@ test("buildAccountTransactionDetailGap: locator carries only the account id, nev
 
 test("classifyTerminalExportFailure: disabled and confirmed-missing surfaces stop date retries, drift does not", () => {
   const baseObservation: NoExportAffordanceObservation = {
+    account_page_identity: "exact",
     account_detail_marker_count: 1,
     affordance_disabled: false,
     export_affordance_candidates: [],
@@ -118,7 +119,12 @@ test("classifyTerminalExportFailure: disabled and confirmed-missing surfaces sto
     target_count: 0,
     transaction_marker_count: 1,
   };
-  const base: DiagnosticInfo = { diag: null, no_export_observation: baseObservation, phase: "no_export_affordance" };
+  const base: DiagnosticInfo = {
+    account_page_identity: "exact",
+    diag: null,
+    no_export_observation: baseObservation,
+    phase: "no_export_affordance",
+  };
   assert.equal(
     classifyTerminalExportFailure({
       ...base,

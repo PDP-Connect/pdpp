@@ -54,6 +54,8 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   buildIndexRows,
   classifyExportLadderOutcome,
+  classifyTerminalExportFailure,
+  classifyUsaaAccountPageIdentity,
   classifyUsaaNoExportRoute,
   DEFERRED_STREAMS,
   driveExport,
@@ -61,13 +63,16 @@ import {
   emitAccountsStream,
   emitDeferredStreams,
   emitExportFailure,
+  emitPdfStatementTransactions,
   emitStatementRecords,
+  finalizeTransactionsStream,
   type HydrationSummary,
   hydrationSuccess,
   isNoDataExportMessage,
   runSingleLadderAttempt,
   shouldParseStatementTitle,
   tryExportLadder,
+  USAA_FALLBACK_SERIALIZED_BYTES_MAX,
   USAA_RETRYABLE_PATTERN,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -148,6 +153,43 @@ function makeHydrationOk(overrides: Partial<HydrationResultSuccess> = {}): Hydra
   };
 }
 
+function makeStatementPdf(): Buffer {
+  const content = [
+    "BT",
+    "/F1 12 Tf",
+    "72 720 Td",
+    "(Statement Period 04/01/2026 - 04/30/2026) Tj",
+    "0 -20 Td",
+    "(TRANSACTIONS) Tj",
+    "0 -20 Td",
+    "(04/02 COFFEE SHOP #45   -4.50   95.50) Tj",
+    "0 -20 Td",
+    "(ENDING BALANCE 95.50) Tj",
+    "ET",
+  ].join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(content, "latin1")} >>\nstream\n${content}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, "latin1"));
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, "latin1");
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  pdf += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+
 function makeNoExportPage(
   finalUrl: string,
   counts: {
@@ -200,7 +242,7 @@ function makeNoExportFallbackPage(controlLabel: string): Page {
           aria_disabled: false,
           class_name: "activity-control",
           disabled: false,
-          href_path: "/my/activity",
+          href_path: "/my/activity?accountId=ACCT-CHK-0001&email=owner@example.com",
           label: controlLabel,
           role: "button",
           tag: "BUTTON",
@@ -223,10 +265,10 @@ function makeNoExportFallbackPage(controlLabel: string): Page {
       };
     },
     title() {
-      return Promise.resolve("Bank Account Summary | USAA");
+      return Promise.resolve("OTP 123456 owner@example.com ACCT-CHK-0001");
     },
     url() {
-      return "https://www.usaa.com/my/checking?accountId=private";
+      return "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001";
     },
   });
 }
@@ -281,7 +323,7 @@ function makeDisabledExportPage(): Page {
       };
     },
     title: () => Promise.resolve("Bank Account Summary | USAA"),
-    url: () => "https://www.usaa.com/my/credit-card?accountId=private",
+    url: () => "https://www.usaa.com/my/credit-card?accountId=ACCT-CC-0001",
   });
 }
 
@@ -571,6 +613,94 @@ test("buildIndexRows: blank account reference normalizes to null", () => {
   assert.equal(rows[0]?.account_id, null);
 });
 
+test("ambiguous statement account references emit neither PDF transactions nor alternate-account coverage", async () => {
+  const accounts = [
+    makeAccount({ account_id_raw: "ACCT-CHK-9241", name: "USAA CLASSIC CHECKING", last_four: "9241" }),
+    makeAccount({
+      account_id_raw: "ACCT-CC-9241",
+      account_type: "credit-card",
+      name: "USAA CARD",
+      last_four: "9241",
+    }),
+  ];
+  const [row] = buildIndexRows([makeDocRow({ account_reference: "USAA CARD *9241" })], accounts);
+  assert.ok(row);
+  assert.equal(row.account_id, null, "duplicate last-four must stay unresolved");
+
+  const { deps, emitted, messages } = makeHarness();
+  const covered = await emitPdfStatementTransactions(
+    deps,
+    [row],
+    new Map([[row.rowIndex, makeHydrationOk({ buffer: makeStatementPdf() })]]),
+    accounts
+  );
+  assert.deepEqual([...covered], []);
+  assert.equal(emitted.filter((record) => record.stream === "transactions").length, 0);
+  assert.equal(
+    messages.some((message) => message.type === "DETAIL_COVERAGE" && message.stream === "transactions"),
+    false
+  );
+});
+
+test("finalizeTransactionsStream keeps exact terminal evidence when PDF coverage hydrates the same account", async () => {
+  const { deps, messages } = makeHarness();
+  const account = makeAccount();
+  const terminalDiag: DiagnosticInfo = {
+    account_page_identity: "exact",
+    diag: null,
+    no_export_observation: {
+      account_page_identity: "exact",
+      account_detail_marker_count: 1,
+      affordance_disabled: true,
+      export_affordance_candidates: [],
+      navigation_marker_count: 2,
+      route: "expected",
+      target_count: 1,
+      transaction_marker_count: 1,
+    },
+    phase: "no_export_affordance",
+  };
+  const result: Parameters<typeof finalizeTransactionsStream>[1] = {
+    cursor: {},
+    enumerationComplete: true,
+    exportFailures: new Map([
+      [
+        account.account_id_raw ?? "",
+        { account, lastDiag: terminalDiag, terminalFailure: "export_affordance_disabled" },
+      ],
+    ]),
+    outcomes: [
+      {
+        accountId: account.account_id_raw ?? "",
+        kind: "unavailable",
+        reason: "export_affordance_disabled",
+        errorClass: "export_affordance_disabled",
+      },
+    ],
+  };
+
+  await finalizeTransactionsStream(deps, result, new Set([account.account_id_raw ?? ""]));
+
+  const skip = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "transactions"
+  );
+  assert.ok(skip, "terminal CSV/control evidence must remain visible after PDF hydration");
+  assert.equal(skip.reason, "export_affordance_disabled");
+  assert.deepEqual(skip.recovery_hint, { action: "capture_live_surface", retryable: false });
+  const coverage = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      message.type === "DETAIL_COVERAGE" && message.stream === "transactions"
+  );
+  assert.ok(coverage);
+  assert.deepEqual(coverage.hydrated_keys, [account.account_id_raw]);
+  assert.equal(coverage.optional_skip_keys, undefined);
+  assert.equal(
+    messages.some((message) => message.type === "DETAIL_GAP"),
+    false
+  );
+});
+
 // ─── Invariant 5: dedup — repeated hydration map key yields one emit per row ─
 
 test("emitStatementRecords: duplicate rowIndex in indexRows emits once per row entry (no hidden dedupe)", async () => {
@@ -621,8 +751,10 @@ test("emitExportFailure: a missing export affordance is reported as a structure-
   // mistaken for momentary export pressure.
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
+    account_page_identity: "exact",
     phase: "no_export_affordance",
     no_export_observation: {
+      account_page_identity: "exact",
       account_detail_marker_count: 1,
       affordance_disabled: false,
       export_affordance_candidates: [],
@@ -651,6 +783,7 @@ test("emitExportFailure: a missing export affordance is reported as a structure-
   assert.equal(emittedDiag.terminal_failure, "source_structure_changed");
   assert.deepEqual(emittedDiag, {
     terminal_failure: "source_structure_changed",
+    account_page_identity: "exact",
     browser_surface: {
       account_detail_marker_count: 1,
       activity_table_marker_count: 0,
@@ -674,12 +807,27 @@ test("emitExportFailure: a missing export affordance is reported as a structure-
 });
 
 test("classifyUsaaNoExportRoute requires both a closed account route and structural marker", () => {
-  assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/checking?accountId=private", true), "expected");
-  assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/checking?accountId=private", false), "unknown");
+  assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001", true), "expected");
+  assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001", false), "unknown");
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/challenge/step", true), "interstitial");
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/logon", true), "interstitial");
   assert.equal(classifyUsaaNoExportRoute("https://www.usaa.com/my/dashboard", true), "unknown");
   assert.equal(classifyUsaaNoExportRoute("https://private.example/my/checking", true), "unknown");
+});
+
+test("classifyUsaaAccountPageIdentity requires the requested account id and page path", () => {
+  const requested = "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001";
+  assert.equal(classifyUsaaAccountPageIdentity(requested, requested), "exact");
+  assert.equal(
+    classifyUsaaAccountPageIdentity(requested, "https://www.usaa.com/my/checking?accountId=ACCT-CC-0001"),
+    "mismatch"
+  );
+  assert.equal(
+    classifyUsaaAccountPageIdentity(requested, "https://www.usaa.com/my/credit-card?accountId=ACCT-CHK-0001"),
+    "mismatch"
+  );
+  assert.equal(classifyUsaaAccountPageIdentity(undefined, requested), "unverified");
+  assert.equal(classifyUsaaAccountPageIdentity(requested, "https://www.usaa.com/my/dashboard"), "mismatch");
 });
 
 test("tryExportLadder: a confirmed disabled control is terminal and does not try another date window", async () => {
@@ -689,7 +837,11 @@ test("tryExportLadder: a confirmed disabled control is terminal and does not try
     {} as BrowserContext,
     makeDisabledExportPage(),
     async () => ({ request_id: "test", status: "success", type: "INTERACTION_RESPONSE" }),
-    makeAccount({ account_type: "credit-card" }),
+    makeAccount({
+      account_id_raw: "ACCT-CC-0001",
+      account_type: "credit-card",
+      account_url: "/my/credit-card?accountId=ACCT-CC-0001",
+    }),
     3,
     4,
     ["2026-01-01", "2025-01-01"],
@@ -710,7 +862,7 @@ test("tryExportLadder: a confirmed disabled control is terminal and does not try
 });
 
 test("driveExport records account, challenge, and unrelated routes through the actual no-export path", async () => {
-  for (const { counts, finalUrl, route } of [
+  for (const { counts, finalUrl, identity, route } of [
     {
       counts: {
         account_detail_marker_count: 1,
@@ -719,7 +871,8 @@ test("driveExport records account, challenge, and unrelated routes through the a
         target_count: 0,
         transaction_marker_count: 0,
       },
-      finalUrl: "https://www.usaa.com/my/checking?accountId=private",
+      finalUrl: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      identity: "exact",
       route: "expected",
     },
     {
@@ -731,6 +884,7 @@ test("driveExport records account, challenge, and unrelated routes through the a
         transaction_marker_count: 0,
       },
       finalUrl: "https://www.usaa.com/challenge/step",
+      identity: "mismatch",
       route: "interstitial",
     },
     {
@@ -742,37 +896,111 @@ test("driveExport records account, challenge, and unrelated routes through the a
         transaction_marker_count: 0,
       },
       finalUrl: "https://www.usaa.com/my/dashboard",
+      identity: "mismatch",
       route: "unknown",
     },
   ]) {
     const diagnostics: DiagnosticInfo[] = [];
-    const outcome = await driveExport(makeNoExportPage(finalUrl, counts), "https://www.usaa.com/my/checking", {
-      onDiagnostics: (info) => diagnostics.push(info),
-      settleDelayMs: 0,
-      sinceDate: "2026-01-01",
-      untilDate: "2026-07-16",
-    });
+    const outcome = await driveExport(
+      makeNoExportPage(finalUrl, counts),
+      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      {
+        onDiagnostics: (info) => diagnostics.push(info),
+        settleDelayMs: 0,
+        sinceDate: "2026-01-01",
+        untilDate: "2026-07-16",
+      }
+    );
 
     assert.deepEqual(outcome, { kind: "failed" });
     assert.deepEqual(diagnostics, [
       {
+        account_page_identity: identity,
         diag: null,
-        no_export_observation: { ...counts, affordance_disabled: false, route },
+        no_export_observation: { ...counts, account_page_identity: identity, affordance_disabled: false, route },
         phase: "no_export_affordance",
       },
     ]);
   }
 });
 
-test("driveExport writes a bounded alternate-surface inventory for a terminal no-export observation", async () => {
+test("driveExport keeps a wrong-account route retryable instead of classifying terminal absence", async () => {
+  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-wrong-route-"));
+  try {
+    const diagnostics: DiagnosticInfo[] = [];
+    const outcome = await driveExport(
+      makeNoExportPage("https://www.usaa.com/my/checking?accountId=ACCT-CC-0001", {
+        account_detail_marker_count: 1,
+        export_affordance_candidates: [],
+        navigation_marker_count: 2,
+        target_count: 0,
+        transaction_marker_count: 1,
+      }),
+      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      {
+        fallbackDiagnosticRootOverride: captureRoot,
+        onDiagnostics: (info) => diagnostics.push(info),
+        settleDelayMs: 0,
+        sinceDate: "2026-01-01",
+        untilDate: "2026-07-16",
+      }
+    );
+    assert.deepEqual(outcome, { kind: "failed" });
+    const [diag] = diagnostics;
+    assert.ok(diag);
+    assert.equal(diag.account_page_identity, "mismatch");
+    assert.equal(diag.no_export_observation?.route, "unknown");
+    assert.equal(classifyTerminalExportFailure(diag), null);
+    assert.equal(classifyExportLadderOutcome(diag), "navigation_drifted");
+  } finally {
+    rmSync(captureRoot, { force: true, recursive: true });
+  }
+});
+
+test("terminal classifiers require exact page identity even when route evidence claims expected", () => {
+  const wrongPage: DiagnosticInfo = {
+    account_page_identity: "mismatch",
+    diag: null,
+    no_export_observation: {
+      account_detail_marker_count: 1,
+      account_page_identity: "mismatch",
+      affordance_disabled: true,
+      export_affordance_candidates: [],
+      navigation_marker_count: 2,
+      route: "expected",
+      target_count: 1,
+      transaction_marker_count: 1,
+    },
+    phase: "no_export_affordance",
+  };
+  assert.equal(classifyTerminalExportFailure(wrongPage), null);
+  assert.equal(classifyExportLadderOutcome(wrongPage), "navigation_drifted");
+  const conflictingIdentity = { ...wrongPage, account_page_identity: "exact" as const };
+  assert.equal(classifyTerminalExportFailure(conflictingIdentity), null);
+  assert.equal(classifyExportLadderOutcome(conflictingIdentity), "navigation_drifted");
+
+  const wrongDialog: DiagnosticInfo = {
+    account_page_identity: "unverified",
+    diag: null,
+    phase: "export_dialog_unexpected_shape",
+  };
+  assert.equal(classifyTerminalExportFailure(wrongDialog), null);
+  assert.equal(classifyExportLadderOutcome(wrongDialog), "navigation_drifted");
+});
+
+test("driveExport writes a redacted, byte-bounded alternate-surface receipt for a terminal no-export observation", async () => {
   const captureRoot = mkdtempSync(join(tmpdir(), "usaa-no-export-capture-"));
   try {
-    const first = await driveExport(makeNoExportFallbackPage("View activity"), "https://www.usaa.com/my/checking", {
-      fallbackDiagnosticRootOverride: captureRoot,
-      settleDelayMs: 0,
-      sinceDate: "2026-01-01",
-      untilDate: "2026-07-16",
-    });
+    const first = await driveExport(
+      makeNoExportFallbackPage("View activity"),
+      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      {
+        fallbackDiagnosticRootOverride: captureRoot,
+        settleDelayMs: 0,
+        sinceDate: "2026-01-01",
+        untilDate: "2026-07-16",
+      }
+    );
     assert.deepEqual(first, { kind: "failed" });
 
     const fallbackPath = join(captureRoot, "usaa", "diagnostics", "no-export-affordance.json");
@@ -781,20 +1009,30 @@ test("driveExport writes a bounded alternate-surface inventory for a terminal no
     assert.equal(written.observation.route, "expected");
     assert.equal(written.observation.target_count, 0);
     assert.equal(written.surface_controls.length, 1);
-    assert.equal(written.surface_controls[0].label, "View activity");
-    assert.equal(written.surface_controls[0].href_path, "/my/activity");
-    assert.doesNotMatch(JSON.stringify(written), /accountId=|private/);
+    assert.equal(written.page_title, null);
+    assert.equal(written.surface_controls[0].label, "");
+    assert.equal(written.surface_controls[0].href_path, null);
+    assert.equal(written.surface_controls[0].class_name, "");
+    assert.ok(
+      Buffer.byteLength(await readFile(fallbackPath, "utf8"), "utf8") <= USAA_FALLBACK_SERIALIZED_BYTES_MAX,
+      "fallback JSON must stay below the serialized-byte cap"
+    );
+    assert.doesNotMatch(JSON.stringify(written), /OTP 123456|owner@example\.com|ACCT-CHK-0001|View activity/);
 
-    const second = await driveExport(makeNoExportFallbackPage("Statements"), "https://www.usaa.com/my/checking", {
-      fallbackDiagnosticRootOverride: captureRoot,
-      settleDelayMs: 0,
-      sinceDate: "2026-01-01",
-      untilDate: "2026-07-16",
-    });
+    const second = await driveExport(
+      makeNoExportFallbackPage("Statements"),
+      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      {
+        fallbackDiagnosticRootOverride: captureRoot,
+        settleDelayMs: 0,
+        sinceDate: "2026-01-01",
+        untilDate: "2026-07-16",
+      }
+    );
     assert.deepEqual(second, { kind: "failed" });
     const rewritten = JSON.parse(await readFile(fallbackPath, "utf8"));
-    assert.equal(rewritten.surface_controls[0].label, "Statements");
-    assert.doesNotMatch(JSON.stringify(rewritten), /View activity/);
+    assert.equal(rewritten.surface_controls[0].label, "");
+    assert.doesNotMatch(JSON.stringify(rewritten), /View activity|Statements/);
   } finally {
     rmSync(captureRoot, { force: true, recursive: true });
   }
@@ -852,6 +1090,7 @@ test("classifyExportLadderOutcome: a marketing-detour no_export_affordance is na
   // not weaken that case.
   const confirmed: DiagnosticInfo = {
     ...drifted,
+    account_page_identity: "exact",
     no_export_observation: { ...(drifted.no_export_observation as NoExportAffordanceObservation), route: "expected" },
   };
   assert.equal(classifyExportLadderOutcome(confirmed), "source_structure_changed");
@@ -932,7 +1171,7 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
         has_utility_bar: false,
         nav_candidates: [],
         title: "",
-        url: "https://www.usaa.com/my/checking?accountId=private",
+        url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
       });
     },
     goto() {
@@ -982,7 +1221,7 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
       return Promise.resolve("Bank Account Summary | USAA");
     },
     url() {
-      return "https://www.usaa.com/my/checking?accountId=private";
+      return "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001";
     },
   });
 }
@@ -991,10 +1230,9 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
  *  `[role="dialog"]` element with real innerHTML) — just never gets the
  *  expected `select[name="selectionType"]`, so it still falls into the
  *  unexpected-shape branch, but this time with a real (non-null)
- *  `dialog_html_preview`. Used to prove the bounded fallback-capture file
- *  is written with the same truncated, redaction-safe preview that reaches
- *  in-memory diagnostics — never the raw untruncated HTML. */
-function makeDialogWrongShapePage(dialogHtml: string): Page {
+ *  `dialog_html_preview`. The fixture supports the in-memory diagnostic path;
+ *  the durable fallback receipt must still contain no DOM/title evidence. */
+function makeDialogWrongShapePage(dialogHtml: string, pageTitle = "Bank Account Summary | USAA"): Page {
   return Object.assign({} as Page, {
     evaluate() {
       return Promise.resolve({
@@ -1003,8 +1241,8 @@ function makeDialogWrongShapePage(dialogHtml: string): Page {
         export_candidates: [],
         has_utility_bar: false,
         nav_candidates: [],
-        title: "Bank Account Summary | USAA",
-        url: "https://www.usaa.com/my/checking?accountId=private",
+        title: pageTitle,
+        url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
       });
     },
     goto() {
@@ -1055,35 +1293,39 @@ function makeDialogWrongShapePage(dialogHtml: string): Page {
       };
     },
     title() {
-      return Promise.resolve("Bank Account Summary | USAA");
+      return Promise.resolve(pageTitle);
     },
     url() {
-      return "https://www.usaa.com/my/checking?accountId=private";
+      return "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001";
     },
   });
 }
 
 test("driveExport captures the dialog-not-open checkpoint before pressing Escape", async () => {
   const callOrder: string[] = [];
-  const outcome = await driveExport(makeDialogNotOpenPage(callOrder), "https://www.usaa.com/my/checking", {
-    capture: {
-      baseDir: "/tmp/unused",
-      captureDom: (_page: Page, label: string) => {
-        callOrder.push(`capture:${label}`);
-        return Promise.resolve();
-      },
-      captureHttp: (): void => undefined,
-      finalize: (): void => undefined,
-      keepOnSuccess: true,
-      markSucceeded: (): void => undefined,
-      recordRecord: (): void => undefined,
-      runId: "test-dialog-not-open",
-    } satisfies CaptureSession,
-    captureLabel: "usaa-export",
-    settleDelayMs: 0,
-    sinceDate: "2026-01-01",
-    untilDate: "2026-07-16",
-  });
+  const outcome = await driveExport(
+    makeDialogNotOpenPage(callOrder),
+    "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+    {
+      capture: {
+        baseDir: "/tmp/unused",
+        captureDom: (_page: Page, label: string) => {
+          callOrder.push(`capture:${label}`);
+          return Promise.resolve();
+        },
+        captureHttp: (): void => undefined,
+        finalize: (): void => undefined,
+        keepOnSuccess: true,
+        markSucceeded: (): void => undefined,
+        recordRecord: (): void => undefined,
+        runId: "test-dialog-not-open",
+      } satisfies CaptureSession,
+      captureLabel: "usaa-export",
+      settleDelayMs: 0,
+      sinceDate: "2026-01-01",
+      untilDate: "2026-07-16",
+    }
+  );
 
   assert.deepEqual(outcome, { kind: "failed" });
   const captureIdx = callOrder.indexOf("capture:usaa-export-dialog-not-open");
@@ -1130,7 +1372,7 @@ test("driveExport surfaces the full call log on an export-click timeout, not jus
         has_utility_bar: true,
         nav_candidates: [],
         title: "Bank Account Summary | USAA",
-        url: "https://www.usaa.com/my/checking?accountId=private",
+        url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
       });
     },
     goto() {
@@ -1159,10 +1401,10 @@ test("driveExport surfaces the full call log on an export-click timeout, not jus
       };
     },
     title: () => Promise.resolve("Bank Account Summary | USAA"),
-    url: () => "https://www.usaa.com/my/checking?accountId=private",
+    url: () => "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
   });
 
-  const outcome = await driveExport(page, "https://www.usaa.com/my/checking", {
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001", {
     onDiagnostics: (d) => diagnostics.push(d),
     settleDelayMs: 0,
     sinceDate: "2026-01-01",
@@ -1413,9 +1655,8 @@ test("driveExport surfaces export_affordance_disabled as its own reason for a no
  * least a fake capture session or onDiagnostics callback; this one
  * deliberately passes neither) and asserts the fallback file lands anyway,
  * bounded to a single fixed filename (proving it can't grow unbounded
- * across repeated failures) and truncated to the same HTML_PREVIEW_MAX the
- * in-memory diagnostic already uses (proving no raw/untruncated HTML is
- * ever written to disk).
+ * across repeated failures), strictly redacted, and hard-capped by serialized
+ * UTF-8 bytes (proving hostile titles and DOM cannot reach disk).
  *
  * Uses `fallbackDiagnosticRootOverride` rather than mutating
  * `process.env.PDPP_CAPTURE_ROOT_DIR`: this file's tests run as concurrent
@@ -1425,33 +1666,43 @@ test("driveExport surfaces export_affordance_disabled as its own reason for a no
 test("driveExport writes a bounded fallback capture for export_dialog_unexpected_shape even with no capture session configured", async () => {
   const captureRoot = mkdtempSync(join(tmpdir(), "usaa-fallback-capture-"));
   try {
-    const longDialogHtml = `<div class="unexpected-promo-dialog">${"x".repeat(2000)}</div>`;
-    const outcome = await driveExport(makeDialogWrongShapePage(longDialogHtml), "https://www.usaa.com/my/checking", {
-      // Deliberately no `capture` and no `onDiagnostics` — matches
-      // PDPP_CAPTURE_FIXTURES / PDPP_CAPTURE_ON_FAILURE both being unset
-      // and no live diagnostics listener, as on the live 07-31 run.
-      fallbackDiagnosticRootOverride: captureRoot,
-      settleDelayMs: 0,
-      sinceDate: "2026-01-01",
-      untilDate: "2026-07-16",
-    });
+    const longDialogHtml = `<div data-otp="123456" data-email="owner@example.com" data-account-id="ACCT-CHK-0001">${"x".repeat(2000)}</div>`;
+    const hostileTitle = `OTP 123456 owner@example.com ACCT-CHK-0001 ${"T".repeat(1_000_000)}`;
+    const outcome = await driveExport(
+      makeDialogWrongShapePage(longDialogHtml, hostileTitle),
+      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      {
+        // Deliberately no `capture` and no `onDiagnostics` — matches
+        // PDPP_CAPTURE_FIXTURES / PDPP_CAPTURE_ON_FAILURE both being unset
+        // and no live diagnostics listener, as on the live 07-31 run.
+        fallbackDiagnosticRootOverride: captureRoot,
+        settleDelayMs: 0,
+        sinceDate: "2026-01-01",
+        untilDate: "2026-07-16",
+      }
+    );
     assert.deepEqual(outcome, { kind: "failed" });
 
     const fallbackPath = join(captureRoot, "usaa", "diagnostics", "export-dialog-unexpected-shape.json");
     const written = JSON.parse(await readFile(fallbackPath, "utf8"));
     assert.equal(written.phase, "export_dialog_unexpected_shape");
-    assert.equal(written.page_title, "Bank Account Summary | USAA");
-    assert.ok(written.dialog_html_preview.length <= 600, "fallback preview must stay within HTML_PREVIEW_MAX");
+    assert.equal(written.page_title, null);
+    assert.equal(written.dialog_html_preview, null);
     assert.ok(
-      !written.dialog_html_preview.includes("x".repeat(601)),
-      "fallback must never carry the untruncated raw dialog HTML"
+      Buffer.byteLength(await readFile(fallbackPath, "utf8"), "utf8") <= USAA_FALLBACK_SERIALIZED_BYTES_MAX,
+      "fallback JSON must stay below the serialized-byte cap"
+    );
+    assert.doesNotMatch(
+      JSON.stringify(written),
+      /123456|owner@example\.com|ACCT-CHK-0001|unexpected-promo-dialog|x{601}/,
+      "fallback must not persist OTP, email, account id, DOM, or hostile title evidence"
     );
 
     // A second occurrence overwrites, not accumulates — the whole point of
     // "bounded" is a fixed single file, not one per run.
     const secondOutcome = await driveExport(
-      makeDialogWrongShapePage(`<div>${"y".repeat(2000)}</div>`),
-      "https://www.usaa.com/my/checking",
+      makeDialogWrongShapePage(`<div>${"y".repeat(2000)}</div>`, `SECOND ${"Y".repeat(1_000_000)}`),
+      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
       {
         fallbackDiagnosticRootOverride: captureRoot,
         settleDelayMs: 0,
@@ -1461,11 +1712,9 @@ test("driveExport writes a bounded fallback capture for export_dialog_unexpected
     );
     assert.deepEqual(secondOutcome, { kind: "failed" });
     const rewritten = JSON.parse(await readFile(fallbackPath, "utf8"));
-    assert.ok(rewritten.dialog_html_preview.includes("y"), "second occurrence must overwrite, not append");
-    assert.ok(
-      !rewritten.dialog_html_preview.includes("x"),
-      "prior occurrence's content must not survive the overwrite"
-    );
+    assert.equal(rewritten.page_title, null);
+    assert.equal(rewritten.dialog_html_preview, null);
+    assert.doesNotMatch(JSON.stringify(rewritten), /x{20}|y{20}|SECOND/);
   } finally {
     rmSync(captureRoot, { force: true, recursive: true });
   }
@@ -1534,6 +1783,7 @@ test("runSingleLadderAttempt retains a logon interstitial on the existing re-aut
 test("emitExportFailure: the dialog-unexpected-shape phase is also a structure-changed outcome", async () => {
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
+    account_page_identity: "exact",
     phase: "export_dialog_unexpected_shape",
     diag: {
       url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",

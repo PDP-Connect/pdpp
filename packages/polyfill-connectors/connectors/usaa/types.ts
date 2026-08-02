@@ -151,6 +151,10 @@ export interface PageDiagnostics {
   url: string;
 }
 
+/** Closed, non-sensitive proof state for the page reached by an account
+ * navigation. Raw URLs and account identifiers never cross this boundary. */
+export type UsaaAccountPageIdentity = "exact" | "mismatch" | "unverified";
+
 /**
  * What `download.saveAs()` + the createReadStream fallback actually
  * produced when the export artifact arrived. Lets `download_empty`-style
@@ -169,6 +173,7 @@ export interface DownloadDiagnostics {
 }
 
 export interface DiagnosticInfo {
+  account_page_identity?: UsaaAccountPageIdentity;
   artifact?: BodyResponseDiagnostics | null;
   browser_surface?: BrowserSurfaceDiagnostic;
   diag: PageDiagnostics | null;
@@ -200,6 +205,7 @@ export interface ExportAffordanceCandidate {
 /** Closed facts collected only for the no-export terminal diagnostic. */
 export interface NoExportAffordanceObservation {
   account_detail_marker_count: number;
+  account_page_identity?: UsaaAccountPageIdentity;
   /** True iff at least one matched export-affordance element exists
    *  (`target_count > 0`) and it reports itself disabled/aria-disabled —
    *  i.e. the button is present but not yet actionable, as distinct from
