@@ -11,12 +11,15 @@ alongside it.
 
 ## What changes
 
-- Run the existing bounded, fenced connector-maintenance sweep once when its
-  timer is armed.
+- Launch the existing bounded, fenced startup walker synchronously before the
+  periodic connector-maintenance timer is armed, making it the explicit
+  first-pass authority.
+- Preserve the timer's ordinary periodic cadence without giving it a
+  competing immediate boot tick.
 - Keep ordinary owner reads read-only and preserve the periodic cadence.
 
 ## Impact
 
 The change affects reference connector-summary maintenance only. It does not
-infer coverage, change unknown classifications, or modify connector-specific
-collection behavior.
+infer coverage, change unknown classifications, modify connector-specific
+collection behavior, or add writes to owner reads.

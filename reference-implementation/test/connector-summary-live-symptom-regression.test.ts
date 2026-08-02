@@ -23,6 +23,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { emitSpineEvent } from "../lib/spine.ts";
+import { createResumableConnectorMaintenanceSweep } from "../server/connector-maintenance-sweep.ts";
 import {
   getConnectorListSummaryTerminalProjection,
   getConnectorSummaryEvidence,
@@ -160,6 +161,56 @@ async function seedSuccessfulCoveredRun(runId: string, occurredAt: string) {
   });
 }
 
+async function seedFailedRun(runId: string, occurredAt: string) {
+  await emitSpineEvent({
+    actor_id: CONNECTOR_ID,
+    actor_type: "runtime",
+    data: {
+      boot_epoch: "00000000-0000-4000-8000-000000000099",
+      connection_id: CONNECTOR_INSTANCE_ID,
+      connector_instance_id: CONNECTOR_INSTANCE_ID,
+      reason: "connector_reported_failed",
+      seq: 2,
+      source: { id: CONNECTOR_ID, kind: "connector" },
+    },
+    event_type: "run.failed",
+    object_id: runId,
+    object_type: "run",
+    occurred_at: occurredAt,
+    run_id: runId,
+    source_id: CONNECTOR_ID,
+    source_kind: "connector",
+    status: "failed",
+    trace_id: `trc_${runId}`,
+  });
+}
+
+/**
+ * The exact evidence branch wired in `startServer`: the coordinator owns the
+ * durable cursor/fence, invokes the bounded repair, then publishes only the
+ * evidence rows that this repair observed current. Keeping this as a test
+ * seam makes the real maintenance authority executable without starting an
+ * HTTP listener or mutating a live deployment.
+ */
+function createProductionEvidenceMaintenanceSweep() {
+  return createResumableConnectorMaintenanceSweep({
+    evidenceSweepMaxDurationMs: 5000,
+    evidenceSweepPageSize: 25,
+    runEvidenceSweep: async (args) => {
+      const result = await runBoundedSummaryEvidenceSweep({
+        ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+        maxDurationMs: args.maxDurationMs,
+        pageSize: args.pageSize ?? 25,
+        ...(args.phaseTurnGeneration === undefined ? {} : { phaseTurnGeneration: args.phaseTurnGeneration }),
+      });
+      if (result.observedIds.length > 0) {
+        await publishConnectorListSummaryTerminalProjectionsForIds(result.observedIds);
+      }
+      return result;
+    },
+  });
+}
+
 test(
   "LIVE SYMPTOM: after a successful fully-covered run, one bounded maintenance cycle makes /_ref/connectors report ProjectionReliable and healthy, with no read-time fallback/mutation",
   withTmpDb(async () => {
@@ -178,13 +229,11 @@ test(
     assert.ok(before, "the terminal event's own convergence trigger already created the evidence row");
     assert.equal(before.terminal_facts.state, "current");
 
-    // ONE bounded maintenance cycle — the exact primitive both the periodic
-    // 60s tick (connector-maintenance-sweep.ts) and the startup pass call.
-    // Not `rebuildConnectorSummaryEvidence()` (unbounded, test-only shortcut)
-    // and not a second/extra call — exactly what production runs once.
-    const sweep = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 5000, pageSize: 25 });
-    assert.equal(sweep.incomplete, false, "one bounded cycle must fully converge a single-connection fleet");
-    assert.ok(sweep.observedIds.includes(CONNECTOR_INSTANCE_ID));
+    // ONE production maintenance cycle — through the same resumable
+    // coordinator/fence and publisher callback that the startup walker and
+    // periodic timer use, not the bare bounded primitive or an unbounded
+    // test shortcut.
+    await createProductionEvidenceMaintenanceSweep().run();
 
     // Evidence-row proof: the three components `evidenceUnreliableSources`
     // (server/ref-control.ts:3539) gates on are all current after this one
@@ -196,6 +245,8 @@ test(
     assert.equal(evidence.record_snapshot.state, "current");
     assert.equal(evidence.terminal_facts.state, "current", "terminal fold must have converged in this one cycle");
     assert.equal(evidence.manifest_declaration.state, "current");
+    const projection = await getConnectorListSummaryTerminalProjection(CONNECTOR_INSTANCE_ID);
+    assert.equal(projection.state, "current", "the maintenance owner republishes a repaired terminal projection");
 
     // No-mutation-on-read proof: capture the write count, then read.
     const beforeReadRow = getDb().prepare("SELECT total_changes() AS changes").get<{ changes: number }>();
@@ -247,10 +298,8 @@ test(
 
     // First bounded cycle: establishes a current, published baseline —
     // exactly the "after successful run" state before any repair mutation.
-    const firstSweep = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 5000, pageSize: 25 });
-    assert.equal(firstSweep.incomplete, false);
-    const firstPublish = await publishConnectorListSummaryTerminalProjectionsForIds(firstSweep.observedIds);
-    assert.equal(firstPublish.published, 1);
+    const maintenance = createProductionEvidenceMaintenanceSweep();
+    await maintenance.run();
     const currentProjection = await getConnectorListSummaryTerminalProjection(CONNECTOR_INSTANCE_ID);
     assert.equal(currentProjection.state, "current");
 
@@ -283,13 +332,10 @@ test(
     const midCondition = midSummary.connection_health.conditions.find((c) => c.type === "ProjectionReliable");
     assert.equal(midCondition?.status, "false", "premise: a freshly-dirtied row is honestly unreliable until repaired");
 
-    // ONE more bounded maintenance cycle — same primitive, same bound —
+    // ONE more production maintenance cycle — same coordinator, fence, and bound —
     // must repair the dirty evidence AND let the publisher re-converge the
     // terminal LIST projection from stale back to current.
-    const secondSweep = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 5000, pageSize: 25 });
-    assert.equal(secondSweep.incomplete, false);
-    const secondPublish = await publishConnectorListSummaryTerminalProjectionsForIds(secondSweep.observedIds);
-    assert.equal(secondPublish.published, 1, "the publisher must re-converge the projection after the repair cycle");
+    await maintenance.run();
 
     const republished = await getConnectorListSummaryTerminalProjection(CONNECTOR_INSTANCE_ID);
     assert.equal(republished.state, "current");
@@ -306,5 +352,61 @@ test(
       `ProjectionReliable must recover to true after the repair cycle (got reason=${String(afterCondition?.reason)})`
     );
     assert.equal(afterSummary.connection_health.state, "healthy");
+  })
+);
+
+test(
+  "production maintenance repairs stale fully-evidenced facts but leaves known failed recovery non-green, and a failed repair leaves the projection non-current",
+  withTmpDb(async () => {
+    seedConnector();
+    await seedInstance();
+    await seedSuccessfulCoveredRun("run_live_symptom_recovery_success", RUN_OCCURRED_AT);
+    await seedFailedRun("run_live_symptom_recovery_failure", new Date(Date.now() - 15_000).toISOString());
+
+    const maintenance = createProductionEvidenceMaintenanceSweep();
+    await maintenance.run();
+    await markConnectorSummaryEvidenceDirty({
+      connectorInstanceId: CONNECTOR_INSTANCE_ID,
+      reason: "stale fully-evidenced startup residual",
+    });
+    assert.equal((await getConnectorSummaryEvidence(CONNECTOR_INSTANCE_ID))?.dirty, true, "fixture starts stale");
+
+    await maintenance.run();
+    const repaired = await getConnectorSummaryEvidence(CONNECTOR_INSTANCE_ID);
+    assert.ok(repaired);
+    assert.equal(repaired.dirty, false, "the production owner repairs existing canonical facts");
+    assert.equal(repaired.state, "fresh");
+    const repairedProjection = await getConnectorListSummaryTerminalProjection(CONNECTOR_INSTANCE_ID);
+    assert.equal(repairedProjection.state, "current");
+
+    const repairedSummary = (await listConnectorSummaries()).find(
+      (row) => row.connector_instance_id === CONNECTOR_INSTANCE_ID
+    );
+    assert.ok(repairedSummary);
+    assert.notEqual(
+      repairedSummary.connection_health.state,
+      "healthy",
+      "repairing stale evidence must not relabel known failed recovery as green"
+    );
+
+    await markConnectorSummaryEvidenceDirty({
+      connectorInstanceId: CONNECTOR_INSTANCE_ID,
+      reason: "failed repair fixture",
+    });
+    const failingMaintenance = createResumableConnectorMaintenanceSweep({
+      evidenceSweepMaxDurationMs: 5000,
+      evidenceSweepPageSize: 25,
+      runEvidenceSweep: () => Promise.reject(new Error("repair backend unavailable")),
+    });
+    await failingMaintenance.run();
+
+    const failedRepair = await getConnectorSummaryEvidence(CONNECTOR_INSTANCE_ID);
+    assert.ok(failedRepair);
+    assert.equal(failedRepair.dirty, true, "a failed repair never fabricates a current evidence row");
+    assert.equal(
+      (await getConnectorListSummaryTerminalProjection(CONNECTOR_INSTANCE_ID)).state,
+      "stale",
+      "a failed repair leaves the terminal owner projection non-current"
+    );
   })
 );

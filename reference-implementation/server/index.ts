@@ -6703,11 +6703,6 @@ export async function startServer(opts: ServerOpts = {}) {
         "connector-maintenance sweep tick failed"
       );
     },
-    // A stale summary envelope must not wait a full periodic interval after
-    // a restart before its existing canonical evidence is reconsidered. The
-    // sweep keeps its durable lease/cursor, so this is the same bounded
-    // maintenance authority as later ticks, not a read-path repair.
-    runImmediately: true,
     sweep: () => connectorMaintenanceSweep.run(),
   });
   function stopConnectorMaintenanceSweep() {
@@ -7060,46 +7055,47 @@ export async function startServer(opts: ServerOpts = {}) {
   // indefinitely. The per-request observation barrier remains the actual
   // correctness backstop regardless of how many rounds run or whether any
   // round fails (design.md "Startup is acceleration, not authority") — a
-  // connection this multi-round pass still does not reach is repaired by
-  // the next real read, never lost.
-  const startupSummaryEvidenceSweepDone = new Promise<void>((resolve) => {
-    setImmediate(() => {
-      // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
-      void runStartupSummaryEvidenceSweepToCompletion({
-        maxDurationMs: STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
-        maxRounds: STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS,
-        onRound: (summary: SweepSummary, round: number) => {
-          if (
-            ((summary as unknown as Record<string, unknown>).repaired as number) > 0 ||
-            ((summary as unknown as Record<string, unknown>).skipped as number) > 0 ||
-            summary.incomplete
-          ) {
-            logger.info({ ...summary, round }, "startup summary-evidence observation");
-          }
-        },
-        pageSize: STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE,
-        runSweep: (args) =>
-          connectorMaintenanceSweep.runEvidenceSweepRound({
-            ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
-            maxDurationMs: args.maxDurationMs ?? STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
-            pageSize: args.pageSize ?? STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE,
-          }) as Promise<SweepSummary | null>,
-      })
-        .then((rounds) => {
-          const last = rounds.at(-1);
-          if (last?.incomplete && last.resumeAfterId) {
-            logger.info(
-              { resumeAfterId: last.resumeAfterId, rounds: rounds.length },
-              "startup summary-evidence observation stopped after the resume-round cap; the per-request barrier covers the remainder"
-            );
-          }
-        })
-        .catch((err) => {
-          logger.warn({ err }, "startup summary-evidence observation failed; the next read will retry");
-        })
-        .finally(resolve);
+  // connection this multi-round pass still does not reach remains visibly
+  // stale until periodic maintenance reaches it; reads stay read-only.
+  // Start the bounded startup walker now, before the periodic timer below is
+  // armed. `runEvidenceSweepRound` claims its durable fence before its first
+  // await, so this makes the walker the sole first-pass authority instead of
+  // letting an immediate timer tick win the in-process coordinator guard and
+  // make this finite boot walk report zero rounds. The promise is still not
+  // awaited by startup: boot remains bounded and the durable cursor/fence
+  // continues to govern later periodic rounds.
+  const startupSummaryEvidenceSweepDone = runStartupSummaryEvidenceSweepToCompletion({
+    maxDurationMs: STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
+    maxRounds: STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS,
+    onRound: (summary: SweepSummary, round: number) => {
+      if (
+        ((summary as unknown as Record<string, unknown>).repaired as number) > 0 ||
+        ((summary as unknown as Record<string, unknown>).skipped as number) > 0 ||
+        summary.incomplete
+      ) {
+        logger.info({ ...summary, round }, "startup summary-evidence observation");
+      }
+    },
+    pageSize: STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE,
+    runSweep: (args) =>
+      connectorMaintenanceSweep.runEvidenceSweepRound({
+        ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+        maxDurationMs: args.maxDurationMs ?? STARTUP_SUMMARY_EVIDENCE_MAX_DURATION_MS,
+        pageSize: args.pageSize ?? STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE,
+      }) as Promise<SweepSummary | null>,
+  })
+    .then((rounds) => {
+      const last = rounds.at(-1);
+      if (last?.incomplete && last.resumeAfterId) {
+        logger.info(
+          { resumeAfterId: last.resumeAfterId, rounds: rounds.length },
+          "startup summary-evidence observation stopped after the resume-round cap; the per-request barrier covers the remainder"
+        );
+      }
+    })
+    .catch((err) => {
+      logger.warn({ err }, "startup summary-evidence observation failed; the next read will retry");
     });
-  });
   // Run-history backfill startup accelerator (terminal-read-architecture-
   // fable-0730.md §9): same fire-and-forget shape as the evidence sweep
   // above — NOT a traffic gate (R9.1 struck the blocking-startup-loop

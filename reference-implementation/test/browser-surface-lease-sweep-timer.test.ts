@@ -76,12 +76,14 @@ function createFakeTimers() {
 
 test("start creates exactly one interval at the configured cadence", () => {
   const fake = createFakeTimers();
+  let sweepCalls = 0;
   const timer = createBrowserSurfaceLeaseSweepTimer({
     clearIntervalFn: fake.clearIntervalFn,
     intervalMs: 30_000,
     setIntervalFn: fake.setIntervalFn,
-    sweep: async () => {
-      /* intentionally empty */
+    sweep: () => {
+      sweepCalls += 1;
+      return Promise.resolve();
     },
   });
 
@@ -91,8 +93,11 @@ test("start creates exactly one interval at the configured cadence", () => {
   // biome-ignore lint/style/useDestructuring: Indexed access expresses the protocol field position under test.
   const first = [...fake.scheduled.entries()][0];
   assert.ok(first);
-  const [, entry] = first;
+  const [id, entry] = first;
   assert.equal(entry.ms, 30_000);
+  assert.equal(sweepCalls, 0, "the default periodic timer has no competing immediate boot pass");
+  fake.fire(id);
+  assert.equal(sweepCalls, 1, "the first regular cadence tick still runs the sweep");
 });
 
 test("calling start twice does not create a second interval", () => {
@@ -135,6 +140,11 @@ test("an immediate sweep runs once when explicitly requested, without changing t
   timer.start();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sweepCalls, 1, "repeated start does not rerun the immediate pass");
+
+  timer.stop();
+  timer.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sweepCalls, 2, "a new stop/start lifecycle gets one explicit immediate pass");
 });
 
 test("stop clears the interval", () => {
@@ -246,6 +256,7 @@ test("on tick, sweep() is invoked; a rejected sweep is routed to onSweepError, n
     clearIntervalFn: fake.clearIntervalFn,
     intervalMs: 30_000,
     onSweepError: (err) => errors.push(err),
+    runImmediately: true,
     setIntervalFn: fake.setIntervalFn,
     // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
     sweep: async () => {
@@ -255,6 +266,9 @@ test("on tick, sweep() is invoked; a rejected sweep is routed to onSweepError, n
   });
 
   timer.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sweepCalls, 1, "an immediate rejection still invokes the sweep exactly once");
+  assert.equal(errors.length, 1, "an immediate rejection is routed to the error sink");
   const id = mustExist([...fake.scheduled.keys()][0], "timer was scheduled");
   fake.fire(id);
 
@@ -262,8 +276,8 @@ test("on tick, sweep() is invoked; a rejected sweep is routed to onSweepError, n
   // settle before asserting.
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(sweepCalls, 1);
-  assert.equal(errors.length, 1);
+  assert.equal(sweepCalls, 2);
+  assert.equal(errors.length, 2);
   const firstError = mustExist(errors[0], "one sweep error recorded");
   assert.ok(firstError instanceof Error);
   assert.equal(firstError.message, "sweep failed");

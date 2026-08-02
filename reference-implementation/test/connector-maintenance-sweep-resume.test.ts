@@ -6,8 +6,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createBrowserSurfaceLeaseSweepTimer } from "../runtime/browser-surface-lease-sweep-timer.ts";
 import { createResumableConnectorMaintenanceSweep } from "../server/connector-maintenance-sweep.ts";
 import { closeDb, initDb } from "../server/db.ts";
+import { runStartupSummaryEvidenceSweepToCompletion as runStartupSummaryEvidenceSweepToCompletionUntyped } from "../server/index.ts";
 import {
   type ConnectorMaintenanceCursorLease,
   type ConnectorMaintenanceCursorStore,
@@ -15,6 +17,17 @@ import {
 } from "../server/stores/connector-maintenance-cursor-store.ts";
 
 const INVALID_RESUMABLE_RESULT = /invalid resumable result/;
+
+const runStartupSummaryEvidenceSweepToCompletion = runStartupSummaryEvidenceSweepToCompletionUntyped as (args: {
+  runSweep: (args: {
+    afterId?: string | null;
+    maxDurationMs?: number;
+    pageSize?: number;
+  }) => Promise<{ incomplete: boolean; resumeAfterId: string | null } | null>;
+  maxDurationMs: number;
+  maxRounds: number;
+  pageSize: number;
+}) => Promise<Array<{ incomplete: boolean; resumeAfterId: string | null }>>;
 
 function memoryCursorStore(): ConnectorMaintenanceCursorStore & { readonly writes: Array<string | null> } {
   let cursor: string | null = null;
@@ -314,6 +327,81 @@ test("startup and periodic runners share durable ownership and never overlap evi
     release();
     assert.deepEqual(await startupRound, { incomplete: true, resumeAfterId: "cin_after_startup" });
     assert.equal(startupCalls, 1);
+  } finally {
+    closeDb();
+  }
+});
+
+test("startup takes the first fenced round before an immediate periodic timer tick, so the bounded walker is never suppressed", async () => {
+  initDb(":memory:");
+  const cursorStore = memoryCursorStore();
+  let releaseStartup: (() => void) | null = null;
+  let signalStartup: (() => void) | null = null;
+  const startupEntered = new Promise<void>((resolve) => {
+    signalStartup = resolve;
+  });
+  let evidenceCalls = 0;
+  let periodicTicks = 0;
+  let intervalCallback: (() => void) | null = null;
+  try {
+    const coordinator = runner(cursorStore, async () => {
+      evidenceCalls += 1;
+      signalStartup?.();
+      await new Promise<void>((resolve) => {
+        releaseStartup = resolve;
+      });
+      return { incomplete: false, resumeAfterId: null };
+    });
+
+    // This is the production ordering in server/index.ts: invoking the
+    // startup walk synchronously claims the coordinator before the periodic
+    // timer is armed. The timer remains capable of an explicit immediate
+    // activation; it simply cannot steal the startup owner's round.
+    const startup = runStartupSummaryEvidenceSweepToCompletion({
+      maxDurationMs: 1,
+      maxRounds: 20,
+      pageSize: 1,
+      runSweep: (args) =>
+        coordinator.runEvidenceSweepRound({
+          ...(args.afterId === undefined ? {} : { afterId: args.afterId }),
+          maxDurationMs: args.maxDurationMs ?? 1,
+          ...(args.pageSize === undefined ? {} : { pageSize: args.pageSize }),
+        }),
+    });
+    await startupEntered;
+
+    const timer = createBrowserSurfaceLeaseSweepTimer({
+      clearIntervalFn: () => undefined,
+      intervalMs: 60_000,
+      runImmediately: true,
+      setIntervalFn: (callback) => {
+        intervalCallback = callback;
+        return {} as NodeJS.Timeout;
+      },
+      sweep: async () => {
+        periodicTicks += 1;
+        await coordinator.run();
+      },
+    });
+    timer.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(periodicTicks, 1, "the explicit immediate timer activation ran");
+    assert.equal(evidenceCalls, 1, "the immediate timer tick was fenced out of the startup-owned evidence round");
+
+    const periodicTick = intervalCallback as (() => void) | null;
+    assert.ok(periodicTick, "the timer installed its regular cadence callback");
+    periodicTick();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(periodicTicks, 2, "a periodic overlap is also allowed to attempt the shared coordinator");
+    assert.equal(evidenceCalls, 1, "overlap never starts a second evidence writer");
+
+    const release = releaseStartup as (() => void) | null;
+    assert.ok(release, "the startup owner installed its completion hook");
+    release();
+    const rounds = await startup;
+    assert.equal(rounds.length, 1, "the startup walker completed its authoritative first round, never zero rounds");
+    assert.equal(rounds[0]?.incomplete, false);
+    timer.stop();
   } finally {
     closeDb();
   }

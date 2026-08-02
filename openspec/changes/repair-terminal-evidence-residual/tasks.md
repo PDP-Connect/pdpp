@@ -1,9 +1,10 @@
 ## 1. Implementation
 
 - [x] 1.1 Add opt-in immediate execution to the shared sweep timer.
-- [x] 1.2 Arm connector-summary maintenance with one immediate bounded pass.
+- [x] 1.2 Launch the bounded startup walker before arming periodic maintenance.
+- [x] 1.3 Remove the competing immediate connector-maintenance timer tick while preserving cursor/fence and cadence.
 
 ## 2. Verification
 
-- [x] 2.1 Add a deterministic timer regression for immediate execution and idempotent start.
-- [ ] 2.2 Run focused tests, typecheck, Ultracite, and OpenSpec validation.
+- [x] 2.1 Add deterministic production-wiring regressions for startup ownership, stale fully-evidenced repair, known recovery, failed repair, read-only reads, timer lifecycle, rejection, and overlap.
+- [x] 2.2 Run focused tests, attempted typecheck, Ultracite, OpenSpec validation, and diff review (full typecheck remains blocked only by the pre-existing test-only error at `test/controller-recovery-continuation-automation-policy.test.ts:118`).
