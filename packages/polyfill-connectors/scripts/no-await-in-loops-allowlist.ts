@@ -762,14 +762,14 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/gmail/index.ts",
-    line: 1796,
+    line: 2444,
     column: 18,
     category: "provider_pacing_backpressure",
     note: "processServedAttachmentRecoveryGap(): rate-limited/budget-gated external call",
   },
   {
     path: "connectors/gmail/index.ts",
-    line: 2405,
+    line: 3186,
     column: 5,
     category: "ordered_protocol_emission",
     note: "emitRecord(): Collection Profile protocol emission requiring in-order delivery",

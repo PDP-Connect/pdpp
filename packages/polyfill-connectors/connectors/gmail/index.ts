@@ -2044,7 +2044,19 @@ interface ServedAttachmentRecoveryState {
 }
 
 type ServedAttachmentRecoveryLookupResult = FetchMessageObject | null | "metadata_lookup_limit_reached";
-type ServedAttachmentRecoveryStop = "byte_budget" | "metadata_lookup_cap" | false;
+// `byte_budget` (the pre-check at the top of `processServedAttachmentRecoveryGap`:
+// the running total has already reached the budget) is a genuine hard stop —
+// every remaining candidate, of any size, is guaranteed to hit the same wall,
+// so the caller halts the whole pass. `oversized_for_remaining_budget` (this
+// specific candidate's own byte cost would push the total over budget, but the
+// budget itself is not yet full) is NOT a hard stop: a smaller sibling later in
+// the served-gap order may still fit the remaining room. Distinguishing the two
+// is the fix for the live starvation defect where a handful of multi-MB
+// attachments — always ranked first by recency/age — perpetually reject every
+// smaller sibling behind them by halting the pass outright, so `admitted=1,
+// recovered=0` every run while 44 siblings starve untouched indefinitely (see
+// `gmail-attachment-recovery-starvation-0801.md`).
+type ServedAttachmentRecoveryStop = "byte_budget" | "metadata_lookup_cap" | "oversized_for_remaining_budget" | false;
 
 async function loadServedAttachmentRecoveryMessage(
   client: GmailMessageLookupClient,
@@ -2354,7 +2366,11 @@ async function processServedAttachmentRecoveryGap(
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
   if (state.admitted > 0 && state.admittedBytesTotal + attachmentBytes > byteBudget) {
     await settleServedAttachmentRecoveryDeferral(gap, "run_cap_deferred", state, deps.emitProtocol);
-    return "byte_budget";
+    // This candidate alone doesn't fit the REMAINING budget — not the same as
+    // the budget being fully spent (the top-of-function pre-check already
+    // covers that hard stop). A smaller sibling later in the served order may
+    // still fit, so the caller continues the pass instead of halting it.
+    return "oversized_for_remaining_budget";
   }
 
   state.admitted += 1;
@@ -2426,9 +2442,17 @@ export async function recoverServedAttachmentGaps(
 
   for (const [index, gap] of servedGaps.entries()) {
     const stop = await processServedAttachmentRecoveryGap(client, gap, recoveryAttemptDeps, recoveryState, byteBudget);
+    if (stop === "oversized_for_remaining_budget") {
+      // This candidate alone doesn't fit what's left of the budget, but the
+      // budget isn't fully spent — a smaller sibling further down the served
+      // order may still fit, so keep going instead of abandoning the rest of
+      // the page (see `ServedAttachmentRecoveryStop`'s doc comment).
+      recoveryState.runCapDeferred += 1;
+      continue;
+    }
     if (stop) {
       if (stop === "byte_budget") {
-        recoveryState.runCapDeferred = servedGaps.length - index;
+        recoveryState.runCapDeferred += servedGaps.length - index;
       }
       break;
     }

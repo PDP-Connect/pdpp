@@ -1687,7 +1687,7 @@ test("recoverServedAttachmentGaps: an oversized first candidate admits exactly o
   }
 });
 
-test("recoverServedAttachmentGaps: small candidates stop at budget after one rejected probe", async () => {
+test("recoverServedAttachmentGaps: candidates that don't fit remaining budget are each rejected, not just the first", async () => {
   const originalBudget = process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
   process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = String(ATTACHMENT_BACKFILL_PAGE_MIN_BYTES);
   try {
@@ -1751,15 +1751,24 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
       }
     );
 
-    assert.equal(search.mock.callCount(), 3, "the first rejected overflow probe is the only extra lookup");
-    assert.equal(fetchOne.mock.callCount(), 3, "the overflow candidate should still require one fetch before stopping");
+    // Every remaining candidate individually exceeds what's left of the
+    // budget (each is 100_000 bytes; only ~56_000 remains after two are
+    // admitted), so all three still get looked up and rejected on their own
+    // turn — the pass no longer halts on the FIRST rejection (the live
+    // starvation defect: a handful of oversized attachments, always ranked
+    // first, silently starved every smaller sibling behind them by aborting
+    // the whole page). Each rejected candidate still gets its own lookup and
+    // its own `run_cap_deferred` settlement, so its `last_attempt_at` and
+    // ordering rank actually advance instead of freezing forever.
+    assert.equal(search.mock.callCount(), 5, "every candidate is evaluated, not just the first rejection");
+    assert.equal(fetchOne.mock.callCount(), 5, "every candidate requires its own fetch before its own settlement");
     assert.equal(hydrateAttachmentMock.mock.callCount(), 2, "only the budgeted prefix should hydrate");
     assert.equal(summary.admitted, 2);
     assert.equal(summary.recovered, 2);
     assert.deepEqual(summary, {
       admitted: 2,
       admitted_bytes: 200_000,
-      attempted: 3,
+      attempted: 5,
       attachment_hydration_failure_outcome: {
         blob_upload_http_4xx: 0,
         blob_upload_http_5xx: 0,
@@ -1771,7 +1780,7 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
       },
       hydration_failed: 0,
       lookup_miss: 0,
-      metadata_lookups: 3,
+      metadata_lookups: 5,
       recovered: 2,
       run_cap_deferred: 3,
       served: 5,
@@ -1782,6 +1791,112 @@ test("recoverServedAttachmentGaps: small candidates stop at budget after one rej
       progressMessages.map((msg) => msg.message.match(/phase=([a-z]+)/u)?.[1]),
       ["hydrating", "settled", "hydrating", "settled"]
     );
+  } finally {
+    if (originalBudget === undefined) {
+      delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = originalBudget;
+    }
+  }
+});
+
+test("recoverServedAttachmentGaps: an oversized candidate mid-page defers alone; a smaller sibling behind it still gets admitted", async () => {
+  // Regression for the live starvation defect: a handful of oversized
+  // attachments (always ranked first by recency) each consumed the run's
+  // ENTIRE byte budget solo, then the pass halted outright on the next
+  // candidate simply for not fitting what little budget remained — even
+  // though a much smaller sibling three or four positions later would have
+  // fit easily. Live evidence: `served=45, admitted=1, recovered=0` on
+  // every run for 20+ hours, because the single first-ranked oversized
+  // attachment (4-9MB against a 4MB budget) always "won" the one available
+  // admission slot and every other gap was deferred without ever being
+  // sized or attempted. The fix: a candidate that doesn't fit the REMAINING
+  // budget is deferred on its own turn (still gets its own lookup, still
+  // gets a real `run_cap_deferred` settlement so its ordering rank
+  // advances), and the pass continues to the next candidate instead of
+  // aborting — so a smaller sibling behind an oversized one is not starved
+  // by it.
+  const originalBudget = process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
+  process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES = String(ATTACHMENT_BACKFILL_PAGE_MIN_BYTES);
+  try {
+    const messagesById = new Map<string, FetchMessageObject>();
+    // Budget = ATTACHMENT_BACKFILL_PAGE_MIN_BYTES (256KB). gap-0 (200KB) is
+    // admitted first (always-admit-at-least-one). gap-1 (200KB) does not fit
+    // the ~56KB remaining and is deferred on its own turn. gap-2 (20KB) DOES
+    // fit the still-remaining ~56KB and must still be reached and admitted.
+    const sizes = [200_000, 200_000, 20_000];
+    const servedGaps = sizes.map((size, index) => {
+      const messageId = `gmmsgid-mixed-${index}`;
+      const message = makeServedRecoveryMsg({
+        attachments: [size],
+        emailId: messageId,
+        threadId: `gmthrid-mixed-${index}`,
+        uid: 3000 + index,
+      });
+      messagesById.set(messageId, message);
+      return makeServedRecoveryGap({ gapId: `gap-mixed-${index}`, messageId, partIndex: 1 });
+    });
+    const search = mock.fn((query: { emailId?: string }) => {
+      const message = query.emailId ? messagesById.get(query.emailId) : undefined;
+      return Promise.resolve(message ? [message.uid ?? 0] : []);
+    });
+    const fetchOne = mock.fn((range: string) => {
+      const uid = Number(range);
+      const message = [...messagesById.values()].find((candidate) => candidate.uid === uid);
+      assert.ok(message, `unexpected uid lookup: ${range}`);
+      return Promise.resolve(message);
+    });
+    const hydrateAttachmentMock = mock.fn((_msg: FetchMessageObject, attachment: AttachmentRecord) =>
+      Promise.resolve(
+        hydratedResult({
+          ...attachment,
+          blob_ref: {
+            blob_id: `blob-${attachment.id}`,
+            mime_type: attachment.content_type ?? "application/octet-stream",
+            sha256: `sha-${attachment.id}`,
+            size_bytes: attachment.size_bytes ?? 0,
+          },
+          content_sha256: `sha-${attachment.id}`,
+          content_type: attachment.content_type,
+          hydration_error: null,
+          hydration_status: "hydrated" as const,
+          size_bytes: attachment.size_bytes,
+        })
+      )
+    );
+    const emitHarness = makeRecordingEmit();
+    const emitRecord = async (stream: string, data: Record<string, unknown>): Promise<boolean> => {
+      await emitHarness.emitRecord(stream, data);
+      return true;
+    };
+
+    const summary = await recoverServedAttachmentGaps(
+      { search, fetchOne },
+      {
+        detailGaps: servedGaps,
+        emitProtocol: emitHarness.emit,
+        emitRecord,
+        hydrateAttachment: hydrateAttachmentMock as HydrateAttachmentFn,
+      }
+    );
+
+    // Both gap-0 (admitted first) and gap-2 (the smaller sibling behind the
+    // oversized gap-1) hydrate; gap-1 alone is deferred. Under the prior
+    // starvation bug this would be admitted=1 (gap-0 only), with gap-1 AND
+    // gap-2 both abandoned untouched the instant gap-1 didn't fit.
+    assert.equal(summary.admitted, 2, "gap-0 and the smaller gap-2 are both admitted");
+    assert.equal(summary.recovered, 2);
+    assert.equal(summary.run_cap_deferred, 1, "only the genuinely oversized gap-1 defers");
+    assert.equal(search.mock.callCount(), 3, "every candidate is reached, including the one behind the oversized gap");
+    const deferredMessages = emitHarness.protocolMessages.filter(
+      (msg) => msg.type === "DETAIL_GAP" && msg.gap_id === "gap-mixed-1"
+    );
+    assert.equal(deferredMessages.length, 1, "the oversized gap gets its own real re-defer settlement");
+    assert.equal((deferredMessages[0] as { last_error?: { class?: string } }).last_error?.class, "run_cap_deferred");
+    const recoveredGapIds = emitHarness.protocolMessages
+      .filter((msg) => msg.type === "DETAIL_GAP_RECOVERED")
+      .map((msg) => (msg as { gap_id?: string }).gap_id);
+    assert.deepEqual(new Set(recoveredGapIds), new Set(["gap-mixed-0", "gap-mixed-2"]));
   } finally {
     if (originalBudget === undefined) {
       delete process.env.PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES;
