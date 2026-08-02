@@ -1252,8 +1252,15 @@ function readSlackOptions(): SlackOpts {
  */
 function buildChildEnv(token: string, cookie: string): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {
+    // Slackdump's official workspace/provider cache must survive a reference
+    // container restart. The reference runtime persists /root/.pdpp (which
+    // also contains the archive), while the OS default cache path is an
+    // ephemeral container layer. Keep an explicitly supplied CACHE_DIR
+    // authoritative; otherwise place Slackdump's own cache beside the
+    // durable archive, without introducing a second credential format/store.
     SLACK_TOKEN: token,
     SLACK_COOKIE: cookie,
+    CACHE_DIR: process.env.CACHE_DIR || join(homedir(), ".pdpp/slackdump"),
   };
   for (const [k, v] of Object.entries(process.env)) {
     if (k !== "SLACK_WORKSPACE" && k !== "SLACK_TOKEN" && k !== "SLACK_COOKIE") {
