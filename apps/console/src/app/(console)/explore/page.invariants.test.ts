@@ -35,6 +35,8 @@ const OWNER_FACING_DEMO_COPY_RE =
   /jump to an id|same call any client makes|window capped|names overlap across connections/i;
 const ACTIVE_RANGE_HELPER_RE = /activeRangeKey\(\{\s*since:\s*data\.since,\s*until:\s*data\.until\s*\}\)/;
 const STREAM_RECORDS_HREF_HELPER_RE = /function buildStreamRecordsHref\(\s*recordsBasePath: string,/;
+const CANONICAL_RECORDS_BASE_PROP_RE = /recordsBasePath=\{dashboardRoutes\.section\.records\}/;
+const LEGACY_RECORDS_BASE_DERIVATION_RE = /EXPLORE_SUFFIX_RE|explorePath\.replace\([^)]*records/;
 // The record-detail href is built by the pure buildRecordDetailHref helper in
 // ./explore-control-state.ts (unit-tested there) from clean path segments — NOT
 // by appending the record key to the stream href (which carries `?order=desc`;
@@ -309,8 +311,15 @@ test("Explore range shortcuts use a single active-range helper", async () => {
 
 test("Explore selected-record inspector exposes the complete scoped stream", async () => {
   const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
+  const page = await readFile(LIVE_PAGE_FILE, "utf8");
   const inspector = await readFile(RECORD_INSPECTOR_FILE, "utf8");
 
+  assert.match(page, CANONICAL_RECORDS_BASE_PROP_RE, "live Explore must pass the canonical /sources section base");
+  assert.doesNotMatch(
+    src,
+    LEGACY_RECORDS_BASE_DERIVATION_RE,
+    "Explore must not derive a legacy /records path from the /explore route"
+  );
   assert.match(src, STREAM_RECORDS_HREF_HELPER_RE, "Explore must have one complete-stream route helper");
   assert.match(
     src,

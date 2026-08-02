@@ -110,6 +110,7 @@ export default async function RecordsExplorerPage({
           explorePath={dashboardRoutes.section.explore}
           order="newest"
           peekRelationships={null}
+          recordsBasePath={dashboardRoutes.section.records}
         />
       </RecordroomShellWithPalette>
     );
@@ -151,6 +152,7 @@ export default async function RecordsExplorerPage({
           explorePath={dashboardRoutes.section.explore}
           order={order}
           peekRelationships={peekRelationships}
+          recordsBasePath={dashboardRoutes.section.records}
         />
       </RecordroomShellWithPalette>
     );

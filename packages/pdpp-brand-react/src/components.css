@@ -2102,6 +2102,10 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
 }
 .rr-x-facets__label {
   display: flex;
@@ -2984,12 +2988,14 @@
   right: 0;
   left: auto;
   z-index: 50;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 12px;
   width: min(360px, calc(100vw - 32px));
   max-width: min(360px, calc(100vw - 32px));
   padding: 14px 16px;
+  overflow-wrap: anywhere;
   background: var(--card);
   border: 1px solid var(--border-strong);
   border-top: 2px solid
@@ -4697,11 +4703,16 @@ a.rr-x-row {
     min-height: 42px;
     padding-block: 8px;
   }
+  .rr-x-source-group__summary {
+    align-items: center;
+    min-height: 44px;
+  }
   /* D12 mobile: the command bar is a 2-row layout.
      Row 1: the search input spans full width (no min-width constraint).
      Row 2: sort controls + Options disclosure sit as a compact inline
      strip — flex-wrap so they fit without overflowing 390px. */
   .rr-x-searchrow {
+    position: relative;
     flex-direction: column;
     gap: 8px;
   }
@@ -4714,13 +4725,24 @@ a.rr-x-row {
     flex-wrap: wrap;
     gap: 10px;
     align-items: center;
+    min-width: 0;
+    max-width: 100%;
   }
   /* Sort + Options sub-row: keep them on one horizontal strip, not stacked. */
   .rr-x-sort {
     flex-shrink: 0;
   }
   .rr-x-options {
+    position: static;
     flex-shrink: 0;
+  }
+  /* The desktop popup is anchored to the compact Options trigger. On a phone
+     that anchor can be narrower than the popup, which sends its left edge off
+     the viewport. Re-anchor to the full command row so the same disclosure
+     becomes a viewport-safe inline sheet without changing desktop behavior. */
+  .rr-x-options__body {
+    width: min(360px, 100%);
+    max-width: 100%;
   }
   .rr-x-datechip {
     flex-shrink: 0;

@@ -44,9 +44,9 @@ const HERO_FILE = fileURLToPath(
   new URL("../../../../../../../packages/operator-ui/src/components/overview-hero.tsx", import.meta.url)
 );
 
-// routes.ts derives the Sources add route from the section segment (clean
-// `sources` in the console, legacy `records` in the sandbox mirror), §10.B.
-const ROUTES_ADD_SOURCE_RE = /addSource: `\$\{basePath\}\/\$\{seg\.records\}\/add`/;
+// routes.ts derives the Sources add route from the shared canonical records
+// base (clean `sources` in the console, `records` in the sandbox mirror), §10.B.
+const ROUTES_ADD_SOURCE_RE = /addSource: `\$\{recordsBasePath\}\/add`/;
 // sources-view.tsx add-source path (the empty-state and footer links both point here)
 const ADD_SOURCE_HREF_CONST_RE = /ADD_SOURCE_HREF = "\/sources\/add"/;
 const ADD_SOURCE_LINK_RE = /href=\{ADD_SOURCE_HREF\}/;

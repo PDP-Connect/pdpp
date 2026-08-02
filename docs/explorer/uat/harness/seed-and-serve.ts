@@ -84,13 +84,13 @@ async function mintOwnerToken(): Promise<string> {
   if (ds !== 200) {
     throw new Error(`device_authorization failed (${ds}): ${JSON.stringify(device)}`);
   }
-  const { status: as } = await jsonFetch(`${AS_URL}/device/approve`, {
+  const approval = await fetch(`${AS_URL}/device/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_code: device.user_code }),
   });
-  if (as !== 200) {
-    throw new Error(`device/approve failed (${as})`);
+  if (approval.status !== 200) {
+    throw new Error(`device/approve failed (${approval.status})`);
   }
   const { status: ts, body: tok } = await jsonFetch<TokenResponse>(`${AS_URL}/oauth/token`, {
     method: "POST",

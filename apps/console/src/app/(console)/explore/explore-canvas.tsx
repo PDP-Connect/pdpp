@@ -162,8 +162,6 @@ const QUERY_WHITESPACE_RE = /\s+/;
  * server load-more beneath it (count==reachability).
  */
 const UPCOMING_PREVIEW_DAYS = 10;
-/** Strips the trailing `/explore` segment to derive the records section base. */
-const EXPLORE_SUFFIX_RE = /\/explore$/;
 /** Strips the trailing whitespace-delimited fragment (keeps the leading separator). */
 const TRAILING_FRAGMENT_RE = /(^|\s)\S*$/;
 
@@ -353,6 +351,8 @@ interface ExploreCanvasProps {
    * no record is open or no readable metadata was available.
    */
   peekRelationships?: PeekRelationships | null;
+  /** Canonical records section base (e.g. "/sources"), passed from Routes. */
+  recordsBasePath: string;
 }
 
 /**
@@ -1452,7 +1452,7 @@ function FeedControls({
             onClear={onClearRange}
             onPreset={onSetRange}
           />
-          <details className="rr-x-options">
+          <details className="rr-x-options" data-testid="explore-options">
             <summary className="rr-x-options__summary">Options</summary>
             <div className="rr-x-options__body">
               <div className="rr-x-options__group">
@@ -1804,11 +1804,19 @@ function StreamFacets({
   // search-within-filter for many values; below the threshold it is just noise).
   const showSearch = totalStreams > STREAM_GROUP_TOP_N || groups.length > 3;
   const searching = filter.trim() !== "";
-  // Open a group by default only when there is a single source (nothing to fold)
-  // or when a search is active (so the matching streams are visible immediately).
+  const [isPhone, setIsPhone] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 860px)");
+    const sync = () => setIsPhone(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+  // On phones, opening the outer Filters disclosure should expose the stream
+  // choices immediately. Desktop keeps the established grouped, collapsed rail.
   const singleSource = filtered.length === 1;
   return (
-    <div className="rr-x-facets">
+    <fieldset aria-label="Filter by stream" className="rr-x-facets" data-testid="explore-stream-filters">
       <span className="rr-x-facets__label">
         Sources &amp; streams
         {/* HONEST header count: how many stream facets are shown and that the
@@ -1833,7 +1841,7 @@ function StreamFacets({
       <div className="rr-x-facets__scroll">
         {filtered.map((g) => (
           <SourceFacetGroup
-            forceOpen={singleSource || searching}
+            forceOpen={isPhone || singleSource || searching}
             group={g}
             key={g.connectionId}
             onToggle={onToggle}
@@ -1846,7 +1854,7 @@ function StreamFacets({
           </span>
         ) : null}
       </div>
-    </div>
+    </fieldset>
   );
 }
 
@@ -3010,7 +3018,13 @@ function SavedViewTabs({
 // ─── ExploreCanvas ────────────────────────────────────────────────
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: ExploreCanvas orchestrates the full workbench state; this cell only swaps the shared record identity renderer.
-export function ExploreCanvas({ data, explorePath, order = "newest", peekRelationships = null }: ExploreCanvasProps) {
+export function ExploreCanvas({
+  data,
+  explorePath,
+  order = "newest",
+  peekRelationships = null,
+  recordsBasePath,
+}: ExploreCanvasProps) {
   const router = useRouter();
 
   // ── In-page navigation loading state ──
@@ -3086,10 +3100,6 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const bucketSeries = loadedBand && loadedBand.key === bucketRequestKey ? loadedBand.series : null;
   // Pending = a request is live (non-null key) and no band for THIS key has landed.
   const bucketBandPending = bucketRequestKey !== null && !(loadedBand && loadedBand.key === bucketRequestKey);
-
-  // Records section base path for mobile push-navigation row Links.
-  // e.g. "/explore" → "/sources".
-  const recordsBasePath = `${explorePath.replace(EXPLORE_SUFFIX_RE, "")}/records`;
 
   // The facet rail is a <details> that renders CLOSED (feed-first on phones).
   // On wide viewports we open it so the disclosure state matches the always-
@@ -3732,7 +3742,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
           A <details> disclosure so the rail can FOLD on phones (≤860px): the
           feed is the primary reading surface there. On desktop the disclosure is
           forced open and its summary chrome is hidden (see components.css). */}
-      <details className="rr-x-rail" ref={railRef}>
+      <details className="rr-x-rail" data-testid="explore-filter-rail" ref={railRef}>
         <summary className="rr-x-rail__toggle">
           <span className="rr-x-rail__toggle-label">Filters</span>
           {activeFacetCount > 0 && <span className="rr-x-rail__toggle-n">{activeFacetCount}</span>}

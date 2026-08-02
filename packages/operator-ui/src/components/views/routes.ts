@@ -78,15 +78,40 @@ export const CONSOLE_SEGMENTS: RouteSegments = { records: "sources", runs: "sync
 /** The live console owner routes are clean top-level nouns off root. */
 export const CONSOLE_BASE_PATH = "";
 
+/**
+ * Build the canonical record-detail path from an already-selected records
+ * section base (for example `/sources` or `/sandbox/records`). Each dynamic
+ * value is one encoded path segment; callers must pass raw IDs and names.
+ */
+export function buildRecordRoutePath(
+  recordsBasePath: string,
+  connectorId: string,
+  stream: string,
+  recordId: string
+): string {
+  return [
+    recordsBasePath,
+    encodeURIComponent(connectorId),
+    encodeURIComponent(stream),
+    encodeURIComponent(recordId),
+  ].join("/");
+}
+
+/** Build the canonical stream-list path without inventing a second URL shape. */
+export function buildStreamRoutePath(recordsBasePath: string, connectorId: string, stream: string): string {
+  return [recordsBasePath, encodeURIComponent(connectorId), encodeURIComponent(stream)].join("/");
+}
+
 function makeRoutes(basePath: string, opts: { overview?: string; segments?: RouteSegments } = {}): Routes {
   const enc = (v: string) => encodeURIComponent(v);
   const seg = opts.segments ?? LEGACY_SEGMENTS;
+  const recordsBasePath = `${basePath}/${seg.records}`;
   // An empty base path (the clean console root) has no usable literal overview
   // href, so it maps to `/`. Prefixed mirrors are their own overview.
   const overview = opts.overview ?? (basePath === "" ? "/" : basePath);
   return {
     basePath,
-    connector: (id) => `${basePath}/${seg.records}/${enc(id)}`,
+    connector: (id) => `${recordsBasePath}/${enc(id)}`,
     grant: (id) => `${basePath}/grants/${enc(id)}`,
     peek: (base, id, extra) => {
       const params = new URLSearchParams();
@@ -100,10 +125,10 @@ function makeRoutes(basePath: string, opts: { overview?: string; segments?: Rout
       params.set("peek", id);
       return `${base}?${params.toString()}`;
     },
-    record: (cid, s, rid) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}/${enc(rid)}`,
+    record: (cid, s, rid) => buildRecordRoutePath(recordsBasePath, cid, s, rid),
     run: (id) => `${basePath}/${seg.runs}/${enc(id)}`,
     section: {
-      addSource: `${basePath}/${seg.records}/add`,
+      addSource: `${recordsBasePath}/add`,
       connect: `${basePath}/connect`,
       deployment: `${basePath}/deployment`,
       deploymentTokens: `${basePath}/deployment/tokens`,
@@ -113,14 +138,14 @@ function makeRoutes(basePath: string, opts: { overview?: string; segments?: Rout
       grants: `${basePath}/grants`,
       notifications: `${basePath}/notifications`,
       overview,
-      records: `${basePath}/${seg.records}`,
+      records: recordsBasePath,
       runs: `${basePath}/${seg.runs}`,
       schedules: `${basePath}/schedules`,
       search: `${basePath}/search`,
       traces: `${basePath}/${seg.traces}`,
     },
-    stream: (cid, s) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}`,
-    streamHealth: (cid, s) => `${basePath}/${seg.records}/${enc(cid)}/${enc(s)}/health`,
+    stream: (cid, s) => buildStreamRoutePath(recordsBasePath, cid, s),
+    streamHealth: (cid, s) => `${buildStreamRoutePath(recordsBasePath, cid, s)}/health`,
     trace: (id) => `${basePath}/${seg.traces}/${enc(id)}`,
   };
 }

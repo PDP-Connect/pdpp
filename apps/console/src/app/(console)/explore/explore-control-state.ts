@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { buildRecordRoutePath, buildStreamRoutePath } from "@pdpp/operator-ui/components/views/routes";
+
 export type ExploreRange = "today" | "7d" | "30d" | "all";
 
 const RANGE_DAYS: Record<Exclude<ExploreRange, "all">, number> = { "7d": 6, "30d": 29, today: 0 };
@@ -109,12 +111,7 @@ export function buildRecordDetailHref(
   recordsBasePath: string,
   subject: CompleteStreamHrefSubject & { recordId: string }
 ): string {
-  return [
-    recordsBasePath,
-    encodeURIComponent(recordsRouteId(subject)),
-    encodeURIComponent(subject.stream),
-    encodeURIComponent(subject.recordId),
-  ].join("/");
+  return buildRecordRoutePath(recordsBasePath, recordsRouteId(subject), subject.stream, subject.recordId);
 }
 
 export function buildCompleteStreamHref(
@@ -123,7 +120,7 @@ export function buildCompleteStreamHref(
   state: CompleteStreamHrefState = {}
 ): string {
   const routeId = recordsRouteId(subject);
-  const path = [recordsBasePath, encodeURIComponent(routeId), encodeURIComponent(subject.stream)].join("/");
+  const path = buildStreamRoutePath(recordsBasePath, routeId, subject.stream);
   const params = new URLSearchParams();
 
   for (const filter of state.exactFilters ?? []) {

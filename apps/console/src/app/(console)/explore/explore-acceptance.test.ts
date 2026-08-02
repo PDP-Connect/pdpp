@@ -54,8 +54,9 @@ const STREAM_SEE_ALL_LINKS_READ_RE = /data\.streamSeeAllLinks/;
 const STREAM_SEE_ALL_COMPONENT_RE = /StreamSeeAllLink/;
 const STREAM_SEE_ALL_VIA_HELPER_RE =
   /function StreamSeeAllLink\(\{[\s\S]*buildStreamRecordsHref\(recordsBasePath, \{[\s\S]*connectionId: link\.connectionId,[\s\S]*stream: link\.stream,/;
-const ENCODES_ROUTE_ID_RE = /encodeURIComponent\(routeId\)/;
-const ENCODES_STREAM_RE = /encodeURIComponent\(subject\.stream\)/;
+const CANONICAL_ROUTE_HELPERS_IMPORT_RE =
+  /buildRecordRoutePath[\s\S]*buildStreamRoutePath[\s\S]*from "@pdpp\/operator-ui\/components\/views\/routes"/;
+const USES_CANONICAL_STREAM_PATH_RE = /buildStreamRoutePath\(recordsBasePath, routeId, subject\.stream\)/;
 const RECORDS_BASE_PATH_RE = /recordsBasePath/;
 const DAY_GROUP_CLASS_RE = /rr-x-day/;
 const BURST_CLASS_RE = /rr-x-burst/;
@@ -309,15 +310,15 @@ test("P1 invariant: each See-all link routes through the shared complete-stream 
     STREAM_SEE_ALL_VIA_HELPER_RE,
     "StreamSeeAllLink must build its href via the shared buildStreamRecordsHref helper from link identity"
   );
-  // The shared helper resolves to the per-stream records path and encodes both
-  // the route id (connection or connector) and the stream segment.
+  // The shared helper resolves to the per-stream records path; segment encoding
+  // belongs to the canonical route module rather than a second Explore encoder.
   const controlState = await readFile(new URL("./explore-control-state.ts", import.meta.url), "utf8");
+  assert.match(controlState, CANONICAL_ROUTE_HELPERS_IMPORT_RE, "Explore must use the canonical route path builders");
   assert.match(
     controlState,
-    ENCODES_ROUTE_ID_RE,
-    "the complete-stream helper must encode the connection/connector route segment"
+    USES_CANONICAL_STREAM_PATH_RE,
+    "the complete-stream helper must use the shared stream path"
   );
-  assert.match(controlState, ENCODES_STREAM_RE, "the complete-stream helper must encode the stream segment");
   // The link still bases on the per-stream records path (not the explore path).
   assert.match(src, RECORDS_BASE_PATH_RE, "StreamSeeAllLink must use recordsBasePath as its route base");
 });

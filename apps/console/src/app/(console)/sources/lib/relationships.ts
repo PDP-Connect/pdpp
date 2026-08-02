@@ -27,6 +27,7 @@
  * plain data so it is unit-testable without a running server or React.
  */
 
+import { buildRecordRoutePath, buildStreamRoutePath, dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import type { ExpandCapability } from "../../lib/rs-client.ts";
 
 /** A declared relationship rendered on the parent record's detail page. */
@@ -65,10 +66,6 @@ export interface ReverseChildListLink {
   href: string;
 }
 
-function recordsBasePath(connectionId: string): string {
-  return `/sources/${encodeURIComponent(connectionId)}`;
-}
-
 /**
  * Build the bounded, server-filterable child-**list** href for a parent →
  * children navigation: `…/<child>?filter[<fk>]=<parentKey>`. Each path segment
@@ -85,9 +82,9 @@ function filteredChildListHref(args: {
   foreignKey: string;
   parentKey: string;
 }): string {
-  const base = recordsBasePath(args.connectionId);
+  const base = buildStreamRoutePath(dashboardRoutes.section.records, args.connectionId, args.childStream);
   const filterQuery = `filter[${encodeURIComponent(args.foreignKey)}]=${encodeURIComponent(args.parentKey)}`;
-  return `${base}/${encodeURIComponent(args.childStream)}?${filterQuery}`;
+  return `${base}?${filterQuery}`;
 }
 
 /**
@@ -297,7 +294,6 @@ export function childHasOneBackLinksFromManifest(
   if (!(childManifestStream && childRecordData && typeof childRecordData === "object")) {
     return [];
   }
-  const base = recordsBasePath(args.connectionId);
   const out: ParentBackLink[] = [];
   for (const rel of childManifestStream.relationships ?? []) {
     if (rel.cardinality !== "has_one" || !rel.stream || !rel.foreign_key) {
@@ -309,7 +305,7 @@ export function childHasOneBackLinksFromManifest(
     }
     out.push({
       childParentKeyField: rel.foreign_key,
-      href: `${base}/${encodeURIComponent(rel.stream)}/${encodeURIComponent(value)}`,
+      href: buildRecordRoutePath(dashboardRoutes.section.records, args.connectionId, rel.stream, value),
       parentStream: rel.stream,
     });
   }
@@ -543,8 +539,6 @@ export function findParentBackLink(
   if (!(childRecordData && typeof childRecordData === "object")) {
     return null;
   }
-  const base = recordsBasePath(args.connectionId);
-
   for (const { parentStream, capability } of parentRelations) {
     const targetStream = capability.target_stream ?? capability.stream;
     if (targetStream !== childStream) {
@@ -563,7 +557,7 @@ export function findParentBackLink(
     }
     return {
       childParentKeyField,
-      href: `${base}/${encodeURIComponent(parentStream)}/${encodeURIComponent(value)}`,
+      href: buildRecordRoutePath(dashboardRoutes.section.records, args.connectionId, parentStream, value),
       parentStream,
     };
   }
