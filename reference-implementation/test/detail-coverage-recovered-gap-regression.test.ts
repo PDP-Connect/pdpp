@@ -810,24 +810,16 @@ test("a truly pending gap still surfaces as a retryable known_gap", async (t) =>
   assert.equal(detailGapKnownGap.recovery_hint?.action, "retry_by_runtime");
 });
 
-// Live incident (run_ac0f15a193a449e99b2f69830aaba467, Gmail connection
-// cin_12407c1afb78d56848fe0b20, 2026-08-02): a required attachments key whose
-// durable gap crosses the per-item no-progress quarantine budget ON THIS SAME
-// RUN threw "Connector detail coverage incomplete ... missing_required_keys=5"
-// and aborted an otherwise-successful run at the commit gate, even though the
-// runtime had just durably recorded that exact key as `terminal`/`quarantined`
-// (§10-A: "terminal is always sticky" — a real, final resolution, not a
-// missing one). Root cause: `assertDetailCoverageSatisfiedBeforeCommit`'s
-// `accountedGapKeys` set only credited `status === 'pending' || 'recovered'`,
-// so a gap that quarantined mid-run (via `maybeQuarantineDetailGap` ->
-// `settleDetailGapMessage`) fell into neither: not hydrated, not
-// optional-skipped, not pending, not recovered. The runtime's own quarantine
-// decision made a required key "missing" in its own eyes half a function
-// later. Fix: the gate now also credits `status === 'terminal'` — the item is
-// durably, permanently accounted for either way (success or exhausted
-// no-progress budget), and the commit-gate's job is to catch UNACCOUNTED
-// evidence, not to re-litigate a same-run terminal decision the runtime
-// itself just made.
+// A required key whose durable gap crosses the per-item no-progress quarantine
+// budget on THIS SAME RUN must satisfy the commit gate, not just abort it.
+// `assertDetailCoverageSatisfiedBeforeCommit`'s `accountedGapKeys` set previously
+// credited only `status === 'pending' || 'recovered'`; a gap that quarantines
+// mid-run (`maybeQuarantineDetailGap` -> `settleDetailGapMessage`) fell into
+// neither bucket, so the runtime's own terminal decision made a required key
+// "missing" in its own eyes half a function later. `terminal` is a real, final,
+// durable resolution per §10-A ("always sticky"), not a missing one — the
+// commit-gate's job is to catch unaccounted evidence, not to re-litigate a
+// same-run terminal decision the runtime itself just made.
 test("a gap quarantined to terminal on THIS run satisfies the commit gate, not just pending/recovered", async (t) => {
   const server = await typedStartServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   t.after(() => closeServer(server));
@@ -844,9 +836,7 @@ test("a gap quarantined to terminal on THIS run satisfies the commit gate, not j
   const threshold = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
 
   // Seed a gap already sitting AT the quarantine no-progress budget (as if it
-  // had already survived `threshold` prior real attempts across earlier
-  // runs) — mirrors the live gaps, which had attempt_count 8 (== the default
-  // threshold) at the moment they quarantined.
+  // had already survived `threshold` prior real attempts across earlier runs).
   const LOCATOR = { conversation_id: "POISON", kind: "chatgpt.conversation" };
   let poison = await store.upsertPendingGap({
     connectorId,
