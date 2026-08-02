@@ -133,6 +133,26 @@ function resolveSlackdumpBin(): string {
   return process.env.SLACKDUMP_BIN || "slackdump";
 }
 
+/**
+ * Keep the root transport error visible when the shared HTTP governor wraps it
+ * in `RetryExhaustedError.originalCause`. Without this, a coded browser
+ * acquisition failure becomes only "HTTP request failed after retry budget
+ * was exhausted" and the optional-stream coverage classifier cannot tell a
+ * missing capability from a Slack API failure.
+ */
+function collectSlackErrorMessages(error: unknown): string[] {
+  const messages: string[] = [];
+  const seen = new Set<Error>();
+  let current: unknown = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    messages.push(current.message);
+    const wrapped = current as Error & { cause?: unknown; originalCause?: unknown };
+    current = wrapped.originalCause ?? wrapped.cause;
+  }
+  return messages.length > 0 ? messages : [String(error)];
+}
+
 export function formatSlackdumpMissingError(bin: string): string {
   return [
     `slackdump binary not found: ${bin}`,
@@ -2226,8 +2246,9 @@ export async function runOptionalStream(
   try {
     await run();
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    const errorCode = parseSlackApiErrorCode(message);
+    const errorMessages = collectSlackErrorMessages(e);
+    const message = errorMessages.join(": ");
+    const errorCode = errorMessages.map(parseSlackApiErrorCode).find((code) => code !== null) ?? null;
     // A missing browser capability on THIS runtime (Chromium unavailable,
     // launch error, cookie-seed failure) is checked first and reported with
     // its own reason/recovery_hint, distinct from both a live Slack API
@@ -2256,20 +2277,18 @@ export async function runOptionalStream(
       });
       return;
     }
-    const retryable = SLACK_API_RETRYABLE_FAILURE_RE.test(message);
     const isAuthFailure = SLACK_API_AUTH_FAILURE_RE.test(message);
+    const retryable = !isAuthFailure && SLACK_API_RETRYABLE_FAILURE_RE.test(message);
     await emit({
       type: "SKIP_RESULT",
       stream,
       reason: OPTIONAL_STREAM_FAILED_REASON,
       message: `Slack: ${stream} failed and was skipped (optional stream): ${message}`,
-      // `action: "retry_by_runtime"` is a claim that retrying can help — true
-      // for a transient failure, false for a durable auth failure (retrying
-      // the same call with the same rejected session repeats the same
-      // outcome forever). Omitting it for an auth failure keeps the coverage
-      // projection (`mapSkipCoverageCondition`, which checks `action` before
-      // any reason text) from reading a persistent 401 as `retryable_gap`.
-      recovery_hint: isAuthFailure ? { retryable: false } : { action: "retry_by_runtime", retryable },
+      // `action: "retry_by_runtime"` is a claim that retrying can help. Keep
+      // it in lockstep with the retryable flag: the coverage projection checks
+      // this action before any reason text, so an action paired with
+      // `retryable: false` becomes a misleading `retryable_gap` forever.
+      recovery_hint: retryable ? { action: "retry_by_runtime", retryable: true } : { retryable: false },
       // Structured evidence beyond the free-text message: the stable coded
       // prefix `parseSlackApiResponse` throws, when the failure came from a
       // parsed Slack API response (absent for a network-layer error the
@@ -2353,11 +2372,11 @@ export function withResolvedRemoteCdpUrl(
  * streams exactly like a Slack API failure does, not fail the whole run —
  * `runRequestedStreams`'s required streams (messages/channels/files/etc.)
  * must be unaffected by this connector newly touching a browser. On
- * failure, returns a transport whose every call rejects with the
- * acquisition error and a no-op `release`; each of the four callers already
- * wraps its stream in `runOptionalStream`, which turns that rejection into
- * the same per-stream `optional_stream_failed` SKIP_RESULT a live-call
- * failure would produce.
+ * failure, returns a transport whose every call rejects with the acquisition
+ * error and a no-op `release`; each of the four callers already wraps its
+ * stream in `runOptionalStream`, which preserves that coded capability cause
+ * as an `optional_stream_capability_missing` SKIP_RESULT instead of confusing
+ * it with a live Slack API failure.
  *
  * `acquire` defaults to `acquireBrowserForConnector` (the real Chromium
  * launcher); overridable so tests can exercise the acquisition-failure and

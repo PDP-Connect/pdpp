@@ -245,6 +245,19 @@ test("runOptionalStream: a retryable failure (rate limit) is flagged retryable w
   assert.equal(hint?.action, "retry_by_runtime", "a transient failure claims retrying can help");
 });
 
+test("runOptionalStream: an exhausted retryable HTTP status keeps its retry action", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "reminders", () =>
+    Promise.reject(new Error("HTTP request got retryable status 503 after retry budget was exhausted"))
+  );
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
+  assert.equal(hint?.retryable, true);
+  assert.equal(hint?.action, "retry_by_runtime");
+});
+
 test("runOptionalStream: an auth failure is flagged non-retryable and omits retry_by_runtime", async () => {
   // Regression for a real evidence gap: `mapSkipCoverageCondition`
   // (reference-implementation/server/connector-coverage-policy.ts) reads
@@ -457,8 +470,14 @@ test("acquireSlackApiBrowserTransport: a failed run through runOptionalStream st
     "d-cookie-value",
     () => Promise.reject(new Error("headed_browser_unavailable"))
   );
+  const captured: Captured = { considered: [], records: [] };
   await runOptionalStream(emit, "stars", () =>
-    handle.transport({ url: "https://slack.com/api/stars.list", method: "GET", headers: {} }).then(() => undefined)
+    runStarsStream(
+      fakeDeps(new DatabaseSync(":memory:"), captured, ["stars"]),
+      handle.transport,
+      "xoxc-fake",
+      "d-cookie-value"
+    )
   );
   await handle.release();
 
@@ -498,6 +517,19 @@ test("acquireSlackApiBrowserTransport: a failed run through runOptionalStream st
     "slack_api_browser_unavailable",
     "the coded error prefix must survive into diagnostics"
   );
+});
+
+test("runOptionalStream: a non-retryable exhausted request omits retry_by_runtime", async () => {
+  const { emit, messages } = captureEmitted();
+
+  await runOptionalStream(emit, "reminders", () =>
+    Promise.reject(new Error("HTTP request failed after retry budget was exhausted"))
+  );
+
+  const [msg] = messages;
+  const hint = (msg as { recovery_hint?: { action?: string; retryable?: boolean } }).recovery_hint;
+  assert.equal(hint?.retryable, false);
+  assert.equal(hint?.action, undefined, "an unclassified exhausted request must not claim retry_by_runtime");
 });
 
 test("acquireSlackApiBrowserTransport: a cookie-seeding failure is isolated the same way as an acquisition failure", async () => {

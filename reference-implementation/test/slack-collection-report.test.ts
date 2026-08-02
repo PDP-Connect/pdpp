@@ -279,6 +279,27 @@ test("slack optional-stream transient failure: SKIP_RESULT with retry_by_runtime
   assert.equal(entry.coverage_condition, "retryable_gap", "a transient failure still reads as self-healing");
 });
 
+test("slack optional-stream exhausted request without a retry signal -> terminal_gap", async () => {
+  const skip = await skipFromRealRunOptionalStream(new Error("HTTP request failed after retry budget was exhausted"));
+  assert.equal(skip.recovery_action, undefined, "an exhausted request without a retry signal must not retry forever");
+
+  const entries = report([fact({ collected: 0, skipped: skip, stream: "stars" })]);
+  assert.equal(entryFor(entries, "stars").coverage_condition, "terminal_gap");
+});
+
+test("slack browser capability wrapped by HTTP retry remains unsupported", async () => {
+  const skip = await skipFromRealRunOptionalStream(
+    new Error("HTTP request failed after retry budget was exhausted", {
+      cause: new Error("slack_api_browser_unavailable: chromium_not_installed"),
+    })
+  );
+  assert.equal(skip.reason, "optional_stream_capability_missing");
+  assert.notEqual(skip.recovery_action, "retry_by_runtime");
+
+  const entries = report([fact({ collected: 0, skipped: skip, stream: "stars" })]);
+  assert.equal(entryFor(entries, "stars").coverage_condition, "unsupported");
+});
+
 // ─── Browser-capability-missing vs. auth-failure: true end-to-end proof ────
 //
 // Regression for a real gap a prior review found: `acquireSlackApiBrowserTransport`
