@@ -168,6 +168,31 @@ interface RequeueResult {
   requeued: number;
 }
 
+/** Exact, bounded owner-repair scope for pending evidence-class rows. */
+export interface PendingGapRepairScopeInput {
+  connectorId: string;
+  connectorInstanceId: string;
+  errorClass: string;
+  limit?: number;
+  now?: string;
+  stream: string;
+}
+
+export interface PendingGapRepairResult {
+  gapIds: string[];
+  matched: number;
+  terminalized: number;
+}
+
+interface NormalizedPendingGapRepairScope {
+  connectorId: string;
+  connectorInstanceId: string;
+  errorClass: string;
+  limit: number;
+  now: string;
+  stream: string;
+}
+
 interface CountByStream {
   count: number;
   stream: string;
@@ -725,6 +750,72 @@ function normalizeQuarantinedRequeueScope(
   };
 }
 
+function normalizePendingGapRepairScope(input: PendingGapRepairScopeInput): NormalizedPendingGapRepairScope {
+  const connectorId = nonEmptyString(input.connectorId);
+  const connectorInstanceId = nonEmptyString(input.connectorInstanceId);
+  const errorClass = nonEmptyString(input.errorClass);
+  const stream = nonEmptyString(input.stream);
+  if (!connectorId) {
+    throw new Error("pending detail-gap repair requires connectorId, connectorInstanceId, stream, and errorClass");
+  }
+  if (!connectorInstanceId) {
+    throw new Error("pending detail-gap repair requires connectorId, connectorInstanceId, stream, and errorClass");
+  }
+  if (!errorClass) {
+    throw new Error("pending detail-gap repair requires connectorId, connectorInstanceId, stream, and errorClass");
+  }
+  if (!stream) {
+    throw new Error("pending detail-gap repair requires connectorId, connectorInstanceId, stream, and errorClass");
+  }
+  return {
+    connectorId,
+    connectorInstanceId,
+    errorClass,
+    limit: normalizeGapMutationLimit(input.limit),
+    now: nonEmptyString(input.now) || nowIso(),
+    stream,
+  };
+}
+
+function sqlitePendingGapRepairRows(scope: NormalizedPendingGapRepairScope): DetailGap[] {
+  return [
+    ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+      `
+      SELECT * FROM connector_detail_gaps
+      WHERE connector_id = ?
+        AND connector_instance_id = ?
+        AND stream = ?
+        AND status = 'pending'
+        AND json_extract(last_error_json, '$.class') = ?
+        AND lease_run_id IS NULL
+        AND lease_id IS NULL
+      ORDER BY updated_at, created_at, gap_id
+      LIMIT ?
+    `,
+      [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass, scope.limit]
+    ),
+  ].map((row) => rowToGap(row) as DetailGap);
+}
+
+async function postgresPendingGapRepairRows(scope: NormalizedPendingGapRepairScope): Promise<DetailGap[]> {
+  const result = await postgresQuery<DetailGapRow>(
+    `
+      SELECT * FROM connector_detail_gaps
+      WHERE connector_id = $1
+        AND connector_instance_id = $2
+        AND stream = $3
+        AND status = 'pending'
+        AND last_error_json->>'class' = $4
+        AND lease_run_id IS NULL
+        AND lease_id IS NULL
+      ORDER BY updated_at, created_at, gap_id
+      LIMIT $5
+    `,
+    [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass, scope.limit]
+  );
+  return result.rows.map((row) => rowToGap(row) as DetailGap);
+}
+
 function sqliteQuarantinedRequeueRows(scope: QuarantinedRequeueScope): DetailGap[] {
   const streamPlaceholders = optionalSqlPlaceholders(scope.streams);
   // REVIEWED-DYNAMIC: bounded repair selection for terminal quarantined
@@ -1204,6 +1295,11 @@ export function createSqliteConnectorDetailGapStore() {
     },
 
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async listPendingGapsForExactScope(input: PendingGapRepairScopeInput): Promise<DetailGap[]> {
+      return sqlitePendingGapRepairRows(normalizePendingGapRepairScope(input));
+    },
+
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async markGapStatus(gapId: string, status: string, options: MarkGapStatusOptions = {}): Promise<DetailGap | null> {
       const mutation = normalizeGapStatusMutation(gapId, status, options);
       // `reason` is COALESCE-updated: only overwritten when the caller supplies
@@ -1461,6 +1557,77 @@ export function createSqliteConnectorDetailGapStore() {
       }
       return rowToGap(firstSqliteRow("SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1", [owner.gapId]));
     },
+
+    // A terminal policy outcome is explicit provider-independent settlement:
+    // preserve prior attempt evidence, preserve the exact sanitized error,
+    // and clear only the current run-owned lease. The WHERE clause is the
+    // same gap/run/lease CAS used by pending and recovered settlement, so a
+    // stale terminal message cannot close a newer lease.
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async settleLeasedGapTerminal(
+      lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown },
+      input: UpsertGapInput
+    ): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const gap = normalizeGapInput({ ...input, gapId: owner.gapId });
+      const result = execDynamicSqlAcknowledged(
+        `
+        UPDATE connector_detail_gaps
+        SET source_json = ?, detail_locator_json = ?, list_cursor_json = ?, scope_json = ?, reason = ?,
+            status = 'terminal', next_attempt_after = NULL, last_error_json = ?, last_run_id = ?,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = ?
+        WHERE gap_id = ? AND status = 'in_progress'
+          AND lease_run_id = ? AND lease_id = ?
+      `,
+        [
+          encodeJson(gap.source),
+          encodeJson(gap.detailLocator),
+          encodeJson(gap.listCursor),
+          encodeJson(gap.scope),
+          gap.reason,
+          encodeJson(gap.lastError),
+          gap.lastRunId,
+          gap.now,
+          owner.gapId,
+          owner.runId,
+          owner.leaseId,
+        ]
+      );
+      if (Number(result.changes || 0) !== 1) {
+        return null;
+      }
+      return rowToGap(firstSqliteRow("SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1", [owner.gapId]));
+    },
+
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async terminalizePendingGapsForExactScope(input: PendingGapRepairScopeInput): Promise<PendingGapRepairResult> {
+      const scope = normalizePendingGapRepairScope(input);
+      const rows = sqlitePendingGapRepairRows(scope);
+      const gapIds: string[] = [];
+      for (const gap of rows) {
+        const result = execDynamicSqlAcknowledged(
+          `
+          UPDATE connector_detail_gaps
+          SET status = 'terminal', reason = 'too_large', next_attempt_after = NULL, updated_at = ?
+          WHERE gap_id = ?
+            AND connector_id = ?
+            AND connector_instance_id = ?
+            AND stream = ?
+            AND status = 'pending'
+            AND json_extract(last_error_json, '$.class') = ?
+            AND lease_run_id IS NULL
+            AND lease_id IS NULL
+        `,
+          [scope.now, gap.gap_id, scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass]
+        );
+        if (Number(result.changes || 0) === 1) {
+          gapIds.push(gap.gap_id);
+        }
+      }
+      return { gapIds, matched: rows.length, terminalized: gapIds.length };
+    },
+
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async upsertPendingGap(input: UpsertGapInput): Promise<DetailGap | null> {
       const gap = normalizeGapInput(input);
@@ -1917,6 +2084,11 @@ export function createPostgresConnectorDetailGapStore() {
       return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
     },
 
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async listPendingGapsForExactScope(input: PendingGapRepairScopeInput): Promise<DetailGap[]> {
+      return postgresPendingGapRepairRows(normalizePendingGapRepairScope(input));
+    },
+
     async markGapStatus(gapId: string, status: string, options: MarkGapStatusOptions = {}): Promise<DetailGap | null> {
       const mutation = normalizeGapStatusMutation(gapId, status, options);
       // `reason` is COALESCE-updated (see the SQLite path): only overwritten
@@ -2127,6 +2299,69 @@ export function createPostgresConnectorDetailGapStore() {
       );
       return result.rows[0] ? rowToGap(result.rows[0]) : null;
     },
+
+    async settleLeasedGapTerminal(
+      lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown },
+      input: UpsertGapInput
+    ): Promise<DetailGap | null> {
+      const owner = normalizeLease(lease);
+      const gap = normalizeGapInput({ ...input, gapId: owner.gapId });
+      const result = await postgresQuery<DetailGapRow>(
+        `
+        UPDATE connector_detail_gaps
+        SET source_json = $1::jsonb, detail_locator_json = $2::jsonb, list_cursor_json = $3::jsonb,
+            scope_json = $4::jsonb, reason = $5, status = 'terminal', next_attempt_after = NULL,
+            last_error_json = $6::jsonb, last_run_id = $7,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = $8
+        WHERE gap_id = $9 AND status = 'in_progress' AND lease_run_id = $10 AND lease_id = $11
+        RETURNING *
+      `,
+        [
+          JSON.stringify(gap.source),
+          encodeJson(gap.detailLocator),
+          encodeJson(gap.listCursor),
+          JSON.stringify(gap.scope),
+          gap.reason,
+          encodeJson(gap.lastError),
+          gap.lastRunId,
+          gap.now,
+          owner.gapId,
+          owner.runId,
+          owner.leaseId,
+        ]
+      );
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    async terminalizePendingGapsForExactScope(input: PendingGapRepairScopeInput): Promise<PendingGapRepairResult> {
+      const scope = normalizePendingGapRepairScope(input);
+      const rows = await postgresPendingGapRepairRows(scope);
+      const gapIds: string[] = [];
+      for (const gap of rows) {
+        // biome-ignore lint/performance/noAwaitInLoops: Sequential CAS updates keep the bounded receipt order deterministic across backends.
+        const result = await postgresQuery(
+          `
+          UPDATE connector_detail_gaps
+          SET status = 'terminal', reason = 'too_large', next_attempt_after = NULL, updated_at = $1
+          WHERE gap_id = $2
+            AND connector_id = $3
+            AND connector_instance_id = $4
+            AND stream = $5
+            AND status = 'pending'
+            AND last_error_json->>'class' = $6
+            AND lease_run_id IS NULL
+            AND lease_id IS NULL
+        `,
+          [scope.now, gap.gap_id, scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass]
+        );
+        if (Number(result.rowCount || 0) === 1) {
+          gapIds.push(gap.gap_id);
+        }
+      }
+      return { gapIds, matched: rows.length, terminalized: gapIds.length };
+    },
+
     async upsertPendingGap(input: UpsertGapInput): Promise<DetailGap | null> {
       const gap = normalizeGapInput(input);
       const result = await postgresQuery<DetailGapRow>(

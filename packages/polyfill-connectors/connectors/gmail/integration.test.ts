@@ -1251,14 +1251,88 @@ test("recoverServedAttachmentGaps: too_large is a permanent policy skip without 
     );
     assert.equal(
       emitHarness.protocolMessages.some((protocolMessage) => protocolMessage.type === "DETAIL_GAP"),
-      false,
-      "too_large must not become a retryable DETAIL_GAP"
+      true,
+      "a served too_large gap must emit its explicit terminal DETAIL_GAP outcome"
     );
+    const terminalMessages = emitHarness.protocolMessages.filter(
+      (protocolMessage) => protocolMessage.type === "DETAIL_GAP" && protocolMessage.status === "terminal"
+    );
+    assert.equal(terminalMessages.length, 1);
+    const [terminalMessage] = terminalMessages;
+    assert.equal(terminalMessage?.gap_id, gap.gap_id);
+    assert.equal(terminalMessage?.lease_id, gap.lease_id);
+    assert.equal(terminalMessage?.reason, "too_large");
+    assert.equal(terminalMessage?.retryable, false);
+    assert.equal(terminalMessage?.last_error?.class, "too_large");
+    assert.equal(terminalMessage?.last_error?.message, "attachment exceeds max size: 16 > 8 bytes");
     assert.equal(
       emitHarness.protocolMessages.some((protocolMessage) => protocolMessage.type === "DETAIL_GAP_RECOVERED"),
       false
     );
     assert.equal(emitHarness.emitted[0]?.data.hydration_status, "too_large");
+  } finally {
+    if (originalMax === undefined) {
+      delete process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
+    } else {
+      process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES = originalMax;
+    }
+  }
+});
+
+test("recoverServedAttachmentGaps: rejected too_large record fails closed to a retryable gap", async () => {
+  const originalMax = process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
+  process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES = "8";
+  try {
+    const message = makeServedRecoveryMsg({ attachments: [16], emailId: "gmmsgid-too-large-rejected", uid: 7003 });
+    const gap = makeServedRecoveryGap({
+      gapId: "gap-too-large-rejected",
+      leaseId: "lease-too-large-rejected",
+      messageId: "gmmsgid-too-large-rejected",
+      partIndex: 1,
+    });
+    const attachmentCoverage = makeAttachmentDetailCoverage();
+    const emitHarness = makeRecordingEmit();
+    const hydrateAttachment = makeAttachmentHydrator({
+      connectorId: "https://registry.pdpp.org/connectors/gmail",
+      fetchAttachment: () =>
+        Promise.resolve({
+          content: Readable.from([Buffer.from("must not download")]),
+          expectedSize: 16,
+          mimeType: "application/pdf",
+        }),
+      maxBytes: 8,
+      uploadBlob: () => Promise.reject(new Error("must not upload a policy skip")),
+    });
+
+    const summary = await recoverServedAttachmentGaps(
+      {
+        search: mock.fn(() => Promise.resolve([message.uid ?? 7003])),
+        fetchOne: mock.fn(() => Promise.resolve(message)),
+      },
+      {
+        attachmentCoverage,
+        detailGaps: [gap],
+        emitProtocol: emitHarness.emit,
+        emitRecord: async () => false,
+        hydrateAttachment,
+      }
+    );
+
+    assert.equal(summary.attempted, 1);
+    assert.equal(summary.recovered, 0);
+    assert.deepEqual(attachmentCoverage.optionalSkipKeys, []);
+    const [pendingGap] = emitHarness.protocolMessages.filter(
+      (protocolMessage) => protocolMessage.type === "DETAIL_GAP" && protocolMessage.status !== "terminal"
+    );
+    assert.equal(pendingGap?.reason, "temporary_unavailable");
+    assert.equal(pendingGap?.retryable, true);
+    assert.equal(pendingGap?.last_error?.class, "hydration_failed");
+    assert.equal(
+      emitHarness.protocolMessages.some(
+        (protocolMessage) => protocolMessage.type === "DETAIL_GAP" && protocolMessage.status === "terminal"
+      ),
+      false
+    );
   } finally {
     if (originalMax === undefined) {
       delete process.env.PDPP_GMAIL_MAX_ATTACHMENT_BYTES;
@@ -2667,6 +2741,9 @@ test("recoverServedAttachmentGaps: an unclassified plain blob failure remains re
 // is wrong-ordered and fails the run at the runtime boundary. So this table
 // asserts, per attempted gap: exactly one outcome, AND that outcome's index in
 // the overall protocol stream strictly follows that gap's own ATTEMPTED index.
+// An accepted `too_large` policy skip is intentionally outside this attempted-
+// gap invariant: it emits no ATTEMPTED, but does emit its own terminal
+// `DETAIL_GAP` with the same lease identity before returning.
 //
 // `runOrder` accepts the array of served-gap indices in the exact order
 // `recoverServedAttachmentGaps`'s loop must serve them — `messageIds`/`leases`

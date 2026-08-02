@@ -287,6 +287,7 @@ interface RuntimeDetailGapStoreCapabilities {
   releaseLeasedGaps?: (leases: ServedGapLease[]) => unknown;
   settleLeasedGapPending?: (lease: ServedGapLease, input: RuntimeDetailGapInput) => Promise<DurableDetailGap | null>;
   settleLeasedGapRecovered?: (lease: ServedGapLease) => Promise<DurableDetailGap | null>;
+  settleLeasedGapTerminal?: (lease: ServedGapLease, input: RuntimeDetailGapInput) => Promise<DurableDetailGap | null>;
   upsertPendingGap?: (input: RuntimeDetailGapInput) => Promise<DurableDetailGap | null>;
 }
 
@@ -295,6 +296,7 @@ interface RuntimeDetailGapStore extends RuntimeDetailGapStoreCapabilities {
   markLeasedGapAttempt: NonNullable<RuntimeDetailGapStoreCapabilities["markLeasedGapAttempt"]>;
   settleLeasedGapPending: NonNullable<RuntimeDetailGapStoreCapabilities["settleLeasedGapPending"]>;
   settleLeasedGapRecovered: NonNullable<RuntimeDetailGapStoreCapabilities["settleLeasedGapRecovered"]>;
+  settleLeasedGapTerminal: NonNullable<RuntimeDetailGapStoreCapabilities["settleLeasedGapTerminal"]>;
   upsertPendingGap: NonNullable<RuntimeDetailGapStoreCapabilities["upsertPendingGap"]>;
 }
 
@@ -1314,6 +1316,44 @@ function validateSkipResultMessage(msg: ConnectorMessage, scopeByStream: ScopeBy
   validateSkipTimeRange(msg.time_range);
 }
 
+function validateTerminalDetailGapMessage(msg: ConnectorMessage): void {
+  if (msg.retryable !== false || msg.reason !== "too_large") {
+    throw new Error("Connector emitted invalid terminal DETAIL_GAP: expected non-retryable too_large outcome");
+  }
+  const detailLocator = msg.detail_locator;
+  const locatorKind =
+    detailLocator && typeof detailLocator === "object" && !Array.isArray(detailLocator)
+      ? Reflect.get(detailLocator, "kind")
+      : null;
+  if (
+    msg.reference_only !== true ||
+    !detailLocator ||
+    typeof detailLocator !== "object" ||
+    Array.isArray(detailLocator) ||
+    typeof locatorKind !== "string" ||
+    !locatorKind.trim()
+  ) {
+    throw new Error("Connector emitted invalid terminal DETAIL_GAP.detail_locator");
+  }
+  if (!(msg.gap_id && msg.lease_id)) {
+    throw new Error("Connector emitted invalid terminal DETAIL_GAP: gap_id and lease_id are required");
+  }
+  if (isNullish(msg.record_key) || (typeof msg.record_key !== "string" && typeof msg.record_key !== "number")) {
+    throw new Error("Connector emitted invalid terminal DETAIL_GAP.record_key");
+  }
+  const terminalError = msg.last_error;
+  const terminalErrorObject =
+    terminalError && typeof terminalError === "object" && !Array.isArray(terminalError) ? terminalError : null;
+  const terminalErrorClass = terminalErrorObject ? Reflect.get(terminalErrorObject, "class") : null;
+  const terminalErrorMessage = terminalErrorObject ? Reflect.get(terminalErrorObject, "message") : null;
+  if (terminalErrorClass !== "too_large" || typeof terminalErrorMessage !== "string" || !terminalErrorMessage.trim()) {
+    throw new Error("Connector emitted invalid terminal DETAIL_GAP.last_error");
+  }
+  if (!isNullish(msg.detail) && Reflect.get(msg.detail, "class") !== "too_large") {
+    throw new Error("Connector emitted invalid terminal DETAIL_GAP.detail.class");
+  }
+}
+
 function validateDetailGapMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
   requireOptionalNonEmptyString(msg.stream, "DETAIL_GAP.stream");
   if (!msg.stream) {
@@ -1335,6 +1375,12 @@ function validateDetailGapMessage(msg: ConnectorMessage, scopeByStream: ScopeByS
   }
   requireOptionalNonEmptyString(msg.gap_id, "DETAIL_GAP.gap_id");
   requireOptionalNonEmptyString(msg.lease_id, "DETAIL_GAP.lease_id");
+  if (!isNullish(msg.status) && msg.status !== "pending" && msg.status !== "terminal") {
+    throw new Error("Connector emitted invalid DETAIL_GAP.status: expected pending or terminal");
+  }
+  if (msg.status === "terminal") {
+    validateTerminalDetailGapMessage(msg);
+  }
 }
 
 function findServedDetailGapLease(leases: Map<string, ServedGapLease>, msg: ConnectorMessage): ServedGapLease | null {
@@ -2057,6 +2103,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     markLeasedGapAttempt: unsupportedDetailGapStoreCapability("leased gap attempts"),
     settleLeasedGapPending: unsupportedDetailGapStoreCapability("pending lease settlement"),
     settleLeasedGapRecovered: unsupportedDetailGapStoreCapability("recovered lease settlement"),
+    settleLeasedGapTerminal: unsupportedDetailGapStoreCapability("terminal lease settlement"),
     upsertPendingGap: unsupportedDetailGapStoreCapability("pending gap upserts"),
     ...(opts.detailGapStore || (getDefaultConnectorDetailGapStore() as RuntimeDetailGapStoreCapabilities)),
   };
@@ -3742,13 +3789,27 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       }
     }
 
+    interface TerminalDetailGapOutcome {
+      gap: {
+        attempt_count?: number;
+        gap_id: string;
+        last_error?: unknown;
+        reason?: string | null;
+        status?: string;
+        stream?: string;
+      } | null;
+      terminated: boolean;
+    }
+
     async function recordTerminalDetailGap(
-      outcome: Awaited<ReturnType<typeof maybeTerminateGap>>,
+      outcome: TerminalDetailGapOutcome,
       msg: ConnectorMessage,
       gapStream: string,
       gapReason: string | null,
       gapParentStream: string | null,
-      errorInfo: Parameters<typeof maybeTerminateGap>[2]
+      errorInfo: Parameters<typeof maybeTerminateGap>[2],
+      terminalReasonOverride: string | null = null,
+      terminalLeaseId: string | null = null
     ): Promise<boolean> {
       if (!(outcome.terminated && outcome.gap)) {
         return false;
@@ -3774,10 +3835,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         data: {
           gap_id: outcome.gap.gap_id,
           grant_id: grantId,
+          ...(terminalLeaseId ? { last_error: outcome.gap.last_error ?? null, lease_id: terminalLeaseId } : {}),
           reason: outcome.gap.reason,
           source: runSource,
-          stream: outcome.gap.stream,
-          terminal_reason: errorInfo ? classifyRecoveryError(errorInfo).reason : null,
+          stream: outcome.gap.stream ?? gapStream,
+          terminal_reason: terminalReasonOverride ?? (errorInfo ? classifyRecoveryError(errorInfo).reason : null),
         },
         event_type: "run.detail_gap_terminal",
         object_id: runId,
@@ -3902,6 +3964,50 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       return storedGap as DurableDetailGap;
     }
 
+    async function settleTerminalDetailGapMessage(
+      msg: ConnectorMessage,
+      gapStream: string,
+      gapParentStream: string | null
+    ): Promise<DurableDetailGap> {
+      const leasedGap = findServedDetailGapLease(allServedGapLeases, msg);
+      if (!leasedGap || msg.lease_id !== leasedGap.leaseId) {
+        throw new Error("Connector terminalized a detail gap without the current run-owned lease");
+      }
+      // Terminal policy settlement follows the accepted attachment record. The
+      // record batch must reach the host before the lease leaves in_progress,
+      // just as recovered settlement flushes first; Gmail emits its accumulated
+      // optional-skip coverage in the normal protocol order before DONE.
+      await flushAll();
+      const storedGap = await detailGapStore.settleLeasedGapTerminal(leasedGap, {
+        connectorId,
+        connectorInstanceId: normalizedConnectorInstanceId,
+        detailLocator: msg.detail_locator ?? null,
+        discoveredRunId: runId,
+        gapId: leasedGap.gapId,
+        grantId,
+        lastError: msg.last_error ?? null,
+        lastRunId: runId,
+        listCursor: msg.list_cursor ?? null,
+        nextAttemptAfter: null,
+        parentStream: gapParentStream,
+        reason: "too_large",
+        recordKey: msg.record_key ?? null,
+        scope: startScope,
+        source: runSource,
+        stream: gapStream,
+      });
+      if (
+        !storedGap ||
+        storedGap.gap_id !== leasedGap.gapId ||
+        storedGap.status !== "terminal" ||
+        storedGap.lease_id !== null
+      ) {
+        throw new Error("Detail-gap terminal settlement lease was lost before durable accounting");
+      }
+      allServedGapLeases.delete(leasedGap.gapId);
+      return storedGap;
+    }
+
     async function recordPendingDetailGap(
       msg: ConnectorMessage,
       storedGap: DurableDetailGap,
@@ -4024,6 +4130,20 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       const gapStream = msg.stream as string;
       const gapReason = (msg.reason as string | undefined) || null;
       const gapParentStream = (msg.parent_stream as string | undefined) || null;
+      if (msg.status === "terminal") {
+        const storedGap = await settleTerminalDetailGapMessage(msg, gapStream, gapParentStream);
+        await recordTerminalDetailGap(
+          { gap: storedGap, terminated: true },
+          msg,
+          gapStream,
+          gapReason,
+          gapParentStream,
+          { errorClass: "too_large" },
+          "too_large",
+          msg.lease_id as string
+        );
+        return;
+      }
       const gapLastError = (msg.last_error as { class?: string; http_status?: number } | null) ?? null;
       const storedGap = await settleDetailGapMessage(msg, gapStream, gapReason, gapParentStream, gapLastError);
 

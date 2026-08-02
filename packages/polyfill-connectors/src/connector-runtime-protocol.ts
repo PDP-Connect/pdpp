@@ -208,6 +208,41 @@ export interface DetailGapMessage {
   type: "DETAIL_GAP";
 }
 
+/**
+ * Explicit terminal settlement for a served detail gap. This stays on the
+ * existing DETAIL_GAP wire family so stream/locator consumers remain stable,
+ * while the status/retryability pair makes it impossible for runtime cleanup
+ * to mistake a policy decision for an untouched pending lease.
+ */
+export interface TerminalDetailGapMessage {
+  detail?: {
+    class?: "too_large";
+    http_status?: number;
+    network_pressure?: DetailGapNetworkPressure;
+  };
+  detail_locator: {
+    kind: string;
+    [field: string]: string | number | boolean | null | Record<string, string | number | boolean | null>;
+  };
+  gap_id: string;
+  last_error: {
+    class: "too_large";
+    http_status?: number;
+    message: string;
+    network_pressure?: DetailGapNetworkPressure;
+  };
+  lease_id: string;
+  list_cursor?: unknown;
+  parent_stream?: string;
+  reason: "too_large";
+  record_key: string | number;
+  reference_only: true;
+  retryable: false;
+  status: "terminal";
+  stream: string;
+  type: "DETAIL_GAP";
+}
+
 export interface DetailCoverageMessage {
   /**
    * Optional connector-declared `considered` denominator: how many items the run
@@ -371,6 +406,7 @@ export type EmittedMessage =
       recovery_hint?: string | { action?: string; retryable?: boolean };
     }
   | DetailGapMessage
+  | TerminalDetailGapMessage
   | DetailGapAttemptedMessage
   | DetailCoverageMessage
   | DetailGapRecoveredMessage

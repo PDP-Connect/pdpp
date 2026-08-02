@@ -40,6 +40,7 @@ import {
   type DetailCoverageMessage,
   type DetailGapMessage,
   type DetailGapStartEntry,
+  type TerminalDetailGapMessage,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
@@ -521,10 +522,10 @@ export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSumma
  * bucket by its `hydration_status`:
  *   - `hydrated`  → `hydratedKeys` (the numerator: blob bytes committed).
  *   - `failed`    → `gapKeys` (a retryable detail gap to re-attempt next run).
- *   - `too_large` → `optionalSkipKeys` (a permanent, by-policy skip — NOT a
- *                   gap, because the next run will skip it again on the same
- *                   size cap; counting it as a gap would falsely report the
- *                   stream as never-complete).
+ *   - `too_large` → `optionalSkipKeys` (a permanent, by-policy skip — not a
+ *                   retryable gap. A pre-existing served gap for this record
+ *                   is closed by the explicit terminal policy outcome while
+ *                   the coverage fact keeps the stream complete).
  *
  * This is the real `considered` axis the progress-evidence contract asks for:
  * the count is observed from the run, never inferred. Streams without an
@@ -711,6 +712,48 @@ export function buildAttachmentDetailGap(
 }
 
 /**
+ * Build the explicit terminal outcome for a served attachment that the
+ * current size policy cannot hydrate. The served locator and lease identity
+ * remain authoritative; the record's bounded hydration error is copied
+ * verbatim so the durable terminal row explains the policy decision.
+ */
+export function buildAttachmentDetailTerminalGap(
+  gap: DetailGapStartEntry,
+  attachment: AttachmentRecord
+): TerminalDetailGapMessage {
+  if (!gap.lease_id) {
+    throw new Error("a terminal Gmail attachment gap requires the served lease_id");
+  }
+  const detailLocator =
+    gap.detail_locator && typeof gap.detail_locator === "object" && !Array.isArray(gap.detail_locator)
+      ? (gap.detail_locator as TerminalDetailGapMessage["detail_locator"])
+      : {
+          kind: "gmail.attachment_detail",
+          message_id: attachment.message_id,
+          part_index: attachment.part_index,
+          attachment_id: attachment.id,
+        };
+  return {
+    type: "DETAIL_GAP",
+    reference_only: true,
+    status: "terminal",
+    stream: "attachments",
+    parent_stream: "messages",
+    record_key: gap.record_key ?? attachment.id,
+    detail_locator: detailLocator,
+    reason: "too_large",
+    retryable: false,
+    last_error: {
+      class: "too_large",
+      message: attachment.hydration_error ?? "attachment exceeds the configured size policy",
+    },
+    detail: { class: "too_large" },
+    gap_id: gap.gap_id,
+    lease_id: gap.lease_id,
+  };
+}
+
+/**
  * Render `ReferenceBlobUploadFailureEvidence` into a single compact,
  * fixed-shape string for `DETAIL_GAP.last_error.message` — the shared
  * `buildDetailGap` helper has no dedicated slot for this evidence, and this
@@ -790,7 +833,9 @@ function attachmentDetailGapMatches(gap: DetailGapStartEntry, attachment: Attach
 // The fresh-discovery pass (emitAttachmentRecords) never marks any served
 // gap's attempt, so it always passes this shared empty set to
 // findRecoveredAttachmentDetailGaps — every served/leased gap is correctly
-// excluded from recovery there, leaving only non-leased gaps eligible.
+// excluded from recovery there, leaving only non-leased gaps eligible. A
+// served `too_large` policy skip is the one explicit no-attempt exception: its
+// accepted record is followed by a terminal policy outcome in the served lane.
 const EMPTY_ATTEMPTED_GAP_IDS: ReadonlySet<string> = new Set();
 // Likewise, the fresh-discovery pass has no served-gap "already settled via
 // re-defer" state of its own (only the served-recovery lane re-defers served
@@ -799,10 +844,11 @@ const EMPTY_SETTLED_GAP_IDS: ReadonlySet<string> = new Set();
 
 /**
  * A served gap (carries `lease_id`) is a runtime-owned lease with its own
- * mandatory lifecycle: `DETAIL_GAP_ATTEMPTED` MUST precede any terminal
- * outcome, and once a terminal outcome (recovered OR re-deferred) has been
- * sent, that lease is DONE for this run — a second outcome for the same
- * lease is rejected by the runtime just as surely as an early one is
+ * mandatory lifecycle: ordinary provider work emits `DETAIL_GAP_ATTEMPTED`
+ * before its terminal outcome, and once a terminal outcome (recovered OR
+ * re-deferred) has been sent, that lease is DONE for this run — a second
+ * outcome for the same lease is rejected by the runtime just as surely as an
+ * early one is
  * (`handleDetailGapRecovered`/`handleDetailGapAttempted`,
  * reference-implementation/runtime/index.ts). Recovering a served gap here
  * either BEFORE its own turn (before its own ATTEMPTED) or AFTER it has
@@ -815,8 +861,10 @@ const EMPTY_SETTLED_GAP_IDS: ReadonlySet<string> = new Set();
  * before a later sibling's hydration would otherwise try to recover it.
  * `attemptedGapIds` gates the first case; `settledGapIds` gates the second
  * — a served gap is only eligible for recovery here if it HAS been
- * attempted AND has NOT already reached a terminal outcome this run. A
- * non-served gap (no `lease_id` — reached only via the fresh-discovery
+ * attempted AND has NOT already reached a terminal outcome this run. The
+ * separate `too_large` policy branch does not enter this recovery matcher: it
+ * settles its own served lease without provider-attempt evidence. A non-served
+ * gap (no `lease_id` — reached only via the fresh-discovery
  * `emitAttachmentRecords` path, never through the leased/served recovery
  * lane) has no lease lifecycle to violate and remains recoverable
  * unconditionally once not already recovered, matching prior behavior.
@@ -880,14 +928,10 @@ async function emitAttachmentRecords(
     // a `failed` (and `deferred`) attachment still emits a record, and IF
     // accepted, the coverage denominator above stays honest. Only `hydrated`
     // (a real blob fill) that was ALSO accepted may acknowledge a served gap
-    // as recovered. `too_large` is deliberately excluded even though the
-    // commit-gate already treats it as covered via `optionalSkipKeys`: it is
-    // a permanent by-policy skip, never the subject of a durable DETAIL_GAP
-    // in the first place (gaps are only ever created for `failed`, see
-    // `emitAttachmentDetailGaps`), so there is nothing to recover — the
-    // pre-existing pending row (from an earlier `failed` attempt, before a
-    // size cap started applying) is already harmless and left to
-    // age/terminalize on its own.
+    // as recovered. `too_large` is deliberately excluded from recovered
+    // outcomes even though the commit-gate credits it via `optionalSkipKeys`:
+    // the served-recovery lane emits an explicit terminal policy outcome for
+    // any pre-existing pending gap instead.
     if (!emitted || hydrated.hydration_status !== "hydrated") {
       continue;
     }
@@ -2310,15 +2354,16 @@ function buildServedAttachmentRecoveryDeferredGap(
  * attempt was marked (`DETAIL_GAP_ATTEMPTED` sent, runtime-owned lease now
  * `attempted=true`) must reach EXACTLY ONE explicit, lease_id-bearing
  * terminal outcome — `DETAIL_GAP_RECOVERED` (settleServedAttachmentRecoveryAttempt's
- * hydrated branch) or a `DETAIL_GAP` re-defer via this function — before the
- * recovery pass returns. `processServedAttachmentRecoveryGap` may return one
+ * hydrated branch), a terminal `too_large` DETAIL_GAP policy outcome, or a
+ * retryable DETAIL_GAP re-defer via this function — before the recovery pass
+ * returns. `processServedAttachmentRecoveryGap` may return one
  * held first oversized candidate to its caller, but that candidate is settled
  * before any sibling hydration or hydrated as the final fallback. The runtime's
  * `awaitLeaseAccounting` hard-fails a nominally successful run if any
  * attempted lease reaches DONE without one (reference-implementation/runtime/
- * index.ts). Route every post-attempt exit through this function (or the
- * DETAIL_GAP_RECOVERED emit in `settleServedAttachmentRecoveryAttempt`) —
- * never let a post-attempt branch `return` without calling one of the two.
+ * index.ts). Route every post-attempt exit through this function or the
+ * recovery emit, and route every accepted policy skip through its terminal
+ * outcome — never let a served lease return without an explicit outcome.
  */
 async function settleServedAttachmentRecoveryDeferral(
   gap: DetailGapStartEntry,
@@ -2372,11 +2417,13 @@ async function settleServedAttachmentRecoveryPolicySkip(
     emitRecord: EmitRecordFn;
   },
   hydration: AttachmentHydrationResult
-): Promise<void> {
+): Promise<boolean> {
   const emitted = await deps.emitRecord("attachments", { ...hydration.record });
-  if (emitted && deps.attachmentCoverage) {
+  const accepted = emitted === true;
+  if (accepted && deps.attachmentCoverage) {
     recordAttachmentCoverage(deps.attachmentCoverage, hydration.record);
   }
+  return accepted;
 }
 
 async function settleServedAttachmentRecoveryHydration(
@@ -2391,12 +2438,19 @@ async function settleServedAttachmentRecoveryHydration(
   hydration: AttachmentHydrationResult
 ): Promise<void> {
   if (hydration.record.hydration_status === "too_large") {
-    // `too_large` is a permanent policy skip. It is credited through
-    // optional_skip_keys, but it must not mark the served lease attempted or
-    // emit a retryable DETAIL_GAP. The runtime can release this untouched
-    // lease without increasing durable attempt_count.
-    await settleServedAttachmentRecoveryPolicySkip(deps, hydration);
-    state.settledGapIds.add(gap.gap_id);
+    // `too_large` is a permanent policy skip. Once its record is accepted, it
+    // is credited through optional_skip_keys and the served lease is closed by
+    // an explicit terminal outcome. No provider attempt or recovery event is
+    // emitted. If the host rejects the record, fail closed onto the ordinary
+    // retryable path so the runtime never terminalizes without coverage.
+    const emitted = await settleServedAttachmentRecoveryPolicySkip(deps, hydration);
+    if (emitted) {
+      state.settledGapIds.add(gap.gap_id);
+      await deps.emitProtocol(buildAttachmentDetailTerminalGap(gap, hydration.record));
+      return;
+    }
+    await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
+    await settleServedAttachmentRecoveryDeferral(gap, "hydration_failed", state, deps.emitProtocol);
     return;
   }
   await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
@@ -2472,8 +2526,9 @@ async function processServedAttachmentRecoveryGap(
   }
   // A candidate is not marked attempted until its hydration outcome is known:
   // the hydrator can resolve `too_large`, which is a permanent policy skip and
-  // must leave the runtime-owned lease untouched. Lookup misses and budget
-  // deferrals still mark here at the exact branch that emits their settlement.
+  // settles through the explicit terminal outcome after its record is accepted.
+  // Lookup misses and budget deferrals still mark here at the exact branch that
+  // emits their pending settlement.
   const loadedMessage = await loadServedAttachmentRecoveryMessage(client, locator.messageId, state);
   if (loadedMessage === "metadata_lookup_limit_reached") {
     await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);

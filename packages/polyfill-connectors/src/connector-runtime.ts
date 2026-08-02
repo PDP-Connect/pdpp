@@ -109,6 +109,7 @@ export type {
   RecordData,
   StartMessage,
   StreamScope,
+  TerminalDetailGapMessage,
   ValidateRecord,
 } from "./connector-runtime-protocol.ts";
 

@@ -12,6 +12,7 @@ import type {
   DetailGapMessage,
   DetailGapRecoveredMessage,
   DetailGapStartEntry,
+  TerminalDetailGapMessage,
 } from "../../src/connector-runtime.ts";
 
 export interface StreamRequest {
@@ -102,6 +103,7 @@ export type EmittedMessage =
   // (gap_keys alone do not satisfy it). Already a known runtime protocol
   // message; added to the local union so `emit()` can carry it.
   | DetailGapMessage
+  | TerminalDetailGapMessage
   // Reference-only recovery acknowledgement for a served pending attachment
   // gap. The Gmail connector emits this only after the matching attachment
   // record actually lands.
