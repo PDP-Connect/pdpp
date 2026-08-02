@@ -47,6 +47,28 @@ interface BetterSqliteDatabase {
 export const DEFAULT_SCENARIO_ID = "scn_reference_default";
 const SPINE_VERSION = "reference.spine.v1";
 
+// connector-summary-read-model.ts owns connector-summary evidence/list-read
+// dependencies not appropriate for this low-level storage module to import
+// statically (risk of a spine <-> read-model cycle, and a much heavier
+// dependency graph than this file otherwise needs). A terminal run event is
+// a post-commit trigger for that module's OWN scoped, best-effort
+// convergence — loaded lazily at the same "index maintenance is a
+// post-commit effect" boundary `records.ts` already uses for lexical/
+// semantic index maintenance.
+const CONNECTOR_SUMMARY_READ_MODEL_MODULE = "../server/connector-summary-read-model.ts";
+const CONNECTOR_SUMMARY_TERMINAL_PUBLISHER_MODULE = "../server/connector-summary-terminal-publisher.ts";
+// Kept in lock-step with connector-summary-read-model.ts's own
+// TERMINAL_RUN_EVENT_TYPES: exactly the event types the terminal-facts fold
+// itself folds. Triggering convergence for any broader/narrower set would
+// either do wasted work (an event the fold ignores) or leave a fold-relevant
+// event without its own convergence trigger.
+const TERMINAL_RUN_EVENT_TYPES_FOR_CONVERGENCE = new Set([
+  "run.completed",
+  "run.failed",
+  "run.browser_surface_failed",
+  "run.cancelled",
+]);
+
 export type SpineDatabase = BetterSqliteDatabase;
 
 export type SpineCorrelationKey = "trace" | "grant" | "run";
@@ -501,7 +523,7 @@ export function getCurrentBootEpoch(): BootEpoch | null {
 export function clearCurrentBootEpoch(): void {
   currentBootEpoch = null;
 }
-export function emitSpineEvent(
+export async function emitSpineEvent(
   input: SpineEventInput = {},
   dbHandle: SpineDatabase | null = null
 ): Promise<SpineEventRecord | null> {
@@ -513,12 +535,14 @@ export function emitSpineEvent(
   }
 
   if (!dbHandle && isPostgresStorageBackend()) {
-    return postgresEmitSpineEvent(input) as Promise<SpineEventRecord | null>;
+    const record = await (postgresEmitSpineEvent(input) as Promise<SpineEventRecord | null>);
+    await triggerScopedTerminalEvidenceConvergence(record);
+    return record;
   }
 
   const db = dbHandle ?? (getDb() as SpineDatabase | undefined);
   if (!db) {
-    return Promise.resolve(null);
+    return null;
   }
   const event = normalizeSpineEventInput(input);
 
@@ -530,7 +554,61 @@ export function emitSpineEvent(
     writeSqliteRunHistoryForSpineEvent(toRunHistorySpineEvent(event, input.data));
   }
 
-  return Promise.resolve(hydrateNormalizedEvent(event));
+  const record = hydrateNormalizedEvent(event);
+  await triggerScopedTerminalEvidenceConvergence(record);
+  return record;
+}
+
+/**
+ * Best-effort scoped evidence convergence for exactly the one connection a
+ * terminal run event just settled. Awaited by `emitSpineEvent` (every
+ * caller already awaits terminal-event emission — see runtime/index.ts and
+ * runtime/controller.ts) so a caller that awaits run completion also
+ * observes converged evidence, but failures here are swallowed: this must
+ * never turn a successfully-recorded terminal event into a throw.
+ *
+ * Without this, a connection's newest proven coverage is visible ONLY once
+ * the periodic connector-maintenance sweep's round-robin keyset walk
+ * happens to revisit that connection's page (connector-maintenance-sweep.ts
+ * / connector-summary-read-model.ts's `runBoundedSummaryEvidenceSweep`) —
+ * latency proportional to fleet size and current cursor position, not to
+ * this run's own completion (2026-08-01 live symptom: a fully-covered
+ * terminal run's evidence stayed on a stale prior-run coverage read for
+ * 120s+). This does not replace or race the maintenance sweep — it is the
+ * SAME scoped, single-connection `reconcileDirtyConnectorSummaryEvidence`
+ * call `scheduler-manager-factory.ts`'s forward-evidence-debt probe and
+ * `server/index.ts`'s scoped detail read already use, just triggered
+ * immediately from the one place every terminal run event (success,
+ * failure, cancel — across every emission site in runtime/index.ts and
+ * runtime/controller.ts) already funnels through, rather than duplicated at
+ * each of those call sites. Only ever scoped to the one connection that just
+ * settled — never a fleet-wide pass — so it stays cheap regardless of fleet
+ * size, unlike the round-robin sweep it accelerates past.
+ */
+async function triggerScopedTerminalEvidenceConvergence(event: SpineEventRecord | null): Promise<void> {
+  if (!(event && TERMINAL_RUN_EVENT_TYPES_FOR_CONVERGENCE.has(event.event_type))) {
+    return;
+  }
+  const connectorInstanceId = connectionIdFromEventData(event);
+  if (!connectorInstanceId) {
+    return;
+  }
+  try {
+    const [readModel, terminalPublisher] = await Promise.all([
+      import(CONNECTOR_SUMMARY_READ_MODEL_MODULE),
+      import(CONNECTOR_SUMMARY_TERMINAL_PUBLISHER_MODULE),
+    ]);
+    await readModel.reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
+    // Mirrors the maintenance sweep's own ordering: publish the terminal
+    // owner-LIST projection only AFTER this connection's evidence just
+    // converged, never before (the publisher's own CAS fencing would
+    // reject a not-yet-current row anyway — see
+    // connector-summary-terminal-publisher.ts).
+    await terminalPublisher.publishConnectorListSummaryTerminalProjectionsForIds([connectorInstanceId]);
+  } catch {
+    // Best-effort acceleration only: the periodic maintenance sweep is the
+    // durable backstop that converges this row regardless.
+  }
 }
 
 function toRunHistorySpineEvent(event: NormalizedSpineEvent, rawData: unknown): RunHistorySpineEvent {

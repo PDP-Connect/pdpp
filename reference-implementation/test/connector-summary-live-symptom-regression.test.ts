@@ -161,10 +161,16 @@ test(
     await seedInstance();
     await seedSuccessfulCoveredRun("run_live_symptom_1", "2026-07-31T00:05:00.000Z");
 
-    // Pre-condition: before any maintenance cycle runs, no evidence row
-    // exists yet, matching a freshly-observed live connection.
+    // Pre-condition: the terminal run.completed event's own scoped
+    // convergence trigger (lib/spine.ts's emitSpineEvent) already created and
+    // converged the evidence row before any maintenance cycle runs — proven
+    // separately by connector-summary-terminal-event-triggers-convergence.test.ts.
+    // This test's job is the NEXT layer: that the periodic maintenance sweep
+    // is ALSO sufficient on its own (the durable backstop), so it still runs
+    // one bounded cycle below regardless of this pre-existing convergence.
     const before = await getConnectorSummaryEvidence(CONNECTOR_INSTANCE_ID);
-    assert.equal(before, null, "premise: no evidence row exists before the first maintenance cycle");
+    assert.ok(before, "the terminal event's own convergence trigger already created the evidence row");
+    assert.equal(before.terminal_facts.state, "current");
 
     // ONE bounded maintenance cycle — the exact primitive both the periodic
     // 60s tick (connector-maintenance-sweep.ts) and the startup pass call.
