@@ -677,6 +677,81 @@ const OwnerConnectionDiagnosticsSchema = {
   type: "object",
 };
 
+const OwnerConnectionDetailGapSchema = {
+  additionalProperties: false,
+  properties: {
+    attempt_count: { minimum: 0, type: "integer" },
+    disposition: {
+      additionalProperties: false,
+      properties: {
+        policy_class: { type: ["string", "null"] },
+        state: { enum: ["policy_skipped", "recovered", "retryable", "terminal"], type: "string" },
+      },
+      required: ["state", "policy_class"],
+      type: "object",
+    },
+    gap_id: { type: "string" },
+    last_attempt_at: { type: ["string", "null"] },
+    last_error: {
+      additionalProperties: false,
+      properties: { class: { type: ["string", "null"] } },
+      required: ["class"],
+      type: "object",
+    },
+    lease: {
+      additionalProperties: false,
+      properties: {
+        expires_at: { type: ["string", "null"] },
+        state: { enum: ["leased", "not_leased", "unknown"], type: "string" },
+      },
+      required: ["state", "expires_at"],
+      type: "object",
+    },
+    next_attempt_after: { type: ["string", "null"] },
+    reason: { type: ["string", "null"] },
+    record_key: { type: ["string", "null"] },
+    status: { enum: ["pending", "in_progress", "recovered", "terminal"], type: "string" },
+    stream: { type: "string" },
+  },
+  required: [
+    "gap_id",
+    "stream",
+    "record_key",
+    "status",
+    "reason",
+    "last_error",
+    "attempt_count",
+    "last_attempt_at",
+    "next_attempt_after",
+    "lease",
+    "disposition",
+  ],
+  type: "object",
+};
+
+const OwnerConnectionDetailGapListResponseSchema = {
+  additionalProperties: false,
+  properties: {
+    connection_id: { type: "string" },
+    data: { items: OwnerConnectionDetailGapSchema, type: "array" },
+    has_more: { type: "boolean" },
+    limit: { maximum: 100, minimum: 1, type: "integer" },
+    next_cursor: { type: ["string", "null"] },
+    object: { const: "owner_connection_detail_gaps" },
+  },
+  required: ["object", "connection_id", "data", "limit", "has_more", "next_cursor"],
+  type: "object",
+};
+
+const OwnerConnectionDetailGapQuerySchema = {
+  additionalProperties: false,
+  properties: {
+    cursor: { minLength: 1, type: "string" },
+    limit: { maximum: 100, minimum: 1, type: "integer" },
+  },
+  type: "object",
+};
+
 // Owner-agent connection-revoke result: the soft-flipped connection. Revoke is
 // zero-cascade (records, spine, device rows, and sibling connections are
 // untouched) and durable, so the response only confirms the connection's new
@@ -2195,6 +2270,17 @@ export const referenceManifests = [
     responses: { 200: { schema: OwnerConnectionDiagnosticsSchema }, ...CommonErrors },
     summary:
       "Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+  },
+  {
+    id: "ownerInspectConnectionDetailGaps",
+    method: "GET",
+    path: "/v1/owner/connections/{connectionId}/diagnostics/detail-gaps",
+    request: { params: ConnectionIdParamSchema, query: OwnerConnectionDetailGapQuerySchema },
+    responses: { 200: { schema: OwnerConnectionDetailGapListResponseSchema }, ...CommonErrors },
+    summary:
+      "Owner-agent bearer: read a bounded, exact-connection page of detail-gap identity and diagnostics-safe state. Supports limit 1..100 (default 25) and an opaque keyset cursor. Exposes only gap_id, stream, record_key, status, reason, last_error.class, attempt/timing fields, modeled lease state/expiry, and terminal/policy disposition; omits payloads, locators, filenames, provider messages, tokens, lease identifiers, and raw diagnostics. There is no connector-only alias, so sibling connections cannot be included by ambiguity resolution.",
     surface: "reference",
     tags: ["reference", "connections", "owner-agent"],
   },

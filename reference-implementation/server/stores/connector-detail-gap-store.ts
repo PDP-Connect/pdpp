@@ -158,6 +158,11 @@ interface QuarantinedRequeueScope {
   streams: string[] | null;
 }
 
+interface DetailGapListCursor {
+  createdAt: string;
+  gapId: string;
+}
+
 interface RequeueResult {
   matched: number;
   requeued: number;
@@ -1032,6 +1037,37 @@ export function createSqliteConnectorDetailGapStore() {
       return rowToGap(firstSqliteRow("SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1", [id]));
     },
 
+    // Bounded owner diagnostics listing. Unlike the recovery listing above,
+    // this intentionally includes every status and uses a stable keyset order
+    // so a caller can inspect terminal/policy evidence without offset scans.
+    // REVIEWED-DYNAMIC: scoped, bounded read of the store-owned detail-gap table.
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async listGapsForConnectorInstance(
+      connectorId: string,
+      connectorInstanceId: string,
+      { after = null, limit = 100 }: { after?: DetailGapListCursor | null; limit?: number } = {}
+    ): Promise<DetailGap[]> {
+      const bounded = normalizeGapMutationLimit(limit);
+      const cursorClause = after ? "AND (created_at > ? OR (created_at = ? AND gap_id > ?))" : "";
+      const params = after
+        ? [connectorId, connectorInstanceId, after.createdAt, after.createdAt, after.gapId, bounded]
+        : [connectorId, connectorInstanceId, bounded];
+      const rows = [
+        ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+          `
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND connector_instance_id = ?
+          ${cursorClause}
+        ORDER BY created_at ASC, gap_id ASC
+        LIMIT ?
+      `,
+          params
+        ),
+      ];
+      return rows.map((row) => rowToGap(row) as DetailGap);
+    },
+
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async listPendingGaps(
       options: {
@@ -1745,6 +1781,33 @@ export function createPostgresConnectorDetailGapStore() {
         [id]
       );
       return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    // Bounded owner diagnostics listing. This is the Postgres counterpart to
+    // the SQLite method above: all statuses, exact connector-instance scope,
+    // and a unique keyset order.
+    async listGapsForConnectorInstance(
+      connectorId: string,
+      connectorInstanceId: string,
+      { after = null, limit = 100 }: { after?: DetailGapListCursor | null; limit?: number } = {}
+    ): Promise<DetailGap[]> {
+      const bounded = normalizeGapMutationLimit(limit);
+      const cursorClause = after ? "AND (created_at > $3 OR (created_at = $4 AND gap_id > $5))" : "";
+      const params = after
+        ? [connectorId, connectorInstanceId, after.createdAt, after.createdAt, after.gapId, bounded]
+        : [connectorId, connectorInstanceId, bounded];
+      const result = await postgresQuery<DetailGapRow>(
+        `
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND connector_instance_id = $2
+          ${cursorClause}
+        ORDER BY created_at ASC, gap_id ASC
+        LIMIT $${after ? 6 : 3}
+      `,
+        params
+      );
+      return (result.rows as DetailGapRow[]).map((row) => rowToGap(row) as DetailGap);
     },
 
     async listPendingGaps(

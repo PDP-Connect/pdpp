@@ -619,6 +619,17 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     // placeholder; the per-connection projection substitutes the concrete id.
     urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/diagnostics`,
   },
+  {
+    family: "inspect_detail_gaps",
+    method: "GET",
+    reason:
+      "Read a bounded, deterministic page of exact detail-gap state for one connection by connection_id. GET this URL; optional query parameters are limit (default 25, maximum 100) and opaque cursor. The response exposes gap_id, stream, record_key, status, reason, last_error.class, attempt/timing fields, modeled lease state/expiry, and terminal or policy disposition only; it omits payloads, locators, filenames, provider messages, tokens, and raw diagnostics. Use a connection_id from list_connections. There is no connector-only alias because detail-gap evidence must never widen across sibling connections.",
+    scope: "instance",
+    status: "supported",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/diagnostics/detail-gaps`,
+  },
   // Supported in this build: a trusted owner agent manages CloudEvents webhook
   // subscriptions over the same bearer. This is a surface-level family (it is not
   // bound to one configured connection), and it is the one capability the

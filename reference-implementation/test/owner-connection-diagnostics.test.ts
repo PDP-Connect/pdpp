@@ -282,15 +282,19 @@ interface DiagnosticsResponseBody {
 interface DetailGapUpsertInput {
   connectorId: string;
   connectorInstanceId: string;
+  gapId?: string;
+  lastError?: unknown;
   nextAttemptAfter?: string;
   now?: string;
-  reason: string;
+  reason?: string;
   recordKey: string;
   stream: string;
 }
 
 interface DetailGapMarkStatusOptions {
+  lastError?: unknown;
   now?: string;
+  reason?: string | null;
   runId?: string | null;
 }
 
@@ -300,6 +304,10 @@ interface DetailGapRecord {
 }
 
 interface ConnectorDetailGapStoreLike {
+  claimPendingGaps: (
+    gapIds: readonly string[],
+    options: { leaseExpiresAt: string; leaseId: string; runId: string }
+  ) => Promise<unknown>;
   markGapStatus: (
     gapId: string,
     status: string,
@@ -665,6 +673,203 @@ test("owner-agent control document advertises inspect_diagnostics as supported w
     assert.equal(diagnostics.status, "supported");
     assert.equal(diagnostics.method, "GET");
     assert.equal(diagnostics.url, `${rsUrl}/v1/owner/connections/{connection_id}/diagnostics`);
+    const detailGaps = body.actions.find((a) => a.family === "inspect_detail_gaps");
+    assert.ok(detailGaps, "inspect_detail_gaps must be advertised");
+    assert.equal(detailGaps.status, "supported");
+    assert.equal(detailGaps.method, "GET");
+    assert.equal(detailGaps.url, `${rsUrl}/v1/owner/connections/{connection_id}/diagnostics/detail-gaps`);
+  });
+});
+
+test("owner-agent detail-gap diagnostics pages exact rows with bounded redaction and keyset cursors", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest("spotify"));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    assert.ok(connectorKey, "expected a canonical connector key");
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_spotify_gap_owner",
+      displayName: "Gap owner connection",
+      sourceBindingKey: "gap-owner@example.com",
+    });
+    await seedInstance({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_spotify_gap_sibling",
+      displayName: "Sibling connection",
+      sourceBindingKey: "gap-sibling@example.com",
+    });
+
+    const gapStore = detailGapStore();
+    await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_spotify_gap_owner",
+      gapId: "gap_a",
+      lastError: { class: "too_large", filename: "private-name.pdf", message: "raw-provider-message" },
+      now: NOW,
+      reason: "temporary_unavailable",
+      recordKey: "record_a",
+      stream: "attachments",
+    });
+    await gapStore.markGapStatus("gap_a", "terminal", {
+      lastError: { class: "too_large", message: "secret-token", token: "secret-token" },
+      now: "2026-06-01T00:00:00.000Z",
+      reason: "quarantined",
+    });
+    await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_spotify_gap_owner",
+      gapId: "gap_b",
+      lastError: { class: "run_cap_deferred", message: "do-not-return" },
+      now: NOW,
+      reason: "temporary_unavailable",
+      recordKey: "record_b",
+      stream: "attachments",
+    });
+    await gapStore.claimPendingGaps(["gap_b"], {
+      leaseExpiresAt: "2026-06-01T01:00:00.000Z",
+      leaseId: "lease-do-not-return",
+      runId: "run-do-not-return",
+    });
+    await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_spotify_gap_owner",
+      gapId: "gap_c",
+      now: "2026-06-02T00:00:00.000Z",
+      recordKey: "record_c",
+      stream: "attachments",
+    });
+    await gapStore.markGapStatus("gap_c", "recovered", { now: "2026-06-02T00:01:00.000Z" });
+    await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: "cin_spotify_gap_sibling",
+      gapId: "gap_sibling",
+      now: NOW,
+      recordKey: "sibling_record",
+      stream: "attachments",
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const first = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      "/v1/owner/connections/cin_spotify_gap_owner/diagnostics/detail-gaps?limit=2"
+    );
+    assert.equal(first.status, 200);
+    const firstBody = first.body as {
+      connection_id: string;
+      data: Record<string, unknown>[];
+      has_more: boolean;
+      limit: number;
+      next_cursor: string | null;
+    };
+    assert.equal(firstBody.connection_id, "cin_spotify_gap_owner");
+    assert.equal(firstBody.limit, 2);
+    assert.equal(firstBody.has_more, true);
+    assert.ok(firstBody.next_cursor, "a second page has a cursor");
+    assert.deepEqual(
+      firstBody.data.map((row) => row.gap_id),
+      ["gap_a", "gap_b"],
+      "rows are ordered by created_at then gap_id"
+    );
+    assert.deepEqual(firstBody.data[0]?.last_error, { class: "too_large" });
+    assert.deepEqual(firstBody.data[0]?.disposition, {
+      policy_class: "too_large",
+      state: "terminal",
+    });
+    assert.deepEqual(firstBody.data[1]?.lease, {
+      expires_at: "2026-06-01T01:00:00.000Z",
+      state: "leased",
+    });
+    assert.deepEqual(Object.keys(firstBody.data[0] ?? {}).sort(), [
+      "attempt_count",
+      "disposition",
+      "gap_id",
+      "last_attempt_at",
+      "last_error",
+      "lease",
+      "next_attempt_after",
+      "reason",
+      "record_key",
+      "status",
+      "stream",
+    ]);
+    const serialized = JSON.stringify(first.body);
+    for (const forbidden of [
+      "raw-provider-message",
+      "private-name.pdf",
+      "secret-token",
+      "lease-do-not-return",
+      "run-do-not-return",
+      "detail_locator",
+      "source",
+      "filename",
+      "provider_message",
+    ]) {
+      assert.ok(!serialized.includes(forbidden), `detail-gap projection must omit ${forbidden}`);
+    }
+
+    const second = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      `/v1/owner/connections/cin_spotify_gap_owner/diagnostics/detail-gaps?limit=2&cursor=${encodeURIComponent(firstBody.next_cursor)}`
+    );
+    assert.equal(second.status, 200);
+    const secondBody = second.body as {
+      data: Record<string, unknown>[];
+      has_more: boolean;
+      next_cursor: string | null;
+    };
+    assert.deepEqual(
+      secondBody.data.map((row) => row.gap_id),
+      ["gap_c"]
+    );
+    assert.equal(secondBody.has_more, false);
+    assert.equal(secondBody.next_cursor, null);
+    assert.ok(!JSON.stringify(second.body).includes("gap_sibling"), "sibling rows stay out of exact scope");
+    const crossConnectionCursor = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      `/v1/owner/connections/cin_spotify_gap_sibling/diagnostics/detail-gaps?cursor=${encodeURIComponent(firstBody.next_cursor)}`
+    );
+    assert.equal(crossConnectionCursor.status, 400);
+    assert.equal((crossConnectionCursor.body as DiagnosticsResponseBody).error?.code, "invalid_cursor");
+
+    const defaultPage = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      "/v1/owner/connections/cin_spotify_gap_owner/diagnostics/detail-gaps"
+    );
+    assert.equal(defaultPage.status, 200);
+    assert.equal((defaultPage.body as { limit: number }).limit, 25);
+    const invalidLimit = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      "/v1/owner/connections/cin_spotify_gap_owner/diagnostics/detail-gaps?limit=101"
+    );
+    assert.equal(invalidLimit.status, 400);
+    assert.equal((invalidLimit.body as DiagnosticsResponseBody).error?.code, "invalid_request");
+    const invalidCursor = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      "/v1/owner/connections/cin_spotify_gap_owner/diagnostics/detail-gaps?cursor=not-a-cursor"
+    );
+    assert.equal(invalidCursor.status, 400);
+    assert.equal((invalidCursor.body as DiagnosticsResponseBody).error?.code, "invalid_cursor");
+
+    const [firstStream] = manifest.streams;
+    assert.ok(firstStream, "manifest carries at least one stream");
+    const clientToken = await approveClientGrant(asUrl, connectorKey, firstStream.name);
+    const clientRead = await getDiagnostics(
+      rsUrl,
+      clientToken,
+      "/v1/owner/connections/cin_spotify_gap_owner/diagnostics/detail-gaps"
+    );
+    assert.equal(clientRead.status, 403);
+    assert.equal((clientRead.body as DiagnosticsResponseBody).error?.code, "permission_error");
+    const unauthenticated = await fetchJson(
+      `${rsUrl}/v1/owner/connections/cin_spotify_gap_owner/diagnostics/detail-gaps`
+    );
+    assert.equal(unauthenticated.status, 401);
   });
 });
 

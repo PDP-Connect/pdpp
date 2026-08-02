@@ -53,6 +53,7 @@
 //         actions" → "Agent inspects available actions" (inspect diagnostics) +
 //         "Agent targets connector type when instance is ambiguous")
 
+import { normalizeOwnerDetailGapLimit } from "../owner-detail-gap-projection.ts";
 import {
   auditActorKind,
   buildAuditTrace,
@@ -95,6 +96,7 @@ interface RouteResponse {
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 type NextFn = () => unknown | Promise<unknown>;
+const DETAIL_GAP_LIMIT_PATTERN = /^\d+$/;
 
 interface AppLike {
   get: (path: string, ...args: RouteArg<RouteHandler>[]) => AppLike;
@@ -113,6 +115,13 @@ export interface MountOwnerConnectionDiagnosticsContext {
   createTraceContext: (input?: { scenarioId?: string }) => TraceContext;
   emitSpineEvent: (event: Record<string, unknown>) => Promise<unknown>;
   ensureRequestId: (res: RouteResponse) => string;
+  getOwnerConnectionDetailGaps: (input: {
+    connectorId: string;
+    connectorInstanceId: string;
+    connectionId: string;
+    cursor?: string | null;
+    limit?: unknown;
+  }) => Promise<unknown>;
   // Shared connection-scoped diagnostics read. Owner-scoped because the
   // namespace was already resolved owner-side; returns `null` when no
   // configured connection matches the resolved instance id.
@@ -149,6 +158,9 @@ export interface MountOwnerConnectionDiagnosticsContext {
 function httpStatusForDiagnosticsError(err: unknown): number {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const code = (err as { code?: unknown })?.code;
+  if (code === "invalid_request" || code === "invalid_cursor") {
+    return 400;
+  }
   if (code === "authentication_error") {
     return 401;
   }
@@ -180,6 +192,8 @@ async function emitDiagnosticsAudit(
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
     selector: "connection_id" | "connector_id";
+    operation?: "inspect_diagnostics" | "inspect_detail_gaps";
+    targetResource?: "connection_diagnostics" | "connection_detail_gaps";
   }
 ): Promise<void> {
   const trace = buildAuditTrace(ctx, req, res);
@@ -203,10 +217,10 @@ async function emitDiagnosticsAudit(
       // Non-secret health verdict so an owner can see what state the agent
       // observed without re-reading the diagnostics body. `null` on failure.
       health_state: args.healthState ?? null,
-      operation: "inspect_diagnostics",
+      operation: args.operation ?? "inspect_diagnostics",
       outcome: args.outcome,
       selector: args.selector,
-      target_resource: "connection_diagnostics",
+      target_resource: args.targetResource ?? "connection_diagnostics",
       ...(args.error
         ? {
             error: {
@@ -233,7 +247,11 @@ async function emitDiagnosticsAudit(
 // complete for client/mcp_package bearers that reach the route.
 function buildDiagnosticsRequireOwner(
   ctx: MountOwnerConnectionDiagnosticsContext,
-  selector: "connection_id" | "connector_id"
+  selector: "connection_id" | "connector_id",
+  auditOptions: {
+    operation?: "inspect_diagnostics" | "inspect_detail_gaps";
+    targetResource?: "connection_diagnostics" | "connection_detail_gaps";
+  } = {}
 ): MiddlewareHandler {
   return async (...args: unknown[]) => {
     const [req, res, next] = args as [RouteRequest, RouteResponse, NextFn];
@@ -251,6 +269,7 @@ function buildDiagnosticsRequireOwner(
       outcome: "failed",
       ownerSubjectId: typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null,
       selector,
+      ...auditOptions,
     });
     ctx.pdppError(res, 403, "permission_error", "Owner token required");
   };
@@ -259,6 +278,42 @@ function buildDiagnosticsRequireOwner(
 function readHealthState(diagnostics: unknown): string | null {
   const health = (diagnostics as { health?: { state?: unknown } } | null)?.health;
   return typeof health?.state === "string" ? health.state : null;
+}
+
+function invalidDetailGapQuery(
+  code: "invalid_cursor" | "invalid_request",
+  message: string,
+  param?: string
+): Error & {
+  code: string;
+  param?: string;
+} {
+  const error = new Error(message) as Error & { code: string; param?: string };
+  error.code = code;
+  if (param) {
+    error.param = param;
+  }
+  return error;
+}
+
+function readDetailGapQuery(req: RouteRequest): { cursor: string | null; limit: number } {
+  const rawLimit = req.query.limit;
+  if (
+    Array.isArray(rawLimit) ||
+    (rawLimit !== undefined && rawLimit !== null && typeof rawLimit !== "number" && typeof rawLimit !== "string") ||
+    (typeof rawLimit === "string" && !DETAIL_GAP_LIMIT_PATTERN.test(rawLimit))
+  ) {
+    throw invalidDetailGapQuery("invalid_request", "limit must be a single integer", "limit");
+  }
+  const limit = normalizeOwnerDetailGapLimit(rawLimit);
+  const rawCursor = req.query.cursor;
+  if (rawCursor === undefined || rawCursor === null) {
+    return { cursor: null, limit };
+  }
+  if (typeof rawCursor !== "string" || !rawCursor.trim()) {
+    throw invalidDetailGapQuery("invalid_cursor", "cursor must be a non-empty opaque cursor", "cursor");
+  }
+  return { cursor: rawCursor, limit };
 }
 
 // Shared handler body for both routes. `selector` chooses connector-only vs
@@ -349,7 +404,77 @@ function buildDiagnosticsHandler(
   };
 }
 
+function buildDetailGapHandler(ctx: MountOwnerConnectionDiagnosticsContext): RouteHandler {
+  return async (req: RouteRequest, res: RouteResponse) => {
+    const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+    let connectionId: string | null = null;
+    let connectorKey: string | null = null;
+    try {
+      const query = readDetailGapQuery(req);
+      const addressed = decodeURIComponent(req.params.connectionId as string);
+      connectionId = addressed;
+      const namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
+        allowDefaultAccount: false,
+        connectorInstanceId: addressed,
+        ownerSubjectId,
+      });
+      connectionId = namespace.connectorInstanceId;
+      connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+      const page = await ctx.getOwnerConnectionDetailGaps({
+        connectionId: namespace.connectorInstanceId,
+        connectorId: namespace.connectorId,
+        connectorInstanceId: namespace.connectorInstanceId,
+        cursor: query.cursor,
+        limit: query.limit,
+      });
+      await emitDiagnosticsAudit(ctx, req, res, {
+        connectionId,
+        connectorKey,
+        operation: "inspect_detail_gaps",
+        outcome: "succeeded",
+        ownerSubjectId,
+        selector: "connection_id",
+        targetResource: "connection_detail_gaps",
+      });
+      res.status(200).json(page);
+    } catch (err) {
+      await emitDiagnosticsAudit(ctx, req, res, {
+        connectionId,
+        connectorKey,
+        error: err,
+        operation: "inspect_detail_gaps",
+        outcome: "failed",
+        ownerSubjectId,
+        selector: "connection_id",
+        targetResource: "connection_detail_gaps",
+      });
+      const { code } = err as { code?: unknown };
+      if (code === "invalid_request" || code === "invalid_cursor") {
+        ctx.pdppError(
+          res,
+          400,
+          code,
+          err instanceof Error ? err.message : "Invalid detail-gap page request",
+          typeof (err as { param?: unknown }).param === "string" ? (err as { param: string }).param : null
+        );
+        return;
+      }
+      ctx.handleError(res, err);
+    }
+  };
+}
+
 export function mountOwnerConnectionDiagnostics(app: AppLike, ctx: MountOwnerConnectionDiagnosticsContext): void {
+  app.get(
+    "/v1/owner/connections/:connectionId/diagnostics/detail-gaps",
+    { contract: "ownerInspectConnectionDetailGaps" },
+    ctx.requireToken,
+    buildDiagnosticsRequireOwner(ctx, "connection_id", {
+      operation: "inspect_detail_gaps",
+      targetResource: "connection_detail_gaps",
+    }),
+    buildDetailGapHandler(ctx)
+  );
   app.get(
     "/v1/owner/connections/:connectionId/diagnostics",
     { contract: "ownerInspectConnectionDiagnostics" },

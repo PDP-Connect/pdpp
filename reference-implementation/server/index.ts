@@ -190,6 +190,7 @@ import {
 } from "./metadata.ts";
 import { unresolvedOwnerActionEvidenceFromSummary } from "./owner-action-gate.ts";
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
+import { getOwnerConnectionDetailGapPage } from "./owner-detail-gap-projection.ts";
 import { resolveOwnerExposurePosture } from "./owner-exposure-posture.ts";
 import { createPackageRsClient, createRsClient } from "./package-rs-client.ts";
 import { reconcilePolyfillManifests } from "./polyfill-manifest-reconcile.ts";
@@ -6157,6 +6158,8 @@ function buildRsApp(opts: ServerOpts = {}) {
     createTraceContext,
     emitSpineEvent,
     ensureRequestId,
+    getOwnerConnectionDetailGaps: (input: Parameters<typeof getOwnerConnectionDetailGapPage>[0]) =>
+      getOwnerConnectionDetailGapPage(input),
     getOwnerConnectionDiagnostics: (connectorInstanceId: string) =>
       getOwnerConnectionDiagnostics(connectorInstanceId, opts.controller),
     getOwnerTokenSubjectId,

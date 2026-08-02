@@ -30,6 +30,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **DELETE** | `/v1/owner/connections/{connectionId}` | `ownerDeleteConnection` | Owner-agent bearer: DESTRUCTIVELY delete one configured connection, addressed by `connection_id`. Erases that connection's records, record-change history, version counters, blobs, blob bindings, search indices, and attention records, deletes its schedule, clears its device source-instance back-reference, and removes the connector_instances row — all keyed strictly on one connection_id, never widening to connector_id (sibling connections of the same connector type are untouched). It does NOT erase a running collection: a connection with an in-flight run is REFUSED, not deleted (no active-run row is erased while running). The source-of-truth deletion (records, history, version counters, blobs, blob bindings, attention, schedule, device back-ref, and the connector_instances row) is transactional all-or-nothing across one connector_instance_id; the search-index teardown is a rebuildable projection cleaned up after that commit. PRESERVES the audit spine (appending an owner_agent.connection.delete event), disclosure grants, and the device edge. Delete is NOT revoke: it erases the past and removes the configuration, where revoke only stops the future. A repeat/unknown/foreign-owner id returns a typed `connector_instance_not_found` (404) without leaking existence. An in-flight run returns `connection_run_active` (409). A default-account binding returns `default_account_delete_unsupported` (409) — revoke it instead. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. `/mcp` owner-bearer rejection is untouched. |
 | **DELETE** | `/v1/owner/connectors/{connectorId}` | `ownerDeleteConnector` | Owner-agent bearer: DESTRUCTIVELY delete a connector's connection addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Erases the resolved connection's data + configuration per the connection-scoped cascade (see ownerDeleteConnection). Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **GET** | `/v1/owner/connections/{connectionId}/diagnostics` | `ownerInspectConnectionDiagnostics` | Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **GET** | `/v1/owner/connections/{connectionId}/diagnostics/detail-gaps` | `ownerInspectConnectionDetailGaps` | Owner-agent bearer: read a bounded, exact-connection page of detail-gap identity and diagnostics-safe state. Supports limit 1..100 (default 25) and an opaque keyset cursor. Exposes only gap_id, stream, record_key, status, reason, last_error.class, attempt/timing fields, modeled lease state/expiry, and terminal/policy disposition; omits payloads, locators, filenames, provider messages, tokens, lease identifiers, and raw diagnostics. There is no connector-only alias, so sibling connections cannot be included by ambiguity resolution. |
 | **GET** | `/v1/owner/connectors/{connectorId}/diagnostics` | `ownerInspectConnectorDiagnostics` | Owner-agent bearer: read connection-scoped diagnostics for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **GET** | `/_ref/connections/{connectorInstanceId}` | `refGetConnection` | Get one owner-facing configured connector connection by connector instance id. |
 | **GET** | `/_ref/connector-instances/{connectorInstanceId}` | `refGetConnectorInstance` | Compatibility alias for reading one configured connector instance behind an owner-facing connection. |
@@ -515,6 +516,28 @@ Owner-agent bearer: DESTRUCTIVELY delete a connector's connection addressed by `
 `GET /v1/owner/connections/{connectionId}/diagnostics`
 
 Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectionId` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerInspectConnectionDetailGaps
+
+`GET /v1/owner/connections/{connectionId}/diagnostics/detail-gaps`
+
+Owner-agent bearer: read a bounded, exact-connection page of detail-gap identity and diagnostics-safe state. Supports limit 1..100 (default 25) and an opaque keyset cursor. Exposes only gap_id, stream, record_key, status, reason, last_error.class, attempt/timing fields, modeled lease state/expiry, and terminal/policy disposition; omits payloads, locators, filenames, provider messages, tokens, lease identifiers, and raw diagnostics. There is no connector-only alias, so sibling connections cannot be included by ambiguity resolution.
+
+### Query parameters
+
+- `cursor` — string
+- `limit` — integer · min: 1 · max: 100
 
 ### Path parameters
 

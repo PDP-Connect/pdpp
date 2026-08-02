@@ -134,6 +134,11 @@
     "date": "2026-07-28",
     "reason": "TypeScript migration closure (2026-07-28): manifest resolution adds 3 extra guards for StorageBinding | null | undefined -> StorageBinding | null | undefined alignment with exactOptionalPropertyTypes and SourceDescriptorOptions nativeManifest field. Each guard narrows a real nullable boundary; removing them would require a cast that violates the strict-plus baseline."
   },
+  "server/owner-detail-gap-projection.ts": {
+    "allowed_mass": 5,
+    "date": "2026-08-02",
+    "reason": "New file (2026-08-02, owner-only detail-gap projection): the bounded page must reject malformed limits and cursors, bind cursors to one connection, derive policy and lease state, and emit a strict redacted wire shape. These branches preserve pagination, exact-scope, and disclosure invariants; extracting them would split one projection contract without reducing a state distinction. Owner-route tests prove bounds, cursor reuse rejection, field allowlisting, and redaction."
+  },
   "server/postgres-records.ts": {
     "allowed_mass": 204,
     "date": "2026-07-28",
@@ -158,6 +163,11 @@
     "allowed_mass": 33,
     "date": "2026-07-30",
     "reason": "Fable ruling terminal-read-architecture-fable-0730.md §8 (2026-07-30, identity_inventory) + design doc add-source-perf-design-agy-0730.md R4/R5 (2026-07-30, retained_count_summary + connector_id SET scope). The second increment adds a third accepted profile value (validated in the same one-place guard) and its matching branch/overload fork in sendConnectionScopedConnectorSummary's listConnectorSummaries closure, so the connection-scoped `?connection=` form can also serve retained_count_summary. The added branches are the profile parse/validate guard's extra arm and the closure's third call-site fork; both are the minimum surface for the route to expose a second additional named profile without a second route."
+  },
+  "server/routes/owner-connection-diagnostics.ts": {
+    "allowed_mass": 30,
+    "date": "2026-08-02",
+    "reason": "Owner detail-gap observability (2026-08-02): the existing diagnostics adapter gains one exact-connection page route with strict query-shape validation, typed invalid-request mapping, operation-specific audit evidence, and the existing owner bearer and namespace guards. The added branches preserve the auth and error ordering at this HTTP boundary; moving them into the projection would hide transport semantics and weaken route-local reasoning. Focused route tests prove owner-only auth, exact scope, cursor/limit errors, and audit-safe behavior."
   },
   "server/routes/ref-device-exporters.ts": {
     "allowed_mass": 161,
@@ -190,9 +200,9 @@
     "reason": "The SQLite and Postgres implementations must each make the same run-and-lease-owned compare-and-set transitions for claim, explicit attempt, recovery, re-deferral, release, and expired-lease reclaim. The branches preserve the distinction between an untouched issuance and a real provider attempt across durable backend dialects; collapsing them behind a shallow helper would hide the SQL ownership predicates that prevent re-serve races."
   },
   "server/stores/connector-detail-gap-store.ts": {
-    "allowed_mass": 55,
+    "allowed_mass": 56,
     "date": "2026-08-02",
-    "reason": "Sticky-terminal metadata repair: each SQLite/PostgreSQL upsert conflict branch uses explicit terminal-only CASE preservation for reason, next_attempt_after, last_error_json, and last_run_id so pending rediscovery cannot erase the durable quarantine decision that the scoped repair primitive requires. The duplicated predicates are backend-specific SQL and preserve the existing recovered reopen CASE byte-for-byte; extracting them would hide the dialect-specific conflict semantics without reducing the required state distinctions. Focused SQLite and PostgreSQL regressions prove metadata survives rediscovery and terminal+quarantined repair still requeues."
+    "reason": "Sticky-terminal metadata repair: each SQLite/PostgreSQL upsert conflict branch uses explicit terminal-only CASE preservation for reason, next_attempt_after, last_error_json, and last_run_id so pending rediscovery cannot erase the durable quarantine decision that the scoped repair primitive requires. The duplicated predicates are backend-specific SQL and preserve the existing recovered reopen CASE byte-for-byte; extracting them would hide the dialect-specific conflict semantics without reducing the required state distinctions. Focused SQLite and PostgreSQL regressions prove metadata survives rediscovery and terminal+quarantined repair still requeues. || Owner detail-gap observability (2026-08-02): adds the same exact-instance, all-status, `(created_at, gap_id)` keyset query to SQLite and PostgreSQL. The duplicated SQL is backend-specific bounded persistence logic, and the cursor predicates plus limit placement preserve parity and query bounds. SQLite conformance passes; the PostgreSQL parity test is gated by the repository's existing test URL."
   },
   "server/stores/connector-instance-credential-store.ts": {
     "allowed_mass": 7,

@@ -3683,6 +3683,86 @@ test(
   })
 );
 
+test(
+  "detail-gap diagnostics listing is all-status, exact-instance, deterministic, and keyset-bounded on SQLite",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const connectorId = "detail_gap_projection_connector";
+    const connectorInstanceId = "cin_detail_gap_projection";
+    const siblingInstanceId = "cin_detail_gap_projection_sibling";
+    const createdAt = "2026-07-30T00:00:00.000Z";
+
+    await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId,
+      gapId: "gap_b",
+      lastError: { class: "run_cap_deferred", message: "not public" },
+      now: createdAt,
+      recordKey: "record_b",
+      stream: "attachments",
+    });
+    await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId,
+      gapId: "gap_a",
+      lastError: { class: "too_large", message: "provider text" },
+      now: createdAt,
+      reason: "temporary_unavailable",
+      recordKey: "record_a",
+      stream: "attachments",
+    });
+    await store.markGapStatus("gap_a", "terminal", {
+      lastError: { class: "too_large", filename: "private.pdf" },
+      now: "2026-07-30T00:01:00.000Z",
+      reason: "quarantined",
+    });
+    await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId,
+      gapId: "gap_c",
+      now: "2026-07-30T00:00:01.000Z",
+      recordKey: "record_c",
+      stream: "attachments",
+    });
+    await store.markGapStatus("gap_c", "recovered", { now: "2026-07-30T00:02:00.000Z" });
+    await store.upsertPendingGap({
+      connectorId,
+      connectorInstanceId: siblingInstanceId,
+      gapId: "gap_sibling",
+      now: createdAt,
+      recordKey: "sibling_record",
+      stream: "attachments",
+    });
+    await store.claimPendingGaps(["gap_b"], {
+      leaseExpiresAt: "2026-07-30T01:00:00.000Z",
+      leaseId: "lease_private",
+      runId: "run_private",
+    });
+
+    const firstPage = await store.listGapsForConnectorInstance(connectorId, connectorInstanceId, { limit: 2 });
+    assert.deepEqual(
+      firstPage.map((gap) => [gap.gap_id, gap.status]),
+      [
+        ["gap_a", "terminal"],
+        ["gap_b", "in_progress"],
+      ]
+    );
+    const secondPage = await store.listGapsForConnectorInstance(connectorId, connectorInstanceId, {
+      after: { createdAt, gapId: "gap_b" },
+      limit: 2,
+    });
+    assert.deepEqual(
+      secondPage.map((gap) => [gap.gap_id, gap.status]),
+      [["gap_c", "recovered"]]
+    );
+    assert.equal(
+      [...firstPage, ...secondPage].some((gap) => gap.gap_id === "gap_sibling"),
+      false,
+      "sibling instance rows stay out of an exact-instance listing"
+    );
+  })
+);
+
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (POSTGRES_URL) {
@@ -3727,6 +3807,90 @@ if (POSTGRES_URL) {
       await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = ANY($1::text[])", [
         [first, second],
       ]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test("detail-gap diagnostics listing matches SQLite ordering and cursor scope on Postgres", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `detail_gap_projection_pg_${suffix}`;
+    const connectorInstanceId = `cin_detail_gap_projection_pg_${suffix}`;
+    const siblingInstanceId = `cin_detail_gap_projection_pg_sibling_${suffix}`;
+    const createdAt = "2026-07-30T00:00:00.000Z";
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        gapId: "gap_b",
+        lastError: { class: "run_cap_deferred", message: "not public" },
+        now: createdAt,
+        recordKey: "record_b",
+        stream: "attachments",
+      });
+      await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        gapId: "gap_a",
+        lastError: { class: "too_large", message: "provider text" },
+        now: createdAt,
+        recordKey: "record_a",
+        stream: "attachments",
+      });
+      await store.markGapStatus("gap_a", "terminal", {
+        lastError: { class: "too_large", filename: "private.pdf" },
+        now: "2026-07-30T00:01:00.000Z",
+        reason: "quarantined",
+      });
+      await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        gapId: "gap_c",
+        now: "2026-07-30T00:00:01.000Z",
+        recordKey: "record_c",
+        stream: "attachments",
+      });
+      await store.markGapStatus("gap_c", "recovered", { now: "2026-07-30T00:02:00.000Z" });
+      await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId: siblingInstanceId,
+        gapId: "gap_sibling",
+        now: createdAt,
+        recordKey: "sibling_record",
+        stream: "attachments",
+      });
+      await store.claimPendingGaps(["gap_b"], {
+        leaseExpiresAt: "2026-07-30T01:00:00.000Z",
+        leaseId: "lease_private",
+        runId: "run_private",
+      });
+
+      const firstPage = await store.listGapsForConnectorInstance(connectorId, connectorInstanceId, { limit: 2 });
+      assert.deepEqual(
+        firstPage.map((gap) => [gap.gap_id, gap.status]),
+        [
+          ["gap_a", "terminal"],
+          ["gap_b", "in_progress"],
+        ]
+      );
+      const secondPage = await store.listGapsForConnectorInstance(connectorId, connectorInstanceId, {
+        after: { createdAt, gapId: "gap_b" },
+        limit: 2,
+      });
+      assert.deepEqual(
+        secondPage.map((gap) => [gap.gap_id, gap.status]),
+        [["gap_c", "recovered"]]
+      );
+      assert.equal(
+        [...firstPage, ...secondPage].some((gap) => gap.gap_id === "gap_sibling"),
+        false,
+        "sibling instance rows stay out of an exact-instance listing"
+      );
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_id = $1", [connectorId]);
       await closePostgresStorage();
       closeDb();
     }
