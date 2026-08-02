@@ -61,7 +61,9 @@ export class CredentialEncryptionError extends Error {
  * Returns `null` when unconfigured so callers can decide whether the absence is
  * a fail-closed condition (it is, anywhere a credential must be stored).
  */
-export function resolveCredentialEncryptionKey(env: NodeJS.ProcessEnv = process.env): string | null {
+export function resolveCredentialEncryptionKey(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): string | null {
   const raw = env[CREDENTIAL_ENCRYPTION_KEY_ENV];
   if (typeof raw === "string") {
     const trimmed = raw.trim();
@@ -238,7 +240,9 @@ export function createCredentialCipher(keyMaterial: string): CredentialCipher {
  * must store or recover a credential use this; the fail-closed error is the
  * load-bearing guard that prevents plaintext-at-rest.
  */
-export function createCredentialCipherFromEnv(env: NodeJS.ProcessEnv = process.env): CredentialCipher {
+export function createCredentialCipherFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): CredentialCipher {
   const key = resolveCredentialEncryptionKey(env);
   if (!key) {
     throw new CredentialEncryptionError(
@@ -253,7 +257,9 @@ export function createCredentialCipherFromEnv(env: NodeJS.ProcessEnv = process.e
 }
 
 /** True when an operator key is configured and credential capture can proceed. */
-export function isCredentialEncryptionConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+export function isCredentialEncryptionConfigured(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): boolean {
   try {
     return resolveCredentialEncryptionKey(env) !== null;
   } catch {
