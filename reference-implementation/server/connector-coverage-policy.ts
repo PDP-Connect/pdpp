@@ -208,6 +208,19 @@ export function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): Cover
   return "terminal_gap";
 }
 
+function skipIsDiagnosticWhenDetailGapIsPending(skip: RuntimeCollectionFactSkip): boolean {
+  // Match the run-level classifier: an absent/unknown hint or an explicit
+  // runtime retry is diagnostic when the durable detail-gap retry contract is
+  // present. Any other action is load-bearing owner/maintainer evidence and
+  // must remain visible as terminal rather than being erased by the pending
+  // detail gap.
+  return (
+    skip.recovery_action === undefined ||
+    skip.recovery_action === "unknown" ||
+    skip.recovery_action === "retry_by_runtime"
+  );
+}
+
 /**
  * Classify a stream once no contradictory manifest, explicit skip, or pending
  * recoverable detail gap takes precedence. At this point, coverage rests only
@@ -279,7 +292,8 @@ function deriveGapFreeStreamCoverageCondition(
  * evidence order the contract requires:
  *
  *   1. contradictory manifest (required AND accepted-absent)  -> the accepted axis
- *   2. SKIP_RESULT present  -> manifest accepted-coverage axis, else skip-derived axis
+ *   2. SKIP_RESULT present  -> manifest accepted-coverage axis, else skip-derived axis;
+ *                              a pending detail gap shadows only a diagnostic skip
  *   3. pending recoverable detail gap(s)  -> `retryable_gap`
  *   4. known considered denominator + checkpoint strategy proof
  *                                     -> accepted axis / `complete`
@@ -309,11 +323,15 @@ export function deriveStreamCoverageCondition(
   //    stream. The manifest's accepted-coverage claim wins; otherwise infer a
   //    skip-consistent, never-`complete` axis. When the same stream also carries
   //    a pending DETAIL_GAP, that durable retry contract wins over an otherwise
-  //    terminal-looking diagnostic skip; unsupported/unavailable/deferred skip
-  //    reasons stay precise and non-green.
+  //    terminal-looking diagnostic skip with no/unknown/runtime-retry action;
+  //    explicit owner/maintainer actions remain load-bearing evidence.
   if (fact.skipped) {
     const skipCoverage = accepted ?? mapSkipCoverageCondition(fact.skipped);
-    if (fact.pending_detail_gaps > 0 && skipCoverage === "terminal_gap") {
+    if (
+      fact.pending_detail_gaps > 0 &&
+      skipCoverage === "terminal_gap" &&
+      skipIsDiagnosticWhenDetailGapIsPending(fact.skipped)
+    ) {
       return "retryable_gap";
     }
     return skipCoverage;

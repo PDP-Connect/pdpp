@@ -82,6 +82,23 @@ test("pending detail gaps outrank checkpoint strategy proof", () => {
   );
 });
 
+test("explicit maintainer skip remains terminal when a recoverable detail gap coexists", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({
+        pending_detail_gaps: 2,
+        skipped: {
+          reason: "credit_card_export_unverified",
+          recovery_action: "update_selector",
+        },
+        stream: "transactions",
+      }),
+      { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window" }
+    ),
+    "terminal_gap"
+  );
+});
+
 test("skip facts outrank checkpoint strategy proof", () => {
   assert.equal(
     deriveStreamCoverageCondition(

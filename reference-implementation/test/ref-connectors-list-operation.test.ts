@@ -716,6 +716,47 @@ test("connector summary connection health keeps same-stream skip diagnostics ret
   assert.notEqual(snapshot.forward_disposition, "terminal");
 });
 
+test("connector summary connection health preserves an explicit same-stream maintainer skip", () => {
+  const run = connectorRunSummary({
+    event_count: 7,
+    finished_at: "2026-05-19T12:00:00.000Z",
+    first_at: "2026-05-19T11:59:00.000Z",
+    known_gaps: [
+      {
+        kind: "skip_result",
+        reason: "credit_card_export_unverified",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "transient",
+        stream: "transactions",
+      },
+      {
+        kind: "skip_result",
+        reason: "credit_card_export_unverified",
+        recovery_hint: { action: "update_selector", retryable: false },
+        severity: "actionable",
+        stream: "transactions",
+      },
+    ],
+    last_at: "2026-05-19T12:00:00.000Z",
+    run_id: "run_usaa_mixed_skip_evidence",
+    started_at: "2026-05-19T11:59:00.000Z",
+    status: "succeeded",
+  });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { captured_at: "2026-05-19T12:00:00.000Z", status: "current" },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    pendingDetailGaps: [
+      { reason: "temporary_unavailable", status: "pending", stream: "transactions" },
+      { reason: "temporary_unavailable", status: "pending", stream: "transactions" },
+    ],
+    schedule: null,
+  });
+  assert.equal(snapshot.state, "degraded");
+  assert.equal(snapshot.axes.coverage, "terminal_gap");
+  assert.equal(snapshot.forward_disposition, "terminal");
+});
+
 test("connector summary connection health becomes unknown when durable detail-gap evidence cannot be read", () => {
   const run = connectorRunSummary({
     event_count: 3,

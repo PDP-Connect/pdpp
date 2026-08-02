@@ -4,14 +4,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCollectionFacts, buildRecoveryGapClosureFacts } from "../runtime/connector-gap-bounding.ts";
+import {
+  buildCollectionFacts,
+  buildKnownGap,
+  buildRecoveryGapClosureFacts,
+} from "../runtime/connector-gap-bounding.ts";
 
 interface BaseInputOverrides {
   committedStateStreams?: Set<string> | string[];
   detailCoverageByStateStream?: Map<string, { stream: string; considered: number; covered: number }[]>;
   durableDetailGaps?: { kind: string; stream: string; status: string }[];
   emittedByStream?: Map<string, number>;
+  knownGaps?: { kind: string; reason?: string; recovery_hint?: unknown; stream?: string }[];
   recoveryOnly: boolean;
+  scopeByStream?: Map<string, unknown>;
 }
 
 // openspec/changes/fix-recovery-run-lifecycle: a `recovery_only` run only
@@ -108,6 +114,54 @@ test("recoveryOnly=true: returns null even when a state_stream has staged/commit
 test("recoveryOnly=true: returns null with a completely empty run (no signals at all)", () => {
   const facts = buildCollectionFacts(baseInput({ recoveryOnly: true }));
   assert.equal(facts, null);
+});
+
+test("collection facts preserve the most-degrading same-stream skip, not the first skip", () => {
+  const facts = buildCollectionFacts(
+    baseInput({
+      durableDetailGaps: [
+        { kind: "detail_gap", status: "pending", stream: "transactions" },
+        { kind: "detail_gap", status: "pending", stream: "transactions" },
+      ],
+      knownGaps: [
+        {
+          kind: "skip_result",
+          reason: "credit_card_export_unverified",
+          recovery_hint: { action: "retry_by_runtime", retryable: true },
+          stream: "transactions",
+        },
+        {
+          kind: "skip_result",
+          reason: "credit_card_export_unverified",
+          recovery_hint: { action: "update_selector", retryable: false },
+          stream: "transactions",
+        },
+      ],
+      recoveryOnly: false,
+      scopeByStream: new Map([["transactions", { name: "transactions" }]]),
+    })
+  );
+  assert.ok(facts);
+  assert.deepEqual(facts.streams[0], {
+    checkpoint: "not_staged",
+    collected: 0,
+    pending_detail_gaps: 2,
+    skipped: {
+      reason: "credit_card_export_unverified",
+      recovery_action: "update_selector",
+    },
+    stream: "transactions",
+  });
+});
+
+test("runtime preserves a terminal live-surface capture action instead of normalizing it to unknown", () => {
+  const gap = buildKnownGap({
+    kind: "skip_result",
+    reason: "export_affordance_missing",
+    recoveryHint: { action: "capture_live_surface", retryable: false },
+    stream: "transactions",
+  });
+  assert.deepEqual(gap.recovery_hint, { action: "capture_live_surface", retryable: false });
 });
 
 // buildRecoveryGapClosureFacts is the DISTINCT typed block that carries a

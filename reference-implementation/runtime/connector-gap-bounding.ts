@@ -82,6 +82,7 @@ export const RECOVERY_ACTIONS = new Set([
   "refresh_credentials",
   "manual_action_required",
   "update_selector",
+  "capture_live_surface",
   "upstream_unblock",
   "not_retriable",
   "unknown",
@@ -379,6 +380,41 @@ interface KnownGap {
   stream?: string;
 }
 
+function recoveryActionForSkip(gap: KnownGap): string | null {
+  if (typeof gap.recovery_hint === "string") {
+    return gap.recovery_hint;
+  }
+  if (gap.recovery_hint && typeof gap.recovery_hint === "object") {
+    const { action } = gap.recovery_hint as { action?: unknown };
+    return typeof action === "string" ? action : null;
+  }
+  return null;
+}
+
+function skipEvidenceRank(gap: KnownGap): number {
+  const action = recoveryActionForSkip(gap);
+  // Multiple connector accounts can produce multiple SKIP_RESULTs for one
+  // collection stream. Keep explicit owner/maintainer evidence above a
+  // runtime retry, and keep a retry above an unclassified diagnostic.
+  if (action === null || action === "unknown") {
+    return 0;
+  }
+  return action === "retry_by_runtime" ? 1 : 2;
+}
+
+function selectMostDegradingSkip(knownGaps: KnownGap[], stream: string): KnownGap | null {
+  let selected: KnownGap | null = null;
+  for (const candidate of knownGaps) {
+    if (candidate.kind !== "skip_result" || candidate.stream !== stream) {
+      continue;
+    }
+    if (selected === null || skipEvidenceRank(candidate) > skipEvidenceRank(selected)) {
+      selected = candidate;
+    }
+  }
+  return selected;
+}
+
 interface BuildCollectionFactsInput {
   committedStateStreams: Set<string> | string[];
   detailCoverageByStateStream: Map<string, DetailCoverageEntry[]>;
@@ -442,6 +478,9 @@ interface BuildCollectionFactsInput {
  *     NEVER inferred from `collected`. When present, the projection compares
  *     `considered` against `covered` so a steady-state full-sync run that
  *     suppressed every unchanged record reads `complete`, not a false `partial`;
+ *   - multiple same-stream `SKIP_RESULT`s preserve the most-degrading bounded
+ *     recovery action, so an explicit maintainer action cannot be hidden by a
+ *     retryable diagnostic emitted for another item;
  *   - no `coverage`, `coverage_axis`, `forward_disposition`, `freshness`, or
  *     `refresh` key, on the block or on any entry.
  *
@@ -556,16 +595,13 @@ export function buildCollectionFacts({
   };
 
   const skipForStream = (stream: string): { reason: string | undefined; recovery_action?: string } | null => {
-    const gap = knownGaps.find((candidate) => candidate.kind === "skip_result" && candidate.stream === stream);
-    if (!gap) {
+    const selected = selectMostDegradingSkip(knownGaps, stream);
+    if (!selected) {
       return null;
     }
-    const action =
-      gap.recovery_hint && typeof gap.recovery_hint === "object"
-        ? (gap.recovery_hint as { action?: string }).action
-        : null;
+    const action = recoveryActionForSkip(selected);
     return {
-      reason: gap.reason,
+      reason: selected.reason,
       ...(action ? { recovery_action: action } : {}),
     };
   };
