@@ -1745,7 +1745,7 @@ async function cleanConformanceFixtures() {
 }
 
 test("Postgres ConnectorInstanceStore conforms when PDPP_TEST_POSTGRES_URL is set", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: configuredPostgresUrl() });
   try {
@@ -1764,7 +1764,7 @@ test("Postgres ConnectorInstanceStore conforms when PDPP_TEST_POSTGRES_URL is se
 });
 
 test("Postgres startup migration (migratePostgresLocalDeviceConnectorInstances) does not resurrect a deleted connection on restart (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // Postgres counterpart of the SQLite startup-migration restart regression
   // above. bootstrapPostgresSchema (called by every initPostgresStorage)

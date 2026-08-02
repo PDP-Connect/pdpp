@@ -176,7 +176,7 @@ test("SQLite processing reservation acceptance is fenced by current manifest and
 });
 
 test("dedicated Postgres processing reservation acceptance locks and fences current manifest and semantic identity", {
-  skip: !DEDICATED_POSTGRES_URL,
+  skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: dedicatedPostgresUrlForTest() });
   try {

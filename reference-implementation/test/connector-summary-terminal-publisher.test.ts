@@ -330,7 +330,7 @@ async function cleanupPostgresFixture(connectorId: string, connectorInstanceId: 
 }
 
 test("Postgres: successful run/ingest marks dirty, then the maintenance sweep converges evidence and publishes the terminal LIST projection", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");

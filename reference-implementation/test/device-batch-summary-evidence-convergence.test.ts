@@ -753,7 +753,7 @@ for (const [name, oracle] of ORACLES) {
     await withBackend("sqlite", oracle);
   });
   test(`PostgreSQL device-batch summary-evidence convergence: ${name} (skipped: PDPP_TEST_POSTGRES_URL unset)`, {
-    skip: !DEDICATED_POSTGRES_URL,
+    skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
   }, async () => {
     await withBackend("postgres", oracle);
   });

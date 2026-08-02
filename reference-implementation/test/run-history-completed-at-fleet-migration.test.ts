@@ -342,7 +342,9 @@ test("PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, ide
   );
 });
 
-test("PostgreSQL: a fresh install is unaffected by the fleet-migration repair", { skip: !POSTGRES_URL }, async () => {
+test("PostgreSQL: a fresh install is unaffected by the fleet-migration repair", {
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(
     {

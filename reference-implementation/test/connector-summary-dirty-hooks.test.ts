@@ -366,7 +366,7 @@ test("deleteAllRecordsForConnector (SQLite) dirties every instance it clears", a
 });
 
 test("deleteAllRecordsForConnector (PostgreSQL) dirties every instance it clears", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");

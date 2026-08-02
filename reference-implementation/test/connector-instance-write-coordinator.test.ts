@@ -168,7 +168,7 @@ test("a late lock-query result cannot release its client twice or strand local c
 });
 
 test("Postgres pool saturation and unlock uncertainty destroy the lock session", {
-  skip: !DEDICATED_POSTGRES_URL,
+  skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await withCoordinatorEnvironment(
     {
@@ -207,7 +207,7 @@ test("Postgres pool saturation and unlock uncertainty destroy the lock session",
 });
 
 test("an actual PostgreSQL advisory-session disconnect leaks no lock and the same key recovers", {
-  skip: !DEDICATED_POSTGRES_URL,
+  skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await withCoordinatorEnvironment(
     {

@@ -801,7 +801,7 @@ function markConnectorSummaryEvidenceDirtySync(connectorInstanceId: string, reas
 // ── Postgres parity test (gated on PDPP_TEST_POSTGRES_URL) ───────────────────
 
 test("Postgres connector-summary evidence reaches the same rebuild/dirty/reconcile shape", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");
@@ -901,7 +901,7 @@ test("Postgres connector-summary evidence reaches the same rebuild/dirty/reconci
 });
 
 test("Postgres terminal LIST projection rejects late canonical snapshots", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");

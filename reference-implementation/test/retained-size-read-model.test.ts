@@ -963,7 +963,7 @@ async function readAllRetainedSizeGrains() {
 }
 
 test("Postgres retained-size reads shape identically to SQLite for global/connection/stream/record-family/top grains", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // 1. Compute the SQLite-shaped reads from a temp DB FIRST, while the
   //    backend is still SQLite.

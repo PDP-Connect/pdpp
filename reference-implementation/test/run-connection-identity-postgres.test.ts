@@ -17,7 +17,9 @@ const HISTORICAL_EVENT_ID = "evt_run_connection_identity_historical_postgres";
 const CONNECTOR_INSTANCE_ID = "cin_run_connection_identity_postgres";
 const RE_UNBOUND_RUN_START_WRITER = /new run\.started events require data\.connector_instance_id/;
 
-test("Postgres preserves new run identity and rejects an unbound writer", { skip: !POSTGRES_URL }, async () => {
+test("Postgres preserves new run identity and rejects an unbound writer", {
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
   try {

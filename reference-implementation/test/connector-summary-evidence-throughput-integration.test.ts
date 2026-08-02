@@ -236,7 +236,7 @@ test("manifest registration/backfill ordering does not desynchronize the summary
 
 test(
   "PostgreSQL: connector-wide invalidation (deleteAllRecordsForConnector) is detected and repaired by the summary primitive without a per-record dirty hook",
-  { skip: !DEDICATED_POSTGRES_URL },
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
   () =>
     withTemporaryPostgres(async () => {
       const connectorId = await registerConnector(manifestFor("pg-connector-invalidation", ["messages"]), {
@@ -294,7 +294,7 @@ test(
 
 test(
   "PostgreSQL: an accepted replay of an already-committed batch prefix advances neither the checkpoint nor repair work",
-  { skip: !DEDICATED_POSTGRES_URL },
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
   () =>
     withTemporaryPostgres(async () => {
       const connectorId = await registerConnector(manifestFor("pg-accepted-replay", ["messages"]), {

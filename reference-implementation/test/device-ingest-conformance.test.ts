@@ -2575,7 +2575,7 @@ for (const [name, oracle] of ORACLES) {
     await withBackend("sqlite", oracle);
   });
   test(`PostgreSQL device-ingest conformance: ${name}`, {
-    skip: !DEDICATED_POSTGRES_URL,
+    skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
   }, async () => {
     await withBackend("postgres", oracle);
   });

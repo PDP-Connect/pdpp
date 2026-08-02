@@ -141,7 +141,7 @@ async function cleanupIdentity(ownerSubjectId: string, connectorId: string): Pro
 }
 
 test("two genuine OS processes racing deleteConnection and upsert for the SAME identity never resurrect a deleted connection (Postgres advisory-lock discriminator) (skipped: PDPP_TEST_POSTGRES_URL unset)", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");

@@ -42,7 +42,7 @@ test("SQLite SourceWebhookEventStore claims each source event once", async () =>
 });
 
 test("Postgres SourceWebhookEventStore claims each source event once when PDPP_TEST_POSTGRES_URL is set", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;
   assert.ok(databaseUrl, "Postgres URL is configured when this test runs");

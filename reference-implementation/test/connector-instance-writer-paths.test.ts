@@ -349,7 +349,7 @@ test("SQLite connection purge is fenced through its durable delete and post-comm
 });
 
 test("Postgres sort repair fences all manifest streams for an instance and blob binding respects the same fence", {
-  skip: !DEDICATED_POSTGRES_URL,
+  skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const suffix = `writer_path_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const connectorId = `connector_${suffix}`;

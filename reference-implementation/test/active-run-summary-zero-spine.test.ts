@@ -332,7 +332,9 @@ test("PostgreSQL: zero spine_events statements for an in-progress run's GET (col
   );
 });
 
-test("PostgreSQL: zero spine_events statements for a terminal run's GET", { skip: !POSTGRES_URL }, async () => {
+test("PostgreSQL: zero spine_events statements for a terminal run's GET", {
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
   assert.ok(POSTGRES_URL, "Postgres URL is configured when this test runs");
   await withTemporaryPostgresDatabase(
     {

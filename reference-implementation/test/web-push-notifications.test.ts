@@ -1170,7 +1170,7 @@ test("SQLite WebPushSubscriptionStore persists owner-scoped subscription state",
 });
 
 test("Postgres WebPushSubscriptionStore conforms when PDPP_TEST_POSTGRES_URL is set", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   const endpointPattern = "https://push.example.invalid/sub/postgres-%";
   const databaseUrl = process.env.PDPP_TEST_POSTGRES_URL;

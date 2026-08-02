@@ -513,7 +513,7 @@ test("SQLite revokeDevice spares connector_instance shared with another active d
 });
 
 test("Postgres revokeDevice cascades revoked status when PDPP_TEST_POSTGRES_URL is set", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: configuredPostgresUrl() });
   const cleanup = async () => {
@@ -545,7 +545,7 @@ test("Postgres revokeDevice cascades revoked status when PDPP_TEST_POSTGRES_URL 
 });
 
 test("Postgres revokeDevice spares shared connector_instance when PDPP_TEST_POSTGRES_URL is set", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: configuredPostgresUrl() });
   const cleanup = async () => {
@@ -575,7 +575,7 @@ test("Postgres revokeDevice spares shared connector_instance when PDPP_TEST_POST
 });
 
 test("Postgres DeviceExporterStore conforms when PDPP_TEST_POSTGRES_URL is set", {
-  skip: !process.env.PDPP_TEST_POSTGRES_URL,
+  skip: !process.env.PDPP_TEST_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   await initPostgresStorage({ backend: "postgres", databaseUrl: configuredPostgresUrl() });
   try {
