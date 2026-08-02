@@ -573,101 +573,13 @@ test("rejects a duplicate configured named-skip mapping row before any lookup se
   }
   assert.ok(duplicateDetected, "array-first duplicate detection must see a repeated configured row");
 });
-test("keeps every candidate-added PostgreSQL skip title in the exact receipt mapping", () => {
-  assert.deepEqual(
-    [
-      "real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume",
-      "real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges",
-      "real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint",
-      "real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write",
-    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
-    [
-      "real PostgreSQL: the 25-row first-page starvation shape folds before slow generic repairs and survives restart/resume",
-      "real PostgreSQL mutation: a 1ms cold 25-row page starts at most one slow repair and later converges",
-      "real PostgreSQL mutation: a 1ms 2,001-event fold is capped and resumes from its durable checkpoint",
-      "real PostgreSQL mutation: an expired fold stops its delayed participant checkpoint-write tail after one started write",
-    ]
-  );
-});
-// Aggregate gate regression (2026-07-30, run-history-backfill-cutover REVISE):
-// test/active-run-summary-zero-spine.test.ts (reference-implementation) added
-// three PostgreSQL tests using the bare-boolean `skip: !POSTGRES_URL` shape
-// (in-progress/terminal/no-run cases), and memory-default rejected the first
-// one encountered as an unexplained skip because none of the three exact
-// names were in POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS. The accounting parser
-// aborts on the FIRST unexplained skip per run, so all three names must be
-// present together or a memory-default run fails serially, one at a time,
-// across repeated fix attempts.
-test("keeps every active-run-summary-zero-spine PostgreSQL skip title in the exact receipt mapping", () => {
-  assert.deepEqual(
-    [
-      "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",
-      "PostgreSQL: zero spine_events statements for a terminal run's GET",
-      "PostgreSQL: zero spine_events statements for a connection with no run at all",
-    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
-    [
-      "PostgreSQL: zero spine_events statements for an in-progress run's GET (collection_rate merged via run.progress_reported)",
-      "PostgreSQL: zero spine_events statements for a terminal run's GET",
-      "PostgreSQL: zero spine_events statements for a connection with no run at all",
-    ]
-  );
-});
-// Aggregate gate regression (2026-07-30, terminal-read-integration closure):
-// test/browser-surface.test.ts (reference-implementation) test for scoped
-// browser-surface reads was not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
-// mapping, causing memory-default to reject it as an unexplained skip.
-test("keeps every browser-surface PostgreSQL skip title in the exact receipt mapping", () => {
-  assert.deepEqual(
-    ["Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities"].filter((name) =>
-      POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
-    ),
-    ["Postgres scoped browser-surface reads match filtered global rows for 0, 1, and 25 identities"]
-  );
-});
-// Aggregate gate regression (2026-07-30, terminal-read-integration closure, receipt 70bfe0b9):
-// Four additional PostgreSQL tests were not in the POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS
-// mapping: fleet-migration repair, scheduler_run_history legacy database migration,
-// and terminal LIST projection tests. All emitted 135 skips now mapped.
-test("keeps every fleet-migration and scheduler-upgrade PostgreSQL skip title in the exact receipt mapping", () => {
-  assert.deepEqual(
-    [
-      "PostgreSQL: a fresh install is unaffected by the fleet-migration repair",
-      "PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation",
-      "PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history",
-    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
-    [
-      "PostgreSQL: a fresh install is unaffected by the fleet-migration repair",
-      "PostgreSQL: a pre-renamed-stuck database is repaired on the next boot, idempotently, with row/id/index preservation",
-      "PostgreSQL: a run.started write succeeds against a database migrated from legacy scheduler_run_history",
-    ]
-  );
-});
-test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mapping", () => {
-  assert.deepEqual(
-    ["Postgres terminal LIST projection rejects late canonical snapshots"].filter((name) =>
-      POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
-    ),
-    ["Postgres terminal LIST projection rejects late canonical snapshots"]
-  );
-});
-// SECOND LIVE CANARY REVISE (2026-07-30): the interrupted-migration
-// reconciliation test file added two PostgreSQL tests using the same
-// bare-boolean `skip: !POSTGRES_URL` shape. FOURTH-PASS GATE REVISE
-// (2026-07-30): a third PostgreSQL test (the duplicate-composite-key
-// dedup regression) was added to the same file, using the same shape.
-test("keeps every run-history-interrupted-migration-reconciliation PostgreSQL skip title in the exact receipt mapping", () => {
-  assert.deepEqual(
-    [
-      "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
-      "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
-      "PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction",
-    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
-    [
-      "PostgreSQL: interrupted migration reconciles losslessly against real Postgres — overlap merges, disjoint rows preserved, duplicate run_id across connections survives",
-      "PostgreSQL: a crash before the reconciliation transaction commits leaves scheduler_run_history fully intact for a clean retry",
-      "PostgreSQL: two scheduler_run_history rows sharing the identical composite key deduplicate to the latest (highest id) before merge — the exact fourth-pass gate reproduction",
-    ]
-  );
+test("keeps only legacy boolean PostgreSQL skips in the exact receipt mapping", () => {
+  assert.deepEqual(POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS, [
+    "Postgres ClientEventSubscriptionStore round-trips a full lifecycle",
+    "Postgres bootstrap widens a legacy connector_instances status CHECK to draft",
+    "Postgres migrates legacy accepted outcomes to equal named terminal cursor facts",
+    "Postgres store factory is consistent with the resolver",
+  ]);
 });
 test("the exact named-skip mapping join fails closed on stale rows and on unconfigured consumed identities", () => {
   // Property 3, stale/unmatched arm. A configured row that no emitted skip
