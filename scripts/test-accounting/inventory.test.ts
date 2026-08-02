@@ -835,7 +835,10 @@ test("the memory-default profile declares the exact current skip baseline", asyn
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 202,
+    "PDPP_TEST_POSTGRES_URL unset": 161,
+    "skipped: PDPP_TEST_POSTGRES_URL unset": 5,
+    "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
+    "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,

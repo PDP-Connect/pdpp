@@ -14,7 +14,10 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 202,
+            "PDPP_TEST_POSTGRES_URL unset": 161,
+            "skipped: PDPP_TEST_POSTGRES_URL unset": 5,
+            "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
+            "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
             "dedicated disposable URL not selected": 1,
             "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
             "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
