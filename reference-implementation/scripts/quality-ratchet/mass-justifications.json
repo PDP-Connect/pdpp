@@ -189,6 +189,11 @@
     "date": "2026-07-22",
     "reason": "The SQLite and Postgres implementations must each make the same run-and-lease-owned compare-and-set transitions for claim, explicit attempt, recovery, re-deferral, release, and expired-lease reclaim. The branches preserve the distinction between an untouched issuance and a real provider attempt across durable backend dialects; collapsing them behind a shallow helper would hide the SQL ownership predicates that prevent re-serve races."
   },
+  "server/stores/connector-detail-gap-store.ts": {
+    "allowed_mass": 55,
+    "date": "2026-08-02",
+    "reason": "Sticky-terminal metadata repair: each SQLite/PostgreSQL upsert conflict branch uses explicit terminal-only CASE preservation for reason, next_attempt_after, last_error_json, and last_run_id so pending rediscovery cannot erase the durable quarantine decision that the scoped repair primitive requires. The duplicated predicates are backend-specific SQL and preserve the existing recovered reopen CASE byte-for-byte; extracting them would hide the dialect-specific conflict semantics without reducing the required state distinctions. Focused SQLite and PostgreSQL regressions prove metadata survives rediscovery and terminal+quarantined repair still requeues."
+  },
   "server/stores/connector-instance-credential-store.ts": {
     "allowed_mass": 7,
     "date": "2026-07-27",

@@ -25,7 +25,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { closeDb, initDb } from "../server/db.ts";
-import { createSqliteConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.ts";
+import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import {
+  createPostgresConnectorDetailGapStore,
+  createSqliteConnectorDetailGapStore,
+} from "../server/stores/connector-detail-gap-store.ts";
 import {
   CHATGPT_PROVIDER_PROFILE,
   classifyRecoveryError,
@@ -338,7 +342,14 @@ test(
     assert.ok(gap, "seedGap must return the created gap");
 
     // Terminalize it.
-    await store.markGapStatus(gap.gap_id, "terminal", { lastError: { message: "not found", status: 404 } });
+    const terminalLastError = { class: "quarantined", marker: "terminal-decision", reason: "retry_exhausted" };
+    const terminalNextAttemptAfter = "2099-01-02T03:04:05.000Z";
+    await store.markGapStatus(gap.gap_id, "terminal", {
+      lastError: terminalLastError,
+      nextAttemptAfter: terminalNextAttemptAfter,
+      reason: "quarantined",
+      runId: "terminal_decision_run",
+    });
 
     const afterTerminal = await store.countGapsByStatusForConnector("chatgpt", { status: "terminal" });
     assert.equal(afterTerminal, 1, "one terminal gap before re-upsert");
@@ -348,6 +359,9 @@ test(
       connectorId: "chatgpt",
       detailLocator: { conversation_id: "conv_terminal_sticky", kind: "chatgpt.conversation" },
       grantId: "grant_test",
+      lastError: { class: "temporary_unavailable", marker: "incoming-rediscovery" },
+      lastRunId: "rediscovery_run",
+      nextAttemptAfter: "2099-02-03T04:05:06.000Z",
       reason: "retry_exhausted",
       recordKey: "conv_terminal_sticky",
       stream: "messages",
@@ -363,5 +377,91 @@ test(
 
     const stillTerminal = await store.countGapsByStatusForConnector("chatgpt", { status: "terminal" });
     assert.equal(stillTerminal, 1, "terminal gap count must be unchanged after re-upsert");
+    const preserved = await store.getGapById(gap.gap_id);
+    assert.ok(preserved, "terminal gap remains readable after re-upsert");
+    assert.equal(preserved.status, "terminal");
+    assert.equal(preserved.reason, "quarantined");
+    assert.equal(preserved.next_attempt_after, terminalNextAttemptAfter);
+    assert.equal(preserved.last_run_id, "terminal_decision_run");
+    assert.deepEqual(preserved.last_error, terminalLastError);
+
+    const repair = await store.requeueQuarantinedTerminalGapsForConnectorInstance(
+      "chatgpt",
+      preserved.connector_instance_id,
+      {
+        streams: ["messages"],
+      }
+    );
+    assert.deepEqual(repair, { matched: 1, requeued: 1 });
+    const requeued = await store.getGapById(gap.gap_id);
+    assert.equal(requeued?.status, "pending");
   })
 );
+
+const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+
+if (POSTGRES_URL) {
+  test("upsertPendingGap preserves terminal metadata and repair requeues the gap (Postgres)", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `chatgpt_terminal_sticky_${suffix}`;
+    const connectorInstanceId = `cin_chatgpt_terminal_sticky_${suffix}`;
+    const gapId = `gap_terminal_sticky_${suffix}`;
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      const seeded = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        detailLocator: { conversation_id: "conv_terminal_sticky", kind: "chatgpt.conversation" },
+        gapId,
+        grantId: "grant_test",
+        reason: "retry_exhausted",
+        recordKey: "conv_terminal_sticky",
+        stream: "messages",
+      });
+      assert.ok(seeded, "seeded gap is present");
+      const terminalLastError = { class: "quarantined", marker: "terminal-decision", reason: "retry_exhausted" };
+      const terminalNextAttemptAfter = "2099-01-02T03:04:05.000Z";
+      await store.markGapStatus(gapId, "terminal", {
+        lastError: terminalLastError,
+        nextAttemptAfter: terminalNextAttemptAfter,
+        reason: "quarantined",
+        runId: "terminal_decision_run",
+      });
+
+      await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        detailLocator: { conversation_id: "conv_terminal_sticky", kind: "chatgpt.conversation" },
+        gapId,
+        grantId: "grant_test",
+        lastError: { class: "temporary_unavailable", marker: "incoming-rediscovery" },
+        lastRunId: "rediscovery_run",
+        nextAttemptAfter: "2099-02-03T04:05:06.000Z",
+        reason: "retry_exhausted",
+        recordKey: "conv_terminal_sticky",
+        stream: "messages",
+      });
+
+      const preserved = await store.getGapById(gapId);
+      assert.ok(preserved, "terminal gap remains readable after re-upsert");
+      assert.equal(preserved.status, "terminal");
+      assert.equal(preserved.reason, "quarantined");
+      assert.equal(preserved.next_attempt_after, terminalNextAttemptAfter);
+      assert.equal(preserved.last_run_id, "terminal_decision_run");
+      assert.deepEqual(preserved.last_error, terminalLastError);
+
+      const repair = await store.requeueQuarantinedTerminalGapsForConnectorInstance(connectorId, connectorInstanceId, {
+        streams: ["messages"],
+      });
+      assert.deepEqual(repair, { matched: 1, requeued: 1 });
+      const requeued = await store.getGapById(gapId);
+      assert.equal(requeued?.status, "pending");
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+}

@@ -1443,7 +1443,10 @@ export function createSqliteConnectorDetailGapStore() {
           detail_locator_json = excluded.detail_locator_json,
           list_cursor_json = excluded.list_cursor_json,
           scope_json = excluded.scope_json,
-          reason = excluded.reason,
+          reason = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.reason
+            ELSE excluded.reason
+          END,
           -- §10-A: 'terminal' is always sticky — a terminalized gap must not be
           -- silently resurrected into the fillable-pending set by a re-upsert.
           -- 'recovered' is sticky ONLY against a re-upsert from the SAME run
@@ -1479,9 +1482,18 @@ export function createSqliteConnectorDetailGapStore() {
               THEN 'recovered'
             ELSE 'pending'
           END,
-          next_attempt_after = excluded.next_attempt_after,
-          last_error_json = excluded.last_error_json,
-          last_run_id = excluded.last_run_id,
+          next_attempt_after = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.next_attempt_after
+            ELSE excluded.next_attempt_after
+          END,
+          last_error_json = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.last_error_json
+            ELSE excluded.last_error_json
+          END,
+          last_run_id = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.last_run_id
+            ELSE excluded.last_run_id
+          END,
           updated_at = excluded.updated_at
         -- Identity conflict target = the natural key, with the volatile locator
         -- dropped when a record_key exists (see detailGapIdentityKey). This is
@@ -1492,7 +1504,10 @@ export function createSqliteConnectorDetailGapStore() {
           detail_locator_json = excluded.detail_locator_json,
           list_cursor_json = excluded.list_cursor_json,
           scope_json = excluded.scope_json,
-          reason = excluded.reason,
+          reason = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.reason
+            ELSE excluded.reason
+          END,
           -- §10-A: see the mirrored ON CONFLICT(gap_id) branch above for the
           -- reopen-on-later-run rationale and the NULL-recovered_run_id
           -- non-wildcard rule (a run-id-less recovery is never same-attempt).
@@ -1503,9 +1518,18 @@ export function createSqliteConnectorDetailGapStore() {
               THEN 'recovered'
             ELSE 'pending'
           END,
-          next_attempt_after = excluded.next_attempt_after,
-          last_error_json = excluded.last_error_json,
-          last_run_id = excluded.last_run_id,
+          next_attempt_after = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.next_attempt_after
+            ELSE excluded.next_attempt_after
+          END,
+          last_error_json = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.last_error_json
+            ELSE excluded.last_error_json
+          END,
+          last_run_id = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.last_run_id
+            ELSE excluded.last_run_id
+          END,
           updated_at = excluded.updated_at
       `,
         [
@@ -2058,7 +2082,10 @@ export function createPostgresConnectorDetailGapStore() {
           detail_locator_json = EXCLUDED.detail_locator_json,
           list_cursor_json = EXCLUDED.list_cursor_json,
           scope_json = EXCLUDED.scope_json,
-          reason = EXCLUDED.reason,
+          reason = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.reason
+            ELSE EXCLUDED.reason
+          END,
           -- §10-A: 'terminal' is always sticky — a terminalized gap must not be
           -- silently resurrected into the fillable-pending set by a re-upsert.
           -- 'recovered' is sticky ONLY against a re-upsert from the SAME run
@@ -2092,9 +2119,18 @@ export function createPostgresConnectorDetailGapStore() {
               THEN 'recovered'
             ELSE 'pending'
           END,
-          next_attempt_after = EXCLUDED.next_attempt_after,
-          last_error_json = EXCLUDED.last_error_json,
-          last_run_id = EXCLUDED.last_run_id,
+          next_attempt_after = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.next_attempt_after
+            ELSE EXCLUDED.next_attempt_after
+          END,
+          last_error_json = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.last_error_json
+            ELSE EXCLUDED.last_error_json
+          END,
+          last_run_id = CASE
+            WHEN connector_detail_gaps.status = 'terminal' THEN connector_detail_gaps.last_run_id
+            ELSE EXCLUDED.last_run_id
+          END,
           updated_at = EXCLUDED.updated_at
         RETURNING *
       `,
