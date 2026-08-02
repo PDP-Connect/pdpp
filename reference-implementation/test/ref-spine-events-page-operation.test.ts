@@ -240,6 +240,58 @@ test("ref.spine.events.page leaves non-bearer events untouched", () => {
   assert.equal(firstEvent.object_id, "plain");
 });
 
+test("ref.spine.events.page projects legacy interaction data through the owner-safe allowlist", () => {
+  const rawSecret = "projection-secret";
+  const envelope = executeRefSpineEventsPage({
+    cursor: null,
+    id: "run_legacy_safe",
+    kind: "run",
+    page: {
+      events: [
+        makeEvent({
+          data: {
+            attachments: [{ kind: "file", ref: `https://example.test/${rawSecret}` }],
+            interaction_id: "legacy_1",
+            kind: "credentials",
+            message: `password=${rawSecret}`,
+            schema: {
+              properties: {
+                password: {
+                  default: rawSecret,
+                  format: "password",
+                  type: "string",
+                },
+              },
+              required: ["password"],
+              type: "object",
+            },
+            source: { id: "connector:test", kind: "connector" },
+            stream: null,
+            timeout_seconds: 60,
+          },
+          event_type: "run.interaction_required",
+          interaction_id: "legacy_1",
+        }),
+      ],
+      limit: 10,
+      next_cursor: null,
+      truncated: false,
+    },
+  });
+
+  const [legacy] = envelope.data;
+  assert.ok(legacy);
+  assert.equal(JSON.stringify(legacy).includes(rawSecret), false);
+  assert.ok(isDataRecord(legacy.data));
+  assert.equal(legacy.data.message, "password=[REDACTED]");
+  assert.equal("attachments" in legacy.data, false);
+  assert.deepEqual(legacy.data.schema, {
+    properties: { password: { format: "password", type: "string" } },
+    required: ["password"],
+    type: "object",
+  });
+});
+
 test("ref.spine.events.page threads terminal_status onto the run envelope", () => {
   const envelope = executeRefSpineEventsPage({
     cursor: null,

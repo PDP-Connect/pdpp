@@ -1294,7 +1294,7 @@ test("managed run emits browser-surface cancelled when manual action is cancelle
     () => controller.getPendingInteraction("run_cancel_event")?.interaction_id === "int_cancel_surface",
     "manual action should become pending"
   );
-  controller.respondToInteraction("run_cancel_event", {
+  await controller.respondToInteraction("run_cancel_event", {
     interaction_id: "int_cancel_surface",
     status: "cancelled",
   });

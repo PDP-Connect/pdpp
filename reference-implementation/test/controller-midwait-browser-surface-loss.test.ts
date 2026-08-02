@@ -486,7 +486,7 @@ test("surface lost: respondToInteraction with same interaction_id throws no_pend
   await connectorDone;
 
   // Now try to respond. This must throw no_pending_interaction.
-  assert.throws(
+  await assert.rejects(
     () =>
       c.respondToInteraction("run_stale_resp", {
         interaction_id: "req_stale_1",
@@ -563,7 +563,7 @@ test("surface stays live: owner response settles normally, no browser_surface_lo
   const pending = c.getPendingInteraction("run_live_surface");
   assert.ok(pending, "interaction should still be pending (surface is live)");
 
-  c.respondToInteraction("run_live_surface", {
+  await c.respondToInteraction("run_live_surface", {
     interaction_id: "req_live_1",
     status: "success",
   });
@@ -649,7 +649,7 @@ test("otp interaction without browser surface is not monitored, no spurious brow
   await new Promise((r) => setTimeout(r, 30));
 
   // Respond with success. This should work normally.
-  c.respondToInteraction("run_otp_plain", {
+  await c.respondToInteraction("run_otp_plain", {
     interaction_id: "req_otp_1",
     status: "success",
   });

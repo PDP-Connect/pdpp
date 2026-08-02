@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { emitSpineEvent } from "../lib/spine.ts";
-import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
+import { __resetControllerInteractionStateForTests, ControllerError, createController } from "../runtime/controller.ts";
 import type { RuntimeRunConnectorOptions, RuntimeRunConnectorResult } from "../runtime/index.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import type { ActiveRunRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
@@ -129,6 +129,18 @@ function freshDb(t: TestContext) {
   });
 }
 
+async function waitForPendingInteraction(getPending: () => unknown, runId: string): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    if (getPending()) {
+      return;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: This bounded poll waits for the controller's asynchronous broker admission.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`Timed out waiting for pending interaction on ${runId}`);
+}
+
 test("cancelRun aborts only the targeted run; sibling run is untouched", async (t) => {
   freshDb(t);
 
@@ -222,6 +234,70 @@ test("cancelRun on a run with a terminal event returns already_terminal", async 
 
   const result = await controller.cancelRun("run_finished", "owner_local");
   assert.deepEqual(result, { run_id: "run_finished", status: "already_terminal" });
+});
+
+test("terminal status closes response and cancel before pending interaction cleanup", async (t) => {
+  freshDb(t);
+
+  let releaseRun!: (result: RuntimeRunConnectorResult) => void;
+  const runLifetime = new Promise<RuntimeRunConnectorResult>((resolve) => {
+    releaseRun = resolve;
+  });
+  const controller = createController({
+    admitRunConnection: fakeAdmitRunConnection(),
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => undefined, warn: () => undefined },
+    runConnectorImpl: async (opts) => {
+      const responsePromise = opts.onInteraction?.({
+        kind: "credentials",
+        message: "Need credentials.",
+        request_id: "int_terminal_race",
+      });
+      Promise.resolve(responsePromise).catch(() => undefined);
+      return await runLifetime;
+    },
+    schedulerStore: createSchedulerStore(),
+  });
+
+  await controller.runNow(CONNECTOR_ID, {
+    connectorInstanceId: "cin_terminal_race",
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_terminal_race",
+  });
+  await waitForPendingInteraction(() => controller.getPendingInteraction("run_terminal_race"), "run_terminal_race");
+
+  // Reproduce the production ordering: the durable terminal event is visible
+  // while finalizeRunCleanup has not yet removed the pending interaction.
+  await emitSpineEvent({
+    actor_id: CONNECTOR_ID,
+    actor_type: "runtime",
+    data: { source: { id: CONNECTOR_ID, kind: "connector" } },
+    event_type: "run.completed",
+    object_id: "run_terminal_race",
+    object_type: "run",
+    run_id: "run_terminal_race",
+    status: "succeeded",
+  });
+
+  await assert.rejects(
+    () =>
+      controller.respondToInteraction("run_terminal_race", {
+        data: { password: "should-not-be-delivered", username: "alice" },
+        interaction_id: "int_terminal_race",
+        status: "success",
+      }),
+    (err) => err instanceof ControllerError && err.code === "run_already_terminal"
+  );
+  assert.ok(controller.getPendingInteraction("run_terminal_race"), "cleanup is intentionally still lagging");
+
+  assert.deepEqual(await controller.cancelRun("run_terminal_race", "owner_local"), {
+    run_id: "run_terminal_race",
+    status: "already_terminal",
+  });
+
+  releaseRun({ records_emitted: 0, status: "succeeded" });
+  await controller.drainActiveRuns(1000).catch(() => undefined);
 });
 
 test("after cancel, a new manual run for the same connector is admitted", async (t) => {

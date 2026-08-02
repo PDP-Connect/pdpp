@@ -34,6 +34,11 @@ export interface CurrentRunAssistance {
   timeoutLabel: string | null;
 }
 
+const LEGACY_INTERACTION_KINDS = new Set(["credentials", "manual_action", "otp"]);
+const LEGACY_LIST_MAX = 50;
+const LEGACY_NAME_MAX = 160;
+const LEGACY_UNSAFE_FIELD_NAME_RE = /^(?:__proto__|constructor|prototype)$/;
+
 export function currentRunAssistanceFromInbox(pending: RunInboxEnvelope["data"] | null): CurrentRunAssistance | null {
   if (!pending) {
     return null;
@@ -90,12 +95,9 @@ export function getCurrentRunAssistance(events: SpineEvent[]): CurrentRunAssista
       return assistanceFromEvent(event, id);
     }
 
-    if (event.event_type === "run.interaction_required") {
-      const id = getEventAssistanceId(event);
-      if (!id || completedLegacyInteractions.has(id)) {
-        continue;
-      }
-      return assistanceFromLegacyInteraction(event, id);
+    const legacyAssistance = legacyAssistanceForEvent(event, completedLegacyInteractions);
+    if (legacyAssistance) {
+      return legacyAssistance;
     }
   }
 
@@ -166,15 +168,8 @@ function findCurrentLegacyInteraction(
 ): CurrentRunAssistance | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event?.event_type !== "run.interaction_required") {
-      continue;
-    }
-    const id = getEventAssistanceId(event);
-    if (!id || completedLegacyInteractions.has(id)) {
-      continue;
-    }
-    const assistance = assistanceFromLegacyInteraction(event, id);
-    if (predicate(assistance)) {
+    const assistance = event ? legacyAssistanceForEvent(event, completedLegacyInteractions) : null;
+    if (assistance && predicate(assistance)) {
       return assistance;
     }
   }
@@ -234,22 +229,139 @@ function assistanceFromEvent(event: SpineEvent, id: string): CurrentRunAssistanc
   };
 }
 
-function assistanceFromLegacyInteraction(event: SpineEvent, id: string): CurrentRunAssistance {
+function assistanceFromLegacyInteraction(event: SpineEvent, id: string): CurrentRunAssistance | null {
   const { data } = event;
-  const kind = stringField(data.kind) ?? "interaction";
+  if (!isRecord(data)) {
+    return null;
+  }
+  const kind = legacyInteractionKind(data.kind);
+  if (!kind) {
+    return null;
+  }
   const isManualAction = kind === "manual_action";
   return {
     attachments: isManualAction ? [{ kind: "browser_surface", label: null, ref: null, status: null }] : [],
-    fields: parseFields(data.schema),
+    fields: parseFields(projectLegacyInteractionSchema(data.schema)),
     id,
     isLegacyInteraction: true,
     kind,
-    message: stringField(data.message) ?? "Awaiting operator response.",
+    message: sanitizeLegacyInteractionString(data.message) ?? "Awaiting operator response.",
     ownerAction: isManualAction ? "operate_attachment" : "provide_value",
     progressPosture: "blocked",
     responseContract: "response_required",
     timeoutLabel: timeoutLabel(data.timeout_seconds),
   };
+}
+
+function legacyAssistanceForEvent(
+  event: SpineEvent,
+  completedLegacyInteractions: Set<string>
+): CurrentRunAssistance | null {
+  if (event.event_type !== "run.interaction_required") {
+    return null;
+  }
+  const id = getEventAssistanceId(event);
+  return id && !completedLegacyInteractions.has(id) ? assistanceFromLegacyInteraction(event, id) : null;
+}
+
+function legacyInteractionKind(value: unknown): string | null {
+  return typeof value === "string" && LEGACY_INTERACTION_KINDS.has(value) ? value : null;
+}
+
+/**
+ * Legacy interaction rows were written before the owner-safe assistance
+ * projection existed. Keep the fallback useful for known-safe prompt text,
+ * but never pass connector-authored raw strings or schema branches through to
+ * the page when the inbox projection is absent.
+ */
+function sanitizeLegacyInteractionString(value: unknown, maxLength = 200): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const bounded = value.trim().slice(0, maxLength);
+  if (!bounded) {
+    return null;
+  }
+  const sanitized = bounded
+    .replace(/\b(?:https?|wss?):\/\/[^\s<>"')]+/gi, "[REDACTED_URL]")
+    .replace(
+      /\b((?:qr[_-]?)?(?:secret|token|password|passwd|cookie|otp|bearer))\b\s*[:=]\s*["']?[^"',\s}]+/gi,
+      "$1=[REDACTED]"
+    )
+    .replace(
+      /\b((?:cdp|playwright|webrtc|neko)[_-]?(?:url|uri|endpoint|token|secret))\b\s*[:=]\s*["']?[^"',\s}]+/gi,
+      "$1=[REDACTED]"
+    )
+    .replace(/\b\d{6}\b/g, "[REDACTED_OTP]");
+  return sanitized.length <= maxLength ? sanitized : `${sanitized.slice(0, maxLength - 1)}…`;
+}
+
+function safeLegacyFieldName(value: string): boolean {
+  return Boolean(value) && value.length <= LEGACY_NAME_MAX && !LEGACY_UNSAFE_FIELD_NAME_RE.test(value);
+}
+
+function projectLegacyInteractionSchema(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const result = projectLegacySchemaMetadata(value);
+  const properties = projectLegacySchemaProperties(value.properties);
+  if (properties) {
+    result.properties = properties;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function projectLegacySchemaMetadata(schema: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (typeof schema.type === "string" && schema.type.length <= 40) {
+    result.type = schema.type;
+  }
+  const required = Array.isArray(schema.required)
+    ? schema.required
+        .filter((entry): entry is string => typeof entry === "string" && safeLegacyFieldName(entry))
+        .slice(0, LEGACY_LIST_MAX)
+    : [];
+  if (required.length > 0) {
+    result.required = required;
+  }
+  return result;
+}
+
+function projectLegacySchemaProperties(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const projected: Record<string, unknown> = {};
+  for (const [name, rawDefinition] of Object.entries(value).slice(0, LEGACY_LIST_MAX)) {
+    const definition = projectLegacySchemaField(name, rawDefinition);
+    if (definition) {
+      projected[name] = definition;
+    }
+  }
+  return Object.keys(projected).length > 0 ? projected : null;
+}
+
+function projectLegacySchemaField(name: string, value: unknown): Record<string, unknown> | null {
+  if (!(safeLegacyFieldName(name) && isRecord(value))) {
+    return null;
+  }
+  const definition: Record<string, unknown> = {};
+  if (typeof value.type === "string" && value.type.length <= 40) {
+    definition.type = value.type;
+  }
+  if (value.format === "password") {
+    definition.format = "password";
+  }
+  const title = sanitizeLegacyInteractionString(value.title, 160);
+  if (title) {
+    definition.title = title;
+  }
+  return Object.keys(definition).length > 0 ? definition : null;
 }
 
 function getEventAssistanceId(event: SpineEvent): string | null {

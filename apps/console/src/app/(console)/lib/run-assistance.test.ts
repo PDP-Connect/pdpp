@@ -66,6 +66,71 @@ function event(event_type: string, data: Record<string, unknown>): SpineEvent {
   };
 }
 
+test("legacy timeline fallback preserves safe actionability when the inbox projection is absent", () => {
+  const current = resolveCurrentRunAssistance(
+    [
+      event("run.interaction_required", {
+        interaction_id: "legacy_safe_1",
+        kind: "credentials",
+        message: "Need credentials to continue.",
+        schema: {
+          properties: {
+            password: { format: "password", type: "string" },
+            username: { type: "string" },
+          },
+          required: ["username", "password"],
+          type: "object",
+        },
+      }),
+    ],
+    null
+  );
+
+  assert.ok(current);
+  assert.equal(current.id, "legacy_safe_1");
+  assert.equal(current.isLegacyInteraction, true);
+  assert.equal(current.message, "Need credentials to continue.");
+  assert.deepEqual(current.fields, [
+    { format: "password", label: null, name: "password", required: true },
+    { format: "text", label: null, name: "username", required: true },
+  ]);
+});
+
+test("legacy timeline fallback redacts raw prompt and schema data when the projection is absent", () => {
+  const rawSecret = "projection-secret";
+  const current = resolveCurrentRunAssistance(
+    [
+      event("run.interaction_required", {
+        attachments: [{ kind: "file", ref: `https://example.test/${rawSecret}` }],
+        interaction_id: "legacy_secret_1",
+        kind: "credentials",
+        message: `password=${rawSecret}`,
+        schema: {
+          properties: {
+            password: {
+              default: rawSecret,
+              format: "password",
+              title: `password=${rawSecret}`,
+              type: "string",
+            },
+          },
+          required: ["password"],
+          type: "object",
+        },
+      }),
+    ],
+    null
+  );
+
+  assert.ok(current);
+  assert.equal(current.message, "password=[REDACTED]");
+  assert.equal(JSON.stringify(current).includes(rawSecret), false);
+  assert.deepEqual(current.fields, [
+    { format: "password", label: "password=[REDACTED]", name: "password", required: true },
+  ]);
+  assert.equal(current.attachments[0], undefined, "legacy attachment payload must not cross the fallback boundary");
+});
+
 test("browser-surface assistance without a registered surface is current but not streamable", () => {
   const events = [
     event("run.assistance_requested", {

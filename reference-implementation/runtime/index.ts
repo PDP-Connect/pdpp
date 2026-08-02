@@ -1512,6 +1512,21 @@ export function sanitizeAssistanceInputSchema(value: unknown, depth = 0): unknow
   return out;
 }
 
+function buildLegacyInteractionRequiredData(
+  msg: ConnectorMessage,
+  runSource: { id: string; kind: string },
+  interactionStream: string | null
+): Record<string, unknown> {
+  return {
+    kind: msg.kind,
+    message: sanitizeAssistanceTimelineString(msg.message) ?? "Awaiting operator response.",
+    source: runSource,
+    stream: interactionStream,
+    ...(isNullish(msg.schema) ? {} : { schema: sanitizeAssistanceInputSchema(msg.schema) }),
+    ...(isNullish(msg.timeout_seconds) ? {} : { timeout_seconds: msg.timeout_seconds }),
+  };
+}
+
 function safeOpaqueAttachmentRef(value: unknown): string | null {
   const ref = safeAttachmentString(value, 200);
   if (!ref) {
@@ -4430,14 +4445,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       await emitSpineEventTracked({
         actor_id: connectorId,
         actor_type: "runtime",
-        data: {
-          kind: msg.kind,
-          message: msg.message,
-          source: runSource,
-          stream: interactionStream,
-          ...(isNullish(msg.schema) ? {} : { schema: msg.schema }),
-          ...(isNullish(msg.timeout_seconds) ? {} : { timeout_seconds: msg.timeout_seconds }),
-        },
+        data: buildLegacyInteractionRequiredData(msg, runSource, interactionStream),
         event_type: "run.interaction_required",
         interaction_id: interactionRequestId,
         object_id: runId,

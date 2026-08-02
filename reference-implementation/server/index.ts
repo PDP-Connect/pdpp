@@ -4564,10 +4564,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
           // The runtime may still be blocked in its interaction promise. Give
           // it a terminal cancelled envelope before aborting the child so a
           // failed restore cannot leave a live run waiting indefinitely.
-          originalRespondToInteraction(runId, {
+          await originalRespondToInteraction(runId, {
             interaction_id: interactionId,
             status: "cancelled",
-          });
+          }).catch(() => undefined);
         } finally {
           // Same trusted internal resolution as onPresentationRestoreFailure
           // above: this is system-initiated teardown of a run already known

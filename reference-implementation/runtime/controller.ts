@@ -794,7 +794,7 @@ export interface Controller {
   ) => Promise<BrowserSurfaceRuntimeSurfaceObservation>;
   promoteBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
   reconcileBrowserSurfaceLeasesAfterBoot: () => Promise<void>;
-  respondToInteraction: (runId: string, input?: RunInteractionResponseInput) => RunInteractionAck;
+  respondToInteraction: (runId: string, input?: RunInteractionResponseInput) => Promise<RunInteractionAck>;
   runNow: (connectorId: string, options?: RunNowOptions) => Promise<RunNowResult>;
   setScheduleEnabled: (
     connectorId: string,
@@ -4131,10 +4131,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // build the resolver payload. Throws typed ControllerErrors for the caller to
   // surface; on success returns the validated entry, its pending record, and the
   // response to hand back to the connector child.
-  function resolveInteractionResponse(
+  async function resolveInteractionResponse(
     runId: string,
     input: RunInteractionResponseInput
-  ): { entry: ActiveRunInteraction; pending: PendingInteraction; response: InteractionResponse } {
+  ): Promise<{ entry: ActiveRunInteraction; pending: PendingInteraction; response: InteractionResponse }> {
+    if (await runAlreadyTerminal(runId)) {
+      throw new ControllerError(`Run ${runId} has already reached a terminal state`, "run_already_terminal", {
+        runId,
+      });
+    }
     const entry = activeRunInteractions.get(runId);
     if (!entry) {
       throw new ControllerError(`No active run with id: ${runId}`, "not_found");
@@ -4152,6 +4157,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     if (input.status !== "success" && input.status !== "cancelled") {
       throw new ControllerError(`Invalid interaction status: ${String(input.status)}`, "invalid_status");
+    }
+    // Re-read the durable terminal fact immediately before returning the
+    // response envelope. Cleanup is intentionally asynchronous, so the
+    // pending in-memory interaction may still exist after the terminal event
+    // is authoritative. The terminal event remains the only status authority.
+    if (await runAlreadyTerminal(runId)) {
+      throw new ControllerError(`Run ${runId} has already reached a terminal state`, "run_already_terminal", {
+        runId,
+      });
     }
 
     const response: InteractionResponse = {
@@ -4183,8 +4197,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
-  function respondToInteraction(runId: string, input: RunInteractionResponseInput = {}): RunInteractionAck {
-    const { entry, pending, response } = resolveInteractionResponse(runId, input);
+  async function respondToInteraction(
+    runId: string,
+    input: RunInteractionResponseInput = {}
+  ): Promise<RunInteractionAck> {
+    const { entry, pending, response } = await resolveInteractionResponse(runId, input);
 
     entry.pending = null;
     pending.resolve(response);
@@ -4217,6 +4234,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
           runId,
         }
       );
+    }
+    // The durable terminal event is authoritative even while cleanup still
+    // leaves the in-memory cancellation entry present. Do not abort or
+    // acknowledge a run that has already terminalized.
+    if (await runAlreadyTerminal(runId)) {
+      return { run_id: runId, status: "already_terminal" };
     }
     if (cancellation.abort.signal.aborted) {
       // Cancellation already requested for this run; the abort is idempotent.

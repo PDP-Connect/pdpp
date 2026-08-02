@@ -463,6 +463,15 @@ test("inbox projection survives the first 2,000-event timeline page and answers 
         "the default first page must not contain the pending interaction"
       );
 
+      const fullTimeline = await fetchJson(
+        `${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline?limit=5000`
+      );
+      assert.equal(fullTimeline.status, 200);
+      const fullEvents = (fullTimeline.body as TimelineBody).data;
+      const legacyInteraction = fullEvents.find((event) => event.event_type === "run.interaction_required");
+      assert.ok(legacyInteraction, "the production route should expose the legacy lifecycle event shape");
+      assert.equal(JSON.stringify(legacyInteraction).includes("projection-secret"), false);
+
       const inbox = await fetchJson(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}.json`);
       assert.equal(inbox.status, 200);
       const inboxData = (inbox.body as { data: Record<string, unknown> }).data;
@@ -650,7 +659,7 @@ test("POST /_ref/runs/:runId/interaction: active run with no pending interaction
   }
 });
 
-test("POST /_ref/runs/:runId/interaction: finished run returns 404", async () => {
+test("POST /_ref/runs/:runId/interaction: finished run returns 409 already_terminal", async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);
     const pending = await waitForPendingInteraction(asUrl, started.run_id);
@@ -666,7 +675,8 @@ test("POST /_ref/runs/:runId/interaction: finished run returns 404", async () =>
     });
     await waitForRunTerminal(asUrl, started.run_id);
 
-    // Second attempt should no longer see an active run.
+    // Durable terminal status wins even if the controller has not yet
+    // completed its cleanup chain.
     const resp = await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/interaction`, {
       body: JSON.stringify({
         data: { password: "s3cret", username: "alice" },
@@ -676,9 +686,9 @@ test("POST /_ref/runs/:runId/interaction: finished run returns 404", async () =>
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
-    assert.equal(resp.status, 404);
+    assert.equal(resp.status, 409);
     const body = (await resp.json()) as ErrorBody;
-    assert.equal(body.error.code, "not_found");
+    assert.equal(body.error.code, "run_already_terminal");
   });
 });
 
