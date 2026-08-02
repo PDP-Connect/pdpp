@@ -9,6 +9,7 @@
 
 ARG NODE_VERSION=25-bookworm-slim
 ARG PNPM_VERSION=10.33.0
+ARG GO_VERSION=1.24.2-bookworm@sha256:79390b5e5af9ee6e7b1173ee3eac7fadf6751a545297672916b59bfa0ecf6f71
 
 FROM node:${NODE_VERSION} AS base
 
@@ -43,13 +44,30 @@ COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
 
-RUN pnpm install --frozen-lockfile
+# Do not run workspace prepare scripts against this manifest-only tree; the
+# complete source is copied in the following stage.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 FROM deps AS source
 
 COPY . .
 
-FROM base AS reference
+FROM golang:${GO_VERSION} AS slackdump-identity-builder
+
+WORKDIR /src/slackdump-identity
+COPY packages/polyfill-connectors/connectors/slack/slackdump-identity/go.mod packages/polyfill-connectors/connectors/slack/slackdump-identity/go.sum ./
+RUN go mod download \
+  && go mod verify
+COPY packages/polyfill-connectors/connectors/slack/slackdump-identity/main.go ./
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/slackdump-identity . \
+  && test -x /out/slackdump-identity \
+  && test "$(/out/slackdump-identity --version)" = "pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13"
+
+FROM base AS connector-runtime
+
+COPY --from=slackdump-identity-builder /out/slackdump-identity /opt/pdpp-tools/slackdump/slackdump-identity
+
+FROM connector-runtime AS reference
 
 ARG PDPP_REFERENCE_REVISION=unknown
 

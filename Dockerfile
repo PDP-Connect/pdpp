@@ -3,6 +3,7 @@
 ARG NODE_VERSION=25.8.2-bookworm-slim@sha256:71be4054ee7a5fc8d0b2a66060705988b09a782025d70ba9318b29ff1a931fc0
 ARG PNPM_VERSION=10.33.0
 ARG PNPM_INTEGRITY=sha512-EFaLtKavtYyes2MNqQzJUWQXq+vT+rvmc58K55VyjaFJHp21pUTHatjrdXD1xLs9bGN7LLQb/c20f6gjyGSTGQ==
+ARG GO_VERSION=1.24.2-bookworm@sha256:79390b5e5af9ee6e7b1173ee3eac7fadf6751a545297672916b59bfa0ecf6f71
 
 FROM node:${NODE_VERSION} AS base
 
@@ -73,13 +74,33 @@ RUN pnpm --filter @pdpp/polyfill-connectors run postinstall \
   && pnpm --filter @pdpp/cli run build \
   && pnpm --filter @pdpp/mcp-server run build
 
+# The Slack connector's identity companion is deliberately built in a pinned
+# Go stage: the Node runtime stages do not carry a Go toolchain, and a
+# package.json script alone would never put this executable in a reference
+# image. Keep module metadata in its own cacheable layer and verify the exact
+# Slackdump v3.1.13 module before compiling the static runtime binary.
+FROM golang:${GO_VERSION} AS slackdump-identity-builder
+
+WORKDIR /src/slackdump-identity
+COPY packages/polyfill-connectors/connectors/slack/slackdump-identity/go.mod packages/polyfill-connectors/connectors/slack/slackdump-identity/go.sum ./
+RUN go mod download \
+  && go mod verify
+COPY packages/polyfill-connectors/connectors/slack/slackdump-identity/main.go ./
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/slackdump-identity . \
+  && test -x /out/slackdump-identity \
+  && test "$(/out/slackdump-identity --version)" = "pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13"
+
 FROM source AS console-builder
 
 RUN pnpm --filter pdpp-console build
 
 # Core AS/RS reference runtime. Keep this browser-free: managed-platform Core
 # deploys do not run browser-backed collection inside the server container.
-FROM base AS reference
+FROM base AS connector-runtime
+
+COPY --from=slackdump-identity-builder /out/slackdump-identity /opt/pdpp-tools/slackdump/slackdump-identity
+
+FROM connector-runtime AS reference
 
 # `.git` is excluded from the Docker build context (.dockerignore), so the
 # runtime cannot derive a real git revision at startup and falls back to
@@ -117,7 +138,7 @@ CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_U
 # (reference container) and binary-side (n.eko container) revisions in
 # lockstep; otherwise the CDP attach against n.eko sees a Chromium revision
 # the driver was not built for.
-FROM base AS browsers
+FROM connector-runtime AS browsers
 
 ARG TARGETARCH
 ARG PATCHRIGHT_VERSION=1.59.4
@@ -184,7 +205,7 @@ CMD ["node", "apps/console/server.js"]
 # makes the SQLite database (and first-boot credentials, see
 # deploy/railway/core-first-boot.ts) durable. With a database URL present the
 # runtime selects Postgres and the SQLite default is ignored.
-FROM base AS railway-core
+FROM connector-runtime AS railway-core
 
 ARG PDPP_REFERENCE_REVISION=unknown
 

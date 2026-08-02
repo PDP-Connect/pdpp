@@ -55,9 +55,9 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, constants as fsConstants, readdirSync, statSync } from "node:fs";
-import { chmod, type FileHandle, mkdir, mkdtemp, open, rm } from "node:fs/promises";
+import { chmod, type FileHandle, mkdtemp, open, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { acquireBrowserForConnector } from "../../src/browser-launch.ts";
 import { readOptions } from "../../src/connector-options.ts";
@@ -132,6 +132,141 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
 
 function resolveSlackdumpBin(): string {
   return process.env.SLACKDUMP_BIN || "slackdump";
+}
+
+const SLACKDUMP_IDENTITY_HELPER_VERSION = "pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13";
+const SLACKDUMP_IDENTITY_INPUT_MAX_BYTES = 8192;
+const SLACKDUMP_IDENTITY_OUTPUT_MAX_BYTES = 1024;
+const SLACKDUMP_IDENTITY_TIMEOUT_MS = 20_000;
+
+function resolveSlackdumpIdentityHelperBin(): string {
+  const configured = process.env.SLACKDUMP_IDENTITY_BIN;
+  if (configured) {
+    return configured;
+  }
+  const slackdumpBin = resolveSlackdumpBin();
+  return slackdumpBin.includes("/") ? join(dirname(slackdumpBin), "slackdump-identity") : "slackdump-identity";
+}
+
+function helperChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const forbidden = new Set(["SLACK_TOKEN", "SLACK_COOKIE", "SLACK_WORKSPACE", "CACHE_DIR"]);
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !forbidden.has(key)));
+}
+
+interface IdentityHelperResult {
+  code: number | null;
+  stdout: string;
+}
+
+function runIdentityHelperChild(
+  helperPath: string,
+  args: readonly string[],
+  stdin: string,
+  env: NodeJS.ProcessEnv
+): Promise<IdentityHelperResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let output = "";
+    let timedOut = false;
+    const child = spawn(helperPath, [...args], {
+      env: helperChildEnv(env),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+      finishReject("slackdump_identity_helper_timeout");
+    }, SLACKDUMP_IDENTITY_TIMEOUT_MS);
+    timer.unref?.();
+
+    const finishResolve = (result: IdentityHelperResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const finishReject = (code: string): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(code));
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled) {
+        return;
+      }
+      if (Buffer.byteLength(output) + chunk.byteLength > SLACKDUMP_IDENTITY_OUTPUT_MAX_BYTES) {
+        child.kill("SIGKILL");
+        finishReject("slackdump_identity_output_oversized");
+        return;
+      }
+      output += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", () => undefined);
+    child.on("error", (error) => {
+      if (isErrnoException(error) && error.code === "ENOENT") {
+        finishReject("slackdump_identity_helper_unavailable");
+        return;
+      }
+      finishReject("slackdump_identity_helper_failed");
+    });
+    child.on("close", (code) => {
+      if (timedOut || settled) {
+        return;
+      }
+      finishResolve({ code, stdout: output });
+    });
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(stdin);
+  });
+}
+
+export async function runSlackdumpIdentityHelper(
+  proof: SlackdumpAuthProof,
+  env: NodeJS.ProcessEnv,
+  requestedWorkspace: string
+): Promise<SlackArchiveIdentity> {
+  const helperPath = resolveSlackdumpIdentityHelperBin();
+  const version = await runIdentityHelperChild(helperPath, ["--version"], "", env);
+  if (version.code !== 0 || version.stdout.trim() !== SLACKDUMP_IDENTITY_HELPER_VERSION) {
+    throw new Error("slackdump_identity_helper_version_mismatch");
+  }
+  const request = JSON.stringify({ cookie: proof.cookie, token: proof.token });
+  if (Buffer.byteLength(request) > SLACKDUMP_IDENTITY_INPUT_MAX_BYTES) {
+    throw new Error("slackdump_identity_input_oversized");
+  }
+  const result = await runIdentityHelperChild(helperPath, [], `${request}\n`, env);
+  if (result.code !== 0) {
+    throw new Error("slackdump_identity_preflight_failed");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error("slackdump_identity_invalid", { cause: error });
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Object.keys(parsed).sort().join(",") !== "team_id,url" ||
+    typeof (parsed as { team_id?: unknown }).team_id !== "string" ||
+    typeof (parsed as { url?: unknown }).url !== "string"
+  ) {
+    throw new Error("slackdump_identity_invalid");
+  }
+  const identity = {
+    teamId: (parsed as { team_id: string }).team_id,
+    url: (parsed as { url: string }).url,
+  };
+  if (!archiveWorkspaceMatches(identity, requestedWorkspace)) {
+    throw new Error("slackdump_identity_mismatch");
+  }
+  return identity;
 }
 
 /**
@@ -532,31 +667,44 @@ async function ensureWorkspaceCached({
   token,
   cookie,
   env,
+  requestedWorkspace,
 }: {
   token: string;
   cookie: string;
   env: NodeJS.ProcessEnv;
-}): Promise<SlackdumpAuthHandoff | null> {
+  requestedWorkspace: string;
+}): Promise<SlackdumpAuthHandoff> {
+  let listOutput: string | null = null;
   try {
-    const { stdout } = await runSlackdump(["workspace", "list"], {
-      env,
-      timeoutMs: 10_000,
-    });
-    if (WORKSPACE_LIST_ARROW.test(stdout)) {
-      const proof = await loadSlackdumpProviderAuth(env);
-      if (proof) {
-        return createSlackdumpAuthHandoff(proof, env);
-      }
-    }
+    listOutput = (
+      await runSlackdump(["workspace", "list"], {
+        env,
+        timeoutMs: 10_000,
+      })
+    ).stdout;
   } catch {
     /* fall through to register */
+  }
+  if (listOutput && WORKSPACE_LIST_ARROW.test(listOutput)) {
+    const proof = await loadSlackdumpProviderAuth(env);
+    if (proof) {
+      if (!providerAliasMatchesRequested(proof, requestedWorkspace)) {
+        throw new Error("slackdump_identity_mismatch");
+      }
+      const identity = await runSlackdumpIdentityHelper(proof, env, requestedWorkspace);
+      return createSlackdumpAuthHandoff(proof, env, identity);
+    }
   }
   await runSlackdump(["workspace", "new", "-token", token, "-cookie", cookie, "-no-encryption"], {
     env,
     timeoutMs: 30_000,
   });
   const proof = await loadSlackdumpProviderAuth(env);
-  return proof ? createSlackdumpAuthHandoff(proof, env) : null;
+  if (!(proof && providerAliasMatchesRequested(proof, requestedWorkspace))) {
+    throw new Error("slackdump_identity_unavailable");
+  }
+  const identity = await runSlackdumpIdentityHelper(proof, env, requestedWorkspace);
+  return createSlackdumpAuthHandoff(proof, env, identity);
 }
 
 // ─── Option parsing / credentials ──────────────────────────────────────
@@ -584,6 +732,8 @@ const SLACKDUMP_D_COOKIE_RE = /^xoxd-[A-Za-z0-9%._~-]+$/u;
 const SLACKDUMP_READ_FLAGS = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
 // biome-ignore lint/suspicious/noBitwiseOperators: file-create flags are bit masks.
 const SLACKDUMP_WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
+// biome-ignore lint/suspicious/noBitwiseOperators: file-open flags are bit masks.
+const SLACKDUMP_SCRUB_FLAGS = fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW;
 
 export interface SlackdumpProviderFileStat {
   dev: number;
@@ -691,6 +841,9 @@ async function writePrivateFile(filePath: string, bytes: Uint8Array): Promise<vo
   const handle = await open(filePath, SLACKDUMP_WRITE_FLAGS, 0o600);
   try {
     await handle.writeFile(bytes);
+    if (process.env.PDPP_SLACK_TEST_SNAPSHOT_WRITE_FAILURE === "1" && filePath.endsWith(".bin")) {
+      throw new Error("slackdump_auth_snapshot_write_failed");
+    }
   } catch (error) {
     throw new Error("slackdump_auth_snapshot_write_failed", { cause: error });
   } finally {
@@ -698,30 +851,73 @@ async function writePrivateFile(filePath: string, bytes: Uint8Array): Promise<vo
   }
 }
 
+async function scrubPrivateFile(filePath: string): Promise<void> {
+  let handle: FileHandle;
+  try {
+    handle = await open(filePath, SLACKDUMP_SCRUB_FLAGS);
+  } catch (error) {
+    if (isErrnoException(error) && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      throw new Error("nonregular snapshot file");
+    }
+    if (stat.size > SLACKDUMP_PROVIDER_MAX_BYTES) {
+      await handle.truncate(0);
+      await handle.sync();
+      return;
+    }
+    const zeros = Buffer.alloc(4096);
+    let offset = 0;
+    while (offset < stat.size) {
+      const count = Math.min(zeros.byteLength, stat.size - offset);
+      await handle.write(zeros, 0, count, offset);
+      offset += count;
+    }
+    await handle.truncate(0);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 interface SlackdumpAuthHandoff {
   archiveEnv: NodeJS.ProcessEnv;
+  identity: SlackArchiveIdentity;
   proof: SlackdumpAuthProof;
   snapshotDir: string;
 }
 
 async function createSlackdumpAuthHandoff(
   proof: SlackdumpAuthProof,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  identity: SlackArchiveIdentity
 ): Promise<SlackdumpAuthHandoff> {
   const snapshotDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-auth-"));
+  const handoff: SlackdumpAuthHandoff = {
+    archiveEnv: { ...env, CACHE_DIR: snapshotDir },
+    identity,
+    proof,
+    snapshotDir,
+  };
   try {
     await chmod(snapshotDir, 0o700);
     const markerPath = join(snapshotDir, "workspace.txt");
     const providerFilename = proof.providerName === "default" ? "provider.bin" : `${proof.providerName}.bin`;
     await writePrivateFile(markerPath, new TextEncoder().encode(`${proof.providerName}\n`));
     await writePrivateFile(join(snapshotDir, providerFilename), proof.providerBytes);
-    return {
-      archiveEnv: { ...env, CACHE_DIR: snapshotDir },
-      proof,
-      snapshotDir,
-    };
+    return handoff;
   } catch (error) {
-    await rm(snapshotDir, { recursive: true, force: true });
+    try {
+      await cleanupSlackdumpAuthHandoff(handoff);
+    } catch {
+      // Preserve the primary snapshot-write error. Cleanup is still attempted
+      // and reports only a fixed category through the caller's failure path.
+    }
     throw error;
   }
 }
@@ -743,8 +939,36 @@ async function verifySlackdumpAuthSnapshot(handoff: SlackdumpAuthHandoff): Promi
 }
 
 async function cleanupSlackdumpAuthHandoff(handoff: SlackdumpAuthHandoff): Promise<void> {
-  await rm(handoff.snapshotDir, { recursive: true, force: true });
+  let cleanupFailed = false;
+  const providerFilename =
+    handoff.proof.providerName === "default" ? "provider.bin" : `${handoff.proof.providerName}.bin`;
+  for (const filePath of [join(handoff.snapshotDir, providerFilename), join(handoff.snapshotDir, "workspace.txt")]) {
+    try {
+      await scrubPrivateFile(filePath);
+    } catch {
+      // A failed archive child may have replaced the private provider with a
+      // symlink. Unlinking that directory entry is safe (rm never follows it)
+      // and removes the only readable name for the original snapshot bytes.
+      try {
+        await rm(filePath, { force: true });
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+  }
+  if (process.env.PDPP_SLACK_TEST_SNAPSHOT_RM_FAILURE === "1") {
+    cleanupFailed = true;
+  } else {
+    try {
+      await rm(handoff.snapshotDir, { recursive: true, force: true });
+    } catch {
+      cleanupFailed = true;
+    }
+  }
   if (existsSync(handoff.snapshotDir)) {
+    cleanupFailed = true;
+  }
+  if (cleanupFailed) {
     throw new Error("slackdump_auth_snapshot_cleanup_failed");
   }
 }
@@ -901,6 +1125,29 @@ function providerAliasMatchesRequested(proof: SlackdumpAuthProof, requestedWorks
   // identity; its only authority is the exact TEAM_ID/URL returned by the
   // successful archive built from this proof's private snapshot.
   return proof.providerName === "default" || proof.providerName.toLowerCase() === requestedWorkspace.toLowerCase();
+}
+
+async function mutateSlackdumpSourceForTest(
+  proof: SlackdumpAuthProof,
+  phase: "after_snapshot" | "before_archive"
+): Promise<void> {
+  if (process.env.PDPP_SLACK_TEST_MUTATE_SOURCE === phase) {
+    const handle = await open(proof.providerPath, SLACKDUMP_SCRUB_FLAGS);
+    try {
+      await handle.write(Buffer.from("!"), 0, 1, 0);
+    } finally {
+      await handle.close();
+    }
+  }
+  if (process.env.PDPP_SLACK_TEST_MUTATE_MARKER === phase) {
+    const handle = await open(proof.markerPath, SLACKDUMP_SCRUB_FLAGS);
+    try {
+      await handle.write(Buffer.from("other\n"), 0, 6, 0);
+      await handle.truncate(6);
+    } finally {
+      await handle.close();
+    }
+  }
 }
 
 export async function resolveSlackApiCredentials(
@@ -2552,8 +2799,25 @@ interface EnsureArchiveDeps {
 }
 
 async function runArchiveWithAuthSnapshot(deps: EnsureArchiveDeps): Promise<SlackdumpAuthProof | null> {
-  const handoff = await ensureWorkspaceCached({ token: deps.token, cookie: deps.cookie, env: deps.childEnv });
+  let handoff: SlackdumpAuthHandoff | null = null;
+  let result: SlackdumpAuthProof | null = null;
+  let primaryFailure: unknown = null;
+  let cleanupFailure: unknown = null;
   try {
+    handoff = await ensureWorkspaceCached({
+      token: deps.token,
+      cookie: deps.cookie,
+      env: deps.childEnv,
+      requestedWorkspace: deps.workspace,
+    });
+    await mutateSlackdumpSourceForTest(handoff.proof, "after_snapshot");
+    if (!(await sourceProofStillCurrent(handoff.proof))) {
+      throw new Error("slackdump_auth_source_drift");
+    }
+    await mutateSlackdumpSourceForTest(handoff.proof, "before_archive");
+    if (!(await sourceProofStillCurrent(handoff.proof))) {
+      throw new Error("slackdump_auth_source_drift");
+    }
     // The private CACHE_DIR is the exact provider-byte handoff consumed by
     // both archive and resume. The global Slackdump cache is never consulted
     // after this point, so later marker/provider changes cannot retarget the
@@ -2562,10 +2826,10 @@ async function runArchiveWithAuthSnapshot(deps: EnsureArchiveDeps): Promise<Slac
     await runArchiveOrResume({
       apiConfigPath,
       archivePath: deps.archivePath,
-      childEnv: handoff?.archiveEnv ?? deps.childEnv,
+      childEnv: handoff.archiveEnv,
       opts: deps.opts,
       positionalChannels: deps.positionalChannels,
-      providerName: handoff?.proof.providerName ?? null,
+      providerName: handoff.proof.providerName,
       priorArchive: deps.priorArchive,
       progress: deps.progress,
       resumeTarget: deps.resumeTarget,
@@ -2576,14 +2840,29 @@ async function runArchiveWithAuthSnapshot(deps: EnsureArchiveDeps): Promise<Slac
     });
     if (handoff && !(await verifySlackdumpAuthSnapshot(handoff))) {
       deps.progress("Slackdump auth snapshot changed during archive; retaining supplied connection credentials");
-      return null;
+      result = null;
+    } else {
+      result = handoff.proof;
     }
-    return handoff?.proof ?? null;
+  } catch (error) {
+    primaryFailure = error;
   } finally {
     if (handoff) {
-      await cleanupSlackdumpAuthHandoff(handoff);
+      try {
+        await cleanupSlackdumpAuthHandoff(handoff);
+      } catch (error) {
+        deps.progress("slackdump_auth_cleanup_failed");
+        cleanupFailure = error;
+      }
     }
   }
+  if (primaryFailure) {
+    throw primaryFailure;
+  }
+  if (cleanupFailure) {
+    throw cleanupFailure;
+  }
+  return result;
 }
 
 /**
@@ -3143,9 +3422,7 @@ if (isMainModule(import.meta.url)) {
       const isUnscopedMessageBoundary = positionalChannels.length === 0;
       const messagesScope = requested.get("messages");
       const baseArchivePaths = resolveArchivePaths(workspace);
-      const { dumpDir } = baseArchivePaths;
       const { archivePath, sqlitePath } = resolveScopedArchivePaths(baseArchivePaths, positionalChannels);
-      await mkdir(dumpDir, { recursive: true });
 
       const { resumeTarget, priorArchive } = pickResumeTarget(state, archivePath, {
         allowStateArchive: isUnscopedMessageBoundary,

@@ -179,9 +179,10 @@ services:
       - ${PDPP_DOCKER_CLAUDE_CODE_HOME:-./packages/polyfill-connectors/.pdpp-imports/claude}:/imports/claude:ro
       - ${PDPP_DOCKER_CODEX_HOME:-./packages/polyfill-connectors/.pdpp-imports/codex}:/imports/codex:ro
       # Optional external-tool mount. slackdump is AGPL-licensed and is not
-      # bundled into the stock reference image; mount a host-provided directory
-      # containing a `slackdump` executable when running the Slack connector.
-      - ${PDPP_DOCKER_SLACKDUMP_DIR:-./packages/polyfill-connectors/.pdpp-tools/slackdump}:/opt/pdpp-tools/slackdump:ro
+      # bundled into the stock reference image; mount only the host executable.
+      # The image-owned identity companion remains visible beside it at
+      # /opt/pdpp-tools/slackdump/slackdump-identity.
+      - ${PDPP_DOCKER_SLACKDUMP_DIR:-./packages/polyfill-connectors/.pdpp-tools/slackdump}/slackdump:/opt/pdpp-tools/slackdump/slackdump:ro
     # Health = AS and RS are both listening and serving public metadata.
     # Embedding-model download and semantic backfill run in the background
     # after listen and are intentionally NOT part of "healthy".

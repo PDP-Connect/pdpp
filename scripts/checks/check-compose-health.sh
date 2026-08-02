@@ -50,7 +50,7 @@ if not reference:
 reference_block = reference.group(1)
 required = [
     "SLACKDUMP_BIN: ${SLACKDUMP_BIN:-/opt/pdpp-tools/slackdump/slackdump}",
-    "${PDPP_DOCKER_SLACKDUMP_DIR:-./packages/polyfill-connectors/.pdpp-tools/slackdump}:/opt/pdpp-tools/slackdump:ro",
+    "${PDPP_DOCKER_SLACKDUMP_DIR:-./packages/polyfill-connectors/.pdpp-tools/slackdump}/slackdump:/opt/pdpp-tools/slackdump/slackdump:ro",
     "PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: ${PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES:-}",
 ]
 for needle in required:

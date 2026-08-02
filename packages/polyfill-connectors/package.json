@@ -26,6 +26,7 @@
   },
   "scripts": {
     "postinstall": "node ./scripts/install-patchright-browser.ts",
+    "build:slackdump-identity": "bash ./connectors/slack/slackdump-identity/build.sh",
     "check": "ultracite check",
     "check:noAwaitInLoops-conformance": "node --import tsx ./scripts/check-no-await-in-loops-conformance.ts",
     "check:noUnnecessaryConditions-expiry": "node ./scripts/check-no-unnecessary-conditions-expiry.ts",

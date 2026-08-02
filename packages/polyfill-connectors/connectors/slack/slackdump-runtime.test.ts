@@ -17,6 +17,7 @@ import {
   parseSlackdumpProviderAuth,
   resolveSlackApiCredentials,
   runSlackdump,
+  runSlackdumpIdentityHelper,
   SLACK_RETRYABLE_FAILURE_RE,
   slackdumpProgressChanged,
 } from "./index.ts";
@@ -312,12 +313,73 @@ test("Slackdump provider bridge rejects invalid markers, oversized/truncated fil
   }
 });
 
+test("Slackdump identity companion has bounded malformed and timeout behavior", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-identity-protocol-"));
+  const cacheDir = join(homeDir, "cache");
+  const helper = join(homeDir, "identity-helper.mjs");
+  const priorHelper = process.env.SLACKDUMP_IDENTITY_BIN;
+  const priorMode = process.env.HELPER_MODE;
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(join(cacheDir, "workspace.txt"), "protocol-test\n", "utf8");
+  await writeFile(
+    join(cacheDir, "protocol-test.bin"),
+    JSON.stringify({ Token: VALID_SLACKDUMP_TOKEN, Cookie: [{ Name: "d", Value: VALID_SLACKDUMP_COOKIE }] }),
+    "utf8"
+  );
+  await writeFile(
+    helper,
+    `#!/usr/bin/env node
+if (process.argv[2] === "--version") {
+  process.stdout.write("pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13\\n");
+  process.exit(0);
+}
+if (process.env.HELPER_MODE === "timeout") {
+  setInterval(() => {}, 1000);
+} else if (process.env.HELPER_MODE === "malformed") {
+  process.stdout.write("not-json\\n");
+  process.exit(0);
+}
+`,
+    "utf8"
+  );
+  await chmod(helper, 0o755);
+  const proof = await loadSlackdumpProviderAuth({ CACHE_DIR: cacheDir });
+  assert.ok(proof);
+  process.env.SLACKDUMP_IDENTITY_BIN = helper;
+  try {
+    process.env.HELPER_MODE = "malformed";
+    await assert.rejects(
+      runSlackdumpIdentityHelper(proof, { ...process.env, CACHE_DIR: cacheDir }, "protocol-test"),
+      /slackdump_identity_invalid/
+    );
+    process.env.HELPER_MODE = "timeout";
+    await assert.rejects(
+      runSlackdumpIdentityHelper(proof, { ...process.env, CACHE_DIR: cacheDir }, "protocol-test"),
+      /slackdump_identity_helper_timeout/
+    );
+  } finally {
+    if (priorHelper === undefined) {
+      delete process.env.SLACKDUMP_IDENTITY_BIN;
+    } else {
+      process.env.SLACKDUMP_IDENTITY_BIN = priorHelper;
+    }
+    if (priorMode === undefined) {
+      delete process.env.HELPER_MODE;
+    } else {
+      process.env.HELPER_MODE = priorMode;
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("full collect pins the proved Slackdump provider before opening the archive", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-proof-collect-"));
   const cacheDir = join(homeDir, "cache");
   const fakeSlackdump = join(homeDir, "fake-slackdump.mjs");
+  const fakeIdentityHelper = join(homeDir, "fake-slackdump-identity.mjs");
   const argsPath = join(homeDir, "args.json");
   const snapshotPathFile = join(homeDir, "snapshot-path.txt");
+  const helperObservationPath = join(homeDir, "identity-helper-observation.json");
   const workspace = "proof-collect";
   await mkdir(cacheDir, { recursive: true });
   await writeFile(join(cacheDir, "workspace.txt"), "default\n", "utf8");
@@ -332,7 +394,6 @@ test("full collect pins the proved Slackdump provider before opening the archive
 import { mkdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 const args = process.argv.slice(2);
-writeFileSync(process.env.ARGS_PATH, JSON.stringify(args));
 writeFileSync(process.env.SNAPSHOT_PATH_FILE, process.env.CACHE_DIR);
 writeFileSync(process.env.SNAPSHOT_MODE_FILE, JSON.stringify({
   directory: statSync(process.env.CACHE_DIR).mode & 0o777,
@@ -342,6 +403,8 @@ if (args[0] === "workspace" && args[1] === "list") {
   process.stdout.write("default =>\\n");
   process.exit(0);
 }
+writeFileSync(process.env.ARGS_PATH, JSON.stringify(args));
+if (process.env.FAIL_ARCHIVE === "1" && (args[0] === "archive" || args[0] === "resume")) process.exit(9);
 const outputIndex = args.indexOf("-o");
 const output = outputIndex === -1 ? process.env.ARCHIVE_PATH : args[outputIndex + 1];
 if (outputIndex !== -1) {
@@ -359,6 +422,30 @@ if (process.env.MUTATE_SNAPSHOT === "1") {
     "utf8"
   );
   await chmod(fakeSlackdump, 0o755);
+  await writeFile(
+    fakeIdentityHelper,
+    `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+if (process.argv[2] === "--version") {
+  process.stdout.write("pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13\\n");
+  process.exit(0);
+}
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  writeFileSync(process.env.HELPER_OBSERVATION_PATH, JSON.stringify({
+    argv_has_secret: process.argv.some((value) => value.includes("xoxc-") || value.includes("xoxd-")),
+    env_has_secret: Boolean(process.env.SLACK_TOKEN || process.env.SLACK_COOKIE),
+    stdin_is_json: (() => { try { const parsed = JSON.parse(input); return typeof parsed.token === "string" && parsed.token.startsWith("xoxc-") && typeof parsed.cookie === "string" && parsed.cookie.startsWith("xoxd-"); } catch { return false; } })(),
+  }));
+  process.stdout.write(JSON.stringify({ team_id: process.env.ARCHIVE_TEAM_ID, url: process.env.ARCHIVE_URL }) + "\\n");
+});
+
+`,
+    "utf8"
+  );
+  await chmod(fakeIdentityHelper, 0o755);
 
   try {
     const result = await runConnectorProtocolSubprocess({
@@ -368,7 +455,9 @@ if (process.env.MUTATE_SNAPSHOT === "1") {
         HOME: homeDir,
         CACHE_DIR: cacheDir,
         SLACKDUMP_BIN: fakeSlackdump,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
         ARGS_PATH: argsPath,
+        HELPER_OBSERVATION_PATH: helperObservationPath,
         SNAPSHOT_PATH_FILE: snapshotPathFile,
         SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
         ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
@@ -385,6 +474,11 @@ if (process.env.MUTATE_SNAPSHOT === "1") {
     });
     const args = JSON.parse(await readFile(argsPath, "utf8")) as string[];
     assert.deepEqual(args.slice(0, 5), ["archive", "-y", "-no-encryption", "-workspace", "default"]);
+    assert.deepEqual(JSON.parse(await readFile(helperObservationPath, "utf8")), {
+      argv_has_secret: false,
+      env_has_secret: false,
+      stdin_is_json: true,
+    });
     const snapshotPath = (await readFile(snapshotPathFile, "utf8")).trim();
     await assert.rejects(readFile(join(snapshotPath, "provider.bin")), /ENOENT/);
     assert.deepEqual(JSON.parse(await readFile(join(homeDir, "snapshot-mode.json"), "utf8")), {
@@ -403,7 +497,9 @@ if (process.env.MUTATE_SNAPSHOT === "1") {
         HOME: homeDir,
         CACHE_DIR: cacheDir,
         SLACKDUMP_BIN: fakeSlackdump,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
         ARGS_PATH: argsPath,
+        HELPER_OBSERVATION_PATH: helperObservationPath,
         SNAPSHOT_PATH_FILE: snapshotPathFile,
         SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
         ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
@@ -438,6 +534,110 @@ if (process.env.MUTATE_SNAPSHOT === "1") {
     );
     const mutatedSnapshotPath = (await readFile(snapshotPathFile, "utf8")).trim();
     await assert.rejects(readFile(join(mutatedSnapshotPath, "provider.bin")), /ENOENT/);
+
+    const argsBeforeDrift = await readFile(argsPath, "utf8");
+    const driftResult = await runConnectorProtocolSubprocess({
+      allowFailedDone: true,
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        CACHE_DIR: cacheDir,
+        SLACKDUMP_BIN: fakeSlackdump,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
+        ARGS_PATH: argsPath,
+        HELPER_OBSERVATION_PATH: helperObservationPath,
+        SNAPSHOT_PATH_FILE: snapshotPathFile,
+        SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
+        ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
+        ARCHIVE_URL: `https://${workspace}.slack.com`,
+        ARCHIVE_TEAM_ID: "T_PROOF_COLLECT",
+        PDPP_SLACK_TEST_MUTATE_MARKER: "after_snapshot",
+        SLACK_COOKIE: "d=supplied",
+        SLACK_TOKEN: "xoxc-supplied",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+      },
+    });
+    const driftDone = driftResult.messages.findLast((message) => message.type === "DONE");
+    assert.equal(driftDone?.status, "failed");
+    assert.match(driftDone?.error?.message ?? "", /slackdump_auth_source_drift/);
+    assert.equal(await readFile(argsPath, "utf8"), argsBeforeDrift, "marker drift must invoke zero archive children");
+    await writeFile(join(cacheDir, "workspace.txt"), "default\n", "utf8");
+
+    const argsBeforeSnapshotFailure = await readFile(argsPath, "utf8");
+    const snapshotFailureResult = await runConnectorProtocolSubprocess({
+      allowFailedDone: true,
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        CACHE_DIR: cacheDir,
+        PDPP_SLACK_TEST_SNAPSHOT_WRITE_FAILURE: "1",
+        SLACKDUMP_BIN: fakeSlackdump,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
+        ARGS_PATH: argsPath,
+        HELPER_OBSERVATION_PATH: helperObservationPath,
+        SNAPSHOT_PATH_FILE: snapshotPathFile,
+        SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
+        ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
+        ARCHIVE_URL: `https://${workspace}.slack.com`,
+        ARCHIVE_TEAM_ID: "T_PROOF_COLLECT",
+        SLACK_COOKIE: "d=supplied",
+        SLACK_TOKEN: "xoxc-supplied",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+      },
+    });
+    const snapshotFailureDone = snapshotFailureResult.messages.findLast((message) => message.type === "DONE");
+    assert.match(snapshotFailureDone?.error?.message ?? "", /slackdump_auth_snapshot_write_failed/);
+    assert.equal(
+      await readFile(argsPath, "utf8"),
+      argsBeforeSnapshotFailure,
+      "snapshot write failure must invoke zero archive children"
+    );
+
+    const failedChildResult = await runConnectorProtocolSubprocess({
+      allowFailedDone: true,
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: homeDir,
+        CACHE_DIR: cacheDir,
+        FAIL_ARCHIVE: "1",
+        PDPP_SLACK_TEST_SNAPSHOT_RM_FAILURE: "1",
+        SLACKDUMP_BIN: fakeSlackdump,
+        SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
+        ARGS_PATH: argsPath,
+        HELPER_OBSERVATION_PATH: helperObservationPath,
+        SNAPSHOT_PATH_FILE: snapshotPathFile,
+        SNAPSHOT_MODE_FILE: join(homeDir, "snapshot-mode.json"),
+        ARCHIVE_PATH: join(homeDir, ".pdpp", "slackdump", workspace, "archive"),
+        ARCHIVE_URL: `https://${workspace}.slack.com`,
+        ARCHIVE_TEAM_ID: "T_PROOF_COLLECT",
+        SLACK_COOKIE: "d=supplied",
+        SLACK_TOKEN: "xoxc-supplied",
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+      },
+    });
+    const failedChildDone = failedChildResult.messages.findLast((message) => message.type === "DONE");
+    assert.match(failedChildDone?.error?.message ?? "", /slackdump_exit_9/);
+    const failedSnapshotPath = (await readFile(snapshotPathFile, "utf8")).trim();
+    assert.equal(
+      await readFile(join(failedSnapshotPath, "provider.bin"), "utf8"),
+      "",
+      "cleanup must scrub provider bytes before removal failure"
+    );
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }
@@ -490,6 +690,77 @@ setTimeout(() => process.exit(0), 100);
   assert.match(progressEvents[0]?.message ?? "", /Slack slackdump resume progress:/);
   assert.match(progressEvents[0]?.message ?? "", /archive_bytes=/);
   assert.equal((progressEvents[0]?.extra as { stream?: unknown } | undefined)?.stream, "messages");
+});
+
+test("named and default identity mismatches fail before any archive child or target write", async () => {
+  const cases = [
+    { marker: "provider-b", providerFile: "provider-b.bin", helperUrl: "https://requested.slack.com/", label: "named" },
+    { marker: "default", providerFile: "provider.bin", helperUrl: "https://provider-b.slack.com/", label: "default" },
+  ] as const;
+  for (const scenario of cases) {
+    const homeDir = await mkdtemp(join(tmpdir(), `pdpp-slackdump-${scenario.label}-mismatch-`));
+    const cacheDir = join(homeDir, "cache");
+    const fakeSlackdump = join(homeDir, "fake-slackdump.mjs");
+    const fakeIdentityHelper = join(homeDir, "fake-slackdump-identity.mjs");
+    const callPath = join(homeDir, "calls.json");
+    const workspace = "requested";
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(join(cacheDir, "workspace.txt"), `${scenario.marker}\n`, "utf8");
+    await writeFile(
+      join(cacheDir, scenario.providerFile),
+      JSON.stringify({ Token: VALID_SLACKDUMP_TOKEN, Cookie: [{ Name: "d", Value: VALID_SLACKDUMP_COOKIE }] }),
+      "utf8"
+    );
+    await writeFile(
+      fakeSlackdump,
+      `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+writeFileSync(process.env.CALL_PATH, JSON.stringify(args));
+if (args[0] === "workspace" && args[1] === "list") process.stdout.write("${scenario.marker} =>\\n");
+`,
+      "utf8"
+    );
+    await writeFile(
+      fakeIdentityHelper,
+      `#!/usr/bin/env node
+if (process.argv[2] === "--version") { process.stdout.write("pdpp-slackdump-identity/3.1.13 github.com/rusq/slackdump/v3@v3.1.13\\n"); process.exit(0); }
+else { process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({ team_id: "T_PROVIDER_B", url: "${scenario.helperUrl}" }) + "\\n")); }
+`,
+      "utf8"
+    );
+    await chmod(fakeSlackdump, 0o755);
+    await chmod(fakeIdentityHelper, 0o755);
+    try {
+      const result = await runConnectorProtocolSubprocess({
+        allowFailedDone: true,
+        cwd: PACKAGE_ROOT,
+        entrypoint: SLACK_ENTRYPOINT,
+        env: {
+          HOME: homeDir,
+          CACHE_DIR: cacheDir,
+          CALL_PATH: callPath,
+          SLACKDUMP_BIN: fakeSlackdump,
+          SLACKDUMP_IDENTITY_BIN: fakeIdentityHelper,
+          SLACK_COOKIE: "d=supplied",
+          SLACK_TOKEN: "xoxc-supplied",
+          SLACK_WORKSPACE: workspace,
+        },
+        start: { type: "START", scope: { streams: [{ name: "messages" }] } },
+      });
+      const done = result.messages.findLast((message) => message.type === "DONE");
+      assert.equal(done?.status, "failed");
+      assert.match(done?.error?.message ?? "", /slackdump_identity_/);
+      const childArgs = JSON.parse(await readFile(callPath, "utf8")) as string[];
+      assert.equal(
+        childArgs.some((arg) => arg === "archive" || arg === "resume"),
+        false
+      );
+      await assert.rejects(readFile(join(homeDir, ".pdpp", "slackdump", workspace, "archive")), /ENOENT/);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }
 });
 
 test("runSlackdump: detects progress from row counts even when a WAL checkpoint keeps archive bytes flat", async () => {

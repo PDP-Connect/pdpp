@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const RAILWAY_TEMPLATES_CONFIG_AS_CODE_PATTERN = /Railway templates\/config-as-code expose a Dockerfile path/;
-const FROM_BASE_AS_REFERENCE_PATTERN = /FROM base AS reference/;
+const FROM_CONNECTOR_RUNTIME_AS_REFERENCE_PATTERN = /FROM connector-runtime AS reference/;
 const EXPOSE_7662_7663_PATTERN = /\nEXPOSE 7662 7663\n/;
 const AS_PORT_EXPORT_PATTERN = /export AS_PORT=\\"?\$\{PORT:-\$\{AS_PORT:-7662\}\}\\"?/;
 const EXEC_NODE_REFERENCE_INDEX_PATTERN = /exec node reference-implementation\/server\/index\.ts/;
@@ -19,7 +19,7 @@ const PATCHRIGHT_INSTALL_PATTERN = /patchright install/;
 const FROM_ANY_AS_CONSOLE_PATTERN = /FROM .* AS console/;
 const PNPM_FILTER_CONSOLE_BUILD_PATTERN = /pnpm --filter pdpp-console build/;
 const ENV_PORT_PATTERN = /ENV[\s\S]*?\n\s+PORT=/;
-const FROM_BASE_AS_RAILWAY_CORE_PATTERN = /FROM base AS railway-core/;
+const FROM_CONNECTOR_RUNTIME_AS_RAILWAY_CORE_PATTERN = /FROM connector-runtime AS railway-core/;
 const CMD_CORE_SUPERVISOR_PATTERN = /CMD \["node", "--import", "tsx", "\/app\/deploy\/railway\/core-supervisor\.ts"\]/;
 const EXPOSE_3000_PATTERN = /\nEXPOSE 3000\n/;
 const LOOPBACK_7662_PATTERN = /127\.0\.0\.1:7662/;
@@ -92,7 +92,7 @@ test("manual split-service reference Dockerfile remains a final-stage service im
   const dockerfile = read("deploy/railway/reference.Dockerfile");
 
   assert.match(dockerfile, RAILWAY_TEMPLATES_CONFIG_AS_CODE_PATTERN);
-  assert.match(dockerfile, FROM_BASE_AS_REFERENCE_PATTERN);
+  assert.match(dockerfile, FROM_CONNECTOR_RUNTIME_AS_REFERENCE_PATTERN);
   assert.match(dockerfile, EXPOSE_7662_7663_PATTERN);
   assert.match(dockerfile, AS_PORT_EXPORT_PATTERN);
   assert.match(dockerfile, EXEC_NODE_REFERENCE_INDEX_PATTERN);
@@ -107,7 +107,7 @@ test("Railway core image runs console plus loopback reference AS/RS", () => {
   const dockerfile = read("Dockerfile");
   const supervisor = read("deploy/railway/core-supervisor.ts");
 
-  assert.match(dockerfile, FROM_BASE_AS_RAILWAY_CORE_PATTERN);
+  assert.match(dockerfile, FROM_CONNECTOR_RUNTIME_AS_RAILWAY_CORE_PATTERN);
   assert.match(dockerfile, CMD_CORE_SUPERVISOR_PATTERN);
   assert.match(dockerfile, EXPOSE_3000_PATTERN);
   assert.match(supervisor, LOOPBACK_7662_PATTERN);
