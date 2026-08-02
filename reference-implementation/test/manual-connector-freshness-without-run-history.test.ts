@@ -58,7 +58,11 @@ import {
 } from "../server/ref-control.ts";
 
 const OWNER = "owner_local";
-const NOW = "2026-07-31T00:00:00.000Z";
+// Relative to the real wall clock (not a fixed calendar date) so the fixture
+// stays within the manifest's 86,400s staleness window regardless of when
+// the suite runs — a fixed past date would eventually cross that window
+// purely from clock passage, with no production freshness logic at fault.
+const NOW = new Date(Date.now() - 60_000).toISOString();
 const CONNECTOR_ID = "https://test.pdpp.dev/connectors/manual-freshness-without-run-history";
 const INSTANCE_ID = "cin_manual_freshness_without_run_history";
 const STREAM = "orders";

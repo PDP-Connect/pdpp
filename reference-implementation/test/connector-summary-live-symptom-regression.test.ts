@@ -34,7 +34,13 @@ import { closeDb, getDb, initDb } from "../server/db.ts";
 import { invalidateConnectorSummariesCache, listConnectorSummaries } from "../server/ref-control.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
-const NOW = "2026-07-31T00:00:00.000Z";
+// Relative to the real wall clock (not a fixed calendar date) so the run
+// stays within the real Amazon manifest's 86,400s staleness window
+// regardless of when the suite runs — a fixed past date would eventually
+// cross that window purely from clock passage, with no production
+// freshness logic at fault.
+const NOW = new Date(Date.now() - 60_000).toISOString();
+const RUN_OCCURRED_AT = new Date(Date.now() - 30_000).toISOString();
 const OWNER = "owner_local";
 const CONNECTOR_INSTANCE_ID = "cin_live_symptom_probe";
 
@@ -159,7 +165,7 @@ test(
   withTmpDb(async () => {
     seedConnector();
     await seedInstance();
-    await seedSuccessfulCoveredRun("run_live_symptom_1", "2026-07-31T00:05:00.000Z");
+    await seedSuccessfulCoveredRun("run_live_symptom_1", RUN_OCCURRED_AT);
 
     // Pre-condition: the terminal run.completed event's own scoped
     // convergence trigger (lib/spine.ts's emitSpineEvent) already created and
@@ -237,7 +243,7 @@ test(
   withTmpDb(async () => {
     seedConnector();
     await seedInstance();
-    await seedSuccessfulCoveredRun("run_live_symptom_2", "2026-07-31T00:05:00.000Z");
+    await seedSuccessfulCoveredRun("run_live_symptom_2", RUN_OCCURRED_AT);
 
     // First bounded cycle: establishes a current, published baseline —
     // exactly the "after successful run" state before any repair mutation.
