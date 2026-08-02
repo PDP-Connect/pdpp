@@ -45,6 +45,10 @@ const PAGE_PINNED_TAG_RE = /const PINNED_IMAGE_TAG = "sha-cc07e3a";/;
 const PAGE_REFERENCE_IMAGE_RE = /ghcr\.io\/pdp-connect\/pdpp\/reference:\$\{PINNED_IMAGE_TAG\}/;
 const PAGE_WEB_IMAGE_RE = /ghcr\.io\/pdp-connect\/pdpp\/web:\$\{PINNED_IMAGE_TAG\}/;
 const ORACLE_REJECTION_RE = /not a registry-proven artifact/;
+const REJECTED_NONEXISTENT_TAG_RE = /rejected nonexistent tag class/;
+const MUTABLE_MAIN_LATEST_TAG_RE = /must not use mutable main\/latest image tags/;
+const UNVERIFIED_ALTERNATE_TAG_RE = /an unverified alternate image tag/;
+const UNKNOWN_REPOSITORY_RE = /unknown PDPP image repository/;
 const RETIRED_OWNER_PATH_RE = /contains the retired owner path/;
 const LEGACY_OWNER_PATH = ["/", "dashboard"].join("");
 
@@ -121,25 +125,22 @@ test("artifact oracle mutation-proof: nonexistent tag in source text", () => {
         "synthetic regression input",
         `image: ghcr.io/pdp-connect/pdpp/reference:${NONEXISTENT_TAG}`
       ),
-    { message: /rejected nonexistent tag class/ }
+    { message: REJECTED_NONEXISTENT_TAG_RE }
   );
 });
 
 test("artifact oracle mutation-proof: mutable main tag in source text", () => {
-  assert.throws(
-    () =>
-      assertSourceArtifactsConsistent(
-        "synthetic regression input",
-        "image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}"
-      ),
-    { message: /must not use mutable main\/latest image tags/ }
-  );
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: testing Compose placeholder syntax
+  const composePlaceholder = "image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}";
+  assert.throws(() => assertSourceArtifactsConsistent("synthetic regression input", composePlaceholder), {
+    message: MUTABLE_MAIN_LATEST_TAG_RE,
+  });
 });
 
 test("artifact oracle mutation-proof: mutable latest tag in source text", () => {
   assert.throws(
     () => assertSourceArtifactsConsistent("synthetic regression input", "ghcr.io/pdp-connect/pdpp/web:latest"),
-    { message: /must not use mutable main\/latest image tags/ }
+    { message: MUTABLE_MAIN_LATEST_TAG_RE }
   );
 });
 
@@ -153,7 +154,7 @@ test("artifact oracle mutation-proof: cross-lineage tag mismatch between referen
           `ghcr.io/pdp-connect/pdpp/web:${UNVERIFIED_ALTERNATE_TAG}`,
         ].join("\n")
       ),
-    { message: /an unverified alternate image tag/ }
+    { message: UNVERIFIED_ALTERNATE_TAG_RE }
   );
 });
 
@@ -164,7 +165,7 @@ test("artifact oracle mutation-proof: unknown repository under the same org is r
         "synthetic regression input",
         "ghcr.io/pdp-connect/pdpp/railway-core:sha-cc07e3a"
       ),
-    { message: /unknown PDPP image repository/ }
+    { message: UNKNOWN_REPOSITORY_RE }
   );
 });
 
