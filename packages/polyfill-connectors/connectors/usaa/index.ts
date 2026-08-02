@@ -28,13 +28,19 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
   attachBodyResponseQueue,
+  type BodyResponseCandidateDiagnostic,
   type BodyResponseDiagnostics,
   type BodyResponseQueue,
+  type SafeArtifactResponseMetadata,
+  sanitizeArtifactResponseMetadata,
   waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
 import {
+  type BrowserSurfaceCandidateManifest,
+  type BrowserSurfaceCapturePhase,
   type BrowserSurfaceManagedState,
   browserSurfaceManagedState,
+  buildBrowserSurfaceCandidateManifest,
   buildBrowserSurfaceDiagnostic,
 } from "../../src/browser-surface-diagnostic.ts";
 import {
@@ -154,14 +160,13 @@ const KEY_TYPE_DELAY_MS = 30;
 const BACKFILL_17MO = PARSERS_BACKFILL_17MO;
 const INCREMENTAL_OVERLAP_MS = PARSERS_INCREMENTAL_OVERLAP_MS;
 const ID_TEXT_SNIP = 160;
-const HTML_PREVIEW_MAX = 600;
 // Playwright's locator.click() timeout message is a multi-line call log
 // (e.g. "waiting for locator(...) - locator resolved to <button disabled...>
 // - element is not enabled - retrying click action ..."), routinely 400+
 // chars. ID_TEXT_SNIP (160) is sized for short identifiers/filenames and
 // was cutting this off before the actionability state (disabled/hidden/
 // covered) — the actual cause of the timeout — ever appeared. Sized like
-// HTML_PREVIEW_MAX so the full call log survives into diagnostics.
+// CLICK_ERROR_SNIP so the full call log survives into diagnostics.
 const CLICK_ERROR_SNIP = 600;
 export const USAA_FALLBACK_SERIALIZED_BYTES_MAX = 8 * 1024;
 const USAA_ORIGIN = "https://www.usaa.com";
@@ -682,12 +687,14 @@ function exportFailureDiagnostics(
     const candidates = sanitizeExportAffordanceCandidates(
       lastDiag?.no_export_observation?.export_affordance_candidates
     );
+    const surfaceManifest = lastDiag?.no_export_observation?.surface_manifest;
     const accountPageIdentity = lastDiag ? diagnosticAccountPageIdentity(lastDiag) : null;
     return {
       ...terminal,
       ...(accountPageIdentity ? { account_page_identity: accountPageIdentity } : {}),
       browser_surface: browserSurface,
       ...(candidates.length ? { export_affordance_candidates: candidates } : {}),
+      ...(surfaceManifest ? { surface_manifest: surfaceManifest } : {}),
     };
   }
   return {
@@ -1206,11 +1213,28 @@ export function classifyUsaaNoExportRoute(
   }
 }
 
+type NoExportObservationCounts = Pick<
+  NoExportAffordanceObservation,
+  | "account_detail_marker_count"
+  | "export_affordance_candidates"
+  | "navigation_marker_count"
+  | "target_count"
+  | "transaction_marker_count"
+>;
+
 async function captureNoExportAffordanceObservation(
   page: Page,
-  requestedUrl?: string
+  requestedUrl?: string,
+  capture: DriveExportOptions["capture"] = null
 ): Promise<NoExportAffordanceObservation> {
-  const counts = await page
+  const emptyCounts: NoExportObservationCounts = {
+    account_detail_marker_count: 0,
+    export_affordance_candidates: [],
+    navigation_marker_count: 0,
+    target_count: 0,
+    transaction_marker_count: 0,
+  };
+  const rawCounts = await page
     .evaluate(
       ({ accountDetail, exportAffordance, navigation, transaction }) => {
         // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
@@ -1242,24 +1266,22 @@ async function captureNoExportAffordanceObservation(
         transaction: USAA_TRANSACTION_MARKER_SELECTOR,
       }
     )
-    .catch(() => ({
-      account_detail_marker_count: 0,
-      export_affordance_candidates: [] as NoExportAffordanceObservation["export_affordance_candidates"],
-      navigation_marker_count: 0,
-      target_count: 0,
-      transaction_marker_count: 0,
-    }));
+    .catch((): NoExportObservationCounts | null => null);
+  const counts: NoExportObservationCounts =
+    rawCounts && typeof rawCounts === "object" && !Array.isArray(rawCounts) ? rawCounts : emptyCounts;
   const hasKnownAccountOrTransactionMarker =
     counts.account_detail_marker_count > 0 || counts.transaction_marker_count > 0;
   const [firstCandidate] = counts.export_affordance_candidates ?? [];
   const affordanceDisabled =
     counts.target_count > 0 && Boolean(firstCandidate?.disabled || firstCandidate?.aria_disabled);
   const finalUrl = page.url();
+  const surfaceManifest = await captureSafeSurfaceManifest(page, capture, "after_export_affordance_probe");
   return {
     ...counts,
     affordance_disabled: affordanceDisabled,
     account_page_identity: classifyUsaaAccountPageIdentity(requestedUrl, finalUrl),
     route: classifyUsaaNoExportRoute(finalUrl, hasKnownAccountOrTransactionMarker, requestedUrl),
+    surface_manifest: surfaceManifest,
   };
 }
 
@@ -1323,10 +1345,177 @@ function capturePageDiagnostics(page: Page): Promise<PageDiagnostics | null> {
     .catch((): PageDiagnostics | null => null);
 }
 
+/**
+ * Capture only bounded selector-state evidence from the current page. The
+ * browser-side probe converts labels to fixed categories and drops identifiers,
+ * hrefs, and text before the result crosses the Playwright boundary. The
+ * shared manifest builder applies the same closed shape again in Node.
+ */
+async function captureSafeSurfaceManifest(
+  page: Page,
+  capture: DriveExportOptions["capture"],
+  phase: BrowserSurfaceCapturePhase,
+  labelSuffix?: string
+): Promise<BrowserSurfaceCandidateManifest> {
+  const raw = await page
+    .evaluate(
+      ({ exportAffordance }) => {
+        // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context; module-scoped regexes cannot cross the Playwright bridge.
+        const SAFE_TOKEN_RE = /^[A-Za-z][A-Za-z_-]{0,47}$/u;
+        // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context; module-scoped regexes cannot cross the Playwright bridge.
+
+        const safeToken = (value: string | null): string | null => {
+          if (!value) {
+            return null;
+          }
+          const token = value.trim();
+          return SAFE_TOKEN_RE.test(token) ? token.toLowerCase() : null;
+        };
+        const safeName = (value: string | null): string | null => {
+          if (!value) {
+            return null;
+          }
+          const name = value.trim();
+          return SAFE_TOKEN_RE.test(name) ? name : null;
+        };
+        const classTokens = (element: HTMLElement): string[] => {
+          const out: string[] = [];
+          for (const rawToken of [...element.classList].slice(0, 12)) {
+            const token = safeToken(rawToken);
+            if (token && !out.includes(token)) {
+              out.push(token);
+            }
+            if (out.length >= 8) {
+              break;
+            }
+          }
+          return out;
+        };
+        const textCategory = (value: string | null): string => {
+          const text = value?.trim().toLowerCase() ?? "";
+          if (!text) {
+            return "empty";
+          }
+          if (text.includes("export")) {
+            return "export";
+          }
+          if (text.includes("download")) {
+            return "download";
+          }
+          if (text.includes("option") || text.includes("more")) {
+            return "options";
+          }
+          if (text.includes("csv")) {
+            return "csv";
+          }
+          if (text.includes("pdf")) {
+            return "pdf";
+          }
+          return "other";
+        };
+        const visible = (element: HTMLElement): boolean => {
+          const style = window.getComputedStyle(element);
+          return element.getClientRects().length > 0 && style.display !== "none" && style.visibility !== "hidden";
+        };
+        const controlText = (element: HTMLElement): string | null =>
+          element.getAttribute("aria-label") ?? element.getAttribute("title") ?? element.textContent;
+        const candidateElements = [
+          ...document.querySelectorAll<HTMLElement>(
+            'button, [role="button"], a, input[type="button"], input[type="submit"], [role="menuitem"]'
+          ),
+        ];
+        const candidates = candidateElements
+          .map((element) => {
+            const category = textCategory(controlText(element));
+            const classTokensValue = classTokens(element);
+            const classHint = classTokensValue.some(
+              (token) =>
+                token.includes("export") ||
+                token.includes("download") ||
+                token.includes("csv") ||
+                token.includes("pdf") ||
+                token.includes("option")
+            );
+            const href = element.getAttribute("href")?.toLowerCase() ?? "";
+            const hrefPath = href.split("?")[0]?.split("#")[0] ?? "";
+            const isExport =
+              element.matches(exportAffordance) ||
+              category === "export" ||
+              classTokensValue.some((token) => token.includes("export"));
+            const isDownload =
+              category === "download" ||
+              category === "csv" ||
+              category === "pdf" ||
+              category === "options" ||
+              classHint ||
+              element.hasAttribute("download") ||
+              hrefPath.endsWith(".csv") ||
+              hrefPath.endsWith(".pdf");
+            if (!(isExport || isDownload)) {
+              return null;
+            }
+            return {
+              aria_disabled: element.getAttribute("aria-disabled") === "true",
+              class_tokens: classTokensValue,
+              disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
+              kind: isExport ? "export" : "download",
+              role: safeToken(element.getAttribute("role")),
+              tag: safeToken(element.tagName),
+              text_category: category,
+              type: safeToken(element.getAttribute("type")),
+              visible: visible(element),
+            };
+          })
+          .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+        const dialogElements = [
+          ...document.querySelectorAll<HTMLElement>(
+            '[role="dialog"] button, [role="dialog"] [role="button"], [role="dialog"] input, [role="dialog"] select, [role="dialog"] [role="menuitem"], [role="dialog"] a'
+          ),
+        ];
+        const controls = dialogElements.map((element) => ({
+          aria_disabled: element.getAttribute("aria-disabled") === "true",
+          class_tokens: classTokens(element),
+          disabled: "disabled" in element && Boolean((element as HTMLButtonElement).disabled),
+          name: safeName(element.getAttribute("name") ?? element.getAttribute("aria-label")),
+          role: safeToken(element.getAttribute("role")),
+          tag: safeToken(element.tagName),
+          text_category: textCategory(controlText(element)),
+          type: safeToken(element.getAttribute("type")),
+          visible: visible(element),
+        }));
+        return {
+          candidateCount: candidates.length,
+          candidates: candidates.slice(0, 32),
+          controlCount: controls.length,
+          controls: controls.slice(0, 24),
+        };
+      },
+      { exportAffordance: USAA_EXPORT_AFFORDANCE_SELECTOR }
+    )
+    .catch((): null => null);
+  const manifest = buildBrowserSurfaceCandidateManifest({
+    captureState: raw ? "captured" : "unavailable",
+    candidateCount: raw?.candidateCount,
+    candidates: raw?.candidates,
+    controlCount: raw?.controlCount,
+    controls: raw?.controls,
+    phase,
+  });
+  if (capture) {
+    try {
+      capture.captureHttp(`usaa-surface-${phase}${labelSuffix ? `-${labelSuffix}` : ""}`, manifest);
+    } catch {
+      // Capture is best-effort and must never change connector behavior.
+    }
+  }
+  return manifest;
+}
+
 async function locateExportPage(
   page: Page,
   accountUrl: string,
-  settleDelayMs: number
+  settleDelayMs: number,
+  capture: DriveExportOptions["capture"]
 ): Promise<LocatedExportPage | null> {
   const candidates = [accountUrl];
 
@@ -1347,20 +1536,20 @@ async function locateExportPage(
     await politeDelay(settleDelayMs);
     const finalUrl = page.url();
     if (LOGON_REDIRECT_RE.test(finalUrl)) {
-      throw new SessionDeadRedirectError(await captureNoExportAffordanceObservation(page));
+      throw new SessionDeadRedirectError(await captureNoExportAffordanceObservation(page, undefined, capture));
     }
     if (classifyUsaaAccountPageIdentity(accountUrl, finalUrl) !== "exact") {
       continue;
     }
+    await captureSafeSurfaceManifest(page, capture, "account_page_settled");
     const btn = await findExportAffordance(page);
+    await captureSafeSurfaceManifest(page, capture, "after_export_affordance_probe");
     if (btn) {
       return { url: finalUrl, export: btn };
     }
   }
   return null;
 }
-
-const DIALOG_HTML_WS_RE = /\s+/g;
 
 async function emitExportClickFailedDiagnostic(
   page: Page,
@@ -1379,38 +1568,7 @@ async function emitExportClickFailedDiagnostic(
   });
 }
 
-/**
- * Redacted, bounded structural evidence for `export_dialog_unexpected_shape` — the
- * one diagnostic phase this file has no retained live DOM evidence for (the
- * 2026-07-31 gate recorded only the redacted phase). Every OTHER diagnostic
- * capture in this file (the
- * `dialog_html_preview` passed to `onDiagnostics`, and every
- * `captureExportCheckpoint` call) is either bounded to `HTML_PREVIEW_MAX`
- * chars before it reaches durable evidence, or gated behind
- * `options.capture` (the operator-opt-in `PDPP_CAPTURE_FIXTURES` /
- * `PDPP_CAPTURE_ON_FAILURE` fixture-capture session — see
- * ../../src/fixture-capture.ts). On the 2026-07-31 live run neither capture
- * flag was set, so when the dialog took this unexpected shape the ladder's
- * own diagnostics were fully redacted before they reached the DB
- * (`sanitizeDiagnosticInfo` nulls `dialog_html_preview` and every candidate
- * list), and no `dom/*.html` checkpoint existed to fall back on — the
- * failure was real and reproducible in the live DB, but the DOM shape that
- * caused it is unrecoverable after the fact.
- *
- * This function closes that specific gap without turning on general-purpose
- * capture (a shared-runtime, cross-connector policy change, out of scope for
- * a provider-specific fix): it writes ONE bounded, path-fixed, filename-fixed
- * file per process — `<capture root>/usaa/diagnostics/export-dialog-unexpected-shape.json`
- * — that a later run silently overwrites, so disk usage never grows
- * unbounded regardless of how many times this phase recurs. It fires
- * unconditionally at this one boundary (not a general "always capture
- * everything" change), is best-effort (a write failure is swallowed exactly
- * like every other capture call in this file — capture must never fail a
- * run). Titles, HTML, labels, classes, paths, and identifiers are redacted
- * before serialization, and the final UTF-8 JSON is hard-capped. The next
- * live occurrence leaves a retrievable, git-ignored structural receipt even
- * with fixture capture off.
- */
+/** Write one bounded structural receipt for an unexpected dialog shape. */
 const DEFAULT_FALLBACK_DIAGNOSTIC_ROOT = join(new URL("../../fixtures", import.meta.url).pathname);
 
 /** Read at call time (not module load) so PDPP_CAPTURE_ROOT_DIR set after
@@ -1454,6 +1612,7 @@ function redactFallbackObservation(observation: NoExportAffordanceObservation): 
     })),
     navigation_marker_count: observation.navigation_marker_count,
     route: observation.route,
+    ...(observation.surface_manifest ? { surface_manifest: observation.surface_manifest } : {}),
     target_count: observation.target_count,
     transaction_marker_count: observation.transaction_marker_count,
   };
@@ -1473,7 +1632,10 @@ function redactFallbackSurfaceControls(controls: BoundedSurfaceControl[]): Bound
   }));
 }
 
-async function writeExportDialogUnexpectedShapeFallback(rootOverride: string | undefined): Promise<void> {
+async function writeExportDialogUnexpectedShapeFallback(
+  rootOverride: string | undefined,
+  surfaceManifest: BrowserSurfaceCandidateManifest
+): Promise<void> {
   try {
     const dir = join(fallbackDiagnosticRoot(rootOverride), "usaa", "diagnostics");
     await mkdir(dir, { recursive: true });
@@ -1484,6 +1646,7 @@ async function writeExportDialogUnexpectedShapeFallback(rootOverride: string | u
         dialog_html_preview: null,
         page_title: null,
         phase: "export_dialog_unexpected_shape",
+        surface_manifest: surfaceManifest,
         note: "Redacted structural fallback; overwritten on every occurrence.",
       })
     );
@@ -1505,40 +1668,32 @@ interface BoundedSurfaceControl {
   visible: boolean;
 }
 
-/** Capture only bounded structural control facts after an export affordance is
- * absent. The in-memory probe is diagnostic-only; its durable fallback is
- * redacted before it is serialized and never drives a selector or click. */
+/** Capture only booleans for the legacy fallback field; useful selector facts
+ * live in the shared safe surface manifest above. */
 async function captureBoundedSurfaceControls(page: Page): Promise<BoundedSurfaceControl[]> {
   const controls = await page
-    .evaluate(() => {
-      const visibleControls = [...document.querySelectorAll<HTMLElement>('button, [role="button"], a')]
-        .slice(0, 24)
-        .map((el): BoundedSurfaceControl => {
-          const href = el.getAttribute("href");
-          let hrefPath: string | null = null;
-          if (href) {
-            try {
-              hrefPath = new URL(href, location.href).pathname.slice(0, 120);
-            } catch {
-              hrefPath = null;
-            }
-          }
-          return {
-            aria_disabled: el.getAttribute("aria-disabled") === "true",
-            class_name: (typeof el.className === "string" ? el.className : "").slice(0, 100),
-            disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
-            href_path: hrefPath,
-            label: (el.getAttribute("aria-label") || el.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80),
-            role: el.getAttribute("role"),
-            tag: el.tagName,
-            type: el.getAttribute("type"),
-            visible: el.offsetParent !== null,
-          };
-        });
-      return visibleControls;
-    })
+    .evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('button, [role="button"], a')].slice(0, 24).map((el) => ({
+        aria_disabled: el.getAttribute("aria-disabled") === "true",
+        disabled: "disabled" in el ? Boolean((el as HTMLButtonElement).disabled) : false,
+        visible: el.getClientRects().length > 0,
+      }))
+    )
     .catch((): BoundedSurfaceControl[] => []);
-  return Array.isArray(controls) ? controls : [];
+  if (!Array.isArray(controls)) {
+    return [];
+  }
+  return controls.map((control) => ({
+    aria_disabled: control.aria_disabled === true,
+    class_name: "",
+    disabled: control.disabled === true,
+    href_path: null,
+    label: "",
+    role: null,
+    tag: "",
+    type: null,
+    visible: control.visible === true,
+  }));
 }
 
 /**
@@ -1572,26 +1727,18 @@ async function writeNoExportAffordanceFallback(
   }
 }
 
-async function readDialogHtmlPreview(page: Page): Promise<string | null> {
-  const dialogHtml = await page
-    .locator('[role="dialog"]')
-    .first()
-    .innerHTML()
-    .catch((): string | null => null);
-  return dialogHtml ? dialogHtml.replace(DIALOG_HTML_WS_RE, " ").slice(0, HTML_PREVIEW_MAX) : null;
-}
-
 function emitDialogUnexpectedShapeDiagnostic(
   base: PageDiagnostics | null,
-  preview: string | null,
   onDiagnostics: NonNullable<DriveExportOptions["onDiagnostics"]>,
-  accountPageIdentity: UsaaAccountPageIdentity
+  accountPageIdentity: UsaaAccountPageIdentity,
+  surfaceManifest: BrowserSurfaceCandidateManifest
 ): void {
   onDiagnostics({
     account_page_identity: accountPageIdentity,
     phase: "export_dialog_unexpected_shape",
+    surface_manifest: surfaceManifest,
     diag: base
-      ? { ...base, dialog_html_preview: preview }
+      ? { ...base, dialog_html_preview: null }
       : {
           url: "",
           title: "",
@@ -1599,7 +1746,7 @@ function emitDialogUnexpectedShapeDiagnostic(
           export_candidates: [],
           nav_candidates: [],
           dialogs_open: 0,
-          dialog_html_preview: preview,
+          dialog_html_preview: null,
         },
   });
 }
@@ -1639,19 +1786,16 @@ async function openExportDialog(
     .locator('[role="dialog"] select[name="selectionType"], select[name="selectionType"]')
     .count()
     .catch((): number => 0);
+  const dialogManifest = await captureSafeSurfaceManifest(page, options.capture ?? null, "export_dialog");
   if (!selectCount) {
-    // The dialog HTML preview is retained only for the bounded in-memory
-    // diagnostic. The fallback capture fires unconditionally but never
-    // receives DOM/title evidence (see writeExportDialogUnexpectedShapeFallback).
-    const preview = await readDialogHtmlPreview(page);
-    await writeExportDialogUnexpectedShapeFallback(options.fallbackDiagnosticRootOverride);
+    await writeExportDialogUnexpectedShapeFallback(options.fallbackDiagnosticRootOverride, dialogManifest);
     if (onDiagnostics) {
       const base = await capturePageDiagnostics(page);
       emitDialogUnexpectedShapeDiagnostic(
         base,
-        preview,
         onDiagnostics,
-        classifyUsaaAccountPageIdentity(accountUrl, page.url())
+        classifyUsaaAccountPageIdentity(accountUrl, page.url()),
+        dialogManifest
       );
     }
     // Capture before Escape: the keypress below can dismiss/mutate the
@@ -1682,23 +1826,33 @@ async function fillExportDateRange(page: Page, sinceDate: string, untilDate: str
   await politeDelay(EXPORT_STATE_DELAY_MS);
 }
 
-async function captureExportCheckpoint(page: Page, options: DriveExportOptions, suffix: string): Promise<void> {
-  if (!(options.capture && options.captureLabel)) {
-    return;
+function captureExportCheckpoint(
+  page: Page,
+  options: DriveExportOptions,
+  suffix: string
+): Promise<BrowserSurfaceCandidateManifest | null> {
+  if (!options.capture) {
+    return Promise.resolve(null);
   }
-  await options.capture.captureDom(page, `${options.captureLabel}-${suffix}`).catch((): undefined => undefined);
+  return captureSafeSurfaceManifest(page, options.capture, "export_checkpoint", suffix);
 }
 
 type ExportSubmitOutcome =
-  | { buffer: Buffer; kind: "artifact"; suggestedFilename: string | null }
+  | {
+      artifact: BodyResponseDiagnostics;
+      buffer: Buffer;
+      download: DownloadDiagnostics | null;
+      kind: "artifact";
+      suggestedFilename: string | null;
+    }
   | {
       kind: "artifact_failed";
       artifact: BodyResponseDiagnostics;
       download: DownloadDiagnostics | null;
       error: string;
     }
-  | { kind: "dialog_error"; message: string }
-  | { kind: "empty"; message: string };
+  | { artifact: BodyResponseDiagnostics; kind: "dialog_error"; message: string }
+  | { artifact: BodyResponseDiagnostics; kind: "empty"; message: string };
 
 /**
  * Error subclass used by `waitForCsvArtifact` so failure callers can read
@@ -1785,7 +1939,7 @@ async function snapshotDownloadFailure(
 async function waitForCsvArtifact(
   downloadQueue: DownloadQueue,
   responseQueue: BodyResponseQueue
-): Promise<{ buffer: Buffer; suggestedFilename: string | null }> {
+): Promise<{ buffer: Buffer; download: DownloadDiagnostics | null; suggestedFilename: string | null }> {
   const responsePromise = responseQueue.waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   const result = await Promise.any([
@@ -1797,7 +1951,7 @@ async function waitForCsvArtifact(
     // detach() settles it immediately, so it must have a handler or that
     // rejection is unhandled.
     downloadPromise.catch((): undefined => undefined);
-    return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
+    return { buffer: result.response.body, download: null, suggestedFilename: result.response.suggestedFilename };
   }
   const { download } = result;
   try {
@@ -1806,7 +1960,18 @@ async function waitForCsvArtifact(
       // The response arm lost the race and is never consumed on this path;
       // neutralize it so detach()'s now-immediate rejection isn't unhandled.
       responsePromise.catch((): undefined => undefined);
-      return { buffer, suggestedFilename: download.suggestedFilename() };
+      const baseDiag = await snapshotDownloadFailure(download).catch((): DownloadDiagnostics => ({}));
+      return {
+        buffer,
+        download: {
+          ...baseDiag,
+          bytes: buffer.length,
+          source: outcome.source,
+          saveAsError: outcome.saveAsError ?? null,
+          streamError: outcome.streamError ?? null,
+        },
+        suggestedFilename: download.suggestedFilename(),
+      };
     }
     // saveAs + createReadStream both produced zero bytes. Capture the
     // download-side evidence (URL, suggested filename, remote failure)
@@ -1821,7 +1986,7 @@ async function waitForCsvArtifact(
     };
     const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
     if (response) {
-      return { buffer: response.body, suggestedFilename: response.suggestedFilename };
+      return { buffer: response.body, download: downloadDiag, suggestedFilename: response.suggestedFilename };
     }
     throw new CsvArtifactError("download_empty", downloadDiag);
   } catch (err) {
@@ -1836,7 +2001,7 @@ async function waitForCsvArtifact(
     };
     const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
     if (response) {
-      return { buffer: response.body, suggestedFilename: response.suggestedFilename };
+      return { buffer: response.body, download: downloadDiag, suggestedFilename: response.suggestedFilename };
     }
     // biome-ignore lint/style/useErrorCause: CsvArtifactError's 3rd constructor arg forwards to super(message, { cause })
     throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag, err);
@@ -1856,7 +2021,10 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
     const dialogMessage = page.locator(EXPORT_DIALOG_MESSAGE_SELECTOR).first();
     const readDialogOutcome = async (): Promise<ExportSubmitOutcome> => {
       const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
-      return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
+      const artifact = responseQueue.diagnostics();
+      return isNoDataExportMessage(message)
+        ? { artifact, kind: "empty", message }
+        : { artifact, kind: "dialog_error", message };
     };
     const errorPromise = page
       .locator(EXPORT_DIALOG_MESSAGE_SELECTOR)
@@ -1868,7 +2036,9 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
     return await Promise.race<ExportSubmitOutcome>([
       waitForCsvArtifact(downloadQueue, responseQueue).then(
         (artifact): ExportSubmitOutcome => ({
+          artifact: responseQueue.diagnostics(),
           buffer: artifact.buffer,
+          download: artifact.download,
           kind: "artifact",
           suggestedFilename: artifact.suggestedFilename,
         })
@@ -1888,6 +2058,67 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
   }
 }
 
+function safeResponseCandidateMetadata(candidate: BodyResponseCandidateDiagnostic): SafeArtifactResponseMetadata {
+  return sanitizeArtifactResponseMetadata({
+    bytes: candidate.bodyBytes,
+    contentDisposition: candidate.contentDisposition,
+    contentType: candidate.contentType,
+    csvHeader: candidate.csvHeader,
+    method: candidate.method,
+    pdfMagic: candidate.pdfMagic,
+    status: candidate.status,
+    url: candidate.url,
+  });
+}
+
+/** Persist only closed response/download metadata; never the artifact body. */
+function captureExportArtifactEvidence(capture: DriveExportOptions["capture"], outcome: ExportSubmitOutcome): void {
+  if (!capture) {
+    return;
+  }
+  const responseCandidates = outcome.artifact.candidates.slice(0, 20).map(safeResponseCandidateMetadata);
+  const matched = outcome.artifact.candidates.find((candidate) => candidate.reason === "matched");
+  const artifact =
+    outcome.kind === "artifact"
+      ? sanitizeArtifactResponseMetadata({
+          body: outcome.buffer,
+          contentDisposition: matched?.contentDisposition,
+          contentType: matched?.contentType,
+          csvHeader: matched?.csvHeader,
+          filename: outcome.suggestedFilename,
+          method: matched?.method,
+          pdfMagic: matched?.pdfMagic,
+          status: matched?.status,
+          url: matched?.url,
+        })
+      : null;
+  const downloadOutcome = outcome.kind === "artifact" || outcome.kind === "artifact_failed" ? outcome.download : null;
+  const download = downloadOutcome
+    ? sanitizeArtifactResponseMetadata({
+        bytes: downloadOutcome.bytes,
+        filename: downloadOutcome.suggestedFilename,
+        url: downloadOutcome.url,
+      })
+    : null;
+  try {
+    capture.captureHttp("usaa-export-artifact-metadata", {
+      artifact,
+      download,
+      phase: outcome.kind,
+      response_candidates: responseCandidates,
+      response_summary: {
+        candidate_count: outcome.artifact.candidates.length,
+        cdp_ready: outcome.artifact.cdpReady,
+        total_cdp_requests_started: outcome.artifact.totalCdpRequestsStarted,
+        total_cdp_responses_seen: outcome.artifact.totalCdpResponsesSeen,
+        total_responses_seen: outcome.artifact.totalResponsesSeen,
+      },
+    });
+  } catch {
+    // Capture is best-effort and must never change connector behavior.
+  }
+}
+
 async function emitNoExportAffordanceDiagnostic(
   page: Page,
   options: DriveExportOptions,
@@ -1895,7 +2126,7 @@ async function emitNoExportAffordanceDiagnostic(
   requestedUrl?: string
 ): Promise<void> {
   await captureExportCheckpoint(page, options, checkpointSuffix);
-  const noExportObservation = await captureNoExportAffordanceObservation(page, requestedUrl);
+  const noExportObservation = await captureNoExportAffordanceObservation(page, requestedUrl, options.capture ?? null);
   await writeNoExportAffordanceFallback(page, noExportObservation, options.fallbackDiagnosticRootOverride);
   if (options.onDiagnostics) {
     options.onDiagnostics({
@@ -1918,13 +2149,92 @@ async function noExportAffordanceFailure(
   return { kind: "failed" };
 }
 
+type DialogExportOutcome = Extract<ExportSubmitOutcome, { kind: "dialog_error" | "empty" }>;
+
+async function finishDialogExportOutcome(
+  page: Page,
+  options: DriveExportOptions,
+  tempDir: string,
+  outcome: DialogExportOutcome
+): Promise<DriveExportResult> {
+  rmSync(tempDir, { recursive: true, force: true });
+  const surfaceManifest = await captureExportCheckpoint(
+    page,
+    options,
+    outcome.kind === "empty" ? "source-empty" : "dialog-error"
+  );
+  let dialogDiag: PageDiagnostics | null = null;
+  if (outcome.kind === "dialog_error" && options.onDiagnostics) {
+    dialogDiag = await capturePageDiagnostics(page);
+  }
+  await page
+    .locator('[role="dialog"] #export-cancel-button')
+    .click()
+    .catch((): undefined => undefined);
+  if (outcome.kind === "dialog_error" && options.onDiagnostics) {
+    options.onDiagnostics({
+      diag: dialogDiag,
+      error: outcome.message,
+      phase: "export_dialog_error",
+      ...(surfaceManifest ? { surface_manifest: surfaceManifest } : {}),
+    });
+  }
+  return outcome.kind === "empty" ? { kind: "empty" } : { kind: "failed" };
+}
+
+async function finishFailedExportOutcome(
+  page: Page,
+  options: DriveExportOptions,
+  tempDir: string,
+  outcome: Extract<ExportSubmitOutcome, { kind: "artifact_failed" }>
+): Promise<DriveExportResult> {
+  rmSync(tempDir, { recursive: true, force: true });
+  const surfaceManifest = await captureExportCheckpoint(page, options, "artifact-failed");
+  if (options.onDiagnostics) {
+    const diag = await capturePageDiagnostics(page);
+    options.onDiagnostics({
+      artifact: outcome.artifact,
+      diag,
+      download: outcome.download,
+      error: outcome.error,
+      phase: "export_artifact_wait_failed",
+      ...(surfaceManifest ? { surface_manifest: surfaceManifest } : {}),
+    });
+  }
+  return { kind: "failed" };
+}
+
+async function finishExportOutcome(
+  page: Page,
+  options: DriveExportOptions,
+  tempDir: string,
+  outcome: ExportSubmitOutcome
+): Promise<DriveExportResult> {
+  captureExportArtifactEvidence(options.capture ?? null, outcome);
+  if (outcome.kind === "empty" || outcome.kind === "dialog_error") {
+    return finishDialogExportOutcome(page, options, tempDir, outcome);
+  }
+  if (outcome.kind === "artifact_failed") {
+    return finishFailedExportOutcome(page, options, tempDir, outcome);
+  }
+  const suggested = (outcome.suggestedFilename || "usaa-export.csv").replace(UNSAFE_FILENAME_RE, "_");
+  const targetPath = join(tempDir, suggested);
+  await writeFile(targetPath, outcome.buffer);
+  return { kind: "artifact", path: targetPath };
+}
+
 export async function driveExport(
   page: Page,
   accountUrl: string,
   options: DriveExportOptions
 ): Promise<DriveExportResult> {
-  const { sinceDate, untilDate, onDiagnostics } = options;
-  const located = await locateExportPage(page, accountUrl, options.settleDelayMs ?? ACCOUNT_SETTLE_DELAY_MS);
+  const { sinceDate, untilDate } = options;
+  const located = await locateExportPage(
+    page,
+    accountUrl,
+    options.settleDelayMs ?? ACCOUNT_SETTLE_DELAY_MS,
+    options.capture ?? null
+  );
   if (!located) {
     return noExportAffordanceFailure(page, options, accountUrl);
   }
@@ -1939,41 +2249,7 @@ export async function driveExport(
 
   const tempDir = mkdtempSync(join(tmpdir(), "usaa-export-"));
   const outcome = await submitExportAndAwait(page);
-  if (outcome.kind === "empty" || outcome.kind === "dialog_error") {
-    rmSync(tempDir, { recursive: true, force: true });
-    await captureExportCheckpoint(page, options, outcome.kind === "empty" ? "source-empty" : "dialog-error");
-    let dialogDiag: PageDiagnostics | null = null;
-    if (outcome.kind === "dialog_error" && onDiagnostics) {
-      dialogDiag = await capturePageDiagnostics(page);
-    }
-    await page
-      .locator('[role="dialog"] #export-cancel-button')
-      .click()
-      .catch((): undefined => undefined);
-    if (outcome.kind === "dialog_error" && onDiagnostics) {
-      onDiagnostics({ diag: dialogDiag, error: outcome.message, phase: "export_dialog_error" });
-    }
-    return outcome.kind === "empty" ? { kind: "empty" } : { kind: "failed" };
-  }
-  if (outcome.kind === "artifact_failed") {
-    rmSync(tempDir, { recursive: true, force: true });
-    await captureExportCheckpoint(page, options, "artifact-failed");
-    if (onDiagnostics) {
-      const diag = await capturePageDiagnostics(page);
-      onDiagnostics({
-        artifact: outcome.artifact,
-        diag,
-        download: outcome.download,
-        error: outcome.error,
-        phase: "export_artifact_wait_failed",
-      });
-    }
-    return { kind: "failed" };
-  }
-  const suggested = (outcome.suggestedFilename || "usaa-export.csv").replace(UNSAFE_FILENAME_RE, "_");
-  const targetPath = join(tempDir, suggested);
-  await writeFile(targetPath, outcome.buffer);
-  return { kind: "artifact", path: targetPath };
+  return finishExportOutcome(page, options, tempDir, outcome);
 }
 
 // parseCsv + rowsToTransactions live in ./parsers.ts.
@@ -2058,11 +2334,6 @@ export type AttemptOutcome =
   | { kind: "session_dead" }
   | { kind: "success"; csvPath: string };
 
-function exportCaptureLabel(a: DashboardAccount, sinceDate: string, untilDate: string): string {
-  const account = `${a.name ?? a.account_type}-${a.last_four ?? "unknown"}`;
-  return `transaction-export-${account}-${sinceDate}-to-${untilDate}`;
-}
-
 /** Run one iteration of the backfill ladder: drive export + translate errors. */
 export async function runSingleLadderAttempt({
   deps,
@@ -2091,7 +2362,6 @@ export async function runSingleLadderAttempt({
       untilDate: todayIso,
       accountType: a.account_type,
       capture: deps.capture ?? null,
-      captureLabel: exportCaptureLabel(a, sinceDate, todayIso),
       onDiagnostics,
       ...(settleDelayMs === undefined ? {} : { settleDelayMs }),
     });

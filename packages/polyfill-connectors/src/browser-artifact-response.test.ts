@@ -5,7 +5,11 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import type { BrowserContext, CDPSession, Page, Response } from "playwright";
-import { attachBodyResponseQueue, isLikelyPdfResponseBody } from "./browser-artifact-response.ts";
+import {
+  attachBodyResponseQueue,
+  isLikelyPdfResponseBody,
+  sanitizeArtifactResponseMetadata,
+} from "./browser-artifact-response.ts";
 
 type FakeCdpSession = CDPSession & { emitCdp: (event: string, payload: unknown) => void };
 
@@ -239,4 +243,29 @@ test("a fresh attach after detach starts its counters at zero — prior attempt'
   assert.equal(secondDiag.totalResponsesSeen, 0);
   assert.deepEqual(secondDiag.candidates, []);
   secondQueue.detach();
+});
+
+test("artifact metadata preserves response shape while dropping URLs, identifiers, filenames, and bytes", () => {
+  const metadata = sanitizeArtifactResponseMetadata({
+    body: Buffer.from("Date,Description,Amount\n2026-01-01,PRIVATE MERCHANT,10.00\n"),
+    contentDisposition: 'attachment; filename="statement-account-123.csv"',
+    contentType: "text/csv; charset=utf-8",
+    method: "post",
+    status: 200,
+    url: "https://www.usaa.com/export/account-123?accountId=SECRET&token=COOKIE",
+  });
+
+  assert.deepEqual(metadata, {
+    byte_count: 58,
+    content_disposition: "attachment",
+    content_type: "text/csv",
+    csv_header: "present",
+    filename_shape: ".csv",
+    method: "POST",
+    path_shape: "/export/[id]",
+    pdf_magic: "absent",
+    status: 200,
+  });
+  const serialized = JSON.stringify(metadata);
+  assert.doesNotMatch(serialized, /PRIVATE MERCHANT|account-123|SECRET|COOKIE|https?:\/\//);
 });

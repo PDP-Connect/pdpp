@@ -7,7 +7,11 @@
 
 import type { Locator } from "playwright";
 import type { BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
-import type { BrowserSurfaceDiagnostic, BrowserSurfaceRoute } from "../../src/browser-surface-diagnostic.ts";
+import type {
+  BrowserSurfaceCandidateManifest,
+  BrowserSurfaceDiagnostic,
+  BrowserSurfaceRoute,
+} from "../../src/browser-surface-diagnostic.ts";
 import type { RecordData } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import type { StatementContentFingerprint } from "../../src/statement-content-fingerprint.ts";
@@ -181,6 +185,7 @@ export interface DiagnosticInfo {
   error?: string;
   no_export_observation?: NoExportAffordanceObservation;
   phase: string;
+  surface_manifest?: BrowserSurfaceCandidateManifest;
 }
 
 /**
@@ -215,6 +220,7 @@ export interface NoExportAffordanceObservation {
   export_affordance_candidates: ExportAffordanceCandidate[];
   navigation_marker_count: number;
   route: BrowserSurfaceRoute;
+  surface_manifest?: BrowserSurfaceCandidateManifest;
   target_count: number;
   transaction_marker_count: number;
 }
@@ -292,6 +298,7 @@ export interface TransactionsPriorState {
 export interface DriveExportOptions {
   accountType?: string;
   capture?: CaptureSession | null;
+  /** Compatibility-only legacy input; bounded export diagnostics ignore this value. */
   captureLabel?: string;
   /** Test-only override for writeExportDialogUnexpectedShapeFallback's
    *  write root; production reads PDPP_CAPTURE_ROOT_DIR / the package

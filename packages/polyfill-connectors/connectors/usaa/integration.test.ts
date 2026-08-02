@@ -224,11 +224,9 @@ function makeNoExportPage(
 }
 
 function makeNoExportFallbackPage(controlLabel: string): Page {
-  let evaluateCount = 0;
   return Object.assign({} as Page, {
-    evaluate() {
-      evaluateCount += 1;
-      if (evaluateCount === 1) {
+    evaluate(_fn: (...args: unknown[]) => unknown, arg?: unknown) {
+      if (arg && typeof arg === "object" && "accountDetail" in (arg as Record<string, unknown>)) {
         return Promise.resolve({
           account_detail_marker_count: 1,
           export_affordance_candidates: [],
@@ -236,6 +234,9 @@ function makeNoExportFallbackPage(controlLabel: string): Page {
           target_count: 0,
           transaction_marker_count: 1,
         });
+      }
+      if (arg && typeof arg === "object" && "exportAffordance" in (arg as Record<string, unknown>)) {
+        return Promise.resolve({ candidateCount: 0, candidates: [], controlCount: 0, controls: [] });
       }
       return Promise.resolve([
         {
@@ -324,6 +325,102 @@ function makeDisabledExportPage(): Page {
     },
     title: () => Promise.resolve("Bank Account Summary | USAA"),
     url: () => "https://www.usaa.com/my/credit-card?accountId=ACCT-CC-0001",
+  });
+}
+
+function makeCapturedDisabledExportPage(): Page {
+  return Object.assign({} as Page, {
+    evaluate(_fn: (...args: unknown[]) => unknown, arg?: unknown) {
+      if (arg && typeof arg === "object" && "accountDetail" in (arg as Record<string, unknown>)) {
+        return Promise.resolve({
+          account_detail_marker_count: 1,
+          export_affordance_candidates: [
+            {
+              aria_disabled: true,
+              cls: "as_credit__utility-bar-item as_credit__export account-987654",
+              disabled: true,
+              id: "export-control-secret-987654",
+              role: "button",
+              tag: "BUTTON",
+              text: "Export PRIVATE MERCHANT transaction 987654",
+              type: "button",
+              visible: false,
+            },
+          ],
+          navigation_marker_count: 1,
+          target_count: 1,
+          transaction_marker_count: 1,
+        });
+      }
+      if (arg && typeof arg === "object" && "exportAffordance" in (arg as Record<string, unknown>)) {
+        return Promise.resolve({
+          candidateCount: 2,
+          candidates: [
+            {
+              aria_disabled: true,
+              class_tokens: "as_credit__utility-bar-item as_credit__export account-987654",
+              disabled: true,
+              kind: "export",
+              role: "button",
+              tag: "BUTTON",
+              text: "Export PRIVATE MERCHANT transaction 987654",
+              type: "button",
+              visible: false,
+            },
+            {
+              aria_disabled: false,
+              class_tokens: "download-link",
+              disabled: false,
+              kind: "download",
+              role: "link",
+              tag: "A",
+              text: "CSV PRIVATE MERCHANT",
+              type: null,
+              visible: true,
+            },
+          ],
+          controlCount: 1,
+          controls: [
+            {
+              aria_disabled: false,
+              class_tokens: "dialog-control dynamic-987654",
+              disabled: false,
+              name: "selectionType",
+              role: "combobox",
+              tag: "SELECT",
+              text: "transaction PRIVATE MERCHANT 987654",
+              type: null,
+              visible: true,
+            },
+          ],
+        });
+      }
+      return Promise.resolve(null);
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    locator(selector: string) {
+      if (selector === "button.as_credit__utility-bar-item.as_credit__export") {
+        return {
+          count: () => Promise.resolve(1),
+          first(): unknown {
+            return this;
+          },
+          isEnabled: () => Promise.resolve(false),
+        };
+      }
+      return {
+        count: () => Promise.resolve(0),
+        filter(): unknown {
+          return this;
+        },
+        first(): unknown {
+          return this;
+        },
+      };
+    },
+    url: () => "https://www.usaa.com/my/checking?accountId=ACCT-CHK-987654",
   });
 }
 
@@ -917,7 +1014,20 @@ test("driveExport records account, challenge, and unrelated routes through the a
       {
         account_page_identity: identity,
         diag: null,
-        no_export_observation: { ...counts, account_page_identity: identity, affordance_disabled: false, route },
+        no_export_observation: {
+          ...counts,
+          account_page_identity: identity,
+          affordance_disabled: false,
+          route,
+          surface_manifest: {
+            capture_state: "captured",
+            candidate_count: 0,
+            candidates: [],
+            control_count: 0,
+            controls: [],
+            phase: "after_export_affordance_probe",
+          },
+        },
         phase: "no_export_affordance",
       },
     ]);
@@ -1313,7 +1423,9 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
           callOrder.push(`capture:${label}`);
           return Promise.resolve();
         },
-        captureHttp: (): void => undefined,
+        captureHttp: (label: string): void => {
+          callOrder.push(`capture:${label}`);
+        },
         finalize: (): void => undefined,
         keepOnSuccess: true,
         markSucceeded: (): void => undefined,
@@ -1328,7 +1440,7 @@ test("driveExport captures the dialog-not-open checkpoint before pressing Escape
   );
 
   assert.deepEqual(outcome, { kind: "failed" });
-  const captureIdx = callOrder.indexOf("capture:usaa-export-dialog-not-open");
+  const captureIdx = callOrder.indexOf("capture:usaa-surface-export_checkpoint-dialog-not-open");
   const escapeIdx = callOrder.indexOf("keyboard:Escape");
   assert.notEqual(captureIdx, -1, "expected a dialog-not-open checkpoint capture");
   assert.notEqual(escapeIdx, -1, "expected an Escape keypress to dismiss the dialog");
@@ -1557,6 +1669,64 @@ test("driveExport short-circuits a disabled-but-present export affordance to a p
     "disabled-affordance evidence must reach stored diagnostics even for credit-card accounts"
   );
   assert.equal(storedCandidate.disabled, true);
+});
+
+test("driveExport capture keeps selector state while dropping page values and raw DOM capture", async () => {
+  const captureRoot = mkdtempSync(join(tmpdir(), "usaa-safe-surface-capture-"));
+  const captured: Array<{ body: unknown; label: string }> = [];
+  let rawDomCaptureAttempted = false;
+  try {
+    const diagnostics: DiagnosticInfo[] = [];
+    const outcome = await driveExport(
+      makeCapturedDisabledExportPage(),
+      "https://www.usaa.com/my/checking?accountId=ACCT-CHK-987654",
+      {
+        capture: {
+          baseDir: "/tmp/unused",
+          captureDom: (): Promise<void> => {
+            rawDomCaptureAttempted = true;
+            return Promise.resolve();
+          },
+          captureHttp: (label: string, body: unknown): void => {
+            captured.push({ body, label });
+          },
+          finalize: (): void => undefined,
+          keepOnSuccess: true,
+          markSucceeded: (): void => undefined,
+          recordRecord: (): void => undefined,
+          runId: "test-safe-surface-capture",
+        } satisfies CaptureSession,
+        fallbackDiagnosticRootOverride: captureRoot,
+        onDiagnostics: (info) => diagnostics.push(info),
+        settleDelayMs: 0,
+        sinceDate: "2026-01-01",
+        untilDate: "2026-07-16",
+      }
+    );
+
+    assert.deepEqual(outcome, { kind: "failed" });
+    assert.equal(rawDomCaptureAttempted, false);
+    assert.ok(captured.some(({ label }) => label === "usaa-surface-account_page_settled"));
+    assert.ok(captured.some(({ label }) => label === "usaa-surface-after_export_affordance_probe"));
+    const probeCapture = captured.find(({ label }) => label === "usaa-surface-after_export_affordance_probe");
+    assert.ok(probeCapture);
+    const probe = probeCapture?.body as {
+      candidates: Record<string, unknown>[];
+      controls: Record<string, unknown>[];
+    };
+    assert.deepEqual(probe.candidates[0]?.class_tokens, ["as_credit__utility-bar-item", "as_credit__export"]);
+    assert.equal(probe.candidates[0]?.disabled, true);
+    assert.equal(probe.candidates[0]?.visible, false);
+    assert.equal(probe.candidates[1]?.text_category, "csv");
+    assert.equal(probe.controls[0]?.name, "selectionType");
+    const serialized = JSON.stringify(captured);
+    assert.doesNotMatch(serialized, /987654|PRIVATE MERCHANT|account-/);
+    assert.doesNotMatch(serialized, /"(?:text|id|href|url)"/);
+    const diagnostic = diagnostics.find((info) => info.phase === "no_export_affordance");
+    assert.equal(diagnostic?.no_export_observation?.surface_manifest?.candidates[0]?.disabled, true);
+  } finally {
+    rmSync(captureRoot, { force: true, recursive: true });
+  }
 });
 
 /**

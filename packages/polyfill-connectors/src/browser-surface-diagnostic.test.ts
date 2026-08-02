@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { browserSurfaceManagedState, buildBrowserSurfaceDiagnostic } from "./browser-surface-diagnostic.ts";
+import {
+  browserSurfaceManagedState,
+  buildBrowserSurfaceCandidateManifest,
+  buildBrowserSurfaceDiagnostic,
+} from "./browser-surface-diagnostic.ts";
 
 function chaseInput(overrides: Record<string, unknown> = {}) {
   return {
@@ -92,4 +96,72 @@ test("browser surface diagnostic has a fixed finite structural shape", () => {
     "verified_empty_marker_count",
     "wait_outcome",
   ]);
+});
+
+test("surface candidate manifests retain selector state while dropping sensitive values", () => {
+  const manifest = buildBrowserSurfaceCandidateManifest({
+    candidateCount: 4,
+    candidates: [
+      {
+        aria_disabled: false,
+        class_tokens: "as_credit__utility-bar-item as_credit__export account-123456",
+        disabled: false,
+        kind: "export",
+        role: "button",
+        tag: "BUTTON",
+        text: "Export for account 123456 with transaction at PRIVATE MERCHANT",
+        type: "button",
+        visible: true,
+      },
+      {
+        aria_disabled: true,
+        class_tokens: ["export", "dynamic-123"],
+        disabled: true,
+        kind: "export",
+        role: "button",
+        tag: "BUTTON",
+        text: "Export",
+        type: "button",
+        visible: false,
+      },
+      {
+        aria_disabled: false,
+        class_tokens: "download-link",
+        disabled: false,
+        kind: "download",
+        role: "link",
+        tag: "A",
+        text: "Download statement for PRIVATE MERCHANT",
+        type: null,
+        visible: true,
+      },
+    ],
+    controlCount: 1,
+    controls: [
+      {
+        aria_disabled: false,
+        class_tokens: "dialog-control",
+        disabled: false,
+        name: "selectionType",
+        role: "combobox",
+        tag: "SELECT",
+        text: "PRIVATE MERCHANT 123456",
+        type: null,
+        visible: true,
+      },
+    ],
+    phase: "after_export_affordance_probe",
+  });
+
+  assert.equal(manifest.candidate_count, 4, "the total candidate count survives the cap");
+  assert.equal(manifest.candidates[0]?.tag, "button");
+  assert.deepEqual(manifest.candidates[0]?.class_tokens, ["as_credit__utility-bar-item", "as_credit__export"]);
+  assert.equal(manifest.candidates[0]?.text_category, "export");
+  assert.equal(manifest.candidates[1]?.disabled, true);
+  assert.equal(manifest.candidates[1]?.visible, false);
+  assert.equal(manifest.controls[0]?.name, "selectionType");
+  assert.equal(manifest.controls[0]?.role, "combobox");
+  const serialized = JSON.stringify(manifest);
+  assert.doesNotMatch(serialized, /123456|PRIVATE MERCHANT|account-/);
+  assert.doesNotMatch(serialized, /"(?:text|id|href|url)"/);
 });

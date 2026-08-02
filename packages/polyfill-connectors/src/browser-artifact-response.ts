@@ -8,6 +8,46 @@ const FILENAME_UTF8_RE = /filename\*=UTF-8''([^;]+)/iu;
 const SURROUNDING_QUOTES_RE = /^"|"$/g;
 const DEFAULT_MAX_DIAGNOSTICS = 20;
 const DEFAULT_ERROR_SLICE = 160;
+const CSV_HEADER_HINT_RE = /(?:^|,)\s*(?:date|description|amount|transaction)\b/iu;
+const SAFE_PATH_SEGMENT_RE = /^[a-z]+(?:[-_][a-z]+)*$/iu;
+const SAFE_FILENAME_EXTENSION_RE = /\.([a-z0-9]{1,8})$/iu;
+const CSV_FIRST_LINE_RE = /\r?\n/u;
+const SAFE_METHOD_RE = /^[A-Z]{3,12}$/u;
+const SAFE_MEDIA_TYPE_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u;
+const FILENAME_PATH_SEPARATOR_RE = /[\\/]/u;
+const SAFE_PATH_SEGMENTS = new Set([
+  "api",
+  "csv",
+  "document",
+  "documents",
+  "download",
+  "export",
+  "file",
+  "files",
+  "my",
+  "pdf",
+  "statement",
+  "statements",
+  "transaction",
+  "transactions",
+  "usaa",
+  "v1",
+  "v2",
+]);
+
+export type ArtifactClassification = "present" | "absent" | "unknown";
+
+export interface SafeArtifactResponseMetadata {
+  byte_count: number | null;
+  content_disposition: "attachment" | "inline" | "other" | null;
+  content_type: string | null;
+  csv_header: ArtifactClassification;
+  filename_shape: string | null;
+  method: string | null;
+  path_shape: string | null;
+  pdf_magic: ArtifactClassification;
+  status: number | null;
+}
 
 export interface CapturedBodyResponse {
   body: Buffer;
@@ -24,7 +64,9 @@ export interface BodyResponseCandidateDiagnostic {
   bodyError?: string;
   contentDisposition: string;
   contentType: string;
+  csvHeader?: ArtifactClassification;
   method: string;
+  pdfMagic?: ArtifactClassification;
   reason: "body_error" | "matched" | "not_expected_body";
   source: "cdp" | "playwright";
   status: number;
@@ -117,6 +159,136 @@ export function isLikelyPdfResponseBody(body: Buffer, headers: Record<string, st
     return true;
   }
   return contentType.includes("application/pdf") || disposition.includes(".pdf");
+}
+
+export function classifyCsvHeaderBody(body: Buffer | null | undefined): ArtifactClassification {
+  if (!body || body.length === 0) {
+    return "unknown";
+  }
+  const header = body.subarray(0, 4096).toString("utf8").split(CSV_FIRST_LINE_RE, 1)[0] ?? "";
+  return CSV_HEADER_HINT_RE.test(header) ? "present" : "absent";
+}
+
+export function classifyPdfMagicBody(body: Buffer | null | undefined): ArtifactClassification {
+  if (!body || body.length === 0) {
+    return "unknown";
+  }
+  return body.subarray(0, 5).toString("latin1") === "%PDF-" ? "present" : "absent";
+}
+
+function artifactClassification(value: unknown): ArtifactClassification | null {
+  return value === "present" || value === "absent" || value === "unknown" ? value : null;
+}
+
+function safeMethod(value: unknown): string | null {
+  if (typeof value !== "string" || !SAFE_METHOD_RE.test(value.trim().toUpperCase())) {
+    return null;
+  }
+  return value.trim().toUpperCase();
+}
+
+function safeStatus(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 100 && value <= 599 ? value : null;
+}
+
+function safeByteCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 1_000_000_000) : null;
+}
+
+function safeContentType(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const mediaType = value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return SAFE_MEDIA_TYPE_RE.test(mediaType) ? mediaType : null;
+}
+
+function safeContentDisposition(value: unknown): SafeArtifactResponseMetadata["content_disposition"] {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const disposition = value.trim().toLowerCase();
+  if (disposition.startsWith("attachment")) {
+    return "attachment";
+  }
+  if (disposition.startsWith("inline")) {
+    return "inline";
+  }
+  return disposition ? "other" : null;
+}
+
+function safeFilenameShape(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+  const filename = value.split(FILENAME_PATH_SEPARATOR_RE).pop() ?? "";
+  const extension = filename.match(SAFE_FILENAME_EXTENSION_RE)?.[1];
+  return extension ? `.${extension.toLowerCase()}` : "[named]";
+}
+
+function filenameFromContentDisposition(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const utf8 = value.match(FILENAME_UTF8_RE)?.[1];
+  if (utf8) {
+    try {
+      return decodeURIComponent(utf8.replace(SURROUNDING_QUOTES_RE, ""));
+    } catch {
+      return utf8;
+    }
+  }
+  return value.match(FILENAME_PLAIN_RE)?.[1] ?? null;
+}
+
+/** Retain only a path shape. Origins, query strings, hashes, and IDs vanish. */
+export function redactedResponsePathShape(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+  try {
+    const { pathname } = new URL(value);
+    const segments = pathname
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => {
+        const normalized = segment.toLowerCase();
+        return segment.length <= 40 && SAFE_PATH_SEGMENT_RE.test(segment) && SAFE_PATH_SEGMENTS.has(normalized)
+          ? normalized
+          : "[id]";
+      });
+    return segments.length ? `/${segments.join("/")}` : "/";
+  } catch {
+    return null;
+  }
+}
+
+/** Build response evidence without retaining body bytes, filenames, or URLs. */
+export function sanitizeArtifactResponseMetadata(input: {
+  readonly body?: Buffer | null;
+  readonly bytes?: unknown;
+  readonly contentDisposition?: unknown;
+  readonly contentType?: unknown;
+  readonly csvHeader?: unknown;
+  readonly filename?: unknown;
+  readonly method?: unknown;
+  readonly pdfMagic?: unknown;
+  readonly status?: unknown;
+  readonly url?: unknown;
+}): SafeArtifactResponseMetadata {
+  const csvHeader = artifactClassification(input.csvHeader) ?? classifyCsvHeaderBody(input.body);
+  const pdfMagic = artifactClassification(input.pdfMagic) ?? classifyPdfMagicBody(input.body);
+  return {
+    byte_count: safeByteCount(input.bytes ?? input.body?.length),
+    content_disposition: safeContentDisposition(input.contentDisposition),
+    content_type: safeContentType(input.contentType),
+    csv_header: csvHeader,
+    filename_shape: safeFilenameShape(input.filename ?? filenameFromContentDisposition(input.contentDisposition)),
+    method: safeMethod(input.method),
+    path_shape: redactedResponsePathShape(input.url),
+    pdf_magic: pdfMagic,
+    status: safeStatus(input.status),
+  };
 }
 
 // Exported so other diagnostics producers (e.g. the popup watcher in
@@ -224,7 +396,9 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
         bodyBytes: body.length,
         contentDisposition,
         contentType,
+        csvHeader: classifyCsvHeaderBody(body),
         method,
+        pdfMagic: classifyPdfMagicBody(body),
         reason: "not_expected_body",
         source,
         status,
@@ -236,7 +410,9 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
       bodyBytes: body.length,
       contentDisposition,
       contentType,
+      csvHeader: classifyCsvHeaderBody(body),
       method,
+      pdfMagic: classifyPdfMagicBody(body),
       reason: "matched",
       source,
       status,
