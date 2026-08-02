@@ -31,6 +31,7 @@ const REGEXP_1 = /text\/html/;
 const REGEXP_2 = /Pending interaction/;
 const REGEXP_3 = /Send success/;
 const REGEXP_4 = /Cancel interaction/;
+const REGEXP_PASSWORD_REDACTED = /password=\[REDACTED\]/;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
@@ -112,11 +113,34 @@ async function waitForPendingInteraction(asUrl: string, runId: string, timeoutMs
   throw new Error(`Timed out waiting for pending interaction on run ${runId}`);
 }
 
-async function waitForRunTerminal(asUrl: string, runId: string, timeoutMs = 5000): Promise<TimelineBody> {
+async function waitForInboxPendingInteraction(asUrl: string, runId: string, timeoutMs = 5000): Promise<TimelineEvent> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
-    const { status, body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
+    const response = await fetchJson(`${asUrl}/_ref/inbox/${encodeURIComponent(runId)}.json`);
+    if (response.status === 200) {
+      const data = (response.body as { data?: { interaction_id?: string } } | null)?.data;
+      if (data?.interaction_id) {
+        return { event_type: "run.interaction_required", interaction_id: data.interaction_id };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for pending inbox interaction on run ${runId}`);
+}
+
+async function waitForRunTerminal(
+  asUrl: string,
+  runId: string,
+  timeoutMs = 5000,
+  timelineQuery = ""
+): Promise<TimelineBody> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
+    const { status, body } = await fetchJson(
+      `${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline${timelineQuery}`
+    );
     const timeline = body as TimelineBody;
     if (status === 200 && Array.isArray(timeline.data)) {
       const terminal = timeline.data.find(
@@ -217,6 +241,52 @@ rl.on('line', (line) => {
         timeout_seconds: 60,
       }) + '\\n');
     }, ${delayMs});
+    return;
+  }
+  if (msg.type === 'INTERACTION_RESPONSE') {
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+    rl.close();
+    process.exit(0);
+  }
+});
+`,
+    "utf8"
+  );
+  return path;
+}
+
+function buildLongPendingInteractionConnectorFixture(tmpDir: string, progressCount = 2100): string {
+  const path = join(tmpDir, "long-pending-connector.mjs");
+  writeFileSync(
+    path,
+    `
+import { createInterface } from 'readline';
+
+const rl = createInterface({ input: process.stdin, terminal: false });
+let started = false;
+rl.on('line', (line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === 'START' && !started) {
+    started = true;
+    for (let index = 0; index < ${progressCount}; index += 1) {
+      process.stdout.write(JSON.stringify({ type: 'PROGRESS', message: 'Still collecting.', count: index, total: ${progressCount} }) + '\\n');
+    }
+    process.stdout.write(JSON.stringify({
+      type: 'INTERACTION',
+      request_id: 'int_long_pending_1',
+      kind: 'credentials',
+      message: 'Need credentials after a long run. password=projection-secret.',
+      schema: {
+        type: 'object',
+        properties: {
+          username: { type: 'string' },
+          password: { type: 'string', format: 'password' },
+        },
+        required: ['username', 'password'],
+      },
+      timeout_seconds: 60,
+    }) + '\\n');
     return;
   }
   if (msg.type === 'INTERACTION_RESPONSE') {
@@ -354,10 +424,16 @@ test("GET /_ref/inbox/:runId renders pending interaction HTML and JSON", async (
       assert.equal(inboxItem.object, "ref_inbox_item");
       assert.deepEqual(inboxItem.data, {
         connector_id: canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id,
+        fields: [
+          { format: "text", label: null, name: "username", required: true },
+          { format: "password", label: null, name: "password", required: true },
+        ],
         interaction_id: pending.interaction_id,
         kind: "credentials",
+        message: "Need credentials to continue.",
         run_id: started.run_id,
         stream: null,
+        timeout_seconds: 60,
       });
     } finally {
       await fetch(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}/dismiss`, {
@@ -368,6 +444,56 @@ test("GET /_ref/inbox/:runId renders pending interaction HTML and JSON", async (
       await waitForRunTerminal(asUrl, started.run_id);
     }
   });
+});
+
+test("inbox projection survives the first 2,000-event timeline page and answers stay ephemeral", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-ref-long-pending-"));
+  const connectorPath = buildLongPendingInteractionConnectorFixture(tmpDir);
+  try {
+    await withCustomHarness(connectorPath, async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForInboxPendingInteraction(asUrl, started.run_id);
+      const firstPage = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+      assert.equal(firstPage.status, 200);
+      assert.ok(Array.isArray((firstPage.body as TimelineBody).data));
+      assert.equal((firstPage.body as { truncated?: boolean }).truncated, true);
+      assert.equal(
+        (firstPage.body as TimelineBody).data.some((event) => event.event_type === "run.interaction_required"),
+        false,
+        "the default first page must not contain the pending interaction"
+      );
+
+      const inbox = await fetchJson(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}.json`);
+      assert.equal(inbox.status, 200);
+      const inboxData = (inbox.body as { data: Record<string, unknown> }).data;
+      assert.equal(inboxData.interaction_id, pending.interaction_id);
+      assert.match(String(inboxData.message), REGEXP_PASSWORD_REDACTED);
+      assert.equal(JSON.stringify(inboxData).includes("projection-secret"), false);
+      assert.equal("schema" in inboxData, false);
+      assert.equal("default" in inboxData, false);
+
+      const response = await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/interaction`, {
+        body: JSON.stringify({
+          data: { password: "s3cret", username: "alice" },
+          interaction_id: pending.interaction_id,
+          status: "success",
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(response.status, 202);
+      await waitForRunTerminal(asUrl, started.run_id, 5000, "?limit=5000");
+
+      const after = await fetchJson(`${asUrl}/_ref/inbox/${encodeURIComponent(started.run_id)}.json`);
+      assert.equal(after.status, 404);
+      const timeline = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline?limit=5000`);
+      const raw = JSON.stringify(timeline.body);
+      assert.equal(raw.includes("s3cret"), false);
+      assert.equal(raw.includes("alice"), false);
+    });
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
 });
 
 test("POST /_ref/inbox/:runId/respond accepts minimal form success data", async () => {

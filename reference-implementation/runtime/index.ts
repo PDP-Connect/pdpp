@@ -1463,7 +1463,7 @@ function safeAttachmentString(value: unknown, maxLength = 160): string | null {
   return trimmed;
 }
 
-function sanitizeAssistanceTimelineString(value: unknown, maxLength = GAP_STRING_MAX): string | null {
+export function sanitizeAssistanceTimelineString(value: unknown, maxLength = GAP_STRING_MAX): string | null {
   const redacted = boundGapString(value);
   if (!redacted) {
     return null;
@@ -1484,7 +1484,7 @@ function sanitizeAssistanceTimelineString(value: unknown, maxLength = GAP_STRING
   return `${sanitized.slice(0, maxLength - 1)}…`;
 }
 
-function sanitizeAssistanceInputSchema(value: unknown, depth = 0): unknown {
+export function sanitizeAssistanceInputSchema(value: unknown, depth = 0): unknown {
   if (depth > 8) {
     return "[REDACTED]";
   }

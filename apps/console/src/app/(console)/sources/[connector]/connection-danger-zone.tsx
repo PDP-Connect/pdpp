@@ -33,7 +33,7 @@ interface Props {
  * before reaching it), so destructive controls never attach to a catalog row.
  *
  * Revoke is a lightweight confirm (checkbox); it stops future collection while
- * retaining records, grants, and audit. Delete requires reproducing the
+ * retaining records, grants, schedules, and history. Delete requires reproducing the
  * connection id (typed-id confirmation) before the destructive submit enables;
  * it erases exactly this connection's records and may be refused for an active
  * run or a default-account binding. Both confirmations are enforced again on the
@@ -83,8 +83,9 @@ function RevokeForm({ connectionId }: { connectionId: string }) {
     <div className="flex flex-col gap-2">
       <h3 className="pdpp-body font-medium text-foreground">Revoke</h3>
       <p className="pdpp-caption text-muted-foreground">
-        Stops future collection for this connection. Already-collected records, grants, and audit history are retained —
-        revoke does not erase anything. Reversible only by an explicit owner re-initiate.
+        Stops future collection for this connection. Already-collected records, grants, schedules, and history are
+        retained — revoke does not erase anything. Reactivate this same connection from the control above; credential
+        updates, when needed, are a separate action.
       </p>
       <form action={revokeConnectionAction} className="mt-1 flex flex-wrap items-center gap-3">
         <input name="connection_id" type="hidden" value={connectionId} />

@@ -76,7 +76,7 @@ import {
   createBrowserSurfaceManager,
 } from "./browser-surface/index.ts";
 import { connectorUsesPhaseScopedSurfaceId } from "./browser-surface/retained-surface-connectors.ts";
-import { runConnector } from "./index.ts";
+import { runConnector, sanitizeAssistanceInputSchema, sanitizeAssistanceTimelineString } from "./index.ts";
 import {
   classifyRecoveryGap,
   filterFreshPressureRows,
@@ -416,10 +416,13 @@ export interface CancelRunResult {
 
 export interface PendingInteractionProjection {
   readonly connector_id: string;
+  readonly fields: readonly PendingInteractionField[];
   readonly interaction_id: string;
   readonly kind: string;
+  readonly message: string;
   readonly run_id: string;
   readonly stream: string | null;
+  readonly timeout_seconds: number | null;
 }
 
 export interface BrowserSurfaceRunProjection extends BrowserSurfaceProjection {
@@ -822,6 +825,7 @@ export interface DrainSummary {
 }
 
 interface RuntimeInteraction {
+  readonly fields?: readonly PendingInteractionField[];
   readonly kind: string;
   /** Human-readable description of the interaction; surfaced in ntfy push body. */
   readonly message?: string;
@@ -829,6 +833,13 @@ interface RuntimeInteraction {
   readonly stream?: string | null;
   /** Original interaction duration in seconds, read only for push urgency/TTL projection. */
   readonly timeout_seconds?: number;
+}
+
+export interface PendingInteractionField {
+  readonly format: "password" | "text";
+  readonly label: string | null;
+  readonly name: string;
+  readonly required: boolean;
 }
 
 function readRuntimeInteraction(value: unknown): RuntimeInteraction {
@@ -843,14 +854,44 @@ function readRuntimeInteraction(value: unknown): RuntimeInteraction {
   const message = Reflect.get(value, "message");
   const stream = Reflect.get(value, "stream");
   const timeoutSeconds = Reflect.get(value, "timeout_seconds");
+  const schema = Reflect.get(value, "schema");
+  const sanitizedSchema = sanitizeAssistanceInputSchema(schema);
+  const properties =
+    sanitizedSchema && typeof sanitizedSchema === "object" && !Array.isArray(sanitizedSchema)
+      ? Reflect.get(sanitizedSchema, "properties")
+      : null;
+  const required = new Set(
+    sanitizedSchema &&
+      typeof sanitizedSchema === "object" &&
+      !Array.isArray(sanitizedSchema) &&
+      Array.isArray(Reflect.get(sanitizedSchema, "required"))
+      ? (Reflect.get(sanitizedSchema, "required") as unknown[]).filter(
+          (item): item is string => typeof item === "string"
+        )
+      : []
+  );
+  const fields =
+    properties && typeof properties === "object" && !Array.isArray(properties)
+      ? Object.entries(properties as Record<string, unknown>).map(([name, definition]): PendingInteractionField => {
+          const item = definition && typeof definition === "object" && !Array.isArray(definition) ? definition : {};
+          const label = Reflect.get(item, "title");
+          return {
+            format: Reflect.get(item, "format") === "password" ? "password" : "text",
+            label: typeof label === "string" ? label : null,
+            name,
+            required: required.has(name),
+          };
+        })
+      : [];
   return {
     kind,
+    message: sanitizeAssistanceTimelineString(message) || "Awaiting operator response.",
     request_id: requestId,
-    ...(typeof message === "string" ? { message } : {}),
     ...(typeof stream === "string" || stream === null ? { stream } : {}),
     ...(typeof timeoutSeconds === "number" && Number.isFinite(timeoutSeconds)
       ? { timeout_seconds: timeoutSeconds }
       : {}),
+    fields,
   };
 }
 
@@ -862,10 +903,13 @@ interface InteractionResponse {
 }
 
 interface PendingInteraction {
+  readonly fields: readonly PendingInteractionField[];
   readonly interaction_id: string;
   readonly kind: string;
+  readonly message: string;
   readonly resolve: (response: InteractionResponse) => void;
   readonly stream: string | null;
+  readonly timeout_seconds: number | null;
 }
 
 interface ActiveRunInteraction {
@@ -1881,10 +1925,13 @@ function brokerInteraction(
 
     entry.connector_id = connectorId;
     entry.pending = {
+      fields: interaction.fields ?? [],
       interaction_id: interaction.request_id,
       kind: interaction.kind,
+      message: interaction.message || "Awaiting operator response.",
       resolve,
       stream: interaction.stream || null,
+      timeout_seconds: interaction.timeout_seconds ?? null,
     };
     activeRunInteractions.set(runId, entry);
 
@@ -4200,10 +4247,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     return {
       connector_id: entry.connector_id,
+      fields: entry.pending.fields ?? [],
       interaction_id: entry.pending.interaction_id,
       kind: entry.pending.kind,
+      message: entry.pending.message || "Awaiting operator response.",
       run_id: runId,
       stream: entry.pending.stream || null,
+      timeout_seconds: entry.pending.timeout_seconds ?? null,
     };
   }
 

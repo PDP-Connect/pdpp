@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import type { SpineEvent } from "./ref-client.ts";
+import type { RunInboxEnvelope, SpineEvent } from "./ref-client.ts";
 
 export type AssistanceProgressPosture = "blocked" | "running" | "waiting_retry";
 export type AssistanceOwnerAction = "act_elsewhere" | "none" | "operate_attachment" | "provide_value";
@@ -32,6 +32,32 @@ export interface CurrentRunAssistance {
   progressPosture: AssistanceProgressPosture;
   responseContract: AssistanceResponseContract;
   timeoutLabel: string | null;
+}
+
+export function currentRunAssistanceFromInbox(pending: RunInboxEnvelope["data"] | null): CurrentRunAssistance | null {
+  if (!pending) {
+    return null;
+  }
+  return {
+    attachments:
+      pending.kind === "manual_action" ? [{ kind: "browser_surface", label: null, ref: null, status: null }] : [],
+    fields: [...pending.fields],
+    id: pending.interaction_id,
+    isLegacyInteraction: true,
+    kind: pending.kind,
+    message: pending.message,
+    ownerAction: pending.kind === "manual_action" ? "operate_attachment" : "provide_value",
+    progressPosture: "blocked",
+    responseContract: "response_required",
+    timeoutLabel: timeoutLabel(pending.timeout_seconds),
+  };
+}
+
+export function resolveCurrentRunAssistance(
+  events: SpineEvent[],
+  pending: RunInboxEnvelope["data"] | null
+): CurrentRunAssistance | null {
+  return currentRunAssistanceFromInbox(pending) ?? getCurrentRunAssistance(events);
 }
 
 const ASSISTANCE_TERMINAL_EVENTS = new Set([

@@ -10,7 +10,33 @@ import {
   hasActiveBrowserSurface,
   hasAvailableBrowserSurfaceAttachment,
   requiresBrowserSurfaceAssistance,
+  resolveCurrentRunAssistance,
 } from "./run-assistance.ts";
+
+test("current inbox wins when the bounded first timeline page has no interaction", () => {
+  const current = resolveCurrentRunAssistance([], {
+    connector_id: "connector:test",
+    fields: [{ format: "password", label: "Password", name: "password", required: true }],
+    interaction_id: "interaction_1",
+    kind: "credentials",
+    message: "Need credentials to continue.",
+    run_id: "run_1",
+    stream: null,
+    timeout_seconds: 60,
+  });
+  assert.deepEqual(current, {
+    attachments: [],
+    fields: [{ format: "password", label: "Password", name: "password", required: true }],
+    id: "interaction_1",
+    isLegacyInteraction: true,
+    kind: "credentials",
+    message: "Need credentials to continue.",
+    ownerAction: "provide_value",
+    progressPosture: "blocked",
+    responseContract: "response_required",
+    timeoutLabel: "1m",
+  });
+});
 
 function event(event_type: string, data: Record<string, unknown>): SpineEvent {
   return {

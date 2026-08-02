@@ -10,17 +10,19 @@ import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroo
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
+  getRunInbox,
   getRunStatus,
   getRunTimeline,
+  type RunInboxEnvelope,
   type RunStatusEnvelope,
   type SpineEvent,
   type TimelineEnvelope,
 } from "../../lib/ref-client.ts";
 import {
   type CurrentRunAssistance,
-  getCurrentRunAssistance,
   hasAvailableBrowserSurfaceAttachment,
   requiresBrowserSurfaceAssistance,
+  resolveCurrentRunAssistance,
 } from "../../lib/run-assistance.ts";
 import {
   classifyKnownGaps,
@@ -76,8 +78,13 @@ export default async function RunDetailPage({
 
   let envelope: TimelineEnvelope | null;
   let runStatus: RunStatusEnvelope | null;
+  let inbox: RunInboxEnvelope["data"] | null;
   try {
-    [envelope, runStatus] = await Promise.all([getRunTimeline(runId, { cursor }), getRunStatus(runId)]);
+    [envelope, runStatus, inbox] = await Promise.all([
+      getRunTimeline(runId, { cursor }),
+      getRunStatus(runId),
+      getRunInbox(runId),
+    ]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -111,7 +118,7 @@ export default async function RunDetailPage({
   // never the source of the active/terminal decision and may be null when
   // the terminal event is not on this page.
   const inPageTerminalStatus = getTerminalRunStatus(events);
-  const currentAssistance = active ? getCurrentRunAssistance(events) : null;
+  const currentAssistance = active ? resolveCurrentRunAssistance(events, inbox) : null;
   const latestProgress = getLatestProgress(events);
   const failure = events.find((e) => e.event_type === "run.failed");
   const terminalKnownGaps = extractTerminalKnownGaps(events);

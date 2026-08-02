@@ -31,10 +31,18 @@ interface RouteApp {
 
 interface PendingInteraction {
   connector_id: string;
+  fields: readonly {
+    format: "password" | "text";
+    label: string | null;
+    name: string;
+    required: boolean;
+  }[];
   interaction_id: string;
   kind: string;
+  message: string;
   run_id: string;
   stream?: string | null;
+  timeout_seconds: number | null;
   [key: string]: unknown;
 }
 

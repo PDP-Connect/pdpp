@@ -50,6 +50,9 @@ const DZ_NULL_GUIDANCE_RE = /nothing to revoke or delete/i;
 const DZ_REVOKE_RETAINED_RE = /retained/i;
 const DZ_REVOKE_FUTURE_RE = /future collection/i;
 const DZ_REVOKE_NO_ERASE_RE = /does not erase anything/i;
+const DZ_REVOKE_SCHEDULES_RE = /schedules/i;
+const DZ_REVOKE_HISTORY_RE = /history/i;
+const DZ_REVOKE_NO_REINITIATE_RE = /explicit owner re-initiate/i;
 const DZ_DELETE_ERASES_RE = /[Ee]rases this connection's records/;
 const DZ_DELETE_NOT_REVOKE_RE = /not revoke/i;
 const DZ_DELETE_RUN_REFUSAL_RE = /run is in flight|run in flight|a run is in flight/i;
@@ -102,6 +105,9 @@ test("revoke copy retains records and stops only future collection, never claims
   assert.match(dz, DZ_REVOKE_RETAINED_RE);
   assert.match(dz, DZ_REVOKE_FUTURE_RE);
   assert.match(dz, DZ_REVOKE_NO_ERASE_RE);
+  assert.match(dz, DZ_REVOKE_SCHEDULES_RE);
+  assert.match(dz, DZ_REVOKE_HISTORY_RE);
+  assert.doesNotMatch(dz, DZ_REVOKE_NO_REINITIATE_RE);
 });
 
 test("delete copy erases this connection, distinguishes from revoke, names the refusals", async () => {

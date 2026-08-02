@@ -100,6 +100,20 @@ export interface RunStatusEnvelope {
   trace_id: string | null;
 }
 
+export interface RunInboxEnvelope {
+  data: {
+    connector_id: string;
+    fields: { format: "password" | "text"; label: string | null; name: string; required: boolean }[];
+    interaction_id: string;
+    kind: string;
+    message: string;
+    run_id: string;
+    stream: string | null;
+    timeout_seconds: number | null;
+  };
+  object: "ref_inbox_item";
+}
+
 interface TimelinePageOptions {
   cursor?: string | null;
 }
@@ -1377,6 +1391,18 @@ export async function getRunTimeline(runId: string, options?: TimelinePageOption
 export async function getRunStatus(runId: string): Promise<RunStatusEnvelope | null> {
   try {
     return normalizeRunStatus(await refFetch(`/_ref/runs/${encodeURIComponent(runId)}`));
+  } catch (err) {
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+export async function getRunInbox(runId: string): Promise<RunInboxEnvelope["data"] | null> {
+  try {
+    const raw = (await refFetch(`/_ref/inbox/${encodeURIComponent(runId)}.json`)) as RunInboxEnvelope;
+    return raw.data;
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;

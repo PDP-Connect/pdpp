@@ -139,6 +139,9 @@ const PAGE_POLLER_GATE_RE = /<RunDetailPoller enabled=\{active\} \/>/;
 const PAGE_CANCEL_GATE_RE = /\{active \? <CancelRunControl runId=\{runId\} \/> : null\}/;
 const PAGE_DISPLAY_FROM_ENVELOPE_RE = /resolveDisplayTerminalStatus\(\{/;
 const PAGE_DISPLAY_FROM_RUN_STATUS_RE = /mapRunHandleStatusToDisplay\(runStatus\?\.status \?\? null\)/;
+const PAGE_INBOX_RE = /getRunInbox\(runId\)/;
+const PAGE_INBOX_PREFERRED_RE = /resolveCurrentRunAssistance\(events, inbox\)/;
+const PAGE_LOAD_MORE_RE = /loadMoreHref=\{envelope\.truncated && envelope\.next_cursor/;
 
 test("run detail page derives `active` from run-status handle, falling back to envelope terminal_status", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -156,6 +159,13 @@ test("the displayed terminal class is resolved via the envelope-anchored helper"
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, PAGE_DISPLAY_FROM_ENVELOPE_RE);
   assert.match(src, PAGE_DISPLAY_FROM_RUN_STATUS_RE);
+});
+
+test("run detail prefers the owner-safe current inbox projection for pending legacy interaction", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, PAGE_INBOX_RE);
+  assert.match(src, PAGE_INBOX_PREFERRED_RE);
+  assert.match(src, PAGE_LOAD_MORE_RE);
 });
 
 // ── ref-client: TimelineEnvelope carries terminal_status through normalize ────

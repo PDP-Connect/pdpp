@@ -68,7 +68,7 @@ import { isUnexpectedStreamDeclaration, streamCountLabel } from "../../lib/strea
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { findManifestForConnectorId } from "../lib/relationships.ts";
 import { formatConnectorHeaderCount } from "../sources-view-model.ts";
-import { resumeConnectorScheduleAction } from "./actions.ts";
+import { reactivateConnectionAction, resumeConnectorScheduleAction } from "./actions.ts";
 import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
@@ -634,7 +634,13 @@ function ConnectorPageView({
 
       {streakDots.length > 0 ? <StreakStrip dots={streakDots} /> : null}
 
-      {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
+      {revoked ? (
+        <RevokedConnectionSection
+          connectionId={connectorInstanceId ?? connectionId}
+          connectorId={connectorId}
+          revokedAt={overview.revokedAt ?? null}
+        />
+      ) : null}
 
       <ConnectionDiagnostics
         connectionHealth={connectionHealth}
@@ -849,13 +855,16 @@ function ConnectorPrimaryHeaderAction({
 
   if (revoked) {
     return (
-      <Link
-        className={buttonVariants({ size: "sm", variant: "default" })}
-        href={addSourceHrefForConnector(connectorId)}
-        title="This connection is revoked. Reconnect starts the supported setup path for this source."
-      >
-        Reconnect
-      </Link>
+      <form action={reactivateConnectionAction}>
+        <input name="connection_id" type="hidden" value={connectionId ?? ""} />
+        <IcButton
+          disabled={!connectionId}
+          size="sm"
+          title="Reactivate this connection without erasing its retained data."
+        >
+          Reactivate
+        </IcButton>
+      </form>
     );
   }
   if (renderedOwnerAction) {
@@ -1386,18 +1395,35 @@ function ConnectionIdentityLine({
   );
 }
 
-function RevokedConnectionSection({ connectorId, revokedAt }: { connectorId: string; revokedAt: string | null }) {
+function RevokedConnectionSection({
+  connectionId,
+  connectorId,
+  revokedAt,
+}: {
+  connectionId: string;
+  connectorId: string;
+  revokedAt: string | null;
+}) {
   return (
     <Section
-      description="Future collection is stopped for this connection. Retained records, grants, runs, and audit evidence stay visible; reconnect starts a fresh setup path for this source."
+      description="Future collection is stopped for this connection. Reactivate this same connection to resume collection; records, grants, schedules, and history are preserved. Nothing is erased."
       title="Revoked connection"
     >
-      <Link
-        className={buttonVariants({ size: "sm", variant: "default" })}
-        href={addSourceHrefForConnector(connectorId)}
-      >
-        Reconnect source
-      </Link>
+      <div className="flex flex-wrap items-center gap-3">
+        <form action={reactivateConnectionAction} data-testid="source-detail-reactivate-form">
+          <input name="connection_id" type="hidden" value={connectionId} />
+          <IcButton type="submit" variant="default">
+            Reactivate connection
+          </IcButton>
+        </form>
+        <Link
+          className={buttonVariants({ size: "sm", variant: "ghost" })}
+          href={addSourceHrefForConnector(connectorId)}
+          title="Create a separate connection for a different account or identity."
+        >
+          Create a new connection
+        </Link>
+      </div>
       {revokedAt ? (
         <p className="pdpp-caption mt-3 text-muted-foreground">
           Revoked <IcTimestamp value={revokedAt} />.
