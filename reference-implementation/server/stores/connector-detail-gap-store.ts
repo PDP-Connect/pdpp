@@ -977,9 +977,11 @@ export function createSqliteConnectorDetailGapStore() {
       connectorId: string,
       {
         status,
+        reasons = null,
         connectorInstanceId = null,
       }: {
         status: string;
+        reasons?: readonly string[] | null;
         connectorInstanceId?: string | null;
       }
     ): Promise<CountByStream[]> {
@@ -987,6 +989,8 @@ export function createSqliteConnectorDetailGapStore() {
         throw new Error(`Unsupported connector detail gap status: ${status}`);
       }
       const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
+      const reasonScope = normalizeReasonScope(reasons);
+      const reasonPlaceholders = optionalSqlPlaceholders(reasonScope);
       // REVIEWED-DYNAMIC: bounded grouped count-by-status aggregate over the
       // store-owned detail-gap table; only stream names and counts are returned.
       const rows = [
@@ -996,10 +1000,11 @@ export function createSqliteConnectorDetailGapStore() {
         WHERE connector_id = ?
           AND status = ?
           AND (? IS NULL OR connector_instance_id = ?)
+          ${reasonScope ? `AND reason IN (${reasonPlaceholders})` : ""}
         GROUP BY stream
         ORDER BY stream
       `,
-          [connectorId, status, scopedConnectorInstanceId, scopedConnectorInstanceId]
+          [connectorId, status, scopedConnectorInstanceId, scopedConnectorInstanceId, ...(reasonScope ?? [])]
         ),
       ];
       return rows.map((row) => ({ count: coerceCount(row.gap_count ?? 0), stream: row.stream }));
@@ -1007,7 +1012,7 @@ export function createSqliteConnectorDetailGapStore() {
 
     countGapsByStatusByStreamForConnectorInstanceIds(
       connectorInstanceIds: readonly (string | null | undefined)[],
-      { status }: { status: string }
+      { reasons = null, status }: { reasons?: readonly string[] | null; status: string }
     ): Promise<Map<string, Map<string, number>>> {
       assertValidGapStatus(status);
       const ids = exactConnectorInstanceIds(connectorInstanceIds);
@@ -1015,20 +1020,26 @@ export function createSqliteConnectorDetailGapStore() {
         return Promise.resolve(new Map());
       }
       const result = new Map<string, Map<string, number>>();
+      const reasonValues = normalizeReasonScope(reasons);
+      const reasonChunks = reasonValues ? chunked(reasonValues, SQLITE_BATCH_REASON_CHUNK_SIZE) : [null];
       for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
         const placeholders = chunk.map(() => "?").join(", ");
-        const rows = [
-          ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string; stream: string; gap_count: number }>(
-            `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
-           WHERE connector_instance_id IN (${placeholders}) AND status = ?
-           GROUP BY connector_instance_id, stream`,
-            [...chunk, status]
-          ),
-        ];
-        for (const row of rows) {
-          const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
-          counts.set(row.stream, coerceCount(row.gap_count));
-          result.set(row.connector_instance_id, counts);
+        for (const reasonChunk of reasonChunks) {
+          const reasonPlaceholders = optionalSqlPlaceholders(reasonChunk);
+          const rows = [
+            ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string; stream: string; gap_count: number }>(
+              `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
+             WHERE connector_instance_id IN (${placeholders}) AND status = ?
+             ${reasonChunk ? `AND reason IN (${reasonPlaceholders})` : ""}
+             GROUP BY connector_instance_id, stream`,
+              [...chunk, status, ...(reasonChunk ?? [])]
+            ),
+          ];
+          for (const row of rows) {
+            const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
+            counts.set(row.stream, (counts.get(row.stream) ?? 0) + coerceCount(row.gap_count));
+            result.set(row.connector_instance_id, counts);
+          }
         }
       }
       return Promise.resolve(result);
@@ -1834,9 +1845,11 @@ export function createPostgresConnectorDetailGapStore() {
       connectorId: string,
       {
         status,
+        reasons = null,
         connectorInstanceId = null,
       }: {
         status: string;
+        reasons?: readonly string[] | null;
         connectorInstanceId?: string | null;
       }
     ): Promise<CountByStream[]> {
@@ -1844,16 +1857,18 @@ export function createPostgresConnectorDetailGapStore() {
         throw new Error(`Unsupported connector detail gap status: ${status}`);
       }
       const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
+      const reasonScope = normalizeReasonScope(reasons);
       const result = await postgresQuery(
         `
         SELECT stream, COUNT(*) AS gap_count FROM connector_detail_gaps
         WHERE connector_id = $1
           AND status = $2
-          AND ($3::text IS NULL OR connector_instance_id = $3)
+          AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
+          AND ($4::text IS NULL OR connector_instance_id = $4)
         GROUP BY stream
         ORDER BY stream
       `,
-        [connectorId, status, scopedConnectorInstanceId]
+        [connectorId, status, reasonScope, scopedConnectorInstanceId]
       );
       return (result.rows as { stream: string; gap_count: number }[]).map((row) => ({
         count: coerceCount(row.gap_count ?? 0),
@@ -1863,7 +1878,7 @@ export function createPostgresConnectorDetailGapStore() {
 
     async countGapsByStatusByStreamForConnectorInstanceIds(
       connectorInstanceIds: readonly (string | null | undefined)[],
-      { status }: { status: string }
+      { reasons = null, status }: { reasons?: readonly string[] | null; status: string }
     ): Promise<Map<string, Map<string, number>>> {
       assertValidGapStatus(status);
       const ids = exactConnectorInstanceIds(connectorInstanceIds);
@@ -1873,8 +1888,9 @@ export function createPostgresConnectorDetailGapStore() {
       const query = await postgresQuery<{ connector_instance_id: string; stream: string; gap_count: number }>(
         `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
          WHERE connector_instance_id = ANY($1::text[]) AND status = $2
+           AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
          GROUP BY connector_instance_id, stream`,
-        [ids, status]
+        [ids, status, normalizeReasonScope(reasons)]
       );
       const result = new Map<string, Map<string, number>>();
       for (const row of query.rows) {

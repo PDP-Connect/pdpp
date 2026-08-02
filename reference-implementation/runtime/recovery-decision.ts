@@ -101,6 +101,19 @@ export const INFORMATIONAL_RECOVERY_REASONS: ReadonlySet<string> = new Set([
   "user_disabled",
 ]);
 
+/**
+ * Terminal reasons that record an accepted collection policy rather than a
+ * source or connector defect. The durable row stays terminal and visible; a
+ * coverage projection must not turn one of these rows into a repair request.
+ *
+ * `too_large` is connector-neutral policy vocabulary: it describes the
+ * configured collection boundary, not a Gmail-specific payload shape.
+ */
+export const POLICY_TERMINAL_GAP_REASONS: ReadonlySet<string> = new Set([
+  "too_large",
+  ...INFORMATIONAL_RECOVERY_REASONS,
+]);
+
 /** Recovery classes that count as durable, drainable non-pressure recovery work. */
 export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set<RecoveryClass>([
   "run_cap_deferred",

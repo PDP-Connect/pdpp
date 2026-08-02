@@ -74,6 +74,7 @@ import {
 } from "../runtime/owner-state.ts";
 import {
   deriveRecoveryStall,
+  POLICY_TERMINAL_GAP_REASONS,
   RECOVERY_STALL_CADENCE_MS,
   type RecoveryAdmissionDiagnostics,
   type RecoveryGapRow,
@@ -563,6 +564,10 @@ interface DetailGapProjection {
    * about 100% (§6.3).
    */
   readonly terminal: number | null;
+  /**
+   * Terminal gaps that still require a repair. Policy-terminal gaps remain in
+   * `terminal`, but do not make a stream's collection coverage terminal.
+   */
   readonly terminalByStream: ReadonlyMap<string, number> | null;
   readonly unreliable: boolean;
 }
@@ -570,19 +575,19 @@ interface DetailGapProjection {
 interface ConnectorDetailGapStoreLike {
   countGapsByStatusByStreamForConnector?: (
     connectorId: string,
-    options: { status: string; connectorInstanceId?: string | null }
+    options: { status: string; reasons?: string[] | null; connectorInstanceId?: string | null }
   ) => Promise<readonly { stream?: unknown; count?: unknown }[]> | readonly { stream?: unknown; count?: unknown }[];
   countGapsByStatusByStreamForConnectorInstanceIds?: (
     connectorInstanceIds: readonly string[],
-    options: { status: string }
+    options: { status: string; reasons?: string[] | null }
   ) => Promise<Map<string, ReadonlyMap<string, number>>> | Map<string, ReadonlyMap<string, number>>;
   countGapsByStatusForConnector?: (
     connectorId: string,
-    options: { status: string; reasons?: readonly string[] | null; connectorInstanceId?: string | null }
+    options: { status: string; reasons?: string[] | null; connectorInstanceId?: string | null }
   ) => Promise<number> | number;
   countGapsByStatusForConnectorInstanceIds?: (
     connectorInstanceIds: readonly string[],
-    options: { status: string; reasons?: readonly string[] | null }
+    options: { status: string; reasons?: string[] | null }
   ) => Promise<Map<string, number>> | Map<string, number>;
   listPendingGaps: (input: {
     connectorId: string;
@@ -1509,7 +1514,7 @@ async function getConnectorDetailGapProjection(
       readLimit: DETAIL_GAP_PROJECTION_LIMIT,
       recovered: await getRecoveredSourcePressureGapCount(store, connectorId, connectorInstanceId),
       terminal: await getTerminalGapCount(store, connectorId, connectorInstanceId),
-      terminalByStream: await getTerminalGapCountsByStream(store, connectorId, connectorInstanceId),
+      terminalByStream: await getRepairBlockingTerminalGapCountsByStream(store, connectorId, connectorInstanceId),
       unreliable: false,
     };
   } catch {
@@ -1558,11 +1563,11 @@ async function getRecoveredSourcePressureGapCount(
 
 /**
  * Optional `terminal` count (§10-A) for the backlog rollup: an exact,
- * connector-wide count of detail gaps in the `terminal` status (permanently
- * unfillable — 404/410/permanent error, recovery budget exhausted). Unlike
- * `recovered`, this is NOT reason-scoped: a gap becomes terminal because of a
- * non-transient HTTP error regardless of its original defer reason, so the
- * honest "N no longer retrievable" count (§6.3) spans all terminal gaps.
+ * connector-wide count of detail gaps in the `terminal` status (a permanent
+ * provider failure, exhausted recovery, or an accepted policy boundary).
+ * Unlike `recovered`, this is NOT reason-scoped: the honest "N no longer
+ * retrievable under the configured policy" count (§6.3) spans all terminal
+ * gaps, including those that no longer require a connector repair.
  * `null` means unmeasured, never a fabricated zero.
  */
 async function getTerminalGapCount(
@@ -1586,7 +1591,27 @@ async function getTerminalGapCount(
   }
 }
 
-async function getTerminalGapCountsByStream(
+function subtractPolicyTerminalGapCounts(
+  terminalByStream: ReadonlyMap<string, number>,
+  policyTerminalByStream: ReadonlyMap<string, number>
+): Map<string, number> {
+  const repairBlocking = new Map<string, number>();
+  for (const [stream, terminalCount] of terminalByStream) {
+    const remaining = terminalCount - (policyTerminalByStream.get(stream) ?? 0);
+    if (remaining > 0) {
+      repairBlocking.set(stream, remaining);
+    }
+  }
+  return repairBlocking;
+}
+
+/**
+ * Counts terminal gaps that are evidence-backed repair work. A policy closure
+ * (for example a Gmail attachment whose provider-declared size exceeds the
+ * configured maximum) remains terminal evidence and is still counted by
+ * `getTerminalGapCount`; it does not imply that a connector fix can hydrate it.
+ */
+export async function getRepairBlockingTerminalGapCountsByStream(
   store: ConnectorDetailGapStoreLike,
   connectorId: string,
   connectorInstanceId?: string
@@ -1595,22 +1620,28 @@ async function getTerminalGapCountsByStream(
     return null;
   }
   try {
-    const rows = await Promise.resolve(
-      store.countGapsByStatusByStreamForConnector(connectorId, {
-        connectorInstanceId: connectorInstanceId ?? null,
-        status: "terminal",
-      })
-    );
-    const map = new Map<string, number>();
-    for (const row of rows) {
-      const stream = typeof row?.stream === "string" ? row.stream : "";
-      const count = typeof row?.count === "number" ? row.count : Number(row?.count);
-      if (!(stream && Number.isFinite(count)) || count <= 0) {
-        continue;
+    const options = { connectorInstanceId: connectorInstanceId ?? null, status: "terminal" };
+    const [rows, policyRows] = await Promise.all([
+      Promise.resolve(store.countGapsByStatusByStreamForConnector(connectorId, options)),
+      Promise.resolve(
+        store.countGapsByStatusByStreamForConnector(connectorId, {
+          ...options,
+          reasons: [...POLICY_TERMINAL_GAP_REASONS],
+        })
+      ),
+    ]);
+    const toMap = (counts: readonly { stream?: unknown; count?: unknown }[]) => {
+      const map = new Map<string, number>();
+      for (const row of counts) {
+        const stream = typeof row?.stream === "string" ? row.stream : "";
+        const count = typeof row?.count === "number" ? row.count : Number(row?.count);
+        if (stream && Number.isFinite(count) && count > 0) {
+          map.set(stream, Math.floor(count));
+        }
       }
-      map.set(stream, Math.floor(count));
-    }
-    return map;
+      return map;
+    };
+    return subtractPolicyTerminalGapCounts(toMap(rows), toMap(policyRows));
   } catch {
     return null;
   }
@@ -3408,6 +3439,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     recovered,
     terminal,
     terminalByStream,
+    policyTerminalByStream,
     attention,
     acquisition,
     credentials,
@@ -3431,6 +3463,12 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     Promise.resolve(detailStore.countGapsByStatusByStreamForConnectorInstanceIds?.(ids, { status: "terminal" })).catch(
       () => null
     ),
+    Promise.resolve(
+      detailStore.countGapsByStatusByStreamForConnectorInstanceIds?.(ids, {
+        reasons: [...POLICY_TERMINAL_GAP_REASONS],
+        status: "terminal",
+      })
+    ).catch(() => null),
     getDefaultConnectorAttentionStore()
       .listOpenAttentionByConnectorInstanceIds(ids, { limit: 50, now: nowIso })
       .catch(() => null),
@@ -3462,7 +3500,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     );
   }
   const detailGapsByInstanceId =
-    pending && recovered && terminal && terminalByStream
+    pending && recovered && terminal && terminalByStream && policyTerminalByStream
       ? new Map(
           ids.map((id) => [
             id,
@@ -3471,7 +3509,10 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
               readLimit: DETAIL_GAP_PROJECTION_LIMIT,
               recovered: recovered.get(id) ?? 0,
               terminal: terminal.get(id) ?? 0,
-              terminalByStream: terminalByStream.get(id) ?? new Map(),
+              terminalByStream: subtractPolicyTerminalGapCounts(
+                terminalByStream.get(id) ?? new Map(),
+                policyTerminalByStream.get(id) ?? new Map()
+              ),
               unreliable: false,
             } satisfies DetailGapProjection,
           ])
