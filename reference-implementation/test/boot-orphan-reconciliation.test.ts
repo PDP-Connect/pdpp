@@ -456,7 +456,7 @@ test("SQLite: orphan with no run_history row (writer identity guard) does not th
 });
 
 test("Postgres parity: boot reconciliation converges run_history to terminal status=abandoned", {
-  skip: !POSTGRES_URL,
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
 }, async () => {
   // biome-ignore lint/style/noNonNullAssertion: guarded by { skip: !POSTGRES_URL } above.
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL! });
