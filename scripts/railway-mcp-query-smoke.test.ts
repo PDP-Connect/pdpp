@@ -31,7 +31,7 @@ import {
   SEED_STREAM,
 } from "./railway-mcp-query-smoke.ts";
 
-const DETERMINISTIC_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
+const FIXED_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
 const MISSING_REASON_PATTERN = /missing/;
 const MCP_ERROR_REASON_PATTERN = /MCP error/;
 
@@ -40,7 +40,7 @@ test("seed corpus: keys and data.id agree (ingestRecord identity rule)", () => {
   for (const record of SEED_RECORDS) {
     assert.equal(typeof record.key, "string");
     assert.equal(record.data.id, record.key, "data.id must equal key or ingest rejects it");
-    assert.match(record.emitted_at, DETERMINISTIC_ISO_PATTERN, "deterministic ISO emitted_at");
+    assert.match(record.emitted_at, FIXED_ISO_PATTERN, "fixed fixture ISO emitted_at");
   }
 });
 
@@ -54,7 +54,7 @@ test("buildSeedNdjson: one JSON record per line, round-trips", () => {
   assert.ok(!ndjson.endsWith("\n"));
 });
 
-test("buildSeedNdjson: deterministic across calls (byte-identical)", () => {
+test("buildSeedNdjson: stable across calls (byte-identical)", () => {
   assert.equal(buildSeedNdjson(), buildSeedNdjson());
 });
 
@@ -165,7 +165,7 @@ test("classifyAnonymousMcpStatus: 401/403 refuse, 2xx is a hard failure", () => 
   assert.equal(classifyAnonymousMcpStatus(500).refused, true);
 });
 
-test("pkceChallenge: deterministic base64url S256 of the verifier", () => {
+test("pkceChallenge: known-input base64url S256 of the verifier", () => {
   // RFC 7636 Appendix B reference vector.
   const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
   assert.equal(pkceChallenge(verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");

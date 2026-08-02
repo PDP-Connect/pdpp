@@ -2,7 +2,7 @@
 
 This gate proves the forkable reference implementation from a fresh Docker
 Compose project. It uses the existing release matrix, owner-journey acceptance
-scan, hosted MCP OAuth tests, and deterministic fixture-source smoke. It does
+scan, hosted MCP OAuth tests, and a stable fixture-source smoke. It does
 not change the operator UI or reference runtime.
 
 Run it after a release has published one exact version to npm and immutable
@@ -28,13 +28,20 @@ proves, in order:
 - the public landing artifact does not advertise a non-hosted MCP origin;
 - Compose config, image resolution, startup, service health, metadata, and the
   unauthenticated owner redirect;
-- a deterministic non-secret fixture source produces records, then hosted
+- a stable non-secret fixture source produces records, then hosted
   OAuth/PKCE issues a scoped client that can query them; anonymous access,
   owner bearers, revoked access tokens, and revoked refresh tokens are denied;
-- all Compose containers, volumes, and orphans are removed.
+- all containers in the Compose project, its labeled volumes, and same-project
+  orphans are removed.
 
-The receipt contains no credentials. Verify that it is still bound to the same
-committed source before replaying:
+The receipt is secret-free and separates stable outcome evidence from per-run
+metadata. It binds the source HEAD and source closure, the resolved image
+digests, and OCI source/revision labels when images advertise them. Missing
+labels are recorded as unavailable; the smoke does not infer image-to-SHA
+provenance. The Compose project nonce, loopback port, owner credentials, PKCE
+verifier, and observation timestamp are intentionally different per run.
+Verify that the stable outcome is still bound to the same committed source
+before replaying:
 
 ```sh
 pnpm release:selfservice-smoke -- \
@@ -43,7 +50,7 @@ pnpm release:selfservice-smoke -- \
 
 Gmail plus Claude Code is a separate live UAT named `selfservice-live-uat`. It
 must use a real deployed origin, a real Gmail account/app password, and the
-real Claude Code OAuth callback. The deterministic gate never fakes that UAT;
+real Claude Code OAuth callback. The fixture gate never fakes that UAT;
 follow [`hosted-mcp-setup.md`](./hosted-mcp-setup.md) only after the fixture
 gate passes. No live deploy, registry publish, or external mutation is part of
 this command.

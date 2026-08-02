@@ -8,8 +8,8 @@
 // release matrix proves package artifacts under its pinned Node/Docker rows;
 // owner-journey proves the shipped command surface; hosted-mcp-oauth proves
 // the in-process OAuth contract; and railway-mcp-query-smoke drives the same
-// public HTTP surface against a fresh Compose deployment with deterministic,
-// non-secret records.
+// public HTTP surface against a fresh Compose deployment with a stable,
+// non-secret fixture corpus.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -25,7 +25,7 @@ import {
   classifyAnonymousMcpStatus,
   type LiveSmokeResult,
   runLiveSmoke,
-  SEED_RECORDS
+  SEED_RECORDS,
 } from "./railway-mcp-query-smoke.ts";
 import { currentSnapshot, PACKAGE_NAMES, type Snapshot, sourceClosure } from "./release-package-matrix.ts";
 
@@ -33,11 +33,31 @@ const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 const COMPOSE_FILE = path.join(REPOSITORY_ROOT, "deploy/docker/docker-compose.yml");
 const LANDING_FILE = path.join(REPOSITORY_ROOT, "apps/site/src/app/reference/page.tsx");
 const MIN_NODE_VERSION = "22.14.0";
-const RECEIPT_SCHEMA = "pdpp.release-selfservice-smoke/v1";
+const RECEIPT_SCHEMA = "pdpp.release-selfservice-smoke/v2";
 const DIGEST_IMAGE_PATTERN = /^[^\s@]+(?:\/[^\s@]+)*@sha256:[a-f0-9]{64}$/;
 const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const NODE_VERSION_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)/;
+const HEX_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
+const SOURCE_REVISION_PATTERN = /^[a-f0-9]{40,64}$/;
+const IMAGE_REFERENCE_DIGEST_PATTERN = /@(sha256:[a-f0-9]{64})$/;
+const FULL_IMAGE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const JSON_START_PATTERN = /\[|{/;
+const LIVE_CARD_PATTERN = /<ConnectAgentCard\b[^>]*\bmode\s*=\s*(?:"live"|'live'|\{"live"\})/s;
+const REQUEST_ORIGIN_PATTERN = /\bgetRequestOrigin\b|x-forwarded-host|x-forwarded-proto/;
+const PROVIDER_ORIGIN_PATTERN = /<ConnectAgentCard\b[^>]*providerUrl\s*=\s*\{providerUrl\}/s;
+const COMPOSE_PROJECT_NONCE_PATTERN = /^[a-f0-9]{12}$/;
+const COMPOSE_PROJECT_HEAD_PATTERN = /^[a-f0-9]{12,64}$/;
+const COMPOSE_PROJECT_NONCE_BYTES = 6;
+const OCI_REVISION_LABEL = "org.opencontainers.image.revision";
+const OCI_SOURCE_LABEL = "org.opencontainers.image.source";
+const FIRST_PARTY_IMAGE_NAMES = new Set(["reference", "web"]);
+const RECEIPT_SECRET_PATTERN =
+  /(?:ownerPassword|credentialEncryptionKey|postgresPassword|accessToken|refreshToken|sessionCookie|codeVerifier|deviceCode)/;
+const RECEIPT_SECRET_ARGUMENT_PATTERN =
+  /(?:--owner-password|PDPP_(?:OWNER_PASSWORD|CREDENTIAL_ENCRYPTION_KEY|POSTGRES_PASSWORD)=)/;
 const OWNER_REDIRECT_STATUSES = new Set([303, 307, 308]);
 const COMPOSE_SERVICES = ["postgres", "reference", "web"] as const;
+const STRING_COMPARE = (left: string, right: string): number => left.localeCompare(right);
 
 export interface LandingArtifactVerdict {
   findings: string[];
@@ -51,13 +71,13 @@ export interface LandingArtifactVerdict {
  */
 export function inspectLandingArtifact(source: string): LandingArtifactVerdict {
   const findings: string[] = [];
-  if (/<ConnectAgentCard\b[^>]*\bmode\s*=\s*(?:"live"|'live'|\{"live"\})/s.test(source)) {
+  if (LIVE_CARD_PATTERN.test(source)) {
     findings.push("public landing artifact renders a live MCP card");
   }
-  if (/\bgetRequestOrigin\b|x-forwarded-host|x-forwarded-proto/.test(source)) {
+  if (REQUEST_ORIGIN_PATTERN.test(source)) {
     findings.push("public landing artifact derives its connection origin from the docs request");
   }
-  if (/<ConnectAgentCard\b[^>]*providerUrl\s*=\s*\{providerUrl\}/s.test(source)) {
+  if (PROVIDER_ORIGIN_PATTERN.test(source)) {
     findings.push("public landing artifact passes the docs origin into the MCP card");
   }
   return { findings, ok: findings.length === 0 };
@@ -76,7 +96,9 @@ export function isPinnedImageReference(value: string | undefined): value is stri
   return typeof value === "string" && DIGEST_IMAGE_PATTERN.test(value.trim());
 }
 
-export function assertPinnedImageReferences(images: Record<string, string | undefined>): void {
+export function assertPinnedImageReferences(
+  images: Record<string, string | undefined>
+): asserts images is Record<string, string> {
   const missing = Object.entries(images)
     .filter(([, value]) => !isPinnedImageReference(value))
     .map(([name, value]) => `${name}=${value ?? "(missing)"}`);
@@ -87,8 +109,128 @@ export function assertPinnedImageReferences(images: Record<string, string | unde
   );
 }
 
+export type ImageRevisionBinding = "matches-head" | "does-not-match-head" | "not-advertised";
+
+export interface DockerImageInspection {
+  labels: Record<string, string>;
+  repoDigests: string[];
+}
+
+export interface ImageProvenance {
+  requested: string;
+  resolvedDigest: string;
+  sourceRepository: string | null;
+  sourceRevision: string | null;
+  sourceRevisionBinding: ImageRevisionBinding;
+}
+
+function requestedImageDigest(reference: string): string {
+  const match = IMAGE_REFERENCE_DIGEST_PATTERN.exec(reference);
+  assert.ok(match, `image reference is missing an immutable digest: ${reference}`);
+  const [, digest] = match;
+  assert.ok(digest, `image reference is missing an immutable digest: ${reference}`);
+  return digest;
+}
+
+export function parseDockerImageInspection(output: string): DockerImageInspection {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.trim());
+  } catch (error) {
+    throw new SmokeFailure("docker image inspect returned invalid JSON", { cause: error });
+  }
+  const document = Array.isArray(parsed) ? parsed[0] : parsed;
+  assert.ok(document && typeof document === "object", "docker image inspect returned no image document");
+  const record = document as {
+    Config?: { Labels?: unknown };
+    RepoDigests?: unknown;
+  };
+  const repoDigests = Array.isArray(record.RepoDigests)
+    ? record.RepoDigests.filter((value): value is string => typeof value === "string")
+    : [];
+  const labels =
+    record.Config?.Labels && typeof record.Config.Labels === "object"
+      ? Object.fromEntries(
+          Object.entries(record.Config.Labels)
+            .filter((entry) => typeof entry[1] === "string")
+            .map(([key, value]) => [key, String(value)])
+        )
+      : {};
+  return { labels, repoDigests };
+}
+
+export function imageProvenanceFindings(
+  imageName: string,
+  requested: string,
+  headSha: string,
+  inspection: DockerImageInspection
+): string[] {
+  const expectedDigest = requestedImageDigest(requested);
+  const findings: string[] = [];
+  if (!inspection.repoDigests.some((digest) => digest.endsWith(`@${expectedDigest}`))) {
+    findings.push(`${imageName} resolved digest did not match requested ${expectedDigest}`);
+  }
+  const sourceRevision = inspection.labels[OCI_REVISION_LABEL];
+  if (FIRST_PARTY_IMAGE_NAMES.has(imageName) && sourceRevision && sourceRevision !== headSha) {
+    findings.push(`${imageName} image revision label ${sourceRevision} did not match source HEAD ${headSha}`);
+  }
+  return findings;
+}
+
+function imageRevisionBinding(sourceRevision: string | null, headSha: string): ImageRevisionBinding {
+  if (!sourceRevision) {
+    return "not-advertised";
+  }
+  return sourceRevision === headSha ? "matches-head" : "does-not-match-head";
+}
+
+function imageProvenance(
+  imageName: string,
+  requested: string,
+  headSha: string,
+  inspection: DockerImageInspection
+): ImageProvenance {
+  const findings = imageProvenanceFindings(imageName, requested, headSha, inspection);
+  assert.equal(findings.length, 0, `Docker image provenance failed: ${findings.join("; ")}`);
+  const sourceRevision = inspection.labels[OCI_REVISION_LABEL] ?? null;
+  return {
+    requested,
+    resolvedDigest: requestedImageDigest(requested),
+    sourceRepository: inspection.labels[OCI_SOURCE_LABEL] ?? null,
+    sourceRevision,
+    sourceRevisionBinding: imageRevisionBinding(sourceRevision, headSha),
+  };
+}
+
+function resolveImageProvenance(
+  commands: SmokeCommandReceipt[],
+  images: Record<string, string>,
+  headSha: string
+): Record<string, ImageProvenance> {
+  return Object.fromEntries(
+    Object.entries(images).map(([imageName, requested]) => {
+      const inspection = requireCommand(
+        commands,
+        ["docker", "image", "inspect", "--format", "{{json .}}", requested],
+        `Docker image inspection for ${imageName}`,
+        { recordedCommand: ["docker", "image", "inspect", "--format", "<json>", "<image>"] }
+      );
+      return [imageName, imageProvenance(imageName, requested, headSha, parseDockerImageInspection(inspection.stdout))];
+    })
+  );
+}
+
+export function makeComposeProjectName(
+  headSha: string,
+  nonce = randomBytes(COMPOSE_PROJECT_NONCE_BYTES).toString("hex")
+): string {
+  assert.match(headSha, COMPOSE_PROJECT_HEAD_PATTERN, "Compose project identity must include a committed source HEAD");
+  assert.match(nonce, COMPOSE_PROJECT_NONCE_PATTERN, "Compose project nonce must be a bounded 12-character hex value");
+  return `pdpp-release-smoke-${headSha.slice(0, 12)}-${nonce}`;
+}
+
 function parseVersion(value: string): [number, number, number] {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(value.trim());
+  const match = NODE_VERSION_PATTERN.exec(value.trim());
   assert.ok(match, `invalid Node version: ${value}`);
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
@@ -131,7 +273,7 @@ export function metadataFindings(origin: string, documents: ComposeMetadataDocum
   }
   for (const [name, value] of Object.entries({
     "authorization-server authorization_endpoint": as.authorization_endpoint,
-    "authorization-server token_endpoint": as.token_endpoint
+    "authorization-server token_endpoint": as.token_endpoint,
   })) {
     if (typeof value !== "string" || !value.startsWith(`${origin}/`)) {
       findings.push(`${name} must stay on the composed public origin`);
@@ -184,9 +326,9 @@ export function ownerLoginBoundaryFinding(boundary: OwnerLoginBoundary): string 
 
 export interface ComposeServiceStatus {
   Health?: string;
+  health?: string;
   Service?: string;
   State?: string;
-  health?: string;
   service?: string;
   state?: string;
 }
@@ -245,9 +387,9 @@ export interface LiveBoundaryEvidence {
   anonymousMcpStatus: number;
   clientRefreshAfterRevokeStatus: number | null;
   clientRevokedMcpStatus: number | null;
+  expectedRecordKeys: readonly string[];
   ownerBearerMcpStatus: number | null;
   queryReturnedKeys: readonly string[];
-  expectedRecordKeys: readonly string[];
 }
 
 export function liveBoundaryFindings(evidence: LiveBoundaryEvidence): string[] {
@@ -264,8 +406,8 @@ export function liveBoundaryFindings(evidence: LiveBoundaryEvidence): string[] {
   if (evidence.clientRefreshAfterRevokeStatus !== 400) {
     findings.push(`revoked refresh token must return 400, got ${evidence.clientRefreshAfterRevokeStatus}`);
   }
-  const expected = [...evidence.expectedRecordKeys].sort();
-  const actual = [...evidence.queryReturnedKeys].sort();
+  const expected = [...evidence.expectedRecordKeys].sort(STRING_COMPARE);
+  const actual = [...evidence.queryReturnedKeys].sort(STRING_COMPARE);
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     findings.push(`scoped MCP query returned ${JSON.stringify(actual)}; expected ${JSON.stringify(expected)}`);
   }
@@ -355,6 +497,7 @@ interface LiveReceiptEvidence {
 export interface SelfServiceReceipt {
   artifacts: {
     images: Record<string, string>;
+    imageProvenance: Record<string, ImageProvenance>;
     npm: PublishedArtifactReceipt[];
     releaseVersion: string;
     releaseMatrixReceiptSha256: string;
@@ -365,10 +508,11 @@ export interface SelfServiceReceipt {
     fileSha256: string;
     projectName: string;
   };
-  createdAt: string;
   failure: string | null;
   headSha: string;
   live: LiveReceiptEvidence | null;
+  observedAt: string;
+  outcomeSha256: string;
   receiptSha256: string;
   replayCommand: string;
   schema: string;
@@ -398,6 +542,86 @@ function stableValue(value: unknown): unknown {
   return value;
 }
 
+export function assertImageProvenance(
+  headSha: string,
+  images: Record<string, string>,
+  provenance: Record<string, ImageProvenance>
+): void {
+  assert.deepEqual(
+    Object.keys(provenance).sort(STRING_COMPARE),
+    Object.keys(images).sort(STRING_COMPARE),
+    "receipt Docker provenance set drifted"
+  );
+  for (const [imageName, requested] of Object.entries(images)) {
+    const evidence = provenance[imageName];
+    assert.ok(evidence, `receipt is missing Docker provenance for ${imageName}`);
+    assert.equal(evidence.requested, requested, `${imageName} provenance requested reference drifted`);
+    assert.equal(evidence.resolvedDigest, requestedImageDigest(requested), `${imageName} resolved digest drifted`);
+    assert.match(evidence.resolvedDigest, FULL_IMAGE_DIGEST_PATTERN, `${imageName} resolved digest is invalid`);
+    if (evidence.sourceRevision === null) {
+      assert.equal(evidence.sourceRevisionBinding, "not-advertised", `${imageName} omitted provenance status`);
+    } else {
+      if (FIRST_PARTY_IMAGE_NAMES.has(imageName)) {
+        assert.match(
+          evidence.sourceRevision,
+          SOURCE_REVISION_PATTERN,
+          `${imageName} advertised an invalid OCI source revision`
+        );
+        assert.equal(
+          evidence.sourceRevisionBinding,
+          "matches-head",
+          `${imageName} advertised an OCI source revision that does not match the receipt HEAD`
+        );
+      }
+      assert.equal(
+        evidence.sourceRevisionBinding,
+        imageRevisionBinding(evidence.sourceRevision, headSha),
+        `${imageName} source revision binding is dishonest`
+      );
+    }
+  }
+}
+
+function receiptOutcomeValue(receipt: SelfServiceReceipt): unknown {
+  const live = receipt.live
+    ? {
+        ...receipt.live,
+        expectedRecordKeys: [...receipt.live.expectedRecordKeys].sort(STRING_COMPARE),
+        queryReturnedKeys: [...receipt.live.queryReturnedKeys].sort(STRING_COMPARE),
+      }
+    : null;
+  return {
+    artifacts: {
+      images: receipt.artifacts.images,
+      imageProvenance: receipt.artifacts.imageProvenance,
+      npm: [...receipt.artifacts.npm].sort((left, right) => STRING_COMPARE(left.name, right.name)),
+      releaseVersion: receipt.artifacts.releaseVersion,
+    },
+    checks: receipt.checks,
+    composeFileSha256: receipt.compose.fileSha256,
+    failure: receipt.failure,
+    headSha: receipt.headSha,
+    live,
+    sourceClosureSha256: receipt.sourceClosureSha256,
+    status: receipt.status,
+  };
+}
+
+export function receiptOutcomeDigest(receipt: SelfServiceReceipt): string {
+  return sha256(JSON.stringify(stableValue(receiptOutcomeValue(receipt))));
+}
+
+export function assertReceiptSecretFree(receipt: SelfServiceReceipt): void {
+  const serialized = JSON.stringify(receipt);
+  assert.equal(RECEIPT_SECRET_PATTERN.test(serialized), false, "release smoke receipt contains credential material");
+  assert.equal(
+    receipt.commands.some(({ command }) => command.some((argument) => RECEIPT_SECRET_ARGUMENT_PATTERN.test(argument))),
+    false,
+    "release smoke receipt records a secret-bearing command"
+  );
+  assert.equal(receipt.replayCommand.includes("--owner-password"), false, "replay command contains owner credentials");
+}
+
 export function receiptDigest(receipt: Omit<SelfServiceReceipt, "receiptSha256"> | SelfServiceReceipt): string {
   const { receiptSha256: _ignored, ...body } = receipt as SelfServiceReceipt;
   return sha256(JSON.stringify(stableValue(body)));
@@ -411,17 +635,20 @@ export function assertReceiptIntegrity(receipt: SelfServiceReceipt): void {
     "passed",
     `release smoke receipt is ${receipt.status}: ${receipt.failure ?? "unknown failure"}`
   );
-  assert.ok(receipt.headSha.length > 0, "receipt must bind a committed head SHA");
-  assert.match(receipt.sourceClosureSha256, /^[a-f0-9]{64}$/, "receipt must bind source closure bytes");
+  assertReceiptSecretFree(receipt);
+  assert.match(receipt.headSha, SOURCE_REVISION_PATTERN, "receipt must bind a committed head SHA");
+  assert.match(receipt.sourceClosureSha256, HEX_DIGEST_PATTERN, "receipt must bind source closure bytes");
+  assert.equal(receipt.outcomeSha256, receiptOutcomeDigest(receipt), "receipt stable outcome fields mutated");
   assertPinnedImageReferences(receipt.artifacts.images);
+  assertImageProvenance(receipt.headSha, receipt.artifacts.images, receipt.artifacts.imageProvenance);
   assert.deepEqual(
     Object.keys(receipt.artifacts.images).sort(),
     ["postgres", "reference", "web"],
     "receipt Docker artifact set drifted"
   );
   assert.deepEqual(
-    receipt.artifacts.npm.map((artifact) => artifact.name).sort(),
-    [...PACKAGE_NAMES].sort(),
+    receipt.artifacts.npm.map((artifact) => artifact.name).sort(STRING_COMPARE),
+    [...PACKAGE_NAMES].sort(STRING_COMPARE),
     "receipt npm package set drifted"
   );
   assert.ok(
@@ -435,20 +662,32 @@ export function assertReceiptIntegrity(receipt: SelfServiceReceipt): void {
 
 interface CommandRunResult {
   exitCode: number;
+  resultSha256: string;
   stderr: string;
   stdout: string;
 }
 
 class SmokeFailure extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "SmokeFailure";
   }
 }
 
-function tail(value: string): string {
-  const lines = value.trim().split("\n");
-  return lines.slice(Math.max(0, lines.length - 8)).join("\n");
+function receiptFailureMessage(error: unknown): string {
+  const name = error instanceof Error ? error.name : "UnknownError";
+  const message = error instanceof Error ? error.message : String(error);
+  return `${name} (detail sha256 ${sha256(message)})`;
+}
+
+function spawnErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error) {
+    return String(error);
+  }
+  return "";
 }
 
 function runCommand(
@@ -461,19 +700,41 @@ function runCommand(
     encoding: "utf8",
     env: options.env ?? process.env,
     maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: ["ignore", "pipe", "pipe"],
   });
   const stdout = String(result.stdout ?? "");
-  const spawnError = result.error instanceof Error ? result.error.message : result.error ? String(result.error) : "";
+  const spawnError = spawnErrorMessage(result.error);
   const stderr = [String(result.stderr ?? ""), spawnError].filter(Boolean).join("\n");
   const exitCode = typeof result.status === "number" ? result.status : 1;
+  const resultSha256 = sha256(`${exitCode}\0${stdout}\0${stderr}`);
   commands.push({
     command: options.recordedCommand ?? command,
     cwd: options.recordedCwd ?? options.cwd ?? REPOSITORY_ROOT,
     exitCode,
-    resultSha256: sha256(`${exitCode}\0${stdout}\0${stderr}`)
+    resultSha256,
   });
-  return { exitCode, stderr, stdout };
+  return { exitCode, resultSha256, stderr, stdout };
+}
+
+function runCommandSafely(
+  commands: SmokeCommandReceipt[],
+  command: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; recordedCommand?: string[]; recordedCwd?: string } = {}
+): CommandRunResult {
+  try {
+    return runCommand(commands, command, options);
+  } catch (error) {
+    const stderr = spawnErrorMessage(error);
+    const exitCode = 1;
+    const resultSha256 = sha256(`${exitCode}\0\0\0${stderr}`);
+    commands.push({
+      command: options.recordedCommand ?? command,
+      cwd: options.recordedCwd ?? options.cwd ?? REPOSITORY_ROOT,
+      exitCode,
+      resultSha256,
+    });
+    return { exitCode, resultSha256, stderr, stdout: "" };
+  }
 }
 
 function requireCommand(
@@ -484,28 +745,32 @@ function requireCommand(
 ): CommandRunResult {
   const result = runCommand(commands, command, options);
   if (result.exitCode !== 0) {
-    const detail = tail(result.stderr || result.stdout);
-    throw new SmokeFailure(`${label} failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`);
+    throw new SmokeFailure(`${label} failed (exit ${result.exitCode}; result ${result.resultSha256})`);
   }
   return result;
 }
 
-async function waitForUrl(url: string, label: string, timeoutMs = 120_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = "no response";
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url, { redirect: "manual" });
-      if (response.status >= 200 && response.status < 500) {
-        return;
-      }
-      lastError = `HTTP ${response.status}`;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+async function waitForUrlAttempt(url: string, label: string, deadline: number, lastError: string): Promise<void> {
+  if (Date.now() >= deadline) {
+    throw new SmokeFailure(`timed out waiting for ${label} at ${url}: ${lastError}`);
   }
-  throw new SmokeFailure(`timed out waiting for ${label} at ${url}: ${lastError}`);
+  let nextError = lastError;
+  try {
+    const response = await fetch(url, { redirect: "manual" });
+    if (response.status >= 200 && response.status < 500) {
+      return;
+    }
+    nextError = `HTTP ${response.status}`;
+  } catch (error) {
+    nextError = spawnErrorMessage(error);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  return waitForUrlAttempt(url, label, deadline, nextError);
+}
+
+function waitForUrl(url: string, label: string, timeoutMs = 120_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  return waitForUrlAttempt(url, label, deadline, "no response");
 }
 
 async function fetchJson(origin: string, pathname: string): Promise<{ body: Record<string, unknown>; status: number }> {
@@ -514,8 +779,8 @@ async function fetchJson(origin: string, pathname: string): Promise<{ body: Reco
   let body: Record<string, unknown> = {};
   try {
     body = (text ? JSON.parse(text) : {}) as Record<string, unknown>;
-  } catch {
-    throw new SmokeFailure(`${pathname} returned non-JSON HTTP ${response.status}`);
+  } catch (error) {
+    throw new SmokeFailure(`${pathname} returned non-JSON HTTP ${response.status}`, { cause: error });
   }
   if (response.status !== 200) {
     throw new SmokeFailure(`${pathname} returned HTTP ${response.status}`);
@@ -563,8 +828,8 @@ function publishedArtifactChecks(
           "version",
           "dist.tarball",
           "dist.shasum",
-          "--json"
-        ]
+          "--json",
+        ],
       }
     );
     const metadata = parseNpmViewMetadata(view.stdout);
@@ -581,8 +846,8 @@ function publishedArtifactChecks(
           "--ignore-scripts",
           "--pack-destination",
           "<artifact-dir>",
-          "<package>@<release-version>"
-        ]
+          "<package>@<release-version>",
+        ],
       }
     );
     const tarball = parsePackJson(packed.stdout).filename;
@@ -619,31 +884,61 @@ function releaseMatrixChecks(commands: SmokeCommandReceipt[], receiptPath: strin
   return sha256(readFileSync(receiptPath));
 }
 
-function parseLeadingJson(output: string): unknown {
-  const start = output.search(/[\[{]/);
-  assert.ok(start >= 0, "command did not emit JSON");
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < output.length; index += 1) {
-    const character = output[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
+interface JsonScanState {
+  depth: number;
+  escaped: boolean;
+  inString: boolean;
+}
+
+interface JsonScanResult {
+  complete: boolean;
+  state: JsonScanState;
+}
+
+function advanceJsonScan(state: JsonScanState, character: string): JsonScanResult {
+  if (state.inString) {
+    if (state.escaped) {
+      return { complete: false, state: { ...state, escaped: false } };
+    }
+    if (character === "\\") {
+      return { complete: false, state: { ...state, escaped: true } };
     }
     if (character === '"') {
-      inString = true;
-      continue;
+      return { complete: false, state: { ...state, inString: false } };
     }
-    if (character === "{" || character === "[") depth += 1;
-    else if (character === "}" || character === "]") {
-      depth -= 1;
-      if (depth === 0) return JSON.parse(output.slice(start, index + 1)) as unknown;
+    return { complete: false, state };
+  }
+  if (character === '"') {
+    return { complete: false, state: { ...state, inString: true } };
+  }
+  if (character === "{" || character === "[") {
+    return { complete: false, state: { ...state, depth: state.depth + 1 } };
+  }
+  if (character === "}" || character === "]") {
+    const depth = state.depth - 1;
+    return { complete: depth === 0, state: { ...state, depth } };
+  }
+  return { complete: false, state };
+}
+
+function findJsonDocumentEnd(output: string, start: number): number | null {
+  let state: JsonScanState = { depth: 0, escaped: false, inString: false };
+  for (let index = start; index < output.length; index += 1) {
+    const { complete, state: nextState } = advanceJsonScan(state, output[index] ?? "");
+    state = nextState;
+    if (complete) {
+      return index;
     }
   }
-  throw new SmokeFailure("command emitted incomplete JSON");
+  return null;
+}
+
+function parseLeadingJson(output: string): unknown {
+  const start = output.search(JSON_START_PATTERN);
+  assert.ok(start >= 0, "command did not emit JSON");
+  const end = findJsonDocumentEnd(output, start);
+  assert.ok(end !== null, "command emitted incomplete JSON");
+  return JSON.parse(output.slice(start, end + 1)) as unknown;
 }
 
 function assertDistTagJson(
@@ -676,7 +971,7 @@ function makeComposeEnv({
   origin,
   ownerPassword,
   port,
-  projectName
+  projectName,
 }: {
   images: Record<string, string>;
   origin: string;
@@ -686,25 +981,250 @@ function makeComposeEnv({
 }): { envFile: string; tempRoot: string } {
   const tempRoot = mkdtempSync(path.join(tmpdir(), "pdpp-release-selfservice-"));
   const envFile = path.join(tempRoot, "compose.env");
-  writeFileSync(
-    envFile,
-    [
-      `COMPOSE_PROJECT_NAME=${projectName}`,
-      `PDPP_REFERENCE_IMAGE=${images.reference}`,
-      `PDPP_WEB_IMAGE=${images.web}`,
-      `PDPP_POSTGRES_IMAGE=${images.postgres}`,
-      `PDPP_REFERENCE_ORIGIN=${origin}`,
-      `PDPP_WEB_PORT=${port}`,
-      `PDPP_OWNER_PASSWORD=${ownerPassword}`,
-      `PDPP_CREDENTIAL_ENCRYPTION_KEY=${randomBytes(32).toString("hex")}`,
-      `PDPP_POSTGRES_PASSWORD=${randomBytes(24).toString("base64url")}`,
-      "PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0",
-      ""
-    ].join("\n"),
-    { mode: 0o600 }
-  );
-  chmodSync(envFile, 0o600);
-  return { envFile, tempRoot };
+  try {
+    writeFileSync(
+      envFile,
+      [
+        `COMPOSE_PROJECT_NAME=${projectName}`,
+        `PDPP_REFERENCE_IMAGE=${images.reference}`,
+        `PDPP_WEB_IMAGE=${images.web}`,
+        `PDPP_POSTGRES_IMAGE=${images.postgres}`,
+        `PDPP_REFERENCE_ORIGIN=${origin}`,
+        `PDPP_WEB_PORT=${port}`,
+        `PDPP_OWNER_PASSWORD=${ownerPassword}`,
+        `PDPP_CREDENTIAL_ENCRYPTION_KEY=${randomBytes(32).toString("hex")}`,
+        `PDPP_POSTGRES_PASSWORD=${randomBytes(24).toString("base64url")}`,
+        "PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0",
+        "",
+      ].join("\n"),
+      { mode: 0o600 }
+    );
+    chmodSync(envFile, 0o600);
+    return { envFile, tempRoot };
+  } catch (error) {
+    try {
+      rmSync(tempRoot, { force: true, recursive: true });
+    } catch {
+      // Preserve the original setup error; no Compose project exists yet.
+    }
+    throw new SmokeFailure("Compose environment setup failed", { cause: error });
+  }
+}
+
+export interface ComposeCleanupCommands {
+  containers: string[];
+  down: string[];
+  volumes: string[];
+}
+
+export function composeCleanupCommands(composeArgs: readonly string[], projectName: string): ComposeCleanupCommands {
+  const compose = (args: readonly string[]): string[] => [...composeArgs, ...args];
+  return {
+    down: compose(["down", "--volumes", "--remove-orphans"]),
+    containers: compose(["ps", "--all", "--quiet"]),
+    volumes: ["docker", "volume", "ls", "--quiet", "--filter", `label=com.docker.compose.project=${projectName}`],
+  };
+}
+
+export function signalExitCode(signal: NodeJS.Signals): number {
+  return signal === "SIGINT" ? 130 : 143;
+}
+
+export function installSignalHandlers(onSignal: (signal: NodeJS.Signals) => void): () => void {
+  const onInterrupt = (): void => onSignal("SIGINT");
+  const onTerminate = (): void => onSignal("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  return () => {
+    process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("SIGTERM", onTerminate);
+  };
+}
+
+function createComposeCleanup(
+  commands: SmokeCommandReceipt[],
+  composeArgs: readonly string[],
+  projectName: string,
+  checks: SmokeCheckReceipt[]
+): () => SmokeFailure | null {
+  let complete = false;
+  let cleanupFailure: SmokeFailure | null = null;
+  return () => {
+    if (complete) {
+      return cleanupFailure;
+    }
+    complete = true;
+    const cleanupCommands = composeCleanupCommands(composeArgs, projectName);
+    const failures: string[] = [];
+    const down = runCommandSafely(commands, cleanupCommands.down, {
+      recordedCommand: [
+        "docker",
+        "compose",
+        "--project-name",
+        "<project>",
+        "--env-file",
+        "<compose-env>",
+        "-f",
+        "deploy/docker/docker-compose.yml",
+        "down",
+        "--volumes",
+        "--remove-orphans",
+      ],
+    });
+    if (down.exitCode !== 0) {
+      failures.push(`Compose cleanup failed (exit ${down.exitCode})`);
+    }
+
+    const remainingContainers = runCommandSafely(commands, cleanupCommands.containers, {
+      recordedCommand: [
+        "docker",
+        "compose",
+        "--project-name",
+        "<project>",
+        "--env-file",
+        "<compose-env>",
+        "-f",
+        "deploy/docker/docker-compose.yml",
+        "ps",
+        "--all",
+        "--quiet",
+      ],
+    });
+    if (remainingContainers.exitCode !== 0) {
+      failures.push(`Compose residue check failed (exit ${remainingContainers.exitCode})`);
+    } else if (remainingContainers.stdout.trim()) {
+      failures.push(`Compose cleanup left container residue: ${remainingContainers.stdout.trim()}`);
+    }
+
+    const remainingVolumes = runCommandSafely(commands, cleanupCommands.volumes, {
+      recordedCommand: ["docker", "volume", "ls", "--quiet", "--filter", "label=com.docker.compose.project=<project>"],
+    });
+    if (remainingVolumes.exitCode !== 0) {
+      failures.push(`Compose volume residue check failed (exit ${remainingVolumes.exitCode})`);
+    } else if (remainingVolumes.stdout.trim()) {
+      failures.push(`Compose cleanup left volume residue: ${remainingVolumes.stdout.trim()}`);
+    }
+
+    if (failures.length > 0) {
+      cleanupFailure = new SmokeFailure(failures.join("; "));
+      return cleanupFailure;
+    }
+    checks.push({
+      id: "cleanup",
+      status: "passed",
+      detail: "Compose project containers, volumes, and orphans were removed",
+    });
+    return null;
+  };
+}
+
+function cleanupComposeSafely(cleanup: () => SmokeFailure | null): SmokeFailure | null {
+  try {
+    return cleanup();
+  } catch (error) {
+    return new SmokeFailure("Compose cleanup crashed before residue could be verified", { cause: error });
+  }
+}
+
+function removeComposeTempRoot(tempRoot: string): SmokeFailure | null {
+  try {
+    rmSync(tempRoot, { force: true, recursive: true });
+    return null;
+  } catch (error) {
+    return new SmokeFailure(`Compose temporary files could not be removed: ${tempRoot}`, { cause: error });
+  }
+}
+
+interface ComposeJourneyContext {
+  checks: SmokeCheckReceipt[];
+  commands: SmokeCommandReceipt[];
+  composeArgs: string[];
+  images: Record<string, string>;
+  origin: string;
+  ownerPassword: string;
+  projectName: string;
+  recordedComposeArgs: string[];
+  snapshot: Snapshot;
+}
+
+interface ComposeJourneyResult {
+  composeFileSha256: string;
+  composeProjectName: string;
+  imageProvenance: Record<string, ImageProvenance>;
+  live: LiveSmokeResult;
+}
+
+async function executeComposeJourney(context: ComposeJourneyContext): Promise<ComposeJourneyResult> {
+  const { commands, composeArgs, checks, images, ownerPassword, origin, projectName, recordedComposeArgs, snapshot } =
+    context;
+  requireCommand(commands, [...composeArgs, "config", "--quiet"], "Compose config", {
+    recordedCommand: [...recordedComposeArgs, "config", "--quiet"],
+  });
+  const imagesResult = requireCommand(commands, [...composeArgs, "config", "--images"], "Compose image resolution", {
+    recordedCommand: [...recordedComposeArgs, "config", "--images"],
+  });
+  assertConfiguredImages(imagesResult.stdout, Object.values(images));
+  requireCommand(commands, [...composeArgs, "pull", "--quiet"], "published Docker artifact pull", {
+    recordedCommand: [...recordedComposeArgs, "pull", "--quiet"],
+  });
+  const resolvedImageProvenance = resolveImageProvenance(commands, images, snapshot.headSha);
+  requireCommand(commands, [...composeArgs, "up", "-d", "--remove-orphans"], "Compose start", {
+    recordedCommand: [...recordedComposeArgs, "up", "-d", "--remove-orphans"],
+  });
+  await waitForUrl(origin, "operator console");
+  await waitForUrl(`${origin}/.well-known/oauth-authorization-server`, "authorization metadata");
+  await waitForUrl(`${origin}/.well-known/oauth-protected-resource`, "protected-resource metadata");
+
+  const ps = requireCommand(commands, [...composeArgs, "ps", "--all", "--format", "json"], "Compose readiness status", {
+    recordedCommand: [...recordedComposeArgs, "ps", "--all", "--format", "json"],
+  });
+  assertComposeReadiness(parseComposePsJson(ps.stdout));
+  checks.push({ id: "compose-readiness", status: "passed", detail: "postgres and reference healthy; web running" });
+
+  const as = await fetchJson(origin, "/.well-known/oauth-authorization-server");
+  const rs = await fetchJson(origin, "/.well-known/oauth-protected-resource");
+  assertComposeMetadata(origin, { authorizationServer: as.body, protectedResource: rs.body });
+  checks.push({ id: "metadata", status: "passed", detail: "AS/RS metadata is bound to the composed origin" });
+
+  const ownerResponse = await fetch(origin, { redirect: "manual" });
+  const ownerFinding = ownerLoginBoundaryFinding({
+    origin,
+    status: ownerResponse.status,
+    location: ownerResponse.headers.get("location"),
+  });
+  assert.equal(ownerFinding, null, ownerFinding ?? "owner login boundary failed");
+  checks.push({
+    id: "owner-login-boundary",
+    status: "passed",
+    detail: "unauthenticated owner surface redirects to /owner/login",
+  });
+
+  const live = await runLiveSmoke({
+    logger: () => undefined,
+    origin,
+    ownerPassword,
+    subjectId: "owner_release_smoke",
+    seed: true,
+  });
+  assertLiveBoundaryEvidence({
+    anonymousMcpStatus: live.anonymousMcpStatus,
+    clientRefreshAfterRevokeStatus: live.clientRefreshAfterRevokeStatus,
+    clientRevokedMcpStatus: live.clientRevokedMcpStatus,
+    ownerBearerMcpStatus: live.ownerBearerMcpStatus,
+    queryReturnedKeys: live.queryReturnedKeys,
+    expectedRecordKeys: SEED_RECORDS.map((record) => record.key),
+  });
+  checks.push({
+    id: "connector-and-hosted-mcp",
+    status: "passed",
+    detail: "stable fixture corpus, per-run PKCE, scoped query, owner-bearer rejection, and revocation passed",
+  });
+  return {
+    composeFileSha256: sha256File(COMPOSE_FILE),
+    composeProjectName: projectName,
+    imageProvenance: resolvedImageProvenance,
+    live,
+  };
 }
 
 async function runComposeJourney(
@@ -712,11 +1232,11 @@ async function runComposeJourney(
   images: Record<string, string>,
   snapshot: Snapshot,
   checks: SmokeCheckReceipt[]
-): Promise<{ composeProjectName: string; composeFileSha256: string; live: LiveSmokeResult }> {
+): Promise<ComposeJourneyResult> {
   assertPinnedImageReferences(images);
   const port = await pickPort();
   const origin = `http://127.0.0.1:${port}`;
-  const projectName = `pdpp-release-smoke-${snapshot.headSha.slice(0, 12)}`;
+  const projectName = makeComposeProjectName(snapshot.headSha);
   const ownerPassword = randomBytes(24).toString("base64url");
   const { envFile, tempRoot } = makeComposeEnv({ images, origin, ownerPassword, port, projectName });
   const composeArgs = ["docker", "compose", "--project-name", projectName, "--env-file", envFile, "-f", COMPOSE_FILE];
@@ -728,117 +1248,56 @@ async function runComposeJourney(
     "--env-file",
     "<compose-env>",
     "-f",
-    "deploy/docker/docker-compose.yml"
+    "deploy/docker/docker-compose.yml",
   ];
-  let started = false;
+  const context: ComposeJourneyContext = {
+    commands,
+    composeArgs,
+    checks,
+    images,
+    ownerPassword,
+    origin,
+    projectName,
+    recordedComposeArgs,
+    snapshot,
+  };
+  const cleanup = createComposeCleanup(commands, composeArgs, projectName, checks);
+  const removeSignalHandlers = installSignalHandlers((signal) => {
+    const cleanupError = cleanupComposeSafely(cleanup);
+    if (cleanupError) {
+      process.stderr.write(`${cleanupError.message}\n`);
+    }
+    process.exitCode = signalExitCode(signal);
+    process.exit(process.exitCode);
+  });
+  let result: ComposeJourneyResult | null = null;
+  let operationError: unknown = null;
   try {
-    const config = requireCommand(commands, [...composeArgs, "config", "--quiet"], "Compose config", {
-      recordedCommand: [...recordedComposeArgs, "config", "--quiet"]
-    });
-    void config;
-    const imagesResult = requireCommand(commands, [...composeArgs, "config", "--images"], "Compose image resolution", {
-      recordedCommand: [...recordedComposeArgs, "config", "--images"]
-    });
-    assertConfiguredImages(imagesResult.stdout, Object.values(images));
-    started = true;
-    requireCommand(commands, [...composeArgs, "down", "--volumes", "--remove-orphans"], "Compose pre-clean", {
-      recordedCommand: [...recordedComposeArgs, "down", "--volumes", "--remove-orphans"]
-    });
-    requireCommand(commands, [...composeArgs, "pull", "--quiet"], "published Docker artifact pull", {
-      recordedCommand: [...recordedComposeArgs, "pull", "--quiet"]
-    });
-    requireCommand(commands, [...composeArgs, "up", "-d", "--remove-orphans"], "Compose start", {
-      recordedCommand: [...recordedComposeArgs, "up", "-d", "--remove-orphans"]
-    });
-    await waitForUrl(origin, "operator console");
-    await waitForUrl(`${origin}/.well-known/oauth-authorization-server`, "authorization metadata");
-    await waitForUrl(`${origin}/.well-known/oauth-protected-resource`, "protected-resource metadata");
-
-    const ps = requireCommand(
-      commands,
-      [...composeArgs, "ps", "--all", "--format", "json"],
-      "Compose readiness status",
-      { recordedCommand: [...recordedComposeArgs, "ps", "--all", "--format", "json"] }
-    );
-    const statuses = parseComposePsJson(ps.stdout);
-    assertComposeReadiness(statuses);
-    checks.push({ id: "compose-readiness", status: "passed", detail: "postgres and reference healthy; web running" });
-
-    const as = await fetchJson(origin, "/.well-known/oauth-authorization-server");
-    const rs = await fetchJson(origin, "/.well-known/oauth-protected-resource");
-    assertComposeMetadata(origin, { authorizationServer: as.body, protectedResource: rs.body });
-    checks.push({ id: "metadata", status: "passed", detail: "AS/RS metadata is bound to the composed origin" });
-
-    const ownerResponse = await fetch(origin, { redirect: "manual" });
-    const ownerFinding = ownerLoginBoundaryFinding({
-      origin,
-      status: ownerResponse.status,
-      location: ownerResponse.headers.get("location")
-    });
-    assert.equal(ownerFinding, null, ownerFinding ?? "owner login boundary failed");
-    checks.push({
-      id: "owner-login-boundary",
-      status: "passed",
-      detail: "unauthenticated owner surface redirects to /owner/login"
-    });
-
-    const live = await runLiveSmoke({
-      logger: () => undefined,
-      origin,
-      ownerPassword,
-      subjectId: "owner_release_smoke",
-      seed: true
-    });
-    assertLiveBoundaryEvidence({
-      anonymousMcpStatus: live.anonymousMcpStatus,
-      clientRefreshAfterRevokeStatus: live.clientRefreshAfterRevokeStatus,
-      clientRevokedMcpStatus: live.clientRevokedMcpStatus,
-      ownerBearerMcpStatus: live.ownerBearerMcpStatus,
-      queryReturnedKeys: live.queryReturnedKeys,
-      expectedRecordKeys: SEED_RECORDS.map((record) => record.key)
-    });
-    checks.push({
-      id: "connector-and-hosted-mcp",
-      status: "passed",
-      detail: "deterministic seed, PKCE OAuth, scoped query, owner-bearer rejection, and revocation passed"
-    });
-    return { composeFileSha256: sha256File(COMPOSE_FILE), composeProjectName: projectName, live };
+    result = await executeComposeJourney(context);
   } catch (error) {
-    if (started) {
-      // Keep the receipt useful without echoing application logs that could
-      // contain operator-provided values. The command result is hashed into
-      // the receipt; Docker's own failure is already surfaced by the failed
-      // command's stderr tail.
-      runCommand(commands, [...composeArgs, "logs", "--no-color", "--tail", "80"], {
-        recordedCommand: [...recordedComposeArgs, "logs", "--no-color", "--tail", "80"]
-      });
-    }
-    throw error;
-  } finally {
-    try {
-      if (started) {
-        requireCommand(commands, [...composeArgs, "down", "--volumes", "--remove-orphans"], "Compose cleanup", {
-          recordedCommand: [...recordedComposeArgs, "down", "--volumes", "--remove-orphans"]
-        });
-        const remaining = requireCommand(
-          commands,
-          [...composeArgs, "ps", "--all", "--quiet"],
-          "Compose residue check",
-          { recordedCommand: [...recordedComposeArgs, "ps", "--all", "--quiet"] }
-        );
-        if (remaining.stdout.trim()) {
-          throw new SmokeFailure(`Compose cleanup left container residue: ${remaining.stdout.trim()}`);
-        }
-        checks.push({
-          id: "cleanup",
-          status: "passed",
-          detail: "Compose volumes, containers, and orphans were removed"
-        });
-      }
-    } finally {
-      rmSync(tempRoot, { force: true, recursive: true });
-    }
+    operationError = error;
+    // Keep the receipt useful without echoing application logs that could
+    // contain operator-provided values. The command result is hashed into
+    // the receipt; Docker's own failure is represented by the failed command's
+    // result hash.
+    runCommandSafely(commands, [...composeArgs, "logs", "--no-color", "--tail", "80"], {
+      recordedCommand: [...recordedComposeArgs, "logs", "--no-color", "--tail", "80"],
+    });
   }
+  const cleanupError = cleanupComposeSafely(cleanup);
+  const tempRootError = removeComposeTempRoot(tempRoot);
+  removeSignalHandlers();
+  if (operationError) {
+    throw operationError;
+  }
+  if (cleanupError) {
+    throw cleanupError;
+  }
+  if (tempRootError) {
+    throw tempRootError;
+  }
+  assert.ok(result, "Compose journey completed without a result");
+  return result;
 }
 
 function sha256File(file: string): string {
@@ -852,7 +1311,7 @@ function makeReplayCommand(version: string, images: Record<string, string>): str
     `--reference-image ${images.reference}`,
     `--web-image ${images.web}`,
     `--postgres-image ${images.postgres}`,
-    "--receipt /tmp/pdpp-release-selfservice-replay.json"
+    "--receipt /tmp/pdpp-release-selfservice-replay.json",
   ].join(" ");
 }
 
@@ -870,6 +1329,17 @@ interface ParsedArgs {
   webImage?: string;
 }
 
+type ParsedStringField = Exclude<keyof ParsedArgs, "help">;
+
+const VALUE_FLAGS: Record<string, ParsedStringField> = {
+  "--postgres-image": "postgresImage",
+  "--receipt": "receipt",
+  "--reference-image": "referenceImage",
+  "--verify-receipt": "verifyReceipt",
+  "--version": "version",
+  "--web-image": "webImage",
+};
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = { help: false };
   const nextValue = (index: number, flag: string): string => {
@@ -879,16 +1349,20 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     return value;
   };
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--help" || arg === "-h") parsed.help = true;
-    else if (arg === "--version") parsed.version = nextValue(index++, arg);
-    else if (arg === "--reference-image") parsed.referenceImage = nextValue(index++, arg);
-    else if (arg === "--web-image") parsed.webImage = nextValue(index++, arg);
-    else if (arg === "--postgres-image") parsed.postgresImage = nextValue(index++, arg);
-    else if (arg === "--receipt") parsed.receipt = nextValue(index++, arg);
-    else if (arg === "--verify-receipt") parsed.verifyReceipt = nextValue(index++, arg);
-    else throw new SmokeFailure(`unknown argument ${arg}`);
+  for (let index = 0; index < argv.length; ) {
+    const arg = argv[index] ?? "";
+    if (arg === "--help" || arg === "-h") {
+      parsed.help = true;
+      index += 1;
+      continue;
+    }
+    const field = VALUE_FLAGS[arg];
+    if (field) {
+      parsed[field] = nextValue(index, arg);
+      index += 2;
+      continue;
+    }
+    throw new SmokeFailure(`unknown argument ${arg}`);
   }
   return parsed;
 }
@@ -923,7 +1397,7 @@ function verifyReceipt(pathname: string): void {
 
 const USAGE = `Usage: pnpm release:selfservice-smoke -- [options]
 
-Required for a deterministic run:
+Required for a replayable run:
   --version <published-version>       exact npm release version
   --reference-image <image@sha256>    published reference image digest
   --web-image <image@sha256>          published operator image digest
@@ -934,8 +1408,10 @@ Options:
   --verify-receipt <path>             verify receipt SHA/source closure without running Docker
   -h, --help                          show this help
 
-The deterministic gate uses a fixture source and no external credentials. Gmail plus
-Claude Code is a separate live UAT and is never simulated by this command.`;
+The gate replays a stable fixture source without storing external credentials. The
+Compose nonce, loopback port, owner credentials, PKCE verifier, and observation
+timestamp are intentionally per-run values. Gmail plus Claude Code is a separate
+live UAT and is never simulated by this command.`;
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -952,7 +1428,7 @@ async function main(): Promise<void> {
   const images = {
     postgres: resolveOption(args.postgresImage, "PDPP_POSTGRES_IMAGE"),
     reference: resolveOption(args.referenceImage, "PDPP_REFERENCE_IMAGE"),
-    web: resolveOption(args.webImage, "PDPP_WEB_IMAGE")
+    web: resolveOption(args.webImage, "PDPP_WEB_IMAGE"),
   };
   const head = currentHeadSha();
   const receiptPath =
@@ -962,6 +1438,7 @@ async function main(): Promise<void> {
   let snapshot: Snapshot | null = null;
   let composeProjectName = "not-started";
   let composeFileSha256 = sha256File(COMPOSE_FILE);
+  let imageEvidence: Record<string, ImageProvenance> = {};
   let npmArtifacts: PublishedArtifactReceipt[] = [];
   let releaseMatrixReceiptSha256 = "";
   let liveEvidence: LiveReceiptEvidence | null = null;
@@ -977,19 +1454,19 @@ async function main(): Promise<void> {
     checks.push({
       id: "revision-and-node",
       status: "passed",
-      detail: `clean worktree at ${snapshot.headSha}; Node ${process.version}`
+      detail: `clean worktree at ${snapshot.headSha}; Node ${process.version}`,
     });
     requireCommand(commands, ["docker", "version", "--format", "{{.Server.Version}}"], "Docker availability", {
-      recordedCommand: ["docker", "version", "--format", "<server-version>"]
+      recordedCommand: ["docker", "version", "--format", "<server-version>"],
     });
     requireCommand(commands, ["docker", "compose", "version", "--short"], "Docker Compose availability", {
-      recordedCommand: ["docker", "compose", "version", "--short"]
+      recordedCommand: ["docker", "compose", "version", "--short"],
     });
     assertLandingArtifact(readFileSync(LANDING_FILE, "utf8"));
     checks.push({
       id: "landing-artifact",
       status: "passed",
-      detail: "public landing does not advertise a live MCP origin"
+      detail: "public landing does not advertise a live MCP origin",
     });
 
     const artifactDir = mkdtempSync(path.join(tmpdir(), "pdpp-release-npm-artifacts-"));
@@ -1004,7 +1481,7 @@ async function main(): Promise<void> {
       checks.push({
         id: "published-artifacts",
         status: "passed",
-        detail: `all ${PACKAGE_NAMES.length} npm packages resolve exact version ${version}`
+        detail: `all ${PACKAGE_NAMES.length} npm packages resolve exact version ${version}`,
       });
     } finally {
       rmSync(artifactDir, { force: true, recursive: true });
@@ -1018,7 +1495,7 @@ async function main(): Promise<void> {
     checks.push({
       id: "release-matrix",
       status: "passed",
-      detail: "pinned Node/runtime rows and receipt replay passed"
+      detail: "pinned Node/runtime rows and receipt replay passed",
     });
 
     const ownerJourney = requireCommand(
@@ -1031,7 +1508,7 @@ async function main(): Promise<void> {
     checks.push({
       id: "owner-journey",
       status: "passed",
-      detail: "source and clean-shell owner journey checks passed"
+      detail: "source and clean-shell owner journey checks passed",
     });
 
     requireCommand(
@@ -1039,43 +1516,56 @@ async function main(): Promise<void> {
       ["node", "--test", "--import", "tsx", "reference-implementation/test/hosted-mcp-oauth.test.ts"],
       "hosted MCP OAuth tests",
       {
-        recordedCommand: ["node", "--test", "--import", "tsx", "reference-implementation/test/hosted-mcp-oauth.test.ts"]
+        recordedCommand: [
+          "node",
+          "--test",
+          "--import",
+          "tsx",
+          "reference-implementation/test/hosted-mcp-oauth.test.ts",
+        ],
       }
     );
     checks.push({
       id: "hosted-oauth",
       status: "passed",
-      detail: "in-process hosted OAuth/PKCE, metadata, scoped MCP, and owner boundary tests passed"
+      detail: "in-process hosted OAuth/PKCE, metadata, scoped MCP, and owner boundary tests passed",
     });
 
     assert.ok(snapshot, "release smoke snapshot was not captured");
-    const compose = await runComposeJourney(commands, images as Record<string, string>, snapshot, checks);
-    composeProjectName = compose.composeProjectName;
-    composeFileSha256 = compose.composeFileSha256;
+    const compose = await runComposeJourney(commands, images, snapshot, checks);
+    const {
+      composeFileSha256: resolvedComposeFileSha256,
+      composeProjectName: resolvedComposeProjectName,
+      imageProvenance: resolvedImageProvenance,
+      live,
+    } = compose;
+    composeProjectName = resolvedComposeProjectName;
+    composeFileSha256 = resolvedComposeFileSha256;
+    imageEvidence = resolvedImageProvenance;
     if (
-      compose.live.clientRefreshAfterRevokeStatus === null ||
-      compose.live.clientRevokedMcpStatus === null ||
-      compose.live.ownerBearerMcpStatus === null
+      live.clientRefreshAfterRevokeStatus === null ||
+      live.clientRevokedMcpStatus === null ||
+      live.ownerBearerMcpStatus === null
     ) {
       throw new SmokeFailure("live smoke omitted a required owner/revocation boundary status");
     }
     liveEvidence = {
-      anonymousMcpStatus: compose.live.anonymousMcpStatus,
-      clientRefreshAfterRevokeStatus: compose.live.clientRefreshAfterRevokeStatus,
-      clientRevokedMcpStatus: compose.live.clientRevokedMcpStatus,
-      expectedRecordKeys: compose.live.seed.recordKeys,
-      ownerBearerMcpStatus: compose.live.ownerBearerMcpStatus,
-      queryReturnedKeys: compose.live.queryReturnedKeys,
-      seedConnectorId: compose.live.seed.connectorId,
-      seedStream: compose.live.seed.stream
+      anonymousMcpStatus: live.anonymousMcpStatus,
+      clientRefreshAfterRevokeStatus: live.clientRefreshAfterRevokeStatus,
+      clientRevokedMcpStatus: live.clientRevokedMcpStatus,
+      expectedRecordKeys: live.seed.recordKeys,
+      ownerBearerMcpStatus: live.ownerBearerMcpStatus,
+      queryReturnedKeys: live.queryReturnedKeys,
+      seedConnectorId: live.seed.connectorId,
+      seedStream: live.seed.stream,
     };
   } catch (error) {
-    failure = error instanceof Error ? error.message : String(error);
+    failure = receiptFailureMessage(error);
     checks.push({ id: "gate", status: "failed", detail: failure });
   }
 
-  const effectiveHead = snapshot?.headSha ?? head;
-  const effectiveClosure = snapshot?.sourceClosure.sha256 ?? sourceClosure(REPOSITORY_ROOT).sha256;
+  const effectiveHead = snapshot ? snapshot.headSha : head;
+  const effectiveClosure = snapshot ? snapshot.sourceClosure.sha256 : sourceClosure(REPOSITORY_ROOT).sha256;
   const replayVersion = version ?? "<published-version>";
   const replayImages = Object.fromEntries(
     Object.entries(images).map(([key, value]) => [key, value ?? `<${key}-image@sha256:digest>`])
@@ -1083,24 +1573,28 @@ async function main(): Promise<void> {
   const receipt: SelfServiceReceipt = {
     artifacts: {
       images: replayImages,
+      imageProvenance: imageEvidence,
       npm: npmArtifacts,
       releaseMatrixReceiptSha256,
-      releaseVersion: replayVersion
+      releaseVersion: replayVersion,
     },
     checks,
     commands,
     compose: { fileSha256: composeFileSha256, projectName: composeProjectName },
-    createdAt: new Date().toISOString(),
+    observedAt: new Date().toISOString(),
     failure,
     headSha: effectiveHead,
     live: liveEvidence,
+    outcomeSha256: "",
     receiptSha256: "",
     replayCommand: makeReplayCommand(replayVersion, replayImages),
     schema: RECEIPT_SCHEMA,
     sourceClosureSha256: effectiveClosure,
-    status: failure ? "failed" : "passed"
+    status: failure ? "failed" : "passed",
   };
+  receipt.outcomeSha256 = receiptOutcomeDigest(receipt);
   receipt.receiptSha256 = receiptDigest(receipt);
+  assertReceiptSecretFree(receipt);
   writeReceipt(receiptPath, receipt);
   process.stdout.write(`Release self-service smoke receipt: ${receiptPath}\n`);
   if (failure) {

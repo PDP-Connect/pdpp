@@ -2,7 +2,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Deterministic record-seed + scripted external MCP query for the Railway Core
+// Stable fixture record-seed + scripted external MCP query for the Railway Core
 // deploy gate (openspec/changes/add-railway-core-deploy-target task 3.2,
 // deploy/railway/README.md "First-live-test gate" steps 5 and 6).
 //
@@ -64,7 +64,7 @@ import {
 } from "./lib/owner-session.ts";
 
 // ---------------------------------------------------------------------------
-// Deterministic seed corpus (pure data).
+// Stable fixture corpus (pure data).
 // ---------------------------------------------------------------------------
 
 // A registered fixture connector manifest is required before /v1/ingest will
@@ -90,8 +90,9 @@ export interface SeedRecord {
 }
 
 // Stable keys + matching data.id (ingestRecord rejects a key that disagrees with
-// data.id). Deterministic timestamps keep re-runs byte-identical; the live
-// smoke deliberately avoids unadvertised sort fields and only asserts presence.
+// data.id). Fixed fixture timestamps keep the seed payload byte-stable; owner
+// credentials and PKCE verifiers remain per-run protocol values. The live smoke
+// deliberately avoids unadvertised sort fields and only asserts presence.
 export const SEED_RECORDS: SeedRecord[] = [
   {
     key: "railway-seed-artist-1",
@@ -275,7 +276,7 @@ export function classifyAnonymousMcpStatus(status: number): AnonymousMcpVerdict 
   return { refused: true, code: `http_${status}` };
 }
 
-// PKCE S256 challenge for the client authorization-code flow.
+// S256 challenge for the per-run client authorization-code verifier.
 export function pkceChallenge(verifier: string): string {
   return crypto.createHash("sha256").update(verifier).digest("base64url");
 }
@@ -602,7 +603,9 @@ async function mintClientToken(origin: string, sessionCookie: string, log: LogFn
     typeof tokenBody.grant_id !== "string" ||
     typeof tokenBody.refresh_token !== "string"
   ) {
-    throw new SmokeError(`oauth/token did not return a scoped access/refresh/grant tuple: ${JSON.stringify(tokenBody)}`);
+    throw new SmokeError(
+      `oauth/token did not return a scoped access/refresh/grant tuple: ${JSON.stringify(tokenBody)}`
+    );
   }
   log("client-token: minted scoped client access token");
   return {
@@ -675,20 +678,13 @@ async function runScopedMcpQuery(origin: string, clientToken: string, log: LogFn
 async function assertOwnerBearerRejected(origin: string, ownerToken: string, log: LogFn): Promise<number> {
   const response = await mcpPost(origin, ownerToken, mcpToolsListMessage(4));
   if (response.status !== 403) {
-    throw new SmokeError(
-      `owner bearer /mcp boundary failed: expected 403, got ${response.status}: ${response.text}`
-    );
+    throw new SmokeError(`owner bearer /mcp boundary failed: expected 403, got ${response.status}: ${response.text}`);
   }
   log("owner bearer: /mcp rejected with 403");
   return response.status;
 }
 
-async function revokeClientGrant(
-  origin: string,
-  ownerToken: string,
-  grantId: string,
-  log: LogFn
-): Promise<number> {
+async function revokeClientGrant(origin: string, ownerToken: string, grantId: string, log: LogFn): Promise<number> {
   const response = await fetch(`${origin}/grants/${encodeURIComponent(grantId)}/revoke`, {
     method: "POST",
     headers: {
@@ -708,9 +704,7 @@ async function revokeClientGrant(
 async function assertRevokedClientRejected(origin: string, clientToken: string, log: LogFn): Promise<number> {
   const response = await mcpPost(origin, clientToken, mcpToolsListMessage(5));
   if (response.status !== 403) {
-    throw new SmokeError(
-      `revoked client /mcp boundary failed: expected 403, got ${response.status}: ${response.text}`
-    );
+    throw new SmokeError(`revoked client /mcp boundary failed: expected 403, got ${response.status}: ${response.text}`);
   }
   log("revocation: client bearer rejected with 403");
   return response.status;
@@ -849,7 +843,7 @@ Options:
   --json                    Emit a JSON result object.
   -h, --help                Show this help.
 
-Seeds a deterministic record set (no connector run) and proves the hosted MCP
+Seeds a stable fixture record set (no connector run) and proves the hosted MCP
 endpoint refuses anonymous access and returns those records for a scoped grant.`;
 
 const TRAILING_SLASH_PATTERN = /\/$/;
