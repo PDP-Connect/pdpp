@@ -41,7 +41,7 @@ links. Two equal-weight cards:
 >
 > ```sh
 > docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
->   ghcr.io/pdp-connect/pdpp/railway-core:main
+>   ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4
 > docker logs -f pdpp
 > ```
 >
@@ -64,7 +64,7 @@ closed by default:
 >
 > ```sh
 > mkdir pdpp && cd pdpp
-> curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/main/deploy/docker/docker-compose.yml
+> curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
 > printf 'PDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
 >   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 > docker compose up -d
@@ -82,7 +82,7 @@ closed by default:
 > ```sh
 > APP="pdpp-core-$(openssl rand -hex 3)"
 > OWNER_PASSWORD="$(openssl rand -base64 24)"
-> fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:main \
+> fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4 \
 >   --name "$APP" --internal-port 3000 --db \
 >   --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \
 >   --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \

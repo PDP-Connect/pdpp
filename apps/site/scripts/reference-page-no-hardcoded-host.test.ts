@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Regression guard: the site reference page must not contain a hardcoded
- * `localhost` URL as a JSX prop value.
+ * Regression guard: the public reference page must not contain a hardcoded
+ * local deployment URL as a JSX prop value.
  *
- * The previous bug: `<CalloutMetric label="Local app" value="http://localhost:3002" />`
- * rendered the localhost URL verbatim in production. The fix derives the URL
- * from `getRequestOrigin()` (which reads `x-forwarded-host` / `host` headers).
- * This test prevents a regression where someone re-introduces a literal.
+ * The public site is documentation, not a running PDPP node. Deployment
+ * origins belong in the operator's copied commands, never in a public live
+ * surface.
  *
- * Run: node --test apps/site/scripts/reference-page-no-hardcoded-host.test.mjs
+ * Run: node --test apps/site/scripts/reference-page-no-hardcoded-host.test.ts
  */
 
 import assert from "node:assert/strict";
@@ -30,6 +29,6 @@ test("reference page has no hardcoded localhost URL as a JSX attribute value", a
 
   assert.ok(
     !JSX_HARDCODED_LOCALHOST_RE.test(src),
-    "reference/page.tsx must not contain a hardcoded localhost URL as a JSX attribute value (use providerUrl from getRequestOrigin() instead)"
+    "reference/page.tsx must not contain a hardcoded localhost URL as a JSX attribute value"
   );
 });

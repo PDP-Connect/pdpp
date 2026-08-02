@@ -25,8 +25,9 @@ required, what prerequisite is missing, and when the connection becomes active.
 
 ### Console (browser, owner session)
 
-1. Open `/dashboard` on your instance and sign in as owner.
-2. Open **Connect** or click **Add source** from the Sources page.
+1. Open `/owner/login` on your instance and sign in as owner.
+2. Open the canonical `/connect` surface or click **Add source** from the
+   Sources page.
 3. Search for the provider or scan the source cards. Each card shows one source
    name, one support status, and one next action.
 

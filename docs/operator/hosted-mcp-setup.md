@@ -5,14 +5,15 @@ that support remote Streamable HTTP MCP servers.
 
 If you do not yet have a reachable self-hosted deployment, start with the
 [self-host quickstart](selfhost-quickstart.md). Come back here once
-`/dashboard/deployment` reports healthy.
+`/deployment` reports healthy and the deployment has collected records.
 
-The dashboard setup page is `/dashboard/connect`. Use that page for the normal
-copy-paste path; this runbook is the expanded reference.
+The canonical client handoff is `/connect` on your deployment. Use that page
+for the normal copy-paste path; this runbook is the expanded reference.
 
 ## Prerequisites
 
-- The reference deployment is reachable over HTTPS.
+- A remote reference deployment is reachable over HTTPS. A local loopback
+  deployment may use HTTP for a local client; do not expose remote HTTP.
 - Owner login works for the deployment dashboard.
 - Public metadata resolves from the same origin:
   - `/.well-known/oauth-authorization-server`
@@ -28,8 +29,8 @@ Your MCP server URL is always:
 ```
 
 Substitute `<PDPP_REFERENCE_ORIGIN>` with the value you set in `.env.docker`.
-For a RunPod CPU Pod this is `https://<podid>-3002.proxy.runpod.net/mcp`.
-For a local Docker host this is typically `http://localhost:3002/mcp`.
+For a RunPod CPU Pod this is `https://<podid>-3000.proxy.runpod.net/mcp`.
+For a local Docker Compose host this is typically `http://localhost:3000/mcp`.
 
 Use this URL in every MCP client setup step below — not some other operator's
 deployment (for example `pdpp.example.com/mcp`), which only serves data
@@ -45,11 +46,12 @@ collected there.
 6. Select the PDPP source the connector should read and approve the grant.
 7. Return to ChatGPT and finish connecting the connector.
 
-The reference authorization server supports dynamic client registration for
-public OAuth clients using `authorization_code` with PKCE, `refresh_token`, and
-RFC 8628 device authorization for headless clients. The issued tokens are bound
-to the approved PDPP grant; they do not expose owner dashboard credentials or
-operator/admin control.
+The reference authorization server supports the PDPP hosted MCP profile:
+dynamic registration where enabled, `authorization_code` with PKCE,
+`refresh_token`, and RFC 8628 device authorization for headless clients. The
+issued tokens are bound to the approved PDPP grant; they do not expose owner
+dashboard credentials or operator/admin control. This wording describes the
+supported PDPP profile, not every MCP client's OAuth profile.
 
 ## Claude Code
 
@@ -141,7 +143,7 @@ chat transcript. A trusted local owner agent reads the credential file at call
 time and uses the bearer only against owner-bearer-supported `/v1/*` REST
 routes.
 
-The dashboard token page at `/dashboard/deployment/tokens` may still be useful
+The deployment token page at `/deployment/tokens` may still be useful
 as a low-level self-export/debug tool for operators who need to inspect the raw
 REST bearer flow. Keep that path secondary: the bearer is broader than a PDPP
 grant, should not be used with `/mcp`, and should not be copied into a
@@ -261,7 +263,7 @@ around it by weakening the compact default.
 
 Event-subscription management is not part of the normal `/mcp` tool surface.
 The operator console surfaces every subscription on the deployment at
-`/dashboard/event-subscriptions` with a read-only list, a peek pane, and one
+`/event-subscriptions` with a read-only list, a peek pane, and one
 safety-valve disable.
 
 See [`docs/operator/event-subscriptions.md`](event-subscriptions.md) for the

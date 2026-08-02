@@ -1,5 +1,9 @@
 # Local end-to-end testing
 
+> Exploratory, browser-specific test. This is not the normal no-support
+> self-service path; use the [Docker + Gmail + Claude Code journey](../operator/self-service-gmail-mcp.md)
+> for that path.
+
 This document walks through connecting one data source (ChatGPT) into a local PDPP instance, onboarding a trusted owner agent for local exploration, and viewing the data in the included web dashboard.
 
 It is mechanical — follow the steps in order. Each step either succeeds or returns a clear error.
@@ -16,7 +20,7 @@ Everything else is mechanical.
 
 ## Prerequisites
 
-- Node.js ≥ 20
+- Node.js ≥ 22.14
 - `pnpm` installed (`npm i -g pnpm` if not)
 - Patchright's bundled Chromium is used by default for the strongest aligned browser posture. Google Chrome is optional and only used when you explicitly set `PDPP_BROWSER_CHANNEL=chrome`.
 - A ChatGPT account (email + password)

@@ -30,7 +30,10 @@ listeners without asking the deploying operator for topology constants.
 Pin a concrete version tag, never `latest` or a moving tag, so the template is
 reproducible.
 
-Current published tag: `sha-6581820`.
+Current registry-proven candidate tag: `sha-2fbdb4` for the separate
+Railway/Core image lineage. This is not the blessed Compose
+`reference/web:sha-cc07e3a` release. Rerun the live template and scratch-project
+gates before treating it as a current template publication.
 
 Current published template:
 
@@ -158,7 +161,9 @@ only after the real template code has been installed and scratch-verified.
 
 ### Template-code replacement checklist
 
-- [x] `pnpm railway:ghcr-public --tag sha-6581820` exits `0`.
+- [x] The registry artifact check covers `railway-core:sha-2fbdb4`.
+- [ ] `pnpm railway:ghcr-public --tag sha-2fbdb4` exits `0` for the
+      current publication.
 - [x] The published template deploys a fresh scratch project.
 - [x] The chosen surface's button URL uses `pdpp-core-template-source` and keeps
       `?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core`.
@@ -168,7 +173,9 @@ only after the real template code has been installed and scratch-verified.
 ## 2026-06-06 scratch proof
 
 - Published config contained exactly `core` and `Postgres`.
-- `core` image: `ghcr.io/pdp-connect/pdpp/railway-core:sha-6581820`.
+- Current registry-proven candidate for the `core` image:
+  `ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4`. The historical scratch proof
+  below must be rerun for this tag before publication.
 - Required app prompt: `core.PDPP_OWNER_PASSWORD`.
 - Generated app secret: `core.PDPP_CREDENTIAL_ENCRYPTION_KEY`.
 - No app prompts for `PORT`, `AS_PORT`, `RS_PORT`, `PDPP_AS_URL`, or

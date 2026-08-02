@@ -7,15 +7,25 @@ Two paths, by intent:
 - **Production** — a small Docker Compose stack with Postgres + pgvector for a
   node you intend to keep.
 
-Both run the same proven one-service Core runtime as the Railway button and
-the Fly.io launch path: the operator console on the public port, the
-Authorization Server and Resource Server on loopback inside the container.
+Both use published PDPP images with one public operator origin. Quickstart
+uses the separately released one-service Railway/Core image (`sha-2fbdb4`);
+production Compose separates the
+reference services, operator console, and Postgres while keeping protocol
+listeners private.
+
+For the one plain self-service journey — including Gmail setup, the health/data
+gate, and Claude Code OAuth — use
+[`docs/operator/self-service-gmail-mcp.md`](../../docs/operator/self-service-gmail-mcp.md).
+The production Compose path below is the pinned deployment used by that guide.
 
 ## Quickstart
 
+This one-service path is a local trial. For the durable self-service journey,
+use the pinned production Compose path below.
+
 ```sh
 docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
-  ghcr.io/pdp-connect/pdpp/railway-core:main
+  ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4
 docker logs -f pdpp
 ```
 
@@ -55,8 +65,8 @@ separate services on Postgres with pgvector. No repository clone required:
 
 ```sh
 mkdir pdpp && cd pdpp
-curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/main/deploy/docker/docker-compose.yml
-printf 'PDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
+printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 docker compose up -d
 ```
@@ -68,7 +78,7 @@ any connector credentials you store. Keep `.env` with your backups.
 Configuration knobs (all optional, set in `.env`):
 
 ```sh
-PDPP_REFERENCE_ORIGIN=https://pdpp.example.com  # public origin; default http://localhost:3000
+PDPP_REFERENCE_ORIGIN=https://pdpp.example.com  # remote origin; local default http://localhost:3000
 PDPP_WEB_PORT=3000                              # published console port
 PDPP_POSTGRES_PASSWORD=...                      # change if you ever publish Postgres
 PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0               # opt out of semantic search model download
@@ -91,19 +101,14 @@ credentials, and a Gmail/Google app password cannot authorize the Google Data
 Portability API.
 
 **Browser-backed connectors (ChatGPT, USAA, ...):** the default `reference`
-image is browser-free. If you run these connectors inside the reference
-container rather than via the local collector, add this to `.env`:
+image is browser-free. A browser-enabled image is a separate, optional release
+that must be verified in the registry before use; it is not part of this
+Compose/Gmail/Claude Code path.
 
-```sh
-PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference-browser:main
-```
-
-That image includes Patchright and a bundled Chromium so the connector can
-launch a headless browser inside the container.
-
-Serve a real domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
+Serve a remote domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
 pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so
-owner-session cookies and OAuth metadata are correct.
+owner-session cookies and OAuth metadata are correct. Local loopback HTTP is
+supported for a local client; do not expose a remote node over HTTP.
 
 ## Verification
 
@@ -112,7 +117,7 @@ curl -fsS "$ORIGIN/.well-known/oauth-authorization-server" | head -c 200; echo
 curl -s -o /dev/null -w '%{http_code}\n' "$ORIGIN/dashboard"   # 307 -> /owner/login (gated)
 ```
 
-Sign in at `$ORIGIN/dashboard`, then check Deployment in the console for the
+Sign in at `$ORIGIN/owner/login`, then check `$ORIGIN/deployment` for the
 runtime diagnostics surface (`GET /_ref/deployment`).
 
 ## Storage and upgrades
@@ -125,13 +130,16 @@ runtime diagnostics surface (`GET /_ref/deployment`).
 Upgrade by pulling and recreating; volumes persist:
 
 ```sh
-docker pull ghcr.io/pdp-connect/pdpp/railway-core:main && docker rm -f pdpp && <your docker run>
+docker pull ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4 && docker rm -f pdpp && <your docker run>
 # or, compose:
 docker compose pull && docker compose up -d
 ```
 
-The published `:main` tag tracks the repository default branch. Pin a
-`sha-<rev>` tag (see GHCR) if you want explicit, reproducible upgrades.
+The quickstart example uses the separately published Railway/Core
+`sha-2fbdb4` lineage. The production Compose example uses the
+registry-proven reference/web `sha-cc07e3a` release; those image
+lineages are not interchangeable. Update the reference and web image tags
+together when moving to another published Compose release.
 
 ## Teardown
 
@@ -143,9 +151,9 @@ docker compose down --volumes                          # production (deletes dat
 ## Related
 
 - [`deploy/railway/README.md`](../railway/README.md) — the Railway pushbutton
-  Core target this image was proven on.
+  Core target and its separate image lineage.
 - [`deploy/flyio/README.md`](../flyio/README.md) — the Fly.io `fly launch`
-  path for the same image.
+  path for the separate Railway/Core image lineage.
 - [`deploy/railway/core-first-boot.ts`](../railway/core-first-boot.ts) — the
   first-boot owner-credential bootstrap, tested by
   `pnpm docker:first-boot:test`.

@@ -1,9 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { ConnectAgentCard } from "@pdpp/operator-ui/components/connect-agent-card";
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
@@ -13,24 +11,19 @@ const GITHUB_REPO = "https://github.com/PDP-Connect/pdpp";
 const GITHUB_REFERENCE_README = `${GITHUB_REPO}/blob/main/reference-implementation/README.md`;
 const GITHUB_ROOT_README = `${GITHUB_REPO}/blob/main/README.md`;
 const GITHUB_DOCKER_README = `${GITHUB_REPO}/blob/main/deploy/docker/README.md`;
+const GITHUB_SELF_SERVICE_README = `${GITHUB_REPO}/blob/main/docs/operator/self-service-gmail-mcp.md`;
 const GITHUB_FLY_README = `${GITHUB_REPO}/blob/main/deploy/flyio/README.md`;
 const RAILWAY_DEPLOY_URL =
   "https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core";
+const PINNED_COMPOSE_REF = "cc07e3a896c2c0df7841da4ec6b2c660ffe1e792";
+const PINNED_IMAGE_TAG = "sha-cc07e3a";
+const RAILWAY_CORE_IMAGE_TAG = "sha-2fbdb4";
 
 export const metadata: Metadata = {
   description:
     "A public explainer for the forkable PDPP reference implementation: purpose, architecture, trust boundaries, and local/self-hosted operation.",
   title: "Reference Implementation - PDPP",
 };
-
-async function getRequestOrigin(): Promise<string> {
-  const headerList = await headers();
-  const host = headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3002";
-  const protocol =
-    headerList.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
-    (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
-  return `${protocol}://${host}`;
-}
 
 const architectureLayers = [
   {
@@ -56,6 +49,34 @@ const architectureLayers = [
     label: "Reference sandbox",
     route: "/sandbox",
     title: "Mock-adapter reference instance",
+  },
+] as const;
+
+const selfServiceSteps = [
+  {
+    body: `Use the pinned Docker Compose stack with reference/web images at ${PINNED_IMAGE_TAG} and the web port set to 3000. Keep the same image tag for both services.`,
+    label: "1",
+    title: "Deploy a pinned Docker/Compose stack",
+  },
+  {
+    body: "Open <your-deployment-origin>/owner/login and sign in with the owner password from your deployment.",
+    label: "2",
+    title: "Sign in as owner",
+  },
+  {
+    body: "From the owner Connect surface, add Gmail. Enter the mailbox address and the Google app password supplied for that mailbox.",
+    label: "3",
+    title: "Add Gmail with an app password",
+  },
+  {
+    body: "Wait for the deployment to report healthy, the first sync to succeed, and records > 0. A saved credential or configured source is not enough.",
+    label: "4",
+    title: "Wait for healthy data",
+  },
+  {
+    body: "Only after that gate, open <your-deployment-origin>/connect. Add the deployed MCP server in Claude Code, complete OAuth in the browser, and query a known Gmail record.",
+    label: "5",
+    title: "Connect Claude Code and query",
   },
 ] as const;
 
@@ -105,9 +126,7 @@ const referenceLinks = [
   },
 ] as const;
 
-export default async function ReferencePage() {
-  const providerUrl = await getRequestOrigin();
-
+export default function ReferencePage() {
   return (
     <main className="relative overflow-hidden">
       <div
@@ -129,8 +148,8 @@ export default async function ReferencePage() {
               docs remain the normative authority.
             </p>
             <div className="mt-7 flex flex-wrap gap-2.5">
-              <a className={buttonVariants({ size: "lg", variant: "default" })} href={GITHUB_REFERENCE_README}>
-                Clone and run
+              <a className={buttonVariants({ size: "lg", variant: "default" })} href={GITHUB_SELF_SERVICE_README}>
+                Follow the self-service path
               </a>
               <Link className={buttonVariants({ size: "lg", variant: "outline" })} href="/docs">
                 Read protocol docs
@@ -141,7 +160,7 @@ export default async function ReferencePage() {
           <aside className="rounded-2xl border bg-card/80 p-4 shadow-sm backdrop-blur">
             <div className="pdpp-eyebrow text-muted-foreground">Run posture</div>
             <div className="mt-4 space-y-4">
-              <CalloutMetric label="Local app" value={providerUrl} />
+              <CalloutMetric label="Public site" value="Documentation only" />
               <CalloutMetric label="Operator surface" value="/" />
               <CalloutMetric label="Public sandbox" value="/sandbox" />
             </div>
@@ -152,16 +171,12 @@ export default async function ReferencePage() {
           </aside>
         </section>
 
-        <div className="mt-10">
-          <ConnectAgentCard mode="live" providerUrl={providerUrl} />
-        </div>
-
         <section className="mt-14">
           <div className="mb-4 flex flex-col gap-1">
             <h2 className="pdpp-heading text-foreground">Run your own node</h2>
             <p className="pdpp-body text-muted-foreground">
-              Start with one click in the cloud or one command on your machine. Production compose and other platforms
-              are available when you need them.
+              Start with one click in the cloud or a pinned Compose stack on your machine. Other platforms are available
+              when you need them.
             </p>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
@@ -171,7 +186,7 @@ export default async function ReferencePage() {
                   Deploy on Railway
                 </a>
               }
-              body="One click provisions the Core node and Postgres. You choose one thing: your owner password."
+              body="One click provisions the separate Railway/Core release and Postgres. It is an alternate deployment lane, not the blessed reference/web Compose release."
               eyebrow="Cloud, one click"
               title="Deploy on Railway"
             />
@@ -181,13 +196,15 @@ export default async function ReferencePage() {
                   Docker runbook
                 </a>
               }
-              body="One command starts a full node on your laptop. First boot prints your dashboard URL and a generated owner password - nothing to configure."
-              code={`docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \\
-  ghcr.io/pdp-connect/pdpp/railway-core:main
-docker logs -f pdpp`}
-              eyebrow="Your machine, one command"
-              footer="Open http://localhost:3000 and sign in with the printed password. Your data persists in the pdpp_data volume across restarts and upgrades."
-              title="Run with Docker"
+              body="Use the same pinned reference and web images for a repeatable node. The Compose stack publishes the operator surface on port 3000 and keeps Postgres and protocol services private."
+              code={`mkdir pdpp && cd pdpp
+curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/${PINNED_COMPOSE_REF}/deploy/docker/docker-compose.yml
+printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:${PINNED_IMAGE_TAG}\\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:${PINNED_IMAGE_TAG}\\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\\nPDPP_WEB_PORT=3000\\nPDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\
+  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
+docker compose up -d`}
+              eyebrow="Your machine, pinned Compose"
+              footer="Open http://localhost:3000/owner/login. Use local HTTP only on the host; put a remote deployment behind HTTPS and set its real origin."
+              title="Deploy with Docker Compose"
             />
           </div>
           <div className="mt-4 grid gap-3">
@@ -197,15 +214,14 @@ docker logs -f pdpp`}
                 pgvector - with healthchecks and named volumes:
               </p>
               <CodeBlock
-                code={`mkdir pdpp && cd pdpp
-curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/main/deploy/docker/docker-compose.yml
-printf 'PDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\
-  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
+                code={`# The production path above is already pinned.
+# Set PDPP_REFERENCE_ORIGIN=https://your-domain for a remote deployment.
+# Keep the web service on port 3000 behind your HTTPS reverse proxy.
 docker compose up -d`}
               />
               <p className="pdpp-caption text-muted-foreground">
-                Put your HTTPS reverse proxy in front and set <code>PDPP_REFERENCE_ORIGIN</code> to your domain. Full
-                runbook:{" "}
+                Put your HTTPS reverse proxy in front of a remote node and set <code>PDPP_REFERENCE_ORIGIN</code> to
+                that domain. Local loopback HTTP is supported for a local client. Full runbook:{" "}
                 <a className="underline underline-offset-2" href={GITHUB_DOCKER_README}>
                   deploy/docker/README.md
                 </a>
@@ -220,7 +236,7 @@ docker compose up -d`}
               <CodeBlock
                 code={`APP="pdpp-core-$(openssl rand -hex 3)"
 OWNER_PASSWORD="$(openssl rand -base64 24)"
-fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:main \\
+fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:${RAILWAY_CORE_IMAGE_TAG} \\
   --name "$APP" --internal-port 3000 --db \\
   --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \\
   --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \\
@@ -228,13 +244,45 @@ fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:main \\
 printf 'Origin: https://%s.fly.dev\\nOwner password: %s\\n' "$APP" "$OWNER_PASSWORD"`}
               />
               <p className="pdpp-caption text-muted-foreground">
-                Requires a payment method on the Fly org. Details and a source-build fallback:{" "}
+                This uses the separately published Railway/Core image lineage at <code>{RAILWAY_CORE_IMAGE_TAG}</code>.
+                it is not the same release as the pinned reference/web Compose images. Requires a payment method on the
+                Fly org. Details and a source-build fallback:{" "}
                 <a className="underline underline-offset-2" href={GITHUB_FLY_README}>
                   deploy/flyio/README.md
                 </a>
                 .
               </p>
             </DeployDisclosure>
+          </div>
+        </section>
+
+        <section className="mt-14" data-testid="blessed-self-service-journey">
+          <div className="mb-4 flex flex-col gap-1">
+            <h2 className="pdpp-heading text-foreground">One path from deployment to data</h2>
+            <p className="pdpp-body max-w-3xl text-muted-foreground">
+              Keep the proof order intact. The MCP client belongs to your deployed node, after the node is healthy and
+              has real records.
+            </p>
+          </div>
+          <div className="grid gap-3">
+            {selfServiceSteps.map((step) => (
+              <ArchitectureStep body={step.body} key={step.label} label={step.label} title={step.title} />
+            ))}
+          </div>
+          <div className="mt-4 rounded-2xl border border-primary/30 bg-primary/5 p-4">
+            <p className="pdpp-body text-foreground">
+              After the healthy/data gate, open the deployed <code>/connect</code> surface for the client-specific
+              handoff. The operator runbook has the same path:{" "}
+              <a className="underline underline-offset-2" href={GITHUB_SELF_SERVICE_README}>
+                Docker + Gmail + Claude Code
+              </a>
+              .
+            </p>
+            <CodeBlock code="claude mcp add --transport http pdpp <your-deployment-origin>/mcp" />
+            <p className="pdpp-caption mt-3 text-muted-foreground">
+              Complete OAuth in Claude Code, approve the Gmail read-only grant, then query a known record. The public
+              site is documentation; it is not this MCP server.
+            </p>
           </div>
         </section>
 

@@ -34,7 +34,7 @@ APP="pdpp-core-$(openssl rand -hex 3)"
 OWNER_PASSWORD="$(openssl rand -base64 24)"
 
 fly launch \
-  --image ghcr.io/pdp-connect/pdpp/railway-core:sha-39232ac \
+  --image ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4 \
   --name "$APP" \
   --region iad \
   --internal-port 3000 \
@@ -49,6 +49,10 @@ fly launch \
 
 printf 'Origin: https://%s.fly.dev\nOwner password: %s\n' "$APP" "$OWNER_PASSWORD"
 ```
+
+The image-backed path uses the separately published, registry-proven
+Railway/Core `sha-2fbdb4` lineage. It is not the same release as the
+Compose `reference/web:sha-cc07e3a` pair used by the blessed self-service path.
 
 Source-build fallback from the public repository:
 

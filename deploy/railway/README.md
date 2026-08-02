@@ -6,7 +6,9 @@ backend, and no browser-backed connector runtime inside the deployed app.
 
 This is operator documentation for someone running their own instance. The
 Docker image at `ghcr.io/pdp-connect/pdpp/railway-core` is the forkable reference
-implementation packaged for Railway.
+implementation packaged for Railway. The registry-proven Railway/Core tag is
+`sha-2fbdb4`; it is a separate release lineage from the blessed Compose pair
+`reference/web:sha-cc07e3a`.
 
 ## Pushbutton Railway template
 
@@ -150,7 +152,7 @@ pnpm docker:smoke
 
 For a live source project or scratch template deploy:
 
-1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` and add
+1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/railway-core:sha-2fbdb4` and add
    Railway Postgres.
 2. Set `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and
    `PDPP_DATABASE_URL` exactly as above.
@@ -173,13 +175,15 @@ For a live source project or scratch template deploy:
 
 ## Template publication
 
-Use [`template.md`](./template.md) for the publication handoff. The button is
-ready for user-facing placement after the 2026-06-06 live gate:
+Use [`template.md`](./template.md) for the publication handoff. The
+registry-proven candidate for the separate Railway/Core image is
+`sha-2fbdb4`. This docs-only closure does not rerun the live template or
+scratch-project gate:
 
-- `pnpm railway:ghcr-public --tag sha-6581820` passed.
-- A source project with exactly `core` plus Postgres passes the live gate above.
-- Railway generates and publishes the template.
-- A fresh scratch project deployed from the published template passes the live
+- run `pnpm railway:ghcr-public --tag sha-2fbdb4` before publication;
+- deploy a source project with exactly `core` plus Postgres and run the live gate;
+- generate and publish the template only after that gate;
+- deploy a fresh scratch project from the published template and run the live
   smoke and restart smoke.
 
 ## Rollback and cleanup
