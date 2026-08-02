@@ -25,6 +25,8 @@ const SET_DISPLAY_NAME_EXPORT_RE =
   /export async function setConnectionDisplayName\(connectionId: string, displayName: string\)/;
 const SET_DISPLAY_NAME_PATCH_RE = /method: "PATCH"/;
 const SET_DISPLAY_NAME_BODY_RE = /asJson\(\{ display_name: displayName \}\)/;
+const RUN_NOW_TYPED_ERROR_RE = /throw new RunNowRequestError\(response\.status, body\)/;
+const RUN_NOW_MALFORMED_BODY_RE = /return res\.json\(\)\.catch\(\(\) => null\)/;
 
 test("operator run helpers expose connection-scoped control paths", async () => {
   const src = await readFile(OPERATOR_RUNS_FILE, "utf8");
@@ -48,4 +50,10 @@ test("setConnectionDisplayName PATCHes the connection route with a display_name 
   assert.match(src, SET_DISPLAY_NAME_EXPORT_RE);
   assert.match(src, SET_DISPLAY_NAME_PATCH_RE);
   assert.match(src, SET_DISPLAY_NAME_BODY_RE);
+});
+
+test("run-now preserves the response status and safe typed error boundary", async () => {
+  const src = await readFile(OPERATOR_RUNS_FILE, "utf8");
+  assert.match(src, RUN_NOW_TYPED_ERROR_RE);
+  assert.match(src, RUN_NOW_MALFORMED_BODY_RE);
 });

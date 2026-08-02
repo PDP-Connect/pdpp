@@ -301,7 +301,7 @@ export default async function ConnectorPage({
   searchParams,
 }: {
   params: Promise<{ connector: string }>;
-  searchParams: Promise<{ demo?: string; error?: string; message?: string }>;
+  searchParams: Promise<{ demo?: string; error?: string; message?: string; run_id?: string }>;
 }) {
   const { connector } = await params;
   const routeId = decodeURIComponent(connector);
@@ -331,7 +331,15 @@ export default async function ConnectorPage({
   // its stall watchdog against real time. This page is `force-dynamic`, so the
   // instant is fresh on every request.
   const now = new Date().toISOString();
-  return <ConnectorPageView dangerError={sp.error} dangerMessage={sp.message} model={model} now={now} />;
+  return (
+    <ConnectorPageView
+      dangerError={sp.error}
+      dangerMessage={sp.message}
+      dangerRunId={sp.run_id}
+      model={model}
+      now={now}
+    />
+  );
 }
 
 async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageModel> {
@@ -497,11 +505,13 @@ function ConnectorPageView({
   model,
   dangerMessage,
   dangerError,
+  dangerRunId,
   now,
 }: {
   model: ConnectorPageModel;
   dangerMessage?: string;
   dangerError?: string;
+  dangerRunId?: string;
   /** Server render instant (ISO-8601) for the diagnostics recovery stall watchdog. */
   now: string;
 }) {
@@ -718,6 +728,7 @@ function ConnectorPageView({
         connectionId={connectorInstanceId ?? connectionId}
         error={dangerError}
         message={dangerMessage}
+        runId={dangerRunId}
       />
     </RecordroomShellWithPalette>
   );

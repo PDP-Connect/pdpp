@@ -5,7 +5,9 @@
 
 import { IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
+import Link from "next/link";
 import { useState } from "react";
+import { isSafeRunId } from "../../lib/run-now-result.ts";
 import { deleteConnectionAction, revokeConnectionAction } from "./actions.ts";
 
 interface Props {
@@ -20,6 +22,8 @@ interface Props {
   error?: string;
   /** Result banner forwarded from the server action redirect. */
   message?: string;
+  /** Safe incumbent run id forwarded from a typed duplicate-run response. */
+  runId?: string;
 }
 
 /**
@@ -35,7 +39,8 @@ interface Props {
  * run or a default-account binding. Both confirmations are enforced again on the
  * server — the client gating is a guardrail, not the gate.
  */
-export function ConnectionDangerZone({ connectionId, error, message }: Props) {
+export function ConnectionDangerZone({ connectionId, error, message, runId }: Props) {
+  const activeRunHref = isSafeRunId(runId) ? `/syncs/${encodeURIComponent(runId)}` : null;
   return (
     <Section
       description="Revoke stops future collection but keeps this connection's records. Delete erases this connection's records and removes it. These actions affect only this connection, never another."
@@ -50,6 +55,11 @@ export function ConnectionDangerZone({ connectionId, error, message }: Props) {
       {message ? (
         <div className="pdpp-caption mb-4 rounded-md border border-emerald-500/30 border-l-4 border-l-emerald-500/60 bg-emerald-500/5 px-4 py-2.5">
           <span className="font-medium text-emerald-700 dark:text-emerald-400">{message}</span>
+          {activeRunHref ? (
+            <Link className="ml-3 underline underline-offset-2" href={activeRunHref}>
+              Open sync →
+            </Link>
+          ) : null}
         </div>
       ) : null}
 

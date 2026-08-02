@@ -22,6 +22,14 @@ import {
   saveConnectorSchedule,
   setConnectionDisplayName,
 } from "../../lib/operator-runs.ts";
+import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
+import {
+  RUN_NOW_ALREADY_ACTIVE_MESSAGE,
+  RUN_NOW_UNEXPECTED_MESSAGE,
+  RUN_NOW_UNREACHABLE_MESSAGE,
+  RunNowRequestError,
+  runNowFailureMessage,
+} from "../../lib/run-now-result.ts";
 
 // The store caps `display_name` at 200 chars; mirror that here so the
 // operator gets a clear message instead of a backend 400.
@@ -31,7 +39,7 @@ function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function connectorHref(connectorId: string, message?: string, error?: string) {
+function connectorHref(connectorId: string, message?: string, error?: string, runId?: string | null) {
   const base = `/sources/${encodeURIComponent(connectorId)}`;
   const params = new URLSearchParams();
   if (message) {
@@ -39,6 +47,9 @@ function connectorHref(connectorId: string, message?: string, error?: string) {
   }
   if (error) {
     params.set("error", error);
+  }
+  if (runId) {
+    params.set("run_id", runId);
   }
   const query = params.toString();
   return `${base}${query ? `?${query}` : ""}#operator-controls`;
@@ -66,7 +77,16 @@ export async function runConnectorNowAction(formData: FormData) {
     };
     message = result.run_id ? `Run started (${result.run_id})` : "Run started";
   } catch (err) {
-    error = errorMessage(err);
+    if (err instanceof RunNowRequestError && err.status === 409 && err.code === "run_already_active") {
+      redirect(connectorHref(routeId, RUN_NOW_ALREADY_ACTIVE_MESSAGE, undefined, err.runId));
+    }
+    if (err instanceof RunNowRequestError) {
+      error = runNowFailureMessage(err);
+    } else if (err instanceof ReferenceServerUnreachableError) {
+      error = RUN_NOW_UNREACHABLE_MESSAGE;
+    } else {
+      error = RUN_NOW_UNEXPECTED_MESSAGE;
+    }
   }
   redirect(connectorHref(routeId, message, error));
 }

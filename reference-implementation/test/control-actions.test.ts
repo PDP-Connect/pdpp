@@ -80,7 +80,7 @@ interface SpineTimelineBody {
 }
 
 interface ErrorBody {
-  error: { code: string; message: string };
+  error: { code: string; message: string; run_id?: string };
 }
 
 interface RunSummary {
@@ -901,6 +901,7 @@ rl.once('line', () => {
         assert.equal(secondResp.status, 409);
         const second = (await secondResp.json()) as ErrorBody;
         assert.equal(second.error.code, "run_already_active");
+        assert.equal(second.error.run_id, first.run_id);
         assert.match(second.error.message, new RegExp(first.run_id));
 
         await waitForRunTerminal(asUrl, first.run_id);

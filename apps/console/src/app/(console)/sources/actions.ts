@@ -6,6 +6,13 @@
 import { revalidatePath } from "next/cache";
 import { runConnectionNow, runConnectorNow } from "../lib/operator-runs.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import {
+  RUN_NOW_ALREADY_ACTIVE_MESSAGE,
+  RUN_NOW_UNEXPECTED_MESSAGE,
+  RUN_NOW_UNREACHABLE_MESSAGE,
+  RunNowRequestError,
+  runNowFailureMessage,
+} from "../lib/run-now-result.ts";
 
 /**
  * Where a failed run-start stopped.
@@ -15,26 +22,30 @@ import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
  *   safe and the deployment may be down.
  * - `after_server`: the reference server responded with an error. The run
  *   probably did not start, but the failure is the server's, not the network's
- *   — the message carries the server's own reason.
+ *   — the typed status/code carries the safe reason.
  *
  * The dashboard renders different copy per phase so the owner knows whether to
- * check their deployment (before) or read the server's reason (after), instead
- * of a single opaque "error".
+ * check their deployment (before) or act on the typed server result (after),
+ * instead of a single opaque "error".
  */
 export type RunStartFailurePhase = "before_server" | "after_server";
 
 export type RunNowResult =
   | { ok: true; run_id: string; trace_id: string }
   | { ok: false; reason: "already_running"; run_id?: string; message: string }
-  | { ok: false; reason: "error"; phase: RunStartFailurePhase; reached_server: boolean; message: string };
+  | {
+      ok: false;
+      reason: "error";
+      phase: RunStartFailurePhase;
+      reached_server: boolean;
+      status?: number;
+      code?: string;
+      message: string;
+    };
 
 interface RunConnectorNowOptions {
   force?: boolean;
 }
-
-const ALREADY_ACTIVE_RE = /already.*active/i;
-const RUN_ALREADY_ACTIVE_RE = /run_already_active/i;
-const RUN_ID_MATCH_RE = /\brun[_:][A-Za-z0-9]+/;
 
 /** Server action: start a connector run. Designed to never throw — the UI
  *  uses the discriminated-union return to render a toast/badge.
@@ -69,30 +80,38 @@ export async function runConnectorNowAction(
     // give a deployment-status / retry hint instead of a raw network string.
     if (err instanceof ReferenceServerUnreachableError) {
       return {
-        message:
-          "Couldn't reach the reference server, so the sync was not started. Check the deployment is running, then retry.",
+        message: RUN_NOW_UNREACHABLE_MESSAGE,
         ok: false,
         phase: "before_server",
         reached_server: false,
         reason: "error",
       };
     }
-    const message = err instanceof Error ? err.message : String(err);
-    // The controller's 409 surfaces as a thrown Error with message like
-    // "Connector already has an active run: run_123…".
-    if (ALREADY_ACTIVE_RE.test(message) || RUN_ALREADY_ACTIVE_RE.test(message)) {
-      const match = message.match(RUN_ID_MATCH_RE);
+    if (err instanceof RunNowRequestError && err.status === 409 && err.code === "run_already_active") {
       return {
-        message: "Sync already in progress.",
+        message: RUN_NOW_ALREADY_ACTIVE_MESSAGE,
         ok: false,
         reason: "already_running",
-        run_id: match?.[0],
+        ...(err.runId ? { run_id: err.runId } : {}),
       };
     }
-    // Everything after the transport-failure branch came from the reference
-    // server. Keep the server envelope text and mark it separately from a
-    // before-server failure so the row can stay local and tell the owner where
-    // the failure occurred.
-    return { message, ok: false, phase: "after_server", reached_server: true, reason: "error" };
+    if (err instanceof RunNowRequestError) {
+      return {
+        code: err.code ?? undefined,
+        message: runNowFailureMessage(err),
+        ok: false,
+        phase: "after_server",
+        reached_server: true,
+        reason: "error",
+        status: err.status,
+      };
+    }
+    return {
+      message: RUN_NOW_UNEXPECTED_MESSAGE,
+      ok: false,
+      phase: "after_server",
+      reached_server: true,
+      reason: "error",
+    };
   }
 }

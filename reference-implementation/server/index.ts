@@ -549,6 +549,7 @@ type ApiError = Error & {
   param?: string | null;
   available_connections?: unknown[];
   retry_with?: string;
+  runId?: string;
   [key: string]: unknown;
 };
 
@@ -564,6 +565,7 @@ interface PdppErrorBody {
   request_id?: string;
   resource_metadata?: string | null;
   retry_with?: string;
+  run_id?: string;
   type: string;
 }
 
@@ -1037,6 +1039,9 @@ function pdppError(
     if (typeof extras.retry_with === "string") {
       body.error.retry_with = extras.retry_with;
     }
+    if (typeof extras.run_id === "string") {
+      body.error.run_id = extras.run_id;
+    }
     if (typeof extras.recovery_admission_reason === "string") {
       body.error.recovery_admission_reason = extras.recovery_admission_reason;
     }
@@ -1221,6 +1226,11 @@ function handleError(res: ResLike, err: ApiError) {
     extras.retry_with = err.retry_with;
   }
   Object.assign(extras, recoveryAdmissionExtrasForWire(err));
+  // Keep the controller's incumbent handle structured; the console must not
+  // recover it from the human-facing message.
+  if (code === "run_already_active" && typeof err.runId === "string") {
+    extras.run_id = err.runId;
+  }
   pdppError(res, status, code, err.message, err.param || null, extras);
 }
 

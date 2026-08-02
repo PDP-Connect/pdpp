@@ -13,6 +13,7 @@ import {
 } from "./connection-control-result.ts";
 import { describeError } from "./describe-error.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
+import { RunNowRequestError } from "./run-now-result.ts";
 
 export type { CancelRunOutcome, CancelRunResult } from "./cancel-run-result.ts";
 export type {
@@ -33,7 +34,7 @@ function asJson(body: unknown) {
 function readBody(res: Response): Promise<unknown> {
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
-    return res.json();
+    return res.json().catch(() => null);
   }
   return res.text();
 }
@@ -100,7 +101,7 @@ async function runNowAt(path: string, options: RunNowOptions = {}) {
   });
   const body = await readBody(response);
   if (!response.ok) {
-    throw new Error(describeError(body, `run-now failed (${response.status})`));
+    throw new RunNowRequestError(response.status, body);
   }
   return body;
 }
