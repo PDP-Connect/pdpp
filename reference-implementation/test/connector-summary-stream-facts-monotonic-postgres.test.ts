@@ -412,7 +412,7 @@ test("real PostgreSQL: existing-row self-heal — a row pre-seeded in the exact 
     const [healedRow] = healedRows;
     assert.ok(healedRow, "healed evidence row exists");
     assert.ok(
-      Number(healedRow.stream_facts_fold_version) === 4,
+      Number(healedRow.stream_facts_fold_version) === 5,
       "the row is stamped current under the new fold-logic version after healing"
     );
     const healedFacts = await factsFor();

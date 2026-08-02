@@ -82,7 +82,14 @@ interface TerminalEventStreamFact {
   checkpoint: string;
   collected: number;
   considered?: number;
+  covered?: number;
   skipped?: { reason: string };
+  stream: string;
+}
+
+/** Mirrors one entry in a terminal event's `recovery_gap_closure_facts.streams` array. */
+interface RecoveryGapClosureStreamFact {
+  recovered_count: number;
   stream: string;
 }
 
@@ -90,6 +97,7 @@ interface SeedTerminalEventOptions {
   connectorInstanceId?: string | null;
   eventType?: string;
   occurredAt: string;
+  recoveryGapClosure?: RecoveryGapClosureStreamFact[];
   recoveryOnly?: boolean;
   runId: string;
   streams?: TerminalEventStreamFact[];
@@ -100,12 +108,16 @@ interface SeedTerminalEventOptions {
  * collection_facts block at all — the shape a real recovery-only run's
  * terminal event actually has (buildCollectionFacts returns null
  * unconditionally for a recovery-only run; see connector-gap-bounding.ts).
+ * `recoveryGapClosure`, when given, seeds the DISTINCT
+ * `recovery_gap_closure_facts` block a recovery-only run's terminal event
+ * carries instead (see buildRecoveryGapClosureFacts).
  */
 function seedTerminalEvent({
   runId,
   occurredAt,
   connectorInstanceId = null,
   streams,
+  recoveryGapClosure,
   eventType = "run.completed",
   recoveryOnly = false,
 }: SeedTerminalEventOptions) {
@@ -114,6 +126,11 @@ function seedTerminalEvent({
     ...(connectorInstanceId ? { connection_id: connectorInstanceId, connector_instance_id: connectorInstanceId } : {}),
     ...(recoveryOnly ? { recovery_only: true } : {}),
     ...(streams === undefined ? {} : { collection_facts: { reference_only: true, schema_version: 1, streams } }),
+    ...(recoveryGapClosure === undefined
+      ? {}
+      : {
+          recovery_gap_closure_facts: { reference_only: true, schema_version: 1, streams: recoveryGapClosure },
+        }),
   };
   getDb()
     .prepare(
@@ -929,6 +946,180 @@ test("terminal CAS: a pass with a stale baseline cannot regress an already-curre
       afterSecondCheckpoint.stream_facts_event_seq,
       seq2,
       "the checkpoint converges back to seq2, never getting stuck at the rewound seq1"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recovery_gap_closure_facts: production reproduction (cin_bc1efca69a1c386d610f0924,
+// 2026-08-01). A mature `stream_latest_facts.transactions` row reads
+// covered=2/considered=4 (2 durable detail gaps outstanding). A NEW
+// recovery-only run's `run.detail_coverage_declared` (a non-terminal event)
+// declared `transactions covered=4/considered=4/gap_keys=0`, then
+// `run.completed` carried NO `collection_facts` (correct: recoveryOnly).
+// Before this fix, the fold had no way to reach those facts at all — the
+// summary stayed frozen at 2/4 forever. The fix does NOT trust
+// `run.detail_coverage_declared`'s connector-self-declared considered/covered
+// numbers (that channel is untouched and remains unreachable from the fold —
+// see the recoveryOnly tests above). Instead, `run.completed` now carries a
+// SEPARATE `recovery_gap_closure_facts` block sourced from the runtime's own
+// durable detail-gap-store `recovered` transitions
+// (`buildRecoveryGapClosureFacts`), and the fold narrows the EXISTING
+// durably-proven fact's `covered` toward its own `considered` by that count
+// — never fabricating a fresh considered/checkpoint claim.
+// ---------------------------------------------------------------------------
+
+test("recovery_gap_closure_facts: production shape — mature 2/4 committed row + recovery-only gap closure converges the summary to 4/4", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_bc1efca69a1c386d610f0924", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    // Mature prior full-scope run: transactions committed but only 2 of 4
+    // considered keys covered (2 durable detail gaps outstanding).
+    seedTerminalEvent({
+      connectorInstanceId: "cin_bc1efca69a1c386d610f0924",
+      occurredAt: "2026-07-30T00:00:00.000Z",
+      runId: "run_prior_1290871",
+      streams: [{ checkpoint: "committed", collected: 2, considered: 4, covered: 2, stream: "transactions" }],
+    });
+    // Recovery-only run: durably recovers the 2 outstanding gaps (the
+    // runtime's own gap-store transitions — never the connector-declared
+    // DETAIL_COVERAGE considered/covered numbers), then terminates with NO
+    // collection_facts (recoveryOnly semantics, unchanged).
+    seedTerminalEvent({
+      connectorInstanceId: "cin_bc1efca69a1c386d610f0924",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      recoveryGapClosure: [{ recovered_count: 2, stream: "transactions" }],
+      recoveryOnly: true,
+      runId: "run_recovery_1291491",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const facts = factsFor(await getConnectorSummaryEvidence("cin_bc1efca69a1c386d610f0924"));
+    const transactions = requireStreamFact(facts, "transactions");
+    assert.equal(transactions.fact.checkpoint, "committed", "checkpoint is untouched — no new inventory measurement");
+    assert.equal(transactions.fact.considered, 4, "considered denominator is untouched — never re-measured");
+    assert.equal((transactions.fact as unknown as { covered: number }).covered, 4, "covered narrows 2 -> 4");
+    assert.equal(transactions.run_id, "run_recovery_1291491", "provenance honestly advances to the recovery run");
+
+    // Checkpoint advanced past both events; a repeated fold pass is stable
+    // (idempotent) rather than re-applying the delta a second time.
+    const stablePass = await foldConnectorSummaryStreamFacts();
+    assert.equal(stablePass.folded, 0, "already-converged row does not re-fold");
+    const factsAfterReplay = factsFor(await getConnectorSummaryEvidence("cin_bc1efca69a1c386d610f0924"));
+    const transactionsAfterReplay = requireStreamFact(factsAfterReplay, "transactions");
+    assert.equal((transactionsAfterReplay.fact as unknown as { covered: number }).covered, 4, "stable at 4, not 6+");
+  });
+});
+
+test("recovery_gap_closure_facts: a later unproven failed/cancelled run cannot regress the closed-gap proof", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_a", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      occurredAt: "2026-07-30T00:00:00.000Z",
+      runId: "run_1",
+      streams: [{ checkpoint: "committed", collected: 2, considered: 4, covered: 2, stream: "transactions" }],
+    });
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      recoveryGapClosure: [{ recovered_count: 2, stream: "transactions" }],
+      recoveryOnly: true,
+      runId: "run_2",
+    });
+    // A subsequent failed/cancelled run — no collection_facts, no
+    // recovery_gap_closure_facts (it recovered nothing) — must not erase the
+    // durable 4/4 proof the recovery run just established.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      eventType: "run.failed",
+      occurredAt: "2026-08-01T01:00:00.000Z",
+      runId: "run_3",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const facts = factsFor(await getConnectorSummaryEvidence("cin_a"));
+    const transactions = requireStreamFact(facts, "transactions");
+    assert.equal((transactions.fact as unknown as { covered: number }).covered, 4, "closed-gap proof is not regressed");
+    assert.equal(transactions.run_id, "run_2", "provenance stays on the run that actually closed the gaps");
+  });
+});
+
+test("recovery_gap_closure_facts: never originates a fresh fact — a stream with no prior durably-proven inventory stays untouched", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_a", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    // No prior run at all for this stream: no stored fact exists to narrow.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      recoveryGapClosure: [{ recovered_count: 2, stream: "transactions" }],
+      recoveryOnly: true,
+      runId: "run_1",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const facts = factsFor(await getConnectorSummaryEvidence("cin_a"));
+    assert.equal(facts?.transactions, undefined, "no fact is fabricated for a stream that was never measured");
+  });
+});
+
+test("recovery_gap_closure_facts: never narrows a stream whose stored checkpoint does not prove durable coverage (not_staged/not_committed)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_a", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    // Prior run left the stream not_committed (unresolved) — no durable
+    // coverage floor exists yet for a gap-closure delta to narrow toward.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      occurredAt: "2026-07-30T00:00:00.000Z",
+      runId: "run_1",
+      streams: [{ checkpoint: "not_committed", collected: 2, considered: 4, covered: 2, stream: "transactions" }],
+    });
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      recoveryGapClosure: [{ recovered_count: 2, stream: "transactions" }],
+      recoveryOnly: true,
+      runId: "run_2",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const facts = factsFor(await getConnectorSummaryEvidence("cin_a"));
+    const transactions = requireStreamFact(facts, "transactions");
+    assert.equal(transactions.fact.checkpoint, "not_committed", "checkpoint stays unresolved, not silently upgraded");
+    assert.equal(
+      (transactions.fact as unknown as { covered: number }).covered,
+      2,
+      "covered is NOT narrowed without a durable-coverage floor — this would be claiming complete without proof"
+    );
+    assert.equal(transactions.run_id, "run_1", "provenance is not restamped without an applied delta");
+  });
+});
+
+test("recovery_gap_closure_facts: never pushes covered past considered (a stream already at parity stays at parity)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_a", "usaa");
+    await rebuildConnectorSummaryEvidence();
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      occurredAt: "2026-07-30T00:00:00.000Z",
+      runId: "run_1",
+      streams: [{ checkpoint: "committed", collected: 4, considered: 4, covered: 4, stream: "transactions" }],
+    });
+    // An over-declared closure count (e.g. connector double-reports) must not
+    // push covered past its own proven denominator.
+    seedTerminalEvent({
+      connectorInstanceId: "cin_a",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      recoveryGapClosure: [{ recovered_count: 3, stream: "transactions" }],
+      recoveryOnly: true,
+      runId: "run_2",
+    });
+    await reconcileDirtyConnectorSummaryEvidence();
+    const facts = factsFor(await getConnectorSummaryEvidence("cin_a"));
+    const transactions = requireStreamFact(facts, "transactions");
+    assert.equal(
+      (transactions.fact as unknown as { covered: number }).covered,
+      4,
+      "covered is capped at considered, never exceeds the proven denominator"
     );
   });
 });

@@ -1215,7 +1215,17 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
 // connection's generation), so it is never a valid baseline after this
 // upgrade either: `seedFoldState` replays it from an empty map on the first
 // observation, exactly like the v2->v3 upgrade.
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 4;
+//
+// Version 5 teaches the fold to also read a recovery-only run's terminal
+// `recovery_gap_closure_facts` block (`applyRecoveryGapClosureFacts`) — a
+// row whose checkpoint already sits past such an event under the OLD logic
+// folded it as a complete no-op (the event carried no `collection_facts`, so
+// `parseTerminalFactEvent` alone gated the entire row out before this
+// change). Under v4 logic that row's stored fact is genuinely stale relative
+// to durable gap-recovery evidence the connection already has; a v4 current
+// map is never a valid baseline after this upgrade either, for the same
+// self-healing reason as v2->v3 and v3->v4.
+const STREAM_FACTS_FOLD_LOGIC_VERSION = 5;
 // A route may retry a replay once after a concurrent writer wins its CAS.
 // This is deliberately small: each retry rereads the durable baseline, and
 // persistent contention fails closed in memory rather than spinning or
@@ -1487,8 +1497,8 @@ function readEventConnectionId(data: Row): string | null {
   return null;
 }
 
-/** Parse a terminal event row's payload into its fact stream array, or `null` when it carries none. */
-function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } | null {
+/** Parse a terminal event row's raw JSON payload, or `null` on a malformed row. */
+function parseTerminalEventPayload(row: Row): Row | null {
   let data: unknown;
   try {
     data = JSON.parse(String(row.data_json ?? "null"));
@@ -1498,8 +1508,34 @@ function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } 
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return null;
   }
-  const payload = data as Row;
+  return data as Row;
+}
+
+/** Parse a terminal event row's payload into its fact stream array, or `null` when it carries none. */
+function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } | null {
+  const payload = parseTerminalEventPayload(row);
+  if (!payload) {
+    return null;
+  }
   const block = payload.collection_facts as Row | undefined;
+  const streams = block && typeof block === "object" && Array.isArray(block.streams) ? block.streams : null;
+  return streams && streams.length > 0 ? { payload, streams } : null;
+}
+
+/**
+ * Parse a terminal event row's payload into its `recovery_gap_closure_facts`
+ * stream array, or `null` when it carries none. Distinct from
+ * `parseTerminalFactEvent`/`collection_facts`: see
+ * `buildRecoveryGapClosureFacts` (`runtime/connector-gap-bounding.ts`) for
+ * why this is a separate block with separate merge semantics
+ * (`applyRecoveryGapClosureFacts`, below).
+ */
+function parseRecoveryGapClosureFactEvent(row: Row): { payload: Row; streams: unknown[] } | null {
+  const payload = parseTerminalEventPayload(row);
+  if (!payload) {
+    return null;
+  }
+  const block = payload.recovery_gap_closure_facts as Row | undefined;
   const streams = block && typeof block === "object" && Array.isArray(block.streams) ? block.streams : null;
   return streams && streams.length > 0 ? { payload, streams } : null;
 }
@@ -1596,7 +1632,91 @@ function mergeEventStreamFacts(
   }
 }
 
-/** Fold one terminal event's fact block into the per-instance maps. */
+/**
+ * Merge one recovery-only terminal event's `recovery_gap_closure_facts` into
+ * a connection's stream-fact map. Unlike `mergeEventStreamFacts` (newest
+ * attempt WINS, wholesale), this NARROWS an existing durably-proven fact —
+ * it never originates a fresh fact for a stream this run did not otherwise
+ * measure, and never changes a stream's `considered` denominator.
+ *
+ * Preconditions to apply, per stream (all must hold, else the stream's
+ * closure count for THIS event is silently dropped — never queued or
+ * retried, since a later genuine measurement or recovery event is the only
+ * thing that can ever produce new proof for it):
+ *   - a stored fact already exists AND its own `checkpoint` proves durable
+ *     coverage (`committed`/`disabled` — same predicate the ordinary
+ *     monotonicity guard uses). A stream with no durably-proven fact yet has
+ *     nothing this can narrow: closing gaps against unmeasured inventory
+ *     would be inventing a `considered` denominator this run never proved.
+ *   - the stored fact declares a known `considered` (else there is no
+ *     denominator to close against).
+ *
+ * The delta itself: `covered` advances by `recovered_count`, floored at the
+ * stream's current `covered ?? collected` and capped at `considered` (a
+ * recovered gap can never push `covered` past the stream's own proven
+ * denominator — that would be claiming MORE than the last genuine
+ * measurement itself claimed). `collected`/`checkpoint`/every other field on
+ * the stored fact is left untouched. Provenance (`run_id`/`evidence_as_of`/
+ * `event_seq`) DOES advance to this recovery event — this is honest, not the
+ * provenance-falsification PR #322 rejected, because the delta being stamped
+ * (`covered` narrowing toward `considered`) is exactly what this run
+ * durably proved (real `DETAIL_GAP_RECOVERED` store transitions), not a
+ * carried-forward inventory claim dressed up as fresh.
+ *
+ * Composes correctly across multiple recovery events for the same stream
+ * within one fold pass: each call reads/writes `facts[stream]` in place, so
+ * a second recovery event's delta narrows the first's already-narrowed
+ * result, in ascending `event_seq` order (see `drainTerminalEventBatches`).
+ */
+function applyRecoveryGapClosureFacts(
+  facts: Record<string, StoredStreamFactEntry>,
+  streams: readonly unknown[],
+  provenance: { evidenceAsOf: string | null; runId: string | null; eventSeq: number },
+  counters: { folded: number; refused: number }
+): void {
+  for (const rawEntry of streams) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      continue;
+    }
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+    const stream = (rawEntry as Row).stream;
+    const recoveredCount = (rawEntry as Row).recovered_count;
+    if (typeof stream !== "string" || !stream || typeof recoveredCount !== "number" || recoveredCount <= 0) {
+      continue;
+    }
+    const existing = facts[stream];
+    if (!existing || existing.event_seq > provenance.eventSeq) {
+      continue;
+    }
+    if (!factCheckpointProvesDurableCoverage(existing.fact)) {
+      // No durably-proven inventory to narrow — never originate a fact here.
+      continue;
+    }
+    // biome-ignore lint/style/useDestructuring: Explicit property access documents this compatibility boundary.
+    const considered = existing.fact.considered;
+    if (typeof considered !== "number") {
+      // No known denominator to close gaps against.
+      continue;
+    }
+    const priorCovered = typeof existing.fact.covered === "number" ? existing.fact.covered : existing.fact.collected;
+    if (typeof priorCovered !== "number") {
+      continue;
+    }
+    const nextCovered = Math.min(considered, priorCovered + recoveredCount);
+    if (nextCovered === priorCovered) {
+      continue;
+    }
+    facts[stream] = {
+      event_seq: provenance.eventSeq,
+      evidence_as_of: provenance.evidenceAsOf,
+      fact: { ...existing.fact, covered: nextCovered },
+      run_id: provenance.runId,
+    };
+    counters.folded += 1;
+  }
+}
+
+/** Fold one terminal event's fact block(s) into the per-instance maps. */
 function foldTerminalEventFacts(
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>,
   checkpointByInstance: Map<string, number | null>,
@@ -1606,10 +1726,16 @@ function foldTerminalEventFacts(
   counters: { folded: number; refused: number }
 ): void {
   const parsed = parseTerminalFactEvent(row);
-  if (!parsed) {
+  // Distinct, independently-optional block (see `buildRecoveryGapClosureFacts`):
+  // a recovery-only run's `run.completed` carries THIS but never
+  // `collection_facts`, so `parsed` alone must not gate whether the row is
+  // worth attributing/generation-fenced/checkpoint-gated below.
+  const parsedGapClosure = parseRecoveryGapClosureFactEvent(row);
+  if (!(parsed || parsedGapClosure)) {
     return;
   }
-  const instanceId = readEventConnectionId(parsed.payload);
+  const payload = (parsed || parsedGapClosure)?.payload as Row;
+  const instanceId = readEventConnectionId(payload);
   if (!instanceId) {
     // Legacy connector-wide event: cannot be attributed to exactly one
     // connection, so it is refused rather than mixed across accounts.
@@ -1650,16 +1776,17 @@ function foldTerminalEventFacts(
   if (!Number.isFinite(eventSeq) || (checkpoint !== null && checkpoint !== undefined && eventSeq <= checkpoint)) {
     return;
   }
-  mergeEventStreamFacts(
-    facts,
-    parsed.streams,
-    {
-      eventSeq,
-      evidenceAsOf: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
-      runId: typeof row.run_id === "string" && row.run_id ? row.run_id : null,
-    },
-    counters
-  );
+  const provenance = {
+    eventSeq,
+    evidenceAsOf: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
+    runId: typeof row.run_id === "string" && row.run_id ? row.run_id : null,
+  };
+  if (parsed) {
+    mergeEventStreamFacts(facts, parsed.streams, provenance, counters);
+  }
+  if (parsedGapClosure) {
+    applyRecoveryGapClosureFacts(facts, parsedGapClosure.streams, provenance, counters);
+  }
 }
 
 /**

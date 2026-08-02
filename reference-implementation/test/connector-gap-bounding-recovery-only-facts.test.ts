@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCollectionFacts } from "../runtime/connector-gap-bounding.ts";
+import { buildCollectionFacts, buildRecoveryGapClosureFacts } from "../runtime/connector-gap-bounding.ts";
 
 interface BaseInputOverrides {
   committedStateStreams?: Set<string> | string[];
@@ -108,4 +108,64 @@ test("recoveryOnly=true: returns null even when a state_stream has staged/commit
 test("recoveryOnly=true: returns null with a completely empty run (no signals at all)", () => {
   const facts = buildCollectionFacts(baseInput({ recoveryOnly: true }));
   assert.equal(facts, null);
+});
+
+// buildRecoveryGapClosureFacts is the DISTINCT typed block that carries a
+// recovery-only run's durable gap-closure count, separate from
+// buildCollectionFacts's unconditional-null `collection_facts`. It never
+// claims inventory (`considered`/`checkpoint`) — only "N previously-open
+// gaps for this stream are now durably recovered" — sourced from the
+// runtime's own `durableDetailGaps` store transitions, not any
+// connector-declared DETAIL_COVERAGE number. See its doc comment in
+// connector-gap-bounding.ts and the fold-side merge test in
+// connector-summary-stream-facts.test.ts.
+
+test("buildRecoveryGapClosureFacts: recoveryOnly=false returns null even with recovered gaps (block only exists for recovery-only runs)", () => {
+  const facts = buildRecoveryGapClosureFacts({
+    durableDetailGaps: [{ kind: "detail_gap", status: "recovered", stream: "transactions" }],
+    recoveryOnly: false,
+  });
+  assert.equal(facts, null);
+});
+
+test("buildRecoveryGapClosureFacts: recoveryOnly=true with no recovered gaps returns null", () => {
+  const facts = buildRecoveryGapClosureFacts({
+    durableDetailGaps: [{ kind: "detail_gap", status: "pending", stream: "transactions" }],
+    recoveryOnly: true,
+  });
+  assert.equal(facts, null);
+});
+
+test("buildRecoveryGapClosureFacts: recoveryOnly=true counts only status=recovered gaps, grouped per stream", () => {
+  const facts = buildRecoveryGapClosureFacts({
+    durableDetailGaps: [
+      { kind: "detail_gap", status: "recovered", stream: "transactions" },
+      { kind: "detail_gap", status: "recovered", stream: "transactions" },
+      { kind: "detail_gap", status: "pending", stream: "transactions" },
+      { kind: "detail_gap", status: "recovered", stream: "orders" },
+      { kind: "detail_gap", status: "terminal", stream: "orders" },
+    ],
+    recoveryOnly: true,
+  });
+  assert.ok(facts);
+  const streams = facts.streams
+    .map((s) => s as { recovered_count: number; stream: string })
+    .sort((a, b) => a.stream.localeCompare(b.stream));
+  assert.deepEqual(streams, [
+    { recovered_count: 1, stream: "orders" },
+    { recovered_count: 2, stream: "transactions" },
+  ]);
+});
+
+test("buildRecoveryGapClosureFacts: never carries considered/covered/checkpoint fields (not an inventory claim)", () => {
+  const facts = buildRecoveryGapClosureFacts({
+    durableDetailGaps: [{ kind: "detail_gap", status: "recovered", stream: "transactions" }],
+    recoveryOnly: true,
+  });
+  assert.ok(facts);
+  const entry = facts.streams[0] as Record<string, unknown>;
+  assert.equal(Object.hasOwn(entry, "considered"), false);
+  assert.equal(Object.hasOwn(entry, "covered"), false);
+  assert.equal(Object.hasOwn(entry, "checkpoint"), false);
+  assert.equal(Object.hasOwn(entry, "collected"), false);
 });
