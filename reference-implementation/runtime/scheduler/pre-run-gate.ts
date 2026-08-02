@@ -48,6 +48,7 @@ export interface PreRunGateRuntimeState {
   readonly exhaustedGrants: Set<string>;
   readonly notifiedAttentionSkips: Map<string, string>;
   readonly notifiedDisabledGrantFailures: Set<string>;
+  readonly notifiedNeedsHumanEscalations: Set<string>;
   readonly notifiedNeedsHumanSkips: Set<string>;
   readonly notifiedNotReadySkips: Map<string, string>;
 }
@@ -448,15 +449,19 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
     return recordAndNotify(buildAutomationPolicySkip(connectorId, reason, connectorInstanceId));
   }
 
-  function gateNeedsHuman(connectorId: string, connectorInstanceId: string, key: string): GateOutcome {
-    if (!isNeedsHuman(connectorId, connectorInstanceId)) {
-      runtime.notifiedNeedsHumanSkips.delete(key);
-      return "proceed";
+  // Fires the owner-facing escalation push at most once per transition.
+  // `onInteraction` may pre-arm `notifiedNeedsHumanEscalations` (see
+  // markNeedsHumanDedupeFromInteraction in scheduler.ts) to suppress a
+  // duplicate push for a transition it already surfaced via the
+  // pending-interaction notification -- kept separate from
+  // notifiedNeedsHumanSkips (gateNeedsHuman's own one-shot gate for the
+  // audit-trail skip record) so pre-arming this set can never suppress that
+  // transition's first, legitimate skip record.
+  function pushNeedsHumanEscalationOnce(connectorId: string, connectorInstanceId: string, key: string): void {
+    if (runtime.notifiedNeedsHumanEscalations.has(key)) {
+      return;
     }
-    if (runtime.notifiedNeedsHumanSkips.has(key)) {
-      return null;
-    }
-    runtime.notifiedNeedsHumanSkips.add(key);
+    runtime.notifiedNeedsHumanEscalations.add(key);
     Promise.resolve(
       onHumanRequiredStateEscalation({
         connectorId,
@@ -467,6 +472,19 @@ export function createPreRunGate(deps: PreRunGateDeps): PreRunGate {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] §10-F needs_attention escalation callback failed for ${connectorId}: ${message}`);
     });
+  }
+
+  function gateNeedsHuman(connectorId: string, connectorInstanceId: string, key: string): GateOutcome {
+    if (!isNeedsHuman(connectorId, connectorInstanceId)) {
+      runtime.notifiedNeedsHumanSkips.delete(key);
+      runtime.notifiedNeedsHumanEscalations.delete(key);
+      return "proceed";
+    }
+    if (runtime.notifiedNeedsHumanSkips.has(key)) {
+      return null;
+    }
+    runtime.notifiedNeedsHumanSkips.add(key);
+    pushNeedsHumanEscalationOnce(connectorId, connectorInstanceId, key);
     return recordAndNotify(buildNeedsHumanSkip(connectorId, connectorInstanceId));
   }
 

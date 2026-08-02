@@ -179,6 +179,14 @@ interface SchedulerRuntime {
   // next observed cooldown emits a fresh skip.
   readonly notifiedCooldownIdentity: Map<string, string>;
   readonly notifiedDisabledGrantFailures: Set<string>;
+  // §10-F: tracks connectors for which we have already pushed a needs-human
+  // ESCALATION (the owner-facing notification), independent of the skip
+  // record above. A scheduled interaction's onInteraction push pre-arms this
+  // set (see markNeedsHumanDedupeFromInteraction) so gateNeedsHuman doesn't
+  // fire a second, separate escalation for the same transition — but the
+  // skip record itself must still be recorded on gateNeedsHuman's first
+  // call, so this is deliberately NOT the same set as notifiedNeedsHumanSkips.
+  readonly notifiedNeedsHumanEscalations: Set<string>;
   // Tracks connectors for which we have already emitted one needs-human skip
   // record this cycle. Cleared when the owner clears the needs-human flag via
   // clearNeedsHuman / runNow so the next automatic tick emits a fresh skip.
@@ -200,6 +208,7 @@ function buildRuntime(): SchedulerRuntime {
     notifiedAttentionSkips: new Map(),
     notifiedCooldownIdentity: new Map(),
     notifiedDisabledGrantFailures: new Set(),
+    notifiedNeedsHumanEscalations: new Set(),
     notifiedNeedsHumanSkips: new Set(),
     notifiedNotReadySkips: new Map(),
     running: false,
@@ -531,15 +540,19 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   // (fired via `gateNeedsHuman` in pre-run-gate.ts, keyed by the same
   // connectorInstanceId) both react to the same underlying transition — a
   // connector run becoming human-required. Without this, the very next
-  // scheduler tick's `gateNeedsHuman` sees `isNeedsHuman() === true` (an
-  // active run counts) and fires a SECOND, separate escalation push for a
-  // connector instance that was already notified. Pre-arming
-  // `notifiedNeedsHumanSkips` here — the same Set `gateNeedsHuman` already
-  // consults — makes the escalation gate treat this transition as already
-  // notified, with no new storage or cross-module plumbing: `runtime` is the
-  // same object `createPreRunGate` was given above.
+  // scheduler tick's `gateNeedsHuman` would fire a SECOND, separate
+  // escalation push for a connector instance that was already notified.
+  // Pre-arming `notifiedNeedsHumanEscalations` here suppresses only the
+  // duplicate escalation push — it must NOT reuse `notifiedNeedsHumanSkips`,
+  // which gates whether the needs-human SKIP RECORD (the audit-trail entry
+  // `onRunComplete` observes) is ever emitted at all. Pre-arming that set
+  // instead made gateNeedsHuman treat the transition's first, legitimate
+  // skip record as already-notified and silently drop it — a real
+  // production defect (root-caused via the "marks connector as needs-human"
+  // scheduler test hanging: the expected second completed run, the skip
+  // record, never arrived).
   const onInteractionWithNeedsHumanDedupe: typeof onInteraction = (...args: unknown[]) => {
-    markNeedsHumanDedupeFromInteraction(args[0], runtime.notifiedNeedsHumanSkips);
+    markNeedsHumanDedupeFromInteraction(args[0], runtime.notifiedNeedsHumanEscalations);
     return onInteraction(...args);
   };
 
