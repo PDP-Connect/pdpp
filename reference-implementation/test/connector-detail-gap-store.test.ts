@@ -3766,6 +3766,96 @@ test(
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (POSTGRES_URL) {
+  test("Postgres terminal policy disposition matches SQLite's immutable coverage filter", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = "gmail";
+    const connectorInstanceId = `cin_gap_pg_policy_${suffix}`;
+    const siblingInstanceId = `cin_gap_pg_policy_sibling_${suffix}`;
+    const policyProof = {
+      configured_limit_bytes: 25,
+      kind: "gmail_attachment_too_large",
+      observed_size_bytes: 26,
+    } as const;
+    const seedPolicy = async (store: ReturnType<typeof createPostgresConnectorDetailGapStore>, id: string) => {
+      const detailLocator = { attachment_id: id, kind: "gmail.attachment_detail" };
+      const lastError = { class: "too_large", message: "attachment exceeds configured size" };
+      const pending = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId: id === "policy-sibling" ? siblingInstanceId : connectorInstanceId,
+        detailLocator,
+        gapId: `gap_${id}_${suffix}`,
+        lastError,
+        reason: "temporary_unavailable",
+        recordKey: id,
+        stream: "attachments",
+      });
+      assert.ok(pending);
+      const runId = `run_${id}_${suffix}`;
+      const leaseId = `lease_${id}_${suffix}`;
+      await store.claimPendingGaps([pending.gap_id], {
+        leaseExpiresAt: "2030-01-01T00:00:00.000Z",
+        leaseId,
+        runId,
+      });
+      assert.ok(
+        await store.settleLeasedGapTerminal(
+          { gapId: pending.gap_id, leaseId, runId },
+          {
+            connectorId,
+            connectorInstanceId: id === "policy-sibling" ? siblingInstanceId : connectorInstanceId,
+            detailLocator,
+            gapId: pending.gap_id,
+            lastError,
+            reason: "too_large",
+            recordKey: id,
+            stream: "attachments",
+          },
+          policyProof
+        )
+      );
+    };
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      await seedPolicy(store, "policy");
+      await seedPolicy(store, "policy-sibling");
+      const notFound = await store.upsertPendingGap({
+        connectorId,
+        connectorInstanceId,
+        detailLocator: { attachment_id: "not-found", kind: "gmail.attachment_detail" },
+        gapId: `gap_not_found_${suffix}`,
+        lastError: { class: "not_found", message: "provider absent" },
+        reason: "not_found",
+        recordKey: "not-found",
+        stream: "attachments",
+      });
+      assert.ok(notFound);
+      await store.markGapStatus(notFound.gap_id, "terminal", {
+        lastError: { class: "not_found", message: "generic mutation" },
+        reason: "too_large",
+      });
+      assert.deepEqual(
+        await store.countGapsByStatusByStreamForConnector(connectorId, {
+          connectorInstanceId,
+          policyDisposition: "gmail_attachment_too_large",
+          status: "terminal",
+        }),
+        [{ count: 1, stream: "attachments" }]
+      );
+      assert.equal(
+        await store.countGapsByStatusForConnector(connectorId, { connectorInstanceId, status: "terminal" }),
+        2
+      );
+    } finally {
+      await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = ANY($1::text[])", [
+        [connectorInstanceId, siblingInstanceId],
+      ]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
   test("detail-gap page batch preserves exact-instance pending and aggregate facts on Postgres", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `gap_pg_batch_${suffix}`;
@@ -4468,6 +4558,10 @@ if (POSTGRES_URL) {
     }
   });
 } else {
+  test("Postgres terminal policy disposition matches SQLite's immutable coverage filter (skipped: PDPP_TEST_POSTGRES_URL unset)", {
+    skip: true,
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+  }, () => {});
   test("connector-emitted DETAIL_GAP survives Postgres persistence and reappears in START.detail_gaps (skipped: PDPP_TEST_POSTGRES_URL unset)", {
     skip: true,
     // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.

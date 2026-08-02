@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
+import { requireValidatedTerminalPolicyDisposition } from "../../runtime/terminal-policy-disposition.ts";
 
 // Type definitions for store interface
 interface DetailGap {
@@ -26,6 +27,7 @@ interface DetailGap {
   list_cursor: unknown;
   next_attempt_after: string | null;
   parent_stream: string | null;
+  policy_disposition: unknown;
   reason: string | null;
   record_key: string | null;
   recovered_run_id: string | null;
@@ -59,6 +61,7 @@ interface DetailGapRow {
   list_cursor_json: string | null;
   next_attempt_after: string | null;
   parent_stream: string | null;
+  policy_disposition_json: string | null;
   reason: string | null;
   record_key: string | null;
   recovered_run_id: string | null;
@@ -516,6 +519,7 @@ function rowToGap(row: DetailGapRow | null): DetailGap | null {
     list_cursor: parseJson(row.list_cursor_json),
     next_attempt_after: nullableGapRowValue(row.next_attempt_after),
     parent_stream: nullableGapRowValue(row.parent_stream),
+    policy_disposition: parseJson(row.policy_disposition_json),
     reason: nullableGapRowValue(row.reason),
     record_key: nullableGapRowValue(row.record_key),
     recovered_run_id: nullableGapRowValue(row.recovered_run_id),
@@ -603,6 +607,43 @@ function chunked<T>(values: readonly T[], size: number): T[][] {
     chunks.push(values.slice(start, start + size));
   }
   return chunks;
+}
+
+interface SqliteCountByInstanceStreamRow {
+  connector_instance_id: string;
+  gap_count: number;
+  stream: string;
+}
+
+function sqliteCountByInstanceStreamChunk(
+  connectorInstanceIds: readonly string[],
+  status: string,
+  reasonChunk: readonly string[] | null,
+  policyKind: string | null
+): SqliteCountByInstanceStreamRow[] {
+  const instancePlaceholders = connectorInstanceIds.map(() => "?").join(", ");
+  const reasonPlaceholders = optionalSqlPlaceholders(reasonChunk);
+  return [
+    ...iterateDynamicSqlAcknowledged<SqliteCountByInstanceStreamRow>(
+      `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
+       WHERE connector_instance_id IN (${instancePlaceholders}) AND status = ?
+       ${reasonChunk ? `AND reason IN (${reasonPlaceholders})` : ""}
+       ${policyKind ? "AND json_extract(policy_disposition_json, '$.kind') = ?" : ""}
+       GROUP BY connector_instance_id, stream`,
+      [...connectorInstanceIds, status, ...(reasonChunk ?? []), ...(policyKind ? [policyKind] : [])]
+    ),
+  ];
+}
+
+function mergeCountByInstanceStreamRows(
+  result: Map<string, Map<string, number>>,
+  rows: readonly SqliteCountByInstanceStreamRow[]
+): void {
+  for (const row of rows) {
+    const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
+    counts.set(row.stream, (counts.get(row.stream) ?? 0) + coerceCount(row.gap_count));
+    result.set(row.connector_instance_id, counts);
+  }
 }
 
 // `NULLIF(last_attempt_at, '')` normalizes an empty-string last_attempt_at to
@@ -978,10 +1019,12 @@ export function createSqliteConnectorDetailGapStore() {
       {
         status,
         reasons = null,
+        policyDisposition = null,
         connectorInstanceId = null,
       }: {
         status: string;
         reasons?: readonly string[] | null;
+        policyDisposition?: string | null;
         connectorInstanceId?: string | null;
       }
     ): Promise<CountByStream[]> {
@@ -990,6 +1033,7 @@ export function createSqliteConnectorDetailGapStore() {
       }
       const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
       const reasonScope = normalizeReasonScope(reasons);
+      const policyKind = nonEmptyString(policyDisposition);
       const reasonPlaceholders = optionalSqlPlaceholders(reasonScope);
       // REVIEWED-DYNAMIC: bounded grouped count-by-status aggregate over the
       // store-owned detail-gap table; only stream names and counts are returned.
@@ -1001,10 +1045,18 @@ export function createSqliteConnectorDetailGapStore() {
           AND status = ?
           AND (? IS NULL OR connector_instance_id = ?)
           ${reasonScope ? `AND reason IN (${reasonPlaceholders})` : ""}
+          ${policyKind ? "AND json_extract(policy_disposition_json, '$.kind') = ?" : ""}
         GROUP BY stream
         ORDER BY stream
       `,
-          [connectorId, status, scopedConnectorInstanceId, scopedConnectorInstanceId, ...(reasonScope ?? [])]
+          [
+            connectorId,
+            status,
+            scopedConnectorInstanceId,
+            scopedConnectorInstanceId,
+            ...(reasonScope ?? []),
+            ...(policyKind ? [policyKind] : []),
+          ]
         ),
       ];
       return rows.map((row) => ({ count: coerceCount(row.gap_count ?? 0), stream: row.stream }));
@@ -1012,7 +1064,11 @@ export function createSqliteConnectorDetailGapStore() {
 
     countGapsByStatusByStreamForConnectorInstanceIds(
       connectorInstanceIds: readonly (string | null | undefined)[],
-      { reasons = null, status }: { reasons?: readonly string[] | null; status: string }
+      {
+        reasons = null,
+        policyDisposition = null,
+        status,
+      }: { reasons?: readonly string[] | null; policyDisposition?: string | null; status: string }
     ): Promise<Map<string, Map<string, number>>> {
       assertValidGapStatus(status);
       const ids = exactConnectorInstanceIds(connectorInstanceIds);
@@ -1021,25 +1077,14 @@ export function createSqliteConnectorDetailGapStore() {
       }
       const result = new Map<string, Map<string, number>>();
       const reasonValues = normalizeReasonScope(reasons);
+      const policyKind = nonEmptyString(policyDisposition);
       const reasonChunks = reasonValues ? chunked(reasonValues, SQLITE_BATCH_REASON_CHUNK_SIZE) : [null];
       for (const chunk of chunked(ids, SQLITE_BATCH_INSTANCE_ID_CHUNK_SIZE)) {
-        const placeholders = chunk.map(() => "?").join(", ");
         for (const reasonChunk of reasonChunks) {
-          const reasonPlaceholders = optionalSqlPlaceholders(reasonChunk);
-          const rows = [
-            ...iterateDynamicSqlAcknowledged<{ connector_instance_id: string; stream: string; gap_count: number }>(
-              `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
-             WHERE connector_instance_id IN (${placeholders}) AND status = ?
-             ${reasonChunk ? `AND reason IN (${reasonPlaceholders})` : ""}
-             GROUP BY connector_instance_id, stream`,
-              [...chunk, status, ...(reasonChunk ?? [])]
-            ),
-          ];
-          for (const row of rows) {
-            const counts = result.get(row.connector_instance_id) ?? new Map<string, number>();
-            counts.set(row.stream, (counts.get(row.stream) ?? 0) + coerceCount(row.gap_count));
-            result.set(row.connector_instance_id, counts);
-          }
+          mergeCountByInstanceStreamRows(
+            result,
+            sqliteCountByInstanceStreamChunk(chunk, status, reasonChunk, policyKind)
+          );
         }
       }
       return Promise.resolve(result);
@@ -1577,15 +1622,23 @@ export function createSqliteConnectorDetailGapStore() {
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async settleLeasedGapTerminal(
       lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown },
-      input: UpsertGapInput
+      input: UpsertGapInput,
+      policyDisposition: unknown
     ): Promise<DetailGap | null> {
       const owner = normalizeLease(lease);
       const gap = normalizeGapInput({ ...input, gapId: owner.gapId });
+      const policy = requireValidatedTerminalPolicyDisposition(policyDisposition, {
+        connectorId: gap.connectorId,
+        detailLocator: gap.detailLocator,
+        lastError: gap.lastError,
+        reason: gap.reason,
+        stream: gap.stream,
+      });
       const result = execDynamicSqlAcknowledged(
         `
         UPDATE connector_detail_gaps
         SET source_json = ?, detail_locator_json = ?, list_cursor_json = ?, scope_json = ?, reason = ?,
-            status = 'terminal', next_attempt_after = NULL, last_error_json = ?, last_run_id = ?,
+            status = 'terminal', next_attempt_after = NULL, last_error_json = ?, policy_disposition_json = ?, last_run_id = ?,
             lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
             updated_at = ?
         WHERE gap_id = ? AND status = 'in_progress'
@@ -1598,6 +1651,7 @@ export function createSqliteConnectorDetailGapStore() {
           encodeJson(gap.scope),
           gap.reason,
           encodeJson(gap.lastError),
+          encodeJson(policy),
           gap.lastRunId,
           gap.now,
           owner.gapId,
@@ -1846,10 +1900,12 @@ export function createPostgresConnectorDetailGapStore() {
       {
         status,
         reasons = null,
+        policyDisposition = null,
         connectorInstanceId = null,
       }: {
         status: string;
         reasons?: readonly string[] | null;
+        policyDisposition?: string | null;
         connectorInstanceId?: string | null;
       }
     ): Promise<CountByStream[]> {
@@ -1858,6 +1914,7 @@ export function createPostgresConnectorDetailGapStore() {
       }
       const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
       const reasonScope = normalizeReasonScope(reasons);
+      const policyKind = nonEmptyString(policyDisposition);
       const result = await postgresQuery(
         `
         SELECT stream, COUNT(*) AS gap_count FROM connector_detail_gaps
@@ -1865,10 +1922,11 @@ export function createPostgresConnectorDetailGapStore() {
           AND status = $2
           AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
           AND ($4::text IS NULL OR connector_instance_id = $4)
+          AND ($5::text IS NULL OR policy_disposition_json->>'kind' = $5)
         GROUP BY stream
         ORDER BY stream
       `,
-        [connectorId, status, reasonScope, scopedConnectorInstanceId]
+        [connectorId, status, reasonScope, scopedConnectorInstanceId, policyKind]
       );
       return (result.rows as { stream: string; gap_count: number }[]).map((row) => ({
         count: coerceCount(row.gap_count ?? 0),
@@ -1878,7 +1936,11 @@ export function createPostgresConnectorDetailGapStore() {
 
     async countGapsByStatusByStreamForConnectorInstanceIds(
       connectorInstanceIds: readonly (string | null | undefined)[],
-      { reasons = null, status }: { reasons?: readonly string[] | null; status: string }
+      {
+        reasons = null,
+        policyDisposition = null,
+        status,
+      }: { reasons?: readonly string[] | null; policyDisposition?: string | null; status: string }
     ): Promise<Map<string, Map<string, number>>> {
       assertValidGapStatus(status);
       const ids = exactConnectorInstanceIds(connectorInstanceIds);
@@ -1889,8 +1951,9 @@ export function createPostgresConnectorDetailGapStore() {
         `SELECT connector_instance_id, stream, COUNT(*) AS gap_count FROM connector_detail_gaps
          WHERE connector_instance_id = ANY($1::text[]) AND status = $2
            AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
+           AND ($4::text IS NULL OR policy_disposition_json->>'kind' = $4)
          GROUP BY connector_instance_id, stream`,
-        [ids, status, normalizeReasonScope(reasons)]
+        [ids, status, normalizeReasonScope(reasons), nonEmptyString(policyDisposition)]
       );
       const result = new Map<string, Map<string, number>>();
       for (const row of query.rows) {
@@ -2318,19 +2381,27 @@ export function createPostgresConnectorDetailGapStore() {
 
     async settleLeasedGapTerminal(
       lease: { gapId?: unknown; leaseId?: unknown; runId?: unknown },
-      input: UpsertGapInput
+      input: UpsertGapInput,
+      policyDisposition: unknown
     ): Promise<DetailGap | null> {
       const owner = normalizeLease(lease);
       const gap = normalizeGapInput({ ...input, gapId: owner.gapId });
+      const policy = requireValidatedTerminalPolicyDisposition(policyDisposition, {
+        connectorId: gap.connectorId,
+        detailLocator: gap.detailLocator,
+        lastError: gap.lastError,
+        reason: gap.reason,
+        stream: gap.stream,
+      });
       const result = await postgresQuery<DetailGapRow>(
         `
         UPDATE connector_detail_gaps
         SET source_json = $1::jsonb, detail_locator_json = $2::jsonb, list_cursor_json = $3::jsonb,
             scope_json = $4::jsonb, reason = $5, status = 'terminal', next_attempt_after = NULL,
-            last_error_json = $6::jsonb, last_run_id = $7,
+            last_error_json = $6::jsonb, policy_disposition_json = $7::jsonb, last_run_id = $8,
             lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
-            updated_at = $8
-        WHERE gap_id = $9 AND status = 'in_progress' AND lease_run_id = $10 AND lease_id = $11
+            updated_at = $9
+        WHERE gap_id = $10 AND status = 'in_progress' AND lease_run_id = $11 AND lease_id = $12
         RETURNING *
       `,
         [
@@ -2340,6 +2411,7 @@ export function createPostgresConnectorDetailGapStore() {
           JSON.stringify(gap.scope),
           gap.reason,
           encodeJson(gap.lastError),
+          JSON.stringify(policy),
           gap.lastRunId,
           gap.now,
           owner.gapId,

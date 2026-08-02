@@ -1,7 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { classifyRecoveryGap } from "../runtime/recovery-decision.ts";
+import {
+  GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION,
+  parseGmailAttachmentTooLargePolicyDisposition,
+} from "../runtime/terminal-policy-disposition.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.ts";
 
 export const OWNER_DETAIL_GAP_PAGE_DEFAULT_LIMIT = 25;
@@ -25,6 +28,7 @@ interface DetailGapForProjection {
   lease_id?: unknown;
   lease_run_id?: unknown;
   next_attempt_after?: unknown;
+  policy_disposition?: unknown;
   reason?: unknown;
   record_key?: unknown;
   status?: unknown;
@@ -69,12 +73,6 @@ interface InvalidDetailGapRequest extends Error {
   code: "invalid_cursor" | "invalid_request";
   param?: string;
 }
-
-// `too_large` is already a neutral connector error class used by the existing
-// detail-gap rows. It is a policy disposition, not a Gmail route or a payload
-// field. Informational recovery reasons are handled through the shared
-// recovery classifier below.
-const POLICY_DISPOSITION_CLASSES = new Set(["too_large"]);
 
 function invalidRequest(
   code: InvalidDetailGapRequest["code"],
@@ -167,18 +165,10 @@ function readAttemptCount(value: unknown): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
-function policyClassFor(row: DetailGapForProjection, errorClass: string | null): string | null {
-  const classification = classifyRecoveryGap({
-    last_error: errorClass ? { class: errorClass } : null,
-    reason: stringOrNull(row.reason),
-  });
-  if (POLICY_DISPOSITION_CLASSES.has(errorClass ?? "")) {
-    return errorClass;
-  }
-  if (classification.recoveryClass === "informational") {
-    return classification.connectorClass ?? stringOrNull(row.reason);
-  }
-  return null;
+function policyClassFor(row: DetailGapForProjection): string | null {
+  return parseGmailAttachmentTooLargePolicyDisposition(row.policy_disposition)
+    ? GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION
+    : null;
 }
 
 function dispositionFor(status: string, policyClass: string | null): OwnerDetailGapWire["disposition"] {
@@ -215,7 +205,7 @@ function projectGap(row: DetailGapForProjection): OwnerDetailGapWire {
   }
   const status = nonEmptyString(row.status) ?? "unknown";
   const errorClass = readErrorClass(row.last_error);
-  const policyClass = policyClassFor(row, errorClass);
+  const policyClass = policyClassFor(row);
   return {
     attempt_count: readAttemptCount(row.attempt_count),
     disposition: dispositionFor(status, policyClass),

@@ -60,6 +60,7 @@ import { DEFAULT_QUARANTINE_POLICY } from "./recovery-quarantine.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 import type { StderrTail } from "./stderr-tail.ts";
 import { createStderrTailBuffer } from "./stderr-tail.ts";
+import { requireValidatedTerminalPolicyDisposition } from "./terminal-policy-disposition.ts";
 import { deriveTerminalReason } from "./terminal-reason.ts";
 
 const REDACTED_SCHEMA_KEY_RE = /^(?:default|example|examples|const|enum)$/i;
@@ -216,6 +217,7 @@ interface DurableDetailGap {
   lease_run_id?: string | null;
   list_cursor?: unknown;
   parent_stream?: string | null;
+  policy_disposition?: unknown;
   reason?: string | null;
   record_key?: string | number | null;
   status?: string;
@@ -287,7 +289,11 @@ interface RuntimeDetailGapStoreCapabilities {
   releaseLeasedGaps?: (leases: ServedGapLease[]) => unknown;
   settleLeasedGapPending?: (lease: ServedGapLease, input: RuntimeDetailGapInput) => Promise<DurableDetailGap | null>;
   settleLeasedGapRecovered?: (lease: ServedGapLease) => Promise<DurableDetailGap | null>;
-  settleLeasedGapTerminal?: (lease: ServedGapLease, input: RuntimeDetailGapInput) => Promise<DurableDetailGap | null>;
+  settleLeasedGapTerminal?: (
+    lease: ServedGapLease,
+    input: RuntimeDetailGapInput,
+    policyDisposition: unknown
+  ) => Promise<DurableDetailGap | null>;
   upsertPendingGap?: (input: RuntimeDetailGapInput) => Promise<DurableDetailGap | null>;
 }
 
@@ -1316,7 +1322,20 @@ function validateSkipResultMessage(msg: ConnectorMessage, scopeByStream: ScopeBy
   validateSkipTimeRange(msg.time_range);
 }
 
-function validateTerminalDetailGapMessage(msg: ConnectorMessage): void {
+function terminalPolicyDispositionFromDetail(msg: ConnectorMessage): unknown {
+  const { detail } = msg;
+  if (
+    !isNullish(detail) &&
+    (typeof detail !== "object" || Array.isArray(detail) || Reflect.get(detail, "class") !== "too_large")
+  ) {
+    throw new Error("Connector emitted invalid terminal DETAIL_GAP.detail.class");
+  }
+  return detail && typeof detail === "object" && !Array.isArray(detail)
+    ? Reflect.get(detail, "policy_disposition")
+    : null;
+}
+
+function validateTerminalDetailGapMessage(msg: ConnectorMessage, connectorId: string): void {
   if (msg.retryable !== false || msg.reason !== "too_large") {
     throw new Error("Connector emitted invalid terminal DETAIL_GAP: expected non-retryable too_large outcome");
   }
@@ -1349,12 +1368,16 @@ function validateTerminalDetailGapMessage(msg: ConnectorMessage): void {
   if (terminalErrorClass !== "too_large" || typeof terminalErrorMessage !== "string" || !terminalErrorMessage.trim()) {
     throw new Error("Connector emitted invalid terminal DETAIL_GAP.last_error");
   }
-  if (!isNullish(msg.detail) && Reflect.get(msg.detail, "class") !== "too_large") {
-    throw new Error("Connector emitted invalid terminal DETAIL_GAP.detail.class");
-  }
+  requireValidatedTerminalPolicyDisposition(terminalPolicyDispositionFromDetail(msg), {
+    connectorId,
+    detailLocator,
+    lastError: terminalError,
+    reason: typeof msg.reason === "string" ? msg.reason : null,
+    stream: typeof msg.stream === "string" ? msg.stream : "",
+  });
 }
 
-function validateDetailGapMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream): void {
+function validateDetailGapMessage(msg: ConnectorMessage, scopeByStream: ScopeByStream, connectorId: string): void {
   requireOptionalNonEmptyString(msg.stream, "DETAIL_GAP.stream");
   if (!msg.stream) {
     throw new Error("Connector emitted invalid DETAIL_GAP.stream: expected non-empty string");
@@ -1379,7 +1402,7 @@ function validateDetailGapMessage(msg: ConnectorMessage, scopeByStream: ScopeByS
     throw new Error("Connector emitted invalid DETAIL_GAP.status: expected pending or terminal");
   }
   if (msg.status === "terminal") {
-    validateTerminalDetailGapMessage(msg);
+    validateTerminalDetailGapMessage(msg, connectorId);
   }
 }
 
@@ -3978,24 +4001,28 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // just as recovered settlement flushes first; Gmail emits its accumulated
       // optional-skip coverage in the normal protocol order before DONE.
       await flushAll();
-      const storedGap = await detailGapStore.settleLeasedGapTerminal(leasedGap, {
-        connectorId,
-        connectorInstanceId: normalizedConnectorInstanceId,
-        detailLocator: msg.detail_locator ?? null,
-        discoveredRunId: runId,
-        gapId: leasedGap.gapId,
-        grantId,
-        lastError: msg.last_error ?? null,
-        lastRunId: runId,
-        listCursor: msg.list_cursor ?? null,
-        nextAttemptAfter: null,
-        parentStream: gapParentStream,
-        reason: "too_large",
-        recordKey: msg.record_key ?? null,
-        scope: startScope,
-        source: runSource,
-        stream: gapStream,
-      });
+      const storedGap = await detailGapStore.settleLeasedGapTerminal(
+        leasedGap,
+        {
+          connectorId,
+          connectorInstanceId: normalizedConnectorInstanceId,
+          detailLocator: msg.detail_locator ?? null,
+          discoveredRunId: runId,
+          gapId: leasedGap.gapId,
+          grantId,
+          lastError: msg.last_error ?? null,
+          lastRunId: runId,
+          listCursor: msg.list_cursor ?? null,
+          nextAttemptAfter: null,
+          parentStream: gapParentStream,
+          reason: "too_large",
+          recordKey: msg.record_key ?? null,
+          scope: startScope,
+          source: runSource,
+          stream: gapStream,
+        },
+        (msg.detail as Record<string, unknown>).policy_disposition
+      );
       if (
         !storedGap ||
         storedGap.gap_id !== leasedGap.gapId ||
@@ -4124,7 +4151,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     async function handleDetailGapMessage(msg: ConnectorMessage): Promise<void> {
-      validateDetailGapMessage(msg, scopeByStream);
+      validateDetailGapMessage(msg, scopeByStream, connectorId);
       // Proven by the validator: non-empty in-scope `stream`; the
       // remaining fields are optional and pass through as-is.
       const gapStream = msg.stream as string;

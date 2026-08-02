@@ -219,6 +219,11 @@ export interface TerminalDetailGapMessage {
     class?: "too_large";
     http_status?: number;
     network_pressure?: DetailGapNetworkPressure;
+    policy_disposition?: {
+      configured_limit_bytes: number;
+      kind: "gmail_attachment_too_large";
+      observed_size_bytes: number;
+    };
   };
   detail_locator: {
     kind: string;

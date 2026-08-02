@@ -1,19 +1,23 @@
 ## Why
 
-Terminal Gmail attachment rows with verified `too_large` policy evidence are
-correctly retained as terminal detail gaps, but the collection-report
-projection counts every terminal row as a repair-blocking coverage gap. This
-turns an accepted policy exclusion into a maintainer `code_fix` action even
-when retryable siblings remain queued separately.
+Historical Gmail attachment rows use mutable `reason` and error-class fields
+as a proxy for `too_large` policy evidence. That lets an ordinary terminal
+failure be misclassified by a generic status mutation and lets diagnostics and
+coverage disagree. The collection-report projection must retain every terminal
+row while excluding only a validated terminal-settlement policy fact.
 
 ## What Changes
 
 - Keep terminal policy rows and their aggregate count visible.
-- Exclude only connector-neutral, policy-terminal reasons from the
-  repair-blocking per-stream terminal aggregate used by coverage projection.
+- Write one immutable `gmail_attachment_too_large` disposition only during
+  terminal lease settlement after validating Gmail attachment context and
+  observed-size/configured-limit evidence.
+- Exclude only that stored disposition from the repair-blocking per-stream
+  terminal aggregate and derive owner diagnostics from the same field.
 - Keep terminal resource/connector defects repair-blocking.
-- Add SQLite/PostgreSQL parity for reason-scoped per-stream aggregates and a
-  regression covering policy versus defect terminal rows.
+- Fail closed when either aggregate is malformed, duplicated, or inconsistent.
+- Add SQLite/PostgreSQL parity and mutation regressions for policy versus
+  defect terminal rows.
 
 ## Capabilities
 
@@ -26,4 +30,5 @@ when retryable siblings remain queued separately.
 
 - `reference-implementation/server/ref-control.ts`
 - `reference-implementation/server/stores/connector-detail-gap-store.ts`
-- `reference-implementation/runtime/recovery-decision.ts`
+- `reference-implementation/runtime/terminal-policy-disposition.ts`
+- `reference-implementation/server/owner-detail-gap-projection.ts`

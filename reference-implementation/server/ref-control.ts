@@ -74,7 +74,6 @@ import {
 } from "../runtime/owner-state.ts";
 import {
   deriveRecoveryStall,
-  POLICY_TERMINAL_GAP_REASONS,
   RECOVERY_STALL_CADENCE_MS,
   type RecoveryAdmissionDiagnostics,
   type RecoveryGapRow,
@@ -83,6 +82,7 @@ import {
 } from "../runtime/recovery-decision.ts";
 import type { RenderedVerdict, ScheduleEvidence } from "../runtime/rendered-verdict.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION } from "../runtime/terminal-policy-disposition.ts";
 import { pickMostUrgentAttention } from "./attention-urgency.ts";
 import { getConnectorManifest } from "./auth.ts";
 import {
@@ -575,11 +575,16 @@ interface DetailGapProjection {
 interface ConnectorDetailGapStoreLike {
   countGapsByStatusByStreamForConnector?: (
     connectorId: string,
-    options: { status: string; reasons?: string[] | null; connectorInstanceId?: string | null }
+    options: {
+      status: string;
+      reasons?: string[] | null;
+      connectorInstanceId?: string | null;
+      policyDisposition?: string | null;
+    }
   ) => Promise<readonly { stream?: unknown; count?: unknown }[]> | readonly { stream?: unknown; count?: unknown }[];
   countGapsByStatusByStreamForConnectorInstanceIds?: (
     connectorInstanceIds: readonly string[],
-    options: { status: string; reasons?: string[] | null }
+    options: { status: string; reasons?: string[] | null; policyDisposition?: string | null }
   ) => Promise<Map<string, ReadonlyMap<string, number>>> | Map<string, ReadonlyMap<string, number>>;
   countGapsByStatusForConnector?: (
     connectorId: string,
@@ -1594,15 +1599,55 @@ async function getTerminalGapCount(
 function subtractPolicyTerminalGapCounts(
   terminalByStream: ReadonlyMap<string, number>,
   policyTerminalByStream: ReadonlyMap<string, number>
-): Map<string, number> {
+): Map<string, number> | null {
   const repairBlocking = new Map<string, number>();
+  if ([...policyTerminalByStream.keys()].some((stream) => !terminalByStream.has(stream))) {
+    return null;
+  }
   for (const [stream, terminalCount] of terminalByStream) {
-    const remaining = terminalCount - (policyTerminalByStream.get(stream) ?? 0);
+    const policyCount = policyTerminalByStream.get(stream) ?? 0;
+    if (policyCount > terminalCount) {
+      return null;
+    }
+    const remaining = terminalCount - policyCount;
     if (remaining > 0) {
       repairBlocking.set(stream, remaining);
     }
   }
   return repairBlocking;
+}
+
+function normalizeTerminalGapAggregateRow(row: { stream?: unknown; count?: unknown }): [string, number] | null {
+  if (typeof row.stream !== "string") {
+    return null;
+  }
+  const stream = row.stream.trim();
+  if (!stream) {
+    return null;
+  }
+  const rawCount = row.count;
+  if (!["number", "string"].includes(typeof rawCount)) {
+    return null;
+  }
+  const count = Number(rawCount);
+  if (!Number.isSafeInteger(count) || count <= 0) {
+    return null;
+  }
+  return [stream, count];
+}
+
+function normalizeTerminalGapAggregate(
+  rows: readonly { stream?: unknown; count?: unknown }[]
+): ReadonlyMap<string, number> | null {
+  const normalized = new Map<string, number>();
+  for (const row of rows) {
+    const normalizedRow = normalizeTerminalGapAggregateRow(row);
+    if (!normalizedRow || normalized.has(normalizedRow[0])) {
+      return null;
+    }
+    normalized.set(...normalizedRow);
+  }
+  return normalized;
 }
 
 /**
@@ -1626,22 +1671,16 @@ export async function getRepairBlockingTerminalGapCountsByStream(
       Promise.resolve(
         store.countGapsByStatusByStreamForConnector(connectorId, {
           ...options,
-          reasons: [...POLICY_TERMINAL_GAP_REASONS],
+          policyDisposition: GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION,
         })
       ),
     ]);
-    const toMap = (counts: readonly { stream?: unknown; count?: unknown }[]) => {
-      const map = new Map<string, number>();
-      for (const row of counts) {
-        const stream = typeof row?.stream === "string" ? row.stream : "";
-        const count = typeof row?.count === "number" ? row.count : Number(row?.count);
-        if (stream && Number.isFinite(count) && count > 0) {
-          map.set(stream, Math.floor(count));
-        }
-      }
-      return map;
-    };
-    return subtractPolicyTerminalGapCounts(toMap(rows), toMap(policyRows));
+    const terminalByStream = normalizeTerminalGapAggregate(rows);
+    const policyTerminalByStream = normalizeTerminalGapAggregate(policyRows);
+    if (!(terminalByStream && policyTerminalByStream)) {
+      return null;
+    }
+    return subtractPolicyTerminalGapCounts(terminalByStream, policyTerminalByStream);
   } catch {
     return null;
   }
@@ -3465,7 +3504,7 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
     ),
     Promise.resolve(
       detailStore.countGapsByStatusByStreamForConnectorInstanceIds?.(ids, {
-        reasons: [...POLICY_TERMINAL_GAP_REASONS],
+        policyDisposition: GMAIL_ATTACHMENT_TOO_LARGE_POLICY_DISPOSITION,
         status: "terminal",
       })
     ).catch(() => null),
@@ -3509,10 +3548,11 @@ async function loadPageProductEvidence(connectorInstanceIds: readonly string[]):
               readLimit: DETAIL_GAP_PROJECTION_LIMIT,
               recovered: recovered.get(id) ?? 0,
               terminal: terminal.get(id) ?? 0,
-              terminalByStream: subtractPolicyTerminalGapCounts(
-                terminalByStream.get(id) ?? new Map(),
-                policyTerminalByStream.get(id) ?? new Map()
-              ),
+              terminalByStream: (() => {
+                const total = terminalByStream.get(id);
+                const policy = policyTerminalByStream.get(id) ?? new Map();
+                return total ? subtractPolicyTerminalGapCounts(total, policy) : null;
+              })(),
               unreliable: false,
             } satisfies DetailGapProjection,
           ])

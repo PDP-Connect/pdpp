@@ -15,6 +15,11 @@ const CONNECTOR_ID = "gmail";
 const CONNECTOR_INSTANCE_ID = "cin_gmail_tail";
 const GRANT_ID = "grant_gmail_tail";
 const SEEDED_AT = "2026-08-02T12:00:00.000Z";
+const POLICY_PROOF = {
+  configured_limit_bytes: 26_214_400,
+  kind: "gmail_attachment_too_large",
+  observed_size_bytes: 30_062_404,
+} as const;
 
 const POLICY_ROWS = [
   ["1676747841192606552:2", "attachment exceeds max size: 29830196 > 26214400 bytes"],
@@ -63,7 +68,14 @@ rl.on('line', (line) => {
               ? 'attachment exceeds max size: 29209135 > 26214400 bytes'
               : 'attachment exceeds max size: 28957723 > 26214400 bytes'
       },
-      detail: { class: 'too_large' },
+      detail: {
+        class: 'too_large',
+        policy_disposition: {
+          kind: 'gmail_attachment_too_large',
+          observed_size_bytes: 30062404,
+          configured_limit_bytes: 26214400
+        }
+      },
       gap_id: gap.gap_id,
       lease_id: gap.lease_id
     }) + '\\n');
@@ -335,7 +347,8 @@ test(
 
     const stale = await store.settleLeasedGapTerminal(
       { gapId: seeded.gap_id, leaseId: "lease-cas-stale", runId: "run-cas-current" },
-      terminalInput
+      terminalInput,
+      POLICY_PROOF
     );
     assert.equal(stale, null);
     const stillLeased = await store.getGapById(seeded.gap_id);
@@ -345,7 +358,8 @@ test(
 
     const terminal = await store.settleLeasedGapTerminal(
       { gapId: seeded.gap_id, leaseId: "lease-cas-current", runId: "run-cas-current" },
-      terminalInput
+      terminalInput,
+      POLICY_PROOF
     );
     assert.ok(terminal);
     assert.equal(terminal.status, "terminal");
@@ -354,5 +368,6 @@ test(
     assert.equal(terminal.last_attempt_at, null);
     assert.equal(terminal.lease_id, null);
     assert.deepEqual(terminal.last_error, error);
+    assert.deepEqual(terminal.policy_disposition, POLICY_PROOF);
   })
 );

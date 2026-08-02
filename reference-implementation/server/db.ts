@@ -796,6 +796,7 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   display_name        TEXT,
   status              TEXT NOT NULL DEFAULT 'active',
   last_error_json     TEXT,
+  policy_disposition_json TEXT,
   -- Heartbeat evidence persisted from device collector reports. Used by
   -- the connection-health outbox axis so the operator console can see
   -- whether a source instance is idle, actively draining, or stalled
@@ -3401,6 +3402,7 @@ function migrateConnectorDetailGapInstanceColumns(raw: SqliteDatabase, opts: Mig
   addColumnIfMissing(raw, "connector_detail_gaps", "lease_id", "TEXT");
   addColumnIfMissing(raw, "connector_detail_gaps", "lease_attempted", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(raw, "connector_detail_gaps", "lease_expires_at", "TEXT");
+  addColumnIfMissing(raw, "connector_detail_gaps", "policy_disposition_json", "TEXT");
   const legacyLeaseLess = raw
     .prepare(`
     UPDATE connector_detail_gaps

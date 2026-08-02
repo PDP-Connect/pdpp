@@ -448,8 +448,15 @@ interface AttachmentHydrationFailure {
   readonly stage: AttachmentHydrationFailureStage;
 }
 
+interface GmailAttachmentTooLargePolicyDisposition {
+  readonly configured_limit_bytes: number;
+  readonly kind: "gmail_attachment_too_large";
+  readonly observed_size_bytes: number;
+}
+
 export interface AttachmentHydrationResult {
   readonly failure: AttachmentHydrationFailure | null;
+  readonly policyDisposition?: GmailAttachmentTooLargePolicyDisposition | null;
   readonly record: AttachmentRecord;
 }
 
@@ -719,7 +726,8 @@ export function buildAttachmentDetailGap(
  */
 export function buildAttachmentDetailTerminalGap(
   gap: DetailGapStartEntry,
-  attachment: AttachmentRecord
+  attachment: AttachmentRecord,
+  policyDisposition: GmailAttachmentTooLargePolicyDisposition
 ): TerminalDetailGapMessage {
   if (!gap.lease_id) {
     throw new Error("a terminal Gmail attachment gap requires the served lease_id");
@@ -747,7 +755,7 @@ export function buildAttachmentDetailTerminalGap(
       class: "too_large",
       message: attachment.hydration_error ?? "attachment exceeds the configured size policy",
     },
-    detail: { class: "too_large" },
+    detail: { class: "too_large", policy_disposition: policyDisposition },
     gap_id: gap.gap_id,
     lease_id: gap.lease_id,
   };
@@ -2443,10 +2451,15 @@ async function settleServedAttachmentRecoveryHydration(
     // an explicit terminal outcome. No provider attempt or recovery event is
     // emitted. If the host rejects the record, fail closed onto the ordinary
     // retryable path so the runtime never terminalizes without coverage.
+    if (!hydration.policyDisposition) {
+      await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
+      await settleServedAttachmentRecoveryDeferral(gap, "hydration_failed", state, deps.emitProtocol);
+      return;
+    }
     const emitted = await settleServedAttachmentRecoveryPolicySkip(deps, hydration);
     if (emitted) {
       state.settledGapIds.add(gap.gap_id);
-      await deps.emitProtocol(buildAttachmentDetailTerminalGap(gap, hydration.record));
+      await deps.emitProtocol(buildAttachmentDetailTerminalGap(gap, hydration.record, hydration.policyDisposition));
       return;
     }
     await markAndCountServedAttachmentRecoveryAttempt(gap, state, deps.emitProtocol);
@@ -2983,6 +2996,14 @@ function hydrationFailureResult(
 ): AttachmentHydrationResult {
   return {
     failure,
+    policyDisposition:
+      err instanceof AttachmentTooLargeError
+        ? {
+            configured_limit_bytes: err.configuredLimitBytes,
+            kind: "gmail_attachment_too_large",
+            observed_size_bytes: err.observedSizeBytes,
+          }
+        : null,
     record: {
       ...attachment,
       blob_ref: null,
@@ -3041,9 +3062,14 @@ export function resolveMaxAttachmentBytes(env: NodeJS.ProcessEnv = process.env):
 }
 
 class AttachmentTooLargeError extends Error {
+  readonly configuredLimitBytes: number;
+  readonly observedSizeBytes: number;
+
   constructor(observedBytes: number, maxBytes: number) {
     super(`attachment exceeds max size: ${observedBytes} > ${maxBytes} bytes`);
+    this.configuredLimitBytes = maxBytes;
     this.name = "AttachmentTooLargeError";
+    this.observedSizeBytes = observedBytes;
   }
 }
 

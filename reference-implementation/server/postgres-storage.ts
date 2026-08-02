@@ -1127,6 +1127,7 @@ export async function bootstrapPostgresSchema({
         collector_protocol_version TEXT,
         last_heartbeat_at TEXT,
         last_error_json JSONB,
+        policy_disposition_json JSONB,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revoked_at TEXT
@@ -2696,6 +2697,9 @@ async function migratePostgresConnectorDetailGapInstanceColumns(client: PoolClie
   }
   if (!(await hasPostgresColumn(client, "connector_detail_gaps", "lease_expires_at"))) {
     await client.query("ALTER TABLE connector_detail_gaps ADD COLUMN lease_expires_at TEXT");
+  }
+  if (!(await hasPostgresColumn(client, "connector_detail_gaps", "policy_disposition_json"))) {
+    await client.query("ALTER TABLE connector_detail_gaps ADD COLUMN policy_disposition_json JSONB");
   }
   await client.query(`
     UPDATE connector_detail_gaps
