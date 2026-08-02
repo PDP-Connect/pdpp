@@ -54,11 +54,7 @@ interface CreateManagerOptions {
 // deterministic ids/tokens, frozen clock, dynamic (allocator-backed) mode so
 // the phase acquire actually round-trips through the fake allocator below.
 function createManager(options: CreateManagerOptions = {}): BrowserSurfaceLeaseManager {
-  const {
-    managedConnectors = new Set(["slack"]),
-    surfaceCap = 2,
-    leaseWaitTimeoutMs = 300_000,
-  } = options;
+  const { managedConnectors = new Set(["slack"]), surfaceCap = 2, leaseWaitTimeoutMs = 300_000 } = options;
   let leaseSeq = 0;
   let surfaceSeq = 0;
   let tokenSeq = 0;
@@ -308,7 +304,7 @@ test("I3: release call carries the fencing token recorded AT GRANT TIME, not wha
   const granted = await manager.acquireManagedBrowserSurfaceForPhase(phaseInput("run_x"));
   assert.equal(granted.kind, "granted");
   assert.ok(granted.kind === "granted");
-  const leaseId = granted.leaseId;
+  const { leaseId } = granted;
   const grantedFencingToken = leaseManager.getLease(leaseId)?.fencing_token;
   assert.ok(typeof grantedFencingToken === "number");
 
@@ -694,21 +690,17 @@ test("I11 (regression): a non-capacity early-return (ensureSurface failure) evic
   assert.equal(leaked, false, "an early-return/failure from a failing allocator must evict the session identity");
 });
 
-test("I12 (regression): a granted attempt missing lease/env (surface_failed) evicts the phase session identity", async (t) => {
+test("I12 (regression): an unhealthy allocator surface evicts the phase session identity", async (t) => {
   const warnCalls: string[] = [];
   const leaseManager = createManager();
-  // An allocator whose ensureSurface never settles ready-with-env is out of
-  // scope for this harness (BrowserSurfaceLeaseManager's own attempt loop
-  // requires a real surface); instead simulate the "attempt resolved but
-  // lease/env came back incomplete" branch directly via a lease manager
-  // stubbed to return a starting (non-leased, non-early-return) status that
-  // acquireManagedBrowserSurfaceAttempt maps to a missing lease/env. This
-  // reuses the SAME allocator that fails ensureSurface, which drives
-  // acquireManagedBrowserSurfaceAttempt to its "not (lease && env)" branch
-  // instead of the early_return branch (distinguishing this from I11).
+  // Report the same unhealthy surface from both allocator calls. Returning
+  // null from getSurfaceStatus after ensureSurface succeeds represents
+  // transient allocator-index lag, which production correctly retries; with
+  // this harness's frozen clock that would never exhaust its time budget.
+  let unhealthySurface: BrowserSurface | null = null;
   const flakyAllocator: BrowserSurfaceAllocator = {
-    ensureSurface: (request) =>
-      Promise.resolve({
+    ensureSurface: (request) => {
+      unhealthySurface = {
         backend: "neko",
         cdp_url: "",
         connector_id: request.connectorId,
@@ -718,8 +710,10 @@ test("I12 (regression): a granted attempt missing lease/env (surface_failed) evi
         profile_key: request.profileKey,
         stream_base_url: "",
         surface_id: request.surfaceId,
-      }),
-    getSurfaceStatus: async () => null,
+      };
+      return Promise.resolve(unhealthySurface);
+    },
+    getSurfaceStatus: async () => unhealthySurface,
     listSurfaces: async () => [],
     stopSurface: async () => null,
   };
