@@ -1216,15 +1216,24 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
 // upgrade either: `seedFoldState` replays it from an empty map on the first
 // observation, exactly like the v2->v3 upgrade.
 //
-// Version 5 teaches the fold to also read a recovery-only run's terminal
+// Version 5 teaches the fold to read a recovery-only run's terminal
 // `recovery_gap_closure_facts` block (`applyRecoveryGapClosureFacts`) — a
-// row whose checkpoint already sits past such an event under the OLD logic
-// folded it as a complete no-op (the event carried no `collection_facts`, so
-// `parseTerminalFactEvent` alone gated the entire row out before this
-// change). Under v4 logic that row's stored fact is genuinely stale relative
-// to durable gap-recovery evidence the connection already has; a v4 current
-// map is never a valid baseline after this upgrade either, for the same
-// self-healing reason as v2->v3 and v3->v4.
+// narrower, durable-gap-sourced fact that narrows an existing fact's
+// `covered` count. A row whose checkpoint already sits past such a
+// recovery-only event under OLD v4 logic folded it as a complete no-op
+// (the event carried no `collection_facts`, so `parseTerminalFactEvent`
+// alone gated the entire row out before this change). This is crucial
+// for rolling mixed-version deployments: a NEW v5 runtime emits the
+// `recovery_gap_closure_facts` block for recovery-only runs, but an OLD
+// v4 folder has no `applyRecoveryGapClosureFacts` hook and ignores it.
+// That v4 folder's stored fact remains stale. Under v5, replay healing
+// matters: a v5 folder re-reading an old v4-folded row will see the
+// missed recovery-gap-closure event and narrow the fact. Genuinely
+// pre-change (pre-v5) terminal events for recovery-only runs never carry
+// the block (the old runtime never emitted it), so they are unaffected:
+// the fold only re-reads to narrow EXISTING facts, never to originate
+// fresh ones. A v4 current map is never a valid baseline after this
+// upgrade, for the same self-healing reason as v2->v3 and v3->v4.
 const STREAM_FACTS_FOLD_LOGIC_VERSION = 5;
 // A route may retry a replay once after a concurrent writer wins its CAS.
 // This is deliberately small: each retry rereads the durable baseline, and

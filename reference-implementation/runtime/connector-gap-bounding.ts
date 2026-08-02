@@ -602,7 +602,7 @@ export function buildCollectionFacts({
 // ── RECOVERY GAP-CLOSURE FACTS ─────────────────────────────────────────────────
 
 interface BuildRecoveryGapClosureFactsInput {
-  durableDetailGaps: KnownGap[];
+  durableDetailGaps: Array<KnownGap & { gap_id?: string }>;
   recoveryOnly?: boolean;
 }
 
@@ -629,6 +629,10 @@ interface BuildRecoveryGapClosureFactsInput {
  * gap count, never to originate a fresh `considered`/`checkpoint` for a
  * stream this run did not otherwise measure.
  *
+ * Duplicate entries for the same gap_id are deduplicated before counting:
+ * only the stable gap_id identity matters. Malformed entries (no stream, no
+ * gap_id, status != "recovered") are silently excluded from the proof.
+ *
  * @returns the block, or null when there is nothing to report (not a
  *   recovery-only run, or the run recovered no durable gaps).
  */
@@ -640,10 +644,12 @@ export function buildRecoveryGapClosureFacts({
     return null;
   }
   const recoveredCountByStream = new Map<string, number>();
+  const seenGapIds = new Set<string>();
   for (const gap of durableDetailGaps) {
-    if (gap.status !== "recovered" || !gap.stream) {
+    if (gap.status !== "recovered" || !gap.stream || !gap.gap_id || seenGapIds.has(gap.gap_id)) {
       continue;
     }
+    seenGapIds.add(gap.gap_id);
     recoveredCountByStream.set(gap.stream, (recoveredCountByStream.get(gap.stream) || 0) + 1);
   }
   if (!recoveredCountByStream.size) {

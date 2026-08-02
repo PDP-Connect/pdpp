@@ -139,11 +139,11 @@ test("buildRecoveryGapClosureFacts: recoveryOnly=true with no recovered gaps ret
 test("buildRecoveryGapClosureFacts: recoveryOnly=true counts only status=recovered gaps, grouped per stream", () => {
   const facts = buildRecoveryGapClosureFacts({
     durableDetailGaps: [
-      { kind: "detail_gap", status: "recovered", stream: "transactions" },
-      { kind: "detail_gap", status: "recovered", stream: "transactions" },
-      { kind: "detail_gap", status: "pending", stream: "transactions" },
-      { kind: "detail_gap", status: "recovered", stream: "orders" },
-      { kind: "detail_gap", status: "terminal", stream: "orders" },
+      { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      { gap_id: "gap-2", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      { gap_id: "gap-3", kind: "detail_gap", status: "pending", stream: "transactions" },
+      { gap_id: "gap-4", kind: "detail_gap", status: "recovered", stream: "orders" },
+      { gap_id: "gap-5", kind: "detail_gap", status: "terminal", stream: "orders" },
     ],
     recoveryOnly: true,
   });
@@ -159,7 +159,7 @@ test("buildRecoveryGapClosureFacts: recoveryOnly=true counts only status=recover
 
 test("buildRecoveryGapClosureFacts: never carries considered/covered/checkpoint fields (not an inventory claim)", () => {
   const facts = buildRecoveryGapClosureFacts({
-    durableDetailGaps: [{ kind: "detail_gap", status: "recovered", stream: "transactions" }],
+    durableDetailGaps: [{ gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "transactions" }],
     recoveryOnly: true,
   });
   assert.ok(facts);
@@ -168,4 +168,44 @@ test("buildRecoveryGapClosureFacts: never carries considered/covered/checkpoint 
   assert.equal(Object.hasOwn(entry, "covered"), false);
   assert.equal(Object.hasOwn(entry, "checkpoint"), false);
   assert.equal(Object.hasOwn(entry, "collected"), false);
+});
+
+test("buildRecoveryGapClosureFacts: deduplicates by stable gap_id (duplicate idempotent gap entries count once)", () => {
+  const facts = buildRecoveryGapClosureFacts({
+    durableDetailGaps: [
+      { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "orders" },
+      { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "orders" },
+      { gap_id: "gap-2", kind: "detail_gap", status: "recovered", stream: "orders" },
+      { gap_id: "gap-3", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      { gap_id: "gap-3", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      { gap_id: "gap-3", kind: "detail_gap", status: "recovered", stream: "transactions" },
+      // Gap identity is global; a malformed duplicate must not count again
+      // even if it claims a different stream.
+      { gap_id: "gap-3", kind: "detail_gap", status: "recovered", stream: "orders" },
+    ],
+    recoveryOnly: true,
+  });
+  assert.ok(facts);
+  const streams = facts.streams
+    .map((s) => s as { recovered_count: number; stream: string })
+    .sort((a, b) => a.stream.localeCompare(b.stream));
+  assert.deepEqual(streams, [
+    { recovered_count: 2, stream: "orders" },
+    { recovered_count: 1, stream: "transactions" },
+  ]);
+});
+
+test("buildRecoveryGapClosureFacts: malformed entries (no gap_id) are excluded from proof", () => {
+  const facts = buildRecoveryGapClosureFacts({
+    durableDetailGaps: [
+      { gap_id: "gap-1", kind: "detail_gap", status: "recovered", stream: "orders" },
+      { kind: "detail_gap", status: "recovered", stream: "orders" },
+      { gap_id: "", kind: "detail_gap", status: "recovered", stream: "orders" },
+      { gap_id: "gap-2", kind: "detail_gap", status: "recovered", stream: "orders" },
+    ],
+    recoveryOnly: true,
+  });
+  assert.ok(facts);
+  const entry = facts.streams[0] as { recovered_count: number; stream: string };
+  assert.deepEqual(entry, { recovered_count: 2, stream: "orders" });
 });
