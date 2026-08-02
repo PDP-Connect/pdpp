@@ -14,6 +14,11 @@
     "date": "2026-07-30",
     "reason": "Bounded runtime-observation seam (2026-07-30): known-id reads must distinguish an empty input (no allocator call), unavailable allocator (every requested id unknown), a missing surface, and an unreadable per-id status without falling back to the global listSurfaces diagnostic. The cap and explicit outcome branches are the contract that prevents unbounded background work and loss of missing-versus-unknown evidence; extracting them would split one small observation projection without reducing the required state distinctions. Focused 0/1/25 tests assert bounded calls, global-call exclusion, explicit outcomes, and filtered-global parity."
   },
+  "runtime/browser-surface-lease-sweep-timer.ts": {
+    "allowed_mass": 1,
+    "date": "2026-08-02",
+    "reason": "repair-terminal-evidence-residual: the opt-in immediate-sweep branch is the timer activation contract for connector-summary maintenance. It reuses the existing runTick error boundary and keeps the ordinary interval intact; removing the branch reintroduces the first-interval stale-evidence gap, while extracting it would relocate the only decision without reducing mass. Proven by the timer regression that asserts one immediate pass, one interval, and no repeat on a second start."
+  },
   "runtime/browser-surface/run-coordinator.ts": {
     "allowed_mass": 106,
     "date": "2026-07-31",

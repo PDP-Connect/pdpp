@@ -19,6 +19,8 @@ export interface BrowserSurfaceLeaseSweepTimerOptions {
   readonly clearIntervalFn?: (timer: NodeJS.Timeout) => void;
   readonly intervalMs: number;
   readonly onSweepError?: (err: unknown) => void;
+  /** Run one bounded sweep when the timer is armed, before its first interval. */
+  readonly runImmediately?: boolean;
   /** Injectable for tests. Defaults to the global timer functions. */
   readonly setIntervalFn?: (callback: () => void, ms: number) => NodeJS.Timeout;
   readonly sweep: () => Promise<void>;
@@ -71,6 +73,9 @@ export function createBrowserSurfaceLeaseSweepTimer(
       // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
       if (typeof (timer as { unref?: () => void })?.unref === "function") {
         (timer as { unref: () => void }).unref();
+      }
+      if (options.runImmediately === true) {
+        runTick();
       }
     },
     stop,

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { emitSpineEvent } from "../lib/spine.ts";
 import {
   getConnectorListSummaryTerminalProjection,
   getConnectorSummaryEvidence,
@@ -17,7 +18,11 @@ import {
 import { publishConnectorListSummaryTerminalProjectionsForIds } from "../server/connector-summary-terminal-publisher.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
-import { invalidateConnectorSummariesCache, REFERENCE_OWNER_SUBJECT_ID } from "../server/ref-control.ts";
+import {
+  invalidateConnectorSummariesCache,
+  listConnectorSummaries,
+  REFERENCE_OWNER_SUBJECT_ID,
+} from "../server/ref-control.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 const NOW = "2026-07-31T00:00:00.000Z";
@@ -106,6 +111,103 @@ test("successful run/ingest marks dirty, then the maintenance sweep converges ev
     assert.equal(after.projection.summary.connection_id, connectorInstanceId);
     assert.ok(after.projection.runtime, "runtime evidence envelope must be stamped alongside the summary");
     assert.equal(typeof after.projection.runtime?.observed_at, "string");
+  }));
+
+test("terminal convergence clears stale evidence for complete and known-recovery connections without reclassifying recovery as complete", () =>
+  withTempDb(async () => {
+    const completeIds = ["cin_terminal_complete_a", "cin_terminal_complete_b"];
+    const recoveryId = "cin_terminal_recovery";
+    seedConnector(CONNECTOR_ID);
+    for (const connectorInstanceId of [...completeIds, recoveryId]) {
+      // biome-ignore lint/performance/noAwaitInLoops: the fixture creates three independent configured connections.
+      await seedInstance(connectorInstanceId, CONNECTOR_ID);
+    }
+
+    async function emitTerminal(connectorInstanceId: string, status: "failed" | "succeeded") {
+      const runId = `run_${connectorInstanceId}_${status}`;
+      const data = {
+        boot_epoch: "00000000-0000-4000-8000-000000000055",
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+        seq: 1,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      };
+      await emitSpineEvent({
+        actor_id: CONNECTOR_ID,
+        actor_type: "runtime",
+        data,
+        event_type: "run.started",
+        object_id: runId,
+        object_type: "run",
+        occurred_at: NOW,
+        run_id: runId,
+        source_id: CONNECTOR_ID,
+        source_kind: "connector",
+        status: "started",
+      });
+      await emitSpineEvent({
+        actor_id: CONNECTOR_ID,
+        actor_type: "runtime",
+        data: {
+          ...data,
+          ...(status === "succeeded"
+            ? {
+                collection_facts: {
+                  streams: [
+                    {
+                      checkpoint: "committed",
+                      collected: 1,
+                      considered: 1,
+                      covered: 1,
+                      pending_detail_gaps: 0,
+                      skipped: null,
+                      stream: "items",
+                    },
+                  ],
+                },
+              }
+            : { reason: "connector_reported_failed" }),
+        },
+        event_type: status === "succeeded" ? "run.completed" : "run.failed",
+        object_id: runId,
+        object_type: "run",
+        occurred_at: "2026-07-31T00:00:01.000Z",
+        run_id: runId,
+        source_id: CONNECTOR_ID,
+        source_kind: "connector",
+        status,
+      });
+    }
+
+    for (const connectorInstanceId of completeIds) {
+      // biome-ignore lint/performance/noAwaitInLoops: independent terminal evidence fixtures.
+      await emitTerminal(connectorInstanceId, "succeeded");
+    }
+    // Establish known collection evidence before the failed attempt. The
+    // failure must remain visible as recovery work, not become a synthetic
+    // complete/healthy state merely because the stale envelope was repaired.
+    await emitTerminal(recoveryId, "succeeded");
+    await emitTerminal(recoveryId, "failed");
+
+    const summaries = await listConnectorSummaries();
+    for (const connectorInstanceId of [...completeIds, recoveryId]) {
+      const summary = summaries.find((candidate) => candidate.connector_instance_id === connectorInstanceId);
+      assert.ok(summary, `${connectorInstanceId} has a list summary`);
+      assert.equal(
+        summary.connection_health.unknown_reasons.includes("summary_evidence_dirty_backstop"),
+        false,
+        `${connectorInstanceId} is not left in the stale-evidence backstop`
+      );
+    }
+    const completeSummaries = summaries.filter((candidate) => completeIds.includes(candidate.connector_instance_id));
+    assert.deepEqual(
+      completeSummaries.map((summary) => summary.connection_health.forward_disposition),
+      ["complete", "complete"],
+      "the two fully evidenced fixtures retain their proven forward disposition"
+    );
+    const recovery = summaries.find((candidate) => candidate.connector_instance_id === recoveryId);
+    assert.ok(recovery);
+    assert.notEqual(recovery.connection_health.state, "healthy", "a failed terminal remains a known non-green outcome");
   }));
 
 test("a concurrent mutation during assembly makes the publish a fenced no-op; a later sweep retries and succeeds", () =>

@@ -6703,6 +6703,11 @@ export async function startServer(opts: ServerOpts = {}) {
         "connector-maintenance sweep tick failed"
       );
     },
+    // A stale summary envelope must not wait a full periodic interval after
+    // a restart before its existing canonical evidence is reconsidered. The
+    // sweep keeps its durable lease/cursor, so this is the same bounded
+    // maintenance authority as later ticks, not a read-path repair.
+    runImmediately: true,
     sweep: () => connectorMaintenanceSweep.run(),
   });
   function stopConnectorMaintenanceSweep() {

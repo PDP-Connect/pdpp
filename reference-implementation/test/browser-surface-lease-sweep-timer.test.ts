@@ -113,6 +113,30 @@ test("calling start twice does not create a second interval", () => {
   assert.equal(fake.scheduled.size, 1);
 });
 
+test("an immediate sweep runs once when explicitly requested, without changing the interval", async () => {
+  const fake = createFakeTimers();
+  let sweepCalls = 0;
+  const timer = createBrowserSurfaceLeaseSweepTimer({
+    clearIntervalFn: fake.clearIntervalFn,
+    intervalMs: 30_000,
+    runImmediately: true,
+    setIntervalFn: fake.setIntervalFn,
+    sweep: async () => {
+      await Promise.resolve();
+      sweepCalls += 1;
+    },
+  });
+
+  timer.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sweepCalls, 1);
+  assert.equal(fake.scheduled.size, 1, "the immediate pass does not create a second timer");
+
+  timer.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sweepCalls, 1, "repeated start does not rerun the immediate pass");
+});
+
 test("stop clears the interval", () => {
   const fake = createFakeTimers();
   const timer = createBrowserSurfaceLeaseSweepTimer({
