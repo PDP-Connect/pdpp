@@ -116,14 +116,23 @@ function readSingleNonEmptyString(value: unknown, name: string): string {
 }
 
 const MEDIA_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
+const DEFAULT_UPLOAD_MIME_TYPE = "application/octet-stream";
 
+// The blob's stored bytes are content-addressed and preserved exactly
+// regardless of Content-Type; the media type is source-declared metadata, not
+// a validity gate on the upload itself. A source can report a missing,
+// malformed, or wildcard (`image/*`, `*/*`) media type for a real attachment
+// — none of those are the caller's fault, and none of them should turn an
+// otherwise-good byte-exact upload into a 400. `application/octet-stream` is
+// the honest "binary, unspecified" fallback; a concrete, well-formed media
+// type (e.g. `application/json`, `image/jpeg`) always passes through as-is.
 function readContentType(value: unknown): string {
   if (typeof value !== "string") {
-    throw new BlobsUploadInvalidRequestError("Content-Type header is required");
+    return DEFAULT_UPLOAD_MIME_TYPE;
   }
   const mediaType = (value.split(";")[0] ?? "").trim().toLowerCase();
   if (!(mediaType && MEDIA_TYPE_PATTERN.test(mediaType))) {
-    throw new BlobsUploadInvalidRequestError("Content-Type header must be a valid media type");
+    return DEFAULT_UPLOAD_MIME_TYPE;
   }
   return mediaType;
 }

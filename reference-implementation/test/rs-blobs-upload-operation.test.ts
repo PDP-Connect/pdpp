@@ -23,8 +23,6 @@ import {
 } from "../operations/rs-blobs-upload/index.ts";
 
 const REGEXP_1 = /connector_id must be a single non-empty string/;
-const REGEXP_2 = /Content-Type header is required/;
-const REGEXP_3 = /Content-Type header must be a valid media type/;
 const REGEXP_4 = /Stream 'messages' not found for connector gmail/;
 const REGEXP_5 = /Blob upload body must be bytes/;
 
@@ -107,26 +105,51 @@ test("rs.blobs.upload rejects whitespace-only stream with invalid_request", asyn
   );
 });
 
-test("rs.blobs.upload rejects missing Content-Type header", async () => {
-  await assert.rejects(
-    () => executeBlobsUpload(defaultInput({ contentType: undefined }), defaultDeps()),
-    (err) => {
-      assert.ok(err instanceof BlobsUploadInvalidRequestError);
-      assert.match(err.message, REGEXP_2);
-      return true;
-    }
+// A missing/malformed/wildcard Content-Type on a real upload is source
+// metadata, not a caller error: the blob is content-addressed and stored
+// exactly regardless of its declared media type, so none of these should turn
+// an otherwise-good upload into a 400 — see the `application/octet-stream`
+// normalization tests below for what each case resolves to.
+test("rs.blobs.upload normalizes a missing Content-Type header to application/octet-stream", async () => {
+  let captured: BlobsUploadPersistArgs | undefined;
+  await executeBlobsUpload(
+    defaultInput({ contentType: undefined }),
+    defaultDeps({
+      persistBlob: (args) => {
+        captured = args;
+        return { blob_id: "b", mime_type: args.mimeType, sha256: "s", size_bytes: args.data.byteLength };
+      },
+    })
   );
+  assert.equal(captured?.mimeType, "application/octet-stream");
 });
 
-test("rs.blobs.upload rejects malformed Content-Type", async () => {
-  await assert.rejects(
-    () => executeBlobsUpload(defaultInput({ contentType: "not-a-mime" }), defaultDeps()),
-    (err) => {
-      assert.ok(err instanceof BlobsUploadInvalidRequestError);
-      assert.match(err.message, REGEXP_3);
-      return true;
-    }
+test("rs.blobs.upload normalizes a malformed Content-Type to application/octet-stream", async () => {
+  let captured: BlobsUploadPersistArgs | undefined;
+  await executeBlobsUpload(
+    defaultInput({ contentType: "not-a-mime" }),
+    defaultDeps({
+      persistBlob: (args) => {
+        captured = args;
+        return { blob_id: "b", mime_type: args.mimeType, sha256: "s", size_bytes: args.data.byteLength };
+      },
+    })
   );
+  assert.equal(captured?.mimeType, "application/octet-stream");
+});
+
+test("rs.blobs.upload normalizes a wildcard Content-Type (image/*) to application/octet-stream", async () => {
+  let captured: BlobsUploadPersistArgs | undefined;
+  await executeBlobsUpload(
+    defaultInput({ contentType: "image/*" }),
+    defaultDeps({
+      persistBlob: (args) => {
+        captured = args;
+        return { blob_id: "b", mime_type: args.mimeType, sha256: "s", size_bytes: args.data.byteLength };
+      },
+    })
+  );
+  assert.equal(captured?.mimeType, "application/octet-stream");
 });
 
 test("rs.blobs.upload normalizes Content-Type by stripping parameters and lowercasing", async () => {

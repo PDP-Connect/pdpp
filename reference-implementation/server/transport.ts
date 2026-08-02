@@ -396,14 +396,26 @@ function buildFastify({ loggerInstance }: { loggerInstance: FastifyBaseLogger })
   // FST_ERR_CTP_EMPTY_JSON_BODY. Replace it with a parser that accepts empty
   // payloads so routes like `POST /grants/:id/revoke` (no body, header still
   // JSON) reach their handlers instead of failing at the transport.
+  //
+  // `POST /v1/blobs` is the one route where `application/json` must NOT mean
+  // "parse this as JSON" — a source attachment can legitimately declare a
+  // concrete `application/json` Content-Type (e.g. a `.json` file) while still
+  // needing byte-exact storage, same as any other binary upload. Registering
+  // this parser as `parseAs: "buffer"` (rather than the prior `"string"`) and
+  // branching on `req.url` lets one registration serve both: the blob route
+  // gets its raw bytes untouched, every other JSON caller is unaffected.
   fastify.removeContentTypeParser("application/json");
-  fastify.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
-    if (!body) {
+  fastify.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+    if (isBlobsUploadRequest(req)) {
+      done(null, body);
+      return;
+    }
+    if (!body.length) {
       done(null, {});
       return;
     }
     try {
-      done(null, JSON.parse(typeof body === "string" ? body : body.toString()));
+      done(null, JSON.parse(body.toString("utf8")));
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       Object.assign(err, { statusCode: 400 });
@@ -412,6 +424,16 @@ function buildFastify({ loggerInstance }: { loggerInstance: FastifyBaseLogger })
   });
 
   return fastify;
+}
+
+// `POST /v1/blobs?...` — matched on the path only (query string and any
+// trailing slash quirks are irrelevant to the parser decision), never on
+// method: the same content-type parser also runs for other verbs against
+// this path if any are ever added, and none of them want JSON body parsing
+// either.
+function isBlobsUploadRequest(req: FastifyRequest): boolean {
+  const path = req.url.split("?")[0] ?? "";
+  return path === "/v1/blobs";
 }
 
 /**

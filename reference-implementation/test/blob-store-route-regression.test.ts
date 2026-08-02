@@ -477,6 +477,137 @@ test("POST /v1/blobs with binary content declared as text/plain round-trips exac
   });
 });
 
+// A source attachment can legitimately carry a concrete `application/json`
+// Content-Type (e.g. a `.json` file) while still needing byte-exact storage,
+// same as any other binary upload. The transport's global `application/json`
+// content-type parser JSON-parses the body for every other route — if it did
+// the same here, `req.body` would arrive at `coerceBodyToBytes` as an already
+// -parsed JS value (object/array), not the original bytes, either corrupting
+// the stored content (re-serialized JSON rarely matches the source byte-for-
+// byte: key order, whitespace, number formatting can all differ) or throwing
+// "Blob upload body must be bytes" outright for a top-level JSON array.
+test("POST /v1/blobs with a real application/json attachment stores the exact source bytes, not a re-parsed/re-serialized JSON value", async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const manifest = loadGmailManifest();
+    await registerConnector(asUrl, manifest);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    // Deliberately NOT what JSON.stringify(JSON.parse(...)) would reproduce:
+    // extra whitespace and an insertion-order object are the easiest real
+    // signal that the exact bytes, not a re-serialized value, were stored.
+    const local = Buffer.from('{\n  "b": 2,\n  "a": 1\n}\n', "utf8");
+    const localSha256 = createHash("sha256").update(local).digest("hex");
+    const uploadParams = new URLSearchParams({
+      connector_id: manifest.connector_id,
+      record_key: "attach_application_json",
+      stream: "attachments",
+    });
+    const upload = await fetch(`${rsUrl}/v1/blobs?${uploadParams.toString()}`, {
+      body: local,
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+    assert.equal(
+      upload.status,
+      200,
+      `upload must succeed for a real application/json attachment (got ${upload.status})`
+    );
+    const uploadBody = (await upload.json()) as { blob_id: string; sha256: string; size_bytes: number };
+    assert.equal(uploadBody.size_bytes, local.byteLength, "server-reported size must match the exact source bytes");
+    assert.equal(uploadBody.sha256, localSha256, "server-reported digest must match the exact source bytes");
+
+    // Ingest a record referencing the blob so it is visible for GET (mirrors
+    // the successful-read test above).
+    const ndjson = `${JSON.stringify({
+      data: {
+        blob_ref: { blob_id: uploadBody.blob_id },
+        filename: "attachment.json",
+        message_id: "msg_json_1",
+        mime_type: "application/json",
+        size_bytes: local.byteLength,
+      },
+      emitted_at: "2026-04-01T00:00:00Z",
+      key: "attach_application_json",
+    })}\n`;
+    const ingestResp = await fetch(
+      `${rsUrl}/v1/ingest/attachments?connector_id=${encodeURIComponent(manifest.connector_id)}`,
+      {
+        body: ndjson,
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          "Content-Type": "application/x-ndjson",
+        },
+        method: "POST",
+      }
+    );
+    assert.equal(ingestResp.status, 200);
+
+    const readResp = await fetch(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(uploadBody.blob_id)}?connector_id=${encodeURIComponent(manifest.connector_id)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    assert.equal(readResp.status, 200);
+    const readBytes = Buffer.from(await readResp.arrayBuffer());
+    assert.deepEqual(readBytes, local, "stored bytes are the exact source bytes, not a re-parsed/re-serialized value");
+
+    // The transport's ordinary JSON route behavior must stay untouched by this
+    // blob-route carve-out: re-registering the SAME manifest is a normal,
+    // successful JSON-bodied POST, proving the body was parsed as JSON (not
+    // handed through as raw bytes) for a route other than /v1/blobs.
+    const ordinaryJsonResp = await fetch(`${asUrl}/connectors`, {
+      body: JSON.stringify(manifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.ok(
+      ordinaryJsonResp.ok,
+      `ordinary application/json routes must still parse JSON normally (got ${ordinaryJsonResp.status}: ${await ordinaryJsonResp.text()})`
+    );
+  });
+});
+
+// The blob's stored bytes are content-addressed and preserved exactly
+// regardless of Content-Type; the media type is source-declared metadata, not
+// a validity gate. A source can report a wildcard media type (`image/*`) for
+// a real attachment — that must normalize to `application/octet-stream`
+// rather than rejecting an otherwise-good byte-exact upload with 400.
+test("POST /v1/blobs with a wildcard Content-Type (image/*) normalizes to application/octet-stream instead of 400", async () => {
+  await withHarness(async ({ asUrl, rsUrl }) => {
+    const manifest = loadGmailManifest();
+    await registerConnector(asUrl, manifest);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const local = randomBytes(2048);
+    const localSha256 = createHash("sha256").update(local).digest("hex");
+    const uploadParams = new URLSearchParams({
+      connector_id: manifest.connector_id,
+      record_key: "attach_wildcard_mime",
+      stream: "attachments",
+    });
+    const upload = await fetch(`${rsUrl}/v1/blobs?${uploadParams.toString()}`, {
+      body: local,
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        "Content-Type": "image/*",
+      },
+      method: "POST",
+    });
+    assert.equal(upload.status, 200, `upload must succeed for a wildcard Content-Type (got ${upload.status})`);
+    const uploadBody = (await upload.json()) as {
+      blob_id: string;
+      mime_type: string;
+      sha256: string;
+      size_bytes: number;
+    };
+    assert.equal(uploadBody.mime_type, "application/octet-stream", "wildcard media type normalizes to octet-stream");
+    assert.equal(uploadBody.size_bytes, local.byteLength, "server-reported size must match the exact source bytes");
+    assert.equal(uploadBody.sha256, localSha256, "server-reported digest must match the exact source bytes");
+  });
+});
+
 test("BlobStore uses metadata-only and backend byte-range reads on SQLite", async () => {
   await withHarness(async () => {
     const blobId = "blob_sha256_store_range_001";

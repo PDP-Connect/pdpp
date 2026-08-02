@@ -10,7 +10,9 @@
 // Mutation surface:
 //   - connector_id / stream / record_key must each be a single non-empty string
 //     (missing or repeated -> BlobsUploadInvalidRequestError code invalid_request).
-//   - Content-Type header is required (else invalid_request).
+//   - a missing/malformed/wildcard Content-Type normalizes to
+//     application/octet-stream rather than rejecting (the blob is
+//     content-addressed and stored exactly regardless of declared media type).
 //   - the stream must be present in the manifest (else BlobsUploadStreamNotFoundError
 //     code not_found).
 //   - success -> { object:'blob', blob_id, sha256, size_bytes, mime_type }.
@@ -92,13 +94,9 @@ test("executeBlobsUpload: a repeated (array) param is invalid_request", async ()
   });
 });
 
-test("executeBlobsUpload: a missing Content-Type is invalid_request", async () => {
-  await assert.rejects(run({ contentType: undefined }), (err) => {
-    assert.ok(err instanceof BlobsUploadInvalidRequestError);
-    assert.equal(err.code, "invalid_request");
-    assert.ok(err.message.includes("Content-Type"));
-    return true;
-  });
+test("executeBlobsUpload: a missing Content-Type normalizes to application/octet-stream, not invalid_request", async () => {
+  const out = await run({ contentType: undefined });
+  assert.equal(out.envelope.mime_type, "application/octet-stream");
 });
 
 test("executeBlobsUpload: a stream absent from the manifest is not_found", async () => {
