@@ -53,6 +53,7 @@ import {
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
 import { createTerminalOnceGate } from "../../src/terminal-once.ts";
+import { normalizeGmailAttachmentRecoveryLocator } from "./attachment-recovery-locator.ts";
 import {
   type BodyPartSelection,
   bigintToCursor,
@@ -2038,47 +2039,8 @@ function servedAttachmentDetailGaps(
     if (gap.stream !== "attachments" || gap.status !== "pending") {
       return false;
     }
-    const locator = gap.detail_locator;
-    if (!locator || typeof locator !== "object" || Array.isArray(locator)) {
-      return false;
-    }
-    return normalizeGmailAttachmentRecoveryLocator(gap) !== null;
+    return normalizeGmailAttachmentRecoveryLocator(gap.detail_locator) !== null;
   });
-}
-
-function normalizeGmailAttachmentRecoveryLocator(gap: DetailGapStartEntry): {
-  attachmentId: string | null;
-  messageId: string;
-  partIndex: string;
-} | null {
-  const locator = gap.detail_locator;
-  if (!locator || typeof locator !== "object" || Array.isArray(locator)) {
-    return null;
-  }
-  const typedLocator = locator as Record<string, unknown>;
-  if (typedLocator.kind !== "gmail.attachment_detail") {
-    return null;
-  }
-  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  const attachmentId = typedLocator.attachment_id == null ? null : String(typedLocator.attachment_id).trim() || null;
-  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  let messageId = typedLocator.message_id == null ? "" : String(typedLocator.message_id).trim();
-  // biome-ignore lint/suspicious/noEqualsToNull: check for both null and undefined
-  let partIndex = typedLocator.part_index == null ? "" : String(typedLocator.part_index).trim();
-  if (attachmentId && !(messageId && partIndex)) {
-    const separator = attachmentId.lastIndexOf(":");
-    if (separator <= 0 || separator === attachmentId.length - 1) {
-      return null;
-    }
-    const derivedMessageId = attachmentId.slice(0, separator);
-    const derivedPartIndex = attachmentId.slice(separator + 1);
-    messageId ||= derivedMessageId;
-    partIndex ||= derivedPartIndex;
-  }
-  if (!(messageId && partIndex)) {
-    return null;
-  }
-  return { attachmentId, messageId, partIndex };
 }
 
 async function fetchGmailMessageByMessageId(
@@ -2531,7 +2493,7 @@ async function processServedAttachmentRecoveryGap(
   byteBudget: number,
   canReserveOversizedFallback: boolean
 ): Promise<ServedAttachmentRecoveryResult> {
-  const locator = normalizeGmailAttachmentRecoveryLocator(gap);
+  const locator = normalizeGmailAttachmentRecoveryLocator(gap.detail_locator);
   if (!locator) {
     return false;
   }

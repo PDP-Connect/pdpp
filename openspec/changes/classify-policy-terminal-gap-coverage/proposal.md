@@ -23,8 +23,10 @@ row while excluding only a validated terminal-settlement policy fact.
 - Fail closed when either aggregate is malformed, duplicated, or inconsistent.
 - Add a dry-run-by-default, exact-instance migration bridge for legacy Gmail
   attachment `too_large` terminal rows with no validated disposition. The
-  bridge only returns the bounded rows to normal scheduled recovery; it does
-  not infer history, alter records or spine events, or emit a new outcome.
+  bridge only returns bounded rows with the same canonical locator shapes
+  normal Gmail scheduled recovery accepts: a derivable `attachment_id`, or a
+  nonempty `message_id` and `part_index`. It does not infer history, alter
+  records or spine events, or emit a new outcome.
 - Add SQLite/PostgreSQL parity and mutation regressions for policy versus
   defect terminal rows.
 

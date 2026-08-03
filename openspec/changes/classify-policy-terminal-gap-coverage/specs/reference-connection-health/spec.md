@@ -53,8 +53,11 @@ disposition SHALL remain repair-blocking.
 - **WHEN** an operator uses the explicit dry-run-by-default remeasurement
   bridge for one Gmail connection instance's canonical `attachments` terminal
   `too_large` rows that lack a validated policy disposition
-- **THEN** the bridge SHALL only return the selected current gap rows to
-  ordinary pending recovery with a status/disposition compare-and-set
+- **THEN** the bridge SHALL only select locator shapes the normal Gmail
+  scheduled recovery parser accepts: a derivable `attachment_id`, or nonempty
+  `message_id` and `part_index`
+- **AND** it SHALL only return the selected current gap rows to ordinary
+  pending recovery with a status/disposition/locator compare-and-set
 - **AND** it SHALL preserve record data and immutable terminal audit/spine
   history without inferring a policy disposition or emitting a new outcome
 - **AND** a later normal scheduled recovery lease SHALL be the sole authority

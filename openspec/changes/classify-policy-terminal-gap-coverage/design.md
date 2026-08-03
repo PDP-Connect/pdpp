@@ -28,10 +28,12 @@ bridge is deliberately not a policy-disposition writer: it is a bounded,
 dry-run-by-default operator command requiring one connector instance, the
 fixed Gmail/attachments/`too_large` scope, and the
 `pre_contract_gmail_attachment_too_large_remeasurement_v1` mutation
-discriminator. The store rechecks the canonical Gmail locator, terminal
-reason/error class, no active lease, and the exact policy-disposition preimage
-as part of each status compare-and-set. It excludes every row the closed
-validator accepts, including when a raw JSON kind alone looks plausible.
+discriminator. The store reuses the normal Gmail recovery locator parser: only
+a well-formed `attachment_id` derivable to message/part, or a nonempty
+`message_id` and `part_index`, is eligible. It rechecks terminal reason/error
+class, no active lease, and exact policy-disposition and locator JSON
+preimages as part of each status compare-and-set. It excludes every row the
+closed policy validator accepts and every kind-only or malformed locator.
 
 Apply changes only an eligible current gap row from `terminal` to `pending`,
 clearing its terminal-only disposition and lease fields. It preserves the

@@ -15,11 +15,13 @@ import {
   validateArgs,
 } from "../scripts/repair/requeue-gmail-precontract-too-large-detail-gaps.ts";
 import { closeDb, initDb } from "../server/db.ts";
-import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
+import { closePostgresStorage, initPostgresStorage } from "../server/postgres-storage.ts";
 import {
   createPostgresConnectorDetailGapStore,
   createSqliteConnectorDetailGapStore,
 } from "../server/stores/connector-detail-gap-store.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const NOW = "2026-08-03T01:00:00.000Z";
 const CONNECTOR_INSTANCE_ID = "cin_precontract_remeasurement";
@@ -28,7 +30,9 @@ const LIMIT_ERROR = /from 1 to 500/;
 const MUTATION_DISCRIMINATOR_ERROR = /mutation-discriminator=.* is required/;
 const UNSUPPORTED_ARGUMENT_ERROR = /unsupported repair argument/;
 
-type GapStore = ReturnType<typeof createSqliteConnectorDetailGapStore>;
+type GapStore =
+  | ReturnType<typeof createPostgresConnectorDetailGapStore>
+  | ReturnType<typeof createSqliteConnectorDetailGapStore>;
 
 function repairArgs(apply: boolean): GmailPrecontractRemeasurementArgs {
   return {
@@ -42,11 +46,15 @@ function repairArgs(apply: boolean): GmailPrecontractRemeasurementArgs {
   };
 }
 
-function gapInput(gapId: string, connectorInstanceId = CONNECTOR_INSTANCE_ID) {
+function gapInput(
+  gapId: string,
+  connectorInstanceId = CONNECTOR_INSTANCE_ID,
+  detailLocator: unknown = { attachment_id: `${gapId}:2`, kind: "gmail.attachment_detail" }
+) {
   return {
     connectorId: "gmail",
     connectorInstanceId,
-    detailLocator: { attachment_id: gapId, kind: "gmail.attachment_detail" },
+    detailLocator,
     gapId,
     grantId: "grant_precontract_remeasurement",
     lastError: { class: "too_large", message: "legacy terminal evidence without structured proof" },
@@ -61,8 +69,16 @@ function gapInput(gapId: string, connectorInstanceId = CONNECTOR_INSTANCE_ID) {
   };
 }
 
-async function seedUnprovenTerminal(store: GapStore, gapId: string, connectorInstanceId = CONNECTOR_INSTANCE_ID) {
-  const input = gapInput(gapId, connectorInstanceId);
+async function seedUnprovenTerminal(
+  store: GapStore,
+  gapId: string,
+  connectorInstanceId = CONNECTOR_INSTANCE_ID,
+  detailLocator?: unknown
+) {
+  const input =
+    detailLocator === undefined
+      ? gapInput(gapId, connectorInstanceId)
+      : gapInput(gapId, connectorInstanceId, detailLocator);
   const pending = await store.upsertPendingGap(input);
   assert.ok(pending, "pending row is stored");
   const terminal = await store.markGapStatus(gapId, "terminal", {
@@ -99,7 +115,33 @@ async function seedProvenTerminal(store: GapStore, gapId: string) {
 }
 
 async function assertRemeasurementContract(store: GapStore): Promise<void> {
-  const remeasure = await seedUnprovenTerminal(store, "gap_remeasure");
+  const remeasure = await seedUnprovenTerminal(store, "gap_legacy_attachment_id_only");
+  const fullLocator = await seedUnprovenTerminal(store, "gap_full_locator", CONNECTOR_INSTANCE_ID, {
+    kind: "gmail.attachment_detail",
+    message_id: "message_full_locator",
+    part_index: "2",
+  });
+  const malformedLocators = [
+    { gapId: "gap_kind_only", locator: { kind: "gmail.attachment_detail" } },
+    { gapId: "gap_empty_attachment_id", locator: { attachment_id: "", kind: "gmail.attachment_detail" } },
+    {
+      gapId: "gap_malformed_attachment_id_no_separator",
+      locator: { attachment_id: "message_without_part", kind: "gmail.attachment_detail" },
+    },
+    {
+      gapId: "gap_malformed_attachment_id_empty_message",
+      locator: { attachment_id: ":2", kind: "gmail.attachment_detail" },
+    },
+    {
+      gapId: "gap_malformed_attachment_id_empty_part",
+      locator: { attachment_id: "message:", kind: "gmail.attachment_detail" },
+    },
+  ];
+  await Promise.all(
+    malformedLocators.map(async ({ gapId, locator }) =>
+      seedUnprovenTerminal(store, gapId, CONNECTOR_INSTANCE_ID, locator)
+    )
+  );
   const proven = await seedProvenTerminal(store, "gap_proven");
   await seedUnprovenTerminal(store, "gap_other_instance", OTHER_INSTANCE_ID);
   const wrongStream = await store.upsertPendingGap({
@@ -124,16 +166,20 @@ async function assertRemeasurementContract(store: GapStore): Promise<void> {
   });
 
   const dryRun = await executeRepair(store, repairArgs(false), NOW);
-  assert.deepEqual(dryRun.gap_ids, ["gap_remeasure"]);
-  assert.equal(dryRun.matched, 1);
+  assert.deepEqual(dryRun.gap_ids, ["gap_full_locator", "gap_legacy_attachment_id_only"]);
+  assert.equal(dryRun.matched, 2);
   assert.equal(dryRun.requeued, 0);
-  assert.equal((await store.getGapById("gap_remeasure"))?.status, "terminal", "dry run is non-mutating");
+  assert.equal(
+    (await store.getGapById("gap_legacy_attachment_id_only"))?.status,
+    "terminal",
+    "dry run is non-mutating"
+  );
 
   const apply = await executeRepair(store, repairArgs(true), NOW);
-  assert.deepEqual(apply.gap_ids, ["gap_remeasure"]);
-  assert.equal(apply.matched, 1);
-  assert.equal(apply.requeued, 1);
-  const after = await store.getGapById("gap_remeasure");
+  assert.deepEqual(apply.gap_ids, ["gap_full_locator", "gap_legacy_attachment_id_only"]);
+  assert.equal(apply.matched, 2);
+  assert.equal(apply.requeued, 2);
+  const after = await store.getGapById("gap_legacy_attachment_id_only");
   assert.ok(after);
   assert.equal(after.status, "pending");
   assert.equal(after.policy_disposition, null);
@@ -142,6 +188,8 @@ async function assertRemeasurementContract(store: GapStore): Promise<void> {
   assert.equal(after.last_run_id, remeasure.last_run_id, "repair creates no run outcome");
   assert.equal(after.recovered_run_id, remeasure.recovered_run_id, "repair does not fabricate recovery");
   assert.equal(after.attempt_count, remeasure.attempt_count, "repair does not fabricate a provider attempt");
+  assert.equal((await store.getGapById("gap_full_locator"))?.status, "pending", "full locator is requeued");
+  assert.deepEqual((await store.getGapById("gap_full_locator"))?.detail_locator, fullLocator.detail_locator);
 
   const secondApply = await executeRepair(store, repairArgs(true), "2026-08-03T01:01:00.000Z");
   assert.deepEqual(secondApply.gap_ids, []);
@@ -152,6 +200,12 @@ async function assertRemeasurementContract(store: GapStore): Promise<void> {
   assert.equal((await store.getGapById("gap_other_instance"))?.status, "terminal", "other instances are isolated");
   assert.equal((await store.getGapById("gap_wrong_stream"))?.status, "terminal", "other streams are isolated");
   assert.equal((await store.getGapById("gap_wrong_class"))?.status, "terminal", "other terminal classes are isolated");
+  const malformedRows = await Promise.all(
+    malformedLocators.map(async ({ gapId }) => ({ gapId, status: (await store.getGapById(gapId))?.status }))
+  );
+  for (const { gapId, status } of malformedRows) {
+    assert.equal(status, "terminal", `${gapId} cannot enter recovery`);
+  }
 }
 
 test("pre-contract Gmail remeasurement is dry-run-first, exact, provenance-preserving, and idempotent on SQLite", async () => {
@@ -200,62 +254,35 @@ test("concurrent pre-contract Gmail remeasurement applies claim one terminal row
   }
 });
 
-const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
-test("real PostgreSQL pre-contract Gmail remeasurement preserves proof exclusion, isolation, and CAS", {
-  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
+test("real disposable PostgreSQL remeasurement has SQLite locator, proof, isolation, and CAS parity", {
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL must target the dedicated loopback proof service",
 }, async () => {
-  assert.ok(POSTGRES_URL, "PostgreSQL URL is configured when this test runs");
-  const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-  const instanceId = `${CONNECTOR_INSTANCE_ID}_${suffix}`;
-  const otherInstanceId = `${OTHER_INSTANCE_ID}_${suffix}`;
-  initDb(":memory:");
-  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
-  try {
-    const store = createPostgresConnectorDetailGapStore();
-    const pgArgs = { ...repairArgs(false), connectorInstanceId: instanceId };
-    const remeasure = await seedUnprovenTerminal(store, `gap_remeasure_${suffix}`, instanceId);
-    await store.upsertPendingGap({ ...gapInput(`gap_proven_${suffix}`), connectorInstanceId: instanceId });
-    // The policy row is seeded under the requested instance rather than the
-    // SQLite fixture default, then settled through the same lease authority.
-    const [claimed] = await store.claimPendingGaps([`gap_proven_${suffix}`], {
-      leaseExpiresAt: "2026-08-03T02:00:00.000Z",
-      leaseId: `lease_pg_${suffix}`,
-      runId: "run_policy_pg",
-    });
-    assert.equal(claimed, `gap_proven_${suffix}`);
-    await store.settleLeasedGapTerminal(
-      { gapId: `gap_proven_${suffix}`, leaseId: `lease_pg_${suffix}`, runId: "run_policy_pg" },
-      { ...gapInput(`gap_proven_${suffix}`), connectorInstanceId: instanceId, lastRunId: "run_policy_pg" },
-      { configured_limit_bytes: 26_214_400, kind: "gmail_attachment_too_large", observed_size_bytes: 30_062_404 }
-    );
-    await seedUnprovenTerminal(store, `gap_other_${suffix}`, otherInstanceId);
-
-    const dryRun = await executeRepair(store, pgArgs, NOW);
-    assert.deepEqual(dryRun.gap_ids, [`gap_remeasure_${suffix}`]);
-    const [first, second] = await Promise.all([
-      executeRepair(store, { ...pgArgs, apply: true }, NOW),
-      executeRepair(store, { ...pgArgs, apply: true }, NOW),
-    ]);
-    assert.equal(first.requeued + second.requeued, 1, "Postgres CAS permits one mutation");
-    const after = await store.getGapById(`gap_remeasure_${suffix}`);
-    assert.ok(after);
-    assert.equal(after.status, "pending");
-    assert.deepEqual(after.detail_locator, remeasure.detail_locator);
-    assert.deepEqual(after.last_error, remeasure.last_error);
-    assert.equal(after.last_run_id, remeasure.last_run_id);
-    assert.equal((await store.getGapById(`gap_proven_${suffix}`))?.status, "terminal");
-    assert.deepEqual((await store.getGapById(`gap_proven_${suffix}`))?.policy_disposition, {
-      configured_limit_bytes: 26_214_400,
-      kind: "gmail_attachment_too_large",
-      observed_size_bytes: 30_062_404,
-    });
-    assert.equal((await store.getGapById(`gap_other_${suffix}`))?.status, "terminal");
-  } finally {
-    await postgresQuery("DELETE FROM connector_detail_gaps WHERE connector_instance_id = ANY($1::text[])", [
-      [instanceId, otherInstanceId],
-    ]);
-    await closePostgresStorage();
-    closeDb();
-  }
+  assert.ok(POSTGRES_URL, "PostgreSQL URL targets the dedicated loopback proof service");
+  await withTemporaryPostgresDatabase(
+    {
+      closeConnections: closePostgresStorage,
+      connectionString: POSTGRES_URL,
+      databaseName: `pdpp_test_gmail_remeasurement_${process.pid.toString(16).padStart(8, "0")}_${Date.now().toString(36)}`,
+    },
+    async (databaseUrl) => {
+      initDb(":memory:");
+      await initPostgresStorage({ backend: "postgres", databaseUrl });
+      try {
+        const store = createPostgresConnectorDetailGapStore();
+        await assertRemeasurementContract(store);
+        await seedUnprovenTerminal(store, "gap_race");
+        const [first, second] = await Promise.all([
+          executeRepair(store, repairArgs(true), NOW),
+          executeRepair(store, repairArgs(true), NOW),
+        ]);
+        assert.equal(first.requeued + second.requeued, 1, "PostgreSQL CAS permits one mutation");
+        assert.equal((await store.getGapById("gap_race"))?.status, "pending");
+      } finally {
+        await closePostgresStorage();
+        closeDb();
+      }
+    }
+  );
 });

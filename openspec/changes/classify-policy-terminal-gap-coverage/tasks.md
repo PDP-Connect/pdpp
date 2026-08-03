@@ -30,3 +30,7 @@
   cannot be requeued.
 - [x] 3.3 Add SQLite and disposable-real-PostgreSQL dry-run/apply/idempotence,
   race, isolation, proven-row exclusion, and no-fabricated-outcome tests.
+- [x] 3.4 Reuse normal Gmail recovery's canonical attachment locator parser in
+  bridge selection and bind each SQLite/PostgreSQL compare-and-set to the
+  validated locator JSON preimage; prove kind-only, empty, malformed,
+  attachment-id-only, and full-locator discrimination on both backends.

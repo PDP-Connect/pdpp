@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
+import { normalizeGmailAttachmentRecoveryLocator } from "../../../packages/polyfill-connectors/connectors/gmail/attachment-recovery-locator.ts";
 import {
   parseGmailAttachmentTooLargePolicyDisposition,
   requireValidatedTerminalPolicyDisposition,
@@ -218,6 +219,7 @@ interface NormalizedPendingGapRepairScope {
 }
 
 interface TerminalGapRemeasurementCandidate {
+  detailLocatorJson: string | null;
   gap: DetailGap;
   policyDispositionJson: string | null;
 }
@@ -970,9 +972,7 @@ function sqliteTerminalGapRemeasurementCandidates(
       [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass, scope.limit]
     ),
   ];
-  return rows
-    .map((row) => ({ gap: rowToGap(row) as DetailGap, policyDispositionJson: row.policy_disposition_json }))
-    .filter((candidate) => !hasValidatedTerminalPolicyDispositionForGap(candidate.gap));
+  return rows.flatMap(terminalGapRemeasurementCandidate);
 }
 
 async function postgresTerminalGapRemeasurementCandidates(
@@ -995,9 +995,18 @@ async function postgresTerminalGapRemeasurementCandidates(
     `,
     [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass, scope.limit]
   );
-  return result.rows
-    .map((row) => ({ gap: rowToGap(row) as DetailGap, policyDispositionJson: row.policy_disposition_json }))
-    .filter((candidate) => !hasValidatedTerminalPolicyDispositionForGap(candidate.gap));
+  return result.rows.flatMap(terminalGapRemeasurementCandidate);
+}
+
+function terminalGapRemeasurementCandidate(row: DetailGapRow): TerminalGapRemeasurementCandidate[] {
+  const gap = rowToGap(row) as DetailGap;
+  if (
+    hasValidatedTerminalPolicyDispositionForGap(gap) ||
+    normalizeGmailAttachmentRecoveryLocator(gap.detail_locator) === null
+  ) {
+    return [];
+  }
+  return [{ detailLocatorJson: row.detail_locator_json, gap, policyDispositionJson: row.policy_disposition_json }];
 }
 
 function requeueSqliteTerminalGapRemeasurementCandidates(
@@ -1005,7 +1014,7 @@ function requeueSqliteTerminalGapRemeasurementCandidates(
   scope: NormalizedTerminalGapRemeasurementScope
 ): TerminalGapRemeasurementResult {
   const gapIds: string[] = [];
-  for (const { gap, policyDispositionJson } of candidates) {
+  for (const { detailLocatorJson, gap, policyDispositionJson } of candidates) {
     const result = execDynamicSqlAcknowledged(
       `
       UPDATE connector_detail_gaps
@@ -1028,6 +1037,7 @@ function requeueSqliteTerminalGapRemeasurementCandidates(
         AND lease_run_id IS NULL
         AND lease_id IS NULL
         AND policy_disposition_json IS ?
+        AND detail_locator_json IS ?
     `,
       [
         scope.now,
@@ -1037,6 +1047,7 @@ function requeueSqliteTerminalGapRemeasurementCandidates(
         scope.stream,
         scope.errorClass,
         policyDispositionJson,
+        detailLocatorJson,
       ]
     );
     if (Number(result.changes || 0) === 1) {
@@ -1051,7 +1062,7 @@ async function requeuePostgresTerminalGapRemeasurementCandidates(
   scope: NormalizedTerminalGapRemeasurementScope
 ): Promise<TerminalGapRemeasurementResult> {
   const gapIds: string[] = [];
-  for (const { gap, policyDispositionJson } of candidates) {
+  for (const { detailLocatorJson, gap, policyDispositionJson } of candidates) {
     // biome-ignore lint/performance/noAwaitInLoops: Sequential CAS updates preserve the bounded receipt order across backends.
     const result = await postgresQuery(
       `
@@ -1075,6 +1086,7 @@ async function requeuePostgresTerminalGapRemeasurementCandidates(
         AND lease_run_id IS NULL
         AND lease_id IS NULL
         AND policy_disposition_json IS NOT DISTINCT FROM $7::jsonb
+        AND detail_locator_json IS NOT DISTINCT FROM $8::jsonb
     `,
       [
         scope.now,
@@ -1084,6 +1096,7 @@ async function requeuePostgresTerminalGapRemeasurementCandidates(
         scope.stream,
         scope.errorClass,
         policyDispositionJson,
+        detailLocatorJson,
       ]
     );
     if (Number(result.rowCount || 0) === 1) {
@@ -1602,8 +1615,8 @@ export function createSqliteConnectorDetailGapStore() {
     // This operator transition returns only legacy terminal rows to ordinary
     // recovery. It neither creates a provider outcome nor rewrites record or
     // terminal evidence; the next scheduled lease is the sole new-measurement
-    // authority. The disposition preimage is part of the CAS so an observed
-    // unproven row cannot overwrite a concurrently changed policy row.
+    // authority. Policy and locator preimages are part of the CAS so a row
+    // changed after canonical-locator validation cannot be requeued.
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async listTerminalGapsForRemeasurement(input: TerminalGapRemeasurementScopeInput): Promise<DetailGap[]> {
       return sqliteTerminalGapRemeasurementCandidates(normalizeTerminalGapRemeasurementScope(input)).map(
