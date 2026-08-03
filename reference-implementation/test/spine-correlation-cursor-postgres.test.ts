@@ -102,7 +102,7 @@ async function pageAll(limit: number) {
   return pages;
 }
 
-test('postgres spine correlations: cursor advances and pages are union-complete', { skip: !POSTGRES_URL }, async (t) => {
+test('postgres spine correlations: cursor advances and pages are union-complete', { skip: !POSTGRES_URL && 'PDPP_TEST_POSTGRES_URL unset' }, async (t) => {
   await ensureStorage();
   t.after(cleanup);
   await cleanup();
@@ -134,7 +134,7 @@ test('postgres spine correlations: cursor advances and pages are union-complete'
   );
 });
 
-test('postgres spine correlations: tied timestamps survive pagination boundaries', { skip: !POSTGRES_URL }, async (t) => {
+test('postgres spine correlations: tied timestamps survive pagination boundaries', { skip: !POSTGRES_URL && 'PDPP_TEST_POSTGRES_URL unset' }, async (t) => {
   await ensureStorage();
   t.after(cleanup);
   await cleanup();
@@ -149,7 +149,7 @@ test('postgres spine correlations: tied timestamps survive pagination boundaries
   }
 });
 
-test('postgres spine correlations: malformed cursor degrades to first page', { skip: !POSTGRES_URL }, async (t) => {
+test('postgres spine correlations: malformed cursor degrades to first page', { skip: !POSTGRES_URL && 'PDPP_TEST_POSTGRES_URL unset' }, async (t) => {
   await ensureStorage();
   t.after(cleanup);
   await cleanup();
@@ -168,6 +168,6 @@ test('postgres spine correlations: malformed cursor degrades to first page', { s
 
 // Release the process-global pool once every test above has finished, so the
 // runner exits cleanly instead of hanging on an open connection.
-test('teardown: close postgres pool', { skip: !POSTGRES_URL }, async () => {
+test('teardown: close postgres pool', { skip: !POSTGRES_URL && 'PDPP_TEST_POSTGRES_URL unset' }, async () => {
   await closePostgresStorage();
 });

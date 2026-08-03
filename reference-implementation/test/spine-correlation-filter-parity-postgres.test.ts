@@ -99,7 +99,7 @@ async function observe(filters: SpineCorrelationFilters) {
   };
 }
 
-test('spine correlation filters behave identically on Postgres and SQLite', { skip: !POSTGRES_URL }, async (t) => {
+test('spine correlation filters behave identically on Postgres and SQLite', { skip: !POSTGRES_URL && 'PDPP_TEST_POSTGRES_URL unset' }, async (t) => {
   if (!POSTGRES_URL) {
     throw new Error('this test body must not run when PDPP_TEST_POSTGRES_URL is unset (test.skip should have prevented it)');
   }
