@@ -28,7 +28,12 @@ import assert from 'node:assert/strict';
 
 import { emitSpineEvent, listSpineCorrelations } from '../lib/spine.ts';
 import { closeDb, getDb, initDb } from '../server/db.js';
-import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
+import {
+  closePostgresStorage,
+  initPostgresStorage,
+  isPostgresStorageBackend,
+  postgresQuery,
+} from '../server/postgres-storage.js';
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const RUN_TAG = `parity${process.pid}${Date.now().toString(36)}`;
@@ -109,7 +114,18 @@ test('spine correlation filters behave identically on Postgres and SQLite', { sk
   // --- Postgres leg ---
   process.env.PDPP_STORAGE_BACKEND = 'postgres';
   process.env.PDPP_DATABASE_URL = POSTGRES_URL;
-  await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+  // Bootstrap only if this process has not already initialized the pool.
+  // `bootstrapPostgresSchema()` is NOT idempotent against an already-migrated
+  // database — `migratePostgresLegacyConnectorInstancesToDefaultAccount` issues
+  // an unguarded `ADD CONSTRAINT connector_instances_source_kind_check`, which
+  // throws "constraint already exists" on a second init. That is pre-existing
+  // behaviour in server/postgres-storage.js, not something this branch changed;
+  // the project's own runner hides it by spawning one process per test file.
+  // Re-initializing here would make this test fail for a reason unrelated to
+  // the parity property it exists to prove.
+  if (!isPostgresStorageBackend()) {
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+  }
   t.after(async () => {
     await postgresQuery('DELETE FROM spine_events WHERE grant_id LIKE $1', [`grt_${RUN_TAG}%`]).catch(() => {});
     await closePostgresStorage();
