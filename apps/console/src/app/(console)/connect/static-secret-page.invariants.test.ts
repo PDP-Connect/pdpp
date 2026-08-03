@@ -152,7 +152,15 @@ const BROWSER_RUNTIME_BLOCKED =
   /const browserRuntimeBlocked = Boolean\(\s*setup\.browser_runtime\?\.required && !setup\.browser_runtime\.configured\s*\)/;
 const BROWSER_RUNTIME_GATES_FORM = /blockedNotice = <BrowserRuntimeBlocked/;
 const FORM_RENDERS_ONLY_WHEN_UNBLOCKED = /\{blockedNotice \?\? \(/;
-const BROWSER_RUNTIME_REMEDIATION = /reference-browser|PDPP_BROWSER_SURFACE_REMOTE_CDP_URL/;
+// Both remediations are asserted separately. As one alternation the oracle
+// passed on the env-var branch alone, so it never actually checked which image
+// it names — which is how `reference-browser` survived here after the copy
+// moved to `core-browser`. `reference-browser` is the wrong answer for this
+// page: it ships no console, so it cannot serve this form at all.
+const BROWSER_RUNTIME_REMEDIATION_IMAGE = /core-browser/;
+const BROWSER_RUNTIME_REMEDIATION_SURFACE = /PDPP_BROWSER_SURFACE_REMOTE_CDP_URL/;
+// `reference-browser` ships no console, so it cannot serve this page.
+const CONSOLE_LESS_IMAGE = /reference-browser/;
 
 test("setup form refuses capture when the connector needs a browser this deployment lacks", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -161,5 +169,8 @@ test("setup form refuses capture when the connector needs a browser this deploym
   // it: the capture form may only appear when nothing is blocking it.
   assert.match(src, BROWSER_RUNTIME_GATES_FORM);
   assert.match(src, FORM_RENDERS_ONLY_WHEN_UNBLOCKED);
-  assert.match(src, BROWSER_RUNTIME_REMEDIATION);
+  assert.match(src, BROWSER_RUNTIME_REMEDIATION_IMAGE);
+  assert.match(src, BROWSER_RUNTIME_REMEDIATION_SURFACE);
+  // A console-less image cannot render this page, so it must not be offered.
+  assert.doesNotMatch(src, CONSOLE_LESS_IMAGE);
 });
