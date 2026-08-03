@@ -357,6 +357,14 @@
       "suite": "root-node",
       "profile": "default",
       "expires": "2027-12-31"
+    },
+    {
+      "path": "docs/explorer/uat/harness/mobile-route-and-filters.test.ts",
+      "reason": "requires a live seeded dashboard (DASH_URL) and a real Chrome/Patchright browser; runs as the separate manual Explore mobile UAT gate documented in its own file header, not part of the unattended node-test accounting suite",
+      "owner": "console-uat-gate",
+      "suite": "root-node",
+      "profile": "default",
+      "expires": "2027-12-31"
     }
   ]
 }
