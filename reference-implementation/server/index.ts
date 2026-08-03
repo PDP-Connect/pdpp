@@ -431,6 +431,7 @@ import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
 } from "./stores/acquisition-batch-store.ts";
+import { createAuthClientAccessMaintenanceReconciler } from "./stores/auth-client-access-reconciliation-store.ts";
 import { createBlobStore } from "./stores/blob-store.ts";
 import {
   type BrowserSurfaceLeaseStore,
@@ -808,7 +809,8 @@ const STARTUP_SUMMARY_EVIDENCE_PAGE_SIZE = 25;
 const STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS = 20;
 // Terminal-gate revision (2026-07-29): periodic tick interval for the
 // connector-maintenance sweep (browser-enrollment-shell retirement, due-
-// attention expiry, one bounded evidence-sweep round) — the recurring
+// attention expiry, one bounded evidence-sweep round, and one bounded
+// client-access round) — the recurring
 // counterpart to the one-shot startup pass above, now that ordinary GET no
 // longer performs any of these writes inline. 60s keeps staleness windows
 // short relative to human-observed dashboard refresh cadence without
@@ -817,6 +819,10 @@ const STARTUP_SUMMARY_EVIDENCE_MAX_RESUME_ROUNDS = 20;
 const CONNECTOR_MAINTENANCE_SWEEP_INTERVAL_MS = 60_000;
 const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS = 2000;
 const CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE = 25;
+const AUTH_CLIENT_ACCESS_MAINTENANCE_MAX_DURATION_MS = 2000;
+const AUTH_CLIENT_ACCESS_MAINTENANCE_MAX_CLIENTS = 25;
+const STARTUP_AUTH_CLIENT_ACCESS_MAX_DURATION_MS = 2000;
+const STARTUP_AUTH_CLIENT_ACCESS_MAX_CLIENTS = 25;
 // Run-history backfill (terminal-read-architecture-fable-0730.md §9):
 // same acceleration-not-authority shape as the summary-evidence startup
 // pass above, on its own name-keyed cursor. NOT a traffic gate (R9.1) —
@@ -6735,6 +6741,7 @@ export async function startServer(opts: ServerOpts = {}) {
   // an orphaned running timer (identical reasoning to the browser-surface
   // lease sweep's own comment on this).
   const runHistoryBackfillStage = createResumableRunHistoryBackfillStage();
+  const authClientAccessMaintenance = createAuthClientAccessMaintenanceReconciler();
   const connectorMaintenanceSweep = createResumableConnectorMaintenanceSweep({
     evidenceSweepMaxDurationMs: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_MAX_DURATION_MS,
     evidenceSweepPageSize: CONNECTOR_MAINTENANCE_EVIDENCE_SWEEP_PAGE_SIZE,
@@ -6743,6 +6750,23 @@ export async function startServer(opts: ServerOpts = {}) {
         { err: err instanceof Error ? err.message : String(err), phase },
         "connector-maintenance sweep phase failed"
       );
+    },
+    runAuthClientAccessReconciliation: async () => {
+      const result = await authClientAccessMaintenance.runRound({
+        maxClients: AUTH_CLIENT_ACCESS_MAINTENANCE_MAX_CLIENTS,
+        maxDurationMs: AUTH_CLIENT_ACCESS_MAINTENANCE_MAX_DURATION_MS,
+      });
+      if (
+        result &&
+        (result.incomplete ||
+          result.grantsRevoked > 0 ||
+          result.packageMembersRevoked > 0 ||
+          result.packagesRevoked > 0 ||
+          result.refreshTokensRevoked > 0 ||
+          result.tokensRevoked > 0)
+      ) {
+        logger.info(result, "auth client-access maintenance reconciliation");
+      }
     },
     runEvidenceSweep: async (args) => {
       const result = await runBoundedSummaryEvidenceSweep({
@@ -7121,6 +7145,29 @@ export async function startServer(opts: ServerOpts = {}) {
     manifests: startupBackfillManifests,
     signal: startupBackfillAbortController.signal,
   });
+  // Historical client-access repair is an acceleration pass, not a boot
+  // gate. One exact-evidence round is scheduled off the request path and is
+  // capped by both client count and wall-clock budget; the durable cursor and
+  // periodic maintenance tick carry the remaining fleet.
+  const startupAuthClientAccessReconciliationDone = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      // biome-ignore lint/complexity/noVoid: The side effect is intentionally fire-and-forget by this runtime contract.
+      void authClientAccessMaintenance
+        .runRound({
+          maxClients: STARTUP_AUTH_CLIENT_ACCESS_MAX_CLIENTS,
+          maxDurationMs: STARTUP_AUTH_CLIENT_ACCESS_MAX_DURATION_MS,
+        })
+        .then((result) => {
+          if (result && (result.incomplete || result.reconciledClientCount > 0)) {
+            logger.info(result, "startup auth client-access reconciliation");
+          }
+        })
+        .catch((err) => {
+          logger.warn({ err }, "startup auth client-access reconciliation failed; periodic maintenance will retry");
+        })
+        .finally(resolve);
+    });
+  });
   // Bounded, multi-round startup observation: best-effort acceleration,
   // never the correctness authority (design.md "Startup is acceleration,
   // not authority"). Off the request path, after listen, runs the SAME
@@ -7302,6 +7349,7 @@ export async function startServer(opts: ServerOpts = {}) {
     rsPort,
     rsServer,
     schedulerManager,
+    startupAuthClientAccessReconciliationDone,
     startupBackfillDone,
     startupRunHistoryBackfillDone,
     startupSummaryEvidenceSweepDone,
@@ -7313,7 +7361,8 @@ export async function startServer(opts: ServerOpts = {}) {
     // Exposed so the CLI shutdown path (and tests that start/stop many
     // server instances per process) can clear the periodic connector-
     // maintenance sweep timer (shell retirement, attention expiry, bounded
-    // evidence-sweep round — see connector-maintenance-sweep.ts).
+    // evidence-sweep and auth-client-access rounds — see
+    // connector-maintenance-sweep.ts).
     stopConnectorMaintenanceSweep,
     // Exposed so the CLI shutdown path (and tests that start/stop many
     // server instances per process) can clear the periodic optional-index
@@ -8244,6 +8293,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     asServer: StartServerResult["asServer"] | null;
     rsServer: StartServerResult["rsServer"] | null;
     abortStartupBackfill: StartServerResult["abortStartupBackfill"] | null;
+    startupAuthClientAccessReconciliationDone: StartServerResult["startupAuthClientAccessReconciliationDone"] | null;
     startupBackfillDone: StartServerResult["startupBackfillDone"] | null;
     startupRunHistoryBackfillDone: StartServerResult["startupRunHistoryBackfillDone"] | null;
     startupSummaryEvidenceSweepDone: StartServerResult["startupSummaryEvidenceSweepDone"] | null;
@@ -8259,6 +8309,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     controller: null,
     rsServer: null,
     schedulerManager: null,
+    startupAuthClientAccessReconciliationDone: null,
     startupBackfillDone: null,
     startupRunHistoryBackfillDone: null,
     startupSummaryEvidenceSweepDone: null,
@@ -8335,6 +8386,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     } catch {}
     const backfillDeadline = new Promise((resolve) => setTimeout(resolve, 2000));
     const awaitStartupTasks = Promise.allSettled([
+      server.startupAuthClientAccessReconciliationDone,
       server.startupBackfillDone,
       server.startupRunHistoryBackfillDone,
       server.startupSummaryEvidenceSweepDone,
@@ -8381,6 +8433,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       server.asServer = result.asServer;
       server.rsServer = result.rsServer;
       server.abortStartupBackfill = result.abortStartupBackfill;
+      server.startupAuthClientAccessReconciliationDone = result.startupAuthClientAccessReconciliationDone;
       server.startupBackfillDone = result.startupBackfillDone;
       server.startupRunHistoryBackfillDone = result.startupRunHistoryBackfillDone;
       server.startupSummaryEvidenceSweepDone = result.startupSummaryEvidenceSweepDone;

@@ -1745,6 +1745,12 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_grant_recent
         ON spine_events(occurred_at DESC, event_seq DESC, grant_id)
         WHERE grant_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_client_reconciliation
+        ON spine_events(client_id, object_id)
+        WHERE event_type = 'client.deleted'
+          AND status = 'succeeded'
+          AND object_type = 'client'
+          AND client_id IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS lexical_search_index (
         connector_id TEXT NOT NULL,
@@ -1943,7 +1949,7 @@ export async function bootstrapPostgresSchema({
       -- Scheduling state only: name-keyed cursors resume bounded maintenance
       -- passes after restart without becoming evidence or owner-visible data.
       CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
-        name TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
+        name TEXT PRIMARY KEY CHECK(name IN ('auth_client_access', 'connector_summary_evidence', 'run_history_backfill')),
         resume_after_id TEXT,
         updated_at TEXT NOT NULL,
         generation BIGINT NOT NULL DEFAULT 0,
@@ -3325,11 +3331,10 @@ async function migratePostgresRunHistoryCompletedAtNullable(client: PoolClient):
 }
 
 // Widens `connector_maintenance_cursor.name`'s CHECK to admit the
-// `run_history_backfill` cursor row alongside the existing
-// `connector_summary_evidence` one. No-op once the constraint already
-// admits both names (checked via pg_get_constraintdef, since the
-// auto-generated constraint name is stable but its definition is what
-// actually matters here).
+// `auth_client_access` cursor row alongside the existing maintenance stages.
+// No-op once the constraint already admits all stages (checked via
+// pg_get_constraintdef, since the auto-generated constraint name is stable but
+// its definition is what actually matters here).
 async function migratePostgresConnectorMaintenanceCursorNameCheck(client: PoolClient): Promise<void> {
   const result = await client.query<{ conname: string; definition: string }>(
     `SELECT conname, pg_get_constraintdef(oid) AS definition
@@ -3337,7 +3342,7 @@ async function migratePostgresConnectorMaintenanceCursorNameCheck(client: PoolCl
       WHERE conrelid = 'connector_maintenance_cursor'::regclass
         AND contype = 'c'`
   );
-  const alreadyWidened = result.rows.some((row) => row.definition.includes("run_history_backfill"));
+  const alreadyWidened = result.rows.some((row) => row.definition.includes("auth_client_access"));
   if (alreadyWidened) {
     return;
   }
@@ -3350,7 +3355,7 @@ async function migratePostgresConnectorMaintenanceCursorNameCheck(client: PoolCl
   await client.query(
     `ALTER TABLE connector_maintenance_cursor
        ADD CONSTRAINT connector_maintenance_cursor_name_check
-       CHECK (name IN ('connector_summary_evidence', 'run_history_backfill'))`
+       CHECK (name IN ('auth_client_access', 'connector_summary_evidence', 'run_history_backfill'))`
   );
 }
 

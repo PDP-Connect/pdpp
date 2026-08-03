@@ -46,6 +46,7 @@ import {
   SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS,
 } from "./oauth-substrate/primitives.ts";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.ts";
+import { reconcileClientAccessArtifacts } from "./stores/auth-client-access-reconciliation-store.ts";
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -3540,6 +3541,15 @@ async function revokeClientAccessArtifacts(
   // for owner tokens (which never have a grant row).
   const tokenRevoke = await getTokenStore().revokeByClientId(clientId);
   const revokedOwnerTokenCount = tokenRevoke.changes;
+
+  // The row-by-row paths above preserve the existing grant/package events.
+  // This set-based pass closes historical partial states too (for example an
+  // active member under a package already marked revoked) and is deliberately
+  // idempotent so a repeated client-delete attempt cannot reopen authority.
+  // It runs after the owner-token store so the existing deletion event keeps
+  // its precise owner-token count.
+  await reconcileClientAccessArtifacts(clientId);
+
   const disabledSubscriptionCount = await disableClientEventSubscriptionsForDeletedClient(
     clientId,
     subscriptionDisableReason

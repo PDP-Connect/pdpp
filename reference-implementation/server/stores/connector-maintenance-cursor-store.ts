@@ -7,7 +7,10 @@ import { randomUUID } from "node:crypto";
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged, writeTransaction } from "../../lib/db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
-export type ConnectorMaintenanceCursorName = "connector_summary_evidence" | "run_history_backfill";
+export type ConnectorMaintenanceCursorName =
+  | "auth_client_access"
+  | "connector_summary_evidence"
+  | "run_history_backfill";
 
 interface CursorRow {
   readonly generation: number | string;

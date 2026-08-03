@@ -12,7 +12,7 @@
  * attention (on the scoped/detail routes), and repaired
  * `connector_summary_evidence` (unbounded on the scoped/detail routes,
  * bounded-but-still-writing on the list routes) on every request. This
- * module is the ONE place those three writes now happen, on a periodic
+ * module is the ONE place those maintenance writes now happen, on a periodic
  * timer plus the existing one-shot startup pass — reusing the SAME generic
  * timer chassis (`runtime/browser-surface-lease-sweep-timer.ts`'s
  * `createBrowserSurfaceLeaseSweepTimer`) the browser-surface-lease sweep
@@ -22,8 +22,8 @@
  * `sweep: () => Promise<void>` wired into machinery that already exists.
  *
  * Every sub-sweep here is independently best-effort: one family's failure
- * (e.g. attention-store unavailable) must not block shell retirement or
- * evidence repair from running this tick, and must not throw past this
+ * (e.g. attention-store unavailable) must not block another phase from
+ * running this tick, and must not throw past this
  * module (the timer's own `onSweepError` handles that, exactly like the
  * browser-surface-lease sweep).
  */
@@ -45,7 +45,12 @@ export interface ConnectorMaintenanceSweepOptions {
   readonly evidenceSweepMaxDurationMs?: number;
   readonly evidenceSweepPageSize?: number;
   readonly nowIso?: () => string;
-  readonly onPhaseError?: (phase: "attention" | "evidence" | "run_history_backfill" | "shells", err: unknown) => void;
+  readonly onPhaseError?: (
+    phase: "attention" | "auth_client_access" | "evidence" | "run_history_backfill" | "shells",
+    err: unknown
+  ) => void;
+  /** One fenced, bounded round over exact client-deletion evidence. */
+  readonly runAuthClientAccessReconciliation?: () => Promise<unknown>;
   readonly runEvidenceSweep: (args: {
     readonly afterId?: string | null;
     readonly maxDurationMs: number;
@@ -219,8 +224,8 @@ export function createResumableConnectorMaintenanceSweep(
 }
 
 /**
- * Runs one maintenance tick: shell retirement, attention expiry, and one
- * bounded round of evidence reconcile/repair, each independently
+ * Runs one maintenance tick: shell retirement, attention expiry, one bounded
+ * round of evidence reconcile/repair, one bounded client-access round, each independently
  * best-effort. Used both by the periodic timer (one tick per interval) and
  * once at startup before the HTTP listener accepts traffic (so a
  * never-before-observed connection converges before the first read rather
@@ -233,6 +238,15 @@ let defaultRunHistoryBackfillStage: ResumableRunHistoryBackfillStage | null = nu
 function getDefaultRunHistoryBackfillStage(): ResumableRunHistoryBackfillStage {
   defaultRunHistoryBackfillStage ??= createResumableRunHistoryBackfillStage();
   return defaultRunHistoryBackfillStage;
+}
+
+function runAuthClientAccessMaintenancePhase(
+  reconcile: ConnectorMaintenanceSweepOptions["runAuthClientAccessReconciliation"],
+  onPhaseError: ConnectorMaintenanceSweepOptions["onPhaseError"]
+): Promise<unknown> {
+  return (reconcile?.() ?? Promise.resolve()).catch((err) => {
+    onPhaseError?.("auth_client_access", err);
+  });
 }
 
 export async function runConnectorMaintenanceSweep(options: ConnectorMaintenanceSweepOptions): Promise<void> {
@@ -263,5 +277,6 @@ export async function runConnectorMaintenanceSweep(options: ConnectorMaintenance
       .catch((err) => {
         onPhaseError?.("run_history_backfill", err);
       }),
+    runAuthClientAccessMaintenancePhase(options.runAuthClientAccessReconciliation, onPhaseError),
   ]);
 }

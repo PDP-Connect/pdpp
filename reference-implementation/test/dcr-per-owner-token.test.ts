@@ -331,6 +331,56 @@ function seedActiveHostedMcpPackageForClient(clientId: string): SeededPackageSta
   return { packageId, packageTokenId, refreshTokenHash };
 }
 
+function seedRevokedPackageWithActiveMemberForClient(clientId: string): {
+  grantId: string;
+  memberId: string;
+  packageId: string;
+} {
+  const now = new Date().toISOString();
+  const grantId = "grant_dcr_historical_orphan";
+  const memberId = "member_dcr_historical_orphan";
+  const packageId = "gpkg_dcr_historical_orphan";
+  const tokenId = "tok_dcr_historical_orphan";
+  const db = typedGetDb();
+
+  db.prepare(`
+    INSERT INTO grants(
+      grant_id, subject_id, client_id, storage_binding_json, grant_json,
+      access_mode, status, consumed, issued_at, expires_at
+    ) VALUES (?, ?, ?, NULL, ?, 'mcp', 'revoked', FALSE, ?, NULL)
+  `).run(grantId, TEST_SUBJECT, clientId, JSON.stringify({ grant_id: grantId }), now);
+
+  db.prepare(`
+    INSERT INTO grant_packages(
+      package_id, subject_id, client_id, status, package_json,
+      trace_id, scenario_id, created_at, approved_at, revoked_at
+    ) VALUES (?, ?, ?, 'revoked', ?, ?, ?, ?, ?, ?)
+  `).run(
+    packageId,
+    TEST_SUBJECT,
+    clientId,
+    JSON.stringify({ package_id: packageId, version: "historical" }),
+    "trace_dcr_historical_orphan",
+    "scenario_dcr_historical_orphan",
+    now,
+    now,
+    now
+  );
+
+  db.prepare(`
+    INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at, revoked)
+    VALUES (?, ?, ?, ?, ?, 'mcp', NULL, TRUE)
+  `).run(tokenId, grantId, packageId, TEST_SUBJECT, clientId);
+
+  db.prepare(`
+    INSERT INTO grant_package_members(
+      package_id, grant_id, token_id, source_json, status, added_at, revoked_at
+    ) VALUES (?, ?, ?, ?, 'active', ?, NULL)
+  `).run(packageId, grantId, tokenId, JSON.stringify({ source: "historical-test" }), now);
+
+  return { grantId, memberId, packageId };
+}
+
 test("DCR per owner token: owner-issued clients list and cascade-revoke owner bearer", async () => {
   await withServer(async ({ asUrl }) => {
     const sessionCookie = await login(asUrl);
@@ -430,6 +480,35 @@ test("DCR per owner token: owner-issued clients list and cascade-revoke owner be
       method: "DELETE",
     });
     assert.equal(deletePreRegisteredResp.status, 403);
+  });
+});
+
+test("client deletion reconciles an active member under an already-revoked package", async () => {
+  await withServer(async ({ asUrl }) => {
+    const sessionCookie = await login(asUrl);
+    const registered = await registerClient(
+      asUrl,
+      {
+        client_name: "historical-orphan-client",
+        token_endpoint_auth_method: "none",
+      },
+      sessionCookie
+    );
+    assert.equal(registered.status, 201);
+    assert.ok(registered.body.client_id);
+
+    const orphan = seedRevokedPackageWithActiveMemberForClient(registered.body.client_id);
+    const deleteResp = await fetch(`${asUrl}/oauth/register/${encodeURIComponent(registered.body.client_id)}`, {
+      headers: { Cookie: sessionCookie },
+      method: "DELETE",
+    });
+    assert.equal(deleteResp.status, 204);
+
+    const member = typedGetDb()
+      .prepare("SELECT status, revoked_at FROM grant_package_members WHERE package_id = ? AND grant_id = ?")
+      .get(orphan.packageId, orphan.grantId) as { revoked_at: string | null; status: string };
+    assert.equal(member.status, "revoked");
+    assert.ok(member.revoked_at, "client deletion must preserve and timestamp member history");
   });
 });
 

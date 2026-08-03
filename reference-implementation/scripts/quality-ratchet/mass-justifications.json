@@ -219,6 +219,11 @@
     "date": "2026-07-27",
     "reason": "P2 TypeScript migration (2026-07-27): separate Undici and Node HTTPS callback adapters share one bounded-address core but preserve their incompatible callback settlement contracts. The additional branches are the load-bearing error-without-socket and late-socket-destruction paths proven by ssrf-guard.test.js; collapsing them would either fabricate a socket or weaken single settlement."
   },
+  "server/stores/auth-client-access-reconciliation-store.ts": {
+    "allowed_mass": 13,
+    "date": "2026-08-03",
+    "reason": "New file (2026-08-03, reconcile-deleted-client-authority): the store is the shared SQLite/PostgreSQL authority for exact client-deletion repair. Its branches preserve independent backend transaction semantics, status-only timestamp-preserving updates, exact successful client.deleted evidence, fenced keyset cursor progress, bounded client/time budgets, and lease release on failure or fencing; collapsing them would hide a backend parity or safety boundary rather than remove incidental complexity. Proven by the route regression, SQLite idempotency/evidence/cursor tests, and the gated PostgreSQL parity test."
+  },
   "server/stores/browser-surface-replacement-ledger-store.ts": {
     "allowed_mass": 48,
     "date": "2026-07-30",

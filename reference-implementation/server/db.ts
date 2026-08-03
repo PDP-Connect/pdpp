@@ -1592,6 +1592,13 @@ CREATE INDEX IF NOT EXISTS idx_spine_events_grant
 CREATE INDEX IF NOT EXISTS idx_spine_events_run
   ON spine_events(run_id, occurred_at, recorded_at);
 
+CREATE INDEX IF NOT EXISTS idx_spine_events_client_reconciliation
+  ON spine_events(client_id, object_id)
+  WHERE event_type = 'client.deleted'
+    AND status = 'succeeded'
+    AND object_type = 'client'
+    AND client_id IS NOT NULL;
+
 -- Lexical retrieval extension — SQLite FTS5 backing for GET /v1/search.
 -- One row per (connector_instance_id, stream, record_key, field) where \`field\` is
 -- declared in the stream's manifest under query.search.lexical_fields.
@@ -1894,7 +1901,7 @@ CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
 -- Durable scheduling cursors for bounded, periodic maintenance sweeps
 -- (name-keyed, one row per stage). Not evidence, not owner-visible data.
 CREATE TABLE IF NOT EXISTS connector_maintenance_cursor (
-  name                         TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
+  name                         TEXT PRIMARY KEY CHECK(name IN ('auth_client_access', 'connector_summary_evidence', 'run_history_backfill')),
   resume_after_id              TEXT,
   updated_at                   TEXT NOT NULL,
   generation                   INTEGER NOT NULL DEFAULT 0,
@@ -3756,16 +3763,15 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed ON sche
 }
 
 // Widen `connector_maintenance_cursor.name`'s CHECK to admit the
-// `run_history_backfill` cursor row alongside the existing
-// `connector_summary_evidence` one. SQLite has no ALTER-CHECK; rebuild the
-// table (it holds at most one scheduling row per stage, never owner data)
-// and copy through unchanged. No-op once the CHECK already admits both
-// names.
+// `auth_client_access` cursor row alongside the existing maintenance stages.
+// SQLite has no ALTER-CHECK; rebuild the table (it holds at most one
+// scheduling row per stage, never owner data) and copy through unchanged.
+// No-op once the CHECK already admits all stages.
 function migrateConnectorMaintenanceCursorNameCheck(raw: SqliteDatabase): void {
   const table = raw
     .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_maintenance_cursor'`)
     .get<SqliteMasterRow>();
-  if (!table?.sql || table.sql.includes("run_history_backfill")) {
+  if (!table?.sql || table.sql.includes("auth_client_access")) {
     return;
   }
 
@@ -3774,7 +3780,7 @@ function migrateConnectorMaintenanceCursorNameCheck(raw: SqliteDatabase): void {
       ALTER TABLE connector_maintenance_cursor RENAME TO connector_maintenance_cursor_old_name_check;
 
       CREATE TABLE connector_maintenance_cursor (
-        name                         TEXT PRIMARY KEY CHECK(name IN ('connector_summary_evidence', 'run_history_backfill')),
+        name                         TEXT PRIMARY KEY CHECK(name IN ('auth_client_access', 'connector_summary_evidence', 'run_history_backfill')),
         resume_after_id              TEXT,
         updated_at                   TEXT NOT NULL,
         generation                   INTEGER NOT NULL DEFAULT 0,
