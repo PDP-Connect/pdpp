@@ -866,14 +866,11 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     options: { readonly hydrateSurface: boolean },
     preReconciliationBindings?: ReadonlyMap<string, string>
   ): Promise<void> {
-    if (!browserSurfaceLeaseManager) {
-      return;
-    }
     for (const lease of leases) {
       // surface_subject_id is the exact connector-instance identity written
       // at acquisition. Only legacy leases without it consult the scoped
       // pre-reconciliation active-run binding.
-      const connectorInstanceId = [lease.surface_subject_id, preReconciliationBindings.get(lease.run_id)].find(Boolean);
+      const connectorInstanceId = lease.surface_subject_id ?? preReconciliationBindings?.get(lease.run_id);
       // biome-ignore lint/performance/noAwaitInLoops: Event and lease persistence remain ordered for each reconciled transition.
       await emitBrowserSurfaceLeaseEvent(
         eventType,

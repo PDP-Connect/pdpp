@@ -50,6 +50,7 @@ function tempDbPath(): string {
 interface CreateManagerOptions {
   leaseWaitTimeoutMs?: number;
   managedConnectors?: Set<string>;
+  now?: () => Date;
   surfaceCap?: number;
 }
 
@@ -57,7 +58,12 @@ interface CreateManagerOptions {
 // deterministic ids/tokens, frozen clock, dynamic (allocator-backed) mode so
 // the phase acquire actually round-trips through the fake allocator below.
 function createManager(options: CreateManagerOptions = {}): BrowserSurfaceLeaseManager {
-  const { managedConnectors = new Set(["slack"]), surfaceCap = 2, leaseWaitTimeoutMs = 300_000 } = options;
+  const {
+    managedConnectors = new Set(["slack"]),
+    surfaceCap = 2,
+    leaseWaitTimeoutMs = 300_000,
+    now = () => new Date("2026-07-31T12:00:00.000Z"),
+  } = options;
   let leaseSeq = 0;
   let surfaceSeq = 0;
   let tokenSeq = 0;
@@ -83,7 +89,7 @@ function createManager(options: CreateManagerOptions = {}): BrowserSurfaceLeaseM
       tokenSeq += 1;
       return tokenSeq;
     },
-    now: () => new Date("2026-07-31T12:00:00.000Z"),
+    now,
   });
 }
 
@@ -754,6 +760,53 @@ test("boot reconciliation leaves a legacy unbound orphan released without fabric
   assert.ok(
     warnings.some((warning) => warning.includes("refusing to persist an unbound run event")),
     "the missing event is diagnosed rather than silently bound to the connector id"
+  );
+});
+
+test("boot reconciliation emits nonempty expired and deferred lease transitions without a binding snapshot", async (t) => {
+  let now = new Date("2026-07-31T12:00:00.000Z");
+  const leaseManager = createManager({ now: () => now, surfaceCap: 1 });
+  const allocator = createReadyAllocator();
+  const active = leaseManager.acquire({
+    connectorId: "slack",
+    profileKey: "slack-profile:cin_active",
+    runId: "run_boot_expired",
+    surfaceSubjectId: "cin_active",
+  });
+  await leaseManager.ensureStartingSurfaceReady({ allocator, leaseId: active.lease.lease_id });
+  const activeLease = leaseManager.getLease(active.lease.lease_id);
+  assert.ok(activeLease?.surface_id);
+  const waiting = leaseManager.acquire({
+    connectorId: "slack",
+    profileKey: "slack-profile:cin_waiting",
+    runId: "run_boot_deferred",
+    surfaceSubjectId: "cin_waiting",
+  });
+  assert.equal(waiting.lease.status, "waiting_for_browser_surface");
+  const invalidated = leaseManager.invalidateSurface(activeLease.surface_id, { releaseLease: false });
+  assert.ok(invalidated.surface);
+  now = new Date("2026-07-31T12:10:00.000Z");
+
+  const { manager } = setup(t, allocator, {
+    leaseManager,
+    listPersistedActiveRuns: async () => [{ run_id: active.lease.run_id }],
+  });
+  await assert.doesNotReject(() => manager.reconcileBrowserSurfaceLeasesAfterBoot());
+
+  assert.equal(leaseManager.getLease(active.lease.lease_id)?.status, "expired");
+  assert.equal(leaseManager.getLease(waiting.lease.lease_id)?.status, "deferred");
+  assert.deepEqual(
+    getDb()
+      .prepare("SELECT event_type, data_json FROM spine_events WHERE run_id IN (?, ?) ORDER BY event_seq")
+      .all(active.lease.run_id, waiting.lease.run_id)
+      .map((row) => ({
+        connectorInstanceId: JSON.parse((row as { data_json: string }).data_json).connector_instance_id,
+        eventType: (row as { event_type: string }).event_type,
+      })),
+    [
+      { connectorInstanceId: "cin_active", eventType: "run.browser_surface_expired" },
+      { connectorInstanceId: "cin_waiting", eventType: "run.browser_surface_deferred" },
+    ]
   );
 });
 
