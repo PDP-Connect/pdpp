@@ -39,16 +39,15 @@ const USAA_ORIGIN = "https://www.usaa.com";
 const MEMBER_ID_INPUT = 'input[name="memberId"]';
 const MAX_OTP_ATTEMPTS = 3;
 const MAX_SOURCE_UNAVAILABLE_LOGIN_RECOVERY_ATTEMPTS = 3;
+const SOURCE_UNAVAILABLE_RETRYABLE_CODE = "source_unavailable";
 const MANUAL_LOGIN_MESSAGE =
   "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
 // `classifyUsaaLoginStepFailure` returning `source_unavailable` proves only
 // that USAA's page copy matches known outage boilerplate — it does NOT prove
-// the provider is actually down. It still reaches manual_action unless this
-// exact state exposes exactly one visible semantic Log in/Log On action which,
-// when activated once, returns to USAA's same-origin member-ID form. That is a
-// proven continuation of the stored-credential flow, not a retry or an uptime
-// claim; every absent, ambiguous, foreign, or failed transition falls through
-// to the established owner handoff.
+// the provider is actually down. A clean same-origin recovery transition is
+// safe to try with the stored credentials, but repeated provider rejection
+// has no automatic progress: manual_action is a separate repair path and
+// cannot resume this stored-credential state machine.
 const MANUAL_LOGIN_MESSAGE_SOURCE_UNAVAILABLE_SUFFIX =
   " USAA's page reported its own system as unavailable, but this exact failure has recurred — if USAA works normally in your own browser, this may be an automated sign-in issue rather than a real outage.";
 const STACK_TRACE_LOCATION_SUFFIX_RE = /\s+at\s+https?:\/\/\S+$/i;
@@ -111,6 +110,7 @@ type SourceUnavailableLoginRecoveryOutcome =
   | "action_error"
   | "ambiguous"
   | "foreign_origin"
+  | "modal_persisted"
   | "member_id_form_missing"
   | "resume_error"
   | "recovered";
@@ -181,6 +181,14 @@ async function attemptSourceUnavailableLoginRecovery(
   } catch {
     return "action_error";
   }
+  try {
+    // The memberId input can remain visible and enabled underneath the modal.
+    // Waiting for the exact clicked action to become hidden proves the blocker
+    // has dismissed, rather than merely proving that the form exists in DOM.
+    await selectedAction.locator.waitFor({ state: "hidden", timeout: 10_000 });
+  } catch {
+    return "modal_persisted";
+  }
   let sameOrigin = false;
   try {
     sameOrigin = new URL(page.url()).origin === USAA_ORIGIN;
@@ -190,10 +198,17 @@ async function attemptSourceUnavailableLoginRecovery(
   if (!sameOrigin) {
     return "foreign_origin";
   }
-  return page
-    .waitForSelector(MEMBER_ID_INPUT, { state: "visible", timeout: 10_000 })
-    .then((): SourceUnavailableLoginRecoveryOutcome => "recovered")
-    .catch((): SourceUnavailableLoginRecoveryOutcome => "member_id_form_missing");
+  try {
+    const memberIdInput = page.locator(MEMBER_ID_INPUT);
+    await memberIdInput.waitFor({ state: "visible", timeout: 10_000 });
+    // `trial` performs Playwright's full actionability checks without
+    // changing the page: visible, enabled, stable, and not covered by the
+    // still-settling modal/navigation.
+    await memberIdInput.click({ trial: true, timeout: 10_000 });
+    return "recovered";
+  } catch {
+    return "member_id_form_missing";
+  }
 }
 
 function passwordStepFailureDiagnostic({
@@ -319,24 +334,22 @@ async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUs
 }
 
 async function submitMemberId(page: Page, username: string): Promise<boolean> {
-  // Give React a beat to initialize the form. USAA's SPA renders the
-  // memberId input immediately but hasn't bound React event handlers yet —
-  // filling in that <1s window produces a value that React discards.
   await page.waitForSelector(MEMBER_ID_INPUT, { timeout: 20_000 });
-  await page.waitForTimeout(1500);
   await page.fill(MEMBER_ID_INPUT, username);
+  const nextButton = page.locator("#next-button:not([disabled])");
   // Wait until Next is enabled; USAA gates it on client-side validation.
-  // If it stays disabled, tick a key event to try again, then check.
+  // If the SPA discarded the first fill before its handlers were ready,
+  // re-observe and refill once, then require the enabled control again.
   try {
-    await page.locator("#next-button:not([disabled])").waitFor({ state: "visible", timeout: 5000 });
+    await nextButton.waitFor({ state: "visible", timeout: 5000 });
   } catch {
-    // Fallback: press a throwaway key to nudge React.
-    await page
-      .locator(MEMBER_ID_INPUT)
-      .press("End")
-      .catch((): undefined => undefined);
-    await page.waitForTimeout(500);
+    const memberIdInput = page.locator(MEMBER_ID_INPUT);
+    await memberIdInput.waitFor({ state: "visible", timeout: 20_000 });
+    await page.fill(MEMBER_ID_INPUT, username);
+    await nextButton.waitFor({ state: "visible", timeout: 5000 });
   }
+  // The selector proves enabled/visible; click adds Playwright's remaining
+  // actionability checks before the form transition is attempted.
   await page.click("#next-button");
   return page
     .waitForSelector('input[name="password"]', { timeout: 25_000 })
@@ -355,17 +368,19 @@ async function handlePasswordFieldStall(
   let classification = classifyUsaaLoginStepFailure(initialBody);
   const sawSourceUnavailable = classification === "source_unavailable";
   let recoveryOutcome: SourceUnavailableLoginRecoveryOutcome | null = null;
+  let recoveryAttempts = 0;
   // Each pass re-observes the page rather than trusting the prior pass's
-  // outcome: the same exact same-origin, single-Log-On-button modal can
-  // recur after a proven recovery+resubmit, and only a fresh classification
+  // outcome: the same exact same-origin, single-Log-On-button rejection can
+  // recur after a clean recovery+resubmit, and only a fresh classification
   // can tell a second recurrence apart from genuine progress. Bounded small
-  // so a persistently-recurring modal still reaches manual_action instead of
-  // hammering USAA.
+  // so repeated provider rejection does not hammer USAA or require the
+  // separate manual repair path.
   for (
     let attempt = 1;
     attempt <= MAX_SOURCE_UNAVAILABLE_LOGIN_RECOVERY_ATTEMPTS && classification === "source_unavailable";
     attempt += 1
   ) {
+    recoveryAttempts = attempt;
     recoveryOutcome = await attemptSourceUnavailableLoginRecovery(capture, page);
     if (recoveryOutcome !== "recovered") {
       break;
@@ -383,6 +398,15 @@ async function handlePasswordFieldStall(
       .innerText()
       .catch((): string => "");
     classification = classifyUsaaLoginStepFailure(retryBody);
+  }
+
+  const automaticRecoveryExhausted =
+    recoveryAttempts >= MAX_SOURCE_UNAVAILABLE_LOGIN_RECOVERY_ATTEMPTS && classification === "source_unavailable";
+  if (recoveryOutcome === "modal_persisted" || (automaticRecoveryExhausted && recoveryOutcome === "recovered")) {
+    throw new TerminalError(
+      `USAA source-unavailable login condition persisted after bounded clean recovery attempts (${sourceUnavailableLoginRecoveryDiagnostic(recoveryOutcome)}); retry later`,
+      { code: SOURCE_UNAVAILABLE_RETRYABLE_CODE, retryable: true }
+    );
   }
 
   const body = await page

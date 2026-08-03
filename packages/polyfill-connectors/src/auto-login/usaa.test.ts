@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
-import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import { type InteractionRequest, type InteractionResponse, TerminalError } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 import { classifyUsaaLoginStepFailure, ensureUsaaSession } from "./usaa.ts";
 
@@ -158,7 +158,9 @@ type SourceUnavailableRecoveryFixture =
   | "foreign_origin"
   | "member_id_form_missing"
   | "resume_error"
-  | "selected";
+  | "selected"
+  | "async_dismissal"
+  | "member_id_fill_discarded";
 
 function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFixture): {
   actionClicks: number;
@@ -174,14 +176,27 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
   let otpResponse = "";
   let passwordFieldReady = false;
   let currentUrl = LOGIN_URL;
+  let modalVisible = false;
+  let modalDismissal: Promise<void> = Promise.resolve();
+  let resolveModalDismissal: (() => void) | undefined;
+  let memberIdFillCount = 0;
   const filledSelectors: string[] = [];
   const roleQueries: Array<{ name: unknown; role: string }> = [];
   const actionCount = fixture === "ambiguous" ? 2 : 1;
-  const memberIdLocator: Pick<Locator, "press"> = {
+  const memberIdLocator: Pick<Locator, "click" | "press" | "waitFor"> = {
+    click: (): Promise<void> =>
+      modalVisible ? Promise.reject(new Error("member-id input is covered by modal")) : Promise.resolve(),
     press: (): Promise<void> => Promise.resolve(),
+    waitFor: (): Promise<void> =>
+      actionClicked && fixture === "member_id_form_missing"
+        ? Promise.reject(new Error("member-id form unavailable"))
+        : Promise.resolve(),
   };
   const nextButtonLocator: Pick<Locator, "waitFor"> = {
-    waitFor: (): Promise<void> => Promise.resolve(),
+    waitFor: (): Promise<void> =>
+      fixture === "member_id_fill_discarded" && memberIdFillCount === 1
+        ? Promise.reject(new Error("Next stayed disabled after discarded member-id fill"))
+        : Promise.resolve(),
   };
   const bodyLocator: Pick<Locator, "innerText"> = {
     innerText: (): Promise<string> => {
@@ -206,7 +221,7 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
     first: (): Locator => textCodeChoiceLocator as Locator,
   };
   const actionLocator = (count: number, index: number): Locator => {
-    const locator: Pick<Locator, "click" | "count" | "isVisible" | "nth"> = {
+    const locator: Pick<Locator, "click" | "count" | "isVisible" | "nth" | "waitFor"> = {
       click: (): Promise<void> => {
         if (fixture === "action_error") {
           return Promise.reject(new Error("action click failed"));
@@ -214,18 +229,34 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
         actionClicks += 1;
         actionClicked = true;
         currentUrl = fixture === "foreign_origin" ? "https://example.invalid/login" : LOGIN_URL;
+        if (fixture === "async_dismissal") {
+          modalDismissal = new Promise<void>((resolve) => {
+            resolveModalDismissal = resolve;
+          });
+          setTimeout(() => {
+            modalVisible = false;
+            resolveModalDismissal?.();
+            resolveModalDismissal = undefined;
+          }, 0);
+        } else {
+          modalVisible = false;
+        }
         return Promise.resolve();
       },
       count: (): Promise<number> => Promise.resolve(count),
-      isVisible: (): Promise<boolean> => Promise.resolve(index < count),
+      isVisible: (): Promise<boolean> => Promise.resolve(index < count && modalVisible),
       nth: (nextIndex: number): Locator => actionLocator(count, nextIndex),
+      waitFor: (options?: { state?: string }): Promise<void> =>
+        options?.state === "hidden" && modalVisible ? modalDismissal : Promise.resolve(),
     };
     return locator as Locator;
   };
   const fake: Partial<Page> = {};
   fake.click = ((selector: string): Promise<void> => {
     if (selector === "#next-button") {
-      if (actionClicked && !passwordFieldReady) {
+      if (!actionClicked) {
+        modalVisible = true;
+      } else if (!passwordFieldReady) {
         passwordFieldReady = true;
       } else if (passwordFieldReady) {
         otpChallengeActive = true;
@@ -240,6 +271,12 @@ function makeSourceUnavailableRecoveryPage(fixture: SourceUnavailableRecoveryFix
     Promise.resolve([{ name: "memberId", placeholder: "", type: "text" }])) as Page["evaluate"];
   fake.fill = ((selector: string): Promise<void> => {
     filledSelectors.push(selector);
+    if (selector === 'input[name="memberId"]') {
+      memberIdFillCount += 1;
+    }
+    if (modalVisible && selector === 'input[name="memberId"]') {
+      return Promise.reject(new Error("member-id input is covered by modal"));
+    }
     if (fixture === "resume_error" && actionClicked && selector === 'input[name="memberId"]') {
       return Promise.reject(new Error("resumed member-id fill failed"));
     }
@@ -326,8 +363,8 @@ function makePostPasswordSourceUnavailablePage(bodyText: string): Page {
 }
 
 /**
- * Models the modal *recurring* after a proven recovery+resubmit: each Log On
- * click advances a `recurrences` counter; while it's below
+ * Models the source-unavailable rejection recurring after a clean
+ * recovery+resubmit: each Log On click advances a `recurrences` counter; while it's below
  * `recurrencesBeforeSuccess`, the resubmit lands back on the exact same
  * source-unavailable modal (with the Log On button visible again) instead of
  * the password field. At `recurrencesBeforeSuccess` the password field
@@ -342,8 +379,12 @@ function makeRecurringSourceUnavailablePage(recurrencesBeforeSuccess: number): {
   let passwordFieldReady = false;
   let authenticated = false;
   let currentUrl = LOGIN_URL;
-  const memberIdLocator: Pick<Locator, "press"> = {
+  let modalVisible = false;
+  const memberIdLocator: Pick<Locator, "click" | "press" | "waitFor"> = {
+    click: (): Promise<void> =>
+      modalVisible ? Promise.reject(new Error("member-id input is covered by modal")) : Promise.resolve(),
     press: (): Promise<void> => Promise.resolve(),
+    waitFor: (): Promise<void> => Promise.resolve(),
   };
   const nextButtonLocator: Pick<Locator, "waitFor"> = {
     waitFor: (): Promise<void> => Promise.resolve(),
@@ -359,27 +400,37 @@ function makeRecurringSourceUnavailablePage(recurrencesBeforeSuccess: number): {
       return Promise.resolve("We are unable to complete your request. Our system is currently unavailable.");
     },
   };
-  const actionLocatorImpl: Pick<Locator, "click" | "count" | "isVisible" | "nth"> = {
+  const actionLocatorImpl: Pick<Locator, "click" | "count" | "isVisible" | "nth" | "waitFor"> = {
     click: (): Promise<void> => {
       actionClicks += 1;
+      modalVisible = false;
       return Promise.resolve();
     },
     count: (): Promise<number> => Promise.resolve(1),
-    isVisible: (): Promise<boolean> => Promise.resolve(true),
+    isVisible: (): Promise<boolean> => Promise.resolve(modalVisible),
     nth: (): Locator => actionLocatorImpl as Locator,
+    waitFor: (options?: { state?: string }): Promise<void> =>
+      options?.state === "hidden" ? Promise.resolve() : Promise.resolve(),
   };
   const actionLocator = actionLocatorImpl as Locator;
   const fake: Partial<Page> = {};
   fake.click = ((selector: string): Promise<void> => {
-    if (selector === "#next-button" && passwordFieldReady) {
-      authenticated = true;
+    if (selector === "#next-button") {
+      if (actionClicks === 0) {
+        modalVisible = true;
+      } else if (passwordFieldReady) {
+        authenticated = true;
+      }
     }
     return Promise.resolve();
   }) as Page["click"];
   fake.evaluate = (async (): Promise<Array<{ name: string; placeholder: string; type: string }>> => [
     { name: "memberId", placeholder: "", type: "text" },
   ]) as Page["evaluate"];
-  fake.fill = (): Promise<void> => Promise.resolve();
+  fake.fill = (selector: string): Promise<void> =>
+    modalVisible && selector === 'input[name="memberId"]'
+      ? Promise.reject(new Error("member-id input is covered by modal"))
+      : Promise.resolve();
   fake.getByRole = ((role: "button" | "link"): Locator => {
     const empty: Pick<Locator, "count" | "isVisible" | "nth"> = {
       count: (): Promise<number> => Promise.resolve(0),
@@ -410,6 +461,9 @@ function makeRecurringSourceUnavailablePage(recurrencesBeforeSuccess: number): {
       // Each resubmit "advances" the recurrence count by one Log On click;
       // the password field only appears once that count reaches the target.
       passwordFieldReady = actionClicks > recurrencesBeforeSuccess;
+      if (!passwordFieldReady) {
+        modalVisible = true;
+      }
       return passwordFieldReady ? Promise.resolve({}) : Promise.reject(new Error("password field unavailable"));
     }
     return Promise.resolve({});
@@ -666,6 +720,52 @@ test("ensureUsaaSession follows exactly one visible semantic login action, then 
   });
 });
 
+test("ensureUsaaSession waits for asynchronous modal dismissal before resubmitting member ID", async () => {
+  await withUsaaCredentials(async () => {
+    const fixturePage = makeSourceUnavailableRecoveryPage("async_dismissal");
+    const context = makeContext([[]], () => fixturePage.otpResponseAuthenticated);
+    const interactions = makeInteractionHarness("success", { code: "123456" });
+
+    const ok = await ensureUsaaSession({
+      context,
+      page: fixturePage.page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(fixturePage.actionClicks, 1);
+    assert.deepEqual(fixturePage.filledSelectors, [
+      'input[name="memberId"]',
+      'input[name="memberId"]',
+      'input[name="password"]',
+    ]);
+    assert.equal(interactions.requests[0]?.kind, "otp");
+  });
+});
+
+test("ensureUsaaSession refills member ID once when the first fill is discarded before Next readiness", async () => {
+  await withUsaaCredentials(async () => {
+    const fixturePage = makeSourceUnavailableRecoveryPage("member_id_fill_discarded");
+    const context = makeContext([[]], () => fixturePage.otpResponseAuthenticated);
+    const interactions = makeInteractionHarness("success", { code: "123456" });
+
+    const ok = await ensureUsaaSession({
+      context,
+      page: fixturePage.page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.deepEqual(fixturePage.filledSelectors, [
+      'input[name="memberId"]',
+      'input[name="memberId"]',
+      'input[name="memberId"]',
+      'input[name="password"]',
+    ]);
+    assert.equal(interactions.requests[0]?.kind, "otp");
+  });
+});
+
 for (const [fixture, expectedOutcome] of [
   ["ambiguous", "ambiguous"],
   ["foreign_origin", "foreign_origin"],
@@ -701,12 +801,10 @@ for (const [fixture, expectedOutcome] of [
   });
 }
 
-test("ensureUsaaSession recovers when the source-unavailable modal recurs once after a proven recovery, then succeeds on retry", async () => {
-  // Live evidence (run run_662e27c389394d9f8b28754adcf53766): the exact
-  // same-origin modal recurred after a proven recovery+resubmit. The
-  // connector must retry the same exact-one-visible-Log-On transition again
-  // (not fall straight to manual_action) and succeed once the second
-  // resubmit lands on the password field.
+test("ensureUsaaSession recovers when source-unavailable rejection recurs after clean recovery, then succeeds on retry", async () => {
+  // After a clean same-origin recovery+resubmit, the same source-unavailable
+  // rejection can recur. Retry the exact-one-visible-Log-On transition once
+  // more, then succeed when the provider finally exposes the password field.
   await withUsaaCredentials(async () => {
     const fixturePage = makeRecurringSourceUnavailablePage(1);
     const { page } = fixturePage;
@@ -725,35 +823,45 @@ test("ensureUsaaSession recovers when the source-unavailable modal recurs once a
   });
 });
 
-test("ensureUsaaSession bounds the source-unavailable retry and falls to manual_action when the modal persistently recurs", async () => {
-  // The modal recurring every single time (well beyond the bound) must not
-  // hammer USAA indefinitely — it must stop at a small fixed cap and hand off
-  // to the owner, with an honest (not stale "recovered") diagnostic.
+test("ensureUsaaSession returns a typed retryable outcome when the source-unavailable modal persists", async () => {
+  // The source-unavailable rejection recurring every single time (well beyond the bound) must not
+  // hammer USAA indefinitely or require manual_action, which cannot resume
+  // this automatic stored-credential flow. A human may still establish the
+  // session through a separate manual-repair product path. This path stops
+  // at the fixed cap with a typed retryable system outcome and no
+  // credential-adjacent diagnostic.
   await withUsaaCredentials(async () => {
     const fixturePage = makeRecurringSourceUnavailablePage(1000);
     const { page } = fixturePage;
-    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const context = makeContext([[]]);
     const interactions = makeInteractionHarness();
 
-    const ok = await ensureUsaaSession({
+    const thrown = await ensureUsaaSession({
       context,
       page,
       sendInteraction: interactions.sendInteraction,
-    });
-
-    assert.equal(ok, true);
-    assert.equal(interactions.requests.length, 1);
-    assert.equal(interactions.requests[0]?.kind, "manual_action");
-    assert.equal(fixturePage.actionClicks, 3, "recovery retries are bounded to the fixed small cap");
-    assert.match(
-      interactions.requests[0]?.message ?? "",
-      /source_unavailable_login_action=recovered/,
-      "the final attempt did in fact recover the Log On transition; the modal recurring after it is a separate fact from whether the transition itself was ever proven"
+    }).then(
+      (): never => {
+        throw new Error("expected ensureUsaaSession to reject");
+      },
+      (err: unknown): TerminalError => err as TerminalError
     );
+
+    assert.equal(thrown instanceof TerminalError, true);
+    assert.equal(thrown.retryable, true);
+    assert.equal(thrown.code, "source_unavailable");
+    assert.equal(fixturePage.actionClicks, 3, "recovery retries are bounded to the fixed small cap");
+    assert.equal(
+      interactions.requests.length,
+      0,
+      "persistent source-modal recovery must not dead-end in manual_action"
+    );
+    assert.match(thrown.message, /source-unavailable login condition persisted after bounded clean recovery/);
+    assert.doesNotMatch(thrown.message, /test-user|test-password|body-preview|inputs=/);
   });
 });
 
-test("ensureUsaaSession still routes a delayed USAA source-unavailable page after member-id submit to genuine manual_action, with an owner-visible diagnostic note", async () => {
+test("ensureUsaaSession keeps an optional manual-repair handoff for a delayed source-unavailable page after member-id submit", async () => {
   // Corrected 2026-07-10: this exact page (source-unavailable copy after the
   // memberId "Next" click, password field never appearing) is the connector's
   // dominant, weeks-long recurring failure mode per prior fixes' own commit
@@ -762,9 +870,11 @@ test("ensureUsaaSession still routes a delayed USAA source-unavailable page afte
   // it could equally be a persistent automation-side condition (stale/blocked
   // profile, bot-detection challenge) that happens to render the same generic
   // copy. Only a human completing login in the visible browser can tell the
-  // difference, so this must still route to manual_action — with the
-  // classification surfaced as an owner-visible note, not used to bypass the
-  // owner entirely.
+  // difference. This page has no safe automatic recovery action, so preserve
+  // the established optional manual-repair handoff with the classification
+  // surfaced as an owner-visible note. That handoff is not a continuation of
+  // the stored-credential state machine and is not required for the bounded
+  // persistent-modal path above.
   await withUsaaCredentials(async () => {
     const prefix = "Member Account Login ".repeat(80);
     const page = makePasswordStepFailurePage(
