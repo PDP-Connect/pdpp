@@ -480,7 +480,6 @@ export function composeFleetHealthVerdict(input: {
     input.coverageAudit.status === "inconclusive" ||
     scope.setupPending.length > 0 ||
     scope.unassessed.length > 0 ||
-    evidence.activeWork.length > 0 ||
     evidence.unknownEvidence.length > 0;
   const state = fleetState({ freshnessAdvisories: evidence.freshnessAdvisories, indeterminate, unhealthy });
 

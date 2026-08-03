@@ -34,11 +34,20 @@ projection, or infer its result by parsing UI copy or untyped run text.
 - **AND** the runtime and coverage-audit results SHALL remain distinct
   dimensions.
 
-#### Scenario: Unsettled evidence prevents a health claim
+#### Scenario: Healthy bounded work remains progress context
 
-- **WHEN** no unhealthy condition exists but active work, unknown health or
-  coverage evidence, an inconclusive stream-coverage audit, or an unassessed
-  configured connection remains
+- **WHEN** an assessed connection has fresh retained data, settled coverage,
+  and active bounded collection work with no failure, stale, or unknown
+  evidence
+- **THEN** the fleet state SHALL be `healthy`
+- **AND** `fully_healthy` SHALL be true
+- **AND** the connection SHALL remain in the typed active-work dimension.
+
+#### Scenario: Genuine unsettled evidence prevents a health claim
+
+- **WHEN** no unhealthy condition exists but unknown health or coverage
+  evidence, an inconclusive stream-coverage audit, or an unassessed configured
+  connection remains
 - **THEN** the fleet state SHALL be `indeterminate`
 - **AND** `fully_healthy` SHALL be false.
 
@@ -60,7 +69,7 @@ projection, or infer its result by parsing UI copy or untyped run text.
 #### Scenario: Fully healthy is strict
 
 - **WHEN** every operational configured connection is assessed and has no
-  unhealthy, unknown, active-work, coverage-audit, or freshness-advisory cause
+  unhealthy, unknown, coverage-audit, or freshness-advisory cause
 - **THEN** the fleet state SHALL be `healthy`
 - **AND** `fully_healthy` SHALL be true.
 

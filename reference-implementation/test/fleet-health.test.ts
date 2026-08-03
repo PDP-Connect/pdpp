@@ -253,7 +253,7 @@ test("a local_device instance with active status and healthy owner_state remains
   );
 });
 
-test("active and unknown work are indeterminate, while fresh manual and paused policy are healthy", () => {
+test("active work remains progress context without making an otherwise healthy fleet indeterminate", () => {
   const active = summary("active-a", {
     connection_health: { ...summary("x").connection_health, badges: { syncing: true } },
     owner_state: { resolver: "collecting" },
@@ -286,7 +286,13 @@ test("active and unknown work are indeterminate, while fresh manual and paused p
     schedule: { enabled: false },
   });
   const manual = summary("manual-a", { schedule: null });
-  assert.equal(compose([inventory("active-a")], [active]).state, "indeterminate");
+  const activeResult = compose([inventory("active-a")], [active]);
+  assert.equal(activeResult.state, "healthy");
+  assert.equal(activeResult.fully_healthy, true);
+  assert.deepEqual(
+    activeResult.dimensions.active_work.map((item) => item.connection_id),
+    ["active-a"]
+  );
   assert.equal(compose([inventory("unknown-a")], [unknown]).state, "indeterminate");
   const healthyPaused = compose([inventory("slack-a")], [paused]);
   assert.equal(healthyPaused.state, "healthy");
@@ -294,7 +300,7 @@ test("active and unknown work are indeterminate, while fresh manual and paused p
   assert.equal(compose([inventory("manual-a")], [manual]).state, "healthy");
 });
 
-test("active healthy collection work is exclusive of transient collection unknown evidence", () => {
+test("active collection work does not make transient collection evidence indeterminate", () => {
   const active = summary("active-collection-a", {
     connection_health: {
       ...summary("x").connection_health,
@@ -314,7 +320,8 @@ test("active healthy collection work is exclusive of transient collection unknow
   });
   const result = compose([inventory(active.connection_id)], [active]);
 
-  assert.equal(result.state, "indeterminate");
+  assert.equal(result.state, "healthy");
+  assert.equal(result.fully_healthy, true);
   assert.deepEqual(
     result.dimensions.active_work.map((item) => item.connection_id),
     ["active-collection-a"]
@@ -522,7 +529,7 @@ test("every closed headline state and owner resolver is classified without a hea
     ["blocked_maintainer", "unhealthy"],
     ["needs_owner", "unhealthy"],
     ["system_degraded", "unhealthy"],
-    ["collecting", "indeterminate"],
+    ["collecting", "healthy"],
     ["not_measured", "indeterminate"],
     ["setup_in_progress", "indeterminate"],
     ["retired", "indeterminate"],
@@ -581,7 +588,7 @@ test("unmeasured forward and owner dispositions remain independently load-bearin
   }
 });
 
-test("every closed non-green health member fails the strict fully-healthy claim", () => {
+test("every closed health member keeps fully-healthy classification honest", () => {
   const baseHealth = summary("base").connection_health;
   const variants = [
     ...["blocked", "cooling_off", "degraded", "needs_attention", "unknown"].map((state) => [
@@ -629,7 +636,10 @@ test("every closed non-green health member fails the strict fully-healthy claim"
   for (const [name, overrides] of variants) {
     const item = summary(`closed-${name}`, overrides);
     const result = compose([inventory(item.connection_id)], [item]);
-    assert.equal(result.fully_healthy, false, `${name} must not be fully healthy`);
+    const isProgressOnly = new Set(["outbox:active", "forward_disposition:checking", "owner_resolver:collecting"]).has(
+      name
+    );
+    assert.equal(result.fully_healthy, isProgressOnly, `${name} active work should remain progress context only`);
   }
 });
 

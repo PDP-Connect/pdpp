@@ -40,10 +40,12 @@ import type {
   ConnectionRemoteSurfaceEvidence,
 } from "../runtime/connection-health.ts";
 import { BLOCKED_PROMOTION_THRESHOLD } from "../runtime/connection-health-policy.ts";
+import { synthesizeConnectorVerdict } from "../runtime/connector-verdict-input.ts";
 import type { SchedulerBackoffApi } from "../runtime/controller.ts";
 import { synthesizeRenderedVerdict } from "../runtime/rendered-verdict.ts";
 import type { CollectionReportEntry, ConnectorRunSummary } from "../server/ref-control.ts";
 import {
+  projectCollectionReport,
   projectConnectorSummaryConnectionHealth,
   refineConnectionHealthWithCollectionReport,
 } from "../server/ref-control.ts";
@@ -1413,6 +1415,113 @@ test("acceptance 3.3: inventory_only accepted-coverage labels the axis without d
   });
   assertHeadline(snap, "healthy");
   assert.equal(snap.axes.coverage, "inventory_only");
+});
+
+test("rendered local-device verdict honors accepted manifest policy without a spine run", () => {
+  const manifestStreams = [
+    {
+      coverage_policy: "inventory_only",
+      coverage_strategy: "snapshot_import_receipt",
+      name: "inventory",
+      required: false,
+    },
+    {
+      coverage_policy: "deferred",
+      coverage_strategy: "snapshot_import_receipt",
+      name: "deferred",
+      required: false,
+    },
+  ] as const;
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localDeviceBacked: true,
+    manifestStreams,
+    nowIso: NOW,
+    outbox: { axis: "active" },
+    schedule: null,
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  const report = projectCollectionReport({
+    connectionHealth: initial,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localDeviceBacked: true,
+    manifestStreams,
+    refreshPolicy: null,
+    schedule: null,
+  });
+  const health = refineConnectionHealthWithCollectionReport(healthInput, initial, report);
+  const verdict = synthesizeConnectorVerdict({
+    manifestStreams,
+    progress: null,
+    refresh: null,
+    report,
+    snapshot: health,
+  });
+
+  assert.equal(health.axes.coverage, "deferred");
+  assert.equal(health.forward_disposition, "complete");
+  assert.equal(verdict.pill.tone, "green");
+  assert.equal(verdict.pill.label, "Syncing");
+  assert.equal(verdict.forward_statement, "The local collector is uploading saved records.");
+  assert.deepEqual(
+    verdict.streams.map((stream) => [stream.stream_id, stream.coverage, stream.disposition]),
+    [
+      ["deferred", "deferred", "complete"],
+      ["inventory", "inventory_only", "complete"],
+    ]
+  );
+});
+
+test("rendered local-device verdict keeps a required unmeasured stream warning", () => {
+  const manifestStreams = [
+    {
+      coverage_strategy: "checkpoint_window",
+      name: "sessions",
+      required: true,
+    },
+    {
+      coverage_policy: "inventory_only",
+      coverage_strategy: "snapshot_import_receipt",
+      name: "inventory",
+      required: false,
+    },
+  ] as const;
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
+    freshness: FRESH,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localDeviceBacked: true,
+    manifestStreams,
+    nowIso: NOW,
+    outbox: { axis: "active" },
+    schedule: null,
+  };
+  const initial = projectConnectorSummaryConnectionHealth(healthInput);
+  const report = projectCollectionReport({
+    connectionHealth: initial,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localDeviceBacked: true,
+    manifestStreams,
+    refreshPolicy: null,
+    schedule: null,
+  });
+  const health = refineConnectionHealthWithCollectionReport(healthInput, initial, report);
+  const verdict = synthesizeConnectorVerdict({
+    manifestStreams,
+    progress: null,
+    refresh: null,
+    report,
+    snapshot: health,
+  });
+
+  assert.equal(health.axes.coverage, "unknown");
+  assert.equal(verdict.pill.tone, "grey");
+  assert.equal(verdict.pill.label, "Not measured");
+  assert.equal(verdict.forward_statement, "Coverage has not been measured yet.");
 });
 
 test("acceptance 3.3: contradictory required+unsupported beats success path even with otherwise clean evidence", () => {

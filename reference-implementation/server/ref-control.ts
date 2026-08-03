@@ -2590,6 +2590,18 @@ function buildCoverageEvidence(
   if (runAxis === "unknown" && localCoverage !== null && localCoverage.axis !== "unknown") {
     return { axis: localCoverage.axis, requiredButAccepted };
   }
+  // Local-device collectors have no spine run to carry an accepted-absence
+  // policy through `mapCoverageAxis`. Preserve that manifest evidence when
+  // durable local proof is absent or temporarily unreliable. Required
+  // streams without proof still produce unknown collection-report entries;
+  // `rollupCollectionReportCoverageOverride` will restore the connection to
+  // unknown for that case, so this fallback cannot hide a real required gap.
+  if (runAxis === "unknown") {
+    const accepted = pickAcceptedCoverage(manifestStreams);
+    if (accepted !== null) {
+      return { axis: accepted, requiredButAccepted };
+    }
+  }
   return { axis: runAxis, requiredButAccepted };
 }
 

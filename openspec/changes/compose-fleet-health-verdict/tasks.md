@@ -17,4 +17,4 @@
 
 - [x] 4.1 Run strict change and all-spec OpenSpec validation.
 - [x] 4.2 Run focused server and console tests, typechecks, contract generation/tests, changed-file lint, and diff review.
-- [x] 4.3 Leave the completed reviewable diff uncommitted for the requested handoff.
+- [x] 4.3 Commit the completed reviewable diff for the requested handoff.

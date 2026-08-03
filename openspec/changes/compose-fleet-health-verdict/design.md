@@ -62,8 +62,10 @@ those dimensions:
 1. `unhealthy` for runtime failure, stream-audit failure, owner action,
    connector broken/degraded, retryable or terminal recovery trouble, or
    stalled work.
-2. `indeterminate` when no unhealthy evidence exists but active work, unknown
-   evidence, inconclusive coverage, or unassessed inventory remains.
+2. `indeterminate` when no unhealthy evidence exists but genuine unknown
+   evidence, inconclusive coverage, or unassessed inventory remains. Active
+   bounded work remains in the work dimension as progress context; it does not
+   make an otherwise fresh, coverage-settled source uncertain.
 3. `healthy_with_advisories` when only freshness advice remains.
 4. `healthy` otherwise.
 
