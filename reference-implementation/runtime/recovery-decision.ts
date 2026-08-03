@@ -693,6 +693,115 @@ export function hasForwardEvidenceDebt(
   return now - newestMs > forwardEvidenceMaxAgeMs(scheduleIntervalMs);
 }
 
+// ─── Bounded forward-evidence reproof (fix-uat-manifest-reproof-governor) ────
+//
+// `hasForwardEvidenceDebt` is only ever consulted inside
+// `evaluateBackoffDispatch`'s `recoveryCadenceElapsed` branch
+// (dispatch-governor.ts), which is itself gated behind
+// `nonPressureRecoveryEligible` — a connection with an EMPTY detail-gap
+// backlog never has the debt probe called at all, so a manifest-generation
+// transition (connector-summary-read-model.ts's `terminal_facts_state:
+// 'stale'`/`terminal_facts_historical` boundary) leaves the connection
+// reading `runtime_evidence_missing` until its ORDINARY schedule interval
+// elapses — up to 12h for a slow-cadence connector (live: Amazon/Reddit).
+//
+// This is the connector-neutral, bounded, fair reproof bound that closes that
+// gap: admit an early, non-interactive confirming run when forward evidence
+// is in debt, independent of the connector's own (possibly long)
+// `scheduleIntervalMs` and independent of whether any recovery-gap backlog
+// exists. Requires NO new durable state: it reuses the SAME per-instance
+// `elapsed` (time since last completed run) the ordinary forward-walk/
+// recovery-cadence gates already compute from `runtime.lastRunTime` /
+// `scheduler_last_run_times` (durable, one-row-per-instance, never pruned —
+// distinct from the fleet-global, evictable `run_history` window
+// `synthesized-attention-revalidation.ts`'s doc comment warns about). A
+// successful run naturally clears both the debt (fresh evidence) and the
+// anchor (elapsed resets to ~0), so this needs no separate cadence table or
+// attempt counter — the SAME durable anchor "since when have I not had a
+// good post-transition run" answers both.
+//
+// Fairness/anti-thundering-herd: `persistManifestAndAdvanceGenerations`
+// (server/auth.ts) bumps EVERY instance of one connector_id atomically, so
+// without desync every sibling instance would probe eligible on the exact
+// same tick the moment the ceiling elapses. `reproofJitterOffsetMs` derives a
+// STABLE per-instance offset (a deterministic hash of
+// `connectorInstanceId`, never `Math.random`/wall-clock — this module must
+// stay pure and reproducible) spread across `jitterSpanMs`, so a same-cohort
+// bump fans its reproof runs out across the jitter window rather than
+// dispatching all at once.
+
+/** Ceiling on how long forward-evidence debt may go unattempted, regardless of the connector's own schedule interval. */
+export const DEFAULT_REPROOF_CEILING_MS = 30 * 60 * 1000; // 30 min
+
+/** Width of the deterministic per-instance jitter window applied on top of the ceiling, to desync a same-cohort manifest bump. */
+export const DEFAULT_REPROOF_JITTER_SPAN_MS = 10 * 60 * 1000; // 10 min
+
+export interface ForwardEvidenceReproofOptions {
+  readonly ceilingMs?: number;
+  readonly jitterSpanMs?: number;
+}
+
+export interface ForwardEvidenceReproofDecision {
+  /** True when a bounded, early confirming run for forward-evidence debt should be admitted THIS tick. */
+  readonly admit: boolean;
+  /** The (ceiling + per-instance jitter) delay this decision applied. */
+  readonly delayMs: number;
+}
+
+/**
+ * Deterministic, stable per-instance jitter offset in `[0, jitterSpanMs)`.
+ * Pure string hash (FNV-1a-shaped) — never `Math.random`/wall-clock, so the
+ * SAME connector instance always gets the SAME offset, spreading a
+ * same-cohort manifest-generation bump across the jitter window without any
+ * stored state.
+ */
+function reproofJitterOffsetMs(connectorInstanceId: string, jitterSpanMs: number): number {
+  if (jitterSpanMs <= 0) {
+    return 0;
+  }
+  let hash = 0x81_1c_9d_c5;
+  for (let i = 0; i < connectorInstanceId.length; i += 1) {
+    // biome-ignore lint/suspicious/noBitwiseOperators: FNV-1a hash mixing step requires bitwise XOR.
+    hash ^= connectorInstanceId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01_00_01_93);
+  }
+  // biome-ignore lint/suspicious/noBitwiseOperators: unsigned-coerce the hash before modulo (Math.imul can produce a negative Int32).
+  const unsigned = hash >>> 0;
+  return unsigned % jitterSpanMs;
+}
+
+/**
+ * Decide whether a bounded, non-interactive confirming run is due to reprove
+ * forward evidence currently in debt (see `hasForwardEvidenceDebt`).
+ *
+ * `elapsedMs` is time since the connection's last completed run (the same
+ * value `evaluateBackoffDispatch` already derives from the durable
+ * `runtime.lastRunTime`/`scheduler_last_run_times` anchor) — NOT gated by
+ * `scheduleIntervalMs` the way ordinary forward-walk eligibility is; this
+ * bound is `min(scheduleIntervalMs, ceilingMs) + per-instance jitter`, so a
+ * slow-cadence connector (e.g. Amazon's 12h interval) is still reproved
+ * promptly, while a connector whose OWN interval is already shorter than the
+ * ceiling never fires earlier than its ordinary cadence would.
+ *
+ * Caller contract: only call this when `hasForwardEvidenceDebt` is already
+ * true for this connection — this function does not itself probe evidence,
+ * mirroring `decideSynthesizedRevalidation`'s pure decide/probe separation.
+ */
+export function decideForwardEvidenceReproof(
+  elapsedMs: number,
+  connectorInstanceId: string,
+  scheduleIntervalMs: number,
+  options: ForwardEvidenceReproofOptions = {}
+): ForwardEvidenceReproofDecision {
+  const ceilingMs = normalizeNonNegativeInteger(options.ceilingMs, DEFAULT_REPROOF_CEILING_MS);
+  const jitterSpanMs = normalizeNonNegativeInteger(options.jitterSpanMs, DEFAULT_REPROOF_JITTER_SPAN_MS);
+  const normalizedInterval = normalizeNonNegativeInteger(scheduleIntervalMs, ceilingMs);
+  const baseDelayMs = Math.min(normalizedInterval, ceilingMs);
+  const jitterMs = reproofJitterOffsetMs(connectorInstanceId, jitterSpanMs);
+  const delayMs = baseDelayMs + jitterMs;
+  return { admit: elapsedMs >= delayMs, delayMs };
+}
+
 // ─── Fresh-pressure re-arm guard (task 1.5 / design.md D4) ───────────────────
 //
 // The cooldown governor (`scheduler-source-pressure-cooldown.ts`) arms whenever

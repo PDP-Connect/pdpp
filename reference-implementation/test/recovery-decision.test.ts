@@ -18,6 +18,9 @@ import {
   classifyRecoveryReason,
   DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS,
   DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS,
+  DEFAULT_REPROOF_CEILING_MS,
+  DEFAULT_REPROOF_JITTER_SPAN_MS,
+  decideForwardEvidenceReproof,
   deriveRecoveryStall,
   filterFreshPressureRows,
   forwardEvidenceMaxAgeMs,
@@ -867,4 +870,60 @@ test("hasForwardEvidenceDebt: current with every fact carrying an unparseable/mi
     ),
     true
   );
+});
+
+// ─── decideForwardEvidenceReproof (fix-uat-manifest-reproof-governor) ────────
+
+test("decideForwardEvidenceReproof: does not admit before the ceiling elapses, even for a long schedule interval", () => {
+  const twelveHoursMs = 12 * 60 * 60 * 1000;
+  const decision = decideForwardEvidenceReproof(5 * 60 * 1000, "cin_amazon_1", twelveHoursMs, { jitterSpanMs: 0 });
+  assert.equal(decision.admit, false, "5 minutes elapsed must not admit against a 30-minute ceiling");
+  assert.equal(decision.delayMs, DEFAULT_REPROOF_CEILING_MS, "ceiling wins over the 12h connector interval");
+});
+
+test("decideForwardEvidenceReproof: admits once the ceiling elapses, far short of a 12h schedule interval", () => {
+  const twelveHoursMs = 12 * 60 * 60 * 1000;
+  const decision = decideForwardEvidenceReproof(DEFAULT_REPROOF_CEILING_MS + 1, "cin_amazon_1", twelveHoursMs, {
+    jitterSpanMs: 0,
+  });
+  assert.equal(decision.admit, true, "the ceiling (not the 12h interval) bounds admission");
+});
+
+test("decideForwardEvidenceReproof: never fires earlier than the connector's OWN interval when that interval is shorter than the ceiling", () => {
+  const fiveMinuteIntervalMs = 5 * 60 * 1000;
+  const decision = decideForwardEvidenceReproof(fiveMinuteIntervalMs + 1, "cin_gmail_1", fiveMinuteIntervalMs, {
+    jitterSpanMs: 0,
+  });
+  assert.equal(decision.admit, true);
+  assert.equal(
+    decision.delayMs,
+    fiveMinuteIntervalMs,
+    "the shorter of interval/ceiling applies — never widens a fast connector's cadence"
+  );
+});
+
+test("decideForwardEvidenceReproof: same connectorInstanceId always yields the same jitter offset (stable, not wall-clock/random)", () => {
+  const a = decideForwardEvidenceReproof(0, "cin_stable_instance", 60 * 60 * 1000);
+  const b = decideForwardEvidenceReproof(0, "cin_stable_instance", 60 * 60 * 1000);
+  assert.equal(a.delayMs, b.delayMs, "repeated calls for the same instance must be deterministic");
+});
+
+test("decideForwardEvidenceReproof: distinct connectorInstanceIds spread across the jitter window (anti-thundering-herd)", () => {
+  // A manifest-generation bump touches every instance of one connector_id
+  // atomically (persistManifestAndAdvanceGenerations, server/auth.ts) — a
+  // same-cohort fleet must not all become eligible on the identical tick.
+  const ids = Array.from({ length: 20 }, (_, i) => `cin_cohort_${i}`);
+  const delays = new Set(ids.map((id) => decideForwardEvidenceReproof(0, id, 60 * 60 * 1000).delayMs));
+  assert.ok(delays.size > 1, "at least some of a 20-instance cohort must land on distinct reproof delays");
+  for (const delayMs of delays) {
+    assert.ok(
+      delayMs >= DEFAULT_REPROOF_CEILING_MS && delayMs < DEFAULT_REPROOF_CEILING_MS + DEFAULT_REPROOF_JITTER_SPAN_MS,
+      `delay ${delayMs} must fall within [ceiling, ceiling + jitterSpan)`
+    );
+  }
+});
+
+test("decideForwardEvidenceReproof: zero jitterSpanMs disables jitter deterministically", () => {
+  const decision = decideForwardEvidenceReproof(0, "cin_no_jitter", 60 * 60 * 1000, { jitterSpanMs: 0 });
+  assert.equal(decision.delayMs, DEFAULT_REPROOF_CEILING_MS);
 });

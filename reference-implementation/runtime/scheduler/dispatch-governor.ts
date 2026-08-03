@@ -18,7 +18,12 @@
  * (scheduler/pre-run-gate.ts), timer ownership (startScheduledLoops in shell).
  */
 
-import { filterFreshPressureRows, resolveRecoveryFirstMode } from "../recovery-decision.ts";
+import {
+  decideForwardEvidenceReproof,
+  type ForwardEvidenceReproofOptions,
+  filterFreshPressureRows,
+  resolveRecoveryFirstMode,
+} from "../recovery-decision.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-backoff.ts";
 import type {
   ConnectorSchedule,
@@ -78,6 +83,12 @@ export interface DispatchGovernorDeps {
    */
   getUnresolvedAttention?: HasUnresolvedAttentionHandler;
   onHumanRequiredStateEscalation: HumanRequiredStateEscalationHandler;
+  /**
+   * Optional tuning for `decideForwardEvidenceReproof` (ceiling, jitter
+   * span). Defaults to production constants when omitted — tests use this
+   * to avoid waiting on real wall-clock ceilings.
+   */
+  reproofOptions?: ForwardEvidenceReproofOptions;
   runtime: DispatchGovernorRuntimeState;
   synthesizedRevalidationOptions?: SynthesizedRevalidationOptionsInput;
   /**
@@ -142,6 +153,143 @@ function resolveLastRunEpochMs(lastRunTimeMs: number | undefined, history: reado
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * The bounded forward-evidence reproof sub-flow only ever has a chance to
+ * widen dispatch: it must never run when the tick is already dispatching
+ * something else, and must never override a genuinely `blocked` connection
+ * (see `resolveRecoveryAndReproofEligibility`'s doc comment).
+ */
+function shouldConsultReproof(input: { blocked: boolean; eligible: boolean }): boolean {
+  return !(input.eligible || input.blocked);
+}
+
+/**
+ * Resolve the recovery-only (SLVP-ideal §4.3) and bounded forward-evidence
+ * reproof (fix-uat-manifest-reproof-governor) sub-flows together, since both
+ * read/write the same `eligible`/`recoveryOnly` pair and share one memoized
+ * `forwardEvidenceDebt` probe. Extracted from `evaluateBackoffDispatch` to
+ * keep that function's branching within the repo's cognitive-complexity
+ * budget — this is the same probe/decide sequence that function inlined
+ * before, unchanged in behavior, just isolated as its own unit.
+ *
+ * ─── Recovery-only eligibility (SLVP-ideal §4.3) ──────────────────────────
+ * Recovery of NON-source-pressure pending gaps (`run_cap_deferred` /
+ * `retry_exhausted`) is a separate, work-conserving sub-flow. NEITHER the
+ * failure-backoff interval NOR the source-pressure cooldown has a claim over
+ * it — see the historical Gmail-stall/16h-backoff-deadlock evidence this
+ * sub-flow fixes (design.md §4.3). It proceeds on a minimal RECOVERY CADENCE
+ * (one base schedule interval), independent of both governors, and takes
+ * priority over fresh forward-walk work once both are due (the live
+ * 10,264-gap Gmail stall this repo's `dispatch-governor-recovery-first.test.ts`
+ * pins). A genuinely `blocked` connection is excluded (nothing safe to
+ * recover until the owner re-auths) — enforced by the caller never invoking
+ * this helper for a blocked tick's eligibility override elsewhere in
+ * `evaluateBackoffDispatch`.
+ *
+ * Forward-evidence-debt (`hasForwardEvidenceDebt`) bounds the otherwise-
+ * unbounded recovery-first default: debt diverts one tick to forward
+ * collection so recovery-first cannot starve fact-carrying evidence
+ * indefinitely (live: Gmail's last fact-carrying forward run was 5+ days and
+ * ~640 runs ago).
+ *
+ * ─── Bounded forward-evidence reproof (fix-uat-manifest-reproof-governor) ──
+ * Closes the gap the recovery-only sub-flow above cannot reach: a
+ * connection with an EMPTY non-pressure recovery backlog never triggers the
+ * recovery-cadence debt check above, and even when it does, that check is
+ * itself gated behind `scheduleIntervalMs` — which can be up to 12h for a
+ * slow-cadence connector (live: Amazon/Reddit reading `runtime_evidence_missing`
+ * for up to 12h after a manifest-generation bump, per
+ * connector-summary-read-model.ts's `terminal_facts_state: 'stale'`/
+ * `terminal_facts_historical` transition). Independent of both governors:
+ * probe debt whenever the tick is not ALREADY dispatching something, and
+ * admit a bounded early run once `decideForwardEvidenceReproof`'s own
+ * ceiling+jitter cadence (never the connector's own possibly-long interval)
+ * says a reprove attempt is due. Never overrides `blocked` — a genuinely
+ * blocked connection has no safe automatic run, reproof included; a reproof
+ * run is still admitted through the ordinary `automation_mode`/
+ * `background_safe` choke point exactly like any other scheduled dispatch
+ * (`gateAutomationPolicy` in pre-run-gate.ts), so a manual/unsafe connector's
+ * declared policy still blocks it.
+ */
+async function resolveRecoveryAndReproofEligibility(input: {
+  blocked: boolean;
+  connectorId: string;
+  elapsed: number;
+  eligible: boolean;
+  key: string;
+  probeForwardEvidenceDebt: (
+    connectorId: string,
+    connectorInstanceId: string,
+    scheduleIntervalMs: number
+  ) => Promise<boolean>;
+  probeNonPressureRecoverableCount: (connectorId: string, connectorInstanceId: string) => Promise<number>;
+  reproofOptions: ForwardEvidenceReproofOptions;
+  scheduleIntervalMs: number;
+}): Promise<{ eligible: boolean; recoveryOnly: boolean }> {
+  const {
+    blocked,
+    connectorId,
+    elapsed,
+    key,
+    probeForwardEvidenceDebt,
+    probeNonPressureRecoverableCount,
+    reproofOptions,
+    scheduleIntervalMs,
+  } = input;
+  // biome-ignore lint/style/useDestructuring: `eligible` is reassigned below; destructuring `input.eligible` alongside `const` fields would shadow oddly.
+  let eligible = input.eligible;
+  let recoveryOnly = false;
+
+  // Forward-evidence-debt is memoized here (shared by both sub-flows below)
+  // so a healthy, debt-free connection never pays the probe twice.
+  let forwardEvidenceDebt: boolean | null = null;
+  let forwardEvidenceDebtProbed = false;
+  async function probeForwardEvidenceDebtOnce(): Promise<boolean> {
+    if (!forwardEvidenceDebtProbed) {
+      forwardEvidenceDebt = await probeForwardEvidenceDebt(connectorId, key, scheduleIntervalMs);
+      forwardEvidenceDebtProbed = true;
+    }
+    return forwardEvidenceDebt ?? false;
+  }
+
+  const recoveryCadenceElapsed = elapsed >= scheduleIntervalMs;
+  if (recoveryCadenceElapsed) {
+    const nonPressureRecoverable = await probeNonPressureRecoverableCount(connectorId, key);
+    const nonPressureRecoveryEligible = nonPressureRecoverable > 0;
+    const debtForRecoveryBound = nonPressureRecoveryEligible ? await probeForwardEvidenceDebtOnce() : false;
+    const recoveryFirst = resolveRecoveryFirstMode({
+      forwardEvidenceDebt: debtForRecoveryBound,
+      nonPressureRecoveryEligible,
+    });
+    if (recoveryFirst) {
+      eligible = true;
+      recoveryOnly = true;
+    } else if (nonPressureRecoveryEligible && debtForRecoveryBound && !eligible) {
+      // Debt selected forward collection over recovery-first, but forward is
+      // NOT otherwise eligible this tick. Dispatching nothing would regress
+      // the recovery-cadence anti-deadlock (a failure-streak-inflated
+      // `effectiveIntervalMs` can run to 16h+): the debt bound may only
+      // PREFER forward when forward is genuinely permitted, never veto
+      // recovery's own independent cadence. Fall back to recovery-only
+      // exactly as if no debt existed.
+      eligible = true;
+      recoveryOnly = true;
+    }
+  }
+
+  if (shouldConsultReproof({ blocked, eligible })) {
+    const debtForReproof = await probeForwardEvidenceDebtOnce();
+    const reproofAdmitted =
+      debtForReproof && decideForwardEvidenceReproof(elapsed, key, scheduleIntervalMs, reproofOptions).admit;
+    if (reproofAdmitted) {
+      eligible = true;
+      recoveryOnly = false;
+    }
+  }
+
+  return { eligible, recoveryOnly };
 }
 
 // ─── Spine-event prefix constants ────────────────────────────────────────────
@@ -512,6 +660,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
     onHumanRequiredStateEscalation,
+    reproofOptions = {},
     runtime,
     synthesizedRevalidationOptions = {},
     synthesizedRevalidationStore,
@@ -810,50 +959,31 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // only `!eligible`) lets bounded recovery win the tick whenever it is due,
     // regardless of ordinary forward-walk eligibility; forward collection still
     // runs normally once no eligible recovery remains (probe returns 0).
-    const recoveryCadenceElapsed = elapsed >= scheduleIntervalMs;
-    let recoveryOnly = false;
-    if (recoveryCadenceElapsed) {
-      const nonPressureRecoverable = await probeNonPressureRecoverableCount(connectorId, key);
-      const nonPressureRecoveryEligible = nonPressureRecoverable > 0;
-      // Forward-evidence-debt bound (fix-pre-provenance-terminal-generation-
-      // semantics): only probed when recovery would otherwise win the tick —
-      // an unbounded recovery-first default could starve forward evidence
-      // indefinitely (live: Gmail's last fact-carrying forward run was 5+
-      // days and ~640 runs ago). Debt diverts THIS tick to forward
-      // collection; recovery-first resumes once fresh evidence lands.
-      const forwardEvidenceDebt = nonPressureRecoveryEligible
-        ? await probeForwardEvidenceDebt(connectorId, key, scheduleIntervalMs)
-        : false;
-      // Shared policy (recovery-decision.ts): a scheduled tick is always an
-      // implicit, unscoped dispatch, so eligible non-pressure recovery work
-      // wins the tick over fresh forward-walk work, unless forward evidence
-      // is already in debt.
-      const recoveryFirst = resolveRecoveryFirstMode({ forwardEvidenceDebt, nonPressureRecoveryEligible });
-      if (recoveryFirst) {
-        eligible = true;
-        recoveryOnly = true;
-      } else if (nonPressureRecoveryEligible && forwardEvidenceDebt && !eligible) {
-        // Debt selected forward collection over recovery-first, but forward
-        // is NOT otherwise eligible this tick (`eligible` here is still just
-        // `intervalElapsed && !cooldownDefers` — the failure-backoff/cooldown
-        // gate, computed above `recoveryOnly`'s block). Dispatching nothing
-        // would regress the documented recovery-cadence anti-deadlock (a
-        // failure-streak-inflated `effectiveIntervalMs` can run to 16h+,
-        // during which this branch would otherwise fire on every tick): the
-        // debt bound may only PREFER forward when forward is genuinely
-        // permitted; it must never become a backoff/cooldown bypass for
-        // forward work, and it must never halt recovery's own independent
-        // cadence. Fall back to recovery-only exactly as if no debt existed.
-        eligible = true;
-        recoveryOnly = true;
-      }
-    }
+    // `blocked` gates the reproof admission (inside the helper below) and the
+    // synthesized-revalidation probe further down — computed once and
+    // shared, since both read the identical `decision.recommendedHealthState`.
+    const blocked = decision.recommendedHealthState === "blocked";
+
+    const recoveryAndReproof = await resolveRecoveryAndReproofEligibility({
+      blocked,
+      connectorId,
+      elapsed,
+      eligible,
+      key,
+      probeForwardEvidenceDebt,
+      probeNonPressureRecoverableCount,
+      reproofOptions,
+      scheduleIntervalMs,
+    });
+    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+    eligible = recoveryAndReproof.eligible;
+    // biome-ignore lint/style/useDestructuring: `recoveryOnly` is reassigned below by `backoffDecision`.
+    let recoveryOnly = recoveryAndReproof.recoveryOnly;
 
     // Only probe synthesized-revalidation cadence when the tick is actually
     // `blocked` — this is the ONLY branch `synthesizedRevalidationDue`
     // affects (see its doc comment), so probing otherwise would be a wasted
     // async round-trip on every eligible/backing-off tick.
-    const blocked = decision.recommendedHealthState === "blocked";
     const synthesizedRevalidationDue = blocked ? await probeSynthesizedRevalidationDue(connectorId, key) : false;
 
     // Decide (pure) then apply (effectful). The pure core reads the current
