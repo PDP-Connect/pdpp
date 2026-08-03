@@ -23,7 +23,13 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../lib/db.ts";
+import {
+  allowUnboundedReadAcknowledged,
+  exec,
+  getOne,
+  iterateDynamicSqlAcknowledged,
+  referenceQueries,
+} from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent, type SpineEventInput, type SpineTraceContext } from "../lib/spine.ts";
 import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
@@ -153,6 +159,13 @@ export interface GrantPackageSummaryRow extends NormalizedPackage {
 
 /** One entry in the owner list page. */
 export interface GrantPackageListEntry extends NormalizedPackage {
+  /**
+   * Newest `disclosure.served` read across this package's child grants, or
+   * `null` for NEVER USED — not "unknown". An unused package still holds live
+   * access for every child grant it wraps, so consumers must render the null
+   * case explicitly rather than as a blank cell.
+   */
+  readonly last_used_at?: string | null;
   readonly member_count: number;
 }
 
@@ -1304,7 +1317,10 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       })
       .filter((row): row is GrantPackageListEntry => row !== null);
 
-    const data = normalized.slice(0, limit);
+    const page = normalized.slice(0, limit);
+    // Single grouped read for the whole page rather than one query per row.
+    const lastUsed = await lastUsedAtByPackageId(page.map((pkg) => pkg.package_id));
+    const data = page.map((pkg) => ({ ...pkg, last_used_at: lastUsed.get(pkg.package_id) ?? null }));
     const hasMore = normalized.length > limit;
     const tail = hasMore ? (data.at(-1) ?? null) : null;
     return {
@@ -1313,6 +1329,75 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
       limit,
       next_cursor: tail ? encodeGrantPackageCursor(tail) : null,
     };
+  }
+
+  /**
+   * Last time each package was actually READ, derived from `disclosure.served`
+   * spine events on its child grants rather than stored on the package row.
+   *
+   * A package is a consent ceremony wrapping source-bounded child grants; the
+   * reads happen against those children, so the package's last-used is the
+   * newest read across its members. `spine_events.grant_id` is indexed, so
+   * this needs no migration and no new write path — the same evidence
+   * authority already used for owner credentials on the tokens page.
+   *
+   * Returns a Map of package_id -> ISO timestamp. A package ABSENT from the
+   * map has never been read. Callers must render that case explicitly: an
+   * unused package still holds live access for every child grant, so
+   * collapsing "never used" into a blank cell hides the packages most worth
+   * revoking. On a live deployment 25 of 85 packages are in exactly that state.
+   */
+  async function lastUsedAtByPackageId(packageIds: readonly string[]): Promise<Map<string, string>> {
+    const ids = [...new Set(packageIds.filter(isNonEmptyString))];
+    if (ids.length === 0) {
+      return new Map();
+    }
+
+    if (isPostgresStorageBackend()) {
+      const rows = (
+        await postgresQuery(
+          `SELECT gpm.package_id, MAX(e.occurred_at) AS last_used_at
+             FROM grant_package_members gpm
+             JOIN spine_events e
+               ON e.grant_id = gpm.grant_id
+              AND e.event_type = 'disclosure.served'
+            WHERE gpm.package_id = ANY($1::text[])
+            GROUP BY gpm.package_id`,
+          [ids]
+        )
+      ).rows as Record<string, unknown>[];
+      return new Map(
+        rows.flatMap((row) =>
+          isNonEmptyString(row.package_id) && isNonEmptyString(row.last_used_at)
+            ? [[row.package_id, row.last_used_at] as [string, string]]
+            : []
+        )
+      );
+    }
+
+    const placeholders = ids.map(() => "?").join(", ");
+    // REVIEWED-DYNAMIC: IN-list cardinality is page-bounded by the caller's
+    // limit; values are bound parameters and the GROUP BY returns at most one
+    // row per bound id.
+    const rows = [
+      ...iterateDynamicSqlAcknowledged<Record<string, unknown>>(
+        `SELECT gpm.package_id AS package_id, MAX(e.occurred_at) AS last_used_at
+           FROM grant_package_members gpm
+           JOIN spine_events e
+             ON e.grant_id = gpm.grant_id
+            AND e.event_type = 'disclosure.served'
+          WHERE gpm.package_id IN (${placeholders})
+          GROUP BY gpm.package_id`,
+        ids
+      ),
+    ];
+    return new Map(
+      rows.flatMap((row) =>
+        isNonEmptyString(row.package_id) && isNonEmptyString(row.last_used_at)
+          ? [[row.package_id, row.last_used_at] as [string, string]]
+          : []
+      )
+    );
   }
 
   async function listActivePackageIdsForClient(clientId: string): Promise<string[]> {

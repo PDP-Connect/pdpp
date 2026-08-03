@@ -72,6 +72,8 @@ export interface GrantPackageSummaryRow {
   readonly children: readonly GrantPackageChild[];
   readonly client_id: string;
   readonly created_at: string;
+  /** Newest read across child grants; null means never used. */
+  readonly last_used_at?: string | null;
   readonly member_count: number;
   readonly package_id: string;
   readonly parent_package_id: string | null;
@@ -207,6 +209,9 @@ export function mountRefGrantPackagesList(app: AppLike, ctx: MountRefGrantsConte
           package_id: pkg.package_id,
           parent_package_id: pkg.parent_package_id,
           revoked_at: pkg.revoked_at,
+          // Derived from disclosure.served on the package's child grants;
+          // null means never used, which the console renders explicitly.
+          last_used_at: pkg.last_used_at ?? null,
           status: pkg.status,
           subject_id: pkg.subject_id,
         })),

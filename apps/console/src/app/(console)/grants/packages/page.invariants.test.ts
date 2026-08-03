@@ -47,3 +47,35 @@ test("grant-packages list page does not render secret-shaped fields", async () =
   const src = await readFile(PAGE_FILE, "utf8");
   assert.doesNotMatch(src, FORBIDDEN_FIELDS_RE);
 });
+
+// ─── Last-used / never-used cleanup affordance ─────────────────────────────
+//
+// Same evidence authority as the tokens page: derived from `disclosure.served`
+// spine events on the package's child grants, never a stored column. The
+// load-bearing case is NULL — a package that has never been read still holds
+// live access across every child grant it wraps, and a live deployment has 25
+// of 85 packages in exactly that state. If `null` renders as a blank cell, the
+// packages most worth revoking become the least visible ones on the page.
+//
+// These guards strip comments and attribute values before matching. An earlier
+// version of the tokens guard passed against a build where the rendered copy
+// had been deleted but a comment still said "never used" — a guard that cannot
+// fail certifies a regression as safe.
+function renderedText(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "")
+    .replace(/\stitle=\{?"[^"]*"\}?/g, "");
+}
+
+test("grant-packages page renders an explicit never-used state, not a blank cell", async () => {
+  const body = renderedText(await readFile(PAGE_FILE, "utf8"));
+  assert.match(body, /never used/i);
+  assert.match(body, /last used/i);
+});
+
+test("grant-packages page orders for cleanup and renders the sorted collection", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, /\[\.\.\.result\.data\]\.sort\(byCleanupPriority\)/);
+  assert.match(src, /items\.map\(/);
+});

@@ -2745,6 +2745,12 @@ export interface GrantPackageSummary {
   approved_at: string | null;
   client_id: string;
   created_at: string;
+  /**
+   * Newest `disclosure.served` read across this package's child grants.
+   * `null` means NEVER USED — render it explicitly; an unused package still
+   * holds live access for every child grant it wraps.
+   */
+  last_used_at: string | null;
   member_count: number;
   object: "grant_package_summary";
   package_id: string;

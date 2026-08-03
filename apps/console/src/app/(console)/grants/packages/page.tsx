@@ -45,7 +45,12 @@ export default async function GrantPackagesIndex() {
     throw err;
   }
 
-  const items = result.data;
+  // Cleanup order, matching the tokens page: never-used first (highest risk —
+  // live access across every child grant, zero reads), then least-recently
+  // used. Issuance order is the wrong default for a page whose job is finding
+  // packages worth revoking.
+  const items = [...result.data].sort(byCleanupPriority);
+  const neverUsed = items.filter((pkg) => !pkg.last_used_at).length;
   return (
     <RecordroomShellWithPalette>
       <PageHeader
@@ -59,17 +64,64 @@ export default async function GrantPackagesIndex() {
             title="No grant packages yet"
           />
         ) : (
-          <DataList>
-            {items.map((pkg) => (
-              <li key={pkg.package_id}>
-                <PackageRow pkg={pkg} />
-              </li>
-            ))}
-          </DataList>
+          <>
+            {neverUsed > 0 ? (
+              <p className="pdpp-caption mb-3 text-foreground">
+                <span className="font-medium">
+                  {neverUsed} package{neverUsed === 1 ? " has" : "s have"} never been read
+                </span>{" "}
+                — every child grant still holds live access. Listed first.
+              </p>
+            ) : null}
+            <DataList>
+              {items.map((pkg) => (
+                <li key={pkg.package_id}>
+                  <PackageRow pkg={pkg} />
+                </li>
+              ))}
+            </DataList>
+          </>
         )}
       </Section>
     </RecordroomShellWithPalette>
   );
+}
+
+/**
+ * Last-read cell. A package that has never served a read still holds its full
+ * grant set, so "never used" is called out rather than left blank — a blank
+ * cell reads as "no data" instead of "no reads", and hides the packages most
+ * worth revoking.
+ */
+function LastUsed({ value }: { value: string | null }) {
+  if (!value) {
+    return (
+      <span
+        className="font-medium text-[color:var(--warning,inherit)]"
+        title="No child grant of this package has ever served a read"
+      >
+        never used
+      </span>
+    );
+  }
+  return (
+    <span>
+      last used <IcTimestamp value={value} />
+    </span>
+  );
+}
+
+function byCleanupPriority(a: GrantPackageSummary, b: GrantPackageSummary): number {
+  if (!(a.last_used_at || b.last_used_at)) {
+    return a.created_at.localeCompare(b.created_at);
+  }
+  if (!a.last_used_at) {
+    return -1;
+  }
+  if (!b.last_used_at) {
+    return 1;
+  }
+  return a.last_used_at.localeCompare(b.last_used_at);
 }
 
 function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
@@ -86,11 +138,14 @@ function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
           </span>
         </div>
       </div>
-      <div className="pdpp-caption mt-1 text-muted-foreground">
-        {memberLabel}
-        {" · "}client {pkg.client_id}
-        {" · subject "}
-        {pkg.subject_id}
+      <div className="pdpp-caption mt-1 flex flex-wrap items-baseline gap-x-2 text-muted-foreground">
+        <span>{memberLabel}</span>
+        <span aria-hidden>·</span>
+        <LastUsed value={pkg.last_used_at} />
+        <span aria-hidden>·</span>
+        <span>client {pkg.client_id}</span>
+        <span aria-hidden>·</span>
+        <span>subject {pkg.subject_id}</span>
       </div>
     </Link>
   );
