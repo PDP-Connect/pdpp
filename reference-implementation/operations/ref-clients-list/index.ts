@@ -37,9 +37,6 @@
  */
 
 export interface RefClientsListClient {
-  readonly client_id: string;
-  readonly client_name: string | null;
-  readonly created_at: string;
   readonly active_token_count: number;
   /**
    * Distinct `token_kind` values this client currently holds (`owner`,
@@ -48,6 +45,9 @@ export interface RefClientsListClient {
    * a row here is not necessarily an owner credential.
    */
   readonly active_token_kinds?: readonly string[];
+  readonly client_id: string;
+  readonly client_name: string | null;
+  readonly created_at: string;
   /**
    * Last time this credential actually READ anything, derived from
    * `disclosure.served` spine events rather than stored on `tokens` (no
@@ -82,12 +82,12 @@ export interface RefClientsListDependencies {
    * the requesting owner-session subject so pre-registered seeds never
    * appear here.
    */
-  listOwnerIssuedClients(): Promise<readonly RefClientsListClient[]> | readonly RefClientsListClient[];
+  listOwnerIssuedClients: () => Promise<readonly RefClientsListClient[]> | readonly RefClientsListClient[];
 }
 
 export interface RefClientsListEnvelope {
-  readonly object: "list";
   readonly data: RefClientsListClient[];
+  readonly object: "list";
 }
 
 export class RefClientsListInvalidRequestError extends Error {
@@ -109,14 +109,14 @@ export class RefClientsListInvalidRequestError extends Error {
  */
 export async function executeRefClientsList(
   input: RefClientsListInput,
-  dependencies: RefClientsListDependencies,
+  dependencies: RefClientsListDependencies
 ): Promise<RefClientsListEnvelope> {
   if (input.owner !== "true") {
     throw new RefClientsListInvalidRequestError();
   }
   const clients = await dependencies.listOwnerIssuedClients();
   return {
-    object: "list",
     data: [...clients],
+    object: "list",
   };
 }

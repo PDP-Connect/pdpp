@@ -39,7 +39,7 @@ test("the revoke action branches on the confirmed `revoked` flag", async () => {
   const src = renderedCopy(await readFile(ACTIONS_FILE, "utf8"));
   assert.match(
     src,
-    /result\?\.revoked\s*\?/,
+    /result\.revoked\s*\?/,
     "success copy must be selected by the server-confirmed flag, not assumed"
   );
   assert.match(src, /notice=token_already_revoked/, "the no-op state needs its own notice");

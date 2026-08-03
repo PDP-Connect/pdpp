@@ -170,7 +170,9 @@ export async function revokeOwnerClientTokenAction(formData: FormData) {
   let target = "/deployment/tokens?notice=token_revoked";
   try {
     const result = await revokeOwnerClientToken(clientId, tokenIdPublic);
-    target = result?.revoked ? "/deployment/tokens?notice=token_revoked" : "/deployment/tokens?notice=token_already_revoked";
+    target = result.revoked
+      ? "/deployment/tokens?notice=token_revoked"
+      : "/deployment/tokens?notice=token_already_revoked";
   } catch (err) {
     target = errorHref(errorMessage(err));
   }

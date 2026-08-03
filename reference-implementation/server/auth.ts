@@ -3288,10 +3288,10 @@ export async function listOwnerIssuedClients(subjectId: unknown): Promise<Record
   const kindsByClient = new Map<string, string[]>();
   await Promise.all(
     clients.map(async (client) => {
-      const rows = await tokenStore.listActiveByClientId(client.client_id);
+      const clientTokenRows = await tokenStore.listActiveByClientId(client.client_id);
       const kinds = [
         ...new Set(
-          (rows ?? []).flatMap((row: DbRow) => (isNonEmptyString(row.token_kind) ? [row.token_kind] : []))
+          (clientTokenRows ?? []).flatMap((row: DbRow) => (isNonEmptyString(row.token_kind) ? [row.token_kind] : []))
         ),
       ].sort();
       kindsByClient.set(client.client_id, kinds);

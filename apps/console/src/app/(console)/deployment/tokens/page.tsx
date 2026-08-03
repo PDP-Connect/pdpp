@@ -424,10 +424,10 @@ function TokensListSection({
         <p className="pdpp-caption mt-0.5 text-muted-foreground">
           One row per OAuth client registered under your owner session, ordered for cleanup: never-used first, then
           least-recently-used. <span className="font-medium text-foreground">Not every row is an owner bearer</span> —
-          this list is selected by who registered the client, so a row may hold scoped <code className="font-mono">client</code>{" "}
-          or <code className="font-mono">mcp_package</code> tokens instead. Each row states what it actually holds.
-          Rename the label in place, or revoke to delete the OAuth client (RFC 7592) and cascade-revoke its bearers.
-          Clients with more than one active token expand to per-token details.
+          this list is selected by who registered the client, so a row may hold scoped{" "}
+          <code className="font-mono">client</code> or <code className="font-mono">mcp_package</code> tokens instead.
+          Each row states what it actually holds. Rename the label in place, or revoke to delete the OAuth client (RFC
+          7592) and cascade-revoke its bearers. Clients with more than one active token expand to per-token details.
         </p>
         {neverUsed > 0 ? (
           <p className="pdpp-caption mt-1.5 text-foreground">
