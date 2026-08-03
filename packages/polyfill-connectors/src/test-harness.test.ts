@@ -239,6 +239,23 @@ test("runConnectorProtocolSubprocess: browser-shaped no-browser fixture complete
   );
 });
 
+test("runConnectorProtocolSubprocess: browser ensureSession preserves USAA session_required through sanitized DONE", async () => {
+  const result = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: PACKAGE_ROOT,
+    entrypoint: fixturePath("protocol-subprocess-browser-session-required.ts"),
+    start: { type: "START", scope: { streams: [{ name: "accounts" }] } },
+  });
+
+  const done = result.messages.at(-1);
+  assert.equal(done?.type, "DONE");
+  if (done?.type === "DONE") {
+    assert.equal(done.status, "failed");
+    assert.equal(done.error?.code, "session_required");
+    assert.equal(done.error?.retryable, false);
+  }
+});
+
 test("runConnectorProtocolSubprocess: rejects a child that exits without terminal DONE", async () => {
   await assert.rejects(
     () =>

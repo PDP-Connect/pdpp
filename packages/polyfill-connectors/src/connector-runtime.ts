@@ -2155,7 +2155,11 @@ async function establishSession(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern);
-      throw new TerminalError(terminalError.message, { retryable: terminalError.retryable, cause: err });
+      throw new TerminalError(terminalError.message, {
+        retryable: terminalError.retryable,
+        ...(err instanceof TerminalError && err.code !== undefined ? { code: err.code } : {}),
+        cause: err,
+      });
     }
   }
 
