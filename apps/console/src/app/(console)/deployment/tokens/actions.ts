@@ -161,9 +161,16 @@ export async function revokeOwnerClientTokenAction(formData: FormData) {
   if (!(clientId && tokenIdPublic)) {
     redirect("/deployment/tokens?error=token+revoke+requires+client+and+token");
   }
+  // The notice must describe the STATE the server confirmed, not the fact that
+  // a request was sent. `revoked: false` is a successful idempotent no-op —
+  // the store proves no ACTIVE matching token remains after owner scoping — but
+  // it is NOT a new revocation, and reporting it as one is how this surface
+  // previously claimed "Token revoked" over a credential the operator could
+  // still see listed.
   let target = "/deployment/tokens?notice=token_revoked";
   try {
-    await revokeOwnerClientToken(clientId, tokenIdPublic);
+    const result = await revokeOwnerClientToken(clientId, tokenIdPublic);
+    target = result?.revoked ? "/deployment/tokens?notice=token_revoked" : "/deployment/tokens?notice=token_already_revoked";
   } catch (err) {
     target = errorHref(errorMessage(err));
   }

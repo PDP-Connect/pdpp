@@ -600,7 +600,14 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       {error ? <InlineError message={error} prefix="Action failed" /> : null}
       {notice === "revoked" ? <InlineNotice message="Credential revoked. Its bearers no longer work." /> : null}
       {notice === "token_revoked" ? (
-        <InlineNotice message="Token revoked. That one bearer no longer works; the credential's other tokens are unaffected." />
+        <InlineNotice message="Credential revoked. That one bearer no longer works; the credential's other tokens are unaffected." />
+      ) : null}
+      {/* Idempotent no-op. The server confirmed no ACTIVE token matches this
+          public id after owner scoping, so the postcondition holds — but no new
+          revocation happened, and saying otherwise is the success theater this
+          surface previously produced. */}
+      {notice === "token_already_revoked" ? (
+        <InlineNotice message="No change was needed — that credential was already revoked or is no longer active." />
       ) : null}
       {notice === "renamed" ? <InlineNotice message="Credential renamed." /> : null}
 

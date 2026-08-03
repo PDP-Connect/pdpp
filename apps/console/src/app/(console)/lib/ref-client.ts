@@ -2595,11 +2595,12 @@ export async function revokeOwnerClientToken(
   clientId: string,
   tokenIdPublic: string
 ): Promise<{ object: "owner_client_token_revocation"; revoked: boolean; token_id_public: string }> {
-  return (await refFetch(
+  const result = (await refFetch(
     `/_ref/clients/${encodeURIComponent(clientId)}/tokens/${encodeURIComponent(tokenIdPublic)}`,
     undefined,
     { method: "DELETE" }
   )) as { object: "owner_client_token_revocation"; revoked: boolean; token_id_public: string };
+  return result;
 }
 
 export interface CimdClientDocument {
