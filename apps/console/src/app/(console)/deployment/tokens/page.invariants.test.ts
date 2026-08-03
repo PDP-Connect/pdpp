@@ -199,3 +199,40 @@ test("byCleanupPriority breaks ties among multiple never-used credentials by iss
     "among never-used credentials, the older issuance sorts first"
   );
 });
+
+// ─── Truthful credential copy (BUG 3) ──────────────────────────────────────
+//
+// This listing selects by WHO REGISTERED the client (issuer_subject_id), not
+// by token kind, so a row can hold `owner` bearers (full /v1/* access), scoped
+// `client` tokens, or `mcp_package` tokens bound to a single consent ceremony.
+// A real deployment showed a row reading "4 active tokens" under an "Owner
+// credentials" heading whose tokens were 2 mcp_package + 2 client and ZERO
+// owner bearers — copy that overstates blast radius on a security surface.
+//
+// Comments and attribute values are stripped before matching: an earlier guard
+// on this page passed against a build whose rendered copy had been deleted
+// because a comment still carried the phrase.
+function renderedCopy(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "")
+    .replace(/\stitle=\{?"[^"]*"\}?/g, "");
+}
+
+test("tokens page does not claim every listed row is an owner credential", async () => {
+  const body = renderedCopy(await readFile(PAGE_FILE, "utf8"));
+  assert.doesNotMatch(
+    body,
+    /One row per approved owner-agent or manual credential/,
+    "the old heading asserted every row is an owner credential, which is false for client/mcp_package rows"
+  );
+  // It must say so explicitly rather than merely omitting the claim.
+  assert.match(body, /Not every row is an owner bearer/i);
+});
+
+test("tokens page derives the per-row label from the actual token kinds", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, /describeTokenKinds\(token\.active_token_kinds\)/);
+  // A bare "active tokens" literal would be the un-derived form this replaces.
+  assert.doesNotMatch(renderedCopy(src), /active token\{token\.active_token_count === 1/);
+});

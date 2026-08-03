@@ -3275,8 +3275,32 @@ export async function listOwnerIssuedClients(subjectId: unknown): Promise<Record
 
   // Single grouped read for the whole page rather than one query per row.
   const lastUsed = await lastUsedAtByClientId(clients.map((client) => client.client_id));
+
+  // The distinct token kinds actually held, so the console can describe each
+  // row truthfully instead of calling everything an "owner credential". This
+  // list selects by WHO REGISTERED the client (issuer_subject_id), not by
+  // token kind, so a dynamically-registered client shows up here whether its
+  // live tokens are `owner`, `client`, or `mcp_package`. On a real deployment
+  // a row labelled "Owner credentials" held 2 `mcp_package` + 2 `client`
+  // tokens and zero owner bearers — copy that overstates blast radius on a
+  // security surface.
+  const tokenStore = getTokenStore();
+  const kindsByClient = new Map<string, string[]>();
+  await Promise.all(
+    clients.map(async (client) => {
+      const rows = await tokenStore.listActiveByClientId(client.client_id);
+      const kinds = [
+        ...new Set(
+          (rows ?? []).flatMap((row: DbRow) => (isNonEmptyString(row.token_kind) ? [row.token_kind] : []))
+        ),
+      ].sort();
+      kindsByClient.set(client.client_id, kinds);
+    })
+  );
+
   return clients.map((client) => ({
     ...client,
+    active_token_kinds: kindsByClient.get(client.client_id) ?? [],
     last_used_at: lastUsed.get(client.client_id) ?? null,
   }));
 }

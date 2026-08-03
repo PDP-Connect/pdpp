@@ -42,6 +42,13 @@ export interface RefClientsListClient {
   readonly created_at: string;
   readonly active_token_count: number;
   /**
+   * Distinct `token_kind` values this client currently holds (`owner`,
+   * `client`, `mcp_package`). Lets a consumer describe the row truthfully:
+   * this listing selects by who registered the client, NOT by token kind, so
+   * a row here is not necessarily an owner credential.
+   */
+  readonly active_token_kinds?: readonly string[];
+  /**
    * Last time this credential actually READ anything, derived from
    * `disclosure.served` spine events rather than stored on `tokens` (no
    * `last_used_at` column exists in either backend).

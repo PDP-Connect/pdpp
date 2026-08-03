@@ -2508,6 +2508,12 @@ export async function listPendingApprovals(): Promise<ListResponse<PendingApprov
 /** Operator-issued OAuth client (one per dashboard-issued bearer). */
 export interface OwnerIssuedClient {
   active_token_count: number;
+  /**
+   * Distinct token kinds this credential holds (`owner`, `client`,
+   * `mcp_package`). The list is selected by who registered the client, not by
+   * kind, so this is what makes truthful per-row copy possible.
+   */
+  active_token_kinds?: string[];
   client_id: string;
   client_name: string | null;
   created_at: string;

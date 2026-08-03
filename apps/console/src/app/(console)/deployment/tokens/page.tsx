@@ -379,6 +379,30 @@ function LastUsed({ value }: { value: string | null }) {
   );
 }
 
+/**
+ * Describe what a row ACTUALLY holds, derived from the live token kinds rather
+ * than from the section heading.
+ *
+ * This listing selects by who registered the client, not by token kind, so a
+ * row can hold `owner` bearers (full `/v1/*` access), scoped `client` tokens,
+ * or `mcp_package` tokens bound to a single consent ceremony. A real
+ * deployment had a row reading "4 active tokens" under an "Owner credentials"
+ * heading whose tokens were 2 `mcp_package` + 2 `client` and zero owner
+ * bearers — copy that overstates blast radius on a security surface.
+ *
+ * Falls back to the neutral "token" when kinds are unavailable (an older
+ * server), which is honest rather than guessing "owner".
+ */
+function describeTokenKinds(kinds: string[] | undefined): string {
+  if (!kinds || kinds.length === 0) {
+    return "token";
+  }
+  if (kinds.length === 1) {
+    return `${kinds[0]} token`;
+  }
+  return `${kinds.join(" + ")} token`;
+}
+
 function TokensListSection({
   tokens,
   tokenDetailsByClient,
@@ -396,11 +420,14 @@ function TokensListSection({
   return (
     <div className="rounded-md border border-border" data-surface="human">
       <div className="border-border/70 border-b px-5 py-3">
-        <h2 className="pdpp-eyebrow">Owner credentials</h2>
+        <h2 className="pdpp-eyebrow">Credentials you registered</h2>
         <p className="pdpp-caption mt-0.5 text-muted-foreground">
-          One row per approved owner-agent or manual credential, ordered for cleanup: never-used first, then
-          least-recently-used. Rename the label in place, or revoke to delete the OAuth client (RFC 7592) and
-          cascade-revoke its bearers. Clients with more than one active token expand to per-token details.
+          One row per OAuth client registered under your owner session, ordered for cleanup: never-used first, then
+          least-recently-used. <span className="font-medium text-foreground">Not every row is an owner bearer</span> —
+          this list is selected by who registered the client, so a row may hold scoped <code className="font-mono">client</code>{" "}
+          or <code className="font-mono">mcp_package</code> tokens instead. Each row states what it actually holds.
+          Rename the label in place, or revoke to delete the OAuth client (RFC 7592) and cascade-revoke its bearers.
+          Clients with more than one active token expand to per-token details.
         </p>
         {neverUsed > 0 ? (
           <p className="pdpp-caption mt-1.5 text-foreground">
@@ -430,7 +457,8 @@ function TokensListSection({
                     <LastUsed value={token.last_used_at} />
                     <span aria-hidden>·</span>
                     <span>
-                      {token.active_token_count} active token{token.active_token_count === 1 ? "" : "s"}
+                      {token.active_token_count} active {describeTokenKinds(token.active_token_kinds)}
+                      {token.active_token_count === 1 ? "" : "s"}
                     </span>
                     <span aria-hidden>·</span>
                     <code className="font-mono text-xs">{token.client_id}</code>
