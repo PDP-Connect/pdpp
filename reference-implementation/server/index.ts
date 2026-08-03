@@ -210,7 +210,9 @@ import {
   initPostgresStorage,
   isPostgresStorageBackend,
   postgresQuery,
+  reconcileSemanticHotHnswIndexesInBackground,
   resolveStorageBackend,
+  semanticHotHnswReconcileIntervalMs,
 } from "./postgres-storage.ts";
 import {
   configuredGoogleDataPortabilityProviderAuthConnectorKeys,
@@ -6783,6 +6785,33 @@ export async function startServer(opts: ServerOpts = {}) {
   function stopConnectorMaintenanceSweep() {
     connectorMaintenanceSweepTimer.stop();
   }
+  // Reuses the same generic timer chassis for the same reason as the two
+  // sweeps above: bootstrapPostgresSchema (awaited earlier in this function,
+  // before any of this) deliberately does NOT build the per-connector-
+  // instance "hot" semantic HNSW indexes inline, because CREATE INDEX
+  // CONCURRENTLY on a large partition can run for tens of minutes and must
+  // never gate server readiness. This timer is that work's only owner,
+  // constructed unstarted here and started at the very end of boot (its
+  // stopWhenAllClosed/start() call, below, mirrors the two sweeps above) so
+  // a failure anywhere between here and there can never leave it orphaned
+  // and running. Its
+  // sweep also self-serializes across processes/replicas/ticks with a
+  // non-blocking Postgres advisory lock (see
+  // reconcileSemanticHotHnswIndexesInBackground), so concurrently arming
+  // this timer on multiple replicas is safe — only one build runs at a time.
+  const semanticHotIndexReconcileTimer = createBrowserSurfaceLeaseSweepTimer({
+    intervalMs: semanticHotHnswReconcileIntervalMs(),
+    onSweepError: (err: unknown) => {
+      logger.warn?.(
+        { err: err instanceof Error ? err.message : String(err) },
+        "semantic hot-index background reconcile tick failed"
+      );
+    },
+    sweep: () => reconcileSemanticHotHnswIndexesInBackground((msg: string) => logger.info(msg)),
+  });
+  function stopSemanticHotIndexReconcile() {
+    semanticHotIndexReconcileTimer.stop();
+  }
   let schedulerManager: {
     cancelRun: (runId: string) => { status: string; run_id: string };
     refresh: () => Promise<void>;
@@ -7233,6 +7262,13 @@ export async function startServer(opts: ServerOpts = {}) {
   // every deployment.
   connectorMaintenanceSweepTimer.stopWhenAllClosed([asServer, rsServer]);
   connectorMaintenanceSweepTimer.start();
+  // Same deferred-arming discipline again, same reason: this is a Postgres-
+  // only concern (reconcileSemanticHotHnswIndexesInBackground no-ops under
+  // SQLite), so starting it after every fallible boot await — including the
+  // ones after storage init — costs nothing and keeps the "arm last" rule
+  // uniform across every background timer in this function.
+  semanticHotIndexReconcileTimer.stopWhenAllClosed([asServer, rsServer]);
+  semanticHotIndexReconcileTimer.start();
   const deliveryWorkerLeases =
     opts.startClientEventDeliveryWorker === false
       ? []
@@ -7278,6 +7314,10 @@ export async function startServer(opts: ServerOpts = {}) {
     // maintenance sweep timer (shell retirement, attention expiry, bounded
     // evidence-sweep round — see connector-maintenance-sweep.ts).
     stopConnectorMaintenanceSweep,
+    // Exposed so the CLI shutdown path (and tests that start/stop many
+    // server instances per process) can clear the periodic semantic
+    // hot-index background reconcile timer.
+    stopSemanticHotIndexReconcile,
   };
 }
 
@@ -8210,6 +8250,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     stopBrowserSurfaceLeaseSweep: StartServerResult["stopBrowserSurfaceLeaseSweep"] | null;
     stopClientEventDeliveryWorker: StartServerResult["stopClientEventDeliveryWorker"] | null;
     stopConnectorMaintenanceSweep: StartServerResult["stopConnectorMaintenanceSweep"] | null;
+    stopSemanticHotIndexReconcile: StartServerResult["stopSemanticHotIndexReconcile"] | null;
   } = {
     abortStartupBackfill: null,
     asServer: null,
@@ -8222,6 +8263,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     stopBrowserSurfaceLeaseSweep: null,
     stopClientEventDeliveryWorker: null,
     stopConnectorMaintenanceSweep: null,
+    stopSemanticHotIndexReconcile: null,
   };
   const exitOnSignal = (signal: string) => async () => {
     if (shuttingDown) {
@@ -8301,6 +8343,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
     } catch {}
     server.stopBrowserSurfaceLeaseSweep?.();
     server.stopConnectorMaintenanceSweep?.();
+    server.stopSemanticHotIndexReconcile?.();
     await server.stopClientEventDeliveryWorker?.();
     // Drain in-flight connector children IN PARALLEL with the HTTP /
     // backfill drains. Children received their own SIGTERM from Docker
@@ -8344,6 +8387,7 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
       server.stopBrowserSurfaceLeaseSweep = result.stopBrowserSurfaceLeaseSweep;
       server.stopClientEventDeliveryWorker = result.stopClientEventDeliveryWorker;
       server.stopConnectorMaintenanceSweep = result.stopConnectorMaintenanceSweep;
+      server.stopSemanticHotIndexReconcile = result.stopSemanticHotIndexReconcile;
     })
     .catch((err) => {
       closePostgresStorage().finally(() => closeDb());

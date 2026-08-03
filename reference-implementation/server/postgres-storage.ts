@@ -127,6 +127,16 @@ function semanticHotHnswMaxTableShare() {
   return 0.1;
 }
 
+// How often the background reconciler (armed in server/index.ts's
+// startServer, only after the HTTP listeners are already accepting
+// connections) attempts a bounded hot-index pass. In-code default, not a
+// deployment-only override: any operator can still tune it via env, but the
+// server is safe with none set.
+export function semanticHotHnswReconcileIntervalMs() {
+  const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_HOT_INDEX_RECONCILE_INTERVAL_MS || "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 5 * 60 * 1000;
+}
+
 export function isPostgresSemanticVectorEmbedding() {
   return activeBackend === "postgres" && semanticEmbeddingColumnMode === "vector";
 }
@@ -242,6 +252,12 @@ const POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK = [482_571, 150];
 const POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS = 120;
 const POSTGRES_BOOTSTRAP_LOCK_INITIAL_DELAY_MS = 25;
 const POSTGRES_BOOTSTRAP_LOCK_MAX_DELAY_MS = 250;
+// Distinct from POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK: the hot-index
+// reconciler runs on its own background timer, independently of bootstrap,
+// and must never contend with (or wait behind) bootstrap's lock. A
+// non-blocking pg_try_advisory_lock on this id is the single-owner gate
+// across every process/replica/tick — see ensureSemanticHotHnswIndexes.
+const POSTGRES_SEMANTIC_HOT_INDEX_RECONCILE_LOCK = [482_571, 152];
 
 function samePostgresEnumMembers(actual: readonly string[], expected: readonly string[]): boolean {
   return actual.length === expected.length && actual.every((value) => expected.includes(value));
@@ -2350,15 +2366,33 @@ function semanticHotHnswIndexName(connectorId: string, connectorInstanceId: stri
   return `${SEMANTIC_HOT_HNSW_INDEX_PREFIX}${connector}_${instance}`.slice(0, 63);
 }
 
+/**
+ * Best-effort, background-only reconciliation of per-connector-instance
+ * ("hot source") partial HNSW indexes. This is a query-planner optimization
+ * on top of the global HNSW index (ensureSemanticEmbeddingHnswIndex) — every
+ * row remains reachable and correctly ranked by the global index or exact
+ * scan whether or not a given hot index exists yet, so this function is
+ * never on the startup-readiness path (see reconcileSemanticHotHnswIndexesInBackground
+ * and its arming in server/index.ts's startServer).
+ *
+ * Single-owner across processes/replicas/ticks via a non-blocking
+ * pg_try_advisory_lock: a losing caller (concurrent tick, concurrent
+ * replica, or a tick that overruns into the next interval) returns
+ * immediately rather than queueing behind the winner, so at most one
+ * `CREATE INDEX CONCURRENTLY` build runs system-wide at a time.
+ *
+ * A build that was canceled mid-flight (deploy restart, statement timeout,
+ * OOM) leaves an invalid index that Postgres will never retry on its own;
+ * ensureSemanticHotHnswIndexCandidateValid drops it with `DROP INDEX
+ * CONCURRENTLY` before the next attempt so the reconciler self-heals
+ * instead of wedging on that connector forever.
+ */
 async function ensureSemanticHotHnswIndexes(
   client: PoolClient,
   log: StorageLog = () => {
     /* no-op */
   }
 ): Promise<void> {
-  // bootstrapPostgresSchema holds the polling-acquired session lock while this
-  // concurrent build runs; a losing bootstrap has finished pg_try_advisory_lock
-  // before backing off and cannot form a virtual-xact wait cycle here.
   if (!(await hasPgvectorExtension(client))) {
     return;
   }
@@ -2394,6 +2428,10 @@ async function ensureSemanticHotHnswIndexes(
   await hot.rows.reduce(async (previous, row) => {
     await previous;
     const indexName = semanticHotHnswIndexName(row.connector_id, row.connector_instance_id);
+    const alreadyValid = await ensureSemanticHotHnswIndexCandidateValid(client, indexName, log);
+    if (alreadyValid) {
+      return;
+    }
     log(
       `[PDPP] Semantic index migration: ensuring hot-source HNSW index ${indexName} (${row.connector_id}, ${row.indexed_rows} rows)`
     );
@@ -2410,6 +2448,77 @@ async function ensureSemanticHotHnswIndexes(
       await client.query("RESET max_parallel_maintenance_workers");
     }
   }, Promise.resolve());
+}
+
+/**
+ * Returns true when `indexName` already exists and is valid (nothing to do).
+ * When it exists but is invalid (a prior CREATE INDEX CONCURRENTLY was
+ * canceled), drops it with DROP INDEX CONCURRENTLY first so the caller's
+ * subsequent CREATE INDEX CONCURRENTLY IF NOT EXISTS actually rebuilds it
+ * instead of silently no-op'ing against the invalid leftover.
+ */
+async function ensureSemanticHotHnswIndexCandidateValid(
+  client: PoolClient,
+  indexName: string,
+  log: StorageLog
+): Promise<boolean> {
+  const existing = await client.query(
+    `SELECT ix.indisvalid AS valid
+       FROM pg_class idx
+       JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+       JOIN pg_index ix ON ix.indexrelid = idx.oid
+      WHERE ns.nspname = current_schema()
+        AND idx.relname = $1
+      LIMIT 1`,
+    [indexName]
+  );
+  if (existing.rowCount === 0) {
+    return false;
+  }
+  if (existing.rows[0]?.valid === true) {
+    return true;
+  }
+  log(
+    `[PDPP] Semantic index migration: dropping invalid hot-source HNSW index ${indexName} before rebuild (prior build was canceled)`
+  );
+  await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${sqlIdentifier(indexName)}`);
+  return false;
+}
+
+/**
+ * The only caller of ensureSemanticHotHnswIndexes off the startup path. Runs
+ * on its own bounded interval, arms only after the server is already
+ * listening (see the server boot sequence), and self-serializes across
+ * processes/replicas with a non-blocking advisory lock so at most one
+ * CREATE INDEX CONCURRENTLY build runs at a time system-wide. Acquires its
+ * own client from the pool — independent of whatever client bootstrap used —
+ * because bootstrap has long since released its client and lock by the time
+ * this ever runs.
+ */
+export async function reconcileSemanticHotHnswIndexesInBackground(log: StorageLog = NOOP_STORAGE_LOG): Promise<void> {
+  if (!isPostgresStorageBackend()) {
+    return;
+  }
+  const client = await getPostgresPool().connect();
+  try {
+    const lockResult = await client.query(
+      "SELECT pg_try_advisory_lock($1, $2) AS locked",
+      POSTGRES_SEMANTIC_HOT_INDEX_RECONCILE_LOCK
+    );
+    if (lockResult.rows[0]?.locked !== true) {
+      return;
+    }
+    try {
+      await ensureSemanticHotHnswIndexes(client, log);
+    } finally {
+      await client.query("SELECT pg_advisory_unlock($1, $2)", POSTGRES_SEMANTIC_HOT_INDEX_RECONCILE_LOCK).catch(() => {
+        // The client is being released regardless; unlock failure here would
+        // otherwise mask a real reconciliation error from the caller.
+      });
+    }
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -2441,7 +2550,10 @@ async function migratePostgresSemanticEmbeddingToVector(
   const udtName = await postgresColumnUdtName(client, "semantic_search_blob", "embedding");
   if (udtName === "vector") {
     await ensureSemanticEmbeddingHnswIndex(client, log);
-    await ensureSemanticHotHnswIndexes(client, log);
+    // Hot per-connector-instance indexes are deliberately NOT built here:
+    // this function runs synchronously inside bootstrapPostgresSchema, which
+    // gates server readiness. reconcileSemanticHotHnswIndexesInBackground
+    // (armed after the server is already listening) owns them instead.
     semanticEmbeddingColumnMode = "vector";
     semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
     return;
@@ -2510,7 +2622,9 @@ async function migratePostgresSemanticEmbeddingToVector(
   }
 
   await ensureSemanticEmbeddingHnswIndex(client, log);
-  await ensureSemanticHotHnswIndexes(client, log);
+  // Hot per-connector-instance indexes: see the comment on the sibling
+  // udtName === "vector" branch above — deliberately not built on this
+  // synchronous, readiness-gating path.
   semanticEmbeddingColumnMode = "vector";
   semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
   if (total > 0) {
