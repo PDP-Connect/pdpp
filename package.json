@@ -29,6 +29,8 @@
     "docker:release-bundle:test": "node --test --import tsx scripts/generate-selfhost-bundle.test.ts",
     "docker:release-bundle:verify-published": "node --import tsx scripts/verify-selfhost-bundle-published.ts",
     "docker:release-bundle:verify-published:test": "node --test --import tsx scripts/verify-selfhost-bundle-published.test.ts",
+    "docker:release-bundle:publish-asset": "node --import tsx scripts/publish-selfhost-bundle-asset.ts",
+    "docker:release-bundle:publish-asset:test": "node --test --import tsx scripts/publish-selfhost-bundle-asset.test.ts",
     "docker:slackdump-identity:contract:test": "node --test --import tsx scripts/slackdump-identity-docker-contract.test.ts",
     "docker:neko:dynamic-allocator-smoke": "bash scripts/docker-neko-dynamic-allocator-smoke.sh",
     "docker:stream-smoke": "node --import tsx scripts/manual-action-stream-smoke.ts",

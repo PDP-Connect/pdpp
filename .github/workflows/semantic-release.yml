@@ -133,6 +133,9 @@ jobs:
       - name: Test self-host bundle publish verification
         run: pnpm docker:release-bundle:verify-published:test
 
+      - name: Test create-once release-asset publish contract (and forbid --clobber)
+        run: pnpm docker:release-bundle:publish-asset:test
+
       - name: Typecheck operator console app
         run: pnpm --dir apps/console run types:check
 
@@ -463,13 +466,21 @@ jobs:
             --image "neko=${{ steps.digests.outputs.neko }}" \
             --out .release-bundle/docker-compose.yml
 
-      - name: Upload bundle to the release
+      # Create-once, not upload-or-replace: this asset's whole value is that
+      # its stable URL always serves the same bytes for a given tag. `gh
+      # release upload --clobber` would silently overwrite it on any re-run
+      # (a workflow retry, or a rebuild that picks up a drifted unpinned
+      # upstream base image) — see scripts/publish-selfhost-bundle-asset.ts
+      # for the full contract: upload only if the asset is absent; if
+      # present, require byte-identical content and succeed without
+      # replacing it; if different, fail loudly instead of picking a winner.
+      - name: Publish bundle to the release (create-once, never overwrite)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.release.outputs.git-tag }}" \
-            .release-bundle/docker-compose.yml \
-            --clobber
+          pnpm docker:release-bundle:publish-asset -- \
+            --tag "${{ needs.release.outputs.git-tag }}" \
+            --file .release-bundle/docker-compose.yml
 
       - name: Verify the published bundle is version-coherent and pullable
         run: pnpm docker:release-bundle:verify-published -- --tag "${{ needs.release.outputs.git-tag }}"
