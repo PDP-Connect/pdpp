@@ -401,6 +401,13 @@ function addSafeDiagnosticEvidence(safe: Record<string, unknown>, raw: UnknownRe
       .slice(0, MAX_SAFE_PAGE_CANDIDATES)
       .map(sanitizeExportCandidate);
   }
+  if (Array.isArray(raw.popup_urls)) {
+    // Same policy as sanitizeArtifactDiagnostics' candidate.url: even a
+    // same-origin-stripped URL string can carry an account- or
+    // document-scoped path segment, so only the bounded count crosses the
+    // safe boundary, never the strings themselves.
+    safe.popup_count = boundedSafeDiagnosticCount(raw.popup_urls.length);
+  }
 }
 
 function addSafeDiagnosticErrorAndCounts(safe: Record<string, unknown>, raw: UnknownRecord): void {

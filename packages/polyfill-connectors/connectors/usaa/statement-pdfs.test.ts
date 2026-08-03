@@ -143,7 +143,8 @@ test("consumeDownloadOrResponse falls back to a late response when the download 
   const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
   assert.ok(result);
   assert.equal(result.suggestedFilename, "fallback.pdf");
-  assert.equal(typeof result.diag?.download_error, "string");
+  const download = result.diag?.download as { downloadFailure?: unknown } | undefined;
+  assert.equal(typeof download?.downloadFailure, "string");
 });
 
 // ─── Outcome 1: zero-effect click ────────────────────────────────────────
@@ -161,7 +162,12 @@ test("outcome 1/4 — zero-effect click: both arms reject, zero response candida
   const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
   assert.ok(result);
   assert.equal(result.buffer.length, 0);
-  assert.equal(result.diag?.response_diagnostics, diagnostics);
+  // Must be keyed `artifact`, not an ad hoc name: sanitizeSafeDiagnosticPayload
+  // (safe-diagnostics.ts) only preserves the canonical artifact/download/error
+  // vocabulary past the safe-emission boundary — any other key is silently
+  // dropped, which is exactly how the live pdf_download_failed evidence
+  // collapsed to a bare `error: "unknown"` with no discriminating detail.
+  assert.equal(result.diag?.artifact, diagnostics);
   // This is exactly the live signature from run_6f7521cba36f476aaf58d464cfbc3f50:
   // both arms rejected, zero response candidates, and (the discriminator a
   // response-only counter can't provide) zero requests ever started.
@@ -332,7 +338,7 @@ test("outcome 3/4 — unmatched response: traffic occurred but nothing matched t
   const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
   assert.ok(result);
   assert.equal(result.buffer.length, 0);
-  const responseDiag = result.diag?.response_diagnostics as BodyResponseDiagnostics;
+  const responseDiag = result.diag?.artifact as BodyResponseDiagnostics;
   // Nonzero traffic, zero candidates: this is the "wrong content-type" or
   // "selector mismatch" signature, distinguishable from outcome 1 purely by
   // the total counters — the live evidence this instrumentation exists to
@@ -360,7 +366,7 @@ test("outcome 4/4 — request-start/no-terminal-artifact: a request began but ne
   const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
   assert.ok(result);
   assert.equal(result.buffer.length, 0);
-  const responseDiag = result.diag?.response_diagnostics as BodyResponseDiagnostics;
+  const responseDiag = result.diag?.artifact as BodyResponseDiagnostics;
   // The discriminator: a request started (nonzero) but neither transport
   // ever saw a response (both zero) — a hung/blocked/never-delivered
   // request, not a click with zero network effect (outcome 1, where this

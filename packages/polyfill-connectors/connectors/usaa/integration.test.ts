@@ -45,7 +45,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BrowserContext, Page } from "playwright";
-import type { BodyResponseCandidateDiagnostic } from "../../src/browser-artifact-response.ts";
+import type { BodyResponseCandidateDiagnostic, BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import type { SafeCaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
@@ -553,6 +553,72 @@ test("hydratePdfsForIndex: a final PDF failure emits one bounded typed and row-c
   assert.notEqual(skip.reason, "diagnostic_sanitized");
   assert.equal((skip.diagnostics as { row_id?: unknown }).row_id, 0, "run-local row correlation survives sanitization");
   assert.doesNotMatch(JSON.stringify(skip), /provider text that must not be emitted/);
+});
+
+test("hydratePdfsForIndex: statement-pdfs.ts's real diag shape (artifact + error) survives sanitization intact", async () => {
+  // Regression for the live gap: statement-pdfs.ts's consumeDownloadOrResponse
+  // catch-all branch emits `diag: { artifact: responseQueue.diagnostics(), error }`
+  // (see the outcome-1-4 tests in statement-pdfs.test.ts). Before this fix that
+  // object used ad hoc keys (`response_diagnostics`, `popup_urls` as raw
+  // strings) that sanitizeSafeDiagnosticPayload (safe-diagnostics.ts) doesn't
+  // recognize, so every field except the bucketed `error` category was
+  // silently dropped — a real "6/7 streams complete, PDF row 3 skip
+  // pdf_download_failed" run had zero discriminating evidence left in durable
+  // storage. This proves the counters that distinguish "zero network effect"
+  // from "traffic occurred but unmatched" from "request started but hung"
+  // reach the emitted SKIP_RESULT, and that popup URLs still never leak raw.
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow()];
+  const artifact: BodyResponseDiagnostics = {
+    candidates: [],
+    cdpError: null,
+    cdpReady: true,
+    totalCdpRequestsStarted: 1,
+    totalCdpResponsesSeen: 0,
+    totalResponsesSeen: 0,
+  };
+  await hydratePdfsForIndex(
+    { ...deps, page: {} as Page },
+    indexRows,
+    ({ onSkip, statements }): Promise<HydratedStatement[]> => {
+      const [statement] = statements;
+      assert.ok(statement);
+      onSkip?.({
+        statement,
+        reason: "download_timeout",
+        diag: {
+          artifact,
+          error: "body_response_timeout after 45000ms",
+          popup_urls: ["https://www.usaa.com/my/documents?acct=555555"],
+        },
+      });
+      return Promise.resolve([]);
+    }
+  );
+
+  const skips = messages.filter(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "statements"
+  );
+  assert.equal(skips.length, 1);
+  const [skip] = skips;
+  assert.ok(skip);
+  const diagnostics = skip.diagnostics as {
+    artifact?: BodyResponseDiagnostics;
+    popup_count?: number;
+  };
+  assert.ok(diagnostics.artifact, "artifact counters must survive sanitization, not collapse to just `error`");
+  assert.equal(diagnostics.artifact?.totalCdpRequestsStarted, 1, "request-started counter survives");
+  assert.equal(diagnostics.artifact?.totalCdpResponsesSeen, 0, "response-seen counter survives");
+  assert.equal(diagnostics.artifact?.totalResponsesSeen, 0, "response-seen counter survives");
+  assert.deepEqual(diagnostics.artifact?.candidates, [], "candidate list survives (empty but present, not dropped)");
+  assert.equal(diagnostics.popup_count, 1, "popup count survives as a bounded number");
+  assert.doesNotMatch(JSON.stringify(skip), /usaa\.com|acct=555555/, "raw popup URL never crosses the safe boundary");
+  assert.match(
+    skip.message,
+    /requests started=1.*popups=1|popups=1.*requests started=1/,
+    "the human-readable message summarizes the surviving evidence, not just the bare reason string"
+  );
 });
 
 test("hydratePdfsForIndex: reversed callback order flushes final skips once in statement index order", async () => {

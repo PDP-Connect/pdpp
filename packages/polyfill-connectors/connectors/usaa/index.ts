@@ -262,6 +262,25 @@ const SAFE_USAA_PROGRESS_CATEGORIES = [
   { message: "Statement parsing", prefix: "Parsed " },
 ] as const;
 
+function safeUsaaPdfDownloadFailedMessage(diagnostics: Record<string, unknown> | undefined): string {
+  const artifact = diagnostics?.artifact as { candidates?: unknown[]; totalCdpRequestsStarted?: number } | undefined;
+  const download = diagnostics?.download as { bytes?: number | null; source?: string | null } | undefined;
+  const parts: string[] = [];
+  if (artifact) {
+    const candidateCount = Array.isArray(artifact.candidates) ? artifact.candidates.length : 0;
+    parts.push(`artifact candidates=${candidateCount}, requests started=${artifact.totalCdpRequestsStarted ?? 0}`);
+  }
+  if (download) {
+    parts.push(`download bytes=${download.bytes ?? 0}, source=${download.source ?? "unknown"}`);
+  }
+  if (typeof diagnostics?.popup_count === "number" && diagnostics.popup_count > 0) {
+    parts.push(`popups=${diagnostics.popup_count}`);
+  }
+  return parts.length
+    ? `USAA statement PDF download did not produce a persisted PDF: ${parts.join("; ")}`
+    : "USAA statement PDF download did not produce a persisted PDF";
+}
+
 function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown> | undefined): string {
   switch (reason) {
     case "export_affordance_disabled":
@@ -291,6 +310,8 @@ function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown
       return "USAA export attempt failed with a bounded diagnostic class";
     case "selectors_pending":
       return "USAA selector wiring is pending for this stream";
+    case "pdf_download_failed":
+      return safeUsaaPdfDownloadFailedMessage(diagnostics);
     default:
       return `USAA diagnostic: ${reason}`;
   }

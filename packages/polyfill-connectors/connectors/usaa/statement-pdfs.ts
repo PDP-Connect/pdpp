@@ -241,7 +241,7 @@ async function consumeDownloadOrResponse({
       if (response) {
         return {
           buffer: response.body,
-          diag: { download_error: errMsg(err), response_source: response.source },
+          diag: { download: { downloadFailure: errMsg(err), source: response.source } },
           suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
         };
       }
@@ -251,17 +251,24 @@ async function consumeDownloadOrResponse({
     if (response) {
       return {
         buffer: response.body,
-        diag: { download_empty: true, response_source: response.source },
+        diag: { download: { bytes: 0, source: response.source } },
         suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
       };
     }
     return null;
   } catch (err) {
+    // Use the same `artifact`/`error` vocabulary the transactions-export
+    // path emits (see index.ts's emitExportFailure) — this is the only
+    // shape sanitizeSafeDiagnosticPayload (safe-diagnostics.ts) preserves
+    // past the safe-emission boundary. An ad hoc key here is silently
+    // dropped, not merely redacted, and the SKIP_RESULT collapses to a bare
+    // `error: "unknown"` with no way to distinguish "no network traffic at
+    // all" from "traffic occurred but never matched."
     return {
       buffer: Buffer.alloc(0),
       diag: {
+        artifact: responseQueue.diagnostics(),
         error: errMsg(err),
-        response_diagnostics: responseQueue.diagnostics(),
       },
       suggestedFilename: "statement.pdf",
     };
