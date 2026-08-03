@@ -33,6 +33,8 @@ const SAFE_GENERIC_REASONS = new Set(["diagnostic_sanitized"]);
 const SAFE_GENERIC_OUTCOMES = new Set(["unknown"]);
 const SAFE_GENERIC_TERMINAL_FAILURES = new Set<string>();
 const SAFE_GENERIC_CODES = new Set(["unknown"]);
+const NETWORK_ERROR_PATTERN =
+  /\bnetwork\b|\bfetch(?:\s+(?:failed|error))?\b|\bsocket\b|\bECONN[A-Z0-9_]*\b|net::ERR_[A-Z0-9_]+|connection reset/i;
 
 export const SAFE_DIAGNOSTIC_OPERATION_DEADLINE_MS = 750;
 
@@ -133,7 +135,8 @@ export function safeErrorCategory(
     if (lower.includes("capture")) {
       return "capture";
     }
-    if (lower.includes("network") || lower.includes("econn") || lower.includes("http")) {
+    const withoutUrls = raw.replace(/\bhttps?:\/\/\S+/gi, " ");
+    if (NETWORK_ERROR_PATTERN.test(withoutUrls)) {
       return "network";
     }
   } catch {

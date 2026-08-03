@@ -353,15 +353,15 @@ const DEFAULT_RETRYABLE_PATTERN = /ECONN|ETIMEDOUT|timeout/i;
 const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
 
 /**
- * A failure that the runtime should convert to a terminal DONE rather than
- * let it bubble as an unhandled rejection. Carries an explicit `retryable`
+ * A failure that the runtime or a connector should convert to a terminal DONE
+ * rather than let it bubble as an unhandled rejection. Carries an explicit `retryable`
  * bit so the outer catch doesn't have to heuristically pattern-match the
  * message. The optional `code` carries a stable, infrastructure-set
  * machine-actionable code (e.g. `browser_surface_attach_exhausted`) through
  * to `DONE.error.code` — see `emitFailed`'s composition with a connector's
  * `normalizeTerminalError` for how this survives connector overrides.
  */
-class TerminalError extends Error {
+export class TerminalError extends Error {
   readonly code?: string;
   readonly retryable: boolean;
   constructor(message: string, options: { cause?: unknown; code?: string; retryable?: boolean } = {}) {

@@ -907,6 +907,7 @@ test("ensureUsaaSession classifies USAA source-unavailable page rendered after p
 
     assert.match(thrown.message, /classification=source_unavailable/);
     assert.match(thrown.message, /USAA login completed but no verified authenticated dashboard session was detected/);
+    assert.equal((thrown as { code?: string }).code, "session_required");
     assert.doesNotMatch(thrown.message, /^source_unavailable:/);
     // This path never had a manual_action interaction before #294 either —
     // preserved, not newly added.

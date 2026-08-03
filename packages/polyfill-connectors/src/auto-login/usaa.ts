@@ -15,7 +15,7 @@
 
 import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
-import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import { type InteractionRequest, type InteractionResponse, TerminalError } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
@@ -515,7 +515,8 @@ export async function ensureUsaaSession({
   // It is folded into the thrown diagnostic so downstream classification/logs
   // can see it, but it does not change what error this throws or suppress
   // the owner-visible diagnostic that was already here.
-  throw new Error(
-    `USAA login completed but no verified authenticated dashboard session was detected (classification=${classification}). url=${page.url()} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(finalText, 300)}`
+  throw new TerminalError(
+    `USAA login completed but no verified authenticated dashboard session was detected (classification=${classification}). url=${page.url()} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(finalText, 300)}`,
+    { code: "session_required" }
   );
 }

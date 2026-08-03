@@ -4,9 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { USAA_SAFE_DIAGNOSTICS_POLICY } from "../connectors/usaa/index.ts";
 import type { EmittedMessage } from "./connector-runtime-protocol.ts";
 import {
   DEFAULT_SAFE_DIAGNOSTICS_POLICY,
+  safeErrorCategory,
   sanitizeSafeDiagnosticInfo,
   sanitizeSafeDiagnosticPayload,
   sanitizeSafeEmission,
@@ -37,9 +39,64 @@ test("the safe emission boundary closes runtime progress and DONE bypasses", () 
     type: "DONE",
     status: "failed",
     records_emitted: 1_000_000,
-    error: { code: "unknown", message: "Connector failure (network)", retryable: true },
+    error: { code: "unknown", message: "Connector failure (unknown)", retryable: true },
   });
   assert.doesNotMatch(JSON.stringify({ progress, done }), /ACCT-123|PRIVATE|SECRET|https?:\/\//u);
+});
+
+test("safeErrorCategory does not classify a URL or bare http text as network", () => {
+  assert.equal(safeErrorCategory(new Error("https://www.usaa.com/network/fetch/socket")), "unknown");
+  assert.equal(safeErrorCategory(new Error("session verification failed url=https://www.usaa.com/my/usaa")), "unknown");
+  assert.equal(safeErrorCategory(new Error("http response body was not authenticated")), "unknown");
+});
+
+test("safeErrorCategory retains explicit network failure signatures", () => {
+  for (const message of [
+    "network request failed",
+    "fetch failed",
+    "socket hang up",
+    "read ECONNRESET",
+    "page.goto: net::ERR_CONNECTION_RESET",
+    "connection reset by peer",
+  ]) {
+    assert.equal(safeErrorCategory(new Error(message)), "network", message);
+  }
+});
+
+test("USAA no-session errors sanitize to the declared session_required code", () => {
+  const safe = sanitizeSafeEmission(
+    asEmittedMessage({
+      type: "DONE",
+      status: "failed",
+      records_emitted: 0,
+      error: {
+        code: "session_required",
+        message:
+          "USAA login completed but no verified authenticated dashboard session was detected url=https://www.usaa.com/my/usaa",
+        retryable: false,
+      },
+    }),
+    USAA_SAFE_DIAGNOSTICS_POLICY
+  );
+  assert.deepEqual(safe, {
+    type: "DONE",
+    status: "failed",
+    records_emitted: 0,
+    error: { code: "session_required", message: "Connector failure (unknown)", retryable: false },
+  });
+});
+
+test("safe diagnostics keep undeclared terminal codes unknown", () => {
+  const safe = sanitizeSafeEmission(
+    asEmittedMessage({
+      type: "DONE",
+      status: "failed",
+      records_emitted: 0,
+      error: { code: "arbitrary_secret_code", message: "credential rejected", retryable: false },
+    }),
+    USAA_SAFE_DIAGNOSTICS_POLICY
+  );
+  assert.equal((safe as Extract<EmittedMessage, { type: "DONE" }>).error?.code, "unknown");
 });
 
 test("the shared diagnostic boundary preserves structural state but drops mutation values", () => {

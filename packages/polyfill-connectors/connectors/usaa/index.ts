@@ -296,7 +296,7 @@ function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown
   }
 }
 
-const USAA_SAFE_DIAGNOSTICS_POLICY: SafeDiagnosticsPolicy = {
+export const USAA_SAFE_DIAGNOSTICS_POLICY: SafeDiagnosticsPolicy = {
   codeAllowlist: SAFE_USAA_CODES,
   defaultProgressMessage: "USAA progress",
   formatSkipMessage: safeUsaaSkipMessage,
