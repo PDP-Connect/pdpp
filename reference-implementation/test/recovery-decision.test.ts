@@ -1008,7 +1008,7 @@ test("isManifestGenerationInvalidatedDebt: false for state=current REGARDLESS of
   );
 });
 
-test("isManifestGenerationInvalidatedDebt: false for missing/null evidence or terminal_facts (never silently treated as in scope)", () => {
+test("isManifestGenerationInvalidatedDebt: true for missing/null evidence or terminal_facts (fail-closed to in scope, never silently treated as current)", () => {
   assert.equal(
     isManifestGenerationInvalidatedDebt(null),
     true,
