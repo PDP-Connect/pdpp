@@ -191,14 +191,85 @@ test("touched landing/docs/page/test surface has no legacy owner path", async ()
 const SEMANTIC_RELEASE_WORKFLOW = new URL("../../../.github/workflows/semantic-release.yml", import.meta.url);
 const SELF_HOSTABLE_IMAGES = ["reference", "reference-browser", "web", "railway-core", "core-browser"] as const;
 
+const DOCKER_IMAGES_WORKFLOW = new URL("../../../.github/workflows/docker-images.yml", import.meta.url);
+
+// Parse `- image: X` matrix entries with the keys that follow them, so the
+// oracle checks what each entry actually BUILDS and LABELS rather than merely
+// that a name appears. Counting names alone would pass while an entry built the
+// wrong target or inherited another image's title — both real mistakes made
+// while adding these images.
+function matrixEntries(workflow: string): { image: string; target?: string; title?: string }[] {
+  const entries: { image: string; target?: string; title?: string }[] = [];
+  const lines = workflow.split("\n");
+  for (const [index, line] of lines.entries()) {
+    const match = /^\s*- image:\s*(\S+)\s*$/.exec(line);
+    if (!match?.[1]) {
+      continue;
+    }
+    const entry: { image: string; target?: string; title?: string } = { image: match[1] };
+    for (const next of lines.slice(index + 1)) {
+      if (/^\s*- image:/.test(next) || !/^\s{2,}\w/.test(next)) {
+        break;
+      }
+      const target = /^\s*target:\s*(\S+)\s*$/.exec(next);
+      if (target?.[1]) {
+        entry.target = target[1];
+      }
+      const title = /^\s*title:\s*(.+?)\s*$/.exec(next);
+      if (title?.[1]) {
+        entry.title = title[1];
+      }
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
 test("every self-hostable image is published by the release pipeline", async () => {
   const workflow = await readFile(fileURLToPath(SEMANTIC_RELEASE_WORKFLOW), "utf8");
+  const entries = matrixEntries(workflow);
   for (const image of SELF_HOSTABLE_IMAGES) {
-    const occurrences = workflow.split(`- image: ${image}\n`).length - 1;
+    const forImage = entries.filter((entry) => entry.image === image);
     assert.equal(
-      occurrences,
+      forImage.length,
       2,
-      `${image} must appear in BOTH the validate-release-images and publish-images matrices (found ${occurrences})`
+      `${image} must appear in BOTH the validate-release-images and publish-images matrices (found ${forImage.length})`
     );
+    // A matrix entry that builds someone else's target ships the wrong bits
+    // under this tag — e.g. a browser-capable name built from the browser-free
+    // stage. Name-presence alone cannot catch that. `web` is a deliberate
+    // legacy alias for the `console` stage (see the Dockerfile comment).
+    const expectedTarget = image === "web" ? "console" : image;
+    for (const entry of forImage) {
+      assert.equal(
+        entry.target,
+        expectedTarget,
+        `${image} must build the \`${expectedTarget}\` Dockerfile target, not \`${entry.target}\``
+      );
+    }
+  }
+});
+
+// Every published image needs its OWN title. A misplaced insertion can leave
+// one image with no labels and give its text to the next, which is how
+// `core-browser` briefly shipped labelled as the browser-free Railway node.
+test("each published image entry carries its own distinct title", async () => {
+  for (const [label, url] of [
+    ["semantic-release", SEMANTIC_RELEASE_WORKFLOW],
+    ["docker-images", DOCKER_IMAGES_WORKFLOW],
+  ] as const) {
+    const entries = matrixEntries(await readFile(fileURLToPath(url), "utf8")).filter((entry) =>
+      SELF_HOSTABLE_IMAGES.includes(entry.image as (typeof SELF_HOSTABLE_IMAGES)[number])
+    );
+    const seen = new Map<string, string>();
+    for (const entry of entries) {
+      assert.ok(entry.title, `${label}: ${entry.image} has no title label`);
+      const owner = seen.get(entry.title as string);
+      assert.ok(
+        owner === undefined || owner === entry.image,
+        `${label}: ${entry.image} reuses the title of ${owner}, so one image ships mislabelled`
+      );
+      seen.set(entry.title as string, entry.image);
+    }
   }
 });

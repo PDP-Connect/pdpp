@@ -85,3 +85,12 @@ test("classification distinguishes why an origin fails, for honest copy", () => 
   assert.equal(classifyHostedMcpOrigin("not-a-url"), "malformed");
   assert.equal(classifyHostedMcpOrigin("https://pdpp.example.com"), "public_https_shape");
 });
+
+// A trailing root-label dot is the same DNS name, so it must not smuggle a
+// private-DNS suffix past the check.
+test("trailing-dot FQDNs are classified like their dotless form", () => {
+  for (const origin of ["https://nas.local.", "https://foo.internal.", "https://pdpp.home.arpa.", "https://127.0.0.1."]) {
+    assert.equal(hasPublicHttpsShape(origin), false, `${origin} must not clear the public-HTTPS shape bar`);
+  }
+  assert.equal(hasPublicHttpsShape("https://pdpp.example.com."), true, "a public FQDN with a root dot is still public");
+});

@@ -61,7 +61,9 @@ export function classifyHostedMcpOrigin(origin: string): HostedMcpOriginShape {
   if (url.protocol !== "https:") {
     return "not_https";
   }
-  const host = url.hostname.toLowerCase();
+  // A trailing root-label dot ("nas.local.") is the same name as "nas.local",
+  // so normalize it away before any suffix comparison.
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!host || host === "localhost" || NON_PUBLIC_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
     return "not_public_address";
   }
