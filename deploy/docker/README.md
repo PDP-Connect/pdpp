@@ -179,12 +179,24 @@ and this operator runbook may continue to use a moving tag for exploratory work.
 
 - Records live in the `pdpp-postgres-data` volume; secrets live in `.env`.
   Back up both together.
+- If you enabled browser-backed sources, the `neko` service's Chromium
+  profile (cookies, saved login state) lives in the `pdpp-neko-profile`
+  volume, independent of the `neko` container itself.
 
 Upgrade by pulling and recreating; volumes persist:
 
 ```sh
 docker compose pull && docker compose up -d
 ```
+
+This recreates every container (including `neko`, if the browser profile is
+enabled) but reattaches the same named volumes, so Postgres data and the
+Chromium sign-in state both survive — you should not need to sign back in to
+ChatGPT/USAA/Amazon/etc. after an upgrade. The same is true of an ordinary
+`docker compose stop && docker compose start`, and of `docker compose down`
+followed by `docker compose up -d` with no `--volumes` flag. Only
+`docker compose down --volumes` (below) deletes profile/auth state, along
+with Postgres data.
 
 Update the reference and web image tags together, and run the registry manifest
 check before moving to another published Compose release.

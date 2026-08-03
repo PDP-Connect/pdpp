@@ -66,18 +66,75 @@ test("the browser surface is an opt-in profile on the same canonical stack", asy
   assert.doesNotMatch(src, /docker-compose\.neko\.yml/, "the blessed stack must not defer to a second compose file");
 });
 
-test("the browser surface is not published to the host", async () => {
-  const src = await compose();
-  // Take the lines from `  neko:` up to the next top-level key (another
-  // service, or the `volumes:` block).
+function nekoServiceBody(src: string): string {
   const lines = src.split("\n");
   const start = lines.findIndex((line) => line === "  neko:");
   assert.ok(start >= 0, "the n.eko service must be declared");
   const rest = lines.slice(start + 1);
   const end = rest.findIndex((line) => /^ {2}\S/.test(line) && line.trimEnd().endsWith(":") && !line.startsWith("    "));
-  const body = (end === -1 ? rest : rest.slice(0, end)).join("\n");
+  return (end === -1 ? rest : rest.slice(0, end)).join("\n");
+}
+
+test("the browser surface is not published to the host", async () => {
+  const src = await compose();
+  // Take the lines from `  neko:` up to the next top-level key (another
+  // service, or the `volumes:` block).
+  const body = nekoServiceBody(src);
   // Only the console is published. A reachable browser surface on the host
   // would be an unauthenticated remote-control port.
   assert.doesNotMatch(body, /^\s+ports:/m, "the n.eko service must not publish a host port");
   assert.match(body, /shm_size: 2gb/, "Chromium needs more than Docker's default 64MB of shared memory");
+});
+
+test("the browser surface's Chromium profile is backed by a project-scoped named volume", async () => {
+  const src = await compose();
+  const body = nekoServiceBody(src);
+  // Chromium's user-data-dir (start-chromium.sh:
+  // --user-data-dir=/home/user/.config/chromium) must be backed by a volume
+  // that outlives container recreation (`down`+`up`, an image rebuild, the
+  // documented `docker compose pull && docker compose up -d` upgrade path),
+  // or sign-in state for every browser-backed connector is silently lost on
+  // the next recreate.
+  assert.match(
+    body,
+    /^\s+- pdpp-neko-profile:\/home\/user\/\.config\/chromium$/m,
+    "the n.eko service must mount a named volume over Chromium's user-data-dir so profile/auth state survives container recreation"
+  );
+  assert.match(
+    src,
+    /^volumes:\n(?:.*\n)*?\s+pdpp-neko-profile:\s*$/m,
+    "pdpp-neko-profile must be declared as a top-level (project-scoped) named volume, not a host bind or an inline anonymous volume"
+  );
+});
+
+test("the browser-profile volume name does not collide with the dynamic allocator's host-bind path", async () => {
+  const src = await compose();
+  // The dynamic allocator (docker-compose.neko.yml, driven by
+  // scripts/reference-stack.sh) persists profiles via a HOST BIND at
+  // PDPP_NEKO_PROFILE_STORAGE_ROOT (default /var/lib/pdpp/neko-profiles),
+  // scoped per allocated surface — a completely different mechanism from
+  // this file's single named volume for the one static browser service.
+  // Neither the volume name nor its mount source may reference that path,
+  // or the two isolation mechanisms could be confused or made to collide.
+  assert.doesNotMatch(
+    src,
+    /PDPP_NEKO_PROFILE_STORAGE_ROOT/,
+    "the blessed self-service stack must not reference the dynamic allocator's host-bind profile-storage variable"
+  );
+  assert.doesNotMatch(
+    src,
+    /\/var\/lib\/pdpp\/neko-profiles/,
+    "the blessed self-service stack must not reuse the dynamic allocator's host-bind profile-storage path"
+  );
+});
+
+test("enabling the browser profile does not change the published web port", async () => {
+  const src = await compose();
+  // Regression guard: the profile-storage volume added to the neko service
+  // must not have moved/duplicated the one host-published port declaration
+  // (web:3000), and no second `ports:` entry should appear stack-wide.
+  const portLines = src.split("\n").filter((line) => /^\s*-\s*"\$\{PDPP_WEB_PORT/.test(line));
+  assert.equal(portLines.length, 1, "exactly one published port mapping (web) must exist in the blessed stack");
+  const allPortsBlocks = src.match(/^\s+ports:$/gm) ?? [];
+  assert.equal(allPortsBlocks.length, 1, "exactly one service (web) may declare a ports: block in the blessed stack");
 });

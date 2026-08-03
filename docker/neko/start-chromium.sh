@@ -121,12 +121,19 @@ ENABLED_FEATURES="${ENABLED_FEATURES:-CDPScreenshotNewSurface}"
 #   --restore-last-session: without it, session-scoped cookies (no
 #     Expires/Max-Age — how several providers, e.g. USAA, issue their auth
 #     cookie) are dropped by Chromium on a clean process exit, so every
-#     container restart forces re-authentication even though the
-#     user-data-dir bind mount is intact. Verified experimentally: a
+#     container restart forces re-authentication even when this
+#     user-data-dir IS backed by a durable volume (a named volume, as in
+#     deploy/docker/docker-compose.yml's `neko` service, or a host bind, as
+#     in the dynamic allocator path). This flag only helps when the
+#     directory itself survives; it does nothing if the compose layer
+#     starting this container has not mounted a volume over
+#     /home/user/.config/chromium in the first place — in that case the
+#     whole profile, not just session cookies, is lost on container
+#     recreation regardless of this flag. Verified experimentally: a
 #     disposable profile with one session cookie and one persistent cookie,
-#     stopped and restarted with these exact flags, loses the session
-#     cookie without this flag and keeps it with this flag; the persistent
-#     cookie survives either way.
+#     stopped and restarted (container preserved, not recreated) with these
+#     exact flags, loses the session cookie without this flag and keeps it
+#     with this flag; the persistent cookie survives either way.
 "$CHROME_BIN" \
   --disable-field-trial-config \
   --disable-background-networking \

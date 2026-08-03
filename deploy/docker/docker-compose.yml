@@ -167,6 +167,33 @@ services:
       NEKO_PASSWORD: ${PDPP_NEKO_PASSWORD:-neko}
       NEKO_PASSWORD_ADMIN: ${PDPP_NEKO_PASSWORD_ADMIN:-admin}
       PDPP_NEKO_CDP_PROXY_PORT: "9223"
+    # Chromium's profile dir (cookies, IndexedDB, saved login state for
+    # ChatGPT/USAA/Amazon/... sign-in) lives at /home/user/.config/chromium
+    # inside the container. A project-scoped named volume is the ONLY thing
+    # that survives container recreation:
+    #   - `docker compose stop`/`start` (no recreate): the container's
+    #     writable layer alone would already survive this case, so the
+    #     volume adds nothing new here, but does no harm either.
+    #   - `docker compose down` + `up` (recreates the container; this is the
+    #     upgrade path this README documents as `docker compose pull &&
+    #     docker compose up -d`): without this volume, the profile lived only
+    #     on the destroyed container's writable layer and was lost. With it,
+    #     the named volume outlives the container and is reattached.
+    #   - an image rebuild (`docker build ... -t pdpp-neko:local` then
+    #     `up -d`, the pre-release path this README documents): same as
+    #     above — survives, because the volume is independent of the image.
+    #   - `docker compose down --volumes` (this README's documented
+    #     teardown): deletes the volume along with Postgres data, by design —
+    #     this is the one operation the README already calls out as "deletes
+    #     data".
+    # Named (not host-bind): a separate operator/development stack (outside
+    # this file) manages a browser-surface allocator with its own
+    # per-surface host-bind profile storage, for isolating concurrently
+    # allocated browser surfaces from each other. That mechanism is
+    # unrelated to and unchanged by this volume — this file stays the one
+    # blessed self-service stack with no cross-references to it.
+    volumes:
+      - pdpp-neko-profile:/home/user/.config/chromium
     # No published port. The owner reaches this surface through the console
     # origin, so the browser is not exposed to the host or the network.
     healthcheck:
@@ -179,3 +206,4 @@ services:
 volumes:
   pdpp-postgres-data:
   pdpp-transformers:
+  pdpp-neko-profile:

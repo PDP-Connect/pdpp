@@ -90,7 +90,7 @@ patches ourselves — the maintenance burden goes to where it belongs.
 | Concern | Where | Why we own it |
 |---|---|---|
 | Window/screen size | `start-chromium.sh` + `NEKO_DESKTOP_SCREEN` | Patchright doesn't set viewport on attached contexts; 1440x900 is a top-five real-user resolution. |
-| User-data-dir | `start-chromium.sh` | Persistent profile for cross-session login state. |
+| User-data-dir | `start-chromium.sh` | Cross-session login state, persistent wherever the compose layer starting this container mounts a durable volume over `/home/user/.config/chromium` — the friend-facing `deploy/docker/docker-compose.yml` `neko` service (named volume `pdpp-neko-profile`) and the dynamic allocator path (`docker-compose.neko.yml`, per-surface host bind) both do this; a compose layer that omits the mount gets an ephemeral profile instead. |
 | CDP endpoint | `--remote-debugging-port=9222` + cdp-proxy.py | Patchright cannot launch the binary itself (must be n.eko's X-attached process); we expose CDP for connectOverCDP. |
 | `webSocketDebuggerUrl` rewrite | `docker/neko/cdp-proxy.py` | Chromium hard-binds CDP to 127.0.0.1; the proxy rewrites the URL in `/json/version` responses so attaching clients can resolve it from the sibling docker network. |
 | Strict mode contract | `neko-adapter.js` `stealthMode` | We commit to never sending raw CDP against the user's tab during streaming sessions. |
