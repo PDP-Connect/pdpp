@@ -145,6 +145,33 @@ async function documentedPowershellSecretBlock(): Promise<string> {
     .join("\n");
 }
 
+// Step 1's fetch commands use `curl`/`curl.exe`, `mkdir`, and `cd` — none of
+// which are POSIX-only constructs the generic oracle above flags — so
+// nothing else in this file forces a PowerShell mate to exist there. Pin it
+// explicitly: a Windows reader following step 1 of the quickstart must not
+// be left with only the sh block and a prose pointer.
+const PINNED_COMPOSE_REF = "cc07e3a896c2c0df7841da4ec6b2c660ffe1e792";
+const STEP1_SH_FETCH_RE = new RegExp(
+  `\`\`\`sh\\nmkdir pdpp && cd pdpp\\ncurl -fsSLO https://raw\\.githubusercontent\\.com/PDP-Connect/pdpp/${PINNED_COMPOSE_REF}/deploy/docker/docker-compose\\.yml\\n\`\`\``
+);
+const STEP1_POWERSHELL_FETCH_RE = new RegExp(
+  `\`\`\`powershell\\nmkdir pdpp; cd pdpp\\ncurl\\.exe -fsSLO https://raw\\.githubusercontent\\.com/PDP-Connect/pdpp/${PINNED_COMPOSE_REF}/deploy/docker/docker-compose\\.yml\\n\`\`\``
+);
+
+test("quickstart step 1 ships an executable PowerShell fetch block with the same pinned URL as the sh block", async () => {
+  const source = await read(QUICKSTART);
+  assert.match(
+    source,
+    STEP1_SH_FETCH_RE,
+    "quickstart step 1 must keep its sh fetch block in the exact pinned shape this test expects"
+  );
+  assert.match(
+    source,
+    STEP1_POWERSHELL_FETCH_RE,
+    "quickstart step 1 must ship a directly-executable PowerShell fetch block (mkdir; cd; curl.exe -fsSLO <same pinned URL>), not prose telling the reader to substitute curl.exe themselves"
+  );
+});
+
 test("documented PowerShell block really writes a docker-readable .env", { skip: !powershellAvailable() }, async () => {
   const script = await documentedPowershellSecretBlock();
   const dir = mkdtempSync(join(tmpdir(), "pdpp-ps-"));

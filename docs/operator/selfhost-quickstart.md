@@ -56,6 +56,15 @@ mkdir pdpp && cd pdpp
 curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
 ```
 
+That block is macOS/Linux (bash or zsh). On **Windows PowerShell**, bare
+`curl` is an alias for `Invoke-WebRequest` and does not accept these flags —
+use `curl.exe` instead, with the same pinned URL:
+
+```powershell
+mkdir pdpp; cd pdpp
+curl.exe -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
+```
+
 This is [`deploy/docker/docker-compose.yml`](../../deploy/docker/docker-compose.yml)
 — the small, pinned self-service stack. It is a different file from the
 repository-root `docker-compose.yml`, which is the development/owner stack
