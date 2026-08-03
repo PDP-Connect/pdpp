@@ -1594,6 +1594,31 @@ function requireStructuredStorageBinding(
   return { connector_id: storageBinding.connector_id };
 }
 
+/**
+ * Keys the reference implementation is known to persist inside a grant's
+ * storage binding. `connector_id` carries the authority; `connector_instance_id`
+ * is connection-identity metadata added later by the same writer.
+ *
+ * This is an allowlist, not a relaxation: anything outside it still fails.
+ * Extend it only when THIS implementation starts writing a new key, so an
+ * unrecognized key in a stored row remains a hard error.
+ */
+const KNOWN_STORED_STORAGE_BINDING_KEYS = ["connector_id", "connector_instance_id"] as const;
+
+/**
+ * True when every key present is in `allowedKeys`. Unlike
+ * `hasExactBindingKeys` this does not require all allowed keys to be present —
+ * older rows predating `connector_instance_id` must keep validating.
+ * Required-field enforcement is a separate concern, owned by
+ * `requireStructuredStorageBinding`.
+ */
+function hasOnlyKnownBindingKeys(value: unknown, allowedKeys: readonly string[]): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
+}
+
 function hasExactBindingKeys(value: unknown, expectedKeys: string[] = []): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -1791,8 +1816,30 @@ function requireStructuredGrantBindings(
     code: "grant_invalid",
     fieldName: "grant_storage_binding",
   });
-  if (!hasExactBindingKeys(storageBinding, ["connector_id"])) {
-    throw bindingError("grant_invalid", "grant_storage_binding must include only connector_id");
+  // STORED bindings are validated against the keys this system actually
+  // writes, not against the request-time shape. The request path
+  // (`invalid_request`, above) still demands EXACTLY `connector_id`, because a
+  // caller must not be able to smuggle extra keys into a grant. Once a grant
+  // is persisted, though, the writer is the reference implementation itself,
+  // and it has since started recording `connector_instance_id` alongside
+  // `connector_id` as part of the connection-identity model. Holding stored
+  // rows to the older request-time shape made the validator stricter than the
+  // data the system emits: 42 active grants on a real deployment carried
+  // `connector_instance_id` and became permanently unrevokable, rejected as
+  // `grant_invalid` despite being `status=active` and perfectly well-formed.
+  //
+  // This does NOT weaken ownership or scope validation. Authority still comes
+  // from `requireStructuredStorageBinding` (which requires `connector_id` and
+  // normalizes the binding down to that single field) and from the
+  // source↔storage matching below, which runs on the NORMALIZED value. An
+  // unrecognized key is still a hard failure, so a corrupt or hand-edited row
+  // is rejected exactly as before — only keys this implementation is known to
+  // write are tolerated.
+  if (!hasOnlyKnownBindingKeys(storageBinding, KNOWN_STORED_STORAGE_BINDING_KEYS)) {
+    throw bindingError(
+      "grant_invalid",
+      `grant_storage_binding may only contain ${KNOWN_STORED_STORAGE_BINDING_KEYS.join(", ")}`
+    );
   }
 
   if (sourceBinding.kind === "connector" && sourceBinding.id !== normalizedStorageBinding.connector_id) {
