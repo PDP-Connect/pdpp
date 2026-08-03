@@ -21,7 +21,17 @@ const CONSOLE_IMPORTER = "apps/console";
 const RI_IMPORTER = "reference-implementation";
 const TARBALL_VERSION_PATTERN = /^file:/;
 
-const OVERRIDES_ENTRY_PATTERN = /^overrides:\n([\s\S]*?)(?:\n\S|\n$|$)/;
+// Captures every indented line following `overrides:` up to (but not
+// including) the first non-indented line or end of file. Must anchor with
+// `m` since the real pnpm-lock.yaml never has `overrides:` at byte 0 (it's
+// preceded by `lockfileVersion:`/`settings:`). A prior version used a
+// non-greedy `[\s\S]*?` body terminated by `\n\S|\n$|$`; once `/m` is set,
+// `$` matches end-of-LINE (not just end-of-string), so the non-greedy match
+// stopped after the first override entry and silently dropped every
+// subsequent line in the block — including a reintroduced
+// `@opendatalabs/remote-surface` override appended after the existing
+// `@pdpp/cli`/`@pdpp/read-core` entries.
+const OVERRIDES_ENTRY_PATTERN = /^overrides:\n((?:[ \t].*\n?)*)/m;
 const IMPORTER_HEADER_PATTERN = /^ {2}(\S.*):\n/gm;
 const DEPENDENCY_BLOCK_PATTERN = /^ {6}'?@opendatalabs\/remote-surface'?:\n( {8}specifier: (.+)\n {8}version: (.+)\n)/m;
 
