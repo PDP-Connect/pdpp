@@ -209,19 +209,24 @@ services:
   # which is fine for Claude Code but cannot serve a hosted client (they fetch
   # the MCP URL from their own servers and cannot reach a private address).
   #
-  # This is Cloudflare's own `cloudflared` image running a NAMED tunnel, not
-  # the zero-setup Quick Tunnel (`cloudflared tunnel --url ...`). Cloudflare's
-  # own docs describe Quick Tunnels as testing/development only, with no SLA,
-  # a 200 in-flight request cap, and no Server-Sent Events support — any of
-  # which can silently break a hosted MCP client. A named tunnel needs a free
-  # Cloudflare account (no domain purchase required; Cloudflare can issue a
-  # subdomain) but carries none of those disclaimers.
+  # This is Cloudflare's own `cloudflared` image running a NAMED (persistent)
+  # tunnel — `tunnel run`, not the zero-setup Quick Tunnel (`cloudflared
+  # tunnel --url ...`, `tunnel --hello-world`, etc). A named tunnel's public
+  # hostname REQUIRES a domain added to a Cloudflare account as a zone — this
+  # is Cloudflare's own documented prerequisite ("A domain on Cloudflare
+  # (required to publish applications)", developers.cloudflare.com/tunnel/setup)
+  # — Cloudflare does not issue a free subdomain for a named tunnel the way it
+  # does for the ephemeral, testing-only Quick Tunnel (*.trycloudflare.com).
+  # If you do not own a domain, see ./README.md#public-https-for-chatgpt-and-claudeai
+  # for a genuinely no-domain stable alternative (ngrok's free static dev
+  # domain) or the ephemeral Quick Tunnel path for a short trial.
   #
   # Setup (see ./README.md#public-https-for-chatgpt-and-claudeai for the full
-  # walkthrough): run `cloudflared tunnel login` and `cloudflared tunnel
-  # create pdpp` once on any machine, route a hostname to the tunnel, then set
-  # CLOUDFLARE_TUNNEL_TOKEN and PDPP_REFERENCE_ORIGIN in .env to that
-  # hostname before starting this profile.
+  # walkthrough): add your domain to Cloudflare, run `cloudflared tunnel
+  # login` and `cloudflared tunnel create pdpp` once on any machine, route a
+  # hostname on that domain to the tunnel, then set CLOUDFLARE_TUNNEL_TOKEN
+  # and PDPP_REFERENCE_ORIGIN in .env to that hostname before starting this
+  # profile.
   cloudflared:
     image: cloudflare/cloudflared:latest
     profiles: ["tunnel"]

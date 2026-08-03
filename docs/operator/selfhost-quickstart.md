@@ -114,16 +114,21 @@ the Compose network only — no Postgres port is published. **Do not publish a
 Postgres port without also setting `PDPP_POSTGRES_PASSWORD` to something
 non-default.**
 
-### Optional: "no domain, no open ports" with Cloudflare Tunnel
+### Optional: "no open ports" public HTTPS for ChatGPT/Claude.ai
 
 If your Docker host is not publicly reachable — home server behind NAT, VPS
 without a domain, or a machine you do not want to expose directly — and you
-need ChatGPT or Claude.ai (not just Claude Code) to reach it, `cloudflared` is
-already built into the blessed Compose stack as an opt-in `--profile tunnel`
-service. It needs a free Cloudflare account and gives you a stable HTTPS
-hostname without opening any firewall port or owning a domain. See
+need ChatGPT or Claude.ai (not just Claude Code) to reach it, none of the
+paths below require opening a firewall port. Which one to use depends on
+whether you own a domain: a stable hostname genuinely requires either a
+domain you add to a Cloudflare account, or ngrok's free no-domain static
+domain; a domain-free Cloudflare Quick Tunnel works too but is explicitly
+ephemeral/testing-only. `cloudflared` for the domain-owning path is already
+built into the blessed Compose stack as an opt-in `--profile tunnel` service.
+See
 [`deploy/docker/README.md#public-https-for-chatgpt-and-claudeai`](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai)
-for the full one-time setup, security posture, and teardown.
+for the full comparison, one-time setup, security posture, and teardown for
+all three paths.
 
 ### 3. Pull and start
 

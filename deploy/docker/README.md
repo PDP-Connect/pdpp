@@ -174,28 +174,100 @@ supported for a local client; do not expose a remote node over HTTP.
 ## Public HTTPS for ChatGPT and Claude.ai
 
 Claude Code, Codex, and other local agents run on your machine and can reach
-`http://localhost:3000/mcp` directly — nothing in this section applies to them.
+`http://localhost:3000/mcp` directly — **nothing in this section applies to
+them, and they need no tunnel at all.**
 
 ChatGPT and Claude.ai are hosted services: they fetch your MCP server URL from
 their own infrastructure, not your browser, so `localhost`, a LAN IP, or any
 other private address can never work for them, no matter how your firewall or
-router is configured. They need a public HTTPS origin.
+router is configured. They need a public HTTPS origin. You do not need a PDPP
+account for any of the paths below.
 
-You do not need a domain name or a PDPP account to get one. This uses
-[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-to publish your local node without opening any inbound port on your router or
-host firewall — `cloudflared` makes an outbound-only connection to Cloudflare.
+**A domain is required for a stable hostname; there is no free lunch here.**
+Cloudflare's own prerequisites state plainly: a named tunnel's public hostname
+needs "[a domain on Cloudflare](https://developers.cloudflare.com/fundamentals/manage-domains/add-site/)
+(required to publish applications)" — see
+[`developers.cloudflare.com/tunnel/setup`](https://developers.cloudflare.com/tunnel/setup).
+Cloudflare does not issue a free subdomain for a named tunnel; `*.trycloudflare.com`
+is generated only by the ephemeral Quick Tunnel below, and cannot be routed to
+a named tunnel. If you don't own a domain, use the ephemeral trial or ngrok's
+free static domain instead of a Cloudflare named tunnel.
 
-**Use a named tunnel, not `cloudflared tunnel --url` (Quick Tunnel).** Quick
-Tunnels need no account at all, but Cloudflare's own docs describe them as
-["testing and development purposes only"](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/),
-with no SLA, a 200 in-flight request cap, and **no support for Server-Sent
-Events** — any of which can silently break a hosted MCP client mid-session. A
-named tunnel needs a free Cloudflare account (email + password; Cloudflare can
-issue you a subdomain, so a domain purchase is still not required) and has
-none of those disclaimers.
+Pick one of the three paths below based on what you have and what you need:
 
-### 1. Create a named tunnel (one time, on any machine with `cloudflared`)
+| You have | You want | Use |
+| --- | --- | --- |
+| Nothing yet, just trying it out | A quick trial connection | [Ephemeral Quick Tunnel](#ephemeral-trial-cloudflare-quick-tunnel) |
+| No domain, want it to keep working | A stable hostname | [ngrok free static domain](#stable-no-domain-ngrok-free-static-domain) |
+| A domain already on Cloudflare | A stable hostname | [Cloudflare named tunnel](#stable-with-a-domain-cloudflare-named-tunnel) |
+
+### Ephemeral trial: Cloudflare Quick Tunnel
+
+`cloudflared tunnel --url` needs no account and no domain — it prints a random
+`https://<words>.trycloudflare.com` hostname and forwards it to your local
+node. Cloudflare's own docs describe this as
+["testing and development purposes only"](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/):
+no SLA, a 200 in-flight request cap, and the hostname changes every time you
+restart it. **Use this only for a short trial connection, never for a
+deployment you want to keep working.**
+
+Cloudflare's docs also state Quick Tunnels do not support Server-Sent Events.
+That does not block PDPP specifically: PDPP's `/mcp` endpoint runs the MCP
+Streamable HTTP transport with `enableJsonResponse: true`
+(`packages/mcp-server/src/server.ts`), so `initialize`, `tools/list`, and
+`tools/call` always respond with plain `application/json`, never
+`text/event-stream` — verified with real HTTP requests through an
+SSE-rejecting proxy. (The one SSE-only path, an optional `GET /mcp`
+server-push stream, is not part of ordinary tool-calling and PDPP's transport
+is stateless, so normal clients never open it.)
+
+```sh
+cloudflared tunnel --url http://localhost:3000
+```
+
+Copy the printed `https://<words>.trycloudflare.com` URL, set it as
+`PDPP_REFERENCE_ORIGIN` in `.env`, and restart the stack (`docker compose up
+-d`) so OAuth metadata and cookies are composed from the new origin. Stop the
+`cloudflared` process to tear the tunnel down; nothing in Compose needs to
+change since this runs outside the `tunnel` profile entirely.
+
+### Stable, no domain: ngrok free static domain
+
+[ngrok](https://ngrok.com)'s free plan assigns every account one persistent
+"dev domain" (shape `https://<your-assigned-name>.ngrok-free.app`) that does
+not change across restarts, at no cost and with no domain purchase or
+Cloudflare-style domain-onboarding step —
+["Every ngrok account comes with a free Dev Domain... its URL is automatically
+generated and cannot be changed"](https://ngrok.com/docs/universal-gateway/domains/).
+Documented free-plan limits: 1 GB/month data transfer, 20,000 HTTP
+requests/month, up to 3 concurrent online endpoints
+([ngrok free plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits)).
+
+One real caveat: the free plan shows a one-time interstitial "this is served
+by ngrok" page to browser (HTML) traffic, which a friend will see once when
+Claude.ai/ChatGPT redirect their browser through OAuth — click "Visit Site" to
+continue. It does not affect the API traffic ChatGPT/Claude.ai make directly
+to `/mcp`.
+
+```sh
+ngrok config add-authtoken <your-authtoken>   # from the ngrok dashboard, free account
+ngrok http --url=<your-assigned-name>.ngrok-free.app 3000
+```
+
+Set `PDPP_REFERENCE_ORIGIN=https://<your-assigned-name>.ngrok-free.app` in
+`.env` and restart the stack (`docker compose up -d`).
+
+### Stable, with a domain: Cloudflare named tunnel
+
+If you already own a domain and have added it to a Cloudflare account as a
+zone, a named tunnel gives you a stable hostname with none of the Quick
+Tunnel disclaimers, published without opening any inbound port on your router
+or host firewall — `cloudflared` makes an outbound-only connection to
+Cloudflare. This is the path the `cloudflared` service in
+[`docker-compose.yml`](./docker-compose.yml) (opt-in `--profile tunnel`) is
+built for.
+
+**1. Create a named tunnel (one time, on any machine with `cloudflared`)**
 
 Install `cloudflared` ([Cloudflare's install docs](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)),
 then:
@@ -203,8 +275,12 @@ then:
 ```sh
 cloudflared tunnel login          # opens a browser; free Cloudflare account
 cloudflared tunnel create pdpp    # prints a tunnel ID and writes a credentials file
-cloudflared tunnel route dns pdpp <your-choice>.<your-zone-or-cloudflare-subdomain>
+cloudflared tunnel route dns pdpp <your-choice>.<your-domain-on-cloudflare>
 ```
+
+`tunnel route dns` requires that `<your-domain-on-cloudflare>` already be
+[added to your Cloudflare account](https://developers.cloudflare.com/fundamentals/manage-domains/add-site/)
+— Cloudflare will not create a hostname on a domain it does not manage.
 
 Get the token for that tunnel — either from the credentials file `cloudflared
 create` wrote, or from the Cloudflare dashboard (Zero Trust → Networks →
@@ -213,14 +289,14 @@ you just routed, in `.env`:
 
 ```sh
 CLOUDFLARE_TUNNEL_TOKEN=<your-tunnel-token>
-PDPP_REFERENCE_ORIGIN=https://<your-choice>.<your-zone-or-cloudflare-subdomain>
+PDPP_REFERENCE_ORIGIN=https://<your-choice>.<your-domain-on-cloudflare>
 ```
 
 `PDPP_REFERENCE_ORIGIN` is the only PDPP-protocol-relevant output of this
 step: OAuth metadata, cookies, and the `/mcp` URL shown on `/connect` are all
 composed from it, so it must exactly match the hostname you routed.
 
-### 2. Start the tunnel profile
+**2. Start the tunnel profile**
 
 ```sh
 docker compose --profile tunnel up -d
@@ -231,7 +307,7 @@ too if you also enabled browser-backed sources). `cloudflared` runs the tunnel
 you created in step 1 and forwards it to the `web` service over the private
 compose network; no host port is published for it.
 
-### 3. Verify and connect
+**3. Verify and connect**
 
 ```sh
 curl -fsS "$PDPP_REFERENCE_ORIGIN/.well-known/oauth-authorization-server" >/dev/null && echo reachable
@@ -247,8 +323,13 @@ for the exact client-side steps.
 
 ### Security posture
 
-- `cloudflared` only ever makes outbound connections to Cloudflare's edge; no
-  inbound port is opened on your router or host firewall by this profile.
+This posture applies to all three paths above (Quick Tunnel, ngrok, and
+Cloudflare named tunnel) — each only changes how a public hostname reaches
+`web`, not what that hostname exposes or how it is authenticated:
+
+- The tunnel client (`cloudflared` or `ngrok`) only ever makes outbound
+  connections to its provider's edge; no inbound port is opened on your
+  router or host firewall by any of these paths.
 - The tunnel exposes exactly the `web` service — the same operator console and
   protocol surface already reachable at `http://localhost:3000`. It does not
   expose Postgres or the browser surface (`neko`), neither of which publish a
@@ -262,7 +343,7 @@ for the exact client-side steps.
   specific grant or CIMD client identity at `/connect`, or rotate
   `PDPP_OWNER_PASSWORD`.
 
-### Tunnel teardown
+### Cloudflare named-tunnel teardown
 
 Stop just the tunnel, keeping the node running locally:
 

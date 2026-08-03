@@ -92,7 +92,8 @@ with every MCP client or every OAuth profile.
   including ChatGPT and Claude.ai, which need the public HTTPS origin below
   instead of `http://localhost:3000`.
 - [`../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai`](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai) —
-  no-domain, no-account, no-open-port public HTTPS for hosted AI clients.
+  no-open-port public HTTPS for hosted AI clients: an ephemeral no-account
+  trial, a stable no-domain option, or a stable option if you own a domain.
 - [`selfhost-quickstart.md`](selfhost-quickstart.md) — deployment notes and
   alternate platform lanes.
 - [`add-connection.md`](add-connection.md) — owner-mediated source setup.
