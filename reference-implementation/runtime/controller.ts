@@ -1002,6 +1002,15 @@ const activeRuns = new Map<string, ActiveRun>();
 // share this one authority; it deliberately does not wait for a hung connector
 // execution promise after the watchdog has completed cleanup.
 const activeRunPromises = new Map<string, Promise<unknown>>();
+// Per-run "recovery continuation settled" promises, keyed by run_id. Set only
+// by the run's own normal-completion `.finally()` around its call to
+// `maybeContinueRecoveryAfterProgress`, which is awaited to completion and can
+// itself launch (and await) a continuation `runNow`. Absent for any run_id
+// that never reaches that call (still starting, or force-finalized by the
+// watchdog) — `drainActiveRuns` below treats absence as "nothing to wait for
+// beyond cleanup," so a hung connector the watchdog already gave up on can
+// never block shutdown.
+const activeRunContinuationSettledPromises = new Map<string, Promise<unknown>>();
 // Run IDs whose terminal cleanup has begun. Used by the 409 guard to
 // distinguish a stale in-memory entry from a genuinely live run, so a hung
 // run that was force-finalized by the watchdog never permanently blocks future
@@ -2003,6 +2012,7 @@ export function __resetControllerInteractionStateForTests(): void {
   activeRunInteractions.clear();
   activeRuns.clear();
   activeRunPromises.clear();
+  activeRunContinuationSettledPromises.clear();
   settledRunIds.clear();
   for (const timer of activeRunWatchdogTimers.values()) {
     clearTimeout(timer);
@@ -4129,35 +4139,47 @@ export function createController(opts: ControllerOptions = {}): Controller {
         }
       })
       .finally(async () => {
-        await finalizeRunCleanup({
-          browserSurfaceLease,
-          connectorId,
-          connectorInstanceId,
-          key,
-          resolveCleanup,
-          runId,
-          traceContext,
-        });
-        const continuationInput: {
-          connectorId: string;
-          connectorInstanceId: string;
-          manifest: ConnectorManifest;
-          options: RunNowOptions;
-          ownerSubjectId: string;
-          ownerToken: string;
-          result: Awaited<ReturnType<RunConnectorFn>> | undefined;
-          rsUrl?: string;
-        } = {
-          connectorId,
-          connectorInstanceId,
-          manifest,
-          options: toPublicRunNowOptions(options),
-          ownerSubjectId: runOwnerSubjectId,
-          ownerToken,
-          result: runResult,
-          ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),
-        };
-        await maybeContinueRecoveryAfterProgress(continuationInput);
+        // Registered BEFORE finalizeRunCleanup deletes this run's
+        // activeRunPromises entry, so drainActiveRuns never observes both
+        // maps empty for this run_id: one of the two is always populated
+        // from admission until the continuation decision (and any
+        // continuation it launches) has settled.
+        const continuationGate = createRunCleanupPromise();
+        activeRunContinuationSettledPromises.set(runId, continuationGate.promise);
+        try {
+          await finalizeRunCleanup({
+            browserSurfaceLease,
+            connectorId,
+            connectorInstanceId,
+            key,
+            resolveCleanup,
+            runId,
+            traceContext,
+          });
+          const continuationInput: {
+            connectorId: string;
+            connectorInstanceId: string;
+            manifest: ConnectorManifest;
+            options: RunNowOptions;
+            ownerSubjectId: string;
+            ownerToken: string;
+            result: Awaited<ReturnType<RunConnectorFn>> | undefined;
+            rsUrl?: string;
+          } = {
+            connectorId,
+            connectorInstanceId,
+            manifest,
+            options: toPublicRunNowOptions(options),
+            ownerSubjectId: runOwnerSubjectId,
+            ownerToken,
+            result: runResult,
+            ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),
+          };
+          await maybeContinueRecoveryAfterProgress(continuationInput);
+        } finally {
+          continuationGate.resolve();
+          activeRunContinuationSettledPromises.delete(runId);
+        }
       });
     runPromise.catch(() => undefined);
     // Arm the wall-clock watchdog. If runConnectorImpl hangs (never resolves
@@ -4184,8 +4206,21 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // SIGTERM handler in server/index.ts calls this before process.exit.
   // Returns the count drained, the count timed out, and elapsed wall-clock
   // time so the caller can log a useful summary.
-  function drainActiveRuns(timeoutMs: number): Promise<DrainSummary> {
-    return drainPromisesWithDeadline(activeRunPromises, timeoutMs);
+  //
+  // Drains `activeRunContinuationSettledPromises` alongside `activeRunPromises`
+  // under one shared deadline: the latter alone settles as soon as terminal
+  // cleanup finishes, before a recovery continuation the same run's
+  // `.finally()` launches afterward has even started.
+  async function drainActiveRuns(timeoutMs: number): Promise<DrainSummary> {
+    const startMs = Date.now();
+    const cleanup = await drainPromisesWithDeadline(activeRunPromises, timeoutMs);
+    const remainingMs = Math.max(0, timeoutMs - (Date.now() - startMs));
+    const continuations = await drainPromisesWithDeadline(activeRunContinuationSettledPromises, remainingMs);
+    return {
+      drained: cleanup.drained + continuations.drained,
+      elapsedMs: Date.now() - startMs,
+      timedOut: cleanup.timedOut + continuations.timedOut,
+    };
   }
 
   // Await a managed-connector run's real terminal outcome.
