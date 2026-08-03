@@ -2726,6 +2726,7 @@ function updateConnectorIdForInstance(
 
 interface LocalDeviceMigrationContext {
   getExistingInstanceByBinding: SqliteStatement;
+  getExistingInstanceById: SqliteStatement;
   getTombstoneByBinding: SqliteStatement;
   legacyInstanceRows: SqliteStatement;
   now: string;
@@ -2874,8 +2875,20 @@ function migrateLocalDeviceConnectorRow(context: LocalDeviceMigrationContext, ro
   const createdAt = row.created_at || context.now;
   const updatedAt = row.updated_at || context.now;
   const displayName = row.display_name || row.local_binding_id || row.connector_id;
+  // identity.existingLifecycle is looked up by the FRESHLY-DERIVED binding
+  // key, but the upsert below conflicts on resolvedInstanceId -- the two can
+  // diverge whenever a row's OWN stored source_binding_key predates a
+  // binding-key derivation change. A binding-key miss must never be trusted
+  // alone to mean "no existing row"; re-check directly by the actual
+  // conflict target as a second, independent source of truth.
+  const existingById = context.getExistingInstanceById.get<{ revoked_at: string | null; status: string }>(
+    resolvedInstanceId
+  );
+  const authoritativeLifecycle =
+    identity.existingLifecycle ??
+    (existingById ? { revokedAt: existingById.revoked_at, status: existingById.status } : null);
   const { status, revokedAt } = resolveLocalDeviceBackfillLifecycle(
-    identity.existingLifecycle,
+    authoritativeLifecycle,
     row.status,
     row.revoked_at ?? updatedAt
   );
@@ -3027,6 +3040,14 @@ function migrateLocalDeviceConnectorInstances(raw: SqliteDatabase, opts: Migrati
           AND source_binding_key = ?
         LIMIT 1`
     );
+    // Second, independent lookup keyed on the ACTUAL upsert conflict target
+    // (connector_instance_id), not the freshly-derived binding key. The two
+    // can diverge whenever a row's OWN stored source_binding_key predates a
+    // binding-key derivation change -- a binding-key miss must never be
+    // trusted alone to mean "no existing row to preserve".
+    const getExistingInstanceById = raw.prepare(
+      "SELECT status, revoked_at FROM connector_instances WHERE connector_instance_id = ? LIMIT 1"
+    );
     // Durability guard: this sweep runs on EVERY boot (not a one-time
     // upgrade — the top-of-function gate only checks that today's columns
     // exist), re-upserting a connector_instances row for every
@@ -3073,6 +3094,7 @@ function migrateLocalDeviceConnectorInstances(raw: SqliteDatabase, opts: Migrati
 
     const context: LocalDeviceMigrationContext = {
       getExistingInstanceByBinding,
+      getExistingInstanceById,
       getTombstoneByBinding,
       legacyInstanceRows,
       now: new Date().toISOString(),

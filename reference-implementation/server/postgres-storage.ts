@@ -4037,8 +4037,28 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
         display_name: row.display_name || connectorKey,
         streams: [],
       };
+      // `existingLifecycle` above is looked up by the FRESHLY-DERIVED binding
+      // key, but the write below conflicts on `connectorInstanceId` — the
+      // two can diverge whenever a row's OWN stored `source_binding_key`
+      // predates a binding-key derivation change (e.g. the legacy
+      // full-source-binding shape predating the {kind, local_binding_name}
+      // narrowing) or any other drift between the two identities. In that
+      // case the binding-key lookup misses even though the UPSERT's own
+      // conflict target row already exists and already carries an
+      // authoritative lifecycle, so a lookup keyed on the ACTUAL conflict
+      // target is required as a second, independent source of truth: never
+      // trust a binding-key miss alone to mean "no existing row".
+      const existingById = await client.query<{ revoked_at: string | null; status: string }>(
+        "SELECT status, revoked_at FROM connector_instances WHERE connector_instance_id = $1",
+        [connectorInstanceId]
+      );
+      const authoritativeLifecycle =
+        existingLifecycle ??
+        (existingById.rows[0]
+          ? { revokedAt: existingById.rows[0].revoked_at, status: existingById.rows[0].status }
+          : null);
       const { status, revokedAt } = resolveLocalDeviceBackfillLifecycle(
-        existingLifecycle,
+        authoritativeLifecycle,
         row.status,
         row.revoked_at || row.updated_at || now
       );

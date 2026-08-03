@@ -294,3 +294,68 @@ test("an active local_device connection stays active across a reference restart"
     }
   });
 });
+
+// waspflow/local-device-revoke-pg-0803: 8264cb5d6's fix looked up the
+// existing-lifecycle-to-preserve by a FRESHLY-DERIVED binding key, but the
+// backfill's own UPSERT conflicts on connector_instance_id (row.connector_instance_id,
+// from device_source_instances, when set). These two identities can diverge:
+// a connector_instances row's OWN stored source_binding_key can predate a
+// binding-key derivation change (see the D8 fix-enroll-connector-instance-pk-collision
+// comment in connector-instance-store.ts for the documented legacy-key class).
+// When that happens, the binding-key lookup misses even though the row the
+// UPSERT will conflict against already exists and already carries an
+// authoritative revoked lifecycle -- proven live on pdpp-reference for
+// cin_7763bf59803d54ad6d433cf7 / cin_3b19c21af86b474fe34f5e48, both of which
+// have tombstoned deterministic-id siblings (source_binding_key hashes that
+// DO match today's derivation) alongside their own, differently-derived live
+// row -- exactly this class of drift.
+test("a revoked connector_instance whose OWN source_binding_key predates the current derivation stays revoked across a SQLite restart", async () => {
+  await withTempDbPath(async (dbPath) => {
+    const connectorInstanceId = "cin_bkdrift_legacy_row_0000000";
+    const first = await startServer({ asPort: 0, dbPath, ownerAuthPassword: "", quiet: true, rsPort: 0 });
+    try {
+      const db = getDb();
+      db.prepare(
+        "INSERT INTO connectors(connector_id, manifest, created_at) VALUES ('bkdrift', '{}', '2026-01-01T00:00:00.000Z') ON CONFLICT(connector_id) DO NOTHING"
+      ).run();
+      db.prepare(
+        `INSERT INTO connector_instances(connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at)
+         VALUES (?, 'owner_bkdrift', 'bkdrift', 'bkdrift device', 'revoked', 'local_device', 'legacy-binding-key-that-does-not-match-current-derivation', '{"kind":"local_device","legacy_shape":true}', '2026-01-01T00:00:00.000Z', '2026-08-03T16:15:16.000Z', '2026-08-03T16:15:16.000Z')`
+      ).run(connectorInstanceId);
+      db.prepare(
+        "INSERT INTO device_exporters(device_id, owner_subject_id, display_name, created_at, updated_at) VALUES ('dexp_bkdrift', 'owner_bkdrift', 'bkdrift device', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')"
+      ).run();
+      // device_source_instances.connector_instance_id is set (a completed
+      // enrollment) -- so the backfill uses THIS id directly as the UPSERT
+      // conflict target, bypassing the binding-key lookup for the WRITE
+      // path. Only the lifecycle-to-preserve lookup goes through the
+      // (drifted, missing) binding key.
+      db.prepare(
+        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, local_binding_id, display_name, status, created_at, updated_at, revoked_at, connector_instance_id)
+         VALUES ('dsrc_bkdrift', 'dexp_bkdrift', 'bkdrift', 'bkdrift-binding', 'bkdrift device', 'active', '2026-01-01T00:00:00.000Z', '2026-08-03T16:15:16.000Z', NULL, ?)`
+      ).run(connectorInstanceId);
+
+      const before = connectorInstanceRow(connectorInstanceId);
+      assert.equal(before.status, "revoked");
+      assert.ok(before.revoked_at);
+    } finally {
+      await closeServer(first);
+    }
+
+    const second = await startServer({ asPort: 0, dbPath, quiet: true, rsPort: 0 });
+    try {
+      const row = connectorInstanceRow(connectorInstanceId);
+      assert.equal(
+        row.status,
+        "revoked",
+        "a binding-key derivation drift must not cause the boot-time backfill to resurrect an owner-revoked connector_instance"
+      );
+      assert.ok(
+        row.revoked_at,
+        "a binding-key derivation drift must not cause the boot-time backfill to clear revoked_at"
+      );
+    } finally {
+      await closeServer(second);
+    }
+  });
+});
