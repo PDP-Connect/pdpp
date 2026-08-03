@@ -35,7 +35,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-
+import { emitSpineEvent } from "../lib/spine.ts";
 import { canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import { getDb } from "../server/db.ts";
 import { encodeHostedMcpSelection } from "../server/hosted-mcp-selection.ts";
@@ -126,8 +126,16 @@ interface RegisteredClient {
 // `_ref/grants`. These describe only the fields the assertions below touch;
 // the routes themselves stay untyped JS (server/index.js), so each fetchJson
 // call site casts its genuinely-unknown JSON body to the shape it expects.
-interface GrantPackageSummary {
+interface GrantPackageClientMetadata {
   readonly client_id: string;
+  readonly client_name: string | null;
+  readonly registration_mode: string | null;
+}
+
+interface GrantPackageSummary {
+  readonly client?: GrantPackageClientMetadata | null;
+  readonly client_id: string;
+  readonly last_used_at?: string | null;
   readonly member_count: number;
   readonly object: string;
   readonly package_id: string;
@@ -153,6 +161,8 @@ interface GrantPackageChild {
 
 interface GrantPackageDetail {
   readonly children: readonly GrantPackageChild[];
+  readonly client?: GrantPackageClientMetadata | null;
+  readonly last_used_at?: string | null;
   readonly member_count: number;
   readonly object: string;
   readonly package_id: string;
@@ -423,6 +433,113 @@ test("GET /_ref/grant-packages lists the package with no secret material", async
     assert.ok(secondPageRow);
     const pagedIds = new Set([firstPageRow.package_id, secondPageRow.package_id]);
     assert.deepEqual(pagedIds, new Set([packageId, secondPackageId]));
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("GET /_ref/grant-packages and /:id attach authoritative oauth_clients metadata, batched, never derived", async () => {
+  const server = await startTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerConnector(asUrl, "spotify");
+    const github = await registerConnector(asUrl, "github");
+    // Dynamic client registration stores client_name + registration_mode in
+    // oauth_clients — the authoritative source this test proves gets
+    // attached, rather than any name/URL-shape guess about the client_id.
+    const client = await registerAuthCodeClient(asUrl);
+    const { packageId } = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/grant-packages`);
+    assert.equal(status, 200);
+    const list = body as GrantPackageList;
+    const row = list.data.find((r) => r.package_id === packageId);
+    assert.ok(row, "newly issued package must appear in the list");
+    assert.equal(row.client_id, client.client_id);
+    assert.ok(row.client, "list row carries attached client metadata, not undefined");
+    assert.equal(row.client?.client_id, client.client_id);
+    assert.equal(
+      row.client?.client_name,
+      "ref-grant-packages test client",
+      "client_name is the exact stored oauth_clients value, never derived from client_id's shape"
+    );
+    assert.equal(row.client?.registration_mode, "dynamic");
+
+    const detailResp = await fetchJson(`${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}`);
+    assert.equal(detailResp.status, 200);
+    const detail = detailResp.body as GrantPackageDetail;
+    assert.ok(detail.client, "detail carries attached client metadata, not undefined");
+    assert.equal(detail.client?.client_id, client.client_id);
+    assert.equal(detail.client?.client_name, "ref-grant-packages test client");
+    assert.equal(detail.client?.registration_mode, "dynamic");
+
+    const [child] = detail.children;
+    assert.ok(child, "package detail must expose a child grant for activity proof");
+    const usedAt = "2031-03-10T00:00:00.000Z";
+    await emitSpineEvent({
+      actor_id: client.client_id,
+      actor_type: "client",
+      client_id: client.client_id,
+      event_type: "disclosure.served",
+      grant_id: child.grant_id,
+      object_id: "package-read",
+      object_type: "query",
+      occurred_at: usedAt,
+      source_id: "connectors/spotify",
+      source_kind: "connector",
+      status: "succeeded",
+    });
+
+    const afterUse = await fetchJson(`${asUrl}/_ref/grant-packages`);
+    const afterUseList = afterUse.body as GrantPackageList;
+    const afterUseRow = afterUseList.data.find((r) => r.package_id === packageId);
+    assert.equal(afterUseRow?.last_used_at, usedAt, "list activity is derived from disclosure.served");
+    const afterUseDetail = await fetchJson(`${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}`);
+    const afterUsePackage = afterUseDetail.body as GrantPackageDetail;
+    assert.equal(afterUsePackage.last_used_at, usedAt, "detail activity matches the list projection");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("GET /_ref/grant-packages resolves client metadata as explicit null when the client_id has no oauth_clients row", async () => {
+  const server = await startTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerConnector(asUrl, "spotify");
+    const github = await registerConnector(asUrl, "github");
+    const client = await registerAuthCodeClient(asUrl);
+    const { packageId } = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+
+    // Delete the oauth_clients row out from under the issued package so the
+    // batched lookup has nothing to find for this client_id — proves missing
+    // metadata resolves to explicit null, never a thrown error or a guessed
+    // label standing in for the absent row.
+    const db = getDb();
+    assert.ok(db, "sqlite db must be initialized");
+    db.prepare("DELETE FROM oauth_clients WHERE client_id = ?").run(client.client_id);
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/grant-packages`);
+    assert.equal(status, 200);
+    const list = body as GrantPackageList;
+    const row = list.data.find((r) => r.package_id === packageId);
+    assert.ok(row, "package still appears in the list after its client row is gone");
+    assert.equal(row.client, null, "missing oauth_clients row resolves to explicit null, not undefined");
+
+    const detailResp = await fetchJson(`${asUrl}/_ref/grant-packages/${encodeURIComponent(packageId)}`);
+    assert.equal(detailResp.status, 200);
+    const detail = detailResp.body as GrantPackageDetail;
+    assert.equal(detail.client, null, "detail also resolves missing client metadata to explicit null");
   } finally {
     await closeServer(server);
   }

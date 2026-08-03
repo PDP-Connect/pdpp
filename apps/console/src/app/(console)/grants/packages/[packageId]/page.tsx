@@ -100,18 +100,7 @@ export default async function GrantPackageDetailPage({
       </div>
       <PageHeader title="Grant package" />
 
-      {sp.revoke_error ? (
-        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
-          <span className="font-medium text-destructive">Revoke error:</span> <span>{sp.revoke_error}</span>
-        </div>
-      ) : null}
-
-      {sp.revoked === "yes" ? (
-        <div className="pdpp-caption mb-6 rounded-md border border-emerald-500/30 border-l-4 border-l-emerald-500/60 bg-emerald-500/5 px-4 py-2.5">
-          <span className="font-medium text-emerald-700 dark:text-emerald-400">Package revoked.</span>{" "}
-          <span>Every child grant has been cascaded to revoked. The package's MCP refresh token is invalidated.</span>
-        </div>
-      ) : null}
+      <RevokeNotices params={sp} />
 
       <Section title="Identity">
         <dl className="pdpp-caption grid grid-cols-[8rem_minmax(0,1fr)] gap-x-4 gap-y-1 text-muted-foreground">
@@ -122,7 +111,23 @@ export default async function GrantPackageDetailPage({
             <StatusBadge status={pkg.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           </dd>
           <dt>Client</dt>
-          <dd className="break-all font-mono text-foreground">{pkg.client_id}</dd>
+          <dd className="break-all text-foreground">
+            <div className="font-medium">
+              {pkg.client ? pkg.client?.client_name || "Unnamed registered client" : "Unknown registered client"}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-2">
+              <Link
+                className="font-mono underline-offset-2 hover:underline"
+                href={`/grants?client_id=${encodeURIComponent(pkg.client_id)}`}
+                title={`Show only grants for ${pkg.client_id}`}
+              >
+                {pkg.client_id}
+              </Link>
+              {pkg.client?.registration_mode ? (
+                <span className="pdpp-caption text-muted-foreground">({pkg.client.registration_mode})</span>
+              ) : null}
+            </div>
+          </dd>
           {pkg.parent_package_id ? (
             <>
               <dt>Extends</dt>
@@ -138,10 +143,12 @@ export default async function GrantPackageDetailPage({
           ) : null}
           <dt>Subject</dt>
           <dd className="break-all font-mono text-foreground">{pkg.subject_id}</dd>
-          <dt>Created</dt>
+          <dt>Issued</dt>
           <dd>
             <IcTimestamp value={pkg.created_at} />
           </dd>
+          <dt>Last used</dt>
+          <dd>{pkg.last_used_at ? <IcTimestamp value={pkg.last_used_at} /> : "never used"}</dd>
           {pkg.approved_at ? (
             <>
               <dt>Approved</dt>
@@ -244,6 +251,25 @@ export default async function GrantPackageDetailPage({
         </Section>
       ) : null}
     </RecordroomShellWithPalette>
+  );
+}
+
+function RevokeNotices({ params }: { params: DetailParams }) {
+  return (
+    <>
+      {params.revoke_error ? (
+        <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+          <span className="font-medium text-destructive">Revoke error:</span> <span>{params.revoke_error}</span>
+        </div>
+      ) : null}
+
+      {params.revoked === "yes" ? (
+        <div className="pdpp-caption mb-6 rounded-md border border-emerald-500/30 border-l-4 border-l-emerald-500/60 bg-emerald-500/5 px-4 py-2.5">
+          <span className="font-medium text-emerald-700 dark:text-emerald-400">Package revoked.</span>{" "}
+          <span>Every child grant has been cascaded to revoked. The package's MCP refresh token is invalidated.</span>
+        </div>
+      ) : null}
+    </>
   );
 }
 

@@ -26,7 +26,13 @@ import {
   referenceQueries,
   transaction,
 } from "../lib/db.ts";
-import { createTraceContext, emitSpineEvent as emitRawSpineEvent, type SpineEventInput } from "../lib/spine.ts";
+import { postgresClientMetadataForClients } from "../lib/postgres-spine.ts";
+import {
+  createTraceContext,
+  emitSpineEvent as emitRawSpineEvent,
+  type SpineClientMetadata,
+  type SpineEventInput,
+} from "../lib/spine.ts";
 import type { CimdFetchDependencies, CimdTransportFailureEvent } from "./cimd.ts";
 import { listActiveBindingsForGrant, projectBindingForWire } from "./connection-identity.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "./connector-key.ts";
@@ -196,8 +202,17 @@ interface ConsentExchangeEntry {
 
 interface GrantPackageNormalized {
   approved_at: string;
+  /**
+   * Authoritative `oauth_clients` metadata for `client_id`, attached by a
+   * single batched lookup over the page (see `attachClientMetadataToPackages`).
+   * `undefined` until that attach step runs; `null` means the lookup ran and
+   * found no registered-client row. Never derived from a URL or client-id
+   * shape.
+   */
+  client?: SpineClientMetadata | null;
   client_id: string;
   created_at: string;
+  last_used_at?: string | null;
   package: Record<string, unknown> | null;
   package_id: string;
   parent_package_id: string | null;
@@ -3244,6 +3259,49 @@ async function lastUsedAtByClientId(clientIds: readonly string[]): Promise<Map<s
 }
 
 /**
+ * Last disclosure served by each package's child grants. This is a read-model
+ * projection only: package activity is derived from the existing disclosure
+ * events and does not add or alter a write/lifecycle path.
+ */
+async function lastUsedAtByPackageId(packageIds: readonly string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(packageIds.filter((id): id is string => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map();
+  }
+
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<{ package_id: string; last_used_at: string | null }>(
+      `SELECT gpm.package_id, MAX(e.occurred_at) AS last_used_at
+         FROM grant_package_members gpm
+         JOIN spine_events e ON e.grant_id = gpm.grant_id
+        WHERE e.event_type = 'disclosure.served'
+          AND gpm.package_id = ANY($1::text[])
+        GROUP BY gpm.package_id`,
+      [ids]
+    );
+    return new Map(
+      result.rows.flatMap((row) => (row.last_used_at ? [[row.package_id, row.last_used_at] as const] : []))
+    );
+  }
+
+  const placeholders = ids.map(() => "?").join(", ");
+  // REVIEWED-DYNAMIC: package ids come from one bounded owner page (or one
+  // detail request); all values are bound parameters.
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<{ package_id: string; last_used_at: string | null }>(
+      `SELECT gpm.package_id, MAX(e.occurred_at) AS last_used_at
+         FROM grant_package_members gpm
+         JOIN spine_events e ON e.grant_id = gpm.grant_id
+        WHERE e.event_type = 'disclosure.served'
+          AND gpm.package_id IN (${placeholders})
+        GROUP BY gpm.package_id`,
+      ids
+    ),
+  ];
+  return new Map(rows.flatMap((row) => (row.last_used_at ? [[row.package_id, row.last_used_at] as const] : [])));
+}
+
+/**
  * Operator-scoped listing of dynamic clients the dashboard registered on
  * behalf of a particular owner-session subject. Backs `GET /_ref/clients?owner=true`.
  * Returns `[{ client_id, client_name, created_at, active_token_count, last_used_at }]`.
@@ -6134,6 +6192,71 @@ function normalizePackageRow(row: DbRow | null | undefined): GrantPackageNormali
   };
 }
 
+interface PackageClientMetadataRow {
+  client_id: string;
+  metadata_json: string;
+  registration_mode: string | null;
+}
+
+function packageClientMetadataFromRow(row: PackageClientMetadataRow): SpineClientMetadata {
+  let metadata: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(row.metadata_json || "{}");
+    if (isRecord(parsed)) {
+      metadata = parsed;
+    }
+  } catch {
+    metadata = {};
+  }
+  const clientName =
+    typeof metadata.client_name === "string" && metadata.client_name.trim() ? metadata.client_name.trim() : null;
+  return {
+    client_id: row.client_id,
+    client_name: clientName,
+    registration_mode:
+      typeof row.registration_mode === "string" && row.registration_mode ? row.registration_mode : null,
+  };
+}
+
+function sqlitePackageClientMetadataForClients(clientIds: readonly string[]): Map<string, SpineClientMetadata> {
+  const uniqueIds = Array.from(
+    new Set(clientIds.filter((value): value is string => typeof value === "string" && value.length > 0))
+  );
+  if (uniqueIds.length === 0) {
+    return new Map();
+  }
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  // REVIEWED-DYNAMIC: package list/detail callers provide one bounded page or
+  // one package; values are bound parameters and the LIMIT equals the id count.
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<PackageClientMetadataRow>(
+      `SELECT client_id, registration_mode, metadata_json
+       FROM oauth_clients
+       WHERE client_id IN (${placeholders})
+       LIMIT ?`,
+      [...uniqueIds, uniqueIds.length]
+    ),
+  ];
+  return new Map(rows.map((row) => [row.client_id, packageClientMetadataFromRow(row)]));
+}
+
+/**
+ * Batched, authoritative `oauth_clients` lookup for a page of grant
+ * packages. One query for the whole page (both backends), never one query
+ * per row. Mutates `pkg.client` in place: an explicit `SpineClientMetadata`
+ * when the client_id resolves to a stored row, `null` when it does not.
+ * Never falls back to deriving a display name from `client_id`'s shape.
+ */
+async function attachClientMetadataToPackages(packages: readonly GrantPackageNormalized[]): Promise<void> {
+  const clientIds = packages.map((pkg) => pkg.client_id).filter((id): id is string => Boolean(id));
+  const byClientId = isPostgresStorageBackend()
+    ? await postgresClientMetadataForClients(clientIds)
+    : sqlitePackageClientMetadataForClients(clientIds);
+  for (const pkg of packages) {
+    pkg.client = byClientId.get(pkg.client_id) ?? null;
+  }
+}
+
 /**
  * Fetch a raw grant_packages row (status-agnostic) for lineage validation.
  * Mirrors the column set used by `getGrantPackageForOwner` and includes
@@ -6653,6 +6776,11 @@ export async function listGrantPackagesForOwner(
     })
     .filter((row) => row !== null);
   const data = normalized.slice(0, limit);
+  await attachClientMetadataToPackages(data);
+  const lastUsedByPackage = await lastUsedAtByPackageId(data.map((pkg) => pkg.package_id));
+  for (const pkg of data) {
+    pkg.last_used_at = lastUsedByPackage.get(pkg.package_id) ?? null;
+  }
   const hasMore = normalized.length > limit;
   const tail = hasMore ? data.at(-1) : null;
   return {
@@ -6702,6 +6830,7 @@ export async function getGrantPackageForOwner(packageId: unknown): Promise<Recor
   if (!grantPackage) {
     return null;
   }
+  await attachClientMetadataToPackages([grantPackage]);
 
   // For operator visibility we ALWAYS return every member row, even ones
   // marked revoked, so the operator can see the cascade history on a
@@ -6721,10 +6850,12 @@ export async function getGrantPackageForOwner(packageId: unknown): Promise<Recor
       }),
     }))
   );
+  const lastUsedByPackage = await lastUsedAtByPackageId([packageId]);
 
   return {
     ...grantPackage,
     children,
+    last_used_at: lastUsedByPackage.get(packageId) ?? null,
     member_count: children.length,
   };
 }

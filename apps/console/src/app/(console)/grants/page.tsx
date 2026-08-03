@@ -36,7 +36,13 @@ interface Params {
   source_kind?: "connector" | "provider_native";
   status?: string;
   until?: string;
+  /** `all` shows every lifecycle status (incl. revoked/denied/failed/pending
+   *  and probe/test residue); any other value (default) shows current,
+   *  actionable access only. Never a name-based filter. */
+  view?: string;
 }
+
+const CURRENT_ACCESS_STATUS = "issued";
 
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
   const merged = { ...params, ...overrides };
@@ -48,40 +54,44 @@ function listHref(params: Params, overrides: Partial<Params> = {}): string {
   return qs ? `/grants?${qs}` : "/grants";
 }
 
-const TECHNICAL_CLIENT_ID_RE = /^cli_[a-z0-9]+$/i;
-const WWW_PREFIX_RE = /^www\./;
-
-function looksLikeTechnicalClientId(value: string): boolean {
-  return TECHNICAL_CLIENT_ID_RE.test(value);
-}
-
-function clientOriginCaption(value: string): string | null {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.replace(WWW_PREFIX_RE, "");
-    return host ? `client ${host}` : null;
-  } catch {
-    return null;
-  }
-}
-
+// Authoritative-only: the caption uses the stored `client_name` from
+// oauth_clients when present, otherwise the raw client_id. Never derived
+// from a URL or client-id shape — a client_id that happens to look like a
+// hostname or a `cli_...` token is not evidence of what the client is.
 function grantClientCaption(grant: GrantSummary): string | null {
   const name = grant.client?.client_name?.trim();
   if (name) {
     return `client ${name}`;
   }
   const clientId = grant.client_id?.trim();
-  if (!clientId) {
-    return null;
-  }
-  return (
-    clientOriginCaption(clientId) ?? (looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`)
-  );
+  return clientId ? `client ${clientId}` : null;
 }
 
-export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
-  const params = await searchParams;
-  const filters = {
+interface LoadedGrantData {
+  approvals: ListResponse<PendingApproval>;
+  peekEnvelope: Awaited<ReturnType<typeof getGrantTimeline>>;
+  result: ListResponse<GrantSummary>;
+}
+
+async function loadGrantData(params: Params): Promise<LoadedGrantData> {
+  const showAll = params.view === "all";
+  if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
+    const demo = await import("./grants-demo-data.ts");
+    const demoData = demo.buildGrantsDemoData();
+    return { approvals: demoData.approvals, peekEnvelope: null, result: demoData.grants };
+  }
+
+  const [result, approvals] = await Promise.all([
+    listGrants(buildGrantListFilters(params, showAll)),
+    listPendingApprovals(),
+  ]);
+  const peekEnvelope = params.peek ? await getGrantTimeline(params.peek) : null;
+  return { approvals, peekEnvelope, result };
+}
+
+function buildGrantListFilters(params: Params, showAll: boolean) {
+  const effectiveStatus = params.status ?? (showAll ? undefined : CURRENT_ACCESS_STATUS);
+  return {
     client_id: params.client_id,
     cursor: params.cursor,
     limit: 50,
@@ -93,46 +103,137 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     // Widen a bare date to cover the whole day so "active before 2026-07-01"
     // does not silently exclude everything that happened on the 1st.
     since: params.since ? `${params.since}T00:00:00.000Z` : undefined,
-    status: params.status,
+    status: effectiveStatus,
     until: params.until ? `${params.until}T23:59:59.999Z` : undefined,
   };
+}
 
-  let result: ListResponse<GrantSummary>;
-  let approvals: ListResponse<PendingApproval>;
-  let peekEnvelope: Awaited<ReturnType<typeof getGrantTimeline>> = null;
-  if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
-    const demo = await import("./grants-demo-data.ts");
-    const demoData = demo.buildGrantsDemoData();
-    result = demoData.grants;
-    ({ approvals } = demoData);
-  } else {
-    try {
-      [result, approvals] = await Promise.all([listGrants(filters), listPendingApprovals()]);
-      if (params.peek) {
-        peekEnvelope = await getGrantTimeline(params.peek);
-      }
-    } catch (err) {
-      if (err instanceof ReferenceServerUnreachableError) {
-        return (
-          <RecordroomShellWithPalette>
-            <PageHeader title="Grants" />
-            <ServerUnreachable />
-          </RecordroomShellWithPalette>
-        );
-      }
-      throw err;
-    }
+function buildActiveFilters(params: Params, showAll: boolean) {
+  const filters: Array<{ label: string; value: string } | null> = [];
+  if (params.status) {
+    filters.push({ label: "state", value: params.status });
+  } else if (!showAll) {
+    filters.push({ label: "view", value: "current access (issued)" });
   }
+  if (params.q) {
+    filters.push({ label: "query", value: params.q });
+  }
+  if (params.client_id) {
+    filters.push({ label: "client", value: params.client_id });
+  }
+  if (params.since) {
+    filters.push({ label: "since", value: params.since });
+  }
+  if (params.until) {
+    filters.push({ label: "before", value: params.until });
+  }
+  return filters.filter((item): item is { label: string; value: string } => Boolean(item));
+}
+
+function buildGrantFilters(params: Params, showAll: boolean) {
+  const carry = [
+    params.client_id ? { name: "client_id", value: params.client_id } : null,
+    params.source_id ? { name: "source_id", value: params.source_id } : null,
+    params.source_kind ? { name: "source_kind", value: params.source_kind } : null,
+    // Carries the current/all view mode through the filter form (status
+    // select, query, date range) so switching a filter doesn't silently
+    // drop back to the default current-access view.
+    showAll ? { name: "view", value: "all" } : null,
+  ].filter((item): item is { name: string; value: string } => Boolean(item));
+
+  return {
+    carry,
+    dateRange: {
+      sinceName: "since",
+      sinceValue: params.since ?? "",
+      untilName: "until",
+      untilValue: params.until ?? "",
+    },
+    query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },
+    status: {
+      defaultValue: params.status ?? (showAll ? "" : CURRENT_ACCESS_STATUS),
+      name: "status",
+      options: [
+        { label: "issued", value: "issued" },
+        { label: "revoked", value: "revoked" },
+        { label: "denied", value: "denied" },
+        { label: "failed", value: "failed" },
+        { label: "pending", value: "pending" },
+      ],
+    },
+  };
+}
+
+export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
+  const params = await searchParams;
+  const showAll = params.view === "all";
+
+  let data: LoadedGrantData;
+  try {
+    data = await loadGrantData(params);
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return (
+        <RecordroomShellWithPalette>
+          <PageHeader title="Grants" />
+          <ServerUnreachable />
+        </RecordroomShellWithPalette>
+      );
+    }
+    throw err;
+  }
+  const { approvals, peekEnvelope, result } = data;
 
   const ownerLoginUrl = getOwnerLoginPath();
-  const activeFilters = [
-    params.status ? { label: "state", value: params.status } : null,
-    params.q ? { label: "query", value: params.q } : null,
-    params.client_id ? { label: "client", value: params.client_id } : null,
-    params.since ? { label: "since", value: params.since } : null,
-    params.until ? { label: "before", value: params.until } : null,
-  ].filter((item): item is { label: string; value: string } => Boolean(item));
-  const preHeader = (
+  const viewParams: ListWithPeekParams<GrantSummary> = {
+    active: "grants",
+    activeFilterChips: buildActiveFilters(params, showAll),
+    buildListHref: (overrides) => listHref(params, overrides),
+    description: showAll
+      ? "All grant evidence, including current, historical, denied, failed, and pending lifecycle records."
+      : "Current issued authorizations for client access to owner data. Historical and non-actionable evidence remains available under All grants.",
+    emptyHint: "Grant artifacts appear after client/provider-connect consent flows issue or reject grants.",
+    emptyTitle: "No grants yet",
+    filters: buildGrantFilters(params, showAll),
+    headerActions: <GrantViewActions params={params} showAll={showAll} />,
+    peekCliCommand: (id) => `pdpp ref grant timeline ${id}`,
+    peekEnvelope,
+    peekId: params.peek,
+    preHeader: <GrantsPreHeader approvals={approvals} ownerLoginUrl={ownerLoginUrl} params={params} />,
+    renderRow: (grant, { peeked, href, detailHref }) => (
+      <GrantRow
+        clientFilterHref={grant.client_id ? listHref(params, { client_id: grant.client_id, cursor: undefined }) : null}
+        detailHref={detailHref}
+        grant={grant}
+        href={href}
+        peeked={peeked}
+      />
+    ),
+    resetHref: "/grants",
+    result,
+    routes: dashboardRoutes,
+    rowKey: (grant) => grant.grant_id,
+    subject: "grant",
+    title: "Grants",
+  };
+
+  return (
+    <RecordroomShellWithPalette>
+      <ListWithPeekView params={viewParams} />
+    </RecordroomShellWithPalette>
+  );
+}
+
+function GrantsPreHeader({
+  approvals,
+  ownerLoginUrl,
+  params,
+}: {
+  approvals: ListResponse<PendingApproval>;
+  ownerLoginUrl: string;
+  params: Params;
+}) {
+  return (
     <>
       {params.approval_error ? (
         <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2.5 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
@@ -169,72 +270,28 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
       ) : null}
     </>
   );
-  const viewParams: ListWithPeekParams<GrantSummary> = {
-    active: "grants",
-    activeFilterChips: activeFilters,
-    buildListHref: (overrides) => listHref(params, overrides),
-    description: "Issued authorizations and lifecycle decisions for client access to owner data.",
-    emptyHint: "Grant artifacts appear after client/provider-connect consent flows issue or reject grants.",
-    emptyTitle: "No grants yet",
-    filters: {
-      // Filters reachable from row links but with no visible control. Without
-      // these hidden fields a GET submit would drop them.
-      carry: [
-        params.client_id ? { name: "client_id", value: params.client_id } : null,
-        params.source_id ? { name: "source_id", value: params.source_id } : null,
-        params.source_kind ? { name: "source_kind", value: params.source_kind } : null,
-      ].filter((f): f is { name: string; value: string } => Boolean(f)),
-      dateRange: {
-        sinceName: "since",
-        sinceValue: params.since ?? "",
-        untilName: "until",
-        untilValue: params.until ?? "",
-      },
-      query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },
-      status: {
-        defaultValue: params.status ?? "",
-        name: "status",
-        options: [
-          { label: "issued", value: "issued" },
-          { label: "revoked", value: "revoked" },
-          { label: "denied", value: "denied" },
-          { label: "failed", value: "failed" },
-          { label: "pending", value: "pending" },
-        ],
-      },
-    },
-    headerActions: (
+}
+
+function GrantViewActions({ params, showAll }: { params: Params; showAll: boolean }) {
+  return (
+    <>
+      <Link
+        className={buttonVariants({ size: "sm", variant: showAll ? "ghost" : "default" })}
+        href={listHref(params, { cursor: undefined, view: undefined })}
+      >
+        Current access
+      </Link>
+      <Link
+        className={buttonVariants({ size: "sm", variant: showAll ? "default" : "ghost" })}
+        href={listHref(params, { cursor: undefined, view: "all" })}
+        title="Revoked, denied, failed, pending, and any probe/test residue — nothing is hidden by name."
+      >
+        All grants
+      </Link>
       <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/grants/request">
         Grant request workspace
       </Link>
-    ),
-    peekCliCommand: (id) => `pdpp ref grant timeline ${id}`,
-    peekEnvelope,
-    peekId: params.peek,
-    preHeader,
-    renderRow: (grant, { peeked, href, detailHref }) => (
-      <GrantRow
-        clientFilterHref={
-          grant.client_id ? listHref(params, { client_id: grant.client_id, cursor: undefined }) : null
-        }
-        detailHref={detailHref}
-        grant={grant}
-        href={href}
-        peeked={peeked}
-      />
-    ),
-    resetHref: "/grants",
-    result,
-    routes: dashboardRoutes,
-    rowKey: (grant) => grant.grant_id,
-    subject: "grant",
-    title: "Grants",
-  };
-
-  return (
-    <RecordroomShellWithPalette>
-      <ListWithPeekView params={viewParams} />
-    </RecordroomShellWithPalette>
+    </>
   );
 }
 
@@ -310,14 +367,18 @@ function GrantRow({
             </span>
           ) : null}
         </div>
-        <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums">
-          <IcTimestamp value={grant.last_at} />
+        <span className="pdpp-caption shrink-0 text-muted-foreground tabular-nums" title="Last used">
+          last used <IcTimestamp value={grant.last_at} />
         </span>
       </div>
       <div className="pdpp-caption mt-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
         <code className="max-w-[32ch] truncate font-mono" title={grant.grant_id}>
           {grant.grant_id}
         </code>
+        <span className="text-muted-foreground/50">·</span>
+        <span title="Issued">
+          issued <IcTimestamp value={grant.first_at} />
+        </span>
         <span className="text-muted-foreground/50">·</span>
         <span className="tabular-nums">{grant.event_count} events</span>
         {grant.source ? (

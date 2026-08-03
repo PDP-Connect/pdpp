@@ -14,7 +14,7 @@
 
 import { IcTimestamp } from "@pdpp/brand-react";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
-import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { DataList, PageHeader, Pager, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -29,10 +29,22 @@ export const metadata: Metadata = {
   title: "Grant packages",
 };
 
-export default async function GrantPackagesIndex() {
+interface Params {
+  cursor?: string;
+}
+
+interface PackageGroup {
+  clientCaption: string;
+  clientId: string;
+  packages: GrantPackageSummary[];
+  subjectId: string;
+}
+
+export default async function GrantPackagesIndex({ searchParams }: { searchParams: Promise<Params> }) {
+  const params = await searchParams;
   let result: ListResponse<GrantPackageSummary>;
   try {
-    result = await listGrantPackages();
+    result = await listGrantPackages({ cursor: params.cursor, limit: 50 });
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -50,14 +62,22 @@ export default async function GrantPackagesIndex() {
   // used. Issuance order is the wrong default for a page whose job is finding
   // packages worth revoking.
   const items = [...result.data].sort(byCleanupPriority);
-  const neverUsed = items.filter((pkg) => !pkg.last_used_at).length;
+  const currentItems = items.filter((pkg) => pkg.status === "active");
+  const historicalItems = items.filter((pkg) => pkg.status !== "active");
+  const neverUsed = currentItems.filter((pkg) => !pkg.last_used_at).length;
+  const nextHref =
+    result.has_more && result.next_cursor ? `/grants/packages?cursor=${encodeURIComponent(result.next_cursor)}` : null;
   return (
     <RecordroomShellWithPalette>
       <PageHeader
-        description="Hosted-MCP multi-source consent ceremonies issued one package per approval. Each package wraps one or more source-bounded child grants and a single bearer-token lifecycle. Revoke from the detail page to cascade across every child."
+        count={result.has_more ? `${items.length} on this page` : `${items.length} shown`}
+        description="Current access is grouped by the authoritative client authorization relationship. Each package wraps source-bounded child grants; historical and revoked packages remain available below. Client names appear only when registered metadata resolves."
         title="Grant packages"
       />
-      <Section title={`Packages (${items.length})`}>
+      <Section
+        description="The current view is lifecycle-authoritative. It does not guess which clients are probes from their names, so active access remains visible here."
+        title={`Current access (${currentItems.length})`}
+      >
         {items.length === 0 ? (
           <EmptyState
             hint="Grant packages appear here after a hosted-MCP OAuth flow approves more than one source in a single ceremony, or after a single-source MCP package ceremony."
@@ -65,7 +85,10 @@ export default async function GrantPackagesIndex() {
           />
         ) : (
           <>
-            {neverUsed > 0 ? (
+            {currentItems.length === 0 ? (
+              <p className="pdpp-caption text-muted-foreground">No active packages on this page.</p>
+            ) : null}
+            {neverUsed > 0 && currentItems.length > 0 ? (
               <p className="pdpp-caption mb-3 text-foreground">
                 <span className="font-medium">
                   {neverUsed} package{neverUsed === 1 ? " has" : "s have"} never been read
@@ -73,17 +96,106 @@ export default async function GrantPackagesIndex() {
                 — every child grant still holds live access. Listed first.
               </p>
             ) : null}
+            <AuthorizationGroups groups={groupPackages(currentItems)} />
+          </>
+        )}
+      </Section>
+      {historicalItems.length > 0 ? (
+        <details className="mt-7">
+          <summary className="cursor-pointer font-medium text-foreground text-sm underline-offset-2 hover:underline">
+            Historical and revoked ({historicalItems.length} on this page)
+          </summary>
+          <p className="pdpp-caption mt-2 text-muted-foreground">
+            Includes revoked and other non-active package evidence. Probe/test residue is not classified by name; use
+            the all grants view for the complete child-grant evidence set.
+          </p>
+          <div className="mt-3">
+            <AuthorizationGroups groups={groupPackages(historicalItems)} view="all" />
+          </div>
+        </details>
+      ) : null}
+      <Pager countLabel={result.has_more ? `${items.length} on this page` : `${items.length} shown`} next={nextHref} />
+    </RecordroomShellWithPalette>
+  );
+}
+
+function groupPackages(items: readonly GrantPackageSummary[]): PackageGroup[] {
+  const groups = new Map<string, PackageGroup>();
+  for (const pkg of items) {
+    const key = `${pkg.client_id}\u0000${pkg.subject_id}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.packages.push(pkg);
+      continue;
+    }
+    groups.set(key, {
+      clientCaption: clientCaption(pkg),
+      clientId: pkg.client_id,
+      packages: [pkg],
+      subjectId: pkg.subject_id,
+    });
+  }
+  return [...groups.values()];
+}
+
+function clientCaption(pkg: GrantPackageSummary): string {
+  if (!pkg.client) {
+    return "Unknown registered client";
+  }
+  const name = pkg.client?.client_name?.trim();
+  if (name) {
+    return name;
+  }
+  return "Unnamed registered client";
+}
+
+function AuthorizationGroups({
+  groups,
+  view = "current",
+}: {
+  groups: readonly PackageGroup[];
+  view?: "all" | "current";
+}) {
+  if (groups.length === 0) {
+    return null;
+  }
+  return (
+    <div className="space-y-6">
+      {groups.map((group) => {
+        const headingId = `grant-package-client-${encodeURIComponent(group.clientId)}-${encodeURIComponent(group.subjectId)}`;
+        return (
+          <section aria-labelledby={headingId} key={group.clientId + group.subjectId}>
+            <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+              <div className="min-w-0">
+                <h2 className="font-medium text-foreground" id={headingId}>
+                  {group.clientCaption}
+                </h2>
+                <div className="pdpp-caption mt-0.5 flex flex-wrap items-baseline gap-x-2 text-muted-foreground">
+                  <code className="break-all font-mono" title={group.clientId}>
+                    {group.clientId}
+                  </code>
+                  <span aria-hidden>·</span>
+                  <span>subject {group.subjectId}</span>
+                </div>
+              </div>
+              <Link
+                className="pdpp-caption shrink-0 underline-offset-2 hover:text-foreground hover:underline"
+                href={`/grants?client_id=${encodeURIComponent(group.clientId)}${view === "all" ? "&view=all" : ""}`}
+              >
+                {view === "all" ? "all grants →" : "current grants →"}
+              </Link>
+            </div>
             <DataList>
-              {items.map((pkg) => (
+              {group.packages.map((pkg) => (
                 <li key={pkg.package_id}>
                   <PackageRow pkg={pkg} />
                 </li>
               ))}
             </DataList>
-          </>
-        )}
-      </Section>
-    </RecordroomShellWithPalette>
+          </section>
+        );
+      })}
+    </div>
   );
 }
 
@@ -130,11 +242,13 @@ function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
   return (
     <Link className="block px-3 py-2.5 transition-colors hover:bg-muted/40" href={href}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <code className="pdpp-caption break-all font-medium font-mono text-foreground">{pkg.package_id}</code>
+        <code className="pdpp-caption break-all font-medium font-mono text-foreground" title={pkg.package_id}>
+          {pkg.package_id}
+        </code>
         <div className="flex items-center gap-2">
           <StatusBadge status={pkg.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
           <span className="pdpp-caption text-muted-foreground">
-            <IcTimestamp value={pkg.created_at} />
+            issued <IcTimestamp value={pkg.created_at} />
           </span>
         </div>
       </div>
@@ -143,9 +257,7 @@ function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
         <span aria-hidden>·</span>
         <LastUsed value={pkg.last_used_at} />
         <span aria-hidden>·</span>
-        <span>client {pkg.client_id}</span>
-        <span aria-hidden>·</span>
-        <span>subject {pkg.subject_id}</span>
+        {pkg.client?.registration_mode ? <span>registration {pkg.client.registration_mode}</span> : null}
       </div>
     </Link>
   );

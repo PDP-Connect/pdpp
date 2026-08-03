@@ -59,6 +59,14 @@ const PARENT_LINK_RE = /\/grants\/packages\/\$\{encodeURIComponent\(pkg\.parent_
 const CUMULATIVE_IFACE_RE = /export interface CumulativeClientAccess/;
 const CUMULATIVE_FN_RE = /export async function getCumulativeClientAccess/;
 const PARENT_FIELD_RE = /parent_package_id: string \| null/;
+const ISSUED_LABEL_RE = /<dt>Issued<\/dt>/;
+const LAST_USED_LABEL_RE = /<dt>Last used<\/dt>/;
+const LAST_USED_FIELD_RE = /pkg\.last_used_at/;
+const CREATED_LABEL_RE = /<dt>Created<\/dt>/;
+const RESOLVED_CLIENT_NAME_RE = /pkg\.client\?\.client_name/;
+const RAW_CLIENT_ID_RE = /pkg\.client_id/;
+const NO_NAME_HEURISTIC_RE = /new URL\(|clientOriginCaption|looksLikeTechnicalClientId/;
+const CLIENT_FILTER_HREF_RE = /\/grants\?client_id=\$\{encodeURIComponent\(pkg\.client_id\)\}/;
 
 test("package detail page wires its revoke form to the server action with a confirm_revoke field", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -113,6 +121,28 @@ test("ref-client exposes a typed cumulative client access surface", async () => 
   assert.match(refClientSrc, CUMULATIVE_IFACE_RE);
   assert.match(refClientSrc, CUMULATIVE_FN_RE);
   assert.match(refClientSrc, PARENT_FIELD_RE);
+});
+
+test("package detail page labels the issuance timestamp Issued, never an unlabeled Created", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, ISSUED_LABEL_RE);
+  assert.match(src, LAST_USED_LABEL_RE);
+  assert.match(src, LAST_USED_FIELD_RE);
+  assert.doesNotMatch(src, CREATED_LABEL_RE);
+});
+
+test("package detail page shows the resolved client name only when authoritative, with the raw id as secondary data", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, RESOLVED_CLIENT_NAME_RE);
+  // The raw client_id must still be rendered (as a link/secondary detail),
+  // never replaced outright by a resolved name.
+  assert.match(src, RAW_CLIENT_ID_RE);
+  assert.doesNotMatch(src, NO_NAME_HEURISTIC_RE);
+});
+
+test("package detail page links to client-filtered grants", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, CLIENT_FILTER_HREF_RE);
 });
 
 test("revoke flow preserves package partial-failure details for the operator", async () => {

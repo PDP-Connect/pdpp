@@ -2750,6 +2750,16 @@ export async function disableClientEventSubscription(
  */
 export interface GrantPackageSummary {
   approved_at: string | null;
+  /**
+   * Authoritative `oauth_clients` row for `client_id`. `null` means the
+   * package's client id has no registered-client row — render that
+   * explicitly, never derive a name from `client_id`'s shape.
+   */
+  client?: {
+    client_id: string;
+    client_name: string | null;
+    registration_mode: string | null;
+  } | null;
   client_id: string;
   created_at: string;
   /**
@@ -2780,8 +2790,19 @@ export interface GrantPackageChild {
 export interface GrantPackageDetail {
   approved_at: string | null;
   children: GrantPackageChild[];
+  /**
+   * Authoritative `oauth_clients` row for `client_id`. `null` means the
+   * package's client id has no registered-client row — render that
+   * explicitly, never derive a name from `client_id`'s shape.
+   */
+  client?: {
+    client_id: string;
+    client_name: string | null;
+    registration_mode: string | null;
+  } | null;
   client_id: string;
   created_at: string;
+  last_used_at: string | null;
   member_count: number;
   object: "grant_package";
   package_id: string;
@@ -2880,8 +2901,18 @@ function formatGrantPackageRevokePartialFailure(result: GrantPackageRevokeResult
   } revoked; ${result.not_revoked_child_count} not revoked: ${failedSummary}. Access remains active.`;
 }
 
-export async function listGrantPackages(): Promise<ListResponse<GrantPackageSummary>> {
-  return (await refFetch("/_ref/grant-packages")) as ListResponse<GrantPackageSummary>;
+export async function listGrantPackages(
+  options: { cursor?: string; limit?: number } = {}
+): Promise<ListResponse<GrantPackageSummary>> {
+  const query = new URLSearchParams();
+  if (options.cursor) {
+    query.set("cursor", options.cursor);
+  }
+  if (options.limit) {
+    query.set("limit", String(options.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return (await refFetch(`/_ref/grant-packages${suffix}`)) as ListResponse<GrantPackageSummary>;
 }
 
 export interface GrantPackageCount {

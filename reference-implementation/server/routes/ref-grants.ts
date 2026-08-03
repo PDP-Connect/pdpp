@@ -67,13 +67,27 @@ export interface GrantPackageChild {
   readonly source: string | null;
 }
 
+export interface GrantPackageClientMetadata {
+  readonly client_id: string;
+  readonly client_name: string | null;
+  readonly registration_mode: string | null;
+}
+
 export interface GrantPackageSummaryRow {
   readonly approved_at: string | null;
   readonly children: readonly GrantPackageChild[];
+  /**
+   * Authoritative `oauth_clients` row for `client_id`, batch-attached by
+   * `listGrantPackagesForOwner`/`getGrantPackageForOwner`. `null` means the
+   * lookup ran and found no registered-client row (explicit missing, not a
+   * guess). The read-model attach step guarantees this is present as either
+   * metadata or explicit null before this route serializes it.
+   */
+  readonly client: GrantPackageClientMetadata | null;
   readonly client_id: string;
   readonly created_at: string;
   /** Newest read across child grants; null means never used. */
-  readonly last_used_at?: string | null;
+  readonly last_used_at: string | null;
   readonly member_count: number;
   readonly package_id: string;
   readonly parent_package_id: string | null;
@@ -202,16 +216,17 @@ export function mountRefGrantPackagesList(app: AppLike, ctx: MountRefGrantsConte
       res.json({
         data: page.data.map((pkg) => ({
           approved_at: pkg.approved_at,
+          client: pkg.client,
           client_id: pkg.client_id,
           created_at: pkg.created_at,
+          // Derived from disclosure.served on the package's child grants;
+          // null means never used, which the console renders explicitly.
+          last_used_at: pkg.last_used_at,
           member_count: pkg.member_count,
           object: "grant_package_summary",
           package_id: pkg.package_id,
           parent_package_id: pkg.parent_package_id,
           revoked_at: pkg.revoked_at,
-          // Derived from disclosure.served on the package's child grants;
-          // null means never used, which the console renders explicitly.
-          last_used_at: pkg.last_used_at ?? null,
           status: pkg.status,
           subject_id: pkg.subject_id,
         })),
@@ -264,8 +279,10 @@ export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContex
           revoked_at: child.revoked_at,
           source: child.source,
         })),
+        client: pkg.client,
         client_id: pkg.client_id,
         created_at: pkg.created_at,
+        last_used_at: pkg.last_used_at,
         member_count: pkg.member_count,
         object: "grant_package",
         package_id: pkg.package_id,
