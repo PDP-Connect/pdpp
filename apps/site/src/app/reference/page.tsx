@@ -12,6 +12,7 @@ const GITHUB_REFERENCE_README = `${GITHUB_REPO}/blob/main/reference-implementati
 const GITHUB_ROOT_README = `${GITHUB_REPO}/blob/main/README.md`;
 const GITHUB_DOCKER_README = `${GITHUB_REPO}/blob/main/deploy/docker/README.md`;
 const GITHUB_SELF_SERVICE_README = `${GITHUB_REPO}/blob/main/docs/operator/self-service-gmail-mcp.md`;
+const GITHUB_HOSTED_MCP_SETUP = `${GITHUB_REPO}/blob/main/docs/operator/hosted-mcp-setup.md`;
 const PINNED_COMPOSE_REF = "cc07e3a896c2c0df7841da4ec6b2c660ffe1e792";
 const PINNED_IMAGE_TAG = "sha-cc07e3a";
 
@@ -244,6 +245,18 @@ docker compose up -d`}
               site is documentation; it is not this MCP server.
             </p>
           </div>
+          <p className="pdpp-caption mt-3 text-muted-foreground">
+            Claude Code reaches a loopback deployment directly. ChatGPT and Claude.ai are hosted services that fetch
+            your MCP URL from their own infrastructure, so they need a public HTTPS origin first — see{" "}
+            <a className="underline underline-offset-2" href={`${GITHUB_DOCKER_README}#public-https-for-chatgpt-and-claudeai`}>
+              Public HTTPS for ChatGPT and Claude.ai
+            </a>{" "}
+            for the no-domain, no-open-port Cloudflare Tunnel path, then{" "}
+            <a className="underline underline-offset-2" href={GITHUB_HOSTED_MCP_SETUP}>
+              hosted MCP setup
+            </a>{" "}
+            for the client-specific steps.
+          </p>
         </section>
 
         <section className="mt-14 grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">

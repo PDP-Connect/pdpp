@@ -88,7 +88,11 @@ with every MCP client or every OAuth profile.
 
 ## Related runbooks
 
-- [`hosted-mcp-setup.md`](hosted-mcp-setup.md) — client-specific OAuth details.
+- [`hosted-mcp-setup.md`](hosted-mcp-setup.md) — client-specific OAuth details,
+  including ChatGPT and Claude.ai, which need the public HTTPS origin below
+  instead of `http://localhost:3000`.
+- [`../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai`](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai) —
+  no-domain, no-account, no-open-port public HTTPS for hosted AI clients.
 - [`selfhost-quickstart.md`](selfhost-quickstart.md) — deployment notes and
   alternate platform lanes.
 - [`add-connection.md`](add-connection.md) — owner-mediated source setup.

@@ -171,6 +171,123 @@ pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so
 owner-session cookies and OAuth metadata are correct. Local loopback HTTP is
 supported for a local client; do not expose a remote node over HTTP.
 
+## Public HTTPS for ChatGPT and Claude.ai
+
+Claude Code, Codex, and other local agents run on your machine and can reach
+`http://localhost:3000/mcp` directly — nothing in this section applies to them.
+
+ChatGPT and Claude.ai are hosted services: they fetch your MCP server URL from
+their own infrastructure, not your browser, so `localhost`, a LAN IP, or any
+other private address can never work for them, no matter how your firewall or
+router is configured. They need a public HTTPS origin.
+
+You do not need a domain name or a PDPP account to get one. This uses
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+to publish your local node without opening any inbound port on your router or
+host firewall — `cloudflared` makes an outbound-only connection to Cloudflare.
+
+**Use a named tunnel, not `cloudflared tunnel --url` (Quick Tunnel).** Quick
+Tunnels need no account at all, but Cloudflare's own docs describe them as
+["testing and development purposes only"](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/),
+with no SLA, a 200 in-flight request cap, and **no support for Server-Sent
+Events** — any of which can silently break a hosted MCP client mid-session. A
+named tunnel needs a free Cloudflare account (email + password; Cloudflare can
+issue you a subdomain, so a domain purchase is still not required) and has
+none of those disclaimers.
+
+### 1. Create a named tunnel (one time, on any machine with `cloudflared`)
+
+Install `cloudflared` ([Cloudflare's install docs](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)),
+then:
+
+```sh
+cloudflared tunnel login          # opens a browser; free Cloudflare account
+cloudflared tunnel create pdpp    # prints a tunnel ID and writes a credentials file
+cloudflared tunnel route dns pdpp <your-choice>.<your-zone-or-cloudflare-subdomain>
+```
+
+Get the token for that tunnel — either from the credentials file `cloudflared
+create` wrote, or from the Cloudflare dashboard (Zero Trust → Networks →
+Tunnels → your tunnel → install/token) — and set it, along with the hostname
+you just routed, in `.env`:
+
+```sh
+CLOUDFLARE_TUNNEL_TOKEN=<your-tunnel-token>
+PDPP_REFERENCE_ORIGIN=https://<your-choice>.<your-zone-or-cloudflare-subdomain>
+```
+
+`PDPP_REFERENCE_ORIGIN` is the only PDPP-protocol-relevant output of this
+step: OAuth metadata, cookies, and the `/mcp` URL shown on `/connect` are all
+composed from it, so it must exactly match the hostname you routed.
+
+### 2. Start the tunnel profile
+
+```sh
+docker compose --profile tunnel up -d
+```
+
+This starts `cloudflared` alongside the normal stack (add `--profile browser`
+too if you also enabled browser-backed sources). `cloudflared` runs the tunnel
+you created in step 1 and forwards it to the `web` service over the private
+compose network; no host port is published for it.
+
+### 3. Verify and connect
+
+```sh
+curl -fsS "$PDPP_REFERENCE_ORIGIN/.well-known/oauth-authorization-server" >/dev/null && echo reachable
+```
+
+Open `<PDPP_REFERENCE_ORIGIN>/connect` and use the ChatGPT or Claude.ai setup
+steps shown there. Both ask you to sign in to *this* deployment's owner
+dashboard and approve a specific, source-scoped grant before either client can
+read anything — the tunnel makes the origin reachable, it does not grant
+access by itself. See
+[`docs/operator/hosted-mcp-setup.md`](../../docs/operator/hosted-mcp-setup.md#chatgpt)
+for the exact client-side steps.
+
+### Security posture
+
+- `cloudflared` only ever makes outbound connections to Cloudflare's edge; no
+  inbound port is opened on your router or host firewall by this profile.
+- The tunnel exposes exactly the `web` service — the same operator console and
+  protocol surface already reachable at `http://localhost:3000`. It does not
+  expose Postgres or the browser surface (`neko`), neither of which publish a
+  host port even without a tunnel.
+- Publishing this node publicly does not weaken owner auth: `/owner/login`,
+  the grant-approval flow, and the `/mcp` bearer checks are unchanged. Anyone
+  who reaches the origin can attempt to sign in or start OAuth, but cannot
+  read data without completing owner login or an approved, source-scoped
+  grant.
+- Revoking access later does not require tearing down the tunnel: revoke the
+  specific grant or CIMD client identity at `/connect`, or rotate
+  `PDPP_OWNER_PASSWORD`.
+
+### Tunnel teardown
+
+Stop just the tunnel, keeping the node running locally:
+
+```sh
+docker compose --profile tunnel stop cloudflared
+```
+
+Remove it entirely (the node stays up on `http://localhost:3000`, now
+unreachable from outside your machine again):
+
+```sh
+docker compose --profile tunnel rm -sf cloudflared
+```
+
+Deleting the tunnel itself (so the hostname stops resolving at all) is done
+once, outside Compose, from wherever you ran `cloudflared tunnel create`:
+
+```sh
+cloudflared tunnel delete pdpp
+```
+
+This does not touch `pdpp-postgres-data` or any other volume — deleting the
+tunnel only retires the public hostname, not your data. Use the
+[Teardown](#teardown) section below to also delete data.
+
 ## Verification
 
 ```sh

@@ -117,48 +117,13 @@ non-default.**
 ### Optional: "no domain, no open ports" with Cloudflare Tunnel
 
 If your Docker host is not publicly reachable — home server behind NAT, VPS
-without a domain, or a machine you do not want to expose directly — Cloudflare
-Tunnel gives you a stable HTTPS URL without opening firewall ports or owning a
-domain.
-
-**One-time setup:**
-
-1. Sign in at [dash.cloudflare.com](https://dash.cloudflare.com), go to
-   **Zero Trust → Networks → Tunnels**, and create a new tunnel.
-2. Copy the tunnel token shown after creation.
-3. Add the `cloudflared` service to your compose stack. Create
-   `docker-compose.override.yml` alongside `docker-compose.yml`:
-
-```yaml
-services:
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN}"
-    networks:
-      - pdpp
-```
-
-4. In the Cloudflare dashboard, add a public hostname for the tunnel pointing to
-   `http://web:3000` (the `web` service on the internal Compose network).
-5. Set the env vars in `.env`:
-
-```sh
-CLOUDFLARE_TUNNEL_TOKEN=<your-tunnel-token>
-PDPP_REFERENCE_ORIGIN=https://<your-hostname>.trycloudflare.com  # or your custom domain
-```
-
-6. Start the full stack:
-
-```sh
-docker compose up -d
-```
-
-The tunnel service connects outbound to Cloudflare; no inbound ports need to be
-opened. `PDPP_REFERENCE_ORIGIN` is the only PDPP-protocol-relevant output of
-this step — set it to the stable HTTPS URL the tunnel provides.
+without a domain, or a machine you do not want to expose directly — and you
+need ChatGPT or Claude.ai (not just Claude Code) to reach it, `cloudflared` is
+already built into the blessed Compose stack as an opt-in `--profile tunnel`
+service. It needs a free Cloudflare account and gives you a stable HTTPS
+hostname without opening any firewall port or owning a domain. See
+[`deploy/docker/README.md#public-https-for-chatgpt-and-claudeai`](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai)
+for the full one-time setup, security posture, and teardown.
 
 ### 3. Pull and start
 

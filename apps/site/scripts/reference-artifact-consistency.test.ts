@@ -20,6 +20,7 @@ const TOUCHED_SURFACE_PATHS = [
   ["artifact consistency oracle", new URL("./reference-artifact-consistency.test.ts", import.meta.url)],
   ["no-hardcoded-host oracle", new URL("./reference-page-no-hardcoded-host.test.ts", import.meta.url)],
   ["self-service journey oracle", new URL("./reference-page-self-service.test.ts", import.meta.url)],
+  ["tunnel profile oracle", new URL("./blessed-compose-tunnel-profile.test.ts", import.meta.url)],
   ["Docker deployment runbook", new URL("../../../deploy/docker/README.md", import.meta.url)],
   ["deployment copy proposal", new URL("../../../deploy/docker/site-copy-proposal.md", import.meta.url)],
   ["Fly deployment runbook", new URL("../../../deploy/flyio/README.md", import.meta.url)],

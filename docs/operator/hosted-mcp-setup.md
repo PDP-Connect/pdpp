@@ -14,11 +14,36 @@ for the normal copy-paste path; this runbook is the expanded reference.
 
 - A remote reference deployment is reachable over HTTPS. A local loopback
   deployment may use HTTP for a local client; do not expose remote HTTP.
+  **ChatGPT and Claude.ai are hosted services that fetch this URL from their
+  own infrastructure** — a loopback or LAN address can never work for them.
+  If you only have a local Docker Compose node, see
+  [Public HTTPS for ChatGPT and Claude.ai](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai)
+  for the no-domain, no-account, no-open-port path using Cloudflare Tunnel.
+  Claude Code and Codex are local agents and need none of this.
 - Owner login works for the deployment dashboard.
 - Public metadata resolves from the same origin:
   - `/.well-known/oauth-authorization-server`
   - `/.well-known/oauth-protected-resource/mcp`
   - `/mcp`
+
+## Who is requesting access, and what they can see
+
+Every one of the flows below ends the same way: the client redirects your
+browser (or shows a device code) for **you**, the owner, to approve — not the
+client vendor and not PDP-Connect. Before approving, the consent screen always
+shows:
+
+- which client is asking (its registered name or client ID);
+- which PDPP source it wants to read (e.g. "Gmail"), never "everything";
+- that the grant is read-only and scoped to that source's fields.
+
+ChatGPT and Claude.ai show you their own account context (which OpenAI/Anthropic
+account is adding the connector) before handing off to your PDPP deployment's
+consent screen — read both: the AI vendor's screen tells you which of *their*
+accounts is connecting, and PDPP's screen tells you which of *your* data
+sources that account would be able to read. Claude Code and Codex have no
+account context of their own to show; the PDPP consent screen is the only
+approval step for them.
 
 ## Your MCP server URL
 
@@ -38,6 +63,12 @@ collected there.
 
 ## ChatGPT
 
+Custom MCP connectors require a paid ChatGPT plan (Plus, Pro, Business, or
+Enterprise) — not the Free tier. OpenAI's own docs describe custom connectors
+as reaching "any server on the public Internet that implements a remote Model
+Context Protocol (MCP) server," which is why the public-HTTPS step above is
+required first.
+
 1. Open ChatGPT connector creation.
 2. Choose a custom MCP connector.
 3. Set the MCP server URL to `<PDPP_REFERENCE_ORIGIN>/mcp`.
@@ -52,6 +83,25 @@ dynamic registration where enabled, `authorization_code` with PKCE,
 issued tokens are bound to the approved PDPP grant; they do not expose owner
 dashboard credentials or operator/admin control. This wording describes the
 supported PDPP profile, not every MCP client's OAuth profile.
+
+## Claude.ai
+
+Custom connectors are available on every Claude.ai plan (Free, Pro, Max, Team,
+Enterprise); Team and Enterprise workspaces have an Owner add the connector
+organization-wide before individual members connect.
+
+1. Open Claude.ai Settings → Connectors → Add custom connector.
+2. Set the MCP server URL to `<PDPP_REFERENCE_ORIGIN>/mcp`.
+3. Add the connector and complete OAuth: sign in to the PDPP owner dashboard
+   when redirected, select the PDPP source to read, and approve the grant.
+
+Anthropic's own docs are explicit that this must be a public address: "your
+MCP server must be reachable over the public internet from Anthropic's IP
+ranges," and a server on a private network, behind a VPN, or blocked by a
+firewall will not connect even if it works from your own machine. Anthropic's
+docs describe this as the failure mode, not an active pre-flight check — so a
+private address may not be rejected immediately, but the connection will not
+succeed.
 
 ## Claude Code
 

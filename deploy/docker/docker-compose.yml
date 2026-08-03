@@ -203,6 +203,45 @@ services:
       retries: 30
       start_period: 20s
 
+  # Public HTTPS ingress for hosted AI clients (ChatGPT, Claude.ai). Off by
+  # default. `docker compose --profile tunnel up -d` starts it; without the
+  # profile this service is not created and the node stays loopback-only,
+  # which is fine for Claude Code but cannot serve a hosted client (they fetch
+  # the MCP URL from their own servers and cannot reach a private address).
+  #
+  # This is Cloudflare's own `cloudflared` image running a NAMED tunnel, not
+  # the zero-setup Quick Tunnel (`cloudflared tunnel --url ...`). Cloudflare's
+  # own docs describe Quick Tunnels as testing/development only, with no SLA,
+  # a 200 in-flight request cap, and no Server-Sent Events support — any of
+  # which can silently break a hosted MCP client. A named tunnel needs a free
+  # Cloudflare account (no domain purchase required; Cloudflare can issue a
+  # subdomain) but carries none of those disclaimers.
+  #
+  # Setup (see ./README.md#public-https-for-chatgpt-and-claudeai for the full
+  # walkthrough): run `cloudflared tunnel login` and `cloudflared tunnel
+  # create pdpp` once on any machine, route a hostname to the tunnel, then set
+  # CLOUDFLARE_TUNNEL_TOKEN and PDPP_REFERENCE_ORIGIN in .env to that
+  # hostname before starting this profile.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel run
+    # A `:?` guard cannot be used here — compose interpolates every service's
+    # environment even when its profile is inactive, so a required variable
+    # would break the default network-only stack for owners who never enable
+    # the tunnel profile (the same reason the neko service below cannot use
+    # `:?` on PDPP_NEKO_IMAGE). Empty is a real, documented failure the
+    # cloudflared image itself reports at startup, not a silent no-op.
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      web:
+        condition: service_started
+    # No published port: cloudflared makes an OUTBOUND connection to
+    # Cloudflare's edge and reaches `web` over the private compose network.
+    # No inbound firewall rule or open port is required on the host.
+
 volumes:
   pdpp-postgres-data:
   pdpp-transformers:
