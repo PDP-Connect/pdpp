@@ -3073,10 +3073,20 @@ export async function hydratePdfsForIndex(
     });
   }
 
-  for (const [rowIndex, skip] of stagedSkips) {
+  // Callback order is not a durable-order contract. Flush at most one final
+  // skip per row in the documents index's existing canonical row order.
+  for (const { rowIndex } of indexRows) {
+    const skip = stagedSkips.get(rowIndex);
+    if (!skip) {
+      continue;
+    }
     if (hydrationSuccess(results.get(rowIndex))) {
       continue;
     }
+    // A malformed duplicate rowIndex must not create duplicate durable skip
+    // evidence. Normal index rows are unique, but the parent owns this final
+    // exactly-once boundary.
+    stagedSkips.delete(rowIndex);
     await emitUsaa(deps, {
       type: "SKIP_RESULT",
       stream: "statements",

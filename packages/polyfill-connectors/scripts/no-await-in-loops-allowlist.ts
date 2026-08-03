@@ -1294,7 +1294,7 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
   },
   {
     path: "connectors/usaa/index.ts",
-    line: 3080,
+    line: 3090,
     column: 5,
     category: "ordered_protocol_emission",
     note: "hydratePdfsForIndex(): final unresolved PDF skips emit in row order after hydration settles",

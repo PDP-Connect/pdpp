@@ -555,6 +555,42 @@ test("hydratePdfsForIndex: a final PDF failure emits one bounded typed and row-c
   assert.doesNotMatch(JSON.stringify(skip), /provider text that must not be emitted/);
 });
 
+test("hydratePdfsForIndex: reversed callback order flushes final skips once in statement index order", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow({ rowIndex: 0 }), makeIndexRow({ id: "IDX-ID-0002", rowIndex: 1 })];
+  await hydratePdfsForIndex(
+    { ...deps, page: {} as Page },
+    indexRows,
+    ({ onSkip, statements }): Promise<HydratedStatement[]> => {
+      const [first, second] = statements;
+      assert.ok(first);
+      assert.ok(second);
+      onSkip?.({ statement: second, reason: "download_timeout", diag: { error: "second provider text" } });
+      onSkip?.({ statement: first, reason: "download_timeout", diag: { error: "first provider text" } });
+      // A duplicate callback for the same row replaces the staged observation,
+      // but still produces exactly one final durable skip for that row.
+      onSkip?.({ statement: second, reason: "download_timeout", diag: { error: "later provider text" } });
+      return Promise.resolve([]);
+    }
+  );
+
+  const skips = messages.filter(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "statements"
+  );
+  assert.equal(skips.length, 2, "one final skip per unresolved index row");
+  assert.deepEqual(
+    skips.map((skip) => (skip.diagnostics as { row_id?: unknown }).row_id),
+    [0, 1],
+    "durable skips follow the canonical documents-index order, not callback insertion order"
+  );
+  assert.deepEqual(
+    skips.map((skip) => skip.reason),
+    ["pdf_download_failed", "pdf_download_failed"]
+  );
+  assert.doesNotMatch(JSON.stringify(skips), /first provider text|second provider text|later provider text/);
+});
+
 // ─── Invariant 4c: per-run detail-coverage evidence on the emit path ─────
 
 function statementCoverage(messages: readonly EmittedMessage[]): EmittedMessage | undefined {
