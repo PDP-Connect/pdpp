@@ -1,6 +1,3 @@
-// Copyright The PDP-Connect Contributors
-// SPDX-License-Identifier: Apache-2.0
-
 /**
  * Canonical `ref.clients.list` operation.
  *
@@ -40,10 +37,21 @@
  */
 
 export interface RefClientsListClient {
-  readonly active_token_count: number;
   readonly client_id: string;
   readonly client_name: string | null;
   readonly created_at: string;
+  readonly active_token_count: number;
+  /**
+   * Last time this credential actually READ anything, derived from
+   * `disclosure.served` spine events rather than stored on `tokens` (no
+   * `last_used_at` column exists in either backend).
+   *
+   * `null` means NEVER USED — not "unknown". A credential that has never
+   * read anything still holds its full grant, so consumers must render that
+   * case explicitly rather than as a blank cell; an unused credential is
+   * often the one most worth revoking.
+   */
+  readonly last_used_at: string | null;
 }
 
 export interface RefClientsListInput {
@@ -67,12 +75,12 @@ export interface RefClientsListDependencies {
    * the requesting owner-session subject so pre-registered seeds never
    * appear here.
    */
-  listOwnerIssuedClients: () => Promise<readonly RefClientsListClient[]> | readonly RefClientsListClient[];
+  listOwnerIssuedClients(): Promise<readonly RefClientsListClient[]> | readonly RefClientsListClient[];
 }
 
 export interface RefClientsListEnvelope {
-  readonly data: RefClientsListClient[];
   readonly object: "list";
+  readonly data: RefClientsListClient[];
 }
 
 export class RefClientsListInvalidRequestError extends Error {
@@ -94,14 +102,14 @@ export class RefClientsListInvalidRequestError extends Error {
  */
 export async function executeRefClientsList(
   input: RefClientsListInput,
-  dependencies: RefClientsListDependencies
+  dependencies: RefClientsListDependencies,
 ): Promise<RefClientsListEnvelope> {
   if (input.owner !== "true") {
     throw new RefClientsListInvalidRequestError();
   }
   const clients = await dependencies.listOwnerIssuedClients();
   return {
-    data: [...clients],
     object: "list",
+    data: [...clients],
   };
 }

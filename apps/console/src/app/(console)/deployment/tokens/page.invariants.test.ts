@@ -104,3 +104,42 @@ test("tokens page renders no raw bearer from the token drilldown (no-leak guard)
   assert.doesNotMatch(src, TOKEN_ACCESS_TOKEN_RE);
   assert.doesNotMatch(src, TOKEN_ID_FIELD_RE);
 });
+
+// ─── Last-used / never-used cleanup affordance ─────────────────────────────
+//
+// "Last used" is derived from `disclosure.served` spine events, not from a
+// stored column — there is no `tokens.last_used_at` in either backend. The
+// load-bearing part is the NULL case: a credential that has never read
+// anything still holds its full grant, and on a live deployment there are
+// real examples of exactly that. If `null` ever renders as an empty cell,
+// the credentials most worth revoking become the least visible ones on the
+// page, which inverts the purpose of this surface.
+//
+// These guards deliberately strip comments and attribute values before
+// matching. An earlier version of this test matched the whole file and so
+// passed against a build where the rendered copy had been deleted but a
+// comment still said "never used" — a guard that cannot fail is worse than
+// no guard, because it certifies a regression as safe.
+function renderedText(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "")
+    .replace(/\stitle=\{?"[^"]*"\}?/g, "");
+}
+
+const NEVER_USED_COPY_RE = /never used/i;
+const LAST_USED_COPY_RE = /last used/i;
+const CLEANUP_ORDER_RE = /\[\.\.\.tokens\]\.sort\(byCleanupPriority\)/;
+
+test("tokens page renders an explicit never-used state, not a blank cell", async () => {
+  const body = renderedText(await readFile(PAGE_FILE, "utf8"));
+  assert.match(body, NEVER_USED_COPY_RE);
+  assert.match(body, LAST_USED_COPY_RE);
+});
+
+test("tokens page orders credentials for cleanup (never-used first, then least-recently-used)", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, CLEANUP_ORDER_RE);
+  // The list must render the SORTED collection, not the raw server order.
+  assert.match(src, /ordered\.map\(/);
+});

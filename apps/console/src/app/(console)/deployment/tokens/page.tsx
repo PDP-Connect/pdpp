@@ -357,6 +357,45 @@ function TokenDrilldown({ clientId, tokens }: { clientId: string; tokens: OwnerC
   );
 }
 
+/**
+ * Last-used cell. A credential that has never served a read still holds its
+ * full grant, so "never used" is called out rather than left blank — an unused
+ * credential is frequently the one most worth revoking, and a blank cell reads
+ * as "no data" instead of "no reads".
+ */
+function LastUsed({ value }: { value: string | null }) {
+  if (!value) {
+    return (
+      <span className="font-medium text-[color:var(--warning,inherit)]" title="This credential has never read any data">
+        never used
+      </span>
+    );
+  }
+  return (
+    <span>
+      last used <IcTimestamp value={value} />
+    </span>
+  );
+}
+
+/**
+ * Cleanup order: never-used credentials first (highest risk — live access,
+ * zero usage), then least-recently-used. Issuance order is the wrong default
+ * for a page whose main job is revoking stale credentials.
+ */
+function byCleanupPriority(a: OwnerIssuedClient, b: OwnerIssuedClient): number {
+  if (!(a.last_used_at || b.last_used_at)) {
+    return a.created_at.localeCompare(b.created_at);
+  }
+  if (!a.last_used_at) {
+    return -1;
+  }
+  if (!b.last_used_at) {
+    return 1;
+  }
+  return a.last_used_at.localeCompare(b.last_used_at);
+}
+
 function TokensListSection({
   tokens,
   tokenDetailsByClient,
@@ -369,18 +408,28 @@ function TokensListSection({
   if (tokens.length === 0) {
     return null;
   }
+  const ordered = [...tokens].sort(byCleanupPriority);
+  const neverUsed = ordered.filter((token) => !token.last_used_at).length;
   return (
     <div className="rounded-md border border-border" data-surface="human">
       <div className="border-border/70 border-b px-5 py-3">
         <h2 className="pdpp-eyebrow">Owner credentials</h2>
         <p className="pdpp-caption mt-0.5 text-muted-foreground">
-          One row per approved owner-agent or manual credential. Rename the label in place, or revoke to delete the
-          OAuth client (RFC 7592) and cascade-revoke its bearers. Clients with more than one active token expand to
-          per-token details.
+          One row per approved owner-agent or manual credential, ordered for cleanup: never-used first, then
+          least-recently-used. Rename the label in place, or revoke to delete the OAuth client (RFC 7592) and
+          cascade-revoke its bearers. Clients with more than one active token expand to per-token details.
         </p>
+        {neverUsed > 0 ? (
+          <p className="pdpp-caption mt-1.5 text-foreground">
+            <span className="font-medium">
+              {neverUsed} credential{neverUsed === 1 ? " has" : "s have"} never been used
+            </span>{" "}
+            — still holding live access. These are usually safe to revoke.
+          </p>
+        ) : null}
       </div>
       <ul className="divide-y divide-border/70">
-        {tokens.map((token) => {
+        {ordered.map((token) => {
           const isHighlight = highlightClientId === token.client_id;
           const detailTokens = tokenDetailsByClient.get(token.client_id) ?? [];
           const showDrilldown = token.active_token_count > 1 && detailTokens.length > 0;
@@ -394,6 +443,8 @@ function TokensListSection({
                       {token.active_token_count > 1 ? "first issued " : "issued "}
                       <IcTimestamp value={token.created_at} />
                     </span>
+                    <span aria-hidden>·</span>
+                    <LastUsed value={token.last_used_at} />
                     <span aria-hidden>·</span>
                     <span>
                       {token.active_token_count} active token{token.active_token_count === 1 ? "" : "s"}

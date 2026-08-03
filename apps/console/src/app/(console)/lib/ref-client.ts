@@ -2511,6 +2511,12 @@ export interface OwnerIssuedClient {
   client_id: string;
   client_name: string | null;
   created_at: string;
+  /**
+   * Last time this credential actually read anything (from `disclosure.served`
+   * spine events). `null` means NEVER USED — render that explicitly; a
+   * credential that has never read anything still holds full access.
+   */
+  last_used_at: string | null;
 }
 
 /**

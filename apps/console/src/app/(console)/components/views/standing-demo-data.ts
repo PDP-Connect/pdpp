@@ -1,6 +1,3 @@
-// Copyright The PDP-Connect Contributors
-// SPDX-License-Identifier: Apache-2.0
-
 /**
  * Seeded "Standing" fixtures — DEV-ONLY screenshot review aid.
  *
@@ -32,170 +29,187 @@ function iso(daysAgo: number): string {
 }
 
 const BEARERS: OwnerIssuedClient[] = [
-  { active_token_count: 1, client_id: "cli_claude_desktop", client_name: "Claude Desktop", created_at: iso(40) },
-  { active_token_count: 2, client_id: "cli_framework", client_name: "CLI on framework", created_at: iso(120) },
-  // Worst case: a real owner bearer with NO human name — the long machine
-  // client_id IS the identity and must truncate without breaking the row.
+  // Actively used credential — the ordinary case.
   {
+    client_id: "cli_claude_desktop",
+    client_name: "Claude Desktop",
     active_token_count: 1,
+    created_at: iso(40),
+    last_used_at: iso(1),
+  },
+  // Issued long ago, last read months back: the stale-but-used case.
+  {
+    client_id: "cli_framework",
+    client_name: "CLI on framework",
+    active_token_count: 2,
+    created_at: iso(120),
+    last_used_at: iso(95),
+  },
+  // Worst case, and the one the cleanup UI exists for: a real owner bearer
+  // with NO human name that has NEVER read anything, yet still holds live
+  // access. The long machine client_id IS the identity and must truncate
+  // without breaking the row, and it must sort to the TOP.
+  {
     client_id: "single-use-proof-1781473829100-7f3a9c2e-b04d-4e51-9a2f-6c8e1d0b5a73",
     client_name: null,
+    active_token_count: 1,
+    last_used_at: null,
     created_at: iso(3),
   },
   // Named client whose machine id is a full OAuth client URL — name stays
   // prominent, the long id rides beneath it, truncated.
   {
-    active_token_count: 4,
     client_id: "https://chatgpt.com/connector_platform_oauth_client/2f1a8b3c-9d4e-4f0a-8c7b-1e2d3f4a5b6c",
     client_name: "ChatGPT",
+    active_token_count: 4,
+    last_used_at: null,
     created_at: iso(7),
   },
 ];
 
 const GRANTS: GrantSummary[] = [
   {
+    object: "grant_summary",
+    grant_id: "grant_atlas",
     client_id: "Atlas Mortgage",
     connector_id: "plaid",
-    event_count: 12,
-    failure: null,
-    first_at: iso(30),
-    grant_id: "grant_atlas",
-    kinds: ["pay_statements", "transactions"],
-    last_at: iso(0),
-    object: "grant_summary",
     status: "active",
+    first_at: iso(30),
+    last_at: iso(0),
+    event_count: 12,
+    kinds: ["pay_statements", "transactions"],
+    failure: null,
   },
   {
+    object: "grant_summary",
+    grant_id: "grant_northstar",
     client_id: "Northstar HR",
     connector_id: "employment",
-    event_count: 4,
-    failure: null,
-    first_at: iso(14),
-    grant_id: "grant_northstar",
-    kinds: ["employment"],
-    last_at: iso(2),
-    object: "grant_summary",
     status: "issued",
+    first_at: iso(14),
+    last_at: iso(2),
+    event_count: 4,
+    kinds: ["employment"],
+    failure: null,
   },
 ];
 
 const TRACES: TraceSummary[] = [
   {
+    object: "trace_summary",
+    trace_id: "trace_1",
+    status: "succeeded",
     actor_id: "Claude Desktop",
     actor_type: "client",
     client_id: "Claude Desktop",
-    event_count: 412,
-    failure: null,
-    first_at: iso(0),
     grant_id: null,
-    kinds: ["transactions"],
-    last_at: iso(0),
-    object: "trace_summary",
-    request_id: null,
     run_id: null,
-    status: "succeeded",
-    trace_id: "trace_1",
+    request_id: null,
+    first_at: iso(0),
+    last_at: iso(0),
+    event_count: 412,
+    kinds: ["transactions"],
+    failure: null,
   },
   {
+    object: "trace_summary",
+    trace_id: "trace_2",
+    status: "succeeded",
     actor_id: "Atlas Mortgage",
     actor_type: "client",
     client_id: "Atlas Mortgage",
-    event_count: 38,
-    failure: null,
-    first_at: iso(1),
     grant_id: "grant_atlas",
-    kinds: ["pay_statements"],
-    last_at: iso(1),
-    object: "trace_summary",
-    request_id: null,
     run_id: null,
-    status: "succeeded",
-    trace_id: "trace_2",
+    request_id: null,
+    first_at: iso(1),
+    last_at: iso(1),
+    event_count: 38,
+    kinds: ["pay_statements"],
+    failure: null,
   },
   {
+    object: "trace_summary",
+    trace_id: "trace_3",
+    status: "denied",
     actor_id: "Unknown app",
     actor_type: "client",
     client_id: "Unknown app",
-    event_count: 0,
-    failure: { event_type: "trace.denied", reason: "scope not granted" },
-    first_at: iso(2),
     grant_id: null,
-    kinds: ["browsing"],
-    last_at: iso(2),
-    object: "trace_summary",
-    request_id: null,
     run_id: null,
-    status: "denied",
-    trace_id: "trace_3",
+    request_id: null,
+    first_at: iso(2),
+    last_at: iso(2),
+    event_count: 0,
+    kinds: ["browsing"],
+    failure: { event_type: "trace.denied", reason: "scope not granted" },
   },
 ];
 
 const FAILED_RUNS: RunSummary[] = [
   {
-    connector_id: "current_activity",
-    event_count: 3,
-    failure_reason: "First Meridian's connection expired. Reconnect to resume syncing.",
-    first_at: iso(2),
-    grant_id: null,
-    kinds: ["run.failed"],
-    last_at: iso(2),
-    needs_input: false,
     object: "run_summary",
-    provider_id: null,
     run_id: "run_meridian",
     status: "failed",
+    connector_id: "current_activity",
+    grant_id: null,
+    provider_id: null,
+    first_at: iso(2),
+    last_at: iso(2),
+    event_count: 3,
+    kinds: ["run.failed"],
+    needs_input: false,
+    failure_reason: "First Meridian's connection expired. Reconnect to resume syncing.",
   },
 ];
 
 const PENDING: PendingApproval[] = [
   {
+    object: "approval",
     approval_id: "appr_atlas",
     client_id: "Atlas Mortgage",
     created_at: iso(0),
+    kind: "consent",
+    user_code: "WXYZ-1234",
     grant_preview: {
       source: null,
       streams: [{ name: "pay_statements" }, { name: "employment" }, { name: "transactions" }],
     },
-    kind: "consent",
-    object: "approval",
-    user_code: "WXYZ-1234",
   },
 ];
 
 const SUMMARY = {
-  blob_bytes: 0,
-  connector_count: 10,
-  earliest_ingested_at: iso(365),
-  earliest_record_time: iso(365),
-  latest_ingested_at: iso(0),
-  latest_record_time: iso(0),
   object: "dataset_summary" as const,
-  projection: { computed_at: iso(0), state: "fresh" as const },
-  record_changes_json_bytes: 0,
   record_count: 48_120,
-  record_json_bytes: 0,
+  connector_count: 10,
   stream_count: 24,
-  top_connectors: [],
   total_retained_bytes: 1_073_741_824,
+  blob_bytes: 0,
+  record_json_bytes: 0,
+  record_changes_json_bytes: 0,
+  earliest_record_time: iso(365),
+  latest_record_time: iso(0),
+  earliest_ingested_at: iso(365),
+  latest_ingested_at: iso(0),
+  top_connectors: [],
+  projection: { state: "fresh" as const, computed_at: iso(0) },
 };
 
 export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): StandingInputs {
   const base: StandingInputs = {
+    now: NOW,
+    hrefs,
+    summary: SUMMARY,
+    bearerClients: BEARERS,
+    grants: GRANTS,
+    traces: TRACES,
+    pendingApprovals: [],
+    failedTraces: [],
+    failedRuns: [],
+    sourceWork: EMPTY_SOURCE_WORK_GROUPS,
     advisoryOwnerActions: [],
     attentionConnections: [],
-    bearerClients: BEARERS,
-    failedRuns: [],
-    failedTraces: [],
-    fleetHealth: null,
-    grants: GRANTS,
-    hrefs,
-    now: NOW,
     overviewLoadIssues: [],
-    pendingApprovals: [],
     sourceIssues: [],
-    sourceWork: EMPTY_SOURCE_WORK_GROUPS,
-    summary: SUMMARY,
-    traces: TRACES,
   };
   if (scenario === "decide") {
     return { ...base, pendingApprovals: PENDING };
@@ -203,34 +217,17 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
   if (scenario === "alarm") {
     return {
       ...base,
+      failedRuns: FAILED_RUNS,
       attentionConnections: [
         {
-          actionLabel: "Check the collector",
           connectorKey: "claude-code",
+          routeId: "cin_demo_claude_code",
           deviceLocal: true,
           label: "Claude Code on workstation",
-          routeId: "cin_demo_claude_code",
           what: "Check the collector before this source can make progress.",
+          actionLabel: "Check the collector",
         },
       ],
-      failedRuns: FAILED_RUNS,
-      fleetHealth: {
-        state: "unhealthy",
-        fully_healthy: false,
-        scope: { configured: 1, assessed: [], intentional_exclusions: [], setup_pending: [], unassessed: [] },
-        dimensions: {
-          runtime: "unhealthy",
-          coverage_audit: "pass",
-          attention: { needs_owner: [] },
-          system: { degraded_or_broken: [] },
-          recovery: { retryable: [], terminal: [] },
-          stalled_work: [],
-          active_work: [],
-          freshness_advisories: [],
-          intentional_policy: { manual: [], paused: [] },
-          unknown_evidence: [],
-        },
-      },
     };
   }
   return base;
