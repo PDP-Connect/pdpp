@@ -150,10 +150,12 @@ export function hasAuthenticatedRequiredStreamEvidence(terminalData: unknown, ma
   if (data.recovery_only === true) {
     return false;
   }
+  // An empty required-stream set (missing/malformed manifest streams, or a
+  // manifest whose every stream is required:false) needs no separate
+  // early-return here: requiredStreamNames.has(...) below is always false
+  // against an empty Set, so .some() naturally returns false regardless of
+  // any per-stream checkpoint/considered evidence.
   const requiredStreamNames = manifestRequiredStreamNames(manifest);
-  if (requiredStreamNames.size === 0) {
-    return false;
-  }
   const streams = data.collection_facts?.streams;
   if (!Array.isArray(streams)) {
     return false;
