@@ -265,6 +265,9 @@ const SAFE_USAA_PROGRESS_CATEGORIES = [
 function safeUsaaPdfDownloadFailedMessage(diagnostics: Record<string, unknown> | undefined): string {
   const artifact = diagnostics?.artifact as { candidates?: unknown[]; totalCdpRequestsStarted?: number } | undefined;
   const download = diagnostics?.download as { bytes?: number | null; source?: string | null } | undefined;
+  const rescue = diagnostics?.response_rescue as
+    | { bytes?: number | null; downloadFailureCategory?: string | null; transport?: string | null }
+    | undefined;
   const parts: string[] = [];
   if (artifact) {
     const candidateCount = Array.isArray(artifact.candidates) ? artifact.candidates.length : 0;
@@ -272,6 +275,12 @@ function safeUsaaPdfDownloadFailedMessage(diagnostics: Record<string, unknown> |
   }
   if (download) {
     parts.push(`download bytes=${download.bytes ?? 0}, source=${download.source ?? "unknown"}`);
+  }
+  if (rescue) {
+    const failurePart = rescue.downloadFailureCategory
+      ? `, downloadFailureCategory=${rescue.downloadFailureCategory}`
+      : "";
+    parts.push(`response_rescue bytes=${rescue.bytes ?? 0}, transport=${rescue.transport ?? "unknown"}${failurePart}`);
   }
   if (typeof diagnostics?.popup_count === "number" && diagnostics.popup_count > 0) {
     parts.push(`popups=${diagnostics.popup_count}`);

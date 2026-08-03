@@ -239,9 +239,16 @@ async function consumeDownloadOrResponse({
     } catch (err) {
       const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
       if (response) {
+        // `response.source` is the body-response transport (cdp/playwright),
+        // not a Download-artifact source (dataUrl/saveAs/createReadStream) —
+        // keying it under `download` would collide with
+        // sanitizeDownloadDiagnostics' unrelated SAFE_DOWNLOAD_SOURCES
+        // allowlist and silently null it. `response_rescue` is its own
+        // sanitized shape for exactly this "response arm rescued a failed
+        // download arm" fact; see sanitizeResponseRescueDiagnostics.
         return {
           buffer: response.body,
-          diag: { download: { downloadFailure: errMsg(err), source: response.source } },
+          diag: { response_rescue: { downloadFailure: errMsg(err), transport: response.source } },
           suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
         };
       }
@@ -251,7 +258,7 @@ async function consumeDownloadOrResponse({
     if (response) {
       return {
         buffer: response.body,
-        diag: { download: { bytes: 0, source: response.source } },
+        diag: { response_rescue: { bytes: 0, transport: response.source } },
         suggestedFilename: response.suggestedFilename || result.download.suggestedFilename(),
       };
     }

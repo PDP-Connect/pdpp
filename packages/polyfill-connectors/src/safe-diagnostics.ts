@@ -255,6 +255,36 @@ function sanitizeDownloadDiagnostics(value: unknown): Record<string, unknown> | 
   };
 }
 
+function safeResponseTransport(value: unknown): "cdp" | "playwright" | null {
+  if (value === "cdp" || value === "playwright") {
+    return value;
+  }
+  return null;
+}
+
+/**
+ * A distinct fact from `download` (a Playwright `Download` artifact's own
+ * persistence outcome, `source` one of dataUrl/saveAs/createReadStream):
+ * this describes the body-response transport (`cdp`/`playwright`, the same
+ * axis as `artifact.candidates[].source`) that ultimately rescued a body
+ * after the download-side attempt failed or produced zero bytes. Reusing
+ * `sanitizeDownloadDiagnostics`'s `source` field for this would silently
+ * null it (its allowlist is the download-artifact vocabulary, not the
+ * transport vocabulary) and its raw failure string must never cross this
+ * boundary verbatim — both are why this has its own sanitizer and key.
+ */
+function sanitizeResponseRescueDiagnostics(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const raw = asRecord(value);
+  return {
+    bytes: typeof raw.bytes === "number" ? boundedSafeDiagnosticCount(raw.bytes) : null,
+    downloadFailureCategory: Object.hasOwn(raw, "downloadFailure") ? safeErrorCategory(raw.downloadFailure) : null,
+    transport: safeResponseTransport(raw.transport),
+  };
+}
+
 function sanitizeBrowserSurface(value: unknown): Record<string, unknown> | null {
   if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -382,6 +412,9 @@ function addSafeDiagnosticEvidence(safe: Record<string, unknown>, raw: UnknownRe
   }
   if (Object.hasOwn(raw, "download")) {
     safe.download = sanitizeDownloadDiagnostics(raw.download);
+  }
+  if (Object.hasOwn(raw, "response_rescue")) {
+    safe.response_rescue = sanitizeResponseRescueDiagnostics(raw.response_rescue);
   }
   const browserSurface = sanitizeBrowserSurface(raw.browser_surface);
   if (browserSurface) {

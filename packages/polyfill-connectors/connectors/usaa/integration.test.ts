@@ -621,6 +621,121 @@ test("hydratePdfsForIndex: statement-pdfs.ts's real diag shape (artifact + error
   );
 });
 
+test("hydratePdfsForIndex: response-rescue-after-download-error diag (transport + bounded failure category) survives sanitization, distinct from the artifact-only outcomes", async () => {
+  // Regression for the REVISE finding: sanitizeDownloadDiagnostics is scoped
+  // to Playwright Download artifacts (source one of dataUrl/saveAs/
+  // createReadStream) — it is NOT a general-purpose "how did we get this
+  // buffer" field. consumeDownloadOrResponse's two response-rescue branches
+  // (readPlaywrightDownloadBuffer threw, or returned zero bytes) report the
+  // BODY-RESPONSE transport (cdp/playwright, same axis as
+  // artifact.candidates[].source) plus the download-side failure that made
+  // the rescue necessary. Keying that under `download` silently nulled the
+  // transport at SAFE_DOWNLOAD_SOURCES and dropped downloadFailure outright
+  // (sanitizeDownloadDiagnostics has no field for it at all) — the fix must
+  // reach a distinct `response_rescue` shape with `transport` preserved as a
+  // closed cdp|playwright enum and `downloadFailure` reduced through
+  // safeErrorCategory, never passed through as raw text.
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow()];
+  await hydratePdfsForIndex(
+    { ...deps, page: {} as Page },
+    indexRows,
+    ({ onSkip, statements }): Promise<HydratedStatement[]> => {
+      const [statement] = statements;
+      assert.ok(statement);
+      onSkip?.({
+        statement,
+        reason: "download_timeout",
+        diag: {
+          response_rescue: {
+            downloadFailure: "download.saveAs failed (saveAs_returned_zero_bytes); provider secret=SECRET123",
+            transport: "playwright",
+          },
+        },
+      });
+      return Promise.resolve([]);
+    }
+  );
+
+  const skips = messages.filter(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "statements"
+  );
+  assert.equal(skips.length, 1);
+  const [skip] = skips;
+  assert.ok(skip);
+  const diagnostics = skip.diagnostics as {
+    artifact?: unknown;
+    download?: unknown;
+    response_rescue?: { bytes?: number | null; downloadFailureCategory?: string | null; transport?: string | null };
+  };
+  assert.ok(diagnostics.response_rescue, "response_rescue must survive sanitization as its own shape");
+  assert.equal(diagnostics.response_rescue?.transport, "playwright", "the cdp/playwright transport enum survives");
+  assert.equal(
+    diagnostics.response_rescue?.downloadFailureCategory,
+    "download",
+    "the raw failure string reduces to a bounded category (via safeErrorCategory), not raw text"
+  );
+  assert.equal(diagnostics.download, undefined, "must not collide with the unrelated Download-artifact `download` key");
+  assert.equal(diagnostics.artifact, undefined, "this branch has no artifact counters — must not fabricate any");
+  assert.doesNotMatch(
+    JSON.stringify(skip),
+    /SECRET123|saveAs_returned_zero_bytes|provider secret/,
+    "raw failure text never crosses the safe boundary"
+  );
+  assert.match(skip.message, /transport=playwright/, "message names the transport that rescued the download");
+  assert.match(
+    skip.message,
+    /downloadFailureCategory=download/,
+    "message names the bounded failure category, not raw text"
+  );
+});
+
+test("hydratePdfsForIndex: response-rescue-after-zero-bytes diag (cdp transport, no failure text) survives sanitization", async () => {
+  // The sibling response-rescue branch: readPlaywrightDownloadBuffer
+  // resolved but with an empty buffer (no thrown error), so there is no
+  // downloadFailure to categorize — only transport + bytes=0. Proves the
+  // `response_rescue` shape is honest when there's nothing to report beyond
+  // "this rescued via CDP, zero bytes," not just when there's an error string
+  // to redact.
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow()];
+  await hydratePdfsForIndex(
+    { ...deps, page: {} as Page },
+    indexRows,
+    ({ onSkip, statements }): Promise<HydratedStatement[]> => {
+      const [statement] = statements;
+      assert.ok(statement);
+      onSkip?.({
+        statement,
+        reason: "download_empty",
+        diag: { response_rescue: { bytes: 0, transport: "cdp" } },
+      });
+      return Promise.resolve([]);
+    }
+  );
+
+  const skips = messages.filter(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "statements"
+  );
+  assert.equal(skips.length, 1);
+  const [skip] = skips;
+  assert.ok(skip);
+  const diagnostics = skip.diagnostics as {
+    response_rescue?: { bytes?: number | null; downloadFailureCategory?: string | null; transport?: string | null };
+  };
+  assert.ok(diagnostics.response_rescue);
+  assert.equal(diagnostics.response_rescue?.transport, "cdp");
+  assert.equal(diagnostics.response_rescue?.bytes, 0);
+  assert.equal(
+    diagnostics.response_rescue?.downloadFailureCategory,
+    null,
+    "no downloadFailure was reported, so the category stays null rather than fabricating one"
+  );
+  assert.match(skip.message, /transport=cdp/);
+});
+
 test("hydratePdfsForIndex: reversed callback order flushes final skips once in statement index order", async () => {
   const { deps, messages } = makeHarness();
   const indexRows = [makeIndexRow({ rowIndex: 0 }), makeIndexRow({ id: "IDX-ID-0002", rowIndex: 1 })];

@@ -143,8 +143,15 @@ test("consumeDownloadOrResponse falls back to a late response when the download 
   const result = await consumeDownloadOrResponse({ downloadQueue, responseQueue });
   assert.ok(result);
   assert.equal(result.suggestedFilename, "fallback.pdf");
-  const download = result.diag?.download as { downloadFailure?: unknown } | undefined;
-  assert.equal(typeof download?.downloadFailure, "string");
+  // Keyed `response_rescue`, not `download`: `response.source` (cdp/playwright,
+  // the body-response transport) is a different axis than
+  // DownloadDiagnostics.source (dataUrl/saveAs/createReadStream, a Playwright
+  // Download artifact's own persistence outcome) — conflating them under
+  // `download` would silently null the value at the SAFE_DOWNLOAD_SOURCES
+  // allowlist in safe-diagnostics.ts.
+  const rescue = result.diag?.response_rescue as { downloadFailure?: unknown; transport?: unknown } | undefined;
+  assert.equal(typeof rescue?.downloadFailure, "string");
+  assert.equal(rescue?.transport, "cdp");
 });
 
 // ─── Outcome 1: zero-effect click ────────────────────────────────────────
