@@ -31,8 +31,8 @@
 #
 # What this script DOES own (environmental, outside Patchright's scope):
 #   - The X display + openbox window class (n.eko contract).
-#   - The user-data-dir; managed Chrome policy restores the prior session so
-#     session-cookie auth survives container restarts.
+#   - The user-data-dir + --restore-last-session (see below), which is what
+#     makes session-scoped auth cookies survive a container restart.
 #   - Window size matching NEKO_DESKTOP_SCREEN to avoid a torn viewport.
 #   - The --remote-debugging-port endpoint that connectOverCDP attaches to.
 
@@ -118,6 +118,15 @@ ENABLED_FEATURES="${ENABLED_FEATURES:-CDPScreenshotNewSurface}"
 #     reliably in this container; the WebGL renderer is the strongest
 #     remaining fingerprint and is addressed at the docker-compose layer
 #     via x11-gpu options when a host GPU is available).
+#   --restore-last-session: without it, session-scoped cookies (no
+#     Expires/Max-Age — how several providers, e.g. USAA, issue their auth
+#     cookie) are dropped by Chromium on a clean process exit, so every
+#     container restart forces re-authentication even though the
+#     user-data-dir bind mount is intact. Verified experimentally: a
+#     disposable profile with one session cookie and one persistent cookie,
+#     stopped and restarted with these exact flags, loses the session
+#     cookie without this flag and keeps it with this flag; the persistent
+#     cookie survives either way.
 "$CHROME_BIN" \
   --disable-field-trial-config \
   --disable-background-networking \
@@ -152,6 +161,7 @@ ENABLED_FEATURES="${ENABLED_FEATURES:-CDPScreenshotNewSurface}"
   --remote-debugging-port=9222 \
   --remote-debugging-address=0.0.0.0 \
   --remote-allow-origins=* \
+  --restore-last-session \
   --app='data:text/html,<meta name="viewport" content="width=device-width,initial-scale=1"><body style="margin:0;background:#000"></body>' \
   ${PROXY_FLAGS} \
   ${CHROMIUM_MOBILE_FLAGS} &
