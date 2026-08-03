@@ -1947,6 +1947,75 @@ test("re-enrolling the same binding supersedes (revokes) the prior device, closi
   });
 });
 
+// waspflow/stream-audit-revoked-0803: an owner-revoked local_device
+// connection must survive the device's own re-enrollment (e.g. the local
+// collector CLI restarting and re-registering the same binding). Before this
+// fix, `performFirstEnrollment` preserved `existingInstance.status` but never
+// read `existingInstance.revokedAt`, so `normalizeRecord`'s
+// `revokedAt: record.revokedAt ?? null` defaulted it to `null` and the
+// upsert's `ON CONFLICT ... DO UPDATE SET revoked_at = excluded.revoked_at`
+// silently cleared the owner's revoke — resurrecting the connection into
+// every audit/fleet-health surface as a live, unassessed obligation.
+test("re-enrolling a revoked local_device binding does not resurrect the connection", async () => {
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, "revoked-then-restarted");
+    await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      {
+        connector_id: "codex",
+        records_pending: 0,
+        source_instances: [{ records_pending: 0, source_instance_id: first.source_instance_id, status: "healthy" }],
+      },
+      authHeaders(first.device_token)
+    );
+    assert.equal(connectorInstanceStatus(first.connector_instance_id), "active");
+
+    const store = createSqliteConnectorInstanceStore();
+    const revokedAtStamp = new Date().toISOString();
+    await store.updateStatus(first.connector_instance_id, {
+      revokedAt: revokedAtStamp,
+      status: "revoked",
+      updatedAt: revokedAtStamp,
+    });
+    assert.equal(connectorInstanceStatus(first.connector_instance_id), "revoked");
+
+    // The device restarts and re-enrolls the same binding — the exact
+    // "device merely restarts and re-enrolls" scenario the sibling
+    // no-demotion test above already covers for `active`.
+    const second = await enrollDevice(asUrl, "revoked-then-restarted");
+    assert.equal(second.connector_instance_id, first.connector_instance_id);
+
+    const row = selectRow<{ revoked_at: string | null; status: string }>(
+      "SELECT status, revoked_at FROM connector_instances WHERE connector_instance_id = ?",
+      first.connector_instance_id
+    );
+    assert.equal(row.status, "revoked", "re-enrollment must preserve an owner-revoked instance's status");
+    assert.ok(row.revoked_at, "re-enrollment must not clear revoked_at on an owner-revoked instance");
+
+    // The restarted device's own follow-up heartbeat must not further
+    // reactivate the connection either.
+    const secondHeartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(second.device_id)}/heartbeat`,
+      {
+        connector_id: "codex",
+        records_pending: 0,
+        source_instances: [{ records_pending: 0, source_instance_id: second.source_instance_id, status: "healthy" }],
+      },
+      authHeaders(second.device_token)
+    );
+    const rowAfterHeartbeat = selectRow<{ revoked_at: string | null; status: string }>(
+      "SELECT status, revoked_at FROM connector_instances WHERE connector_instance_id = ?",
+      first.connector_instance_id
+    );
+    assert.equal(
+      rowAfterHeartbeat.status,
+      "revoked",
+      `re-enrolled device's heartbeat (status ${secondHeartbeat.status}) must not reactivate a revoked instance`
+    );
+    assert.ok(rowAfterHeartbeat.revoked_at, "heartbeat must not clear revoked_at on a revoked instance");
+  });
+});
+
 test("a replacement enrollment that fails before completion never revokes the prior working device", async () => {
   // Independent-gate regression: `consumeEnrollmentCodeAndSupersedePriorDevices`
   // folds completion (consuming the code) and supersession (revoking the

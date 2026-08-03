@@ -155,6 +155,7 @@ interface ConnectorInstanceRow {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
   readonly ownerSubjectId: string;
+  readonly revokedAt?: string | null;
   readonly sourceBindingKey?: string | null;
   readonly sourceKind?: string | null;
   readonly status: string;
@@ -424,6 +425,7 @@ interface ConnectorInstanceStore {
     connectorId: string;
     displayName: string;
     status: string;
+    revokedAt?: string | null | undefined;
     sourceKind: string;
     sourceBindingKey: string;
     sourceBinding: unknown;
@@ -878,6 +880,17 @@ async function performFirstEnrollment(
   // EXISTING row already has (revoked/paused/active all pass through
   // unchanged); only a genuinely new `local_device` row (no existing
   // binding) defaults to `draft`.
+  //
+  // `revokedAt` must be preserved the SAME way, for the SAME reason: the
+  // upsert's `normalizeRecord` defaults an omitted `revokedAt` to `null`
+  // (`connector-instance-store.ts`), and the `ON CONFLICT ... DO UPDATE SET
+  // revoked_at = excluded.revoked_at` writes that default unconditionally.
+  // Passing only `status` through left `revoked_at` cleared on every
+  // re-enroll of an owner-revoked binding — silently resurrecting the
+  // connection into owner-visible audit/fleet-health scope on the device's
+  // next restart, contradicting the owner-revoke route's own durability
+  // contract ("reversible only by an explicit owner re-initiate, never
+  // silently"; see `owner-connection-revoke.ts`).
   const existingInstance = await connectorInstanceStore.getByBinding({
     connectorId: enrollConnectorKey,
     ownerSubjectId: enrollment.ownerSubjectId,
@@ -890,6 +903,7 @@ async function performFirstEnrollment(
     createdAt: now.toISOString(),
     displayName,
     ownerSubjectId: enrollment.ownerSubjectId,
+    revokedAt: existingInstance ? existingInstance.revokedAt : null,
     sourceBinding: {
       device_id: deviceId,
       kind: sourceKind,
