@@ -772,8 +772,12 @@ test("owner-agent detail-gap diagnostics pages exact rows with bounded redaction
       "rows are ordered by created_at then gap_id"
     );
     assert.deepEqual(firstBody.data[0]?.last_error, { class: "too_large" });
+    // policy_class is null here even though last_error.class is "too_large":
+    // this connection is spotify, not gmail, and policy_class now requires a
+    // proven gmail-specific policy_disposition object (8e92b092e), not a bare
+    // error-class string match — see owner-detail-gap-policy-disposition.test.ts.
     assert.deepEqual(firstBody.data[0]?.disposition, {
-      policy_class: "too_large",
+      policy_class: null,
       state: "terminal",
     });
     assert.deepEqual(firstBody.data[1]?.lease, {
