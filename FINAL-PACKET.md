@@ -22,8 +22,41 @@ Live DB `pdpp`: **read-only `SELECT`s only.** All tests ran against throwaway da
 | 6 | `3f2ca6bd7` | P2: `buildEffectiveFilter` arity in `postgresGetRecordFieldWindow` | fix + parity test |
 | 7 | `0dbdff452` | P3: `listActiveRuns` ORDER BY matched to SQLite | fix + parity test |
 | 8 | `c1b7270bd` | **Executable cross-backend parity test** — closes the oracle false-negative | **the parity authority** |
+| 9 | `c8a9b9ee6` | P3: reject unknown query params on the Postgres record-list path | fix + parity test |
+| 10 | `816bfd8f9` | Parity-test process isolation + this packet | test hygiene |
+| 11 | `000663143` | **P1: scope `postgresListStreams` to the grant** (metadata leak) | **CLOSED** — full closure |
+| 12 | `c2904e88f` | P1: rank before limiting in the JSONB semantic fallback | **MITIGATED, NOT CLOSED** — see follow-on |
+| 13 | *(pending)* | Bootstrap idempotence / concurrent-init race correction | dispatched |
 
-Two P1 lanes (`postgresListStreams` grant scoping, `postgresSemanticSearch` rank-before-limit) were still running at the time of writing; their SHAs append after #8.
+### #11 — `postgresListStreams` grant scoping (P1)
+Now iterates each stream grant, applies `buildEffectiveFilter`, pushes the `resources` allowlist into SQL (`record_key = ANY($n::text[])`, matching an existing pattern in the file), and reuses SQLite's own JS `passesTimeRange` for `time_range` rather than hand-rolling a SQL predicate — `consent_time_field` is an arbitrary manifest field, so a SQL rewrite would risk subtly different semantics. Adds a bounded 50k-row candidate scan, since Postgres pays a network round-trip where SQLite iterates in-process.
+
+Pre-fix failure (verified by reverting only the source file): `Postgres record_count must match SQLite for a resources-narrowed grant … 5 !== 2` — Postgres leaked the raw total instead of the scoped count. Post-fix 5/5. I re-ran this test independently on my own disposable database: **5/5 pass.**
+
+### #12 — JSONB semantic-search rank-before-limit (P1) — **BOUNDED MITIGATION, NOT CLOSURE**
+
+> **Status correction (RI owner review).** This commit moved a threshold; it did not
+> eliminate the defect class. **Above `postgresSemanticCandidateLimit` the JSONB
+> fallback can still omit the true nearest result.** Do not record this P1 as fully
+> fixed. Keep the commit — it is a monotonic improvement and my own gate found no
+> regression — but a terminal follow-on remains open.
+>
+> **Terminal follow-on requirement (one of):**
+> 1. **Exact ranking over the entire authorized scope**, with an explicit resource
+>    policy for what that costs at scale; or
+> 2. **An honestly approximate contract** that returns recall/truncation metadata, so
+>    a caller can tell a complete ranking from a truncated one.
+>
+> The current state is silent approximation: a truncated result is indistinguishable
+> from a complete one at the API boundary. That is the part still to close.
+
+The fallback ran `SELECT … LIMIT $n` with **no `ORDER BY`**, so Postgres returned an arbitrary physical-order slice and only then scored it. Now fetches a bounded candidate window via the **existing** `postgresSemanticCandidateLimit` helper — the same one the pgvector overscan path already uses (`max(200, limit)`, env-overridable, hard-capped at 10,000) — scores the whole window, then slices.
+
+Memory-bound decision, made explicitly rather than by removing `LIMIT`: at most `candidateLimit` embedding rows in flight, never the whole corpus. Honest residual: if a single `(connector_instance_id, scope_key)` scope ever exceeds the cap, the same class of truncation returns at a much higher threshold — documented in-code as the reason production should run the pgvector path, which ranks inside the database.
+
+Test discriminates properly: seeds 6 noise rows plus the true best match inserted **last**, requests `limit: 1`. Pre-fix `expected the true nearest neighbour to be ranked first, got ["noise_0"]`; post-fix passes, stable across 3 runs. It forces the JSONB path by connecting as a role without `CREATE EXTENSION` privilege, since bootstrap auto-installs pgvector when available.
+
+> **Process note.** Three lanes committing into one shared git index produced two near-misses: a lane's `git add` swept another lane's files into its commit. Both were caught by the committing agent via `git show --stat`, corrected with `reset --soft` + selective unstage, and the affected files verified byte-identical on disk. No work was lost, and every commit in this packet was verified to contain only its owned files. Worth noting for future multi-lane runs in a shared worktree: stage by explicit pathspec, never `git add -A`.
 
 ---
 
@@ -87,8 +120,18 @@ Options, your call: (1) fix issuance to reuse rather than mint; (2) shorten mach
 
 > **Methodology warning for your CI.** My first full-suite run reported **exit 0** having executed only **39 tests from 1 file** — a stale `PDPP_TEST_POSTGRES_URL` confined the per-file runner. Always assert the file/test counts; `run-tests.js` exits 0 either way. Run it with `env -u PDPP_TEST_POSTGRES_URL -u PDPP_DATABASE_URL -u PDPP_STORAGE_BACKEND`.
 
-## Coverage gap (stated, not hidden)
-`acquisition-batch-store.ts` and `manual-upload-artifact-store.ts` are genuinely dual-backend but were **not** deep-audited. Highest-value follow-up.
+## Open items (stated, not hidden)
+
+1. **Semantic-search ranking is mitigated, not closed** (#12). Above
+   `postgresSemanticCandidateLimit` the JSONB fallback can still omit the true nearest
+   result, and a truncated result is currently indistinguishable from a complete one at
+   the API boundary. Terminal requirement: either exact ranking over the whole
+   authorized scope with an explicit resource policy, or an honestly approximate
+   contract carrying recall/truncation metadata.
+2. **Coverage gap:** `acquisition-batch-store.ts` and `manual-upload-artifact-store.ts`
+   are genuinely dual-backend but were **not** deep-audited. Highest-value follow-up for
+   the parity defect class.
+3. **MCP audience binding** remains a spec packet (#5), deliberately unimplemented.
 
 ## UAT checklist
 1. `/grants` → **Next** shows different ids than page 1.
