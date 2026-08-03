@@ -3142,6 +3142,15 @@ export async function hydratePdfsForIndex(
       // preserves correlation without carrying statement text or account
       // identity, and remains useful when several rows fail together.
       diagnostics: { ...skip.diag, row_id: rowIndex },
+      // A single row's PDF download racing a DOM menu/download event is a
+      // transient, per-attempt failure — not a defect requiring owner or
+      // maintainer action. Without an explicit hint here, the generic
+      // recovery-hint inference (connector-gap-bounding.ts's
+      // `inferRecoveryAction`) finds no transient-shaped keyword in this
+      // deliberately provider-text-free message and defaults to `unknown`,
+      // which reads as an unclassified/non-retryable gap even though the
+      // runtime already retries this same row every scheduled run.
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
     }).catch((): undefined => undefined);
   }
   return { attempts, successes, results };

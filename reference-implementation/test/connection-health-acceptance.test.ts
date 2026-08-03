@@ -1524,6 +1524,65 @@ test("§10-C: ref-control preserves exact typed provider-proof dedupe", () => {
   assert.equal(wrongProvider.conditions?.find((c) => c.type === "CredentialsValid")?.remediation, null);
 });
 
+test("§10-C: a session_required connector_error with zero signalling known-gap text still drives a session-repair prompt", () => {
+  // Live USAA regression (cin_bc1efca69a1c386d610f0924, run_224a73e0ec984c908f6161010fe54886):
+  // the run's failure_reason is empty, terminal_reason is the GENERIC
+  // `connector_reported_failed`, and BOTH known_gaps ("Connector failure
+  // (unknown)" / "Staged stream state was not committed") carry no auth-
+  // shaped text or refresh_credentials recovery_hint at all — every existing
+  // §10-C rescue path (failure_reason, known-gap message/recovery_hint) comes
+  // up empty. The ONLY place the real cause survives is the connector's own
+  // structured terminal error, `connector_error_json: { code:
+  // "session_required", ... }`, which credentialReasonFromGenericFailure must
+  // now consult as a last resort so this doesn't silently read as a healthy/
+  // generic-failed connection with no reconnect path.
+  const run = failedRun({
+    connector_error: { code: "session_required" },
+    failure_reason: "connector_reported_failed",
+    known_gaps: [
+      {
+        kind: "run_failed",
+        message: "Connector failure (unknown)",
+        reason: "connector_reported_failed",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "actionable",
+        stream: null,
+      },
+      {
+        kind: "checkpoint_commit",
+        message: "Staged stream state was not committed",
+        reason: "not_committed",
+        recovery_hint: { action: "retry_by_runtime", retryable: true },
+        severity: "actionable",
+        stream: null,
+      },
+    ],
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    browserSessionRepairCapable: true,
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: null,
+    remoteSurface: {
+      axis: "none",
+      leaseId: null,
+      leaseStatus: null,
+      profileKey: null,
+      surfaceHealth: null,
+      surfaceId: null,
+      waitReason: null,
+    },
+    schedule: { enabled: true },
+  });
+  const credentialCondition = snap.conditions?.find((c) => c.type === "CredentialsValid" && c.status === "false");
+  assert.ok(
+    credentialCondition,
+    `expected a CredentialsValid:false condition from connector_error.code alone, got conditions: ${JSON.stringify(snap.conditions?.map((c) => `${c.type}:${c.status}`))}`
+  );
+  assert.equal(credentialCondition.reason, "session_required");
+  assert.equal(credentialCondition.remediation?.surface?.kind, "browser_session");
+});
+
 test("§10-C control: a non-auth generic failure does NOT manufacture a credential prompt", () => {
   // A genuine non-credential failure (e.g. a parser error) must stay generic —
   // the credential-awareness must not over-fire on every failed run.

@@ -500,6 +500,16 @@ export interface ConnectorRunSummary {
    * `collection_report`; never final coverage truth.
    */
   readonly collection_facts: RuntimeCollectionFacts | null;
+  /**
+   * The connector's own structured terminal error (`{ code, message,
+   * retryable }`), read straight off `run_history.connector_error_json`
+   * (§10-C). This is the ONE place a connector's typed failure code (e.g.
+   * `session_required`) survives past a flattened, generic top-level
+   * `failure_reason`/`terminal_reason` (`connector_reported_failed`) with a
+   * non-signalling message — `credentialReasonFromGenericFailure` consults
+   * `code` here before falling back to scanning `known_gaps` message text.
+   */
+  readonly connector_error?: { readonly code?: string | null } | null;
   readonly event_count: number;
   readonly failure_reason: string | null;
   readonly finished_at: string | null;
@@ -1148,6 +1158,19 @@ function buildFreshness(lastUpdated: string | null = null): Freshness {
   return deriveReferenceFreshness({ recordLastUpdatedAt: lastUpdated });
 }
 
+/**
+ * Narrow a raw `connector_error_json` blob to the one field
+ * `credentialReasonFromGenericFailure` needs (`code`), never surfacing
+ * `message`/other fields past this boundary unvetted.
+ */
+function normalizeConnectorError(raw: Record<string, unknown> | null | undefined): { code: string | null } | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const code = (raw as { code?: unknown }).code;
+  return { code: typeof code === "string" && code.length > 0 ? code : null };
+}
+
 function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): unknown[] {
   if (data && Array.isArray(data.known_gaps)) {
     return data.known_gaps;
@@ -1217,6 +1240,7 @@ function productRunHistoryToConnectorRunSummary(
       : null;
   return {
     collection_facts: readCollectionFactsFromTerminalData(facts),
+    connector_error: normalizeConnectorError(history.connectorError),
     event_count: 0,
     failure_reason: history.failureReason ?? history.error ?? browserSurfaceFailureReason,
     finished_at: isActiveRunSummaryStatus(status) ? null : history.completedAt,
@@ -2257,6 +2281,25 @@ function hasCompetingOwnerInteractionGap(knownGaps: readonly unknown[]): boolean
  * defers to an explicit sibling gap that is itself present this run), or no
  * known-gap signals credentials.
  */
+/**
+ * True for a `connector_error.code` that itself names a credential/session
+ * failure — the same vocabulary `isCredentialReason`/`isBrowserSessionRepairReason`
+ * (`runtime/connection-health.ts`) recognize downstream, kept as a narrow local
+ * check here so this module does not need to import the runtime's broader
+ * text-matching classifier for one field.
+ */
+function isCredentialShapedErrorCode(code: string): boolean {
+  const normalized = code.toLowerCase();
+  return (
+    normalized.includes("auth") ||
+    normalized.includes("credential") ||
+    normalized.includes("session_required") ||
+    normalized.includes("session_expired") ||
+    normalized.includes("session_failed") ||
+    normalized.includes("token")
+  );
+}
+
 function credentialReasonFromGenericFailure(run: ConnectorRunSummary | null): string | null {
   if (!run) {
     return null;
@@ -2276,6 +2319,17 @@ function credentialReasonFromGenericFailure(run: ConnectorRunSummary | null): st
     if (reason) {
       return reason;
     }
+  }
+  // The known-gaps array can flatten every signal into a non-descriptive
+  // message ("Connector failure (unknown)") while the connector's OWN
+  // structured terminal error still names the real cause (live evidence:
+  // USAA `session_required` surfaced only on `connector_error_json`, never
+  // in `failure_reason` or any known-gap message). Consult it last, after
+  // known-gaps, so an explicit competing owner-interaction gap (a real
+  // manual_action/interaction_required read from the connector) still wins.
+  const code = run.connector_error?.code ?? null;
+  if (!competingOwnerInteraction && typeof code === "string" && isCredentialShapedErrorCode(code)) {
+    return code;
   }
   return null;
 }

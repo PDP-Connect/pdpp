@@ -553,6 +553,18 @@ test("hydratePdfsForIndex: a final PDF failure emits one bounded typed and row-c
   assert.notEqual(skip.reason, "diagnostic_sanitized");
   assert.equal((skip.diagnostics as { row_id?: unknown }).row_id, 0, "run-local row correlation survives sanitization");
   assert.doesNotMatch(JSON.stringify(skip), /provider text that must not be emitted/);
+  // Live regression: this skip previously had no explicit recovery_hint, so
+  // the generic recovery-action inference (connector-gap-bounding.ts) found
+  // no transient-shaped keyword in this deliberately provider-text-free
+  // message and defaulted to `{ action: "unknown", retryable: false }` —
+  // reading as an unclassified, non-retryable gap even though the runtime
+  // retries this exact row on every scheduled run. A single row's PDF
+  // download racing a DOM event is honest, bounded, runtime-retryable work.
+  assert.deepEqual(
+    skip.recovery_hint,
+    { action: "retry_by_runtime", retryable: true },
+    "a per-row PDF download race is runtime-retryable, not an unclassified gap"
+  );
 });
 
 test("hydratePdfsForIndex: statement-pdfs.ts's real diag shape (artifact + error) survives sanitization intact", async () => {

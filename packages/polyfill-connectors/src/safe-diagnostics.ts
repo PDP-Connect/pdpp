@@ -33,6 +33,24 @@ const SAFE_GENERIC_REASONS = new Set(["diagnostic_sanitized"]);
 const SAFE_GENERIC_OUTCOMES = new Set(["unknown"]);
 const SAFE_GENERIC_TERMINAL_FAILURES = new Set<string>();
 const SAFE_GENERIC_CODES = new Set(["unknown"]);
+// The connector-neutral recovery-action vocabulary the runtime's own
+// recovery-hint normalization recognizes (`RECOVERY_ACTIONS`,
+// reference-implementation/runtime/connector-gap-bounding.ts). Mirrored here
+// (not imported — this package must not depend on reference-implementation)
+// so a connector's own honest recovery hint survives this safe-emission
+// boundary instead of being silently dropped and re-inferred from message
+// text that was deliberately kept provider-neutral/non-descriptive.
+const SAFE_RECOVERY_ACTIONS = new Set([
+  "retry_by_runtime",
+  "retry_on_connector_upgrade",
+  "refresh_credentials",
+  "manual_action_required",
+  "update_selector",
+  "capture_live_surface",
+  "upstream_unblock",
+  "not_retriable",
+  "unknown",
+]);
 const NETWORK_ERROR_PATTERN =
   /\bnetwork\b|\bfetch(?:\s+(?:failed|error))?\b|\bsocket\b|\bECONN[A-Z0-9_]*\b|net::ERR_[A-Z0-9_]+|connection reset/i;
 
@@ -575,10 +593,31 @@ function sanitizeSafeSkip(
   if (diagnostics !== undefined) {
     safe.diagnostics = diagnostics;
   }
-  if (typeof message.recovery_hint === "object" && message.recovery_hint?.action === "capture_live_surface") {
-    safe.recovery_hint = { action: "capture_live_surface", retryable: message.recovery_hint.retryable === true };
+  const recoveryHint = safeRecoveryHint(message.recovery_hint);
+  if (recoveryHint) {
+    safe.recovery_hint = recoveryHint;
   }
   return safe;
+}
+
+/**
+ * Reduce a producer-supplied `recovery_hint` (string action, or `{ action,
+ * retryable }`) to the bounded connector-neutral vocabulary, or `undefined`
+ * when the action is absent/unrecognized. `retryable` defaults from the
+ * action itself (`retry_by_runtime` implies retryable) exactly like the
+ * runtime's own `normalizeRecoveryHint`, so a connector that supplies only a
+ * bare action string still gets an honest `retryable` value rather than a
+ * silently-dropped hint.
+ */
+function safeRecoveryHint(
+  hint: string | { action?: string; retryable?: boolean } | undefined
+): { action: string; retryable: boolean } | undefined {
+  const action = typeof hint === "string" ? hint : hint?.action;
+  if (!(action && SAFE_RECOVERY_ACTIONS.has(action))) {
+    return;
+  }
+  const retryable = typeof hint === "object" && typeof hint.retryable === "boolean" ? hint.retryable : undefined;
+  return { action, retryable: retryable ?? action === "retry_by_runtime" };
 }
 
 function sanitizeSafeDone(

@@ -86,6 +86,51 @@ test("USAA no-session errors sanitize to the declared session_required code", ()
   });
 });
 
+test("sanitizeSafeEmission preserves a bounded recovery_hint (object and string form) on SKIP_RESULT", () => {
+  const objectForm = sanitizeSafeEmission(
+    asEmittedMessage({
+      type: "SKIP_RESULT",
+      stream: "statements",
+      reason: "pdf_download_failed",
+      message: "USAA statement PDF download did not produce a persisted PDF",
+      recovery_hint: { action: "retry_by_runtime", retryable: true },
+    }),
+    USAA_SAFE_DIAGNOSTICS_POLICY
+  );
+  assert.deepEqual(
+    (objectForm as { recovery_hint?: unknown }).recovery_hint,
+    { action: "retry_by_runtime", retryable: true },
+    "an explicit runtime-retryable hint must survive sanitization, not silently drop to no hint at all"
+  );
+
+  // Chase's own SKIP_RESULTs emit the bare-string form (connectors/chase/index.ts).
+  const stringForm = sanitizeSafeEmission(
+    asEmittedMessage({
+      type: "SKIP_RESULT",
+      stream: "transactions",
+      reason: "csv_no_data_rows",
+      message: "CSV had no data rows",
+      recovery_hint: "retry_by_runtime",
+    })
+  );
+  assert.deepEqual((stringForm as { recovery_hint?: unknown }).recovery_hint, {
+    action: "retry_by_runtime",
+    retryable: true,
+  });
+
+  // An unrecognized action must not leak past the bounded vocabulary.
+  const unknownAction = sanitizeSafeEmission(
+    asEmittedMessage({
+      type: "SKIP_RESULT",
+      stream: "unknown",
+      reason: "diagnostic_sanitized",
+      message: "m",
+      recovery_hint: { action: "provider text that must not be emitted", retryable: true },
+    })
+  );
+  assert.equal((unknownAction as { recovery_hint?: unknown }).recovery_hint, undefined);
+});
+
 test("safe diagnostics keep undeclared terminal codes unknown", () => {
   const safe = sanitizeSafeEmission(
     asEmittedMessage({
