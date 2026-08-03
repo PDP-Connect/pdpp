@@ -32,7 +32,7 @@ import test from "node:test";
 
 import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
 import { closeDb } from "../server/db.ts";
-import { startServer } from "../server/index.ts";
+import { startServer as startServerBase } from "../server/index.ts";
 import { closePostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 
 const PROTOCOL_HEADERS = { "X-PDPP-Collector-Protocol": COLLECTOR_PROTOCOL_VERSION };
@@ -40,6 +40,12 @@ const OWNER_SUBJECT_ID = "owner_local";
 const OWNER_CLIENT_ID = "cli_longview";
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+
+function startServer(
+  options: Parameters<typeof startServerBase>[0] & { databaseUrl?: string; storageBackend?: "postgres" }
+) {
+  return startServerBase(options);
+}
 
 interface CloseableTestServer {
   readonly asPort: number;
