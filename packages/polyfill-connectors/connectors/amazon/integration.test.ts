@@ -533,12 +533,12 @@ test("collect path does not advance a year cursor after unparseable order-date d
   );
 });
 
-test("amazon manifest: successful manual runs have a bounded freshness window", () => {
+test("amazon manifest: successful automatic runs have a bounded freshness window", () => {
   const manifest = JSON.parse(readFileSync(AMAZON_MANIFEST_PATH, "utf8")) as {
     capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
   };
   const policy = manifest.capabilities?.refresh_policy;
-  assert.equal(policy?.recommended_mode, "manual");
+  assert.equal(policy?.recommended_mode, "automatic");
   assert.equal(policy?.maximum_staleness_seconds, 86_400);
 });
 
