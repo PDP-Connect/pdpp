@@ -597,6 +597,46 @@ function listRunEvents(runId: string): RunEventRow[] {
   }));
 }
 
+test("startup reconciliation waits for the deferred active-run binding snapshot before clearing rows", async (t) => {
+  let resolveSnapshot: (rows: readonly ActiveRunRecord[]) => void = () => undefined;
+  const snapshot = new Promise<readonly ActiveRunRecord[]>((resolve) => {
+    resolveSnapshot = resolve;
+  });
+  const activeRunStore = createFencedActiveRunStore();
+  const activeRun: ActiveRunRecord = {
+    connector_id: "managed",
+    connector_instance_id: "cin_boot_snapshot",
+    run_generation: 1,
+    run_id: "run_boot_snapshot",
+    scenario_id: "scenario_boot_snapshot",
+    started_at: "2026-08-02T00:00:00.000Z",
+    trace_id: "trace_boot_snapshot",
+  };
+  activeRunStore.activeRuns.set(activeRun.connector_instance_id ?? activeRun.connector_id, activeRun);
+  let listCalls = 0;
+  activeRunStore.store.listActiveRuns = () => {
+    listCalls += 1;
+    return listCalls === 1 ? snapshot : [...activeRunStore.activeRuns.values()];
+  };
+
+  const { controller } = setup(t, { schedulerStore: activeRunStore.store });
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(listCalls, 1, "controller startup must begin the binding snapshot");
+  assert.equal(activeRunStore.deleteCalls.length, 0, "reconciliation cannot clear before the snapshot settles");
+  assert.equal(activeRunStore.activeRuns.get("cin_boot_snapshot")?.run_id, activeRun.run_id);
+
+  resolveSnapshot([activeRun]);
+  await activeRunStore.deleteStarted;
+  assert.equal(listCalls, 2, "reconciliation reads active rows only after snapshot completion");
+  assert.equal(activeRunStore.activeRuns.get("cin_boot_snapshot")?.run_id, activeRun.run_id);
+
+  activeRunStore.allowDelete();
+  await controller.reconcileBrowserSurfaceLeasesAfterBoot();
+  assert.equal(activeRunStore.activeRuns.get("cin_boot_snapshot"), undefined);
+});
+
 test("managed free surface leases and spawns with browser-surface env", async (t) => {
   const { calls, controller, manager } = setup(t);
 

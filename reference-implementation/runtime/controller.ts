@@ -2627,7 +2627,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       log.warn?.(`[controller] failed to snapshot startup active-run bindings: ${message}`);
       return new Map();
     });
-  const startupControllerRunReconciliation = reconcileStartupRunState();
+  const startupControllerRunReconciliation = startupControllerRunBindingSnapshot.then(() => reconcileStartupRunState());
 
   function getScheduleRecord(connectorId: string): Promise<Schedule | null> {
     return Promise.resolve(schedulerStore.getSchedule(connectorId));
