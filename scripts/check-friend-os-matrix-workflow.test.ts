@@ -24,20 +24,33 @@ const VALID_WORKFLOW = [
   "macOS and Linux (bash or zsh):",
   "Windows PowerShell (the block above cannot work there",
   "### 1. Fetch the blessed compose stack",
+  "On **Windows PowerShell**, bare",
   "docker info --format",
 ].join("\n");
+
+const FETCH_URL = "https://raw.githubusercontent.com/PDP-Connect/pdpp/fetchref789/deploy/docker/docker-compose.yml";
+const SH_FETCH_BLOCK = ["```sh", "mkdir pdpp && cd pdpp", `curl -fsSLO ${FETCH_URL}`, "```"].join("\n");
+const POWERSHELL_FETCH_BLOCK = ["```powershell", "mkdir pdpp; cd pdpp", `curl.exe -fsSLO ${FETCH_URL}`, "```"].join(
+  "\n"
+);
 
 const VALID_DOC = [
   "abc123",
   "macOS and Linux (bash or zsh):",
   "Windows PowerShell (the block above cannot work there",
   "### 1. Fetch the blessed compose stack",
+  SH_FETCH_BLOCK,
+  "On **Windows PowerShell**, bare",
+  POWERSHELL_FETCH_BLOCK,
 ].join("\n");
 
 const DROPPED_OS_PATTERN = /no longer runs on "windows-latest"/;
 const DRIFTED_COMMIT_PIN_PATTERN = /pins commit abc123.*no longer appears/;
 const MISSING_DOC_ANCHOR_PATTERN = /missing from docs\/operator\/selfhost-quickstart\.md/;
 const MISSING_DOCKER_PROBE_PATTERN = /no longer probes for a real Linux container daemon/;
+const MISSING_SH_FETCH_URL_PATTERN = /missing the sh Compose-fetch URL/;
+const MISSING_POWERSHELL_FETCH_URL_PATTERN = /missing the powershell Compose-fetch URL/;
+const MISMATCHED_FETCH_URL_PATTERN = /point to different sources/;
 
 test("findWorkflowDocBindingIssues is silent when workflow and doc agree", () => {
   assert.deepEqual(findWorkflowDocBindingIssues(VALID_WORKFLOW, VALID_DOC), []);
@@ -72,6 +85,31 @@ test("findWorkflowDocBindingIssues reports a dropped Docker-daemon probe", () =>
   const findings = findWorkflowDocBindingIssues(workflow, VALID_DOC);
   assert.equal(findings.length, 1);
   assert.match(findings[0]?.detail ?? "", MISSING_DOCKER_PROBE_PATTERN);
+});
+
+test("findWorkflowDocBindingIssues reports a missing sh Compose-fetch URL", () => {
+  const doc = VALID_DOC.replace(SH_FETCH_BLOCK, "");
+  const findings = findWorkflowDocBindingIssues(VALID_WORKFLOW, doc);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0]?.detail ?? "", MISSING_SH_FETCH_URL_PATTERN);
+});
+
+test("findWorkflowDocBindingIssues reports a missing powershell Compose-fetch URL", () => {
+  const doc = VALID_DOC.replace(POWERSHELL_FETCH_BLOCK, "");
+  const findings = findWorkflowDocBindingIssues(VALID_WORKFLOW, doc);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0]?.detail ?? "", MISSING_POWERSHELL_FETCH_URL_PATTERN);
+});
+
+test("findWorkflowDocBindingIssues reports sh and powershell fetch URLs pointing to different sources", () => {
+  const driftedUrl = "https://raw.githubusercontent.com/PDP-Connect/pdpp/def456/deploy/docker/docker-compose.yml";
+  const doc = VALID_DOC.replace(
+    POWERSHELL_FETCH_BLOCK,
+    ["```powershell", "mkdir pdpp; cd pdpp", `curl.exe -fsSLO ${driftedUrl}`, "```"].join("\n")
+  );
+  const findings = findWorkflowDocBindingIssues(VALID_WORKFLOW, doc);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0]?.detail ?? "", MISMATCHED_FETCH_URL_PATTERN);
 });
 
 test("live repo: friend-os-matrix.yml agrees with docs/operator/selfhost-quickstart.md", () => {

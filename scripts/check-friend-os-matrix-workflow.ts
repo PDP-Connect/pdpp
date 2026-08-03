@@ -32,6 +32,8 @@ const MATRIX_OS_LIST_PATTERNS = new Map(
   REQUIRED_MATRIX_OSES.map((os) => [os, new RegExp(`^\\s*os:\\s*\\[[^\\]]*\\b${os}\\b`, "m")])
 );
 const QUICKSTART_COMMIT_PATTERN = /PDPP_QUICKSTART_COMMIT:\s*(\S+)/;
+const SH_FETCH_URL_PATTERN = /```sh\nmkdir pdpp && cd pdpp\ncurl -fsSLO (\S+)\n```/;
+const POWERSHELL_FETCH_URL_PATTERN = /```powershell\nmkdir pdpp; cd pdpp\ncurl\.exe -fsSLO (\S+)\n```/;
 
 export function findWorkflowDocBindingIssues(workflowSource: string, quickstartDocSource: string): Finding[] {
   const findings: Finding[] = [];
@@ -59,6 +61,7 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
     "macOS and Linux (bash or zsh):",
     "Windows PowerShell (the block above cannot work there",
     "### 1. Fetch the blessed compose stack",
+    "On **Windows PowerShell**, bare",
   ];
   for (const anchor of requiredAnchors) {
     if (!workflowSource.includes(anchor)) {
@@ -75,6 +78,22 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
     findings.push({
       detail:
         "friend-os-matrix.yml no longer probes for a real Linux container daemon before claiming a Docker-backed pass",
+    });
+  }
+
+  const shFetchMatch = quickstartDocSource.match(SH_FETCH_URL_PATTERN);
+  const powershellFetchMatch = quickstartDocSource.match(POWERSHELL_FETCH_URL_PATTERN);
+  if (!shFetchMatch) {
+    findings.push({ detail: "docs/operator/selfhost-quickstart.md is missing the sh Compose-fetch URL under step 1" });
+  }
+  if (!powershellFetchMatch) {
+    findings.push({
+      detail: "docs/operator/selfhost-quickstart.md is missing the powershell Compose-fetch URL under step 1",
+    });
+  }
+  if (shFetchMatch && powershellFetchMatch && shFetchMatch[1] !== powershellFetchMatch[1]) {
+    findings.push({
+      detail: `docs/operator/selfhost-quickstart.md sh fetch URL (${shFetchMatch[1]}) and powershell fetch URL (${powershellFetchMatch[1]}) point to different sources — the two platform blocks must fetch the exact same pinned ref and target file`,
     });
   }
 
