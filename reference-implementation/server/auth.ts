@@ -20,6 +20,7 @@ import {
   exec,
   execDynamicSqlAcknowledged,
   getOne,
+  iterateDynamicSqlAcknowledged,
   type MutationQuery,
   type RegisteredQuery,
   referenceQueries,
@@ -3142,9 +3143,62 @@ async function bindDynamicClientToApprovingOwner(
 }
 
 /**
+ * Last time each of `clientIds` actually READ anything, derived from the
+ * spine rather than from a column on `tokens`.
+ *
+ * There is no `tokens.last_used_at` in either backend, so "last used" is not
+ * a stored fact -- but every `disclosure.served` event carries the reading
+ * client, and `spine_events.client_id` is a real column on both backends.
+ * That makes last-used derivable today with no migration and no new write
+ * path.
+ *
+ * One grouped read for the whole page (not one query per row). Returns a
+ * Map of client_id -> ISO timestamp. A client absent from the map has NEVER
+ * served a disclosure. Callers must render that case explicitly: an unused
+ * credential still holds full access, so collapsing "never used" into an
+ * empty cell hides the credentials most worth revoking.
+ */
+async function lastUsedAtByClientId(clientIds: readonly string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(clientIds.filter((id): id is string => typeof id === "string" && id.length > 0))];
+  if (ids.length === 0) {
+    return new Map();
+  }
+
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery<{ client_id: string; last_used_at: string | null }>(
+      `SELECT client_id, MAX(occurred_at) AS last_used_at
+         FROM spine_events
+        WHERE event_type = 'disclosure.served'
+          AND client_id = ANY($1::text[])
+        GROUP BY client_id`,
+      [ids]
+    );
+    return new Map(
+      result.rows.flatMap((row) => (row.last_used_at ? [[row.client_id, row.last_used_at] as const] : []))
+    );
+  }
+
+  const placeholders = ids.map(() => "?").join(", ");
+  // REVIEWED-DYNAMIC: IN-list cardinality equals the caller's client count
+  // (one owner's credentials); values are bound parameters and the GROUP BY
+  // returns at most one row per bound id.
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<{ client_id: string; last_used_at: string | null }>(
+      `SELECT client_id, MAX(occurred_at) AS last_used_at
+         FROM spine_events
+        WHERE event_type = 'disclosure.served'
+          AND client_id IN (${placeholders})
+        GROUP BY client_id`,
+      ids
+    ),
+  ];
+  return new Map(rows.flatMap((row) => (row.last_used_at ? [[row.client_id, row.last_used_at] as const] : [])));
+}
+
+/**
  * Operator-scoped listing of dynamic clients the dashboard registered on
  * behalf of a particular owner-session subject. Backs `GET /_ref/clients?owner=true`.
- * Returns `[{ client_id, client_name, created_at, active_token_count }]`.
+ * Returns `[{ client_id, client_name, created_at, active_token_count, last_used_at }]`.
  *
  * Spec: openspec/changes/dcr-per-owner-token-with-revoke/specs/
  *       reference-implementation-architecture/spec.md
@@ -3170,7 +3224,14 @@ export async function listOwnerIssuedClients(subjectId: unknown): Promise<Record
       };
     })
   );
-  return projected.flatMap((client) => (client ? [client] : []));
+  const clients = projected.flatMap((client) => (client ? [client] : []));
+
+  // Single grouped read for the whole page rather than one query per row.
+  const lastUsed = await lastUsedAtByClientId(clients.map((client) => client.client_id));
+  return clients.map((client) => ({
+    ...client,
+    last_used_at: lastUsed.get(client.client_id) ?? null,
+  }));
 }
 
 /**

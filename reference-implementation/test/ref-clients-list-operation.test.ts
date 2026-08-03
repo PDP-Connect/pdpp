@@ -23,6 +23,7 @@ const sampleClient = {
   client_id: "client_abc",
   client_name: "Operator CLI",
   created_at: "2026-04-01T00:00:00Z",
+  last_used_at: null,
 };
 
 test("ref.clients.list emits {object: list, data: []} when there are no clients", async () => {
