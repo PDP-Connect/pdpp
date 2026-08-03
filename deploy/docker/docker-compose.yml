@@ -47,6 +47,39 @@ services:
       GOOGLE_DATAPORTABILITY_CLIENT_SECRET: ${GOOGLE_DATAPORTABILITY_CLIENT_SECRET:-}
       GOOGLE_DATAPORTABILITY_REDIRECT_URI: ${GOOGLE_DATAPORTABILITY_REDIRECT_URI:-}
       GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS: ${GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS:-}
+      # Browser surface. Empty by default, which is what makes this node
+      # network-only: with no managed connectors the runtime never requires a
+      # surface, and browser-backed sources are refused up front at setup
+      # instead of failing on the first sync.
+      #
+      # `docker compose --profile browser up -d` starts the n.eko service below.
+      #
+      # Only this one is a real choice: which browser-backed connector this
+      # node may drive. Empty = network-only. Set it in .env; see the runbook
+      # for the exact one-line value.
+      PDPP_NEKO_MANAGED_CONNECTORS: ${PDPP_NEKO_MANAGED_CONNECTORS:-}
+      # The rest are compose-internal wiring with correct defaults. They are
+      # addresses of the `neko` service on this compose network, so an owner
+      # never has to look up a container IP. Do not change them unless you are
+      # pointing at a browser surface you run yourself.
+      # These MUST stay empty unless a managed connector is configured. The
+      # runtime treats a present CDP URL as "this deployment has a browser
+      # surface", so defaulting them unconditionally would make a node with no
+      # n.eko container claim a surface it does not have — and a browser-backed
+      # source would be accepted at setup and then fail on the first sync,
+      # which is exactly the trap the setup guard exists to prevent.
+      #
+      # `${VAR:+value}` expands to the value ONLY when VAR is non-empty, so
+      # these follow PDPP_NEKO_MANAGED_CONNECTORS automatically: set the
+      # connector, get the wiring; leave it empty, stay honestly network-only.
+      PDPP_NEKO_BASE_URL: ${PDPP_NEKO_BASE_URL:-${PDPP_NEKO_MANAGED_CONNECTORS:+http://neko:8080/neko}}
+      PDPP_NEKO_CDP_HTTP_URL: ${PDPP_NEKO_CDP_HTTP_URL:-${PDPP_NEKO_MANAGED_CONNECTORS:+http://neko:9223}}
+      PDPP_NEKO_WINDOW_SETTLE_URL: ${PDPP_NEKO_WINDOW_SETTLE_URL:-${PDPP_NEKO_MANAGED_CONNECTORS:+http://neko:9223/pdpp/window-settle}}
+      PDPP_NEKO_PROXY_ALLOWED_HOSTS: ${PDPP_NEKO_PROXY_ALLOWED_HOSTS:-${PDPP_NEKO_MANAGED_CONNECTORS:+neko:8080}}
+      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY:-${PDPP_NEKO_MANAGED_CONNECTORS:-}}
+      PDPP_NEKO_SURFACE_MODE: ${PDPP_NEKO_SURFACE_MODE:-${PDPP_NEKO_MANAGED_CONNECTORS:+static}}
+      PDPP_NEKO_SURFACE_CAP: ${PDPP_NEKO_SURFACE_CAP:-${PDPP_NEKO_MANAGED_CONNECTORS:+1}}
+      PDPP_NEKO_BROWSER_OWNER_MODE: ${PDPP_NEKO_BROWSER_OWNER_MODE:-${PDPP_NEKO_MANAGED_CONNECTORS:+neko-owned}}
     volumes:
       - pdpp-transformers:/var/cache/pdpp/transformers
     depends_on:
@@ -99,6 +132,49 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # Browser surface for browser-backed sources (ChatGPT, USAA, Amazon, ...).
+  #
+  # Off by default. `docker compose --profile browser up -d` starts it; without
+  # the profile this service is not created and the node stays network-only.
+  # It is a separate profile, not a separate compose file, so there is exactly
+  # one canonical stack to reason about.
+  #
+  # These connectors sign in through a REAL browser session the owner can see
+  # and click in: the provider may show a bot challenge or a 2FA prompt that
+  # only a human can clear. A headless browser cannot do that, and a headed
+  # browser inside a container has no screen — which is why this is its own
+  # service rather than a flag on the reference container.
+  neko:
+    # No default tag on purpose: the n.eko image is in the release pipeline but
+    # has not been published yet, so there is no registry-proven tag to pin. Set
+    # PDPP_NEKO_IMAGE in .env to a locally built image until a release runs;
+    # compose fails with this message rather than silently pulling a tag that
+    # does not exist.
+    # Deliberately has no registry default: the n.eko image is in the release
+    # pipeline but not published yet, so there is no proven tag to pin. Set
+    # PDPP_NEKO_IMAGE in .env to a locally built image until a release runs.
+    # A `:?` guard cannot be used here — compose interpolates every service
+    # even when its profile is inactive, so that would break the default
+    # network-only stack for owners who never enable the browser profile.
+    image: ${PDPP_NEKO_IMAGE:-pdpp-neko-image-not-set}
+    profiles: ["browser"]
+    restart: unless-stopped
+    # Chromium needs more shared memory than Docker's 64MB default or it
+    # crashes on non-trivial pages.
+    shm_size: 2gb
+    environment:
+      NEKO_PASSWORD: ${PDPP_NEKO_PASSWORD:-neko}
+      NEKO_PASSWORD_ADMIN: ${PDPP_NEKO_PASSWORD_ADMIN:-admin}
+      PDPP_NEKO_CDP_PROXY_PORT: "9223"
+    # No published port. The owner reaches this surface through the console
+    # origin, so the browser is not exposed to the host or the network.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9223/json/version >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
 
 volumes:
   pdpp-postgres-data:

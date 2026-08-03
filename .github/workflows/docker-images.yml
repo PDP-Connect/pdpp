@@ -58,6 +58,7 @@ on:
           - web
           - railway-core
           - core-browser
+          - neko
       platforms:
         description: Publish platforms on manual dispatch
         required: false
@@ -101,6 +102,11 @@ jobs:
             target: core-browser
             title: PDPP Core node (single container, browser-capable)
             description: PDPP single-container Core node with Patchright/Chromium for browser-backed connectors
+          - image: neko
+            dockerfile: ./docker/neko/Dockerfile
+            target: neko-runtime
+            title: PDPP browser surface (n.eko)
+            description: PDPP viewable browser surface (n.eko + Patchright Chromium) for browser-backed connectors
 
     steps:
       - name: Checkout
@@ -149,7 +155,7 @@ jobs:
             type=gha,scope=reference
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
           context: .
-          file: ./Dockerfile
+          file: ${{ matrix.dockerfile || './Dockerfile' }}
           build-args: |
             PDPP_REFERENCE_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -193,6 +199,11 @@ jobs:
             target: core-browser
             title: PDPP Core node (single container, browser-capable)
             description: PDPP single-container Core node with Patchright/Chromium for browser-backed connectors
+          - image: neko
+            dockerfile: ./docker/neko/Dockerfile
+            target: neko-runtime
+            title: PDPP browser surface (n.eko)
+            description: PDPP viewable browser surface (n.eko + Patchright Chromium) for browser-backed connectors
 
     steps:
       - name: Checkout
@@ -252,7 +263,7 @@ jobs:
             type=gha,scope=reference
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
           context: .
-          file: ./Dockerfile
+          file: ${{ matrix.dockerfile || './Dockerfile' }}
           build-args: |
             PDPP_REFERENCE_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}

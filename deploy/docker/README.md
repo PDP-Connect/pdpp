@@ -82,13 +82,12 @@ Portability API.
 
 ## Browser-backed sources (ChatGPT, USAA, ...)
 
-Choose this **before** you set up sources, because it changes which image you
-run. Sources split into two kinds and the dashboard tells you which is which:
+Sources split into two kinds — the dashboard tells you which is which:
 
-| You want | Run | Containers |
+| You want | Setup | Services |
 | --- | --- | --- |
-| Gmail, GitHub, Notion, Oura, YNAB (network-only) | `railway-core` (or the Compose stack above) | 1 (or 3) |
-| ...and also ChatGPT, USAA, Amazon, Chase, Reddit (browser-backed) | `core-browser` + a browser surface | 2 |
+| Gmail, GitHub, Notion, Oura, YNAB (network-only) | `docker compose up -d` | 3 (`reference`, `web`, `postgres`) |
+| ...and also ChatGPT, USAA, Amazon, Chase, Reddit (browser-backed) | add one env var, then `docker compose --profile browser up -d` | 4 (above + `neko`) |
 
 Browser-backed connectors sign in through a real, *viewable* browser session:
 the provider may show a Cloudflare challenge or a 2FA prompt that you have to
@@ -97,51 +96,64 @@ container has no screen, so these connectors need a browser surface you can
 watch and control (n.eko). This is why they are not part of the one-command
 network-only path.
 
-If you only want the network-only sources, ignore this section. The dashboard
-refuses a browser-backed source up front on a node without a browser surface,
-rather than taking your provider password and failing on the first sync.
+If you only want the network-only sources, stop here; the dashboard refuses a
+browser-backed source up front on a node without a browser surface, rather than
+taking your provider password and failing on the first sync.
 
-The single-container browser-capable node is `core-browser` — the same bundled
-console and supervisor as `railway-core`, plus Chromium — pointed at a n.eko
-surface:
+### Enabling browser-backed sources
 
-The n.eko surface image is **not published to a registry** — it is built from
-this repository, so this path requires a clone:
+Browser-backed connectors are enabled as a Docker Compose profile. The same
+`docker-compose.yml` file above runs both modes.
+
+**1. Add one line to `.env`:**
+
+The `neko` service is already defined in the compose file with a `profiles: ["browser"]`
+directive, so it is not created by default. To opt in, set the managed connector
+in your `.env`:
 
 ```sh
-git clone https://github.com/PDP-Connect/pdpp.git && cd pdpp
-docker build -f docker/neko/Dockerfile -t pdpp-neko:local .
-docker run -d --name pdpp-neko --shm-size=2g pdpp-neko:local
-NEKO_IP=$(docker inspect pdpp-neko --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-
-docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
-  -e PDPP_NEKO_BASE_URL="http://$NEKO_IP:8080/neko" \
-  -e PDPP_NEKO_CDP_HTTP_URL="http://$NEKO_IP:9223" \
-  -e PDPP_NEKO_WINDOW_SETTLE_URL="http://$NEKO_IP:9223/pdpp/window-settle" \
-  -e PDPP_NEKO_PROXY_ALLOWED_HOSTS="$NEKO_IP:8080" \
-  -e PDPP_NEKO_MANAGED_CONNECTORS="https://registry.pdpp.org/connectors/chatgpt" \
-  -e PDPP_NEKO_SURFACE_MODE=static \
-  -e PDPP_NEKO_SURFACE_CAP=1 \
-  -e PDPP_NEKO_STATIC_PROFILE_KEY="https://registry.pdpp.org/connectors/chatgpt" \
-  -e PDPP_NEKO_BROWSER_OWNER_MODE=neko-owned \
-  ghcr.io/pdp-connect/pdpp/core-browser:<released-tag>
+PDPP_NEKO_MANAGED_CONNECTORS=https://registry.pdpp.org/connectors/chatgpt
 ```
 
-Every one of those `PDPP_NEKO_*` variables is required; the server refuses to
-start with a named error if one is missing (for example
-`PDPP_NEKO_SURFACE_CAP is required`). Gmail and the other network-only sources
-work on this node too, so you do not need both nodes.
+All other `PDPP_NEKO_*` settings derive automatically from this single choice.
+The wiring is internal to the compose network (service names, no host IPs), so
+you never need to look up a container address.
 
-`core-browser` and the n.eko image are larger than `railway-core` (Chromium and
-its dependencies), which is the only reason they are a separate tag rather than
-the default.
+On **Windows PowerShell**, append to `.env` with:
 
-> **Honest status.** `core-browser` is new in this change and has no released
-> tag yet; substitute one once a release exists. The n.eko image is not
-> published at all today, so this path needs a repository clone and two local
-> builds. That makes it a **developer-grade** path, not a self-service one — if
-> you are setting this up for someone non-technical, prefer the network-only
-> node and leave browser-backed sources out.
+```powershell
+Add-Content -Path .env -Value 'PDPP_NEKO_MANAGED_CONNECTORS=https://registry.pdpp.org/connectors/chatgpt' -Encoding ascii
+```
+
+**2. Start the full stack with the browser profile:**
+
+```sh
+docker compose --profile browser up -d
+```
+
+The `reference`, `web`, and `postgres` services start as before; the `neko`
+service joins the compose network. Once `reference` is healthy (5-30 seconds),
+browser-backed sources are available in the dashboard.
+
+**Release status:** The `neko` and `core-browser` images are newly added to the
+release pipeline but have NOT been published yet. Until a release runs, you must
+override `PDPP_NEKO_IMAGE` with a locally built image. Add to `.env`:
+
+```sh
+PDPP_NEKO_IMAGE=pdpp-neko:local
+```
+
+Build that image from this repository with
+`docker build -f docker/neko/Dockerfile -t pdpp-neko:local .`. This is the one
+step that still needs a clone, and it exists only because the image is not
+published yet — it is not part of the steady-state route.
+
+Until you set `PDPP_NEKO_IMAGE`, the compose file resolves the n.eko service to
+the placeholder `pdpp-neko-image-not-set`, which fails loudly rather than
+pulling a tag that does not exist. The default network-only stack is unaffected:
+the n.eko service is not created without `--profile browser`.
+
+Once a release publishes the image, set `PDPP_NEKO_IMAGE` to that released tag.
 
 Serve a remote domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
 pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so

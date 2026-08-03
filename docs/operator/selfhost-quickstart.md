@@ -295,6 +295,15 @@ Stopped Pods retain the volume disk but the proxy URL changes when the Pod
 restarts on a different host. After resuming a stopped Pod, update
 `PDPP_REFERENCE_ORIGIN` in `.env` to the new proxy URL and restart the stack.
 
+### Optional: Browser-backed sources (ChatGPT, USAA, Amazon, ...)
+
+If you want to use browser-backed connectors that require interactive 2FA or
+bot-challenge verification, see
+[Browser-backed sources](../../deploy/docker/README.md#browser-backed-sources-chatgpt-usaa-)
+in the Docker deployment guide. It requires adding one environment variable and
+restarting with the `--profile browser` flag. Network-only sources (Gmail,
+GitHub, etc.) work without this step.
+
 ---
 
 ## Wire an MCP client
