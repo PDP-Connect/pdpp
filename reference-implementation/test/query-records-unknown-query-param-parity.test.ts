@@ -70,7 +70,7 @@ async function seed() {
   });
 }
 
-async function runUnknownParamConformance(label) {
+async function runUnknownParamConformance(label: string) {
   await seed();
 
   // Sanity control: a well-formed request with a supported param succeeds.
@@ -80,8 +80,9 @@ async function runUnknownParamConformance(label) {
   // A typo'd/unsupported key must be a typed rejection, not a silent no-op.
   await assert.rejects(
     () => queryRecords(CONNECTOR_ID, STREAM, GRANT, { limitt: 5 }, MANIFEST),
-    (err) => {
-      assert.equal(err.code, 'invalid_request', `${label}: unsupported param rejected with invalid_request`);
+    (err: unknown) => {
+      assert.ok(err instanceof Error, `${label}: rejection must be an Error`);
+      assert.equal((err as Error & { code?: string }).code, 'invalid_request', `${label}: unsupported param rejected with invalid_request`);
       assert.match(err.message, /limitt/, `${label}: error message names the offending key`);
       return true;
     },

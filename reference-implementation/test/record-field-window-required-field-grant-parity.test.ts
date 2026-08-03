@@ -85,7 +85,7 @@ async function seed() {
   }
 }
 
-async function runRequiredFieldConformance(label) {
+async function runRequiredFieldConformance(label: string) {
   await seed();
 
   // The grant's explicit `fields` list is ['body'] only, but the manifest

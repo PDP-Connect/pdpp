@@ -26,6 +26,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import type { SpineCorrelationFilters } from '../lib/spine.ts';
 import { emitSpineEvent, listSpineCorrelations } from '../lib/spine.ts';
 import { closeDb, getDb, initDb } from '../server/db.ts';
 import {
@@ -88,15 +89,20 @@ async function seedAll() {
 }
 
 /** Observable projection: ids in returned order, plus paging flags. */
-async function observe(filters) {
+async function observe(filters: SpineCorrelationFilters) {
   const page = await listSpineCorrelations('grant', { limit: 50, ...filters });
   return {
-    ids: page.summaries.map((s) => s.grant_id || s.id).filter((id) => String(id).includes(RUN_TAG)),
+    ids: page.summaries
+      .map((s) => s.grant_id || s.id)
+      .filter((id): id is string => typeof id === 'string' && id.includes(RUN_TAG)),
     hasMore: Boolean(page.hasMore),
   };
 }
 
 test('spine correlation filters behave identically on Postgres and SQLite', { skip: !POSTGRES_URL }, async (t) => {
+  if (!POSTGRES_URL) {
+    throw new Error('this test body must not run when PDPP_TEST_POSTGRES_URL is unset (test.skip should have prevented it)');
+  }
   const sqliteResults = new Map();
   const postgresResults = new Map();
 

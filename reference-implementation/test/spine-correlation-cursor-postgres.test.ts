@@ -40,8 +40,11 @@ const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 // ({backend, databaseUrl}) and bootstraps the schema itself — passing any
 // other shape silently falls through to the sqlite branch and leaves the
 // pool uninitialized.
-let storageReady = null;
+let storageReady: Promise<unknown> | null = null;
 function ensureStorage() {
+  if (!POSTGRES_URL) {
+    throw new Error('ensureStorage() must not be called when PDPP_TEST_POSTGRES_URL is unset');
+  }
   storageReady ??= initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
   return storageReady;
 }
@@ -84,12 +87,14 @@ async function cleanup() {
 }
 
 /** Page through with the given size, following next_cursor to exhaustion. */
-async function pageAll(limit) {
-  const pages = [];
-  let cursor = null;
+async function pageAll(limit: number) {
+  const pages: string[][] = [];
+  let cursor: string | null = null;
   for (let guard = 0; guard < 50; guard += 1) {
     const page = await postgresListSpineCorrelations('grant', { limit, cursor });
-    const ids = page.summaries.map((s) => s.grant_id || s.id).filter((id) => String(id).includes(RUN_TAG));
+    const ids = page.summaries
+      .map((s) => s.grant_id || s.id)
+      .filter((id): id is string => typeof id === 'string' && id.includes(RUN_TAG));
     pages.push(ids);
     if (!(page.hasMore && page.nextCursor)) break;
     cursor = page.nextCursor;

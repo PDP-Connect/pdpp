@@ -33,6 +33,7 @@ import {
   initPostgresStorage,
   postgresQuery,
 } from '../server/postgres-storage.ts';
+import type { SchedulerStoreWithSynthesizedRevalidation } from '../server/stores/scheduler-store.ts';
 import {
   createPostgresSchedulerStore,
   createSqliteSchedulerStore,
@@ -76,7 +77,7 @@ const SEED_RUNS = [
 
 const EXPECTED_ORDER_BY_STARTED_AT = ['run_c', 'run_a', 'run_b'];
 
-async function runOrderConformance(store, label) {
+async function runOrderConformance(store: SchedulerStoreWithSynthesizedRevalidation, label: string) {
   for (const record of SEED_RUNS) {
     await store.upsertActiveRun(record);
   }

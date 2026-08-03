@@ -57,7 +57,7 @@ import { postgresSemanticSearch } from '../server/postgres-search.ts';
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
-function deterministicVector(dimensions, seed) {
+function deterministicVector(dimensions: number, seed: number): number[] {
   const vec = new Array(dimensions);
   for (let index = 0; index < dimensions; index += 1) {
     vec[index] = Math.sin(seed * 31 + index * 7) * 0.5;
@@ -126,18 +126,21 @@ if (!POSTGRES_URL) {
       const hits = await postgresSemanticSearch({
         connectorId,
         connectorInstanceId,
+        stream: 'messages',
         scopeKeys: [scope],
         queryVector,
         limit: 1,
       });
 
       assert.equal(hits.length, 1, 'requested limit is honored');
+      const [bestHit] = hits;
+      assert.ok(bestHit, 'postgresSemanticSearch must return the one requested hit');
       assert.equal(
-        hits[0].recordKey,
+        bestHit.recordKey,
         'true_best_match',
         `expected the true nearest neighbour to be ranked first, got ${JSON.stringify(hits.map((h) => h.recordKey))}`,
       );
-      assert.ok(hits[0].distance < 1e-9, `true best match should have ~0 distance, got ${hits[0].distance}`);
+      assert.ok(bestHit.distance < 1e-9, `true best match should have ~0 distance, got ${bestHit.distance}`);
     } finally {
       await postgresQuery('DELETE FROM semantic_search_blob WHERE connector_id = $1', [connectorId]);
       await closePostgresStorage();

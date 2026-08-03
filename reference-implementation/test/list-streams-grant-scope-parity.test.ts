@@ -154,37 +154,50 @@ if (!POSTGRES_URL) {
     const pgTimeRangeResult = await listStreams(connectorId, grantTimeRange, manifest);
     const pgFullResult = await listStreams(connectorId, grantFull, manifest);
 
+    const [sqliteFullEntry] = sqliteFullResult;
+    const [pgFullEntry] = pgFullResult;
+    const [sqliteResourcesEntry] = sqliteResourcesResult;
+    const [pgResourcesEntry] = pgResourcesResult;
+    const [sqliteTimeRangeEntry] = sqliteTimeRangeResult;
+    const [pgTimeRangeEntry] = pgTimeRangeResult;
+    assert.ok(sqliteFullEntry, 'SQLite listStreams must return an entry for the seeded stream');
+    assert.ok(pgFullEntry, 'Postgres listStreams must return an entry for the seeded stream');
+    assert.ok(sqliteResourcesEntry, 'SQLite listStreams must return an entry for the resources-scoped grant');
+    assert.ok(pgResourcesEntry, 'Postgres listStreams must return an entry for the resources-scoped grant');
+    assert.ok(sqliteTimeRangeEntry, 'SQLite listStreams must return an entry for the time_range-scoped grant');
+    assert.ok(pgTimeRangeEntry, 'Postgres listStreams must return an entry for the time_range-scoped grant');
+
     await t.test('raw connection total is 5 (sanity check on seed data)', () => {
-      assert.equal(sqliteFullResult[0].record_count, 5);
-      assert.equal(pgFullResult[0].record_count, 5);
+      assert.equal(sqliteFullEntry.record_count, 5);
+      assert.equal(pgFullEntry.record_count, 5);
     });
 
     await t.test('resources-subset grant: Postgres matches SQLite and is the SCOPED count, not the raw total', () => {
-      assert.equal(sqliteResourcesResult[0].record_count, 2, 'SQLite must return the scoped count (2), not the raw total (5)');
+      assert.equal(sqliteResourcesEntry.record_count, 2, 'SQLite must return the scoped count (2), not the raw total (5)');
       assert.equal(
-        pgResourcesResult[0].record_count,
-        sqliteResourcesResult[0].record_count,
+        pgResourcesEntry.record_count,
+        sqliteResourcesEntry.record_count,
         'Postgres record_count must match SQLite for a resources-narrowed grant',
       );
-      assert.notEqual(pgResourcesResult[0].record_count, 5, 'Postgres must not leak the connection raw total (5) under a narrow resources grant');
+      assert.notEqual(pgResourcesEntry.record_count, 5, 'Postgres must not leak the connection raw total (5) under a narrow resources grant');
       assert.equal(
-        pgResourcesResult[0].last_updated,
-        sqliteResourcesResult[0].last_updated,
+        pgResourcesEntry.last_updated,
+        sqliteResourcesEntry.last_updated,
         'Postgres last_updated must match SQLite (scoped freshness, not the raw connection freshness)',
       );
     });
 
     await t.test('time_range grant: Postgres matches SQLite and is the SCOPED count, not the raw total', () => {
-      assert.equal(sqliteTimeRangeResult[0].record_count, 2, 'SQLite must return the scoped count (2), not the raw total (5)');
+      assert.equal(sqliteTimeRangeEntry.record_count, 2, 'SQLite must return the scoped count (2), not the raw total (5)');
       assert.equal(
-        pgTimeRangeResult[0].record_count,
-        sqliteTimeRangeResult[0].record_count,
+        pgTimeRangeEntry.record_count,
+        sqliteTimeRangeEntry.record_count,
         'Postgres record_count must match SQLite for a time_range-narrowed grant',
       );
-      assert.notEqual(pgTimeRangeResult[0].record_count, 5, 'Postgres must not leak the connection raw total (5) under a narrow time_range grant');
+      assert.notEqual(pgTimeRangeEntry.record_count, 5, 'Postgres must not leak the connection raw total (5) under a narrow time_range grant');
       assert.equal(
-        pgTimeRangeResult[0].last_updated,
-        sqliteTimeRangeResult[0].last_updated,
+        pgTimeRangeEntry.last_updated,
+        sqliteTimeRangeEntry.last_updated,
         'Postgres last_updated must match SQLite (scoped freshness, not the raw connection freshness)',
       );
     });
