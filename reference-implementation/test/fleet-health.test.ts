@@ -294,6 +294,81 @@ test("active and unknown work are indeterminate, while fresh manual and paused p
   assert.equal(compose([inventory("manual-a")], [manual]).state, "healthy");
 });
 
+test("active healthy collection work is exclusive of transient collection unknown evidence", () => {
+  const active = summary("active-collection-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      badges: { syncing: true },
+      conditions: [
+        {
+          current: true,
+          reason: "collection_not_observed",
+          status: "unknown",
+          type: "CollectionSucceeded",
+        },
+      ],
+      state: "unknown",
+      unknown_reasons: ["collection"],
+    },
+    owner_state: { resolver: "collecting" },
+  });
+  const result = compose([inventory(active.connection_id)], [active]);
+
+  assert.equal(result.state, "indeterminate");
+  assert.deepEqual(
+    result.dimensions.active_work.map((item) => item.connection_id),
+    ["active-collection-a"]
+  );
+  assert.deepEqual(result.dimensions.unknown_evidence, []);
+});
+
+test("active work does not mask an independent terminal recovery fault", () => {
+  const activeWithFault = summary("active-terminal-a", {
+    connection_health: {
+      ...summary("x").connection_health,
+      axes: {
+        attention: "none",
+        coverage: "terminal_gap",
+        freshness: "fresh",
+        outbox: "idle",
+        remote_surface: "none",
+      },
+      badges: { syncing: true },
+      conditions: [
+        {
+          current: true,
+          reason: "collection_not_observed",
+          status: "unknown",
+          type: "CollectionSucceeded",
+        },
+      ],
+      forward_disposition: "terminal",
+      state: "degraded",
+      unknown_reasons: ["collection"],
+    },
+    owner_state: { resolver: "collecting" },
+  });
+  const result = compose([inventory(activeWithFault.connection_id)], [activeWithFault]);
+
+  assert.equal(result.state, "unhealthy");
+  assert.deepEqual(
+    result.dimensions.active_work.map((item) => item.connection_id),
+    ["active-terminal-a"]
+  );
+  assert.deepEqual(
+    result.dimensions.recovery.terminal.map((item) => item.connection_id),
+    ["active-terminal-a"]
+  );
+  assert.deepEqual(
+    result.dimensions.system.degraded_or_broken.map((item) => item.connection_id),
+    ["active-terminal-a"]
+  );
+  assert.deepEqual(
+    result.dimensions.unknown_evidence.map((item) => item.connection_id),
+    ["active-terminal-a"]
+  );
+});
+
 test("fresh paused schedule action is healthy, while stale manual and paused actions are advisory", () => {
   const freshPaused = summary("paused-fresh-a", {
     owner_state: { resolver: "owner_paused" },

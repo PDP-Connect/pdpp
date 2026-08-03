@@ -276,15 +276,41 @@ function isActiveWork(summary: FleetSummary): boolean {
   );
 }
 
+// An in-flight run temporarily invalidates terminal collection evidence. That
+// collection-only unknown belongs to active work; independent unknown or fault
+// evidence must continue to retain its own fleet dimension.
+function isTransientActiveCollectionUnknown(summary: FleetSummary): boolean {
+  const { connection_health: health, owner_state: ownerState } = summary;
+  return (
+    isActiveWork(summary) &&
+    health.state === "unknown" &&
+    health.axes.attention === "none" &&
+    health.axes.coverage === "complete" &&
+    health.axes.freshness === "fresh" &&
+    health.unknown_reasons.length > 0 &&
+    health.unknown_reasons.every((reason) => reason === "collection") &&
+    evidenceFor(OWNER_RESOLVER_EVIDENCE, ownerState.resolver) !== "unknown" &&
+    evidenceFor(FORWARD_DISPOSITION_EVIDENCE, health.forward_disposition) !== "unknown" &&
+    health.conditions.some(
+      (condition) =>
+        condition.current &&
+        condition.status === "unknown" &&
+        condition.type === "CollectionSucceeded" &&
+        condition.reason === "collection_not_observed"
+    )
+  );
+}
+
 function hasUnknownEvidence(summary: FleetSummary): boolean {
   const { connection_health: health, owner_state: ownerState } = summary;
+  const transientActiveCollectionUnknown = isTransientActiveCollectionUnknown(summary);
   return (
     // `connection_health.state` is the canonical composition of whether an
     // axis applies. In particular, a normal server connection can carry an
     // intentionally inapplicable raw `outbox: "unknown"` while remaining
     // healthy. Do not recompose raw axes here.
-    evidenceFor(HEADLINE_EVIDENCE, health.state) === "unknown" ||
-    health.unknown_reasons.length > 0 ||
+    (!transientActiveCollectionUnknown && evidenceFor(HEADLINE_EVIDENCE, health.state) === "unknown") ||
+    (!transientActiveCollectionUnknown && health.unknown_reasons.length > 0) ||
     // These are independent composed dispositions, not raw axes. Keep their
     // fail-closed behavior until their owning projections fold them into the
     // headline state.
