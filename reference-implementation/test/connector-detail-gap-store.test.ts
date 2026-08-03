@@ -865,6 +865,101 @@ test(
   })
 );
 
+// Lifecycle oracle requested by luna-usaa-evidence-0803.md: the live USAA
+// durable gap `gap_d7fce556a69afc0569838d600d59f255` (connector-neutral —
+// this is not a USAA-specific defect, so the oracle belongs here, not in a
+// USAA test file) shows `status=pending`, a NON-NULL `recovered_run_id`,
+// and `last_run_id` equal to a run that came AFTER the recovering run. The
+// null-recovered_run_id tests above (P1 review finding on commit
+// 5712f3afe) prove the run-id-LESS recovery path reopens correctly, but
+// never exercise the primary, non-null `recovered_run_id = excluded.last_run_id`
+// comparison the SQL comment above documents — i.e. neither the SAME-run
+// stickiness guard nor its complementary LATER-run reopen were previously
+// pinned by a positive test using a real, non-null run id on both sides.
+// This closes that gap with the two-sided lifecycle: recovered by run A,
+// re-upserted again from run A stays sticky (no flap on an ordinary forward
+// pass with no new evidence); the SAME row re-upserted from a later run B
+// reopens to pending (the connector is reporting, with fresh attempt
+// evidence, that a previously-closed record is missing again) — matching
+// the exact recovered-then-reopened shape the live gap exhibits.
+test(
+  "a gap recovered by run A stays recovered on a same-run A re-upsert, then reopens to pending on a later run B re-upsert",
+  withTempDb(async () => {
+    const store = createSqliteConnectorDetailGapStore();
+    const seeded = await store.upsertPendingGap({
+      connectorId: "usaa",
+      connectorInstanceId: "cin_bc1efca69a1c386d610f0924",
+      detailLocator: { account_id: "acct_1" },
+      discoveredRunId: "run_a",
+      lastRunId: "run_a",
+      reason: "temporary_unavailable",
+      recordKey: "0002-example",
+      stream: "transactions",
+    });
+    assert.ok(seeded, "seeded is present");
+    assert.equal(seeded.status, "pending");
+
+    const recovered = await store.markGapStatus(seeded.gap_id, "recovered", { runId: "run_a" });
+    assert.ok(recovered, "recovered is present");
+    assert.equal(recovered.status, "recovered");
+    assert.equal(recovered.recovered_run_id, "run_a");
+
+    // Same-run A re-upsert: an ordinary forward pass re-defer with no new
+    // attempt evidence (e.g. the coverage sweep re-reports the same account
+    // within the same run that just recovered it). Must stay sticky —
+    // recovered_run_id ("run_a") matches excluded.last_run_id ("run_a").
+    const sameRunReupsert = await store.upsertPendingGap({
+      connectorId: "usaa",
+      connectorInstanceId: "cin_bc1efca69a1c386d610f0924",
+      detailLocator: { account_id: "acct_1" },
+      discoveredRunId: "run_a",
+      lastRunId: "run_a",
+      reason: "temporary_unavailable",
+      recordKey: "0002-example",
+      stream: "transactions",
+    });
+    assert.ok(sameRunReupsert, "sameRunReupsert is present");
+    assert.equal(sameRunReupsert.gap_id, seeded.gap_id, "same identity — same row");
+    assert.equal(
+      sameRunReupsert.status,
+      "recovered",
+      "a same-run re-upsert must not flap a just-recovered gap back to pending"
+    );
+    assert.equal(sameRunReupsert.recovered_run_id, "run_a", "recovered_run_id is untouched by the sticky branch");
+
+    // A LATER, independent run B re-upserts the SAME identity — this is the
+    // live shape: the account's export ladder failed again on a later run,
+    // fresh attempt evidence that the record is missing again. Must reopen
+    // to pending — recovered_run_id ("run_a") does NOT match
+    // excluded.last_run_id ("run_b").
+    const laterRunReupsert = await store.upsertPendingGap({
+      connectorId: "usaa",
+      connectorInstanceId: "cin_bc1efca69a1c386d610f0924",
+      detailLocator: { account_id: "acct_1" },
+      discoveredRunId: "run_a",
+      lastRunId: "run_b",
+      reason: "temporary_unavailable",
+      recordKey: "0002-example",
+      stream: "transactions",
+    });
+    assert.ok(laterRunReupsert, "laterRunReupsert is present");
+    assert.equal(laterRunReupsert.gap_id, seeded.gap_id, "same identity — same row");
+    assert.equal(
+      laterRunReupsert.status,
+      "pending",
+      "a later run's re-upsert must reopen a previously-recovered gap — this is the exact live shape " +
+        "of gap_d7fce556a69afc0569838d600d59f255 (recovered_run_id=run_8312a880399b4e2fb9ece689de3aca04, " +
+        "status=pending after a later run re-reported it missing)"
+    );
+    assert.equal(
+      laterRunReupsert.recovered_run_id,
+      "run_a",
+      "recovered_run_id from the original recovery is preserved as history, not cleared by the reopen"
+    );
+    assert.equal(laterRunReupsert.last_run_id, "run_b", "last_run_id advances to the reopening run");
+  })
+);
+
 test(
   "listPendingGaps returns only retry-eligible pending gaps",
   withTempDb(async () => {
