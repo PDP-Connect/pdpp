@@ -68,6 +68,49 @@ function sqliteScheduleExists(connectorInstanceId: string): boolean {
   return Boolean(row);
 }
 
+interface SummaryEvidenceRow {
+  dirty: number | boolean;
+  last_error: string | null;
+  state: string;
+}
+
+function seedSummaryEvidenceSqlite(
+  connectorInstanceId: string,
+  connectorId: string,
+  { dirty = 0, state = "fresh" }: { dirty?: number; state?: string } = {}
+): void {
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO connector_summary_evidence(connector_instance_id, connector_id, dirty, state, last_error) VALUES (?, ?, ?, ?, NULL)"
+  ).run(connectorInstanceId, connectorId, dirty, state);
+}
+
+function sqliteSummaryEvidence(connectorInstanceId: string): SummaryEvidenceRow | undefined {
+  const db = getDb();
+  return db
+    .prepare("SELECT dirty, state, last_error FROM connector_summary_evidence WHERE connector_instance_id = ?")
+    .get(connectorInstanceId) as SummaryEvidenceRow | undefined;
+}
+
+async function seedSummaryEvidencePostgres(
+  connectorInstanceId: string,
+  connectorId: string,
+  { dirty = 0, state = "fresh" }: { dirty?: number; state?: string } = {}
+): Promise<void> {
+  await postgresQuery(
+    "INSERT INTO connector_summary_evidence(connector_instance_id, connector_id, dirty, state, last_error) VALUES ($1, $2, $3, $4, NULL)",
+    [connectorInstanceId, connectorId, dirty, state]
+  );
+}
+
+async function postgresSummaryEvidence(connectorInstanceId: string): Promise<SummaryEvidenceRow | undefined> {
+  const result = await postgresQuery<SummaryEvidenceRow>(
+    "SELECT dirty, state, last_error FROM connector_summary_evidence WHERE connector_instance_id = $1",
+    [connectorInstanceId]
+  );
+  return result.rows[0];
+}
+
 test("SQLite: a fault thrown between the activation write and the schedule write rolls back BOTH — no stranded active-unscheduled row", async (t) => {
   closeDb();
   initDb(makeTemporaryDbPath("pdpp-atomic-fault-sqlite-"));
@@ -595,5 +638,269 @@ test(
       [connectorInstanceId]
     );
     assert.equal(schedule.rows.length, 0, "no schedule row for a manual-mode manifest");
+  }
+);
+
+test("SQLite: a successful activation marks connector_summary_evidence dirty/stale in the SAME transaction", async (t) => {
+  closeDb();
+  initDb(makeTemporaryDbPath("pdpp-atomic-dirty-mark-sqlite-"));
+  await registerConnector(AMAZON_MANIFEST);
+  const connectorInstanceId = "cin_dirty_mark_sqlite";
+  seedDraftConnectorInstanceSqlite(connectorInstanceId, "amazon");
+  seedSummaryEvidenceSqlite(connectorInstanceId, "amazon", { dirty: 0, state: "fresh" });
+  t.after(() => closeDb());
+
+  const result = await activateDraftAndAttachScheduleAtomically({
+    connectorId: "amazon",
+    connectorInstanceId,
+    manifest: AMAZON_MANIFEST,
+  });
+
+  assert.equal(result.activated, true);
+  const evidence = sqliteSummaryEvidence(connectorInstanceId);
+  assert.ok(evidence, "evidence row must still exist");
+  assert.equal(Number(evidence.dirty), 1, "activation must mark evidence dirty");
+  assert.equal(evidence.state, "stale", "activation must mark evidence state stale");
+  assert.equal(evidence.last_error, "connector instance status changed to active");
+});
+
+test("SQLite: a faulted attempt leaves connector_summary_evidence in its PRIOR state, unchanged (dirty-mark rolls back too)", async (t) => {
+  closeDb();
+  initDb(makeTemporaryDbPath("pdpp-atomic-dirty-mark-rollback-sqlite-"));
+  await registerConnector(AMAZON_MANIFEST);
+  const connectorInstanceId = "cin_dirty_mark_rollback_sqlite";
+  seedDraftConnectorInstanceSqlite(connectorInstanceId, "amazon");
+  seedSummaryEvidenceSqlite(connectorInstanceId, "amazon", { dirty: 0, state: "fresh" });
+  t.after(() => {
+    __setAuthenticatedDraftActivationFaultHookForTest(null);
+    closeDb();
+  });
+
+  __setAuthenticatedDraftActivationFaultHookForTest((point) => {
+    if (point === "after_activate_before_schedule") {
+      throw new Error("injected fault: schedule write failure");
+    }
+  });
+
+  await assert.rejects(() =>
+    activateDraftAndAttachScheduleAtomically({
+      connectorId: "amazon",
+      connectorInstanceId,
+      manifest: AMAZON_MANIFEST,
+    })
+  );
+
+  assert.equal(sqliteInstanceStatus(connectorInstanceId), "draft", "status rolled back");
+  const evidence = sqliteSummaryEvidence(connectorInstanceId);
+  assert.ok(evidence, "evidence row must still exist");
+  assert.equal(Number(evidence.dirty), 0, "the dirty-mark write must roll back along with the status flip");
+  assert.equal(evidence.state, "fresh", "prior evidence state must be unchanged after rollback");
+  assert.equal(evidence.last_error, null, "prior evidence last_error must be unchanged after rollback");
+});
+
+test(
+  "Postgres: a successful activation marks connector_summary_evidence dirty/stale in the SAME transaction",
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
+  async (t) => {
+    const postgresUrl = DEDICATED_POSTGRES_URL;
+    assert.ok(postgresUrl, "DEDICATED_POSTGRES_URL is required for this test");
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+    const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const connectorInstanceId = `cin_dirty_mark_pg_${suffix}`;
+    t.after(async () => {
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
+        connectorInstanceId,
+      ]);
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    });
+
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES ('amazon', $1::jsonb, $2)
+       ON CONFLICT (connector_id) DO NOTHING`,
+      [JSON.stringify(AMAZON_MANIFEST), "2026-06-01T00:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES ($1, 'owner_1', 'amazon', $1, 'draft', 'account', $1, $2::jsonb, $3, $3, NULL)`,
+      [connectorInstanceId, JSON.stringify({ kind: "static_secret_draft" }), "2026-06-01T00:00:00.000Z"]
+    );
+    await seedSummaryEvidencePostgres(connectorInstanceId, "amazon", { dirty: 0, state: "fresh" });
+
+    const result = await activateDraftAndAttachScheduleAtomically({
+      connectorId: "amazon",
+      connectorInstanceId,
+      manifest: AMAZON_MANIFEST,
+    });
+
+    assert.equal(result.activated, true);
+    const evidence = await postgresSummaryEvidence(connectorInstanceId);
+    assert.ok(evidence, "evidence row must still exist");
+    assert.equal(evidence.dirty === true || Number(evidence.dirty) === 1, true, "activation must mark evidence dirty");
+    assert.equal(evidence.state, "stale", "activation must mark evidence state stale");
+    assert.equal(evidence.last_error, "connector instance status changed to active");
+  }
+);
+
+test(
+  "Postgres: a faulted attempt leaves connector_summary_evidence in its PRIOR state, unchanged (dirty-mark rolls back too)",
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
+  async (t) => {
+    const postgresUrl = DEDICATED_POSTGRES_URL;
+    assert.ok(postgresUrl, "DEDICATED_POSTGRES_URL is required for this test");
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+    const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const connectorInstanceId = `cin_dirty_mark_rollback_pg_${suffix}`;
+    t.after(async () => {
+      __setAuthenticatedDraftActivationFaultHookForTest(null);
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
+        connectorInstanceId,
+      ]);
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    });
+
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES ('amazon', $1::jsonb, $2)
+       ON CONFLICT (connector_id) DO NOTHING`,
+      [JSON.stringify(AMAZON_MANIFEST), "2026-06-01T00:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES ($1, 'owner_1', 'amazon', $1, 'draft', 'account', $1, $2::jsonb, $3, $3, NULL)`,
+      [connectorInstanceId, JSON.stringify({ kind: "static_secret_draft" }), "2026-06-01T00:00:00.000Z"]
+    );
+    await seedSummaryEvidencePostgres(connectorInstanceId, "amazon", { dirty: 0, state: "fresh" });
+
+    __setAuthenticatedDraftActivationFaultHookForTest((point) => {
+      if (point === "after_activate_before_schedule") {
+        throw new Error("injected fault: schedule write failure");
+      }
+    });
+
+    await assert.rejects(() =>
+      activateDraftAndAttachScheduleAtomically({
+        connectorId: "amazon",
+        connectorInstanceId,
+        manifest: AMAZON_MANIFEST,
+      })
+    );
+
+    const instance = await postgresQuery<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(instance.rows[0]?.status, "draft", "status rolled back");
+    const evidence = await postgresSummaryEvidence(connectorInstanceId);
+    assert.ok(evidence, "evidence row must still exist");
+    assert.equal(
+      evidence.dirty === false || Number(evidence.dirty) === 0,
+      true,
+      "the dirty-mark write must roll back along with the status flip"
+    );
+    assert.equal(evidence.state, "fresh", "prior evidence state must be unchanged after rollback");
+    assert.equal(evidence.last_error, null, "prior evidence last_error must be unchanged after rollback");
+  }
+);
+
+test("SQLite: concurrent activation attempts against the SAME draft connection produce exactly one activation and exactly one schedule row", async (t) => {
+  closeDb();
+  initDb(makeTemporaryDbPath("pdpp-atomic-concurrency-sqlite-"));
+  await registerConnector(AMAZON_MANIFEST);
+  const connectorInstanceId = "cin_concurrency_sqlite";
+  seedDraftConnectorInstanceSqlite(connectorInstanceId, "amazon");
+  t.after(() => closeDb());
+
+  const results = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      activateDraftAndAttachScheduleAtomically({ connectorId: "amazon", connectorInstanceId, manifest: AMAZON_MANIFEST })
+    )
+  );
+
+  const activatedCount = results.filter((r) => r.activated).length;
+  const scheduleAttachedCount = results.filter((r) => r.scheduleAttached).length;
+  assert.equal(activatedCount, 1, "exactly one of the concurrent calls performs the activation");
+  assert.equal(scheduleAttachedCount, 1, "exactly one of the concurrent calls attaches the schedule");
+  assert.equal(sqliteInstanceStatus(connectorInstanceId), "active");
+
+  const db = getDb();
+  const scheduleRows = db
+    .prepare("SELECT connector_instance_id FROM connector_schedules WHERE connector_instance_id = ?")
+    .all(connectorInstanceId);
+  assert.equal(scheduleRows.length, 1, "no duplicate schedule row from the race");
+});
+
+test(
+  "Postgres: concurrent activation attempts against the SAME draft connection produce exactly one activation and exactly one schedule row",
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
+  async (t) => {
+    const postgresUrl = DEDICATED_POSTGRES_URL;
+    assert.ok(postgresUrl, "DEDICATED_POSTGRES_URL is required for this test");
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+    const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const connectorInstanceId = `cin_concurrency_pg_${suffix}`;
+    t.after(async () => {
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    });
+
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES ('amazon', $1::jsonb, $2)
+       ON CONFLICT (connector_id) DO NOTHING`,
+      [JSON.stringify(AMAZON_MANIFEST), "2026-06-01T00:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES ($1, 'owner_1', 'amazon', $1, 'draft', 'account', $1, $2::jsonb, $3, $3, NULL)`,
+      [connectorInstanceId, JSON.stringify({ kind: "static_secret_draft" }), "2026-06-01T00:00:00.000Z"]
+    );
+
+    // Real concurrent transactions against the SAME row, exercising the
+    // SELECT ... FOR UPDATE lock on connector_instances that this module's
+    // Postgres branch takes: without it, two concurrent callers could both
+    // observe status='draft', both attempt the INSERT into
+    // connector_schedules (whose PRIMARY KEY on connector_instance_id would
+    // only catch that as a last-resort 23505, not a clean serialized
+    // no-op) — this test proves the lock, not just the constraint, is doing
+    // the serializing.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        activateDraftAndAttachScheduleAtomically({ connectorId: "amazon", connectorInstanceId, manifest: AMAZON_MANIFEST })
+      )
+    );
+
+    const activatedCount = results.filter((r) => r.activated).length;
+    const scheduleAttachedCount = results.filter((r) => r.scheduleAttached).length;
+    assert.equal(activatedCount, 1, "exactly one of the concurrent calls performs the activation");
+    assert.equal(scheduleAttachedCount, 1, "exactly one of the concurrent calls attaches the schedule");
+
+    const instance = await postgresQuery<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(instance.rows[0]?.status, "active");
+    const scheduleRows = await postgresQuery(
+      "SELECT connector_instance_id FROM connector_schedules WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(scheduleRows.rows.length, 1, "no duplicate schedule row from the race");
   }
 );

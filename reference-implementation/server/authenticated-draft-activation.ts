@@ -28,6 +28,15 @@
 // existing contract exactly), and the schedule write only INSERTs when no
 // row exists yet for this connector_instance_id — an owner-paused or
 // custom-interval row already present is read but never touched.
+//
+// connector_summary_evidence dirty-mark parity: a genuine status flip also
+// marks this connection's maintained summary evidence dirty/stale, using the
+// SAME canonical statement and last_error wording connector-instance-store.ts's
+// own updateStatus already uses on both backends — inside the SAME
+// transaction as the status flip, so a rollback undoes the dirty-mark too.
+// Both backends perform this write; a prior revision only wired it into the
+// SQLite branch, which was a real Postgres parity gap (evidence stayed
+// unmarked-dirty after a real Postgres activation), closed here.
 
 import { exec, getOne, referenceQueries, writeTransaction } from "../lib/db.ts";
 import {
@@ -149,6 +158,16 @@ async function activateDraftAndAttachSchedulePostgres(
       await client.query(
         "UPDATE connector_instances SET status = 'active', updated_at = $1, revoked_at = NULL WHERE connector_instance_id = $2",
         [now, connectorInstanceId]
+      );
+      // Canonical mark-dirty statement/semantics, matching
+      // connector-instance-store.ts's own updateStatus exactly (same SQL,
+      // same last_error wording) — inside this SAME transaction, so a
+      // rollback (fault or otherwise) undoes the dirty-mark along with the
+      // status flip, never leaving evidence marked dirty for a rolled-back
+      // activation.
+      await client.query(
+        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2",
+        ["connector instance status changed to active", connectorInstanceId]
       );
     }
     // A schedule is only ever attached for a connection that IS (or just
