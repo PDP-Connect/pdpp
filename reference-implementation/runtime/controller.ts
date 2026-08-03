@@ -2607,6 +2607,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
+  // Active rows are admission state, so startup reconciliation may remove
+  // them before boot lease reconciliation emits supplementary lifecycle
+  // events. Capture their exact bindings first for legacy leases that lack a
+  // durable surface subject.
+  const startupControllerRunBindingSnapshot = listPersistedActiveRuns()
+    .then(
+      (rows) =>
+        new Map(
+          rows.flatMap((row) =>
+            typeof row.connector_instance_id === "string" && row.connector_instance_id.length > 0
+              ? [[row.run_id, row.connector_instance_id] as const]
+              : []
+          )
+        )
+    )
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] failed to snapshot startup active-run bindings: ${message}`);
+      return new Map();
+    });
   const startupControllerRunReconciliation = reconcileStartupRunState();
 
   function getScheduleRecord(connectorId: string): Promise<Schedule | null> {
@@ -2685,6 +2705,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     scheduleRun(connectorId, options, onFailure) {
       detachControllerTask(runNow(connectorId, options).catch(onFailure));
     },
+    startupControllerRunBindingSnapshot,
     startupControllerRunReconciliation,
   });
 

@@ -32,12 +32,15 @@ import {
   type StopBrowserSurfaceRequest,
   // biome-ignore lint/correctness/noUnresolvedImports: workspace package subpath is available to the test runtime.
 } from "@opendatalabs/remote-surface/leases";
-import { createTraceContext } from "../lib/spine.ts";
+import { createTraceContext, emitSpineEvent } from "../lib/spine.ts";
+import { readLastSuccessfulRuntimeReceipt } from "../runtime/browser-surface/health-summary-adapter.ts";
 import {
   browserSurfacePhaseSessionId,
   createBrowserSurfaceManager,
 } from "../runtime/browser-surface/run-coordinator.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
+import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import { createSqliteBrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import { makeTemporaryDbPath } from "./helpers/temp-dir.ts";
 
 function tempDbPath(): string {
@@ -126,8 +129,13 @@ function createReadyAllocator(): BrowserSurfaceAllocator & {
 }
 
 interface SetupOptions {
+  browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore | null;
   leaseManager?: BrowserSurfaceLeaseManager;
-  listPersistedActiveRuns?: () => Promise<ReadonlyArray<{ readonly run_id: string }>>;
+  listPersistedActiveRuns?: () => Promise<
+    ReadonlyArray<{ readonly connector_instance_id?: string | null; readonly run_id: string }>
+  >;
+  startupControllerRunBindingSnapshot?: Promise<ReadonlyMap<string, string>>;
+  startupControllerRunReconciliation?: Promise<void>;
   warnCalls?: string[];
 }
 
@@ -150,7 +158,7 @@ function setup<TAllocator extends BrowserSurfaceAllocator>(
     activeRunInteractions: new Map(),
     browserSurfaceAllocator: allocator,
     browserSurfaceLeaseManager: leaseManager,
-    browserSurfaceLeaseStore: null,
+    browserSurfaceLeaseStore: options.browserSurfaceLeaseStore ?? null,
     browserSurfaceMidWaitPollIntervalMs: undefined,
     browserSurfaceReadinessProbe: null,
     browserSurfaceReadinessTimeoutMs: undefined,
@@ -164,7 +172,8 @@ function setup<TAllocator extends BrowserSurfaceAllocator>(
     },
     pendingBrowserSurfaceLaunches: new Map(),
     scheduleRun: () => undefined,
-    startupControllerRunReconciliation: Promise.resolve(),
+    startupControllerRunBindingSnapshot: options.startupControllerRunBindingSnapshot ?? Promise.resolve(new Map()),
+    startupControllerRunReconciliation: options.startupControllerRunReconciliation ?? Promise.resolve(),
   });
   return { allocator, leaseManager, manager };
 }
@@ -617,6 +626,134 @@ test("I9 (regression): releaseManagedBrowserSurfaceForPhase both terminalizes th
     parentRows.length,
     0,
     "the parent run's own event history must not gain a browser_surface_released row from the phase release"
+  );
+});
+
+test("boot reconciliation releases an orphan with its durable exact connector_instance_id after startup removes the active row", async (t) => {
+  const warnings: string[] = [];
+  const { allocator, leaseManager, manager: producer } = setup(t, createReadyAllocator());
+  const connectorInstanceId = "cin_slack_1";
+  const runId = "run_boot_orphan";
+  const granted = await producer.acquireManagedBrowserSurfaceForPhase(phaseInput(runId, "slack", connectorInstanceId));
+  assert.equal(granted.kind, "granted");
+  assert.ok(granted.kind === "granted");
+  const leased = leaseManager.getLease(granted.leaseId);
+  assert.ok(leased);
+  assert.equal(leased.surface_subject_id, connectorInstanceId, "the durable subject is the exact connector instance");
+
+  await producer.emitLeaseEvent("run.browser_surface_ready", "slack", leased.run_id, createTraceContext(), leased);
+  await emitSpineEvent({
+    actor_id: "slack",
+    event_type: "run.completed",
+    object_id: leased.run_id,
+    object_type: "run",
+    run_id: leased.run_id,
+    status: "succeeded",
+  });
+
+  let activeRows: ReadonlyArray<{ readonly connector_instance_id: string; readonly run_id: string }> = [
+    { connector_instance_id: connectorInstanceId, run_id: leased.run_id },
+  ];
+  const preReconciliationSnapshot = Promise.resolve(new Map([[leased.run_id, connectorInstanceId]]));
+  let resolveStartupReconciliation: () => void = () => undefined;
+  const startupControllerRunReconciliation = new Promise<void>((resolve) => {
+    resolveStartupReconciliation = resolve;
+  });
+  const leaseStore = createSqliteBrowserSurfaceLeaseStore();
+  const bootManager = createBrowserSurfaceManager({
+    activeRunInteractions: new Map(),
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseManager: leaseManager,
+    browserSurfaceLeaseStore: leaseStore,
+    browserSurfaceMidWaitPollIntervalMs: undefined,
+    browserSurfaceReadinessProbe: null,
+    browserSurfaceReadinessTimeoutMs: undefined,
+    browserSurfaceReplacementReceiptStore: null,
+    listPersistedActiveRuns: async () => activeRows,
+    log: { error: () => undefined, warn: (message: string) => warnings.push(message) },
+    pendingBrowserSurfaceLaunches: new Map(),
+    scheduleRun: () => undefined,
+    startupControllerRunBindingSnapshot: preReconciliationSnapshot,
+    startupControllerRunReconciliation,
+  });
+
+  const bootReconciliation = bootManager.reconcileBrowserSurfaceLeasesAfterBoot();
+  activeRows = [];
+  resolveStartupReconciliation();
+  await bootReconciliation;
+
+  assert.deepEqual(
+    activeRows,
+    [],
+    "startup reconciliation removes the controller active row before activeRunIds are read"
+  );
+  assert.equal(leaseManager.getLease(granted.leaseId)?.status, "released");
+  assert.equal((await leaseStore.getLease(granted.leaseId))?.status, "released", "the released lease is persisted");
+  assert.equal(
+    (await leaseStore.getSurface(leased.surface_id ?? ""))?.active_lease_id,
+    undefined,
+    "the released lease is cleared from its persisted surface"
+  );
+
+  const releasedRows = getDb()
+    .prepare("SELECT data_json FROM spine_events WHERE run_id = ? AND event_type = 'run.browser_surface_released'")
+    .all(leased.run_id) as { data_json: string }[];
+  assert.equal(releasedRows.length, 1);
+  assert.equal(JSON.parse(releasedRows[0].data_json).connector_instance_id, connectorInstanceId);
+  assert.equal(
+    warnings.some((warning) => warning.includes("refusing to persist an unbound run event")),
+    false,
+    "the exact durable identity prevents the unbound-event warning"
+  );
+
+  const receipt = await readLastSuccessfulRuntimeReceipt({
+    connectionId: connectorInstanceId,
+    connectorId: "slack",
+    lastSuccessfulRun: { run_id: leased.run_id },
+    now: new Date(Date.now() + 60_000).toISOString(),
+    profileKey: leased.profile_key,
+    reader: {
+      listLeases: async () => await leaseStore.listLeases(),
+      listSurfaces: async () => await leaseStore.listSurfaces(),
+    },
+  });
+  assert.deepEqual(receipt?.lifecycle, ["ready", "succeeded", "released"]);
+});
+
+test("boot reconciliation leaves a legacy unbound orphan released without fabricating a connector-level event binding", async (t) => {
+  const warnings: string[] = [];
+  const { allocator, leaseManager, manager: producer } = setup(t, createReadyAllocator());
+  const granted = await producer.acquireManagedBrowserSurfaceForPhase(phaseInput("run_boot_legacy_unbound"));
+  assert.equal(granted.kind, "granted");
+  assert.ok(granted.kind === "granted");
+  const leased = leaseManager.getLease(granted.leaseId);
+  assert.ok(leased);
+  assert.equal(leased.surface_subject_id, undefined, "the legacy fixture has no durable exact instance identity");
+
+  const leaseStore = createSqliteBrowserSurfaceLeaseStore();
+  const { manager: bootManager } = setup(t, allocator, {
+    browserSurfaceLeaseStore: leaseStore,
+    leaseManager,
+    warnCalls: warnings,
+  });
+  await bootManager.reconcileBrowserSurfaceLeasesAfterBoot();
+
+  assert.equal(leaseManager.getLease(granted.leaseId)?.status, "released");
+  assert.equal((await leaseStore.getLease(granted.leaseId))?.status, "released", "the release remains durable");
+  assert.equal(
+    (await leaseStore.getSurface(leased.surface_id ?? ""))?.active_lease_id,
+    undefined,
+    "the released legacy lease is removed from the persisted surface"
+  );
+  const releasedRow = getDb()
+    .prepare(
+      "SELECT COUNT(*) AS count FROM spine_events WHERE run_id = ? AND event_type = 'run.browser_surface_released'"
+    )
+    .get(leased.run_id) as { count: number };
+  assert.equal(releasedRow.count, 0, "an unbound legacy lease must not emit a fabricated connector-level event");
+  assert.ok(
+    warnings.some((warning) => warning.includes("refusing to persist an unbound run event")),
+    "the missing event is diagnosed rather than silently bound to the connector id"
   );
 });
 

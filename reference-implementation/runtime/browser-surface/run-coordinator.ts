@@ -226,6 +226,11 @@ export interface BrowserSurfaceManagerDeps {
   ) => void;
   /** Injectable sleep, so tests can avoid real wall-clock delay. Defaults to setTimeout. */
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * Exact active-run bindings captured before startup reconciliation clears
+   * terminal/orphan controller flight rows. Used only by legacy lease events.
+   */
+  readonly startupControllerRunBindingSnapshot?: Promise<ReadonlyMap<string, string>>;
   readonly startupControllerRunReconciliation: Promise<void>;
 }
 
@@ -572,6 +577,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     pendingBrowserSurfaceLaunches,
     resolveOwnerSubjectIdForConnectorInstance = async () => null,
     scheduleRun,
+    startupControllerRunBindingSnapshot = Promise.resolve(new Map()),
     startupControllerRunReconciliation,
   } = deps;
   const replacementHooks = createReplacementLifecycleHooks({
@@ -653,10 +659,11 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     connectorId: string,
     runId: string,
     traceContext: SpineTraceContext,
-    lease: BrowserSurfaceLease
+    lease: BrowserSurfaceLease,
+    boundConnectorInstanceId?: string
   ): Promise<void> {
     try {
-      const connectorInstanceId = await requireConnectorInstanceIdForRun(runId);
+      const connectorInstanceId = boundConnectorInstanceId ?? (await requireConnectorInstanceIdForRun(runId));
       await emitSpineEvent({
         actor_id: connectorId,
         actor_type: "runtime",
@@ -856,14 +863,26 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   async function emitAndPersistReconciledLeases(
     leases: readonly BrowserSurfaceLease[],
     eventType: string,
-    options: { readonly hydrateSurface: boolean }
+    options: { readonly hydrateSurface: boolean },
+    preReconciliationBindings?: ReadonlyMap<string, string>
   ): Promise<void> {
     if (!browserSurfaceLeaseManager) {
       return;
     }
     for (const lease of leases) {
-      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-      await emitBrowserSurfaceLeaseEvent(eventType, lease.connector_id, lease.run_id, createTraceContext(), lease);
+      // surface_subject_id is the exact connector-instance identity written
+      // at acquisition. Only legacy leases without it consult the scoped
+      // pre-reconciliation active-run binding.
+      const connectorInstanceId = [lease.surface_subject_id, preReconciliationBindings.get(lease.run_id)].find(Boolean);
+      // biome-ignore lint/performance/noAwaitInLoops: Event and lease persistence remain ordered for each reconciled transition.
+      await emitBrowserSurfaceLeaseEvent(
+        eventType,
+        lease.connector_id,
+        lease.run_id,
+        createTraceContext(),
+        lease,
+        connectorInstanceId
+      );
       const surface =
         options.hydrateSurface && lease.surface_id
           ? browserSurfaceLeaseManager.getSurface(lease.surface_id)
@@ -2279,6 +2298,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
   }
 
   async function reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void> {
+    const preReconciliationBindings = await startupControllerRunBindingSnapshot;
     await startupControllerRunReconciliation;
     if (!browserSurfaceLeaseManager) {
       return;
@@ -2293,7 +2313,12 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     // releases a surface a phase is still using (AM-1).
     const activeRunIds = new Set(activeRows.flatMap((row) => [row.run_id, browserSurfacePhaseSessionId(row.run_id)]));
     const reconciled = browserSurfaceLeaseManager.reconcileAfterRestart({ activeRunIds, promoteQueued: false });
-    await emitAndPersistReconciledLeases(reconciled.released, "run.browser_surface_released", { hydrateSurface: true });
+    await emitAndPersistReconciledLeases(
+      reconciled.released,
+      "run.browser_surface_released",
+      { hydrateSurface: true },
+      preReconciliationBindings
+    );
     await emitAndPersistReconciledLeases(reconciled.expired, "run.browser_surface_expired", { hydrateSurface: false });
     await emitAndPersistReconciledLeases(reconciled.deferred, "run.browser_surface_deferred", {
       hydrateSurface: false,
