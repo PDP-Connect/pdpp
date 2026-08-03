@@ -252,11 +252,13 @@ const POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK = [482_571, 150];
 const POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS = 120;
 const POSTGRES_BOOTSTRAP_LOCK_INITIAL_DELAY_MS = 25;
 const POSTGRES_BOOTSTRAP_LOCK_MAX_DELAY_MS = 250;
-// Distinct from POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK: the hot-index
-// reconciler runs on its own background timer, independently of bootstrap,
-// and must never contend with (or wait behind) bootstrap's lock. A
-// non-blocking pg_try_advisory_lock on this id is the single-owner gate
-// across every process/replica/tick — see ensureSemanticHotHnswIndexes.
+// Distinct from POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK: the optional-index
+// reconciler (hot HNSW indexes + the lexical scoped GIN index) runs on its
+// own background timer, independently of bootstrap, and must never contend
+// with (or wait behind) bootstrap's lock. A non-blocking pg_try_advisory_lock
+// on this id is the single-owner gate across every process/replica/tick and
+// across both optional-index kinds — see
+// reconcileOptionalPostgresIndexesInBackground.
 const POSTGRES_SEMANTIC_HOT_INDEX_RECONCILE_LOCK = [482_571, 152];
 
 function samePostgresEnumMembers(actual: readonly string[], expected: readonly string[]): boolean {
@@ -2217,7 +2219,11 @@ export async function bootstrapPostgresSchema({
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
     await migratePostgresConnectorInstancesSourceKindBrowserCollector(client);
     await migratePostgresSemanticEmbeddingToVector(client, log);
-    await ensurePostgresLexicalScopedGinIndex(client, log);
+    // The scoped GIN index is deliberately NOT built here: this function runs
+    // synchronously inside bootstrapPostgresSchema, which gates server
+    // readiness. reconcileOptionalPostgresIndexesInBackground (armed after
+    // the server is already listening) owns it instead, same as the hot HNSW
+    // indexes above.
   } finally {
     try {
       if (bootstrapLockHeld) {
@@ -2372,7 +2378,7 @@ function semanticHotHnswIndexName(connectorId: string, connectorInstanceId: stri
  * on top of the global HNSW index (ensureSemanticEmbeddingHnswIndex) — every
  * row remains reachable and correctly ranked by the global index or exact
  * scan whether or not a given hot index exists yet, so this function is
- * never on the startup-readiness path (see reconcileSemanticHotHnswIndexesInBackground
+ * never on the startup-readiness path (see reconcileOptionalPostgresIndexesInBackground
  * and its arming in server/index.ts's startServer).
  *
  * Single-owner across processes/replicas/ticks via a non-blocking
@@ -2486,16 +2492,24 @@ async function ensureSemanticHotHnswIndexCandidateValid(
 }
 
 /**
- * The only caller of ensureSemanticHotHnswIndexes off the startup path. Runs
- * on its own bounded interval, arms only after the server is already
- * listening (see the server boot sequence), and self-serializes across
- * processes/replicas with a non-blocking advisory lock so at most one
- * CREATE INDEX CONCURRENTLY build runs at a time system-wide. Acquires its
- * own client from the pool — independent of whatever client bootstrap used —
- * because bootstrap has long since released its client and lock by the time
- * this ever runs.
+ * The only caller of ensureSemanticHotHnswIndexes and
+ * ensurePostgresLexicalScopedGinIndex off the startup path. Runs on its own
+ * bounded interval, arms only after the server is already listening (see the
+ * server boot sequence), and self-serializes across processes/replicas with
+ * a non-blocking advisory lock so at most one CREATE/DROP INDEX CONCURRENTLY
+ * build runs at a time system-wide — across BOTH optional-index kinds, since
+ * they share this single reconcile pass and lock. Acquires its own client
+ * from the pool — independent of whatever client bootstrap used — because
+ * bootstrap has long since released its client and lock by the time this
+ * ever runs.
+ *
+ * The lexical scoped GIN index is schema-optional in the same sense the hot
+ * HNSW indexes are: every lexical query remains correct without it (Postgres
+ * falls back to a sequential scan), so it belongs in the same
+ * post-readiness, single-owner, self-healing reconciliation as the hot
+ * indexes rather than a second parallel timer.
  */
-export async function reconcileSemanticHotHnswIndexesInBackground(log: StorageLog = NOOP_STORAGE_LOG): Promise<void> {
+export async function reconcileOptionalPostgresIndexesInBackground(log: StorageLog = NOOP_STORAGE_LOG): Promise<void> {
   if (!isPostgresStorageBackend()) {
     return;
   }
@@ -2510,6 +2524,7 @@ export async function reconcileSemanticHotHnswIndexesInBackground(log: StorageLo
     }
     try {
       await ensureSemanticHotHnswIndexes(client, log);
+      await ensurePostgresLexicalScopedGinIndex(client, log);
     } finally {
       await client.query("SELECT pg_advisory_unlock($1, $2)", POSTGRES_SEMANTIC_HOT_INDEX_RECONCILE_LOCK).catch(() => {
         // The client is being released regardless; unlock failure here would
@@ -2552,7 +2567,7 @@ async function migratePostgresSemanticEmbeddingToVector(
     await ensureSemanticEmbeddingHnswIndex(client, log);
     // Hot per-connector-instance indexes are deliberately NOT built here:
     // this function runs synchronously inside bootstrapPostgresSchema, which
-    // gates server readiness. reconcileSemanticHotHnswIndexesInBackground
+    // gates server readiness. reconcileOptionalPostgresIndexesInBackground
     // (armed after the server is already listening) owns them instead.
     semanticEmbeddingColumnMode = "vector";
     semanticIterativeScanSupported = await detectSemanticIterativeScanSupport(client);
@@ -3649,12 +3664,23 @@ async function ensurePostgresIndexDefinition(
   await client.query(createSql);
 }
 
+/**
+ * Optional query-planner optimization, not a correctness requirement:
+ * lexical search remains correct (falls back to a sequential scan) whether
+ * or not this index exists. Like the hot HNSW indexes, it is therefore never
+ * called from the startup-readiness path — CREATE/DROP INDEX CONCURRENTLY on
+ * a large lexical_search_index table can run for a long time, and a canceled
+ * build must not wedge every subsequent boot behind a retry. Its only caller
+ * is reconcileOptionalPostgresIndexesInBackground, which runs this under the
+ * same single-owner, post-readiness reconcile pass as the hot indexes.
+ */
 async function ensurePostgresLexicalScopedGinIndex(
   client: PoolClient,
   log: StorageLog = NOOP_STORAGE_LOG
 ): Promise<void> {
   // This includes both the invalid-index DROP CONCURRENTLY recovery path and
-  // the CREATE CONCURRENTLY path. Both execute under bootstrap's polling lock.
+  // the CREATE CONCURRENTLY path. Both execute under the reconciler's
+  // single-owner advisory lock (see reconcileOptionalPostgresIndexesInBackground).
   const extension = await client.query("SELECT 1 FROM pg_extension WHERE extname = 'btree_gin' LIMIT 1");
   if (extension.rowCount === 0) {
     log("[PDPP] Lexical search scoped GIN index skipped: btree_gin extension is unavailable");

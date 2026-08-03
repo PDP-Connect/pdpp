@@ -210,7 +210,7 @@ import {
   initPostgresStorage,
   isPostgresStorageBackend,
   postgresQuery,
-  reconcileSemanticHotHnswIndexesInBackground,
+  reconcileOptionalPostgresIndexesInBackground,
   resolveStorageBackend,
   semanticHotHnswReconcileIntervalMs,
 } from "./postgres-storage.ts";
@@ -6788,29 +6788,30 @@ export async function startServer(opts: ServerOpts = {}) {
   // Reuses the same generic timer chassis for the same reason as the two
   // sweeps above: bootstrapPostgresSchema (awaited earlier in this function,
   // before any of this) deliberately does NOT build the per-connector-
-  // instance "hot" semantic HNSW indexes inline, because CREATE INDEX
-  // CONCURRENTLY on a large partition can run for tens of minutes and must
-  // never gate server readiness. This timer is that work's only owner,
-  // constructed unstarted here and started at the very end of boot (its
+  // instance "hot" semantic HNSW indexes or the lexical scoped GIN index
+  // inline, because CREATE/DROP INDEX CONCURRENTLY on a large table can run
+  // for tens of minutes and must never gate server readiness. This timer is
+  // that work's only owner for BOTH optional-index kinds, constructed
+  // unstarted here and started at the very end of boot (its
   // stopWhenAllClosed/start() call, below, mirrors the two sweeps above) so
   // a failure anywhere between here and there can never leave it orphaned
   // and running. Its
   // sweep also self-serializes across processes/replicas/ticks with a
   // non-blocking Postgres advisory lock (see
-  // reconcileSemanticHotHnswIndexesInBackground), so concurrently arming
+  // reconcileOptionalPostgresIndexesInBackground), so concurrently arming
   // this timer on multiple replicas is safe — only one build runs at a time.
-  const semanticHotIndexReconcileTimer = createBrowserSurfaceLeaseSweepTimer({
+  const optionalIndexReconcileTimer = createBrowserSurfaceLeaseSweepTimer({
     intervalMs: semanticHotHnswReconcileIntervalMs(),
     onSweepError: (err: unknown) => {
       logger.warn?.(
         { err: err instanceof Error ? err.message : String(err) },
-        "semantic hot-index background reconcile tick failed"
+        "optional-index background reconcile tick failed"
       );
     },
-    sweep: () => reconcileSemanticHotHnswIndexesInBackground((msg: string) => logger.info(msg)),
+    sweep: () => reconcileOptionalPostgresIndexesInBackground((msg: string) => logger.info(msg)),
   });
   function stopSemanticHotIndexReconcile() {
-    semanticHotIndexReconcileTimer.stop();
+    optionalIndexReconcileTimer.stop();
   }
   let schedulerManager: {
     cancelRun: (runId: string) => { status: string; run_id: string };
@@ -7263,12 +7264,12 @@ export async function startServer(opts: ServerOpts = {}) {
   connectorMaintenanceSweepTimer.stopWhenAllClosed([asServer, rsServer]);
   connectorMaintenanceSweepTimer.start();
   // Same deferred-arming discipline again, same reason: this is a Postgres-
-  // only concern (reconcileSemanticHotHnswIndexesInBackground no-ops under
+  // only concern (reconcileOptionalPostgresIndexesInBackground no-ops under
   // SQLite), so starting it after every fallible boot await — including the
   // ones after storage init — costs nothing and keeps the "arm last" rule
   // uniform across every background timer in this function.
-  semanticHotIndexReconcileTimer.stopWhenAllClosed([asServer, rsServer]);
-  semanticHotIndexReconcileTimer.start();
+  optionalIndexReconcileTimer.stopWhenAllClosed([asServer, rsServer]);
+  optionalIndexReconcileTimer.start();
   const deliveryWorkerLeases =
     opts.startClientEventDeliveryWorker === false
       ? []
@@ -7315,8 +7316,9 @@ export async function startServer(opts: ServerOpts = {}) {
     // evidence-sweep round — see connector-maintenance-sweep.ts).
     stopConnectorMaintenanceSweep,
     // Exposed so the CLI shutdown path (and tests that start/stop many
-    // server instances per process) can clear the periodic semantic
-    // hot-index background reconcile timer.
+    // server instances per process) can clear the periodic optional-index
+    // background reconcile timer (hot semantic HNSW indexes + the lexical
+    // scoped GIN index).
     stopSemanticHotIndexReconcile,
   };
 }

@@ -1401,13 +1401,17 @@ test("Postgres simultaneous empty public bootstraps use polling without concurre
           (SELECT count(*)::int FROM pg_constraint
              WHERE conrelid = 'browser_surface_leases'::regclass
                AND conname = 'browser_surface_leases_priority_class_check') AS priority_checks,
-          (SELECT indisvalid FROM pg_index
-             WHERE indexrelid = 'idx_pg_lexical_search_scope_document'::regclass) AS lexical_index_valid
+          to_regclass('public.idx_pg_lexical_search_scope_document') AS lexical_index
       `);
+    // The scoped GIN index is deliberately NOT built by bootstrap (it is a
+    // query-planner optimization owned by the post-readiness background
+    // reconciler, same as the hot semantic HNSW indexes — see
+    // reconcileOptionalPostgresIndexesInBackground), so a bootstrap-only run
+    // must leave it absent rather than valid.
     assert.deepEqual(canonical.rows[0], {
       leases: "browser_surface_leases",
       lexical: "lexical_search_index",
-      lexical_index_valid: true,
+      lexical_index: null,
       priority_checks: 1,
     });
     await assertNoPriorityBootstrapLocks(admin);

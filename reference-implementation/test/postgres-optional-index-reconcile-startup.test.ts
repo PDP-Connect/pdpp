@@ -8,22 +8,28 @@
  * accept traffic. `CREATE INDEX CONCURRENTLY` on a large partition can run
  * for tens of minutes; a canceled build left an invalid index that was
  * retried (still blocking) on every subsequent restart, so the server could
- * stay unhealthy for a very long time.
+ * stay unhealthy for a very long time. The same defect class was later found
+ * in `ensurePostgresLexicalScopedGinIndex`, which bootstrap also awaited
+ * synchronously (`DROP`/`CREATE INDEX CONCURRENTLY` on `lexical_search_index`).
  *
- * These tests pin the terminal correction:
+ * These tests pin the terminal correction, generalized across BOTH
+ * optional-index kinds (they now share one reconcile pass and one lock —
+ * see `reconcileOptionalPostgresIndexesInBackground`):
  *
  *   1. Bootstrap (and therefore startup readiness) never calls
- *      `CREATE INDEX CONCURRENTLY` for a hot index, even when there is a
- *      qualifying hot source sitting above the row-count threshold.
- *   2. The background reconciler (`reconcileSemanticHotHnswIndexesInBackground`)
+ *      `CREATE`/`DROP INDEX CONCURRENTLY` for either optional index, even
+ *      when there is a qualifying hot source or a pre-existing lexical
+ *      table sitting above the row-count threshold.
+ *   2. The background reconciler (`reconcileOptionalPostgresIndexesInBackground`)
  *      is the only owner of that work, and at most one caller — across
  *      concurrent ticks, processes, or replicas — actually builds at a time;
- *      a losing caller returns without touching the index.
+ *      a losing caller returns without touching either index.
  *   3. An index left invalid by a canceled build (reproduced here the same
  *      way a real deploy restart would: `pg_cancel_backend` mid-`CREATE INDEX
  *      CONCURRENTLY`) is dropped and rebuilt to valid on the next
  *      reconcile, instead of silently no-op'ing forever behind
- *      `IF NOT EXISTS`.
+ *      `IF NOT EXISTS`. Verified for both the hot HNSW index and the lexical
+ *      scoped GIN index.
  *
  * Requires PDPP_TEST_POSTGRES_URL (a pgvector-capable Postgres, e.g.
  * pgvector/pgvector:pg16). Skipped otherwise.
@@ -39,7 +45,7 @@ import {
   closePostgresStorage,
   getPostgresPool,
   initPostgresStorage,
-  reconcileSemanticHotHnswIndexesInBackground,
+  reconcileOptionalPostgresIndexesInBackground,
 } from "../server/postgres-storage.ts";
 import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
@@ -111,8 +117,15 @@ async function hotIndexNames(admin: InstanceType<typeof pg.Pool>): Promise<strin
   return result.rows.map((row) => row.indexname);
 }
 
+async function lexicalScopedGinIndexExists(admin: InstanceType<typeof pg.Pool>): Promise<boolean> {
+  const result = await admin.query<{ indexname: string }>(
+    `SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'idx_pg_lexical_search_scope_document'`
+  );
+  return result.rowCount === 1;
+}
+
 if (POSTGRES_URL) {
-  test("bootstrap readiness is never gated by hot-index construction, even with a qualifying hot source", async () => {
+  test("bootstrap readiness is never gated by optional-index construction, even with a qualifying hot source", async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const databaseName = `pdpp_hotidx_ready_${suffix}`;
     const previousMinRows = process.env[HOT_INDEX_MIN_ROWS_ENV];
@@ -137,20 +150,32 @@ if (POSTGRES_URL) {
           const startedAt = Date.now();
           // Re-running bootstrap must return promptly. If the defect were
           // still present, this await would race a multi-second-plus
-          // CREATE INDEX CONCURRENTLY build for the seeded rows above.
+          // CREATE INDEX CONCURRENTLY build for the seeded rows above (and,
+          // for the lexical GIN index, a DROP/CREATE INDEX CONCURRENTLY pair
+          // on lexical_search_index — initPostgresStorage above already ran
+          // bootstrap once, so a still-present defect would also pay that
+          // cost here on the re-run).
           await bootstrapPostgresSchema({});
           const elapsedMs = Date.now() - startedAt;
           assert.ok(
             elapsedMs < 5000,
-            `bootstrap took ${elapsedMs}ms; readiness must not wait on hot-index construction`
+            `bootstrap took ${elapsedMs}ms; readiness must not wait on optional-index construction`
           );
 
           // The mutation-sensitive half of this proof: bootstrap must not have
-          // built the hot index as a side effect. Without the fix, this
-          // assertion fails because the synchronous call inside
-          // migratePostgresSemanticEmbeddingToVector already created it.
+          // built either optional index as a side effect. Without the fix,
+          // the hot-index assertion fails because the synchronous call
+          // inside migratePostgresSemanticEmbeddingToVector already created
+          // it, and the lexical assertion fails because
+          // ensurePostgresLexicalScopedGinIndex was still called inline at
+          // the end of bootstrapPostgresSchema.
           const names = await hotIndexNames(admin);
           assert.deepEqual(names, [], "bootstrap must not construct any hot-source HNSW index inline");
+          assert.equal(
+            await lexicalScopedGinIndexExists(admin),
+            false,
+            "bootstrap must not construct the lexical scoped GIN index inline"
+          );
         } finally {
           await admin.end();
         }
@@ -192,8 +217,8 @@ if (POSTGRES_URL) {
           const logsA: string[] = [];
           const logsB: string[] = [];
           await Promise.all([
-            reconcileSemanticHotHnswIndexesInBackground((msg) => logsA.push(msg)),
-            reconcileSemanticHotHnswIndexesInBackground((msg) => logsB.push(msg)),
+            reconcileOptionalPostgresIndexesInBackground((msg) => logsA.push(msg)),
+            reconcileOptionalPostgresIndexesInBackground((msg) => logsB.push(msg)),
           ]);
 
           const buildLogCount = [logsA, logsB].filter((logs) =>
@@ -282,7 +307,7 @@ if (POSTGRES_URL) {
           );
 
           const logs: string[] = [];
-          await reconcileSemanticHotHnswIndexesInBackground((msg) => logs.push(msg));
+          await reconcileOptionalPostgresIndexesInBackground((msg) => logs.push(msg));
 
           assert.ok(
             logs.some((msg) => msg.includes("dropping invalid hot-source HNSW index")),
@@ -325,7 +350,106 @@ if (POSTGRES_URL) {
     await closePostgresStorage();
     // With no Postgres storage initialized, this must resolve immediately
     // without throwing (there is no pool to connect from).
-    await reconcileSemanticHotHnswIndexesInBackground();
+    await reconcileOptionalPostgresIndexesInBackground();
+  });
+
+  test("background reconcile builds the lexical scoped GIN index left unbuilt by bootstrap", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const databaseName = `pdpp_lexidx_reconcile_${suffix}`;
+    await withTemporaryPostgresDatabase(
+      { closeConnections: closePostgresStorage, connectionString: POSTGRES_URL, databaseName },
+      async (url) => {
+        const admin = new pg.Pool({ connectionString: url });
+        try {
+          await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+          assert.equal(
+            await lexicalScopedGinIndexExists(admin),
+            false,
+            "test setup check: bootstrap must not have built the lexical index"
+          );
+
+          const logs: string[] = [];
+          await reconcileOptionalPostgresIndexesInBackground((msg) => logs.push(msg));
+
+          assert.ok(
+            logs.some((msg) => msg.includes("building scoped GIN index idx_pg_lexical_search_scope_document")),
+            "the reconciler must build the lexical scoped GIN index"
+          );
+          assert.equal(
+            await lexicalScopedGinIndexExists(admin),
+            true,
+            "the lexical scoped GIN index must exist after the background reconcile pass"
+          );
+          const validity = await admin.query<{ indisvalid: boolean }>(
+            "SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_pg_lexical_search_scope_document'::regclass"
+          );
+          assert.equal(validity.rows[0]?.indisvalid, true, "the built lexical index must end up valid");
+        } finally {
+          await admin.end();
+        }
+      }
+    );
+  });
+
+  test("an invalid lexical scoped GIN index from a canceled build is dropped and rebuilt to valid on the next reconcile", async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const databaseName = `pdpp_lexidx_invalid_${suffix}`;
+    await withTemporaryPostgresDatabase(
+      { closeConnections: closePostgresStorage, connectionString: POSTGRES_URL, databaseName },
+      async (url) => {
+        const admin = new pg.Pool({ connectionString: url });
+        const canceler = new pg.Pool({ connectionString: url });
+        try {
+          await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+
+          // Reproduce the real production failure mode: start the exact same
+          // CREATE INDEX CONCURRENTLY the reconciler would run, then cancel it
+          // mid-flight — mirroring a deploy restart interrupting a live build —
+          // and confirm Postgres leaves it invalid, same as the live hot-index
+          // incident this closure generalizes the fix from.
+          const buildPromise = canceler
+            .query(
+              `CREATE INDEX CONCURRENTLY idx_pg_lexical_search_scope_document
+                 ON lexical_search_index
+                 USING GIN (connector_instance_id, stream, document)`
+            )
+            .catch(() => undefined);
+          const activity = await pollForActiveBuild(admin, "idx_pg_lexical_search_scope_document", Date.now() + 5000);
+          assert.ok(activity, "the concurrent build must be observable in pg_stat_activity before it is canceled");
+          await admin.query("SELECT pg_cancel_backend($1)", [activity]);
+          await buildPromise;
+
+          const beforeValidity = await admin.query<{ indisvalid: boolean }>(
+            "SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_pg_lexical_search_scope_document'::regclass"
+          );
+          assert.equal(
+            beforeValidity.rows[0]?.indisvalid,
+            false,
+            "the canceled build must leave an invalid index (test setup check)"
+          );
+
+          const logs: string[] = [];
+          await reconcileOptionalPostgresIndexesInBackground((msg) => logs.push(msg));
+
+          assert.ok(
+            logs.some((msg) => msg.includes("dropping invalid scoped GIN index before rebuild")),
+            "the reconciler must detect and drop the invalid lexical index before rebuilding"
+          );
+
+          const afterValidity = await admin.query<{ indisvalid: boolean }>(
+            "SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_pg_lexical_search_scope_document'::regclass"
+          );
+          assert.equal(
+            afterValidity.rows[0]?.indisvalid,
+            true,
+            "the rebuilt lexical index must end up valid, not stay wedged"
+          );
+        } finally {
+          await canceler.end();
+          await admin.end();
+        }
+      }
+    );
   });
 }
 

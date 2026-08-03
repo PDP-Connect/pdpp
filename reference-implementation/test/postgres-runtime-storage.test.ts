@@ -41,6 +41,7 @@ import {
   getStorageBackendKind,
   initPostgresStorage,
   postgresQuery,
+  reconcileOptionalPostgresIndexesInBackground,
   resolveStorageBackend,
 } from "../server/postgres-storage.ts";
 import {
@@ -335,6 +336,12 @@ if (POSTGRES_URL) {
         cimdTable.rows.map((row) => row.column_name),
         ["document_id", "client_name", "redirect_uris", "logo_uri", "created_at", "updated_at"]
       );
+      // The scoped GIN index is deliberately NOT built inline by bootstrap
+      // (see reconcileOptionalPostgresIndexesInBackground) — startServer only
+      // arms the background timer, it does not await a first tick. Invoke
+      // the reconcile pass directly so this assertion observes the index
+      // startServer's boot sequence promises will eventually produce.
+      await reconcileOptionalPostgresIndexesInBackground();
       const scopedLexicalIndex = await postgresQuery(
         `SELECT 1
            FROM pg_extension e
