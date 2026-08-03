@@ -4012,9 +4012,18 @@ function projectCurrentUnleasedBrowserSurfaceFailure(surface: BrowserSurface): C
 }
 
 function projectNoCurrentBrowserSurfaceEvidence(
-  connectorLeaseHistory: ReadonlySet<string>
+  connectorLeaseHistory: ReadonlySet<string>,
+  managed: boolean
 ): ConnectorBrowserSurfaceProjection {
-  return connectorLeaseHistory.size > 0
+  // Lease history from a connector that is not CURRENTLY a managed remote-
+  // surface connector (e.g. it was reconfigured out of
+  // `PDPP_NEKO_MANAGED_CONNECTORS`, or the rows belong to an unrelated local
+  // ephemeral/optional-stream browser attempt that never touched this lease
+  // store) is not ambiguous evidence about today's remote-surface axis — it
+  // is not applicable. Only a currently-managed connector's own history can
+  // make "no current lease/surface" genuinely ambiguous (crashed mid-lease,
+  // released without a terminal surface record, etc.).
+  return connectorLeaseHistory.size > 0 && managed
     ? BROWSER_SURFACE_UNKNOWN_PROJECTION
     : {
         evidence: null,
@@ -4025,7 +4034,8 @@ function projectNoCurrentBrowserSurfaceEvidence(
 function projectConnectorBrowserSurfaceEvidence(
   connectorLeases: readonly BrowserSurfaceLease[],
   connectorSurfaces: readonly BrowserSurface[],
-  connectorLeaseHistory: ReadonlySet<string>
+  connectorLeaseHistory: ReadonlySet<string>,
+  managed: boolean
 ): ConnectorBrowserSurfaceProjection {
   const picked = pickMostUrgentLease(connectorLeases);
   if (picked) {
@@ -4037,7 +4047,7 @@ function projectConnectorBrowserSurfaceEvidence(
   }
 
   if (connectorSurfaces.length === 0) {
-    return projectNoCurrentBrowserSurfaceEvidence(connectorLeaseHistory);
+    return projectNoCurrentBrowserSurfaceEvidence(connectorLeaseHistory, managed);
   }
 
   const currentFailureSurface = pickMostRecentSurface(
@@ -4085,7 +4095,11 @@ const BROWSER_SURFACE_UNKNOWN_PROJECTION: ConnectorBrowserSurfaceProjection = {
 
 export async function getConnectorBrowserSurfaceProjection(
   connectorId: string,
-  options: { readonly profileKey?: string | null; readonly store?: BrowserSurfaceLeaseStoreReader } = {}
+  options: {
+    readonly profileKey?: string | null;
+    readonly store?: BrowserSurfaceLeaseStoreReader;
+    readonly managed?: boolean;
+  } = {}
 ): Promise<ConnectorBrowserSurfaceProjection> {
   const store = options.store ?? (getDefaultBrowserSurfaceLeaseStore() as BrowserSurfaceLeaseStoreReader);
   let leases: readonly BrowserSurfaceLease[];
@@ -4120,17 +4134,27 @@ export async function getConnectorBrowserSurfaceProjection(
       )
       .map((lease) => lease.surface_id)
   );
+  // Default `true` (the prior, conservative behavior) when a caller does not
+  // pass `managed` explicitly — only callers that resolve the connector's
+  // current managed status (`getConnectorSummaryForRoute` et al.) opt into
+  // the "not applicable" reading for a non-managed connector's stale history.
+  const managed = options.managed ?? true;
 
   if (connectorLeases.length === 0 && connectorSurfaces.length === 0) {
     // Host browser / API connector — no managed remote surface. Routine
     // absence of evidence, not unreliable evidence.
-    return projectNoCurrentBrowserSurfaceEvidence(connectorLeaseHistory);
+    return projectNoCurrentBrowserSurfaceEvidence(connectorLeaseHistory, managed);
   }
 
   // 1-2. Active lease evidence is the freshest signal. A stale unhealthy
   // surface from an earlier failed launch must not poison a connection that
   // subsequently leased a ready surface successfully.
-  const projection = projectConnectorBrowserSurfaceEvidence(connectorLeases, connectorSurfaces, connectorLeaseHistory);
+  const projection = projectConnectorBrowserSurfaceEvidence(
+    connectorLeases,
+    connectorSurfaces,
+    connectorLeaseHistory,
+    managed
+  );
   return projection;
 }
 
@@ -5667,6 +5691,7 @@ async function projectConnectorSummaryForInstance(
         })
       : getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
     getConnectorBrowserSurfaceProjection(connectorId, {
+      managed: controller?.getBrowserSurfaceRuntimeManagement?.(connectorId)?.managed === true,
       profileKey: browserSurfaceProfileKey,
       store: sharedBrowserSurfaceReader,
     }),

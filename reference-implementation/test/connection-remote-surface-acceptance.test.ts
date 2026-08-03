@@ -634,3 +634,79 @@ test(
     assert.equal(activeConnection.evidence?.surfaceId, "surface_usaa_active_ready");
   })
 );
+
+// ─── Stale lease history from a connector no longer managed today ─────────
+
+test(
+  "7.6 regression: a connector with only stale/terminal lease history and no current lease/surface projects `none`, not `unknown`, when it is not currently a managed remote-surface connector",
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    // A released (terminal) lease from an earlier period when this connector
+    // was configured into `PDPP_NEKO_MANAGED_CONNECTORS` (or from an
+    // unrelated historical artifact). No current lease or surface row exists
+    // for this connector today — `listNonTerminalLeases()`/`listSurfaces()`
+    // return nothing for it, but `listLeases()` (all leases, including
+    // terminal) still carries this row forever.
+    await store.upsertSurface(
+      surfaceFixture({
+        connector_id: "slack",
+        health: "unhealthy",
+        profile_key: "slack",
+        surface_id: "surface_slack_stale",
+      })
+    );
+    await store.upsertLease(
+      leaseFixture({
+        connector_id: "slack",
+        lease_id: "lease_slack_stale",
+        profile_key: "slack",
+        released_at: "2026-05-19T10:06:00.000Z",
+        run_id: "run_slack_stale",
+        status: "released",
+        surface_id: "surface_slack_stale",
+      })
+    );
+    getDb().exec("PRAGMA foreign_keys = OFF");
+    try {
+      getDb().prepare("DELETE FROM browser_surfaces WHERE surface_id = ?").run("surface_slack_stale");
+    } finally {
+      getDb().exec("PRAGMA foreign_keys = ON");
+    }
+
+    const notManaged = await getConnectorBrowserSurfaceProjection("slack", { managed: false });
+    assert.equal(notManaged.unreliable, false);
+    assert.equal(
+      notManaged.evidence,
+      null,
+      "a connector that is not currently managed projects no remote-surface evidence at all from stale history"
+    );
+
+    // The pre-existing (managed) behavior is unchanged: stale history for a
+    // CURRENTLY managed connector remains genuinely ambiguous.
+    const stillManaged = await getConnectorBrowserSurfaceProjection("slack", { managed: true });
+    assert.equal(stillManaged.evidence?.axis, "unknown");
+
+    // Omitting `managed` entirely preserves the historical default (`true`)
+    // so existing callers that have not been updated to pass the fact keep
+    // their prior fail-closed reading.
+    const defaulted = await getConnectorBrowserSurfaceProjection("slack");
+    assert.equal(defaulted.evidence?.axis, "unknown");
+
+    const snapshot = projectConnectorSummaryConnectionHealth({
+      freshness: FRESH,
+      lastRun: succeededRun(),
+      lastSuccessfulRun: succeededRun(),
+      nowIso: NOW_ISO,
+      outbox: { axis: "idle" },
+      remoteSurface: notManaged.evidence,
+      schedule: { enabled: true, last_successful_at: PRIOR_SUCCESS_ISO },
+    });
+    assert.equal(
+      snapshot.state,
+      "healthy",
+      "a successful, fully-covered run for a non-managed connector must not be demoted to unknown by unrelated stale lease history"
+    );
+    assert.equal(snapshot.axes.remote_surface, "none");
+    assert.equal(snapshot.unknown_reasons.length, 0);
+  })
+);
