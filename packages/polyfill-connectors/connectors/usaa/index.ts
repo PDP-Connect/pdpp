@@ -2054,6 +2054,19 @@ function captureExportArtifactEvidence(capture: DriveExportOptions["capture"], o
         response_summary: {
           candidate_count: outcome.artifact.candidates.length,
           cdp_ready: outcome.artifact.cdpReady,
+          // Same nine bounded per-stage counters the safe-emission path
+          // already threads through sanitizeArtifactDiagnostics — the
+          // production safe-capture path (this function) previously only
+          // forwarded the three legacy totals, silently dropping these.
+          stage_cdp_body_fetch_failed: outcome.artifact.stageCdpBodyFetchFailed,
+          stage_cdp_body_fetch_succeeded: outcome.artifact.stageCdpBodyFetchSucceeded,
+          stage_cdp_header_accepted: outcome.artifact.stageCdpHeaderAccepted,
+          stage_cdp_header_rejected: outcome.artifact.stageCdpHeaderRejected,
+          stage_cdp_loading_finished: outcome.artifact.stageCdpLoadingFinished,
+          stage_playwright_body_fetch_failed: outcome.artifact.stagePlaywrightBodyFetchFailed,
+          stage_playwright_body_fetch_succeeded: outcome.artifact.stagePlaywrightBodyFetchSucceeded,
+          stage_playwright_header_accepted: outcome.artifact.stagePlaywrightHeaderAccepted,
+          stage_playwright_header_rejected: outcome.artifact.stagePlaywrightHeaderRejected,
           total_cdp_requests_started: outcome.artifact.totalCdpRequestsStarted,
           total_cdp_responses_seen: outcome.artifact.totalCdpResponsesSeen,
           total_responses_seen: outcome.artifact.totalResponsesSeen,

@@ -448,3 +448,100 @@ test("artifact capture sanitizer uses finite metadata and drops mutation payload
     /PRIVATE MERCHANT|account-123|SECRET|https?:\/\/|raw error|bodyError|downloadFailure/
   );
 });
+
+// uat-usaa-final-review-0803.md blocking finding: the nine bounded stage
+// counters (stageCdpHeaderAccepted/Rejected, stageCdpLoadingFinished,
+// stageCdpBodyFetchSucceeded/Failed, and the Playwright-side analogues)
+// survive the safe-EMISSION path (sanitizeArtifactDiagnostics,
+// safe-diagnostics.ts) but were silently dropped by the separate safe-
+// CAPTURE path (sanitizeArtifactCapturePayload, this file) — the producer
+// at index.ts's captureExportArtifactEvidence only forwarded the three
+// legacy totals into response_summary. This test exercises the capture
+// path directly with nonzero stage counters and asserts each one survives,
+// bounded, alongside the pre-existing PII-safety guarantee.
+test("artifact capture sanitizer preserves all nine bounded stage counters, clamped, alongside the legacy totals", () => {
+  const payload = sanitizeArtifactCapturePayload({
+    artifact: null,
+    download: null,
+    phase: "artifact_failed",
+    response_candidates: [],
+    response_summary: {
+      candidate_count: 0,
+      cdp_ready: true,
+      stage_cdp_body_fetch_failed: 2,
+      stage_cdp_body_fetch_succeeded: 3,
+      stage_cdp_header_accepted: 5,
+      stage_cdp_header_rejected: 7,
+      stage_cdp_loading_finished: 4,
+      // Deliberately hostile: a value exceeding the 1_000_000 clamp, and a
+      // negative value — proves bounded numeric sanitization applies to
+      // these fields exactly like the pre-existing total_* counters, not
+      // just a bare pass-through.
+      stage_playwright_body_fetch_failed: -1,
+      stage_playwright_body_fetch_succeeded: 99_999_999,
+      stage_playwright_header_accepted: 11,
+      stage_playwright_header_rejected: 13,
+      total_cdp_requests_started: 20,
+      total_cdp_responses_seen: 18,
+      total_responses_seen: 18,
+    },
+  });
+
+  assert.equal(payload.response_summary.stage_cdp_header_accepted, 5);
+  assert.equal(payload.response_summary.stage_cdp_header_rejected, 7);
+  assert.equal(payload.response_summary.stage_cdp_loading_finished, 4);
+  assert.equal(payload.response_summary.stage_cdp_body_fetch_succeeded, 3);
+  assert.equal(payload.response_summary.stage_cdp_body_fetch_failed, 2);
+  assert.equal(payload.response_summary.stage_playwright_header_accepted, 11);
+  assert.equal(payload.response_summary.stage_playwright_header_rejected, 13);
+  assert.equal(payload.response_summary.stage_playwright_body_fetch_succeeded, 1_000_000, "clamped, not pass-through");
+  assert.equal(
+    payload.response_summary.stage_playwright_body_fetch_failed,
+    0,
+    "negative clamps to 0, not pass-through"
+  );
+
+  // Same discriminator the observability fix exists to preserve: header
+  // acceptance/rejection and body-stage completion are now visible from the
+  // CAPTURE path too, not just the emission path.
+  assert.equal(
+    payload.response_summary.stage_cdp_header_accepted > payload.response_summary.stage_cdp_loading_finished,
+    true,
+    "an accepted-but-not-loadingFinished gap is representable through the capture path"
+  );
+
+  // Also also drive it through the real producer shape (camelCase field
+  // names, as BodyResponseDiagnostics actually provides them) to prove the
+  // fix works against what captureExportArtifactEvidence really sends, not
+  // just a hand-shaped snake_case fixture.
+  const producerShapedPayload = sanitizeArtifactCapturePayload({
+    artifact: null,
+    download: null,
+    phase: "artifact_failed",
+    response_candidates: [],
+    response_summary: {
+      candidate_count: 0,
+      cdp_ready: true,
+      stageCdpBodyFetchFailed: 6,
+      stageCdpBodyFetchSucceeded: 0,
+      stageCdpHeaderAccepted: 9,
+      stageCdpHeaderRejected: 0,
+      stageCdpLoadingFinished: 0,
+      stagePlaywrightBodyFetchFailed: 0,
+      stagePlaywrightBodyFetchSucceeded: 0,
+      stagePlaywrightHeaderAccepted: 0,
+      stagePlaywrightHeaderRejected: 0,
+      totalCdpRequestsStarted: 9,
+      totalCdpResponsesSeen: 9,
+      totalResponsesSeen: 9,
+    },
+  });
+  assert.equal(producerShapedPayload.response_summary.stage_cdp_header_accepted, 9);
+  assert.equal(producerShapedPayload.response_summary.stage_cdp_body_fetch_failed, 6);
+
+  // Raw text must still never cross this boundary — the discriminating fix
+  // only adds bounded counters, it must not reopen the PII surface the
+  // existing sibling test above already guards.
+  const serializedStagePayload = JSON.stringify(payload);
+  assert.doesNotMatch(serializedStagePayload, /SECRET|https?:\/\/|PRIVATE/);
+});

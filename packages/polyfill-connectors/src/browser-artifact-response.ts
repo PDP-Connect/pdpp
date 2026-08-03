@@ -67,6 +67,22 @@ export interface SafeArtifactCaptureRecord {
   response_summary: {
     candidate_count: number;
     cdp_ready: boolean;
+    // Same nine bounded per-stage counters as BodyResponseDiagnostics (see
+    // the field-level comments there) — mirrored here so the separate
+    // safe-capture path (fixture-capture.ts, gated by PDPP_CAPTURE_FIXTURES)
+    // retains the same header/loadingFinished/body-fetch stage evidence the
+    // safe-emission path already preserves via sanitizeArtifactDiagnostics.
+    // Without this, a capture-enabled run would still lose the discriminator
+    // between a header-stage rejection and a body-stage race.
+    stage_cdp_body_fetch_failed: number;
+    stage_cdp_body_fetch_succeeded: number;
+    stage_cdp_header_accepted: number;
+    stage_cdp_header_rejected: number;
+    stage_cdp_loading_finished: number;
+    stage_playwright_body_fetch_failed: number;
+    stage_playwright_body_fetch_succeeded: number;
+    stage_playwright_header_accepted: number;
+    stage_playwright_header_rejected: number;
     total_cdp_requests_started: number;
     total_cdp_responses_seen: number;
     total_responses_seen: number;
@@ -420,6 +436,33 @@ export function sanitizeArtifactCapturePayload(value: unknown): SafeArtifactCapt
     response_summary: {
       candidate_count: boundedDiagnosticCount(summary.candidate_count ?? rawCandidates.length),
       cdp_ready: summary.cdp_ready === true,
+      stage_cdp_body_fetch_failed: boundedDiagnosticCount(
+        summary.stage_cdp_body_fetch_failed ?? summary.stageCdpBodyFetchFailed
+      ),
+      stage_cdp_body_fetch_succeeded: boundedDiagnosticCount(
+        summary.stage_cdp_body_fetch_succeeded ?? summary.stageCdpBodyFetchSucceeded
+      ),
+      stage_cdp_header_accepted: boundedDiagnosticCount(
+        summary.stage_cdp_header_accepted ?? summary.stageCdpHeaderAccepted
+      ),
+      stage_cdp_header_rejected: boundedDiagnosticCount(
+        summary.stage_cdp_header_rejected ?? summary.stageCdpHeaderRejected
+      ),
+      stage_cdp_loading_finished: boundedDiagnosticCount(
+        summary.stage_cdp_loading_finished ?? summary.stageCdpLoadingFinished
+      ),
+      stage_playwright_body_fetch_failed: boundedDiagnosticCount(
+        summary.stage_playwright_body_fetch_failed ?? summary.stagePlaywrightBodyFetchFailed
+      ),
+      stage_playwright_body_fetch_succeeded: boundedDiagnosticCount(
+        summary.stage_playwright_body_fetch_succeeded ?? summary.stagePlaywrightBodyFetchSucceeded
+      ),
+      stage_playwright_header_accepted: boundedDiagnosticCount(
+        summary.stage_playwright_header_accepted ?? summary.stagePlaywrightHeaderAccepted
+      ),
+      stage_playwright_header_rejected: boundedDiagnosticCount(
+        summary.stage_playwright_header_rejected ?? summary.stagePlaywrightHeaderRejected
+      ),
       total_cdp_requests_started: boundedDiagnosticCount(summary.total_cdp_requests_started),
       total_cdp_responses_seen: boundedDiagnosticCount(summary.total_cdp_responses_seen),
       total_responses_seen: boundedDiagnosticCount(summary.total_responses_seen),
