@@ -27,13 +27,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { emitSpineEvent, listSpineCorrelations } from '../lib/spine.ts';
-import { closeDb, getDb, initDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.ts';
 import {
   closePostgresStorage,
   initPostgresStorage,
   isPostgresStorageBackend,
   postgresQuery,
-} from '../server/postgres-storage.js';
+} from '../server/postgres-storage.ts';
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 const RUN_TAG = `parity${process.pid}${Date.now().toString(36)}`;

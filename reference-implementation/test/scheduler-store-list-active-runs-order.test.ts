@@ -27,12 +27,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { closeDb, initDb } from '../server/db.js';
+import { closeDb, initDb } from '../server/db.ts';
 import {
   closePostgresStorage,
   initPostgresStorage,
   postgresQuery,
-} from '../server/postgres-storage.js';
+} from '../server/postgres-storage.ts';
 import {
   createPostgresSchedulerStore,
   createSqliteSchedulerStore,

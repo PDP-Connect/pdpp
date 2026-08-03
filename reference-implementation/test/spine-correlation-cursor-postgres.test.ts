@@ -30,8 +30,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { postgresEmitSpineEvent, postgresListSpineCorrelations } from '../lib/postgres-spine.js';
-import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
+import { postgresEmitSpineEvent, postgresListSpineCorrelations } from '../lib/postgres-spine.ts';
+import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.ts';
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 

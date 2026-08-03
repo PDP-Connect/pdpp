@@ -23,14 +23,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { registerConnector } from '../server/auth.js';
-import { closeDb, initDb } from '../server/db.js';
+import { registerConnector } from '../server/auth.ts';
+import { closeDb, initDb } from '../server/db.ts';
 import {
   closePostgresStorage,
   initPostgresStorage,
   postgresQuery,
-} from '../server/postgres-storage.js';
-import { ingestRecord, queryRecords } from '../server/records.js';
+} from '../server/postgres-storage.ts';
+import { ingestRecord, queryRecords } from '../server/records.ts';
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 

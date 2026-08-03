@@ -31,15 +31,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { initDb, closeDb } from '../server/db.js';
-import { registerConnector } from '../server/auth.js';
+import { initDb, closeDb } from '../server/db.ts';
+import { registerConnector } from '../server/auth.ts';
 import {
   closePostgresStorage,
   initPostgresStorage,
   isPostgresStorageBackend,
   postgresQuery,
-} from '../server/postgres-storage.js';
-import { ingestRecord, listStreams } from '../server/records.js';
+} from '../server/postgres-storage.ts';
+import { ingestRecord, listStreams } from '../server/records.ts';
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 

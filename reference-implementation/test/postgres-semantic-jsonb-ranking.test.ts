@@ -52,8 +52,8 @@ import {
   initPostgresStorage,
   isPostgresSemanticVectorEmbedding,
   postgresQuery,
-} from '../server/postgres-storage.js';
-import { postgresSemanticSearch } from '../server/postgres-search.js';
+} from '../server/postgres-storage.ts';
+import { postgresSemanticSearch } from '../server/postgres-search.ts';
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
