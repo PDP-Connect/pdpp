@@ -302,6 +302,50 @@ async function resolveRecordIdentityForBinding(
   return identity;
 }
 
+function invalidQueryError(message: string, code = "invalid_request"): PgQueryError {
+  const err: PgQueryError = new Error(message);
+  err.code = code;
+  return err;
+}
+
+// Canonical public read query-param allowlist. Mirrors
+// `SUPPORTED_RECORD_QUERY_PARAMS` in records.ts. Kept in sync by
+// duplication so postgres-records.ts does not import from records.ts
+// (records.ts dispatches into postgres-records.ts — the dep must run one
+// way only, see the SUPPORTED_COUNT_KINDS_PG note below).
+const SUPPORTED_RECORD_QUERY_PARAMS_PG = new Set([
+  "changes_since",
+  "connection_id",
+  "connector_id",
+  "connector_instance_id",
+  "count",
+  "cursor",
+  "expand",
+  "expand_limit",
+  "fields",
+  "filter",
+  "limit",
+  "order",
+  "sort",
+  "subject_id",
+  "view",
+  "window",
+]);
+
+/**
+ * Reject unknown/unsupported top-level query-string keys before any other
+ * validation runs. Mirrors `validateTopLevelQueryParams`'s unsupported-key
+ * check in records.ts so a caller typo (e.g. `?limitt=5`) is a typed
+ * `invalid_request` error on Postgres, the same as it already is on
+ * SQLite, instead of silently no-oping.
+ */
+function assertSupportedRecordQueryParamsPg(requestParams: QueryRequestParams): void {
+  const unsupported = Object.keys(requestParams).filter((key) => !SUPPORTED_RECORD_QUERY_PARAMS_PG.has(key));
+  if (unsupported.length) {
+    throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(", ")}`);
+  }
+}
+
 // Canonical public-read graded-count vocabulary. Mirrors
 // `SUPPORTED_COUNT_KINDS` in records.ts. Kept in sync by duplication so
 // postgres-records.ts does not import from records.ts (records.ts
@@ -311,12 +355,6 @@ async function resolveRecordIdentityForBinding(
 //       reference-implementation-architecture/spec.md
 //       (#"Counts are opt-in and cost-graded").
 const SUPPORTED_COUNT_KINDS_PG = new Set(["none", "estimated", "exact"]);
-
-function invalidQueryError(message: string, code = "invalid_request"): PgQueryError {
-  const err: PgQueryError = new Error(message);
-  err.code = code;
-  return err;
-}
 
 /**
  * Validate the requested count grade against the canonical
@@ -2212,6 +2250,7 @@ export async function postgresQueryRecords(
   requestParams: QueryRequestParams = {},
   manifest: ConnectorManifest | null = null
 ): Promise<RecordListResponse> {
+  assertSupportedRecordQueryParamsPg(requestParams);
   assertManifestReadAuthority(manifest, stream, { actor: "internal" });
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId ?? "");
@@ -2740,24 +2779,78 @@ export async function postgresListAllStreams(storageTarget: StorageTarget): Prom
   return result.rows;
 }
 
+// Grant-narrowed visible-count cap for a single stream's candidate scan in
+// `postgresListStreams`. Mirrors the SQLite path's per-stream iteration
+// (records.ts `listStreams`) but Postgres pays a network round-trip per row
+// set, so cap it defensively rather than iterate an unbounded connector's
+// full history into JS. A connection this large is already an outlier; the
+// count returned is a floor (capped, not exact) in that tail case, which is
+// preferable to an unscoped raw-total leak.
+const LIST_STREAMS_VISIBLE_CANDIDATE_LIMIT = 50000;
+
+/**
+ * List streams available under a grant, with the SAME grant-scoped
+ * `record_count` / `last_updated` semantics as the SQLite `listStreams`
+ * path: only rows that pass the stream grant's `resources` allowlist and
+ * `time_range` (against the manifest's `consent_time_field`) are counted.
+ * `postgresListAllStreams`'s raw per-connection totals are never returned
+ * directly to a caller — a narrow grant must not learn the connection's
+ * true unscoped total record count or freshness.
+ */
 export async function postgresListStreams(
   storageTarget: StorageTarget,
   grant: ConnectorGrant,
   manifest: ConnectorManifest | null = null
 ): Promise<JsonObject[]> {
   assertGrantedManifestReadAuthority(manifest, grant, null);
-  const rows = await postgresListAllStreams(storageTarget);
-  const byName = new Map(rows.map((row) => [row.name, row]));
-  return grant.streams.map((streamGrant) => {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId ?? "");
+  const result: JsonObject[] = [];
+
+  for (const streamGrant of grant.streams) {
     const manifestStream = getManifestStream(manifest, streamGrant.name);
-    const stored = byName.get(streamGrant.name);
-    return {
-      last_updated: stored?.last_updated || null,
+    const effective = buildEffectiveFilter(streamGrant, {});
+    const consentTimeField = manifestStream?.consent_time_field || null;
+
+    const params: unknown[] = [connectorInstanceId, streamGrant.name];
+    let whereClause = "connector_instance_id = $1 AND stream = $2 AND deleted = FALSE";
+    if (Array.isArray(effective.resources) && effective.resources.length > 0) {
+      params.push(effective.resources);
+      whereClause += ` AND record_key = ANY($${params.length}::text[])`;
+    }
+    params.push(LIST_STREAMS_VISIBLE_CANDIDATE_LIMIT);
+
+    const candidates = await postgresQuery(
+      `SELECT record_key, record_json, emitted_at
+       FROM records
+       WHERE ${whereClause}
+       ORDER BY record_key ASC
+       LIMIT $${params.length}`,
+      params
+    );
+
+    let visibleCount = 0;
+    let lastUpdated: string | null = null;
+    for (const row of candidates.rows) {
+      if (effective.timeRange && consentTimeField) {
+        const rawData = typeof row.record_json === "string" ? JSON.parse(row.record_json) : row.record_json;
+        if (!passesTimeRange(rawData as JsonObject, effective.timeRange, consentTimeField)) continue;
+      }
+      visibleCount += 1;
+      if (!lastUpdated || row.emitted_at > lastUpdated) {
+        lastUpdated = row.emitted_at;
+      }
+    }
+
+    result.push({
+      last_updated: lastUpdated,
       name: streamGrant.name,
-      record_count: stored?.record_count || 0,
+      record_count: visibleCount,
       schema: manifestStream?.schema || null,
-    };
-  });
+    });
+  }
+
+  return result;
 }
 
 export function postgresDeleteAllRecords(storageTarget: StorageTarget, stream: string): Promise<number> {
