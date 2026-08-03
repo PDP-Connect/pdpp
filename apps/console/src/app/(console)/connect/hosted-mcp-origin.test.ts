@@ -89,7 +89,12 @@ test("classification distinguishes why an origin fails, for honest copy", () => 
 // A trailing root-label dot is the same DNS name, so it must not smuggle a
 // private-DNS suffix past the check.
 test("trailing-dot FQDNs are classified like their dotless form", () => {
-  for (const origin of ["https://nas.local.", "https://foo.internal.", "https://pdpp.home.arpa.", "https://127.0.0.1."]) {
+  for (const origin of [
+    "https://nas.local.",
+    "https://foo.internal.",
+    "https://pdpp.home.arpa.",
+    "https://127.0.0.1.",
+  ]) {
     assert.equal(hasPublicHttpsShape(origin), false, `${origin} must not clear the public-HTTPS shape bar`);
   }
   assert.equal(hasPublicHttpsShape("https://pdpp.example.com."), true, "a public FQDN with a root dot is still public");

@@ -6,7 +6,12 @@ import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primi
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { getStaticSecretSetup, RefNotFoundError, type StaticSecretSetupField } from "../../../lib/ref-client.ts";
+import {
+  getStaticSecretSetup,
+  RefNotFoundError,
+  type StaticSecretSetup,
+  type StaticSecretSetupField,
+} from "../../../lib/ref-client.ts";
 import { createStaticSecretConnectionAction, replaceStaticSecretCredentialAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
@@ -36,6 +41,52 @@ function firstValue(value: string | string[] | undefined): string | undefined {
 
 function inputType(field: StaticSecretSetupField): "email" | "password" | "text" {
   return field.type === "email" || field.type === "password" ? field.type : "text";
+}
+
+// The two reasons this form refuses to open. Each is a closed state with its
+// own remediation, kept beside the form rather than inside it so the page body
+// stays a single flat choice between "blocked" and "capture".
+function BrowserRuntimeBlocked({ displayName }: { displayName: string }) {
+  return (
+    <Callout
+      description={`${displayName} signs in through a real browser session, and this deployment has no browser runtime. Entering your ${displayName} password here would be stored but the first sync would fail at browser startup, so this form stays closed.`}
+      title="This deployment cannot sign in to this source"
+      tone="warning"
+    >
+      <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
+        <li>
+          Run a browser-enabled image such as <code>ghcr.io/pdp-connect/pdpp/core-browser</code> instead of the
+          browser-free image, or
+        </li>
+        <li>
+          attach a browser surface by setting <code>PDPP_BROWSER_SURFACE_REMOTE_CDP_URL</code> or the managed{" "}
+          <code>PDPP_NEKO_CDP_HTTP_URL</code>.
+        </li>
+        <li>Sources that need only a network connection work on this deployment as-is.</li>
+      </ul>
+    </Callout>
+  );
+}
+
+function CredentialStorageBlocked({ readiness }: { readiness: StaticSecretSetup["deployment_readiness"] }) {
+  return (
+    <Callout
+      description={
+        readiness.guidance ??
+        "Configure the instance-level credential key provider before entering a provider credential."
+      }
+      title="Credential storage is not ready"
+      tone="warning"
+    >
+      <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
+        {readiness.blockers.map((blocker) => (
+          <li key={blocker.key}>
+            Set <code>{blocker.key}</code>
+          </li>
+        ))}
+      </ul>
+    </Callout>
+  );
 }
 
 export default async function StaticSecretConnectPage({
@@ -68,6 +119,15 @@ export default async function StaticSecretConnectPage({
   // the credential up front rather than storing a provider password this
   // deployment can never use.
   const browserRuntimeBlocked = Boolean(setup.browser_runtime?.required && !setup.browser_runtime.configured);
+  // One flat decision: either a closed state explains itself, or the form
+  // renders. Ordered browser-first because a deployment that cannot sign in at
+  // all is a harder stop than a missing credential key.
+  let blockedNotice: React.ReactNode = null;
+  if (browserRuntimeBlocked) {
+    blockedNotice = <BrowserRuntimeBlocked displayName={setup.display_name} />;
+  } else if (readinessBlocked) {
+    blockedNotice = <CredentialStorageBlocked readiness={setup.deployment_readiness} />;
+  }
 
   // After a validation failure the action redirects back here with the owner's
   // non-secret field values as `field_<name>` query params so the form context
@@ -110,42 +170,7 @@ export default async function StaticSecretConnectPage({
         }
         title={setup.credential_capture.label}
       >
-        {browserRuntimeBlocked ? (
-          <Callout
-            description={`${setup.display_name} signs in through a real browser session, and this deployment has no browser runtime. Entering your ${setup.display_name} password here would be stored but the first sync would fail at browser startup, so this form stays closed.`}
-            title="This deployment cannot sign in to this source"
-            tone="warning"
-          >
-            <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
-              <li>
-                Run the browser-enabled image <code>ghcr.io/pdp-connect/pdpp/reference-browser</code> instead of the
-                browser-free <code>reference</code> image, or
-              </li>
-              <li>
-                attach a browser surface by setting <code>PDPP_BROWSER_SURFACE_REMOTE_CDP_URL</code> or the managed{" "}
-                <code>PDPP_NEKO_CDP_HTTP_URL</code>.
-              </li>
-              <li>Sources that need only a network connection work on this deployment as-is.</li>
-            </ul>
-          </Callout>
-        ) : readinessBlocked ? (
-          <Callout
-            description={
-              setup.deployment_readiness.guidance ??
-              "Configure the instance-level credential key provider before entering a provider credential."
-            }
-            title="Credential storage is not ready"
-            tone="warning"
-          >
-            <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
-              {setup.deployment_readiness.blockers.map((blocker) => (
-                <li key={blocker.key}>
-                  Set <code>{blocker.key}</code>
-                </li>
-              ))}
-            </ul>
-          </Callout>
-        ) : (
+        {blockedNotice ?? (
           <form
             action={isReplaceMode ? replaceStaticSecretCredentialAction : createStaticSecretConnectionAction}
             className="grid max-w-2xl gap-4 rounded-sm border border-border/80 bg-muted/20 p-4"

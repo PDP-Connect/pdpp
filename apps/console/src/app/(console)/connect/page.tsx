@@ -6,7 +6,6 @@ import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
-import { hasPublicHttpsShape } from "./hosted-mcp-origin.ts";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { DeploymentReadinessPanel } from "../components/deployment-readiness-panel.tsx";
 import { extractReadinessInputs, type ServerInputs } from "../components/deployment-readiness-rows.ts";
@@ -19,6 +18,7 @@ import {
   listConnectorSummaries,
 } from "../lib/ref-client.ts";
 import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";
+import { hasPublicHttpsShape } from "./hosted-mcp-origin.ts";
 import { type SourceReadinessEvidence, sourceReadinessRow } from "./readiness.ts";
 
 export const dynamic = "force-dynamic";

@@ -28,8 +28,13 @@ const NON_PUBLIC_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa", 
 const NON_PUBLIC_IPV4 =
   /^(?:0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|22[4-9]\.|2[3-5]\d\.)/;
 
+const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+const IPV6_UNIQUE_LOCAL = /^f[cd]/i;
+const IPV6_LINK_LOCAL = /^fe[89ab]/i;
+const TRAILING_ROOT_DOT = /\.$/;
+
 function isIpv4Literal(host: string): boolean {
-  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+  return IPV4_LITERAL.test(host);
 }
 
 // IPv6 loopback (::1), unspecified (::), unique-local (fc00::/7 → fc/fd), and
@@ -43,7 +48,7 @@ function isNonPublicIpv6(host: string): boolean {
   if (bare === "::1" || bare === "::") {
     return true;
   }
-  if (/^f[cd]/i.test(bare) || /^fe[89ab]/i.test(bare)) {
+  if (IPV6_UNIQUE_LOCAL.test(bare) || IPV6_LINK_LOCAL.test(bare)) {
     return true;
   }
   // IPv4-mapped/compatible forms such as ::ffff:127.0.0.1 inherit the v4 verdict.
@@ -63,7 +68,7 @@ export function classifyHostedMcpOrigin(origin: string): HostedMcpOriginShape {
   }
   // A trailing root-label dot ("nas.local.") is the same name as "nas.local",
   // so normalize it away before any suffix comparison.
-  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  const host = url.hostname.toLowerCase().replace(TRAILING_ROOT_DOT, "");
   if (!host || host === "localhost" || NON_PUBLIC_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
     return "not_public_address";
   }

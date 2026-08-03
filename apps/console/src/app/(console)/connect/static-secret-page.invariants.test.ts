@@ -148,14 +148,18 @@ test("legacy static-secret setup-status URL redirects to the generic setup-statu
 // On a browser-free deployment the form must refuse capture up front rather
 // than accepting a provider password whose first sync can only fail at browser
 // launch. The server route is the real gate; this guards the owner-facing half.
-const BROWSER_RUNTIME_BLOCKED = /const browserRuntimeBlocked = Boolean\(\s*setup\.browser_runtime\?\.required && !setup\.browser_runtime\.configured\s*\)/;
-const BROWSER_RUNTIME_GATES_FORM = /\{browserRuntimeBlocked \? \(/;
+const BROWSER_RUNTIME_BLOCKED =
+  /const browserRuntimeBlocked = Boolean\(\s*setup\.browser_runtime\?\.required && !setup\.browser_runtime\.configured\s*\)/;
+const BROWSER_RUNTIME_GATES_FORM = /blockedNotice = <BrowserRuntimeBlocked/;
+const FORM_RENDERS_ONLY_WHEN_UNBLOCKED = /\{blockedNotice \?\? \(/;
 const BROWSER_RUNTIME_REMEDIATION = /reference-browser|PDPP_BROWSER_SURFACE_REMOTE_CDP_URL/;
 
 test("setup form refuses capture when the connector needs a browser this deployment lacks", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, BROWSER_RUNTIME_BLOCKED);
-  // The gate must precede the form branch, not merely render an advisory note.
+  // The gate must REPLACE the form, not merely render an advisory note beside
+  // it: the capture form may only appear when nothing is blocking it.
   assert.match(src, BROWSER_RUNTIME_GATES_FORM);
+  assert.match(src, FORM_RENDERS_ONLY_WHEN_UNBLOCKED);
   assert.match(src, BROWSER_RUNTIME_REMEDIATION);
 });

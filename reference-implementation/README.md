@@ -474,9 +474,9 @@ the default branch so contributors test what just merged.
 **Do not self-host from `main`.** It is a moving tag with no release gate, so a
 `docker compose pull` can change your node's behavior without warning. The
 release pipeline publishes every image — `reference`, `reference-browser`,
-`web`, and `railway-core` — as exact version tags such as `1.2.3`, moving
-minor-series tags such as `1.2`, `latest`, and `sha-*`. For any node you intend
-to keep, pin an exact version or digest in `.env.docker`:
+`web`, `railway-core`, and `core-browser` — as exact version tags such as
+`1.2.3`, moving minor-series tags such as `1.2`, `latest`, and `sha-*`. For any
+node you intend to keep, pin an exact version or digest in `.env.docker`:
 
 ```bash
 PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:1.2.3
