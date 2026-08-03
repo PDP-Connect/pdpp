@@ -135,25 +135,36 @@ The `reference`, `web`, and `postgres` services start as before; the `neko`
 service joins the compose network. Once `reference` is healthy (5-30 seconds),
 browser-backed sources are available in the dashboard.
 
-**Release status:** The `neko` and `core-browser` images are newly added to the
-release pipeline but have NOT been published yet. Until a release runs, you must
-override `PDPP_NEKO_IMAGE` with a locally built image. Add to `.env`:
+**Release status:** `neko` and `core-browser` publish from the same release
+pipeline as `reference`/`web`/`reference-browser` (`.github/workflows/semantic-release.yml`,
+`publish-images` job) — there is no separate step to remember. Verify a given
+version actually published before you pin it:
+
+```sh
+pnpm docker:release-matrix:verify-published --tag <version>   # e.g. 1.3.0, or "latest"
+```
+
+This queries GHCR directly (no login required) for every image the pipeline is
+supposed to publish and fails if any is missing at that tag — the same check
+that caught this gap in the first place
+(`scripts/verify-published-docker-images.ts`). If it reports `neko` or
+`core-browser` missing at the tag you want, no release has published them yet;
+use the network-only path above until one has, or build locally as a stopgap:
 
 ```sh
 PDPP_NEKO_IMAGE=pdpp-neko:local
 ```
 
-Build that image from this repository with
+added to `.env`, with the image built from this repository via
 `docker build -f docker/neko/Dockerfile -t pdpp-neko:local .`. This is the one
-step that still needs a clone, and it exists only because the image is not
-published yet — it is not part of the steady-state route.
+step that needs a clone, and it exists only as a stopgap for a tag that has not
+published yet — it is not the steady-state route once `verify-published`
+reports the tag present.
 
 Until you set `PDPP_NEKO_IMAGE`, the compose file resolves the n.eko service to
 the placeholder `pdpp-neko-image-not-set`, which fails loudly rather than
 pulling a tag that does not exist. The default network-only stack is unaffected:
 the n.eko service is not created without `--profile browser`.
-
-Once a release publishes the image, set `PDPP_NEKO_IMAGE` to that released tag.
 
 Serve a remote domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
 pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so

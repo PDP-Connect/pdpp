@@ -474,9 +474,9 @@ the default branch so contributors test what just merged.
 **Do not self-host from `main`.** It is a moving tag with no release gate, so a
 `docker compose pull` can change your node's behavior without warning. The
 release pipeline publishes every image — `reference`, `reference-browser`,
-`web`, `railway-core`, and `core-browser` — as exact version tags such as
-`1.2.3`, moving minor-series tags such as `1.2`, `latest`, and `sha-*`. For any
-node you intend to keep, pin an exact version or digest in `.env.docker`:
+`web`, `railway-core`, `core-browser`, and `neko` — as exact version tags such
+as `1.2.3`, moving minor-series tags such as `1.2`, `latest`, and `sha-*`. For
+any node you intend to keep, pin an exact version or digest in `.env.docker`:
 
 ```bash
 PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:1.2.3
@@ -484,7 +484,15 @@ PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:1.2.3
 ```
 
 Self-hosting runbooks (`deploy/docker/README.md`, `docs/operator/selfhost-quickstart.md`)
-pin a released tag for exactly this reason.
+pin a released tag for exactly this reason. Before pinning a tag, confirm the
+release actually published it:
+
+```bash
+pnpm docker:release-matrix:verify-published --tag 1.2.3
+```
+
+This queries GHCR directly (no login required) for all six images and fails
+if any is missing at that tag.
 
 The important topology rule is that `PDPP_REFERENCE_ORIGIN` is what the
 browser uses, while `PDPP_AS_URL` and `PDPP_RS_URL` are container-internal

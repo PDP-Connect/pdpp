@@ -121,6 +121,12 @@ jobs:
       - name: Test dist-tag posture classifier
         run: pnpm release:dist-tag-check:test
 
+      - name: Check Docker release matrix consistency
+        run: pnpm docker:release-matrix:check
+
+      - name: Test Docker release matrix consistency checks
+        run: pnpm docker:release-matrix:check:test
+
       - name: Typecheck operator console app
         run: pnpm --dir apps/console run types:check
 
