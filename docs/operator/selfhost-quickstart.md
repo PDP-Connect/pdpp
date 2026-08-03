@@ -120,10 +120,11 @@ If your Docker host is not publicly reachable — home server behind NAT, VPS
 without a domain, or a machine you do not want to expose directly — and you
 need ChatGPT or Claude.ai (not just Claude Code) to reach it, none of the
 paths below require opening a firewall port. Which one to use depends on
-whether you own a domain: a stable hostname genuinely requires either a
-domain you add to a Cloudflare account, or ngrok's free no-domain static
-domain; a domain-free Cloudflare Quick Tunnel works too but is explicitly
-ephemeral/testing-only. `cloudflared` for the domain-owning path is already
+whether you own a domain: a stable hostname requires either a domain you add
+to a Cloudflare account, or — with no domain of your own — ngrok's free
+automatically-assigned Dev Domain (a hostname ngrok assigns, not one you
+register or choose); a domain-free Cloudflare Quick Tunnel works too but is
+explicitly ephemeral/testing-only. `cloudflared` for the domain-owning path is already
 built into the blessed Compose stack as an opt-in `--profile tunnel` service.
 See
 [`deploy/docker/README.md#public-https-for-chatgpt-and-claudeai`](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai)

@@ -40,6 +40,24 @@ const FALSE_NO_DOMAIN_CLAIM_RES = [
 const DOMAIN_REQUIRED_CLAIM_RE = /domain on Cloudflare[\s\S]*?required to publish/i;
 const ENABLE_JSON_RESPONSE_RE = /enableJsonResponse:\s*true/;
 
+// Regression guard #2: a generic, unscoped "a domain is required for a
+// stable hostname" claim is ALSO false — it directly contradicts the ngrok
+// Dev Domain path documented right below it, which needs no owned domain.
+// The domain requirement is real but SCOPED to the Cloudflare named-tunnel
+// path specifically; it must never be stated as a blanket fact about every
+// stable option.
+const GENERIC_DOMAIN_REQUIRED_RE = /\*\*a domain is required for a stable hostname/i;
+const NO_FREE_LUNCH_RE = /no free lunch/i;
+
+// Regression guard #3: ngrok's free assigned hostname must never be called a
+// "static domain" — that phrasing implies the owner can choose/reserve it,
+// which ngrok's own docs explicitly deny on the free plan ("you cannot
+// choose or reserve custom domain names"). The correct term is ngrok's own:
+// "Dev Domain", automatically assigned, unchangeable, not chosen.
+const STATIC_DOMAIN_CLAIM_RE = /ngrok[^.]*?static domain/i;
+const DEV_DOMAIN_TERM_RE = /Dev Domain/;
+const ASSIGNED_NOT_CHOSEN_RE = /cannot choose or reserve/i;
+
 function compose(): Promise<string> {
   return readFile(fileURLToPath(BLESSED_COMPOSE), "utf8");
 }
@@ -141,10 +159,76 @@ test("the Docker README states the domain requirement for a named tunnel, source
   assert.match(readme, /developers\.cloudflare\.com\/tunnel\/setup/, "the domain-requirement claim must cite its primary source");
 });
 
-test("the Docker README documents a genuinely no-domain stable alternative", async () => {
+test("the Docker README documents a stable path for owners with no domain", async () => {
   const readme = await readmeText();
-  assert.match(readme, /ngrok/i, "the README must offer a no-domain stable path (ngrok's free static domain) alongside the domain-owning Cloudflare path");
-  assert.match(readme, /ngrok-free\.app/, "the ngrok path must document the actual free static-domain shape");
+  assert.match(
+    readme,
+    /ngrok/i,
+    "the README must offer a stable path with no owned domain (ngrok's assigned Dev Domain) alongside the domain-owning Cloudflare path"
+  );
+  assert.match(readme, /ngrok-free\.app/, "the ngrok path must document the actual assigned-hostname shape");
+});
+
+// Regression guard: the domain requirement is real but scoped to Cloudflare
+// named tunnels specifically. A blanket claim contradicts the ngrok path
+// documented in the same file and shipped once before being caught.
+test("no PDPP surface claims a domain is required for EVERY stable hostname", async () => {
+  const [composeSrc, readme] = await Promise.all([compose(), readmeText()]);
+  for (const [label, src] of [
+    ["docker-compose.yml", composeSrc],
+    ["deploy/docker/README.md", readme],
+  ] as const) {
+    assert.doesNotMatch(
+      src,
+      GENERIC_DOMAIN_REQUIRED_RE,
+      `${label} must not claim a domain is required for a stable hostname in general — that's true only for the Cloudflare named-tunnel path, and false for ngrok's assigned Dev Domain path`
+    );
+    assert.doesNotMatch(
+      src,
+      NO_FREE_LUNCH_RE,
+      `${label} must not frame the domain requirement as universal ("no free lunch") — ngrok's assigned Dev Domain is a real free, no-domain, stable alternative`
+    );
+  }
+});
+
+// Regression guard: ngrok's free assigned hostname is not a "static domain"
+// the owner can pick — ngrok's own docs are explicit that free-plan users
+// "cannot choose or reserve custom domain names." Calling it "static"
+// without qualification implies otherwise.
+test("ngrok's free hostname is described with its own term (Dev Domain), never as a choosable static domain", async () => {
+  const readme = await readmeText();
+  assert.doesNotMatch(
+    readme,
+    STATIC_DOMAIN_CLAIM_RE,
+    "the README must not call ngrok's free assigned hostname a 'static domain' — that implies the owner can choose/reserve it, which ngrok's free plan explicitly forbids"
+  );
+  assert.match(
+    readme,
+    DEV_DOMAIN_TERM_RE,
+    "the README must use ngrok's own term 'Dev Domain' for the free assigned hostname"
+  );
+  assert.match(
+    readme,
+    ASSIGNED_NOT_CHOSEN_RE,
+    "the README must state, in ngrok's own words, that the free plan cannot choose or reserve a custom domain — only use the one ngrok assigns"
+  );
+});
+
+// The documented CLI shape must match ngrok's own docs: `--url` is the
+// flag ngrok's docs show for pinning a tunnel to a specific hostname
+// (ngrok.com/docs/http/#domain: "ngrok http 8080 --url https://example.ngrok.app").
+test("the documented ngrok command uses the primary-source-verified --url flag shape", async () => {
+  const readme = await readmeText();
+  assert.match(
+    readme,
+    /ngrok http \d+ --url=/,
+    "the ngrok command must use `ngrok http <port> --url=<hostname>`, the flag shape verified against ngrok's own docs"
+  );
+  assert.match(
+    readme,
+    /ngrok config add-authtoken/,
+    "the ngrok setup must include `ngrok config add-authtoken`, the exact command shown in ngrok's own quickstart docs"
+  );
 });
 
 // The whole reason Quick Tunnel is offered at all (rather than rejected

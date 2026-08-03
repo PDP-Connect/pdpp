@@ -183,22 +183,26 @@ other private address can never work for them, no matter how your firewall or
 router is configured. They need a public HTTPS origin. You do not need a PDPP
 account for any of the paths below.
 
-**A domain is required for a stable hostname; there is no free lunch here.**
-Cloudflare's own prerequisites state plainly: a named tunnel's public hostname
-needs "[a domain on Cloudflare](https://developers.cloudflare.com/fundamentals/manage-domains/add-site/)
+**Cloudflare named tunnels specifically require a domain you own, added to
+your Cloudflare account.** Cloudflare's own prerequisites state plainly: a
+named tunnel's public hostname needs
+"[a domain on Cloudflare](https://developers.cloudflare.com/fundamentals/manage-domains/add-site/)
 (required to publish applications)" — see
 [`developers.cloudflare.com/tunnel/setup`](https://developers.cloudflare.com/tunnel/setup).
 Cloudflare does not issue a free subdomain for a named tunnel; `*.trycloudflare.com`
 is generated only by the ephemeral Quick Tunnel below, and cannot be routed to
-a named tunnel. If you don't own a domain, use the ephemeral trial or ngrok's
-free static domain instead of a Cloudflare named tunnel.
+a named tunnel. **If you don't own a domain, a stable hostname is still
+available** through a third-party-assigned hostname on another provider's
+account — ngrok's free plan is documented below. Use the Cloudflare named
+tunnel path only if you already have, or are willing to register, a domain
+you can add to a Cloudflare account.
 
 Pick one of the three paths below based on what you have and what you need:
 
 | You have | You want | Use |
 | --- | --- | --- |
 | Nothing yet, just trying it out | A quick trial connection | [Ephemeral Quick Tunnel](#ephemeral-trial-cloudflare-quick-tunnel) |
-| No domain, want it to keep working | A stable hostname | [ngrok free static domain](#stable-no-domain-ngrok-free-static-domain) |
+| No domain, want it to keep working | A stable hostname | [ngrok assigned dev domain](#stable-no-owned-domain-ngrok-assigned-dev-domain) |
 | A domain already on Cloudflare | A stable hostname | [Cloudflare named tunnel](#stable-with-a-domain-cloudflare-named-tunnel) |
 
 ### Ephemeral trial: Cloudflare Quick Tunnel
@@ -231,16 +235,21 @@ Copy the printed `https://<words>.trycloudflare.com` URL, set it as
 `cloudflared` process to tear the tunnel down; nothing in Compose needs to
 change since this runs outside the `tunnel` profile entirely.
 
-### Stable, no domain: ngrok free static domain
+### Stable, no owned domain: ngrok assigned Dev Domain
 
-[ngrok](https://ngrok.com)'s free plan assigns every account one persistent
-"dev domain" (shape `https://<your-assigned-name>.ngrok-free.app`) that does
-not change across restarts, at no cost and with no domain purchase or
-Cloudflare-style domain-onboarding step —
-["Every ngrok account comes with a free Dev Domain... its URL is automatically
-generated and cannot be changed"](https://ngrok.com/docs/universal-gateway/domains/).
-Documented free-plan limits: 1 GB/month data transfer, 20,000 HTTP
-requests/month, up to 3 concurrent online endpoints
+[ngrok](https://ngrok.com)'s free plan gives every account one **Dev
+Domain** — ngrok's own term, not a domain you register or choose. Per
+ngrok's docs: "Every ngrok account comes with a free Dev Domain that can be
+used if you don't want to pick a domain," and on the free plan "you can only
+use your automatically assigned dev domain... you cannot choose or reserve
+custom domain names" — that capability requires a paid plan
+([`ngrok.com/docs/universal-gateway/domains/`](https://ngrok.com/docs/universal-gateway/domains/)).
+Practically: ngrok assigns the hostname (shape
+`https://<assigned-name>.ngrok-free.app`) and it does not change across
+restarts, at no cost and with no domain purchase or Cloudflare-style
+domain-onboarding step — but you do not pick the name, and the free plan
+gives you exactly one. Documented free-plan limits: 1 GB/month data transfer,
+20,000 HTTP requests/month, up to 3 concurrent online endpoints
 ([ngrok free plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits)).
 
 One real caveat: the free plan shows a one-time interstitial "this is served
@@ -250,12 +259,16 @@ continue. It does not affect the API traffic ChatGPT/Claude.ai make directly
 to `/mcp`.
 
 ```sh
-ngrok config add-authtoken <your-authtoken>   # from the ngrok dashboard, free account
-ngrok http --url=<your-assigned-name>.ngrok-free.app 3000
+ngrok config add-authtoken <your-authtoken>              # from the ngrok dashboard, free account
+ngrok http 3000 --url=<your-assigned-dev-domain>          # the hostname ngrok assigned you, from the dashboard's Domains page
 ```
 
-Set `PDPP_REFERENCE_ORIGIN=https://<your-assigned-name>.ngrok-free.app` in
-`.env` and restart the stack (`docker compose up -d`).
+`--url` is the documented flag for pinning a tunnel to a specific hostname
+([`ngrok.com/docs/http/#domain`](https://ngrok.com/docs/http/#domain)); the
+value is the Dev Domain ngrok already assigned your account, found on your
+ngrok dashboard's Domains page — not a name you invent. Set
+`PDPP_REFERENCE_ORIGIN=https://<your-assigned-dev-domain>` in `.env` and
+restart the stack (`docker compose up -d`).
 
 ### Stable, with a domain: Cloudflare named tunnel
 

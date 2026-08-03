@@ -251,8 +251,8 @@ docker compose up -d`}
             <a className="underline underline-offset-2" href={`${GITHUB_DOCKER_README}#public-https-for-chatgpt-and-claudeai`}>
               Public HTTPS for ChatGPT and Claude.ai
             </a>{" "}
-            for an ephemeral no-account trial, a stable no-domain option, and a stable option if you already own a
-            domain, then{" "}
+            for an ephemeral no-account trial, a stable option with no owned domain (ngrok's assigned Dev Domain), and
+            a stable option if you already own a domain (Cloudflare named tunnel), then{" "}
             <a className="underline underline-offset-2" href={GITHUB_HOSTED_MCP_SETUP}>
               hosted MCP setup
             </a>{" "}

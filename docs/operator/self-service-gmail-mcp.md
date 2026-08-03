@@ -93,7 +93,8 @@ with every MCP client or every OAuth profile.
   instead of `http://localhost:3000`.
 - [`../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai`](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai) —
   no-open-port public HTTPS for hosted AI clients: an ephemeral no-account
-  trial, a stable no-domain option, or a stable option if you own a domain.
+  trial, a stable option with no owned domain (ngrok's assigned Dev Domain),
+  or a stable option if you own a domain (Cloudflare named tunnel).
 - [`selfhost-quickstart.md`](selfhost-quickstart.md) — deployment notes and
   alternate platform lanes.
 - [`add-connection.md`](add-connection.md) — owner-mediated source setup.

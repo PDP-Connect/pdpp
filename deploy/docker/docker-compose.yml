@@ -218,8 +218,9 @@ services:
   # — Cloudflare does not issue a free subdomain for a named tunnel the way it
   # does for the ephemeral, testing-only Quick Tunnel (*.trycloudflare.com).
   # If you do not own a domain, see ./README.md#public-https-for-chatgpt-and-claudeai
-  # for a genuinely no-domain stable alternative (ngrok's free static dev
-  # domain) or the ephemeral Quick Tunnel path for a short trial.
+  # for a stable alternative that needs no owned domain (ngrok's free,
+  # automatically-assigned Dev Domain — not a name you choose) or the
+  # ephemeral Quick Tunnel path for a short trial.
   #
   # Setup (see ./README.md#public-https-for-chatgpt-and-claudeai for the full
   # walkthrough): add your domain to Cloudflare, run `cloudflared tunnel

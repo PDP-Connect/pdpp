@@ -19,10 +19,11 @@ for the normal copy-paste path; this runbook is the expanded reference.
   If you only have a local Docker Compose node, see
   [Public HTTPS for ChatGPT and Claude.ai](../../deploy/docker/README.md#public-https-for-chatgpt-and-claudeai)
   for three no-open-port options: an ephemeral no-account trial (Cloudflare
-  Quick Tunnel), a stable no-domain option (ngrok's free static domain), or a
-  stable option if you already own a domain (Cloudflare named tunnel — a
-  domain on Cloudflare is a hard prerequisite Cloudflare's own docs state for
-  this path specifically). No option requires a PDPP account.
+  Quick Tunnel), a stable option with no owned domain (ngrok's free assigned
+  Dev Domain — an automatically-assigned, unchosen hostname, not a domain you
+  register), or a stable option if you already own a domain (Cloudflare named
+  tunnel — a domain on Cloudflare is a hard prerequisite Cloudflare's own
+  docs state for this path specifically). No option requires a PDPP account.
   Claude Code and Codex are local agents and need none of this.
 - Owner login works for the deployment dashboard.
 - Public metadata resolves from the same origin:
