@@ -9,6 +9,7 @@
  * snapshot builders.
  */
 
+import { RECOVERY_ACTIONS } from "@pdpp/reference-contract/common";
 import {
   type BodyResponseDiagnostics,
   type SafeArtifactCaptureRecord,
@@ -33,24 +34,6 @@ const SAFE_GENERIC_REASONS = new Set(["diagnostic_sanitized"]);
 const SAFE_GENERIC_OUTCOMES = new Set(["unknown"]);
 const SAFE_GENERIC_TERMINAL_FAILURES = new Set<string>();
 const SAFE_GENERIC_CODES = new Set(["unknown"]);
-// The connector-neutral recovery-action vocabulary the runtime's own
-// recovery-hint normalization recognizes (`RECOVERY_ACTIONS`,
-// reference-implementation/runtime/connector-gap-bounding.ts). Mirrored here
-// (not imported — this package must not depend on reference-implementation)
-// so a connector's own honest recovery hint survives this safe-emission
-// boundary instead of being silently dropped and re-inferred from message
-// text that was deliberately kept provider-neutral/non-descriptive.
-const SAFE_RECOVERY_ACTIONS = new Set([
-  "retry_by_runtime",
-  "retry_on_connector_upgrade",
-  "refresh_credentials",
-  "manual_action_required",
-  "update_selector",
-  "capture_live_surface",
-  "upstream_unblock",
-  "not_retriable",
-  "unknown",
-]);
 const NETWORK_ERROR_PATTERN =
   /\bnetwork\b|\bfetch(?:\s+(?:failed|error))?\b|\bsocket\b|\bECONN[A-Z0-9_]*\b|net::ERR_[A-Z0-9_]+|connection reset/i;
 
@@ -613,7 +596,7 @@ function safeRecoveryHint(
   hint: string | { action?: string; retryable?: boolean } | undefined
 ): { action: string; retryable: boolean } | undefined {
   const action = typeof hint === "string" ? hint : hint?.action;
-  if (!(action && SAFE_RECOVERY_ACTIONS.has(action))) {
+  if (!(action && RECOVERY_ACTIONS.has(action))) {
     return;
   }
   const retryable = typeof hint === "object" && typeof hint.retryable === "boolean" ? hint.retryable : undefined;

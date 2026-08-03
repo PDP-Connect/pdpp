@@ -346,3 +346,197 @@ test("transient skip reasons are persisted with transient severity", async () =>
     }
   });
 });
+
+// Fixture proving requires_browser_runtime's product-level outcome, not just
+// protocol acceptance: an optional (required: false) stream hitting this
+// recovery_hint must stay informational and must not poison the whole
+// connection's known_gaps, while a REQUIRED stream hitting the identical
+// action must stay actionable — the fix must not weaken required-stream
+// gap reporting to buy the optional-stream fix.
+function makeMixedRequirednessManifest(connectorId = "https://registry.pdpp.test/connectors/gap-severity-mixed") {
+  return {
+    connector_id: connectorId,
+    display_name: "Gap severity mixed-requiredness fixture",
+    protocol_version: "0.1.0",
+    streams: [
+      {
+        name: "items",
+        primary_key: ["id"],
+        required: true,
+        schema: {
+          properties: { id: { type: "string" } },
+          required: ["id"],
+          type: "object",
+        },
+        semantics: "append_only",
+      },
+      {
+        name: "optional_stream",
+        primary_key: ["id"],
+        required: false,
+        schema: {
+          properties: { id: { type: "string" } },
+          required: ["id"],
+          type: "object",
+        },
+        semantics: "append_only",
+      },
+    ],
+    version: "0.1.0",
+  };
+}
+
+function createBrowserRuntimeConnector(
+  capturePath: string,
+  { itemsRequiresBrowserRuntime = false }: { itemsRequiresBrowserRuntime?: boolean } = {}
+): { connectorPath: string; cleanup: () => void } {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-gap-browser-runtime-"));
+  const connectorPath = join(tmpDir, "connector.mjs");
+  writeFileSync(
+    connectorPath,
+    `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+
+const capturePath = ${JSON.stringify(capturePath)};
+const itemsRequiresBrowserRuntime = ${JSON.stringify(itemsRequiresBrowserRuntime)};
+const rl = createInterface({ input: process.stdin, terminal: false });
+
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  writeFileSync(capturePath, JSON.stringify(msg.scope, null, 2));
+  const requested = new Set((msg.scope?.streams || []).map((stream) => stream.name));
+  if (itemsRequiresBrowserRuntime && requested.has('items')) {
+    process.stdout.write(JSON.stringify({
+      type: 'SKIP_RESULT',
+      stream: 'items',
+      reason: 'optional_stream_capability_missing',
+      message: 'items skipped -- this runtime has no browser available',
+      recovery_hint: { action: 'requires_browser_runtime', retryable: false },
+    }) + '\\n');
+  }
+  if (requested.has('optional_stream')) {
+    process.stdout.write(JSON.stringify({
+      type: 'SKIP_RESULT',
+      stream: 'optional_stream',
+      reason: 'optional_stream_capability_missing',
+      message: 'optional_stream skipped -- this runtime has no browser available',
+      recovery_hint: { action: 'requires_browser_runtime', retryable: false },
+    }) + '\\n');
+  }
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+  rl.close();
+  process.exit(0);
+});
+`,
+    "utf8"
+  );
+  return { cleanup: () => rmSync(tmpDir, { force: true, recursive: true }), connectorPath };
+}
+
+test("optional stream requires_browser_runtime skip is informational, not actionable", async () => {
+  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const manifest = makeMixedRequirednessManifest();
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      body: JSON.stringify(manifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(registerResp.status, 201);
+    const ownerToken = await issueOwnerToken(asUrl, "gap_severity_mixed_user");
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-gap-browser-runtime-optional-"));
+    const capturePath = join(tmpDir, "scope.json");
+    const { connectorPath, cleanup } = createBrowserRuntimeConnector(capturePath);
+    try {
+      const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "full_refresh",
+        connectorId: manifest.connector_id,
+        connectorPath,
+        manifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      });
+
+      assert.ok(result.known_gaps, "expected known_gaps to be present");
+      assert.equal(result.known_gaps.length, 1);
+      const [gap] = result.known_gaps;
+      assert.ok(gap, "expected a known gap entry");
+      assert.equal(gap.stream, "optional_stream");
+      assert.equal(
+        gap.severity,
+        "informational",
+        "an optional stream unavailable on this runtime must not read as owner-actionable"
+      );
+      // The whole-connection projection (hasTerminalKnownGap) treats
+      // anything other than informational/recoverable/transient as
+      // terminal -- proving informational here is what keeps a run with
+      // ALL required streams succeeding from flipping the connection's
+      // headline to a gap/Can't-collect state over an optional stream.
+      assert.notEqual(result.status, "failed");
+    } finally {
+      cleanup();
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("required stream requires_browser_runtime skip stays actionable", async () => {
+  const server = (await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 })) as TestServer;
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const manifest = makeMixedRequirednessManifest();
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      body: JSON.stringify(manifest),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(registerResp.status, 201);
+    const ownerToken = await issueOwnerToken(asUrl, "gap_severity_mixed_required_user");
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-gap-browser-runtime-required-"));
+    const capturePath = join(tmpDir, "scope.json");
+    const { connectorPath, cleanup } = createBrowserRuntimeConnector(capturePath, {
+      itemsRequiresBrowserRuntime: true,
+    });
+    try {
+      const result = await runConnector({
+        admitRunConnection: fakeAdmitRunConnection(),
+        collectionMode: "full_refresh",
+        connectorId: manifest.connector_id,
+        connectorPath,
+        manifest,
+        onInteraction: async () => ({}),
+        ownerToken,
+        persistState: true,
+        rsUrl,
+        state: null,
+      });
+
+      assert.ok(result.known_gaps, "expected known_gaps to be present");
+      const itemsGap = result.known_gaps.find((gap) => gap.stream === "items");
+      assert.ok(itemsGap, "expected a known gap entry for the required 'items' stream");
+      assert.equal(
+        itemsGap.severity,
+        "actionable",
+        "a REQUIRED stream unavailable on this runtime must still surface as owner/operator-actionable -- the optional-stream fix must not silently swallow a required-stream gap"
+      );
+    } finally {
+      cleanup();
+      rmSync(tmpDir, { force: true, recursive: true });
+    }
+  } finally {
+    await closeServer(server);
+  }
+});

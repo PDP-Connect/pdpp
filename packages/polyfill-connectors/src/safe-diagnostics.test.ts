@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { RECOVERY_ACTIONS } from "@pdpp/reference-contract/common";
 import { USAA_SAFE_DIAGNOSTICS_POLICY } from "../connectors/usaa/index.ts";
 import type { EmittedMessage } from "./connector-runtime-protocol.ts";
 import {
@@ -444,4 +445,49 @@ test("safe diagnostic info fails closed for top-level, nested, own-property, and
     }),
     { diag: null, error: "unknown", phase: "unknown" }
   );
+});
+
+// Drift-proof: every value registered in the shared RECOVERY_ACTIONS
+// vocabulary (packages/reference-contract/src/common/recovery-actions.ts)
+// must survive this sanitizer's closed-vocabulary boundary. If this
+// sanitizer ever reverts to a hardcoded literal (or grows a second,
+// independently-maintained allowlist) instead of consulting the shared
+// Set, a newly-registered action -- like requires_browser_runtime, added
+// for the Slack optional-stream browser-capability-missing case -- would
+// silently vanish from recovery_hint at this boundary even though it is a
+// protocol-valid action, exactly the class of drift this test exists to
+// catch. Iterating the shared Set itself (not a copy-pasted literal list)
+// means this test does not need to be updated when the vocabulary grows.
+test("every registered RECOVERY_ACTIONS value survives the safe SKIP_RESULT boundary", () => {
+  for (const action of RECOVERY_ACTIONS) {
+    const safe = sanitizeSafeEmission(
+      asEmittedMessage({
+        message: "stream skipped",
+        reason: "not_available",
+        recovery_hint: { action, retryable: false },
+        stream: "items",
+        type: "SKIP_RESULT",
+      })
+    );
+    assert.equal(safe.type, "SKIP_RESULT");
+    assert.deepEqual(
+      (safe as Extract<EmittedMessage, { type: "SKIP_RESULT" }>).recovery_hint,
+      { action, retryable: false },
+      `expected recovery_hint.action ${JSON.stringify(action)} to survive sanitization`
+    );
+  }
+});
+
+test("an unregistered recovery_hint action is dropped, not passed through", () => {
+  const safe = sanitizeSafeEmission(
+    asEmittedMessage({
+      message: "stream skipped",
+      reason: "not_available",
+      recovery_hint: { action: "not_a_real_action", retryable: true },
+      stream: "items",
+      type: "SKIP_RESULT",
+    })
+  );
+  assert.equal(safe.type, "SKIP_RESULT");
+  assert.equal((safe as Extract<EmittedMessage, { type: "SKIP_RESULT" }>).recovery_hint, undefined);
 });

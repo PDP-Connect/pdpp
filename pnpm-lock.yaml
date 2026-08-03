@@ -413,6 +413,9 @@ importers:
 
   packages/polyfill-connectors:
     dependencies:
+      '@pdpp/reference-contract':
+        specifier: workspace:*
+        version: link:../reference-contract
       '@streamparser/json':
         specifier: ^0.0.22
         version: 0.0.22

@@ -15,7 +15,8 @@
 //              boundConnectorErrorMessage, boundConsideredCount,
 //              normalizeRecoveryHint, normalizeGapScope,
 //              buildCollectionFacts, buildRecoveryGapClosureFacts, buildKnownGap
-//   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS
+//   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX
+//   Re-exported (owned by @pdpp/reference-contract/common): RECOVERY_ACTIONS
 //
 // Private (not exported): projectDiagnosticsNode, classifyKnownGapSeverity,
 //   normalizeConsideredInDiagnostics, GAP_SEVERITIES, INFORMATIONAL_GAP_REASONS,
@@ -27,6 +28,7 @@
 // No Playwright/CDP/raw-DOM terms. Closed connector evidence is revalidated
 // here before it can enter the durable spine.
 
+import { RECOVERY_ACTIONS } from "@pdpp/reference-contract/common";
 import { isNullish } from "../lib/nullish.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
@@ -76,18 +78,13 @@ const TRANSIENT_GAP_REASONS = new Set([
   "upstream_pressure_deferred",
 ]);
 
-export const RECOVERY_ACTIONS = new Set([
-  "retry_by_runtime",
-  "retry_on_connector_upgrade",
-  "refresh_credentials",
-  "manual_action_required",
-  "update_selector",
-  "capture_live_surface",
-  "requires_browser_runtime",
-  "upstream_unblock",
-  "not_retriable",
-  "unknown",
-]);
+// RECOVERY_ACTIONS is re-exported here (not owned here) so existing
+// consumers of this module's public facade (`runtime/index.ts` and any
+// test that imports it from this path) don't need to also learn the
+// `@pdpp/reference-contract` import path. The single source of truth for
+// the value set lives in packages/reference-contract/src/common/recovery-actions.ts.
+// biome-ignore lint/performance/noBarrelFile: intentional single-symbol re-export preserving this module's existing public facade, not a barrel file.
+export { RECOVERY_ACTIONS } from "@pdpp/reference-contract/common";
 
 // ── BOUNDING FUNCTIONS ────────────────────────────────────────────────────────
 
@@ -804,6 +801,7 @@ function classifyKnownGapSeverity({
   recoveryHint,
   explicitSelection = false,
   severity = null,
+  streamRequired = true,
   unsupportedInDefaultScope = false,
 }: {
   kind: string;
@@ -811,6 +809,7 @@ function classifyKnownGapSeverity({
   recoveryHint: unknown;
   explicitSelection?: boolean;
   severity?: string | null;
+  streamRequired?: boolean;
   unsupportedInDefaultScope?: boolean;
 }): string {
   if (typeof severity === "string" && GAP_SEVERITIES.has(severity)) {
@@ -844,6 +843,20 @@ function classifyKnownGapSeverity({
   if (action === "retry_by_runtime") {
     return "transient";
   }
+  // Not owner-fixable and not runtime-retryable: the remedy is an
+  // operational/placement decision (running this connector on a runtime
+  // that advertises the required capability), which is a maintainer/system
+  // concern, not something the owner can act on. Out of scope by design,
+  // same as any other informational gap — but ONLY for a stream the
+  // manifest itself marks non-required (`streamRequired === false`).
+  // A required stream hitting this must stay actionable: the connector
+  // cannot serve a mandatory stream, which the manifest promised it could.
+  // Mirrors the explicitSelection override above: if the owner explicitly
+  // asked for this stream, its absence is worth their attention even
+  // though the underlying cause is a runtime placement issue.
+  if (action === "requires_browser_runtime" && !streamRequired && !explicitSelection) {
+    return "informational";
+  }
   return "actionable";
 }
 
@@ -860,6 +873,7 @@ interface BuildKnownGapInput {
   scope?: Record<string, unknown> | null;
   severity?: string | null;
   stream?: string | null;
+  streamRequired?: boolean;
   unsupportedInDefaultScope?: boolean;
 }
 
@@ -873,6 +887,7 @@ export function buildKnownGap({
   interactionKind = null,
   explicitSelection = false,
   severity = null,
+  streamRequired = true,
   unsupportedInDefaultScope = false,
   diagnostics = null,
 }: BuildKnownGapInput): Record<string, unknown> {
@@ -884,6 +899,7 @@ export function buildKnownGap({
     reason: safeReason,
     recoveryHint,
     severity,
+    streamRequired,
     unsupportedInDefaultScope,
   });
   const boundedDiagnostics = normalizeConsideredInDiagnostics(boundGapDiagnostics(diagnostics));

@@ -89,6 +89,7 @@ interface ManifestStream {
   consent_time_field?: string | null;
   name: string;
   primary_key?: string | string[] | null;
+  required?: boolean;
   schema?: { required?: string[] } | null;
   selection?: { resource_field?: string } | null;
   state_stream?: string | null;
@@ -4312,6 +4313,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         recoveryHint: msg.recovery_hint || null,
         scope: normalizeGapScope(msg),
         stream: skipStream,
+        streamRequired: skippedManifestStream?.required !== false,
         unsupportedInDefaultScope: streamUnsupportedInDefaultScope(skippedManifestStream),
       });
       appendKnownGap(gap);

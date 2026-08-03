@@ -202,3 +202,4 @@ export const PaginationQuerySchema: JsonSchema = {
 // See openspec/changes/canonicalize-public-read-contract/.
 // biome-ignore lint/performance/noBarrelFile: ./common is the package's named entry point for shared schema helpers — call sites import members by name; the canonical primitives live in a sibling module to keep this file's legacy helpers untouched during the migration window.
 export * from "./canonical.ts";
+export { RECOVERY_ACTIONS } from "./recovery-actions.ts";
