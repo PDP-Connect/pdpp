@@ -19,6 +19,7 @@
 
 import type { CoverageAxis } from "../runtime/connection-health.ts";
 import type { RuntimeCollectionFact, RuntimeCollectionFactSkip } from "./ref-control.ts";
+import { isRetryableCollectionFactSkip } from "./collection-fact-skip.ts";
 
 /** Accepted-coverage policy a manifest stream may declare for an absence. */
 export type AcceptedCoveragePolicy = "deferred" | "inventory_only" | "unavailable" | "unsupported";
@@ -190,7 +191,7 @@ const UNSUPPORTED_SKIP_REASON_PATTERN = /(unsupported|not_supported|capability|i
  */
 export function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): CoverageAxis {
   const reason = skip.reason.toLowerCase();
-  if (skip.recovery_action === "retry_by_runtime") {
+  if (isRetryableCollectionFactSkip(skip)) {
     return "retryable_gap";
   }
   if (RETRYABLE_SKIP_REASON_PATTERN.test(reason)) {

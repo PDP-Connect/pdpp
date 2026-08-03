@@ -30,6 +30,11 @@
 
 import { RECOVERY_ACTIONS } from "@pdpp/reference-contract/common";
 import { isNullish } from "../lib/nullish.ts";
+import {
+  collectionFactSkipFromGap,
+  isBrowserRuntimeCapability,
+  recoveryHintAction,
+} from "./capability-absence.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
 
 // ── CLUSTER-EXCLUSIVE CONSTANTS ───────────────────────────────────────────────
@@ -374,23 +379,13 @@ interface KnownGap {
   kind: string;
   reason?: string;
   recovery_hint?: unknown;
+  severity?: string;
   status?: string;
   stream?: string;
 }
 
-function recoveryActionForSkip(gap: KnownGap): string | null {
-  if (typeof gap.recovery_hint === "string") {
-    return gap.recovery_hint;
-  }
-  if (gap.recovery_hint && typeof gap.recovery_hint === "object") {
-    const { action } = gap.recovery_hint as { action?: unknown };
-    return typeof action === "string" ? action : null;
-  }
-  return null;
-}
-
 function skipEvidenceRank(gap: KnownGap): number {
-  const action = recoveryActionForSkip(gap);
+  const action = recoveryHintAction(gap.recovery_hint);
   // Multiple connector accounts can produce multiple SKIP_RESULTs for one
   // collection stream. Keep explicit owner/maintainer evidence above a
   // runtime retry, and keep a retry above an unclassified diagnostic.
@@ -592,16 +587,14 @@ export function buildCollectionFacts({
     return null;
   };
 
-  const skipForStream = (stream: string): { reason: string | undefined; recovery_action?: string } | null => {
+  const skipForStream = (
+    stream: string
+  ): ReturnType<typeof collectionFactSkipFromGap> | null => {
     const selected = selectMostDegradingSkip(knownGaps, stream);
     if (!selected) {
       return null;
     }
-    const action = recoveryActionForSkip(selected);
-    return {
-      reason: selected.reason,
-      ...(action ? { recovery_action: action } : {}),
-    };
+    return collectionFactSkipFromGap(selected);
   };
 
   const pendingDetailGapsForStream = (stream: string): number =>
@@ -833,14 +826,11 @@ function classifyKnownGapSeverity({
   if (TRANSIENT_GAP_REASONS.has(reason)) {
     return "transient";
   }
-  let action: unknown = null;
-  if (typeof recoveryHint === "string") {
-    action = recoveryHint;
-  } else if (recoveryHint && typeof recoveryHint === "object") {
-    // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-    action = (recoveryHint as { action?: unknown }).action;
-  }
+  const action = recoveryHintAction(recoveryHint);
   if (action === "retry_by_runtime") {
+    return "transient";
+  }
+  if (isBrowserRuntimeCapability(recoveryHint, true)) {
     return "transient";
   }
   // Not owner-fixable and not runtime-retryable: the remedy is an
@@ -854,7 +844,7 @@ function classifyKnownGapSeverity({
   // Mirrors the explicitSelection override above: if the owner explicitly
   // asked for this stream, its absence is worth their attention even
   // though the underlying cause is a runtime placement issue.
-  if (action === "requires_browser_runtime" && !streamRequired && !explicitSelection) {
+  if (isBrowserRuntimeCapability(recoveryHint, false) && !streamRequired && !explicitSelection) {
     return "informational";
   }
   return "actionable";

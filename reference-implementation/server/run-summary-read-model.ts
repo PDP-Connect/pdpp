@@ -2,43 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getRunTerminalEvent, listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
-
-export interface RuntimeCollectionFactSkip {
-  readonly reason: string;
-  readonly recovery_action?: string;
-}
-
-/**
- * One per-stream entry of the runtime `collection_facts` block (Tranche B). These
- * are OBJECTIVE run-local facts only: the runtime stamps NO coverage condition or
- * forward disposition (those are derived on read by `buildCollectionReport`).
- * `considered` is `null` when the connector declared no considered denominator —
- * the projection reads `null` as `unknown` and NEVER infers `complete` from
- * `collected` alone.
- */
-export interface RuntimeCollectionFact {
-  readonly checkpoint: string | null;
-  readonly collected: number;
-  readonly considered: number | null;
-  /**
-   * Optional connector-declared `covered` count: the in-boundary items the run
-   * accounted for (emitted + suppressed-because-unchanged), or `null` when the
-   * connector declared none. When non-null the coverage gate compares `considered`
-   * against this instead of `collected`, so a steady-state full-sync run that
-   * suppressed every unchanged record reads `complete` rather than a false
-   * `partial`. NEVER inferred from `collected`; a weighed-but-dropped item is in
-   * neither count, so a real shortfall still reads `partial`.
-   */
-  readonly covered: number | null;
-  readonly pending_detail_gaps: number;
-  readonly skipped: RuntimeCollectionFactSkip | null;
-  readonly stream: string;
-}
-
-/** The runtime `collection_facts` terminal-event block, parsed defensively. */
-export interface RuntimeCollectionFacts {
-  readonly streams: readonly RuntimeCollectionFact[];
-}
+import type { RuntimeCollectionFacts } from "./ref-control.ts";
+import { readCollectionFactsFromTerminalData } from "./runtime-collection-facts.ts";
 
 export interface ConnectorRunSummary {
   /**
@@ -98,81 +63,6 @@ function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): un
   return [];
 }
 
-function readSafeNonNegativeInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-function readFiniteNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return null;
-  }
-  const entry = raw as Record<string, unknown>;
-  if (typeof entry.stream !== "string" || !entry.stream) {
-    return null;
-  }
-  return {
-    checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
-    collected: readFiniteNumber(entry.collected, 0),
-    // `considered` and `covered` are OMITTED upstream when unknown. Re-validate
-    // defensively: anything not a safe non-negative integer reads as absent,
-    // never as a fabricated denominator or numerator.
-    considered: readSafeNonNegativeInteger(entry.considered),
-    covered: readSafeNonNegativeInteger(entry.covered),
-    pending_detail_gaps: readFiniteNumber(entry.pending_detail_gaps, 0),
-    skipped: readCollectionFactSkip(entry.skipped),
-    stream: entry.stream,
-  };
-}
-
-/**
- * Read the runtime `collection_facts` block (the Tranche B per-stream fact
- * block) off a terminal-event payload. The runtime attaches only objective,
- * run-local facts here (collected count, considered-or-`unknown`, checkpoint,
- * skip, pending-detail-gap count) and stamps NO coverage condition or forward
- * disposition — those are derived on read by the control-plane projection
- * (`buildCollectionReport`). Returns `null` for an old run that predates the
- * block, a `run.failed` that exited before the terminal builder ran, or any
- * malformed payload — absence reads as "no facts", never as `complete`.
- */
-function readCollectionFactsFromTerminalData(data: Record<string, unknown> | null): RuntimeCollectionFacts | null {
-  if (!data) {
-    return null;
-  }
-  const block = data.collection_facts;
-  if (!block || typeof block !== "object" || Array.isArray(block)) {
-    return null;
-  }
-  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
-  const streams = (block as { streams?: unknown }).streams;
-  if (!Array.isArray(streams)) {
-    return null;
-  }
-  const entries: RuntimeCollectionFact[] = [];
-  for (const raw of streams) {
-    const fact = readRuntimeCollectionFact(raw);
-    if (fact) {
-      entries.push(fact);
-    }
-  }
-  return { streams: entries };
-}
-
-function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSkip | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const skip = value as Record<string, unknown>;
-  const reason = typeof skip.reason === "string" ? skip.reason : null;
-  if (reason === null) {
-    return null;
-  }
-  const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : null;
-  return { reason, ...(recoveryAction ? { recovery_action: recoveryAction } : {}) };
-}
 
 export async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
   if (!summary) {

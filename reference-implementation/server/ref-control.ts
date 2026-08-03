@@ -450,12 +450,15 @@ interface StreamSummary {
 /**
  * The skip fact the runtime attaches to a `collection_facts` stream entry when
  * the connector emitted `SKIP_RESULT` for that stream. Carries only the bounded
- * reason and the recovery action the runtime already redacts onto the known-gap
- * — never free-text diagnostics.
+ * reason plus the recovery action/retryability the runtime already redacts onto
+ * the known-gap — never free-text diagnostics. The retryability bit is required
+ * to distinguish an accepted optional capability absence from retryable work.
  */
 export interface RuntimeCollectionFactSkip {
   readonly reason: string;
   readonly recovery_action?: string;
+  readonly recovery_retryable?: boolean;
+  readonly severity?: string;
 }
 
 /**

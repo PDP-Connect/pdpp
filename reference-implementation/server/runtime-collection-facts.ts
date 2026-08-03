@@ -11,7 +11,8 @@
 // `parseCollectionRatePayload` from here.
 
 import type { CollectionRateSnapshot } from "../runtime/connection-health.ts";
-import type { RuntimeCollectionFact, RuntimeCollectionFactSkip, RuntimeCollectionFacts } from "./ref-control.ts";
+import type { RuntimeCollectionFact, RuntimeCollectionFacts } from "./ref-control.ts";
+import { readCollectionFactSkip } from "./collection-fact-skip.ts";
 
 const COLLECTION_RATE_NUMBER_FIELDS = [
   "ceiling_interval_ms",
@@ -97,18 +98,7 @@ export function readCollectionFactsFromTerminalData(
   return { streams: entries };
 }
 
-export function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSkip | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const skip = value as Record<string, unknown>;
-  const reason = typeof skip.reason === "string" ? skip.reason : null;
-  if (reason === null) {
-    return null;
-  }
-  const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : null;
-  return { reason, ...(recoveryAction ? { recovery_action: recoveryAction } : {}) };
-}
+export { readCollectionFactSkip } from "./collection-fact-skip.ts";
 
 function readCollectionRateNumbers(entry: Record<string, unknown>): CollectionRateNumbers | null {
   const values = COLLECTION_RATE_NUMBER_FIELDS.map((field) => [field, entry[field]] as const);

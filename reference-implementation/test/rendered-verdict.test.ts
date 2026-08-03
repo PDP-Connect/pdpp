@@ -716,6 +716,22 @@ test("coverage: a terminal optional stream is still red (a lost stream is lost)"
   assert.equal(v.pill.tone, "red");
 });
 
+test("coverage: an accepted optional capability absence stays green with no code fix", () => {
+  const snap = snapshot({ forward_disposition: "complete", state: "healthy" });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: "unsupported", priority: "accepted_absence", stream_id: "optional_capability" })],
+    null,
+    true
+  );
+  assert.equal(v.pill.tone, "green");
+  assert.equal(v.detail.forward_disposition, "complete");
+  assert.equal(
+    v.required_actions.some((action) => action.kind === "code_fix"),
+    false
+  );
+});
+
 // ─── 3.3 collected clamp ──────────────────────────────────────────────────────
 
 test("streams: collected is clamped to considered — no 3/2 (inv2)", () => {

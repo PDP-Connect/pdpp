@@ -30,6 +30,7 @@ import {
   isExplicitOwnerScheduledManual,
   isManualRefreshOnly,
 } from "./connection-health.ts";
+import { isAcceptedOptionalCapabilityAbsence } from "./capability-absence.ts";
 import {
   type ProgressEvidence,
   type ProgressMode,
@@ -50,6 +51,11 @@ export interface CollectionReportEntryLike {
   readonly considered: number | "unknown";
   readonly coverage_condition: CoverageAxis;
   readonly pending_detail_gaps: number;
+  readonly skipped?: {
+    readonly recovery_action?: string;
+    readonly recovery_retryable?: boolean;
+    readonly severity?: string;
+  } | null;
   readonly stream: string;
 }
 
@@ -106,6 +112,25 @@ export function streamPriority(stream: ManifestStreamLike | undefined): StreamRo
   return "optional";
 }
 
+function isConnectionCompleteReportGap(entry: CollectionReportEntryLike, snapshot: ConnectionHealthSnapshot): boolean {
+  const nonDemotableCoverage = new Set<CoverageAxis>(["complete", "terminal_gap", "unsupported", "unavailable", "unknown"]);
+  return snapshot.axes.coverage === "complete" && entry.pending_detail_gaps === 0 && !nonDemotableCoverage.has(entry.coverage_condition);
+}
+
+function effectiveStreamPriority(
+  entry: CollectionReportEntryLike,
+  stream: ManifestStreamLike | undefined,
+  snapshot: ConnectionHealthSnapshot
+): StreamRollup["priority"] {
+  if (isAcceptedOptionalCapabilityAbsence(stream?.required, entry.skipped)) {
+    return "accepted_absence";
+  }
+  if (entry.coverage_condition === "retryable_gap" || entry.pending_detail_gaps > 0) {
+    return "required";
+  }
+  return isConnectionCompleteReportGap(entry, snapshot) ? "optional" : streamPriority(stream);
+}
+
 /**
  * Map the Collection Report + manifest streams + the connection-level attention
  * axis onto the synthesizer's per-stream rollups. There is no per-stream
@@ -122,7 +147,6 @@ export function buildStreamRollups(
   return report.map((entry) => {
     const manifestStream = streamByName.get(entry.stream);
     const retryable = isRetryableCoverage(entry.coverage_condition) || entry.pending_detail_gaps > 0;
-    const priority = streamPriority(manifestStream);
     // A successful connection-level coverage rollup is authoritative over a
     // per-stream latest-run denominator/sample gap. Some connectors can prove
     // "the run completed and no gaps remain" at the connection level even when
@@ -142,15 +166,11 @@ export function buildStreamRollups(
     // non-required `unknown` entry riding alongside an otherwise-complete
     // axis) still cannot demote a genuinely unmeasured required stream to
     // grey-but-optional.
-    const connectionCompleteReportGap =
-      snapshot.axes.coverage === "complete" &&
-      entry.pending_detail_gaps === 0 &&
-      entry.coverage_condition !== "complete" &&
-      entry.coverage_condition !== "terminal_gap" &&
-      entry.coverage_condition !== "unsupported" &&
-      entry.coverage_condition !== "unavailable" &&
-      entry.coverage_condition !== "unknown";
-    const effectivePriority = connectionCompleteReportGap ? "optional" : priority;
+    // A retryable optional stream is still unfinished work, so it remains
+    // load-bearing. Only the explicit non-retryable capability absence above
+    // is accepted; an optional stream that failed or can be retried remains
+    // fail-closed like required work.
+    const effectivePriority = effectiveStreamPriority(entry, manifestStream, snapshot);
     return {
       // Connection-level attention is the only attention signal the projection
       // exposes; attribute it to a stream only when that stream is not complete,

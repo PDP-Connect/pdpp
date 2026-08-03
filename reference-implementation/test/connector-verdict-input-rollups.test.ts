@@ -213,6 +213,61 @@ test("buildStreamRollups: pending detail gaps block the complete-connection demo
   assert.equal(row.gap_retryable, true, "pending gaps also make it retryable");
 });
 
+test("buildStreamRollups: only an optional explicit non-retryable capability absence is accepted", () => {
+  const manifestStreams: ManifestStreamLike[] = [{ name: "optional_stream", required: false }];
+  const accepted = buildStreamRollups(
+    [
+      entry({
+        coverage_condition: "unsupported",
+        skipped: { recovery_action: "requires_browser_runtime", recovery_retryable: false, severity: "informational" },
+        stream: "optional_stream",
+      }),
+    ],
+    manifestStreams,
+    snap()
+  );
+  assert.equal(accepted[0]?.priority, "accepted_absence");
+
+  const retryable = buildStreamRollups(
+    [
+      entry({
+        coverage_condition: "retryable_gap",
+        skipped: { recovery_action: "requires_browser_runtime", recovery_retryable: true, severity: "informational" },
+        stream: "optional_stream",
+      }),
+    ],
+    manifestStreams,
+    snap({ coverage: "retryable_gap" })
+  );
+  assert.equal(retryable[0]?.priority, "required", "retryable optional work remains load-bearing");
+
+  const required = buildStreamRollups(
+    [
+      entry({
+        coverage_condition: "unsupported",
+        skipped: { recovery_action: "requires_browser_runtime", recovery_retryable: false, severity: "informational" },
+        stream: "optional_stream",
+      }),
+    ],
+    [{ name: "optional_stream", required: true }],
+    snap()
+  );
+  assert.equal(required[0]?.priority, "required", "required capability absence remains load-bearing");
+
+  const unclassified = buildStreamRollups(
+    [
+      entry({
+        coverage_condition: "unsupported",
+        skipped: { recovery_action: "requires_browser_runtime", recovery_retryable: false },
+        stream: "optional_stream",
+      }),
+    ],
+    manifestStreams,
+    snap()
+  );
+  assert.equal(unclassified[0]?.priority, "optional", "an absent informational severity is not accepted");
+});
+
 test("buildStreamRollups: stream_id, collected, and coverage echo the report entry", () => {
   const rows = buildStreamRollups(
     [entry({ collected: 7, coverage_condition: "gaps", stream: "orders" })],

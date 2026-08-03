@@ -45,6 +45,7 @@ import {
   isManualRefreshOnly,
   type OwnerActionSurface,
 } from "./connection-health.ts";
+import { isLoadBearingTerminalCoverage, isLoadBearingTerminalDisposition } from "./capability-absence.ts";
 
 // ─── Public verdict types ──────────────────────────────────────────────────
 
@@ -613,15 +614,14 @@ function outboxTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
  * `accepted_absence`/`optional` stream that is merely stale or partial annotates but
  * does NOT downgrade the pill below the required-stream tone (mitigates "worst-wins
  * over-ambers on a trivial optional stream", design Risks). A required stream always
- * contributes its full tone. A terminal/unsupported coverage on ANY stream is a real
- * red regardless of priority — a lost stream is a lost stream.
+ * contributes its full tone. A terminal/unsupported coverage on any stream is red
+ * unless the input already classified it as an accepted absence.
  */
 function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone {
   let worstTone: VerdictTone = "green";
   for (const stream of streams) {
     const tone = coverageTone(stream.coverage);
-    const isHardRed = tone === "red"; // terminal/unsupported/unavailable
-    if (stream.priority === "required" || isHardRed) {
+    if (stream.priority === "required" || isLoadBearingTerminalCoverage(stream.priority, stream.coverage)) {
       worstTone = worse(worstTone, tone);
     }
     // optional/accepted-absence non-red coverage annotates only; does not downgrade.
@@ -651,14 +651,15 @@ function connectionDisposition(
   // Worst-wins over per-stream dispositions, each derived through the oracle —
   // weighted by manifest priority exactly as the coverage rollup is. A required
   // stream always contributes its disposition; an optional / accepted-absence
-  // stream contributes only when its disposition is `terminal` (a lost stream is
-  // lost regardless of priority). This keeps disposition and coverage consistent so
-  // a trivially-stale optional stream does not amber the whole connection.
+  // stream contributes only when its disposition is `terminal` and it is not an
+  // accepted absence. This keeps disposition and coverage consistent so a
+  // capability the manifest explicitly made optional cannot manufacture a
+  // terminal connection verdict.
   let worstRank = TONE_RANK[dispositionTone(snapshot.forward_disposition)];
   let worst: ForwardDisposition = snapshot.forward_disposition;
   for (const stream of streams) {
     const disposition = streamDisposition(stream, snapshot, refresh, scheduleEvidence);
-    const counts = stream.priority === "required" || disposition === "terminal";
+    const counts = stream.priority === "required" || isLoadBearingTerminalDisposition(stream.priority, disposition);
     if (!counts) {
       continue;
     }
@@ -1255,7 +1256,7 @@ function reauthSatisfaction(surface: OwnerActionSurface): SatisfactionContract {
 
 function terminalStreamIds(streams: readonly StreamRollup[]): string[] {
   return streams
-    .filter((s) => s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable")
+    .filter((stream) => isLoadBearingTerminalCoverage(stream.priority, stream.coverage))
     .map((s) => s.stream_id);
 }
 

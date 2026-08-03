@@ -15,7 +15,7 @@ interface BaseInputOverrides {
   detailCoverageByStateStream?: Map<string, { stream: string; considered: number; covered: number }[]>;
   durableDetailGaps?: { kind: string; stream: string; status: string }[];
   emittedByStream?: Map<string, number>;
-  knownGaps?: { kind: string; reason?: string; recovery_hint?: unknown; stream?: string }[];
+  knownGaps?: { kind: string; reason?: string; recovery_hint?: unknown; severity?: string; stream?: string }[];
   recoveryOnly: boolean;
   scopeByStream?: Map<string, unknown>;
 }
@@ -134,6 +134,7 @@ test("collection facts preserve the most-degrading same-stream skip, not the fir
           kind: "skip_result",
           reason: "credit_card_export_unverified",
           recovery_hint: { action: "update_selector", retryable: false },
+          severity: "actionable",
           stream: "transactions",
         },
       ],
@@ -149,9 +150,64 @@ test("collection facts preserve the most-degrading same-stream skip, not the fir
     skipped: {
       reason: "credit_card_export_unverified",
       recovery_action: "update_selector",
+      recovery_retryable: false,
+      severity: "actionable",
     },
     stream: "transactions",
   });
+});
+
+test("collection facts retain an explicit skip retryability bit", () => {
+  const facts = buildCollectionFacts(
+    baseInput({
+      knownGaps: [
+        {
+          kind: "skip_result",
+          reason: "optional_stream_capability_missing",
+          recovery_hint: { action: "requires_browser_runtime", retryable: false },
+          severity: "informational",
+          stream: "transactions",
+        },
+      ],
+      recoveryOnly: false,
+      scopeByStream: new Map([["transactions", { name: "transactions" }]]),
+    })
+  );
+  assert.ok(facts);
+  assert.deepEqual((facts.streams[0] as { skipped?: unknown }).skipped, {
+    reason: "optional_stream_capability_missing",
+    recovery_action: "requires_browser_runtime",
+    recovery_retryable: false,
+    severity: "informational",
+  });
+});
+
+test("known-gap severity accepts only an explicit non-retryable optional browser capability absence", () => {
+  const severity = (overrides: Parameters<typeof buildKnownGap>[0]) => buildKnownGap(overrides).severity;
+  const base = {
+    kind: "skip_result",
+    reason: "optional_stream_capability_missing",
+    recoveryHint: { action: "requires_browser_runtime", retryable: false },
+    stream: "optional_stream",
+  } as const;
+
+  assert.equal(severity({ ...base, streamRequired: false }), "informational");
+  assert.equal(severity({ ...base, streamRequired: true }), "actionable", "required stream remains fail-closed");
+  assert.equal(
+    severity({ ...base, recoveryHint: { action: "requires_browser_runtime", retryable: true }, streamRequired: false }),
+    "transient",
+    "retryable optional work remains fail-closed"
+  );
+  assert.equal(
+    severity({ ...base, recoveryHint: { action: "requires_browser_runtime" }, streamRequired: false }),
+    "actionable",
+    "retryability must be explicit"
+  );
+  assert.equal(
+    severity({ ...base, recoveryHint: { action: "update_selector", retryable: false }, streamRequired: false }),
+    "actionable",
+    "only the declared browser-capability action is accepted"
+  );
 });
 
 test("runtime preserves a terminal live-surface capture action instead of normalizing it to unknown", () => {
