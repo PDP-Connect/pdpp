@@ -5,9 +5,6 @@ packages:
 overrides:
   "@pdpp/cli": "workspace:*"
   "@pdpp/read-core": "workspace:*"
-  # LOCAL-ONLY dependency overlay: unpublished remote-surface tarball for UAT candidate 0803.
-  # MUST be replaced by the real semantic-release patch before any push/PR/merge to main.
-  "@opendatalabs/remote-surface": "file:./local-artifacts/vendor/opendatalabs-remote-surface-0.3.1-rs-lease-cleanup-contract-0803.tgz"
 onlyBuiltDependencies:
   - "better-sqlite3"
   - "esbuild"

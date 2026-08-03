@@ -74,6 +74,6 @@
   },
   "license": "Apache-2.0",
   "optionalDependencies": {
-    "@opendatalabs/remote-surface": "^1.5.1"
+    "@opendatalabs/remote-surface": "file:../local-artifacts/vendor/opendatalabs-remote-surface-0.3.1-rs-lease-cleanup-contract-0803.tgz"
   }
 }

@@ -67,6 +67,8 @@
     "release:dry-run": "semantic-release --dry-run --no-ci",
     "release:policy-check": "node --import tsx scripts/check-package-release-policy.ts",
     "release:policy-check:test": "node --test --import tsx scripts/check-package-release-policy.test.ts",
+    "remote-surface:overlay-boundary-check": "node --import tsx scripts/check-remote-surface-overlay-boundary.ts",
+    "remote-surface:overlay-boundary-check:test": "node --test --import tsx scripts/check-remote-surface-overlay-boundary.test.ts",
     "release:matrix": "node --import tsx scripts/release-package-matrix.ts",
     "release:matrix:test": "node --test --import tsx scripts/release-package-matrix.test.ts",
     "release:local": "pnpm release:policy-check && pnpm release:matrix",
