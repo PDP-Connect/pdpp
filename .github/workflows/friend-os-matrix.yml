@@ -1,0 +1,303 @@
+name: friend-os-matrix
+
+# Clean-machine, cross-platform proof for the self-host quickstart
+# (docs/operator/selfhost-quickstart.md). Runs the documented
+# secret-generation, Compose-fetch, and (where a Linux Docker daemon is
+# actually available) full `docker compose up` + health/owner-login path with
+# no repository clone and no provider credentials, on ubuntu-latest,
+# macos-latest, and windows-latest.
+#
+# This exists because a prior audit
+# (see docs/operator/selfhost-quickstart.md history / friend readiness
+# reports) claimed "VERIFIED" on macOS and Windows from syntax inspection on
+# Linux alone — no command was ever executed on those platforms. That is not
+# verification; a job that runs on the real OS is. This workflow separates
+# what genuinely ran (secret generation, Compose fetch, `docker compose
+# config`) from what the platform structurally cannot run (a Linux
+# container daemon on hosted macOS; Linux containers on hosted Windows) and
+# reports the boundary instead of overclaiming it away.
+#
+# Non-destructive by construction: it operates in a throwaway job workspace,
+# fetches only the public, pinned Compose file over HTTPS, generates local
+# secrets that are discarded with the runner, and — on the one platform that
+# can run the full stack (ubuntu-latest) — tears the stack down at the end of
+# the job. No provider credentials are used or required anywhere in this
+# workflow; browser-backed connectors and any public tunnel are out of scope.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/friend-os-matrix.yml"
+      - "deploy/docker/docker-compose.yml"
+      - "docs/operator/selfhost-quickstart.md"
+      - "scripts/extract-doc-command-block.ts"
+      - "scripts/friend-os-matrix/**"
+  merge_group: {}
+  workflow_dispatch: {}
+
+concurrency:
+  group: friend-os-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # Pinned commit the quickstart docs reference; kept as a workflow env var
+  # (not hardcoded per-step) so bumping the pinned SHA is a one-line change.
+  PDPP_QUICKSTART_COMMIT: cc07e3a896c2c0df7841da4ec6b2c660ffe1e792
+
+jobs:
+  extract-doc-commands:
+    name: extract documented commands (once, shared across OSes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      posix_secret_block: ${{ steps.extract.outputs.posix_secret_block }}
+      powershell_secret_block: ${{ steps.extract.outputs.powershell_secret_block }}
+      fetch_block: ${{ steps.extract.outputs.fetch_block }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Extract the exact documented command blocks
+        id: extract
+        run: |
+          set -euo pipefail
+          {
+            echo "posix_secret_block<<POSIX_EOF"
+            npx --yes tsx scripts/extract-doc-command-block.ts \
+              docs/operator/selfhost-quickstart.md \
+              "macOS and Linux (bash or zsh):" sh
+            echo
+            echo "POSIX_EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "powershell_secret_block<<PWSH_EOF"
+            npx --yes tsx scripts/extract-doc-command-block.ts \
+              docs/operator/selfhost-quickstart.md \
+              "Windows PowerShell (the block above cannot work there" powershell
+            echo
+            echo "PWSH_EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "fetch_block<<FETCH_EOF"
+            npx --yes tsx scripts/extract-doc-command-block.ts \
+              docs/operator/selfhost-quickstart.md \
+              "### 1. Fetch the blessed compose stack" sh
+            echo
+            echo "FETCH_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  friend-os-matrix:
+    name: ${{ matrix.os }}
+    needs: extract-doc-commands
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      # No checkout: the whole point is a clean machine following only the
+      # published docs, the way a real operator would. The one exception is
+      # the extract-doc-commands job above, which needs the repo to read the
+      # docs it is quoting from; this job receives their output as plain text
+      # and never reads the repository itself.
+      - name: Make a scratch working directory
+        shell: bash
+        run: mkdir -p "${{ runner.temp }}/pdpp-friend-os"
+
+      - name: "[POSIX] Fetch the blessed Compose stack (exact documented command)"
+        if: runner.os != 'Windows'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-friend-os
+        env:
+          FETCH_BLOCK: ${{ needs.extract-doc-commands.outputs.fetch_block }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$FETCH_BLOCK" > fetch.sh
+          echo "--- documented fetch command ---"
+          cat fetch.sh
+          echo "--- executing ---"
+          bash fetch.sh
+          # The fetch block itself does `mkdir pdpp && cd pdpp`, so the
+          # Compose file lands at pdpp/docker-compose.yml relative to this
+          # step's working directory, exactly as an operator following the
+          # doc verbatim would end up.
+          test -f pdpp/docker-compose.yml || { echo "::error::Compose file was not fetched to pdpp/docker-compose.yml"; exit 1; }
+
+      - name: "[POSIX] Generate secrets (exact documented command)"
+        if: runner.os != 'Windows'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-friend-os/pdpp
+        env:
+          SECRET_BLOCK: ${{ needs.extract-doc-commands.outputs.posix_secret_block }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SECRET_BLOCK" > secrets.sh
+          echo "--- documented secret-generation command ---"
+          cat secrets.sh
+          echo "--- executing (same directory as the fetched compose file, per the doc) ---"
+          bash secrets.sh
+          test -s .env || { echo "::error::.env was not written"; exit 1; }
+          grep -q '^PDPP_OWNER_PASSWORD=' .env || { echo "::error::.env missing PDPP_OWNER_PASSWORD"; exit 1; }
+          grep -q '^PDPP_CREDENTIAL_ENCRYPTION_KEY=' .env || { echo "::error::.env missing PDPP_CREDENTIAL_ENCRYPTION_KEY"; exit 1; }
+          # The doc promises UTF-8, not the UTF-16LE a naive `>` redirect can
+          # produce in other shells: file(1) must not report UTF-16.
+          file .env | grep -qi 'UTF-16' && { echo "::error::.env was written as UTF-16, docker compose cannot parse this"; exit 1; }
+          echo "secrets.sh: PASS on $(uname -s)"
+
+      - name: "[Windows] Write the documented fetch command to a script file"
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-friend-os
+        env:
+          FETCH_BLOCK: ${{ needs.extract-doc-commands.outputs.fetch_block }}
+        run: printf '%s\n' "$FETCH_BLOCK" > fetch.ps1
+
+      - name: "[Windows] Fetch the blessed Compose stack (exact documented command)"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/pdpp-friend-os
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "--- documented fetch command ---"
+          Get-Content fetch.ps1
+          Write-Host "--- executing ---"
+          & .\fetch.ps1
+          # The fetch block does `mkdir pdpp; cd pdpp`, so the Compose file
+          # lands at pdpp/docker-compose.yml, matching the doc verbatim.
+          if (-not (Test-Path "pdpp/docker-compose.yml")) {
+            Write-Error "Compose file was not fetched to pdpp/docker-compose.yml"
+            exit 1
+          }
+
+      - name: "[Windows] Write the documented secret-generation command to a script file"
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-friend-os/pdpp
+        env:
+          SECRET_BLOCK: ${{ needs.extract-doc-commands.outputs.powershell_secret_block }}
+        run: printf '%s\n' "$SECRET_BLOCK" > secrets.ps1
+
+      - name: "[Windows] Generate secrets (exact documented command)"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/pdpp-friend-os/pdpp
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "--- documented secret-generation command ---"
+          Get-Content secrets.ps1
+          Write-Host "--- executing (same directory as the fetched compose file, per the doc) ---"
+          & .\secrets.ps1
+          $envPath = ".env"
+          if (-not (Test-Path $envPath) -or (Get-Item $envPath).Length -eq 0) {
+            Write-Error ".env was not written"
+            exit 1
+          }
+          $content = Get-Content -Raw -Path $envPath
+          if ($content -notmatch '(?m)^PDPP_OWNER_PASSWORD=') {
+            Write-Error ".env missing PDPP_OWNER_PASSWORD"
+            exit 1
+          }
+          if ($content -notmatch '(?m)^PDPP_CREDENTIAL_ENCRYPTION_KEY=') {
+            Write-Error ".env missing PDPP_CREDENTIAL_ENCRYPTION_KEY"
+            exit 1
+          }
+          # docker compose's .env parser rejects UTF-16LE; the doc's whole
+          # reason for the -Encoding ascii flag is to avoid this trap, so
+          # prove the flag actually worked rather than trusting the doc text.
+          $bytes = [System.IO.File]::ReadAllBytes($envPath)
+          if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+            Write-Error ".env was written as UTF-16LE, docker compose cannot parse this"
+            exit 1
+          }
+          Write-Host "secrets.ps1: PASS on Windows"
+
+      - name: Probe for a usable Linux container daemon
+        id: docker_probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+            os_type="$(docker info --format '{{.OSType}}' 2>/dev/null || echo unknown)"
+            if [[ "$os_type" == "linux" ]]; then
+              echo "usable=true" >> "$GITHUB_OUTPUT"
+              echo "Linux container daemon available (docker info OSType=linux)."
+            else
+              echo "usable=false" >> "$GITHUB_OUTPUT"
+              echo "docker CLI present but daemon OSType='$os_type', not 'linux'; cannot run this Linux Compose stack."
+            fi
+          else
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "No usable Docker daemon on this runner (${{ runner.os }})."
+          fi
+
+      - name: "[Docker-capable] Validate Compose config (no mutation)"
+        if: steps.docker_probe.outputs.usable == 'true'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-friend-os/pdpp
+        run: |
+          set -euo pipefail
+          docker compose config >/dev/null
+          echo "docker compose config: PASS"
+
+      - name: "[Docker-capable] Pull, boot, and health-check the stack (no provider credentials)"
+        if: steps.docker_probe.outputs.usable == 'true'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-friend-os/pdpp
+        run: |
+          set -euo pipefail
+          docker compose pull
+          docker compose up -d
+          echo "--- waiting for reference + web to report healthy ---"
+          for _ in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/.well-known/oauth-authorization-server >/dev/null 2>&1; then
+              echo "reference AS metadata reachable through web proxy"
+              break
+            fi
+            sleep 5
+          done
+          curl -fsS http://localhost:3000/.well-known/oauth-authorization-server >/dev/null
+          owner_password=$(grep '^PDPP_OWNER_PASSWORD=' .env | cut -d= -f2-)
+          status_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/owner/login \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode "password=${owner_password}")
+          echo "POST /owner/login -> HTTP ${status_code}"
+          # Accept 200 (rendered) or a redirect (302/303/307) to the
+          # authenticated landing page; reject 401/403 (wrong password
+          # rejected — the generated secret didn't round-trip) and 5xx.
+          case "$status_code" in
+            2*|3*) echo "owner login: PASS" ;;
+            *) echo "::error::owner login with the generated .env password returned HTTP ${status_code}"; exit 1 ;;
+          esac
+
+      - name: "[Docker-capable] Teardown (documented, explicit --volumes)"
+        if: always() && steps.docker_probe.outputs.usable == 'true'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-friend-os/pdpp
+        run: docker compose down --volumes || true
+
+      - name: Report this platform's real verification boundary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.os }}"
+            echo ""
+            echo "- Compose-fetch command: executed for real, not syntax-inspected."
+            echo "- Secret-generation command: executed for real; \`.env\` presence, required keys, and encoding were asserted, not assumed."
+            if [[ "${{ steps.docker_probe.outputs.usable }}" == "true" ]]; then
+              echo "- Linux container daemon: available. \`docker compose config\`, \`docker compose pull\`, \`docker compose up -d\`, the health endpoint, and owner login with the generated password all ran for real on this OS."
+            else
+              echo "- Linux container daemon: NOT available on this hosted runner. \`docker compose up\` and everything after it (health check, owner login) did NOT run on this OS in this job — that is a real external gate (no Linux Docker daemon on hosted ${{ matrix.os }}), not a claimed pass."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
