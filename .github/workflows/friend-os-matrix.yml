@@ -104,6 +104,17 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # The fetched compose file sets no top-level `name:`, so `docker
+      # compose` defaults COMPOSE_PROJECT_NAME to the containing directory's
+      # basename ("pdpp", from the doc's own `mkdir pdpp && cd pdpp`) — the
+      # exact same default a real operator's live Compose project would use.
+      # A prior run of this workflow collided with a live "pdpp" Compose
+      # project on the same machine because of this default. Every
+      # Docker-capable step below runs with a run-and-OS-unique project name
+      # so this collision class cannot recur, on this runner or any shared
+      # host.
+      COMPOSE_PROJECT_NAME: friend-os-matrix-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
 
     steps:
       # No checkout: the whole point is a clean machine following only the
@@ -155,30 +166,16 @@ jobs:
           file .env | grep -qi 'UTF-16' && { echo "::error::.env was written as UTF-16, docker compose cannot parse this"; exit 1; }
           echo "secrets.sh: PASS on $(uname -s)"
 
-      - name: "[Windows] Write the documented fetch command to a script file"
+      - name: "[Windows] Fail clearly: the doc has no Windows-safe fetch block yet"
+        id: windows_fetch_gap
         if: runner.os == 'Windows'
         shell: bash
-        working-directory: ${{ runner.temp }}/pdpp-friend-os
-        env:
-          FETCH_BLOCK: ${{ needs.extract-doc-commands.outputs.fetch_block }}
-        run: printf '%s\n' "$FETCH_BLOCK" > fetch.ps1
-
-      - name: "[Windows] Fetch the blessed Compose stack (exact documented command)"
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: ${{ runner.temp }}/pdpp-friend-os
         run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "--- documented fetch command ---"
-          Get-Content fetch.ps1
-          Write-Host "--- executing ---"
-          & .\fetch.ps1
-          # The fetch block does `mkdir pdpp; cd pdpp`, so the Compose file
-          # lands at pdpp/docker-compose.yml, matching the doc verbatim.
-          if (-not (Test-Path "pdpp/docker-compose.yml")) {
-            Write-Error "Compose file was not fetched to pdpp/docker-compose.yml"
-            exit 1
-          }
+          set -euo pipefail
+          echo "::error::docs/operator/selfhost-quickstart.md documents (prose, not a fenced block, around 'use \`curl.exe\` rather than \`curl\` on PowerShell') that the Lane A fetch command under '### 1. Fetch the blessed compose stack' must be run with 'curl.exe' substituted for 'curl' on PowerShell — bare 'curl' there resolves to the Invoke-WebRequest alias and does not accept the documented flags."
+          echo "::error::That fenced block (language 'sh') is POSIX-only; there is no separate PowerShell-native fenced block this workflow can extract and run verbatim. Piping the POSIX block into pwsh as this workflow used to do silently ran a command the doc explicitly says does not work on Windows, and called it 'the exact documented command' — it is not."
+          echo "::error::Fix requires one of: (a) the doc adds a distinct PowerShell-fenced fetch block (e.g. under 'Windows PowerShell (the block above cannot work there' style anchor, mirroring how the secret-generation step already has a separate PowerShell block) that this workflow can extract by anchor and run unmodified, or (b) this workflow is told which anchor to bind to once such a block exists. Until then this job fails here on purpose instead of claiming an unverified pass."
+          exit 1
 
       - name: "[Windows] Write the documented secret-generation command to a script file"
         if: runner.os == 'Windows'
@@ -268,13 +265,39 @@ jobs:
           done
           curl -fsS http://localhost:3000/.well-known/oauth-authorization-server >/dev/null
           owner_password=$(grep '^PDPP_OWNER_PASSWORD=' .env | cut -d= -f2-)
+          # /owner/login is CSRF-protected for browser-submittable content
+          # types (form-urlencoded, text/plain, no Content-Type) — see
+          # reference-implementation/test/owner-csrf.test.ts. A bare POST
+          # with no prior GET always 403s before the password is even
+          # checked, regardless of whether the password is correct. The
+          # real flow a browser performs, and the one this step must
+          # reproduce, is: GET the login page, read the pdpp_owner_csrf
+          # Set-Cookie and the hidden `_csrf` form field it renders, then
+          # POST both back alongside the password.
+          login_headers=$(mktemp)
+          login_body=$(mktemp)
+          curl -fsS -D "$login_headers" -o "$login_body" \
+            -H 'Accept: text/html' \
+            'http://localhost:3000/owner/login?return_to=%2F'
+          csrf_cookie=$(grep -i '^set-cookie: pdpp_owner_csrf=' "$login_headers" | head -n1 | sed -E 's/^[Ss]et-[Cc]ookie: ([^;]+);.*/\1/' | tr -d '\r')
+          csrf_field=$(grep -oE '<input type="hidden" name="_csrf" value="[^"]+"' "$login_body" | sed -E 's/.*value="([^"]+)"/\1/')
+          if [[ -z "$csrf_cookie" || -z "$csrf_field" ]]; then
+            echo "::error::GET /owner/login did not return both a pdpp_owner_csrf cookie and a hidden _csrf field — cannot perform the real login flow"
+            rm -f "$login_headers" "$login_body"
+            exit 1
+          fi
+          rm -f "$login_headers" "$login_body"
           status_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/owner/login \
             -H 'Content-Type: application/x-www-form-urlencoded' \
-            --data-urlencode "password=${owner_password}")
-          echo "POST /owner/login -> HTTP ${status_code}"
+            -H "Cookie: ${csrf_cookie}" \
+            --data-urlencode "password=${owner_password}" \
+            --data-urlencode "return_to=/" \
+            --data-urlencode "_csrf=${csrf_field}")
+          echo "GET+CSRF then POST /owner/login -> HTTP ${status_code}"
           # Accept 200 (rendered) or a redirect (302/303/307) to the
-          # authenticated landing page; reject 401/403 (wrong password
-          # rejected — the generated secret didn't round-trip) and 5xx.
+          # authenticated landing page; reject 401/403 (wrong password,
+          # or CSRF rejected — either means the generated secret or the
+          # CSRF round-trip didn't hold) and 5xx.
           case "$status_code" in
             2*|3*) echo "owner login: PASS" ;;
             *) echo "::error::owner login with the generated .env password returned HTTP ${status_code}"; exit 1 ;;
@@ -293,11 +316,16 @@ jobs:
           {
             echo "### ${{ matrix.os }}"
             echo ""
-            echo "- Compose-fetch command: executed for real, not syntax-inspected."
-            echo "- Secret-generation command: executed for real; \`.env\` presence, required keys, and encoding were asserted, not assumed."
-            if [[ "${{ steps.docker_probe.outputs.usable }}" == "true" ]]; then
-              echo "- Linux container daemon: available. \`docker compose config\`, \`docker compose pull\`, \`docker compose up -d\`, the health endpoint, and owner login with the generated password all ran for real on this OS."
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              echo "- Compose-fetch command: NOT executed. docs/operator/selfhost-quickstart.md documents no PowerShell-native fenced fetch block; the only fenced fetch block is POSIX ('sh'), and the doc says bare \`curl\` on PowerShell is the \`Invoke-WebRequest\` alias and does not work. This job stops here on purpose rather than silently running the POSIX block under pwsh and calling it exact."
+              echo "- Secret-generation command, Docker-backed steps, owner login: NOT reached on this OS this run — blocked by the fetch gap above."
             else
-              echo "- Linux container daemon: NOT available on this hosted runner. \`docker compose up\` and everything after it (health check, owner login) did NOT run on this OS in this job — that is a real external gate (no Linux Docker daemon on hosted ${{ matrix.os }}), not a claimed pass."
+              echo "- Compose-fetch command: executed for real, not syntax-inspected."
+              echo "- Secret-generation command: executed for real; \`.env\` presence, required keys, and encoding were asserted, not assumed."
+              if [[ "${{ steps.docker_probe.outputs.usable }}" == "true" ]]; then
+                echo "- Linux container daemon: available. \`docker compose config\`, \`docker compose pull\`, \`docker compose up -d\` (isolated under a unique \`COMPOSE_PROJECT_NAME\` to avoid colliding with any other Compose project on the runner/host), the health endpoint, and owner login (real two-step GET+CSRF-cookie+hidden-field then POST, matching reference-implementation/test/owner-csrf.test.ts) with the generated password all ran for real on this OS."
+              else
+                echo "- Linux container daemon: NOT available on this hosted runner. \`docker compose up\` and everything after it (health check, owner login) did NOT run on this OS in this job — that is a real external gate (no Linux Docker daemon on hosted ${{ matrix.os }}), not a claimed pass."
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
