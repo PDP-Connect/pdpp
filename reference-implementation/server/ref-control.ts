@@ -2247,6 +2247,40 @@ const GENERIC_TERMINAL_FAILURE_REASONS: ReadonlySet<string> = new Set([
 const OWNER_INTERACTION_RECOVERY_ACTIONS: ReadonlySet<string> = new Set(["manual_action_required"]);
 const OWNER_INTERACTION_GAP_KINDS: ReadonlySet<string> = new Set(["interaction_required"]);
 
+// How long a `local_device` instance that has never proven activation (no
+// heartbeat, no accepted ingest — ever) keeps reading `draft`/
+// `setup_in_progress` ("Finish connecting") before the owner-facing
+// derivation falls through to its raw stored status instead. 72h is
+// generous headroom for a legitimate slow first-time device setup (a
+// pending OS-level permission grant, a delayed package install) while still
+// bounding how long an abandoned or duplicate enrollment attempt can occupy
+// the owner's attention queue with no way to ever resolve itself.
+const NEVER_ACTIVATED_DRAFT_AGE_OUT_MS = 72 * 60 * 60 * 1000;
+
+/**
+ * Has a never-activated `local_device` instance aged past
+ * {@link NEVER_ACTIVATED_DRAFT_AGE_OUT_MS} since its own enrollment? Pure —
+ * no I/O, no clock read (the caller supplies `nowIso`). `createdAt`
+ * `undefined` fails closed (`false`, i.e. "not aged out, keep reading
+ * draft") — a row this function cannot date is never aged out.
+ *
+ * Exported standalone (rather than left inline in `synthesizeConnectorSummary`)
+ * so the age-out boundary itself — not just its wiring — is directly unit-
+ * testable, mirroring `hasDeviceActivationEvidence`'s (`connector-outbox-axis.ts`)
+ * exported-pure-predicate pattern.
+ */
+export function isNeverActivatedDraftAgedOut(createdAt: string | undefined, nowIso: string): boolean {
+  if (createdAt === undefined) {
+    return false;
+  }
+  const createdAtMs = Date.parse(createdAt);
+  const nowMs = Date.parse(nowIso);
+  if (!(Number.isFinite(createdAtMs) && Number.isFinite(nowMs))) {
+    return false;
+  }
+  return nowMs - createdAtMs > NEVER_ACTIVATED_DRAFT_AGE_OUT_MS;
+}
+
 function hasCompetingOwnerInteractionGap(knownGaps: readonly unknown[]): boolean {
   for (const gap of knownGaps) {
     if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
@@ -5181,10 +5215,27 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // `hasDeviceActivationEvidence`'s doc comment) — it only narrows what
   // `owner_state`/settled-audit judgment is willing to claim about a device
   // that has never checked in.
-  const effectiveLifecycleStatus =
-    localDeviceBacked && instance.status === "active" && !hasDeviceActivationEvidence(outbox.heartbeats)
-      ? "draft"
-      : instance.status;
+  //
+  // Bounded age-out: a never-activated instance keeps reading `draft` (and
+  // therefore `owner_state.resolver: "setup_in_progress"`, "Finish connecting")
+  // ONLY within `NEVER_ACTIVATED_DRAFT_AGE_OUT_MS` of its own enrollment. Past
+  // that window the device has had ample time to send its first heartbeat;
+  // continuing to nag the owner about an abandoned/superseded enrollment
+  // attempt (e.g. a duplicate device-agent enrollment where a sibling
+  // instance is already healthy) forever, with no way for the row to ever
+  // stop demanding attention, is the live gap this closes. Falling through
+  // to the raw stored `status` (still `active`, never mutated) lets the
+  // owner-state resolver read the connection's ACTUAL evidence — for a
+  // never-activated instance that has no run/freshness proof either, this
+  // resolves to the quiet `not_measured` resolver, not `needs_owner`, so an
+  // abandoned duplicate stops occupying the owner's attention queue without
+  // being silently marked healthy or auto-revoked. `instance.createdAt`
+  // absent (`undefined`) fails closed — keeps the pre-age-out `draft` read
+  // exactly as before, never ages out a row this derivation cannot date.
+  const neverActivatedLocalDevice =
+    localDeviceBacked && instance.status === "active" && !hasDeviceActivationEvidence(outbox.heartbeats);
+  const neverActivatedAgedOut = neverActivatedLocalDevice && isNeverActivatedDraftAgedOut(instance.createdAt, nowIso);
+  const effectiveLifecycleStatus = neverActivatedLocalDevice && !neverActivatedAgedOut ? "draft" : instance.status;
   const ownerStateEvidence: OwnerStateEvidence = activeRun
     ? {
         as_of: activeRun.started_at,
