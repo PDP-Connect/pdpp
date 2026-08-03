@@ -29,6 +29,15 @@
  * monotonic `phaseTurnGeneration` the maintenance sweep already threads
  * through for fold/repair phase-order alternation — no new durable state.
  *
+ * Convergence is judged against ONE page-wide terminal-event high-water
+ * mark (`observedMaxSeq`), read ONCE by `foldParticipantsFairly` itself
+ * before any participant's singleton call runs, then passed down as an
+ * explicit precomputed scalar — never re-derived by widening each
+ * singleton call's own query scope. A participant with zero attributable
+ * events of its own therefore still judges its convergence against the
+ * SAME shared high-water mark a page-wide call would have used, without
+ * paying for N redundant `readMaxTerminalEventSeq` queries.
+ *
  * This file proves:
  *   1. `rotateForFairTurn` (pure): the durable round-robin ordering
  *      primitive — deterministic, wraps correctly, and a later generation
@@ -44,7 +53,16 @@
  *      the near-current participant's own convergence, and a later
  *      generation still gives the laggard first claim on the budget
  *      (eventual service).
- *   3. One production-path integration oracle: the SAME precondition
+ *   3. CALL-COUNT ORACLE: a page of N participants triggers exactly ONE
+ *      `readMaxTerminalEventSeq` call total (via
+ *      `testOnlyReadMaxTerminalEventSeqCallCounter`, a plain in-memory
+ *      counter — SQL query-count instrumentation via monkey-patching the
+ *      SQLite driver's own `.prepare` was tried first and confirmed NOT
+ *      reliably observable in this harness, mirroring this codebase's own
+ *      documented precedent for `testOnlyDiscoverCandidatesCallCounter`),
+ *      never N — proving the shared high-water mark is genuinely read
+ *      once and threaded through, not re-derived per participant.
+ *   4. One production-path integration oracle: the SAME precondition
  *      driven through the real `runBoundedSummaryEvidenceSweep` entry
  *      point (the actual maintenance-tick call, not a direct scheduler
  *      call) reaches the identical durable outcome.
@@ -61,6 +79,7 @@ import {
   rebuildConnectorSummaryEvidence,
   rotateForFairTurn,
   runBoundedSummaryEvidenceSweep,
+  testOnlyReadMaxTerminalEventSeqCallCounter,
 } from "../server/connector-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 
@@ -264,6 +283,41 @@ test(
       laggardCheckpoint < maxSeq,
       "the laggard has not converged this round — its own ~9,700-event gap is far larger than any leftover budget"
     );
+  })
+);
+
+test(
+  "CALL-COUNT ORACLE: foldParticipantsFairly triggers exactly ONE readMaxTerminalEventSeq call for a 5-participant page, never N",
+  withTempDb(async () => {
+    const ids = ["cin_a", "cin_b", "cin_c", "cin_d", "cin_e"];
+    for (const id of ids) {
+      seedConnection(id);
+    }
+    await rebuildConnectorSummaryEvidence();
+    let maxSeq = 0;
+    for (const id of ids) {
+      maxSeq = seedTerminalEvents(id, 10);
+    }
+
+    const deadline = Date.now() + 60_000;
+    testOnlyReadMaxTerminalEventSeqCallCounter.count = 0;
+    await foldParticipantsFairly(ids, deadline, 1000, 0);
+
+    assert.equal(
+      testOnlyReadMaxTerminalEventSeqCallCounter.count,
+      1,
+      "a 5-participant page triggers exactly ONE readMaxTerminalEventSeq call — the page-wide high-water mark is " +
+        "read once by the orchestrator and threaded through every singleton call as a precomputed scalar " +
+        "(observedMaxSeq), not re-derived once per participant (which would have produced 5 counted calls here — " +
+        "confirmed directly by temporarily reverting the fix to a per-participant re-read and observing the " +
+        "counter jump from 1 to 5 with the exact same fixture)"
+    );
+
+    for (const id of ids) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential assertion, not a work loop.
+      const checkpoint = await checkpointOf(id);
+      assert.equal(checkpoint, maxSeq, `${id} still converges correctly to the shared high-water mark`);
+    }
   })
 );
 

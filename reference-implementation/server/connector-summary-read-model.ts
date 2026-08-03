@@ -1242,6 +1242,23 @@ const STREAM_FACTS_FOLD_LOGIC_VERSION = 5;
 const STREAM_FACTS_CAS_REPLAY_ATTEMPTS = 2;
 
 /**
+ * Test-only call counter for `readMaxTerminalEventSeq` (both SQLite and
+ * PostgreSQL backends increment it at their own call site below). SQL
+ * query-count instrumentation via monkey-patching the driver's own
+ * `.prepare` is not visible to this technique in this codebase's test
+ * harness (confirmed directly: a mutated per-participant re-read is
+ * genuinely invoked N times but a `Database.prototype.prepare` interception
+ * only ever observes 1) — mirrors `testOnlyDiscoverCandidatesCallCounter`'s
+ * existing plain in-memory counter pattern
+ * (`connector-summary-evidence-engine.ts`) as the direct, unambiguous way
+ * to prove `foldParticipantsFairly` reads the page-wide terminal
+ * high-water mark exactly ONCE, not once per participant. Always
+ * incremented (cheap, a single integer add); only ever READ by tests.
+ * Never gates or alters behavior — reset/read is entirely test-owned.
+ */
+export const testOnlyReadMaxTerminalEventSeqCallCounter = { count: 0 };
+
+/**
  * Test-only deterministic pause point inside `foldConnectorSummaryStreamFacts`,
  * a complete no-op in production (`__foldPauseHook` is never assigned
  * outside a test). Exists so a test can make two REAL, complete
@@ -1306,6 +1323,7 @@ function createStreamFactsFoldStore() {
   if (isPostgresStorageBackend()) {
     return {
       async readMaxTerminalEventSeq(scope: readonly string[] | null = null): Promise<number | null> {
+        testOnlyReadMaxTerminalEventSeqCallCounter.count += 1;
         const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentPostgres(scope, 1);
         const result = await postgresQuery(
           `SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE event_type IN (${TERMINAL_TYPES_SQL})${scopeSql}`,
@@ -1384,6 +1402,7 @@ function createStreamFactsFoldStore() {
   }
   return {
     readMaxTerminalEventSeq(scope: readonly string[] | null = null): number | null {
+      testOnlyReadMaxTerminalEventSeqCallCounter.count += 1;
       const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentSqlite(scope);
       const row = getDb()
         .prepare(
@@ -2216,22 +2235,29 @@ export async function foldConnectorSummaryStreamFacts(
     readonly maxDurationMs?: number;
     readonly maxEvents?: number;
     /**
-     * Widens ONLY the `maxSeq` high-water-mark read to a broader scope
-     * than the fold's own event drain/write/CAS scope (`connectorInstanceIds`,
-     * unchanged). Additive, optional, defaults to `connectorInstanceIds`
-     * (byte-for-byte the prior behavior for every existing caller that
-     * omits it). Exists for a caller that scopes a fold call down to ONE
-     * participant for isolation/cost reasons (`foldParticipantsFairly`)
-     * but still needs that participant's convergence judged against the
-     * SAME shared high-water mark a wider-scoped sibling call would see —
-     * a participant with zero attributable events of its OWN would
-     * otherwise read a `null` maxSeq (its own scope has no terminal
-     * events at all) and wrongly bootstrap to checkpoint 0 instead of
+     * Precomputed terminal-event high-water mark to judge every
+     * participant's convergence against, SKIPPING this call's own
+     * `readMaxTerminalEventSeq` query entirely. Additive, optional; when
+     * omitted (the default), behavior is byte-for-byte the prior
+     * behavior — this call reads its own `maxSeq` scoped to
+     * `connectorInstanceIds`, exactly as before.
+     *
+     * Exists for a caller that fans out N singleton-scoped fold calls
+     * across the SAME page (`foldParticipantsFairly`) and must judge
+     * every one of them against ONE shared high-water mark, read ONCE by
+     * the orchestrating caller — not once per participant. Without this,
+     * each singleton call would either (a) read its own scope's `maxSeq`,
+     * which is `null` for a participant with zero attributable events of
+     * its own (wrongly bootstrapping it to checkpoint 0 instead of
      * correctly proving "no coverage debt, current up to the shared
-     * maxSeq" the way it would under a single call scoped to the whole
-     * page.
+     * maxSeq"), or (b) each independently re-query the same page-wide
+     * value N times, multiplying the read cost that isolation was
+     * supposed to reduce. `observedMaxSeq` is that page-wide value,
+     * computed once and threaded through: `null` propagates the SAME
+     * "no terminal events found at all" bootstrap path this function
+     * already has for its own unscoped/nothing-found read.
      */
-    readonly maxSeqScope?: readonly string[] | null;
+    readonly observedMaxSeq?: number | null;
   } = {}
 ): Promise<FoldStreamFactsResult> {
   let result: FoldStreamFactsResult | null = null;
@@ -2255,7 +2281,7 @@ async function foldConnectorSummaryStreamFactsOnce(
     readonly deadline?: number;
     readonly maxDurationMs?: number;
     readonly maxEvents?: number;
-    readonly maxSeqScope?: readonly string[] | null;
+    readonly observedMaxSeq?: number | null;
   }
 ): Promise<FoldStreamFactsResult> {
   const store = createConnectorSummaryStore();
@@ -2274,9 +2300,10 @@ async function foldConnectorSummaryStreamFactsOnce(
       resumeAfterSeq: null,
     };
   }
-  const maxSeq = await foldStore.readMaxTerminalEventSeq(
-    options.maxSeqScope === undefined ? connectorInstanceIds : options.maxSeqScope
-  );
+  const maxSeq =
+    options.observedMaxSeq === undefined
+      ? await foldStore.readMaxTerminalEventSeq(connectorInstanceIds)
+      : options.observedMaxSeq;
   const participants = rows.filter((row) => rowNeedsFoldParticipation(row, maxSeq));
   if (participants.length === 0) {
     return {
@@ -2561,7 +2588,7 @@ async function foldStreamFactsBestEffort(
     readonly deadline?: number;
     readonly maxDurationMs?: number;
     readonly maxEvents?: number;
-    readonly maxSeqScope?: readonly string[] | null;
+    readonly observedMaxSeq?: number | null;
   } = {}
 ): Promise<{
   eventsRead: number;
@@ -2776,6 +2803,14 @@ export async function foldParticipantsFairly(
   if (connectorInstanceIds.length === 0) {
     return emptyFoldOutcome();
   }
+  // ONE page-wide high-water-mark read, up front — not one per participant.
+  // Every singleton call below judges its own participant's convergence
+  // against this SAME precomputed value (`observedMaxSeq`), which skips
+  // each singleton call's own `readMaxTerminalEventSeq` query entirely
+  // (see `observedMaxSeq`'s doc on `foldConnectorSummaryStreamFacts`) — N
+  // participants therefore cost exactly one `readMaxTerminalEventSeq`
+  // call total, the same as the pre-fix single whole-page call, not N.
+  const observedMaxSeq = await createStreamFactsFoldStore().readMaxTerminalEventSeq(connectorInstanceIds);
   const rotated = rotateForFairTurn(connectorInstanceIds, phaseTurnGeneration);
   const accumulator: FairFoldAccumulator = {
     eventsRead: 0,
@@ -2804,13 +2839,12 @@ export async function foldParticipantsFairly(
       deadline,
       maxEvents: accumulator.remainingEvents,
       // The event DRAIN/write/CAS stay scoped to this ONE participant
-      // (isolation), but `maxSeq` is judged against the WHOLE page — a
-      // participant with zero attributable events of its own still
-      // correctly converges to "no coverage debt, current up to the
-      // shared high-water mark" instead of wrongly reading a null/absent
-      // maxSeq from its own empty scope. See `maxSeqScope`'s doc on
-      // `foldConnectorSummaryStreamFacts`.
-      maxSeqScope: connectorInstanceIds,
+      // (isolation), but convergence is judged against the ONE page-wide
+      // `observedMaxSeq` read above — a participant with zero
+      // attributable events of its own still correctly converges to "no
+      // coverage debt, current up to the shared high-water mark" instead
+      // of wrongly reading a null/absent maxSeq from its own empty scope.
+      observedMaxSeq,
     });
     mergeFoldOutcomeInto(accumulator, outcome);
   }
