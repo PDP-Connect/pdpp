@@ -101,6 +101,41 @@ export interface BodyResponseDiagnostics {
   candidates: BodyResponseCandidateDiagnostic[];
   cdpError: string | null;
   cdpReady: boolean;
+  // ─── Bounded per-stage counters (CDP transport) ─────────────────────────
+  // These narrow the ambiguity above by counting each step the CDP path
+  // must clear before a response becomes a candidate:
+  //   responseReceived (== totalCdpResponsesSeen)
+  //     -> shouldInspect(headers, url)
+  //        -> accepted: stageCdpHeaderAccepted += 1
+  //        -> rejected: stageCdpHeaderRejected += 1
+  //     -> (accepted only) Network.loadingFinished observed
+  //        -> stageCdpLoadingFinished += 1
+  //     -> (loadingFinished only) Network.getResponseBody
+  //        -> resolved: stageCdpBodyFetchSucceeded += 1 (regardless of
+  //           whether the body then matched isExpectedBody — that split is
+  //           already visible per-candidate via `reason`)
+  //        -> rejected: stageCdpBodyFetchFailed += 1
+  // A header-stage rejection shows up as
+  // `stageCdpHeaderAccepted < totalCdpResponsesSeen` with
+  // `stageCdpHeaderRejected` making up the difference. A body-stage race
+  // (the alternative this module cannot currently distinguish without these
+  // counters) shows up as `stageCdpHeaderAccepted > 0` while
+  // `stageCdpLoadingFinished` and/or `stageCdpBodyFetchSucceeded` +
+  // `stageCdpBodyFetchFailed` stay below it — i.e. an accepted response that
+  // never reached a terminal body outcome before the caller gave up.
+  stageCdpBodyFetchFailed: number;
+  stageCdpBodyFetchSucceeded: number;
+  stageCdpHeaderAccepted: number;
+  stageCdpHeaderRejected: number;
+  stageCdpLoadingFinished: number;
+  // ─── Bounded per-stage counters (Playwright transport) ──────────────────
+  // Playwright's `response.body()` has no separate "loading finished" event
+  // — the body promise settling IS the terminal signal — so there is no
+  // Playwright analogue of `stageCdpLoadingFinished`.
+  stagePlaywrightBodyFetchFailed: number;
+  stagePlaywrightBodyFetchSucceeded: number;
+  stagePlaywrightHeaderAccepted: number;
+  stagePlaywrightHeaderRejected: number;
   // CDP `Network.requestWillBeSent` count, independent of whether any
   // response (matching or not) ever arrived. Distinguishes "a request
   // started and never got a terminal artifact" (nonzero, totalCdpResponsesSeen
@@ -114,6 +149,15 @@ export interface BodyResponseDiagnostics {
   // occurred at all" (both zero) from "traffic occurred but nothing matched
   // the expected content-type/disposition filter" (nonzero, candidates
   // empty) — the two have very different root causes.
+  //
+  // IMPORTANT: this counter alone does NOT prove `shouldInspect` rejected
+  // every response. A response can pass `shouldInspect` (see
+  // `stageHeaderAccepted` below) and still never produce a candidate if the
+  // CDP completion/body-retrieval stages below it race the caller's own
+  // timeout — `totalResponsesSeen`/`totalCdpResponsesSeen` being nonzero
+  // with `candidates` empty is consistent with EITHER a header-stage
+  // rejection OR a body-stage race; only the stage counters below can tell
+  // the two apart.
   totalCdpResponsesSeen: number;
   totalResponsesSeen: number;
 }
@@ -419,6 +463,15 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
     candidates: [],
     cdpError: null,
     cdpReady: false,
+    stageCdpBodyFetchFailed: 0,
+    stageCdpBodyFetchSucceeded: 0,
+    stageCdpHeaderAccepted: 0,
+    stageCdpHeaderRejected: 0,
+    stageCdpLoadingFinished: 0,
+    stagePlaywrightBodyFetchFailed: 0,
+    stagePlaywrightBodyFetchSucceeded: 0,
+    stagePlaywrightHeaderAccepted: 0,
+    stagePlaywrightHeaderRejected: 0,
     totalCdpRequestsStarted: 0,
     totalCdpResponsesSeen: 0,
     totalResponsesSeen: 0,
@@ -528,14 +581,17 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
     const contentDisposition = headers["content-disposition"] ?? "";
     const url = response.url();
     if (!options.shouldInspect(headers, url)) {
+      diagnostics.stagePlaywrightHeaderRejected += 1;
       return;
     }
+    diagnostics.stagePlaywrightHeaderAccepted += 1;
     response
       .body()
       .then((body) => {
         if (detached) {
           return;
         }
+        diagnostics.stagePlaywrightBodyFetchSucceeded += 1;
         inspectBody({
           body,
           contentDisposition,
@@ -548,6 +604,7 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
         });
       })
       .catch((err): undefined => {
+        diagnostics.stagePlaywrightBodyFetchFailed += 1;
         addDiagnostic({
           bodyError: errorMessage(err),
           contentDisposition,
@@ -588,8 +645,10 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
     }
     const url = event.response.url ?? "";
     if (!options.shouldInspect(headers, url)) {
+      diagnostics.stageCdpHeaderRejected += 1;
       return;
     }
+    diagnostics.stageCdpHeaderAccepted += 1;
     cdpCandidatesByRequestId.set(event.requestId, {
       contentDisposition: headers["content-disposition"] ?? "",
       contentType: headers["content-type"] ?? "",
@@ -608,12 +667,14 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
       return;
     }
     cdpCandidatesByRequestId.delete(event.requestId);
+    diagnostics.stageCdpLoadingFinished += 1;
     cdpSession
       .send("Network.getResponseBody", { requestId: event.requestId })
       .then((payload: { base64Encoded?: boolean; body?: string }) => {
         if (detached) {
           return;
         }
+        diagnostics.stageCdpBodyFetchSucceeded += 1;
         const body = payload.base64Encoded
           ? Buffer.from(payload.body ?? "", "base64")
           : Buffer.from(payload.body ?? "", "utf8");
@@ -629,6 +690,7 @@ export function attachBodyResponseQueue(page: Page, options: BodyResponseQueueOp
         });
       })
       .catch((err): undefined => {
+        diagnostics.stageCdpBodyFetchFailed += 1;
         addDiagnostic({
           bodyError: errorMessage(err),
           contentDisposition: candidate.contentDisposition,

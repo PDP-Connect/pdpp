@@ -44,13 +44,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, CDPSession, Page } from "playwright";
 import type { BodyResponseCandidateDiagnostic, BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import type { SafeCaptureSession } from "../../src/fixture-capture.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   buildIndexRows,
+  classifyExportDialogMessage,
   classifyExportLadderOutcome,
   classifyTerminalExportFailure,
   classifyUsaaAccountPageIdentity,
@@ -105,6 +106,30 @@ function makeHarness(): RecordingHarness {
     emitRecord: harness.emitRecord,
   };
   return { deps, emitted: harness.emitted, messages: harness.protocolMessages };
+}
+
+/** Fill in the bounded stage counters every BodyResponseDiagnostics literal
+ *  needs, so call sites can specify only the fields relevant to what they're
+ *  testing (candidates, totals) without repeating the full stage vocabulary. */
+function fakeArtifact(overrides: Partial<BodyResponseDiagnostics> = {}): BodyResponseDiagnostics {
+  return {
+    candidates: [],
+    cdpError: null,
+    cdpReady: true,
+    stageCdpBodyFetchFailed: 0,
+    stageCdpBodyFetchSucceeded: 0,
+    stageCdpHeaderAccepted: 0,
+    stageCdpHeaderRejected: 0,
+    stageCdpLoadingFinished: 0,
+    stagePlaywrightBodyFetchFailed: 0,
+    stagePlaywrightBodyFetchSucceeded: 0,
+    stagePlaywrightHeaderAccepted: 0,
+    stagePlaywrightHeaderRejected: 0,
+    totalCdpRequestsStarted: 0,
+    totalCdpResponsesSeen: 0,
+    totalResponsesSeen: 0,
+    ...overrides,
+  };
 }
 
 function makeAccount(overrides: Partial<DashboardAccount> = {}): DashboardAccount {
@@ -581,14 +606,9 @@ test("hydratePdfsForIndex: statement-pdfs.ts's real diag shape (artifact + error
   // reach the emitted SKIP_RESULT, and that popup URLs still never leak raw.
   const { deps, messages } = makeHarness();
   const indexRows = [makeIndexRow()];
-  const artifact: BodyResponseDiagnostics = {
-    candidates: [],
-    cdpError: null,
-    cdpReady: true,
+  const artifact: BodyResponseDiagnostics = fakeArtifact({
     totalCdpRequestsStarted: 1,
-    totalCdpResponsesSeen: 0,
-    totalResponsesSeen: 0,
-  };
+  });
   await hydratePdfsForIndex(
     { ...deps, page: {} as Page },
     indexRows,
@@ -1530,6 +1550,146 @@ function makeDialogNotOpenPage(callOrder: string[]): Page {
   });
 }
 
+/**
+ * A page mock that gets PAST openExportDialog (the selectionType select is
+ * found — this is not the dialog-not-open shape above) and into
+ * submitExportAndAwait, where submit resolves and the visible dialog
+ * message is a validation error USAA could plausibly show (never the exact
+ * live text — that was never retained, see luna-usaa-evidence-0803.md).
+ * No CDP/download traffic ever arrives, so the artifact-wait race resolves
+ * via the error-message locator, landing on `dialog_error`.
+ */
+function makeDialogErrorPage(dialogMessageText: string): Page {
+  const emptyLocator = {
+    click: () => Promise.resolve(),
+    count: () => Promise.resolve(0),
+    filter(): unknown {
+      return this;
+    },
+    first(): unknown {
+      return this;
+    },
+    innerHTML: () => Promise.reject(new Error("no dialog")),
+    isEnabled: () => Promise.resolve(false),
+    press: () => Promise.resolve(),
+    pressSequentially: () => Promise.resolve(),
+    textContent: () => Promise.resolve(null),
+    waitFor: () => Promise.reject(new Error("not visible")),
+  };
+  return Object.assign({} as Page, {
+    context() {
+      const context: Partial<BrowserContext> = {};
+      context.on = (() => context) as BrowserContext["on"];
+      context.off = (() => context) as BrowserContext["off"];
+      const session: Partial<CDPSession> = {};
+      session.detach = (() => Promise.resolve()) as CDPSession["detach"];
+      session.off = (() => session) as CDPSession["off"];
+      session.on = (() => session) as CDPSession["on"];
+      session.send = (() => Promise.resolve({})) as CDPSession["send"];
+      context.newCDPSession = (() => Promise.resolve(session as CDPSession)) as BrowserContext["newCDPSession"];
+      return context as BrowserContext;
+    },
+    evaluate() {
+      return Promise.resolve({
+        dialog_html_preview: null,
+        dialogs_open: 1,
+        export_candidates: [],
+        has_utility_bar: true,
+        nav_candidates: [],
+        title: "Bank Account Summary | USAA",
+        url: "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001",
+      });
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    keyboard: { press: () => Promise.resolve() },
+    locator(selector: string) {
+      if (selector === "button.ent-as-utility-bar__item.export") {
+        return {
+          ...emptyLocator,
+          count: () => Promise.resolve(1),
+          isEnabled: () => Promise.resolve(true),
+        };
+      }
+      if (selector.includes('select[name="selectionType"]')) {
+        return { ...emptyLocator, count: () => Promise.resolve(1) };
+      }
+      if (selector === '[role="dialog"] button[type="submit"]') {
+        return emptyLocator;
+      }
+      if (selector.includes("errorMessage")) {
+        return {
+          ...emptyLocator,
+          textContent: () => Promise.resolve(dialogMessageText),
+          waitFor: () => Promise.resolve(),
+        };
+      }
+      return emptyLocator;
+    },
+    off: () => undefined,
+    on: () => undefined,
+    selectOption: () => Promise.resolve([]),
+    title() {
+      return Promise.resolve("Bank Account Summary | USAA");
+    },
+    url() {
+      return "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001";
+    },
+  });
+}
+
+test("driveExport on a dialog_error outcome now preserves artifact evidence and a normalized dialog_category, previously discarded", async () => {
+  // Before this fix, finishDialogExportOutcome's dialog_error emitDiagnostic
+  // call carried only `diag`/`error`/`phase` — outcome.artifact (the same
+  // BodyResponseDiagnostics shape finishFailedExportOutcome already emits
+  // for artifact_failed) was silently dropped, and the message was reduced
+  // no further than isNoDataExportMessage's binary check. This is Luna's
+  // evidence-loss finding: "the dialog-error durable diagnostic omits
+  // artifact/download evidence and the retained error is `unknown`."
+  const diagnostics: DiagnosticInfo[] = [];
+  const page = makeDialogErrorPage("Please select a valid date range.");
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001", {
+    onDiagnostics: (d) => diagnostics.push(d),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "failed" });
+  const dialogError = diagnostics.find((d) => d.phase === "export_dialog_error");
+  assert.ok(dialogError, "expected an export_dialog_error diagnostic");
+  assert.ok(dialogError.artifact, "artifact evidence must now survive the dialog_error branch");
+  assert.equal(dialogError.dialog_category, "validation", "the validation-shaped message must classify as validation");
+  assert.doesNotMatch(
+    JSON.stringify(dialogError),
+    /Please select a valid date range/,
+    "the raw dialog message text must never cross the diagnostic boundary — only its category"
+  );
+});
+
+test("driveExport classifies a no_data-shaped dialog message honestly even on the dialog_error diagnostic path", async () => {
+  // isNoDataExportMessage already routes true no-data messages to kind:
+  // "empty" (a distinct, non-terminal outcome) before finishDialogExportOutcome's
+  // dialog_error branch ever runs — so this proves classifyExportDialogMessage
+  // is not reachable with a no_data message on THIS branch, guarding against
+  // a future refactor silently merging the two outcome kinds.
+  const diagnostics: DiagnosticInfo[] = [];
+  const page = makeDialogErrorPage("There are no transactions for the selected date range.");
+
+  const outcome = await driveExport(page, "https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001", {
+    onDiagnostics: (d) => diagnostics.push(d),
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "empty" }, "a no_data message must stay the distinct 'empty' outcome kind");
+  const dialogError = diagnostics.find((d) => d.phase === "export_dialog_error");
+  assert.equal(dialogError, undefined, "empty-kind outcomes do not emit the dialog_error diagnostic phase");
+});
+
 test("driveExport captures the dialog-not-open checkpoint before pressing Escape", async () => {
   const callOrder: string[] = [];
   const outcome = await driveExport(
@@ -2019,14 +2179,7 @@ test("emitExportFailure: a transient artifact-wait failure stays export_no_downl
   // it must NOT be reported as a structure change.
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
-    artifact: {
-      cdpError: null,
-      cdpReady: true,
-      candidates: [],
-      totalCdpRequestsStarted: 0,
-      totalCdpResponsesSeen: 0,
-      totalResponsesSeen: 0,
-    },
+    artifact: fakeArtifact(),
     diag: null,
     error: "download_empty",
     phase: "export_artifact_wait_failed",
@@ -2057,9 +2210,7 @@ test("emitExportFailure: no diagnostic at all is an honest unknown outcome (stil
 test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
-    artifact: {
-      cdpError: null,
-      cdpReady: true,
+    artifact: fakeArtifact({
       totalCdpRequestsStarted: 1,
       totalCdpResponsesSeen: 1,
       totalResponsesSeen: 1,
@@ -2085,7 +2236,7 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
           url: "https://www.usaa.com/export",
         },
       ],
-    },
+    }),
     diag: null,
     error: "body_response_timeout after 45000ms",
     phase: "export_artifact_wait_failed",
@@ -2111,14 +2262,7 @@ test("emitExportFailure: download diagnostics surface non-PII wait evidence when
   // offline without a second human OTP cycle.
   const { deps, messages } = makeHarness();
   const diag: DiagnosticInfo = {
-    artifact: {
-      cdpError: null,
-      cdpReady: true,
-      candidates: [],
-      totalCdpRequestsStarted: 0,
-      totalCdpResponsesSeen: 0,
-      totalResponsesSeen: 0,
-    },
+    artifact: fakeArtifact(),
     diag: null,
     download: {
       url: "https://www.usaa.com/inet/ent_logon/bnk/dmd/chk/transactionDownload",
@@ -2173,14 +2317,13 @@ test("USAA emission sanitizer drops mutated selector, artifact, URL, token, and 
     url: rawValues[4],
   };
   const diag: DiagnosticInfo = {
-    artifact: {
+    artifact: fakeArtifact({
       cdpError: rawValues[2],
-      cdpReady: true,
       candidates: [hostileCandidate],
       totalCdpRequestsStarted: 1,
       totalCdpResponsesSeen: 1,
       totalResponsesSeen: 1,
-    },
+    }),
     diag: {
       dialog_html_preview: `<div>${rawValues[3]}</div>`,
       dialogs_open: 1,
@@ -2407,6 +2550,25 @@ test("isNoDataExportMessage: distinguishes source-empty export dialogs from gene
   assert.equal(isNoDataExportMessage("There are no transactions for the selected date range."), true);
   assert.equal(isNoDataExportMessage("Nothing to export for this account."), true);
   assert.equal(isNoDataExportMessage("We couldn't process your request right now."), false);
+});
+
+test("classifyExportDialogMessage: distinguishes no_data / validation / server_transient / unknown", () => {
+  // no_data: same message shape isNoDataExportMessage already recognizes.
+  assert.equal(classifyExportDialogMessage("There are no transactions for the selected date range."), "no_data");
+  assert.equal(classifyExportDialogMessage("Nothing to export for this account."), "no_data");
+  // validation: USAA rejected the submitted form itself (date range, required field).
+  assert.equal(classifyExportDialogMessage("Please select a valid date range."), "validation");
+  assert.equal(classifyExportDialogMessage("A start date is required."), "validation");
+  // server_transient: USAA's own backend failed independent of what was submitted.
+  assert.equal(classifyExportDialogMessage("An error occurred. Please try again later."), "server_transient");
+  assert.equal(classifyExportDialogMessage("This service is currently unavailable."), "server_transient");
+  // unknown: text that matches none of the known buckets — this is the
+  // honest, non-guessed fallback, not a defect. It is what the durable
+  // credit_card_export_unverified/export_dialog_error gap from
+  // run_3d79ee85650545a9a39a1e50e871e888 would still show if USAA's actual
+  // message (never retained — see luna-usaa-evidence-0803.md) turns out not
+  // to match any of the three known buckets above.
+  assert.equal(classifyExportDialogMessage("Something unrecognized entirely."), "unknown");
 });
 
 // ─── Invariant 8: pure filters ───────────────────────────────────────────

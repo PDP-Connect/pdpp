@@ -181,6 +181,11 @@ export interface DiagnosticInfo {
   artifact?: BodyResponseDiagnostics | null;
   browser_surface?: BrowserSurfaceDiagnostic;
   diag: PageDiagnostics | null;
+  // Finite, PII-safe classification of an export dialog's message text
+  // (see classifyExportDialogMessage in index.ts) — never the raw message,
+  // which stays local to the connector and is reduced separately via
+  // `error`/safeErrorCategory.
+  dialog_category?: "no_data" | "server_transient" | "unknown" | "validation";
   download?: DownloadDiagnostics | null;
   error?: string;
   no_export_observation?: NoExportAffordanceObservation;

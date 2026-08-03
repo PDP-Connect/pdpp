@@ -14,7 +14,7 @@ import {
 
 type FakeCdpSession = CDPSession & { emitCdp: (event: string, payload: unknown) => void };
 
-function fakeCdpSession(): FakeCdpSession {
+function fakeCdpSession(sendImpl?: (method: string, params?: unknown) => Promise<unknown>): FakeCdpSession {
   const emitter = new EventEmitter();
   const fake: Partial<CDPSession> = {};
   fake.on = ((event: string, listener: (...args: unknown[]) => void) => {
@@ -25,16 +25,20 @@ function fakeCdpSession(): FakeCdpSession {
     emitter.off(event, listener);
     return fake;
   }) as CDPSession["off"];
-  fake.send = (() => Promise.resolve({})) as CDPSession["send"];
+  fake.send = (sendImpl ?? (() => Promise.resolve({}))) as CDPSession["send"];
   fake.detach = (() => Promise.resolve()) as CDPSession["detach"];
   const session = fake as FakeCdpSession;
   session.emitCdp = (event, payload) => emitter.emit(event, payload);
   return session;
 }
 
-function fakePage(): { emitResponse: (response: Response) => void; page: Page; session: FakeCdpSession } {
+function fakePage(sendImpl?: (method: string, params?: unknown) => Promise<unknown>): {
+  emitResponse: (response: Response) => void;
+  page: Page;
+  session: FakeCdpSession;
+} {
   const emitter = new EventEmitter();
-  const session = fakeCdpSession();
+  const session = fakeCdpSession(sendImpl);
   const fake: Partial<Page> = {};
   fake.on = ((event: string, listener: (...args: unknown[]) => void) => {
     emitter.on(event, listener);
@@ -107,6 +111,12 @@ test("totalCdpResponsesSeen counts CDP network events independent of shouldInspe
   assert.equal(diag.totalCdpResponsesSeen, 2);
   assert.equal(diag.candidates.length, 0);
   assert.equal(diag.cdpReady, true);
+  // The discriminator this test's own title warns is otherwise unavailable:
+  // both responses were rejected at the header stage, proven directly by
+  // stageCdpHeaderRejected rather than inferred from candidates being empty.
+  assert.equal(diag.stageCdpHeaderAccepted, 0);
+  assert.equal(diag.stageCdpHeaderRejected, 2);
+  assert.equal(diag.stageCdpLoadingFinished, 0);
   queue.detach();
 });
 
@@ -173,6 +183,120 @@ test("a matching response is still captured as a candidate alongside the total c
   assert.equal(diag.totalResponsesSeen, 2);
   assert.equal(diag.candidates.length, 1);
   assert.equal(diag.candidates[0]?.reason, "matched");
+  queue.detach();
+});
+
+// ─── Stage counters: the ambiguity `candidates: []` alone cannot resolve ────
+//
+// Luna's correction (2026-08-03, luna-usaa-evidence-0803.md): nonzero
+// totalResponsesSeen/totalCdpResponsesSeen with zero candidates does NOT by
+// itself prove `shouldInspect` rejected every response. An accepted CDP
+// response can still produce zero candidates if `Network.loadingFinished`
+// never fires, or if it fires but `Network.getResponseBody` rejects/never
+// resolves before the caller's own timeout. These two tests exercise the
+// real production queue (not a fake diagnostics object) to prove the stage
+// counters actually discriminate the two cases the total counters cannot.
+
+test("stage counters: accepted header but Network.loadingFinished never fires — header-accepted, no body-stage counters advance", async () => {
+  const { page, session } = fakePage();
+  const queue = attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyPdfResponseBody,
+    shouldInspect: shouldInspectPdfHeaders,
+  });
+  await queue.ready;
+
+  // A response whose headers pass shouldInspect (application/pdf) arrives,
+  // but the request is abandoned before CDP ever emits loadingFinished —
+  // e.g. the page navigated away, or the underlying stream just hung. This
+  // is the "accepted response never reaches a terminal body outcome" shape
+  // Luna's report identifies as indistinguishable from a header rejection
+  // using only the pre-fix counters.
+  session.emitCdp("Network.responseReceived", {
+    requestId: "1",
+    response: { headers: { "content-type": "application/pdf" }, status: 200, url: "https://example.com/statement.pdf" },
+  });
+  // Deliberately no Network.loadingFinished / Network.loadingFailed event.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const diag = queue.diagnostics();
+  assert.equal(diag.totalCdpResponsesSeen, 1);
+  assert.equal(diag.candidates.length, 0, "still zero candidates, same as a header rejection would show");
+  // The discriminator: header WAS accepted, but no body-stage counter ever
+  // advanced. A header-rejection case (see the sibling
+  // totalCdpResponsesSeen test above) would show stageCdpHeaderAccepted=0
+  // and stageCdpHeaderRejected=1 instead.
+  assert.equal(diag.stageCdpHeaderAccepted, 1);
+  assert.equal(diag.stageCdpHeaderRejected, 0);
+  assert.equal(diag.stageCdpLoadingFinished, 0);
+  assert.equal(diag.stageCdpBodyFetchSucceeded, 0);
+  assert.equal(diag.stageCdpBodyFetchFailed, 0);
+  queue.detach();
+});
+
+test("stage counters: accepted header, loadingFinished fires, but Network.getResponseBody rejects — reaches the body stage and fails there, not a header rejection", async () => {
+  const { page, session } = fakePage((method) => {
+    if (method === "Network.getResponseBody") {
+      return Promise.reject(new Error("No resource with given identifier found"));
+    }
+    return Promise.resolve({});
+  });
+  const queue = attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyPdfResponseBody,
+    shouldInspect: shouldInspectPdfHeaders,
+  });
+  await queue.ready;
+
+  session.emitCdp("Network.responseReceived", {
+    requestId: "1",
+    response: { headers: { "content-type": "application/pdf" }, status: 200, url: "https://example.com/statement.pdf" },
+  });
+  session.emitCdp("Network.loadingFinished", { requestId: "1" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const diag = queue.diagnostics();
+  assert.equal(diag.totalCdpResponsesSeen, 1);
+  // Unlike the no-loadingFinished case above (zero candidates, no evidence
+  // at all), a getResponseBody rejection DOES already surface as a
+  // body_error candidate via addDiagnostic — that part was already
+  // diagnosable pre-fix. What the stage counters add is the DEFINITIVE
+  // proof that this is a body-stage failure rather than a header rejection,
+  // without having to infer it from candidate.reason alone.
+  assert.equal(diag.candidates.length, 1);
+  assert.equal(diag.candidates[0]?.reason, "body_error");
+  // The discriminator: this got further than the no-loadingFinished case
+  // above — it reached and failed the body-fetch stage, proven by
+  // stageCdpLoadingFinished=1 alongside stageCdpBodyFetchFailed=1.
+  assert.equal(diag.stageCdpHeaderAccepted, 1);
+  assert.equal(diag.stageCdpLoadingFinished, 1);
+  assert.equal(diag.stageCdpBodyFetchSucceeded, 0);
+  assert.equal(diag.stageCdpBodyFetchFailed, 1);
+  queue.detach();
+});
+
+test("stage counters: Playwright transport — accepted header, response.body() rejects", async () => {
+  const { emitResponse, page } = fakePage();
+  const queue = attachBodyResponseQueue(page, {
+    isExpectedBody: isLikelyPdfResponseBody,
+    shouldInspect: shouldInspectPdfHeaders,
+  });
+  await queue.ready;
+
+  const failingResponse = fakeResponse({
+    headers: { "content-type": "application/pdf" },
+    url: "https://example.com/statement.pdf",
+  });
+  failingResponse.body = (() => Promise.reject(new Error("net::ERR_CONNECTION_RESET"))) as Response["body"];
+  emitResponse(failingResponse);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const diag = queue.diagnostics();
+  assert.equal(diag.totalResponsesSeen, 1);
+  assert.equal(diag.candidates.length, 1, "a body_error still produces a bounded candidate, unlike the CDP path");
+  assert.equal(diag.candidates[0]?.reason, "body_error");
+  assert.equal(diag.stagePlaywrightHeaderAccepted, 1);
+  assert.equal(diag.stagePlaywrightHeaderRejected, 0);
+  assert.equal(diag.stagePlaywrightBodyFetchSucceeded, 0);
+  assert.equal(diag.stagePlaywrightBodyFetchFailed, 1);
   queue.detach();
 });
 

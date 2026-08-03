@@ -128,6 +128,8 @@ const CSV_HEAD_RE = /date|description|amount|transaction/iu;
 const EXPORT_DIALOG_MESSAGE_SELECTOR =
   '[role="dialog"] [class*="errorMessage"]:not(:empty), [role="dialog"] :text-matches("no transactions|nothing to export", "i")';
 const EXPORT_NO_DATA_RE = /no transactions|nothing to export/iu;
+const EXPORT_DIALOG_VALIDATION_RE = /invalid|required|select a|must be|please (?:choose|enter|select)/iu;
+const EXPORT_DIALOG_SERVER_TRANSIENT_RE = /try again|unavailable|error occurred|something went wrong|later/iu;
 const USAA_ACCOUNT_DETAIL_ROUTE_RE = /^\/my\/(?:checking|savings|credit-card)(?:\/|$)/u;
 const USAA_INTERSTITIAL_ROUTE_RE =
   /\/(?:my\/logon|access-management\/oauth2\/member\/authorize|security(?:\/|$)|challenge(?:\/|$))/iu;
@@ -1810,6 +1812,34 @@ export function isNoDataExportMessage(text: string): boolean {
 }
 
 /**
+ * Reduce the export dialog's raw message text to a finite, PII-safe
+ * category, the same "keyword-bucket, never the raw text" pattern
+ * `safeErrorCategory` (safe-diagnostics.ts) already uses for generic error
+ * messages — this one is specific to the export-dialog message vocabulary,
+ * which `safeErrorCategory`'s generic buckets (timeout/download/dialog/
+ * capture/network) don't cover. Distinguishing "USAA said there's no data"
+ * from "USAA rejected the submitted form" from "USAA's own backend failed"
+ * is exactly the discriminating signal a `dialog_error` gap is missing
+ * today (durable evidence currently collapses to `error: "unknown"`), and
+ * this callsite already has the message text in hand — it is simply never
+ * classified beyond the binary isNoDataExportMessage check before being
+ * reduced further at the safe-diagnostics boundary. The category — never
+ * the message itself — is what crosses that boundary.
+ */
+export function classifyExportDialogMessage(text: string): "no_data" | "server_transient" | "unknown" | "validation" {
+  if (isNoDataExportMessage(text)) {
+    return "no_data";
+  }
+  if (EXPORT_DIALOG_VALIDATION_RE.test(text)) {
+    return "validation";
+  }
+  if (EXPORT_DIALOG_SERVER_TRANSIENT_RE.test(text)) {
+    return "server_transient";
+  }
+  return "unknown";
+}
+
+/**
  * Skip Adobe Analytics / SiteCatalyst beacon hosts when filtering candidate
  * response bodies. USAA tracks the "export" click as a pageName analytics
  * event, so the keyword `export` ends up in the URL query string of every
@@ -2087,8 +2117,18 @@ async function finishDialogExportOutcome(
     .click()
     .catch((): undefined => undefined);
   if (outcome.kind === "dialog_error" && options.onDiagnostics) {
+    // Previously omitted `artifact` here even though `outcome.artifact`
+    // (the same BodyResponseDiagnostics shape finishFailedExportOutcome
+    // already emits) was in hand — a dialog_error and an artifact_failed
+    // both fire from the same submit/race, so both should carry the same
+    // bounded network evidence past the safe boundary. `dialog_category`
+    // is new: the finite, PII-safe classification of the dialog message
+    // this callsite already reads but previously discarded beyond a bare
+    // isNoDataExportMessage check.
     emitDiagnostic(options.onDiagnostics, {
+      artifact: outcome.artifact,
       diag: dialogDiag,
+      dialog_category: classifyExportDialogMessage(outcome.message),
       error: outcome.message,
       phase: "export_dialog_error",
       ...(surfaceManifest ? { surface_manifest: surfaceManifest } : {}),

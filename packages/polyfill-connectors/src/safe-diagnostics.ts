@@ -34,6 +34,7 @@ const SAFE_GENERIC_REASONS = new Set(["diagnostic_sanitized"]);
 const SAFE_GENERIC_OUTCOMES = new Set(["unknown"]);
 const SAFE_GENERIC_TERMINAL_FAILURES = new Set<string>();
 const SAFE_GENERIC_CODES = new Set(["unknown"]);
+const SAFE_EXPORT_DIALOG_CATEGORIES = new Set(["no_data", "server_transient", "unknown", "validation"]);
 const NETWORK_ERROR_PATTERN =
   /\bnetwork\b|\bfetch(?:\s+(?:failed|error))?\b|\bsocket\b|\bECONN[A-Z0-9_]*\b|net::ERR_[A-Z0-9_]+|connection reset/i;
 
@@ -217,6 +218,22 @@ function sanitizeArtifactDiagnostics(value: unknown): Record<string, unknown> | 
     }),
     cdpError: null,
     cdpReady: artifact.cdpReady === true,
+    // Bounded stage counters — plain non-negative integers, no PII (unlike
+    // URLs/filenames/error text elsewhere in this record), so they cross the
+    // safe boundary the same way the existing total* counters do. These are
+    // what let a future gap distinguish "shouldInspect rejected everything"
+    // from "an accepted response never reached a terminal body outcome"
+    // (see the field-level comments on BodyResponseDiagnostics) — the
+    // ambiguity `candidates: []` alone cannot resolve.
+    stageCdpBodyFetchFailed: boundedSafeDiagnosticCount(artifact.stageCdpBodyFetchFailed),
+    stageCdpBodyFetchSucceeded: boundedSafeDiagnosticCount(artifact.stageCdpBodyFetchSucceeded),
+    stageCdpHeaderAccepted: boundedSafeDiagnosticCount(artifact.stageCdpHeaderAccepted),
+    stageCdpHeaderRejected: boundedSafeDiagnosticCount(artifact.stageCdpHeaderRejected),
+    stageCdpLoadingFinished: boundedSafeDiagnosticCount(artifact.stageCdpLoadingFinished),
+    stagePlaywrightBodyFetchFailed: boundedSafeDiagnosticCount(artifact.stagePlaywrightBodyFetchFailed),
+    stagePlaywrightBodyFetchSucceeded: boundedSafeDiagnosticCount(artifact.stagePlaywrightBodyFetchSucceeded),
+    stagePlaywrightHeaderAccepted: boundedSafeDiagnosticCount(artifact.stagePlaywrightHeaderAccepted),
+    stagePlaywrightHeaderRejected: boundedSafeDiagnosticCount(artifact.stagePlaywrightHeaderRejected),
     totalCdpRequestsStarted: boundedSafeDiagnosticCount(artifact.totalCdpRequestsStarted),
     totalCdpResponsesSeen: boundedSafeDiagnosticCount(artifact.totalCdpResponsesSeen),
     totalResponsesSeen: boundedSafeDiagnosticCount(artifact.totalResponsesSeen),
@@ -394,6 +411,9 @@ function addSafeDiagnosticClassifications(
   const identity = raw.account_page_identity;
   if (identity === "exact" || identity === "mismatch" || identity === "unverified") {
     safe.account_page_identity = identity;
+  }
+  if (Object.hasOwn(raw, "dialog_category") && SAFE_EXPORT_DIALOG_CATEGORIES.has(raw.dialog_category as string)) {
+    safe.dialog_category = raw.dialog_category;
   }
 }
 
