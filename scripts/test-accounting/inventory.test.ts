@@ -824,24 +824,18 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
   });
 });
-// SKIP-BASELINE CLOSURE (2026-08-03): this hardcoded literal must track
-// test-accounting.manifest.json's memory-default skip_reasons exactly. The
-// baseline was 161/189 total; 13 commits authored 2026-08-02/03 (Postgres
-// activation/atomicity/scheduling parity tests, spine-correlation reason
-// classification, and other new Postgres-parity test cases) add 20 more
-// "PDPP_TEST_POSTGRES_URL unset" skips (161 -> 181), and commit d40a23c60
-// ("fix(gmail): validate remeasurement locators") adds one new distinct
-// reason, "PDPP_TEST_POSTGRES_URL must target the dedicated loopback proof
-// service" (a new Postgres-gated test in
-// requeue-gmail-precontract-too-large-detail-gaps.test.ts), for a final
-// baseline of 210.
+// FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
+// test-accounting.manifest.json's memory-default "PDPP_TEST_POSTGRES_URL
+// unset" count exactly. The integration branch already carried a verified
+// baseline of 135; interrupted-migration reconciliation adds three more
+// PostgreSQL-only tests, for a final baseline of 138.
 test("the memory-default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 181,
+    "PDPP_TEST_POSTGRES_URL unset": 161,
     "skipped: PDPP_TEST_POSTGRES_URL unset": 5,
     "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
     "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
@@ -853,7 +847,6 @@ test("the memory-default profile declares the exact current skip baseline", asyn
     "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
     "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
     "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
-    "PDPP_TEST_POSTGRES_URL must target the dedicated loopback proof service": 1,
   });
 });
 test("the optional PostgreSQL profile is not selected by the required default and rejects implicit execution", async () => {

@@ -14,7 +14,7 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 181,
+            "PDPP_TEST_POSTGRES_URL unset": 161,
             "skipped: PDPP_TEST_POSTGRES_URL unset": 5,
             "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
             "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
@@ -24,8 +24,7 @@
             "set PDPP_TEST_LIVE_CDP=1 and PDPP_TEST_CDP_BIN or PDPP_TEST_CDP_WS_URL to run": 1,
             "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
             "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
-            "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority": 1,
-            "PDPP_TEST_POSTGRES_URL must target the dedicated loopback proof service": 1
+            "PDPP_TEST_POSTGRES_URL is required for PostgreSQL status-window authority": 1
           }
         },
         {
