@@ -290,16 +290,6 @@ function safeUsaaPdfDownloadFailedMessage(diagnostics: Record<string, unknown> |
     : "USAA statement PDF download did not produce a persisted PDF";
 }
 
-function safeUsaaCsvSkipMessage(reason: string, diagnostics: Record<string, unknown> | undefined): string {
-  const accountOrdinal = diagnostics?.account_ordinal as number | undefined;
-  const accountTotal = diagnostics?.account_total as number | undefined;
-  if (reason === "csv_no_usable_transactions") {
-    const dataRows = diagnostics?.data_rows as number | undefined;
-    return `CSV parsed no usable transactions from ${dataRows ?? 0} data row(s) for account ${accountOrdinal ?? 0}/${accountTotal ?? 0} (header mismatch or unparseable rows)`;
-  }
-  return `CSV had no data rows for account ${accountOrdinal ?? 0}/${accountTotal ?? 0}`;
-}
-
 function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown> | undefined): string {
   switch (reason) {
     case "export_affordance_disabled":
@@ -331,9 +321,6 @@ function safeUsaaSkipMessage(reason: string, diagnostics: Record<string, unknown
       return "USAA selector wiring is pending for this stream";
     case "pdf_download_failed":
       return safeUsaaPdfDownloadFailedMessage(diagnostics);
-    case "csv_no_usable_transactions":
-    case "csv_no_data_rows":
-      return safeUsaaCsvSkipMessage(reason, diagnostics);
     default:
       return `USAA diagnostic: ${reason}`;
   }

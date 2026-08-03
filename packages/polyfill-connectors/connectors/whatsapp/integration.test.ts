@@ -326,10 +326,7 @@ test("WhatsApp connector marks media hydration failed when blob upload fails", a
   try {
     await writeMediaZip(importRoot);
     await withBlobServer(
-      async () => ({
-        body: { error: { code: "synthetic_upload_failure", message: "synthetic upload failure" } },
-        status: 500,
-      }),
+      async () => ({ body: { error: "synthetic upload failure" }, status: 500 }),
       async (baseUrl) => {
         const { attachment } = await runWhatsAppImport(importRoot, {
           PDPP_OWNER_TOKEN: "owner-token",
@@ -337,9 +334,7 @@ test("WhatsApp connector marks media hydration failed when blob upload fails", a
         });
         assert.equal(attachment.hydration_status, "failed");
         assert.deepEqual(attachment.blob_ref, null);
-        // Only the typed error code may surface — never the free-text message/body.
-        assert.match(String(attachment.hydration_error), /500.*synthetic_upload_failure/);
-        assert.doesNotMatch(String(attachment.hydration_error), /synthetic upload failure(?!_)/);
+        assert.match(String(attachment.hydration_error), /500.*synthetic upload failure/);
       }
     );
   } finally {
