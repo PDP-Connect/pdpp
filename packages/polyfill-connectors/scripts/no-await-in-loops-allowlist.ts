@@ -1293,6 +1293,13 @@ export const NO_AWAIT_IN_LOOPS_ALLOWLIST: readonly NoAwaitInLoopsAllowlistEntry[
     note: "processPdfStatementRow(): sequential PDF parse/emission preserves transaction order and shared counters",
   },
   {
+    path: "connectors/usaa/index.ts",
+    line: 3080,
+    column: 5,
+    category: "ordered_protocol_emission",
+    note: "hydratePdfsForIndex(): final unresolved PDF skips emit in row order after hydration settles",
+  },
+  {
     path: "connectors/usaa/integration.test.ts",
     line: 608,
     column: 21,

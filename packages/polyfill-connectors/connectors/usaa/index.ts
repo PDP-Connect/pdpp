@@ -2138,6 +2138,8 @@ interface StatementsSubDeps extends EmitDeps {
   page: Page;
 }
 
+type StatementPdfHydrator = typeof hydrateStatementPdfs;
+
 interface TransactionsStreamState {
   sessionDeadMidRun: boolean;
 }
@@ -3018,13 +3020,18 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
   });
 }
 
-async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly IndexRow[]): Promise<HydrationSummary> {
+export async function hydratePdfsForIndex(
+  deps: StatementsSubDeps,
+  indexRows: readonly IndexRow[],
+  hydrate: StatementPdfHydrator = hydrateStatementPdfs
+): Promise<HydrationSummary> {
   const results = new Map<number, HydrationResult>();
+  const stagedSkips = new Map<number, { diag: Record<string, unknown> | null; reason: string }>();
   let attempts = 0;
   let successes = 0;
 
   try {
-    const hydrated = await hydrateStatementPdfs({
+    const hydrated = await hydrate({
       page: deps.page,
       statements: indexRows as IndexRow[],
       onProgress: ({ index, total }) => {
@@ -3039,22 +3046,12 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
         }).catch((): undefined => undefined);
       },
       onSkip: ({ statement, reason, diag }) => {
+        // A child callback is only an intermediate observation: the
+        // hydrator can later return this same row as successful after a
+        // retry. Keep the last failure in memory until its final row result
+        // is known, rather than making a stale skip durable immediately.
+        stagedSkips.set(statement.rowIndex, { diag, reason });
         results.set(statement.rowIndex, { err: reason, diag });
-        emitUsaa(deps, {
-          type: "SKIP_RESULT",
-          stream: "statements",
-          reason: `pdf_download_${reason}`,
-          message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
-          // row_id is statement.rowIndex, a plain ordinal position within
-          // this run's /my/documents table scrape — not derived from
-          // account reference, date, or title. Unlike a content hash it
-          // carries no information about the statement itself and cannot
-          // be correlated across runs (row order can shift between
-          // scrapes), only within this run's failure set. Always
-          // included, even when there are no other diagnostics, so every
-          // failure is correlatable back to its row for this run.
-          diagnostics: { ...diag, row_id: statement.rowIndex },
-        }).catch((): undefined => undefined);
       },
     });
     for (const h of hydrated) {
@@ -3074,6 +3071,25 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
       reason: "hydrate_crashed",
       message: msg.slice(0, ID_TEXT_SNIP),
     });
+  }
+
+  for (const [rowIndex, skip] of stagedSkips) {
+    if (hydrationSuccess(results.get(rowIndex))) {
+      continue;
+    }
+    await emitUsaa(deps, {
+      type: "SKIP_RESULT",
+      stream: "statements",
+      // The per-attempt child reason is not a public enum. This stable,
+      // bounded class is the final parent-level fact and survives the safe
+      // diagnostics boundary without exposing provider text.
+      reason: "pdf_download_failed",
+      message: "USAA statement PDF download did not produce a persisted PDF",
+      // row_id is a run-local ordinal from the documents-table scrape. It
+      // preserves correlation without carrying statement text or account
+      // identity, and remains useful when several rows fail together.
+      diagnostics: { ...skip.diag, row_id: rowIndex },
+    }).catch((): undefined => undefined);
   }
   return { attempts, successes, results };
 }

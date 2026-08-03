@@ -404,7 +404,7 @@ function addSafeDiagnosticErrorAndCounts(safe: Record<string, unknown>, raw: Unk
   if (Object.hasOwn(raw, "error")) {
     safe.error = safeErrorCategory(raw.error);
   }
-  for (const key of ["account_ordinal", "account_total", "data_rows"]) {
+  for (const key of ["account_ordinal", "account_total", "data_rows", "row_id"]) {
     if (Object.hasOwn(raw, key)) {
       safe[key] = boundedSafeDiagnosticCount(raw[key]);
     }

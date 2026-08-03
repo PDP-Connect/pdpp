@@ -65,6 +65,7 @@ import {
   emitStatementRecords,
   finalizeTransactionsStream,
   type HydrationSummary,
+  hydratePdfsForIndex,
   hydrationSuccess,
   isNoDataExportMessage,
   runSingleLadderAttempt,
@@ -77,6 +78,7 @@ import type {
   DashboardAccount,
   DiagnosticInfo,
   DocRow,
+  HydratedStatement,
   HydrationResult,
   HydrationResultSuccess,
   IndexRow,
@@ -478,6 +480,79 @@ test("emitStatementRecords: hydrated rows populate pdf_path + pdf_sha256 + docum
   // document_url is a file:// URL derived from pdfPath — we assert the prefix rather than the full
   // platform-dependent path to keep the test portable.
   assert.match(String(stmt.data.document_url), /^file:\/\//, "document_url should be a file:// URL");
+});
+
+test("hydratePdfsForIndex: a retry callback followed by a hydrated row emits no stale SKIP_RESULT and declares complete coverage", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow()];
+  const summary = await hydratePdfsForIndex(
+    { ...deps, page: {} as Page },
+    indexRows,
+    ({ onSkip, statements }): Promise<HydratedStatement[]> => {
+      const [statement] = statements;
+      assert.ok(statement);
+      onSkip?.({
+        statement,
+        reason: "download_timeout",
+        diag: { error: "provider text that must not be emitted" },
+      });
+      return Promise.resolve([
+        {
+          ...makeHydrationOk(),
+          statement,
+          suggestedFilename: "statement.pdf",
+        },
+      ]);
+    }
+  );
+
+  await emitStatementRecords(deps, indexRows, summary.results, summary);
+
+  assert.equal(
+    messages.filter((message) => message.type === "SKIP_RESULT" && message.stream === "statements").length,
+    0,
+    "an intermediate skip must not make a finally hydrated row terminal"
+  );
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
+  assert.deepEqual(coverage.required_keys, ["IDX-ID-0001"]);
+  assert.deepEqual(coverage.hydrated_keys, ["IDX-ID-0001"]);
+  assert.equal(coverage.gap_keys, undefined, "final hydration remains authoritative over the earlier callback");
+});
+
+test("hydratePdfsForIndex: a final PDF failure emits one bounded typed and row-correlated skip", async () => {
+  const { deps, messages } = makeHarness();
+  const indexRows = [makeIndexRow()];
+  const summary = await hydratePdfsForIndex(
+    { ...deps, page: {} as Page },
+    indexRows,
+    ({ onSkip, statements }): Promise<HydratedStatement[]> => {
+      const [statement] = statements;
+      assert.ok(statement);
+      onSkip?.({
+        statement,
+        reason: "download_timeout",
+        diag: { error: "provider text that must not be emitted" },
+      });
+      return Promise.resolve([]);
+    }
+  );
+
+  assert.deepEqual(summary.results.get(0), {
+    err: "download_timeout",
+    diag: { error: "provider text that must not be emitted" },
+  });
+  const skips = messages.filter(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "statements"
+  );
+  assert.equal(skips.length, 1);
+  const [skip] = skips;
+  assert.ok(skip);
+  assert.equal(skip.reason, "pdf_download_failed", "the stable parent-level failure class must survive sanitization");
+  assert.notEqual(skip.reason, "diagnostic_sanitized");
+  assert.equal((skip.diagnostics as { row_id?: unknown }).row_id, 0, "run-local row correlation survives sanitization");
+  assert.doesNotMatch(JSON.stringify(skip), /provider text that must not be emitted/);
 });
 
 // ─── Invariant 4c: per-run detail-coverage evidence on the emit path ─────
