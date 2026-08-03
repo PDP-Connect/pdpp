@@ -59,10 +59,11 @@ COPY packages/polyfill-connectors/scripts/install-patchright-browser.ts packages
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
 COPY reference-implementation/package.json reference-implementation/package.json
 # LOCAL-ONLY: brings the vendored unpublished remote-surface tarball into the
-# deps stage so `pnpm install --frozen-lockfile` below can resolve the
-# pnpm-workspace.yaml file: override pointing at it. Only makes sense while
-# that local vendor path/override exists — MUST be removed along with the
-# override and pnpm-lock.yaml entry before any push/PR/merge to main.
+# deps stage so `pnpm install --frozen-lockfile` below can resolve
+# reference-implementation's direct `file:` optionalDependency pointing at
+# it. Only makes sense while that local vendor path/dependency exists — MUST
+# be removed along with reference-implementation's package.json entry and
+# pnpm-lock.yaml entry before any push/PR/merge to main.
 COPY local-artifacts/vendor/opendatalabs-remote-surface-0.3.1-rs-lease-cleanup-contract-0803.tgz local-artifacts/vendor/opendatalabs-remote-surface-0.3.1-rs-lease-cleanup-contract-0803.tgz
 
 # Do not run workspace prepare scripts against this manifest-only tree. Native
