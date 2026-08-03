@@ -14,6 +14,7 @@ import {
   type StopBrowserSurfaceRequest,
   // biome-ignore lint/correctness/noUnresolvedImports: workspace package subpath is available to the test runtime.
 } from "@opendatalabs/remote-surface/leases";
+import { emitSpineEvent } from "../lib/spine.ts";
 import {
   createBrowserSurfaceReplacementLedger,
   type ReplacementReceipt,
@@ -125,6 +126,55 @@ function createSchedulerStore(calls: SchedulerStoreCalls): SchedulerStore {
     upsertLastRunTime: () => undefined,
   };
   return store;
+}
+
+function createFencedActiveRunStore() {
+  const activeRuns = new Map<string, ActiveRunRecord>();
+  const deleteCalls: Array<{ connectorInstanceId: string; runId: string }> = [];
+  let allowDelete: () => void = () => undefined;
+  let signalDeleteStarted: () => void = () => undefined;
+  const deleteAllowed = new Promise<void>((resolve) => {
+    allowDelete = resolve;
+  });
+  const deleteStarted = new Promise<void>((resolve) => {
+    signalDeleteStarted = resolve;
+  });
+  const upsertedRuns: string[] = [];
+
+  const store: SchedulerStore = {
+    appendRunHistory: () => undefined,
+    createSchedule: () => undefined,
+    deleteActiveRun: async (connectorInstanceId, runId) => {
+      deleteCalls.push({ connectorInstanceId, runId });
+      signalDeleteStarted();
+      await deleteAllowed;
+      if (activeRuns.get(connectorInstanceId)?.run_id === runId) {
+        activeRuns.delete(connectorInstanceId);
+      }
+    },
+    deleteSchedule: () => undefined,
+    getActiveRun: (connectorInstanceId) => activeRuns.get(connectorInstanceId) ?? null,
+    getLatestRunHistoryForConnection: () => null,
+    getSchedule: () => null,
+    listActiveRuns: () => [...activeRuns.values()],
+    listLastRunTimes: () => [],
+    listRunHistory: () => [],
+    listSchedules: () => [],
+    setScheduleEnabled: () => undefined,
+    updateSchedule: () => undefined,
+    upsertActiveRun: (record) => {
+      const connectorInstanceId = record.connector_instance_id ?? record.connector_id;
+      if (activeRuns.has(connectorInstanceId)) {
+        return false;
+      }
+      activeRuns.set(connectorInstanceId, record);
+      upsertedRuns.push(record.run_id);
+      return true;
+    },
+    upsertLastRunTime: () => undefined,
+  };
+
+  return { activeRuns, allowDelete, deleteCalls, deleteStarted, store, upsertedRuns };
 }
 
 function createDurableConflictSchedulerStore(existingRow: ActiveRunRecord): SchedulerStore {
@@ -340,17 +390,23 @@ function createStopFailingAllocator(): BrowserSurfaceAllocator & {
 
 function createBlockedAllocator(): {
   allocator: BrowserSurfaceAllocator;
+  started: Promise<void>;
   stopRequests: StopBrowserSurfaceRequest[];
   unblock: () => void;
 } {
   let unblock: () => void = () => undefined;
+  let signalStarted: () => void = () => undefined;
   const ready = new Promise<void>((resolve) => {
     unblock = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
   });
   const stopRequests: StopBrowserSurfaceRequest[] = [];
   return {
     allocator: {
       ensureSurface: async (request) => {
+        signalStarted();
         await ready;
         return {
           backend: "neko",
@@ -381,6 +437,7 @@ function createBlockedAllocator(): {
         return Promise.resolve(null);
       },
     },
+    started,
     stopRequests,
     unblock,
   };
@@ -401,6 +458,7 @@ interface SetupOptions {
   runConnectorImpl?: (
     opts: RuntimeRunConnectorOptions
   ) => RuntimeRunConnectorResult | Promise<RuntimeRunConnectorResult>;
+  schedulerStore?: SchedulerStore;
 }
 
 interface RunCalls {
@@ -425,6 +483,7 @@ function setup(
     beforeBrowserSurfaceLeaseRelease,
     maxRunWallClockMs,
     runConnectorImpl,
+    schedulerStore: suppliedSchedulerStore,
     connectorPathResolver = () => "/tmp/connector.js",
   }: SetupOptions = {}
 ) {
@@ -443,7 +502,7 @@ function setup(
     runConnector: 0,
     runConnectorOpts: [],
   };
-  const schedulerStore = createSchedulerStore(calls);
+  const schedulerStore = suppliedSchedulerStore ?? createSchedulerStore(calls);
   const controller = createController({
     admitRunConnection: fakeAdmitRunConnection(),
     // Queued/deferred leases are promoted later without a live caller-supplied
@@ -1601,6 +1660,99 @@ test("managed connector with active run rejects without acquiring a new lease", 
 
   releaseFirst();
   await controller.drainActiveRuns(1000);
+});
+
+test("pre-promise managed run remains live through duplicate admission and awaits fenced cleanup", async (t) => {
+  const blocked = createBlockedAllocator();
+  const activeRunStore = createFencedActiveRunStore();
+  const manager = createDynamicManager({ surfaceCap: 1 });
+  let resolveConnectorRun: (result: RuntimeRunConnectorResult) => void = () => undefined;
+  let signalConnectorStarted: () => void = () => undefined;
+  const connectorStarted = new Promise<void>((resolve) => {
+    signalConnectorStarted = resolve;
+  });
+  const connectorResult = new Promise<RuntimeRunConnectorResult>((resolve) => {
+    resolveConnectorRun = resolve;
+  });
+  const { calls, controller } = setup(t, {
+    browserSurfaceAllocator: blocked.allocator,
+    manager,
+    maxRunWallClockMs: Number.POSITIVE_INFINITY,
+    runConnectorImpl: () => {
+      signalConnectorStarted();
+      return connectorResult;
+    },
+    schedulerStore: activeRunStore.store,
+  });
+
+  const firstAdmission = controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_pre_promise",
+  });
+  await blocked.started;
+
+  const activeBeforeDuplicate = controller.getActiveRun("managed");
+  assert.equal(activeBeforeDuplicate?.run_id, "run_pre_promise");
+  assert.equal(activeBeforeDuplicate?.run_generation, 1);
+  assert.equal(activeRunStore.activeRuns.get("managed")?.run_generation, 1);
+
+  await assert.rejects(
+    () =>
+      controller.runNow("managed", {
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+        runId: "run_pre_promise_duplicate",
+      }),
+    (err) =>
+      (err as { code?: string; runId?: string }).code === "run_already_active" &&
+      (err as { code?: string; runId?: string }).runId === "run_pre_promise"
+  );
+
+  // Browser-surface acquisition precedes activeRunPromises installation. The
+  // duplicate must not reclaim A in that interval or advance its generation.
+  assert.equal(controller.getActiveRun("managed")?.run_id, "run_pre_promise");
+  assert.equal(controller.getActiveRun("managed")?.run_generation, 1);
+  assert.equal(activeRunStore.activeRuns.get("managed")?.run_id, "run_pre_promise");
+  assert.equal(activeRunStore.activeRuns.get("managed")?.run_generation, 1);
+  assert.equal(manager.listLeases().length, 1, "duplicate admission must not create a successor lease");
+
+  blocked.unblock();
+  await firstAdmission;
+  await connectorStarted;
+
+  let cleanupCompleted = false;
+  const terminalOutcome = controller.awaitRun("run_pre_promise").then((terminalStatus) => {
+    cleanupCompleted = true;
+    return terminalStatus;
+  });
+  await emitSpineEvent({
+    event_type: "run.completed",
+    object_id: "run_pre_promise",
+    object_type: "run",
+    run_id: "run_pre_promise",
+    status: "completed",
+  });
+  resolveConnectorRun({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
+  await activeRunStore.deleteStarted;
+
+  assert.equal(cleanupCompleted, false, "awaitRun must include the fenced durable active-row delete");
+  assert.equal(controller.getActiveRun("managed"), null, "memory cleanup starts before durable deletion completes");
+  assert.equal(activeRunStore.activeRuns.get("managed")?.run_id, "run_pre_promise");
+  assert.equal(manager.getLease("lease_1")?.status, "leased", "lease release follows durable active-row cleanup");
+
+  activeRunStore.allowDelete();
+  const outcome = await terminalOutcome;
+  assert.equal(outcome, "succeeded");
+
+  assert.equal(controller.getActiveRun("managed"), null);
+  assert.equal(activeRunStore.activeRuns.get("managed"), undefined);
+  assert.deepEqual(activeRunStore.deleteCalls, [{ connectorInstanceId: "managed", runId: "run_pre_promise" }]);
+  assert.equal(manager.getLease("lease_1")?.status, "released");
+  assert.ok(listRunEventTypes("run_pre_promise").includes("run.browser_surface_released"));
+  assert.deepEqual(activeRunStore.upsertedRuns, ["run_pre_promise"], "no successor is admitted");
+  assert.equal(calls.runConnector, 1, "only the original run reaches the connector");
+  assert.equal(manager.listLeases().length, 1, "no successor lease is admitted");
 });
 
 test("duplicate queued managed connector request reports existing pending run", async (t) => {

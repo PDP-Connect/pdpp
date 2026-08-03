@@ -972,11 +972,11 @@ const activeRuns = new Map<string, ActiveRun>();
 // docs/run-reconciliation-design-brief.md for the broader controller-
 // shutdown discipline this complements.
 const activeRunPromises = new Map<string, Promise<unknown>>();
-// Run IDs whose runPromise has settled but whose finalizeRunCleanup may not
-// have completed yet (race window) or — defensively — whose cleanup was
-// skipped due to an unhandled edge. Used by the 409 guard to distinguish a
-// stale in-memory entry from a genuinely live run, so a hung run that was
-// force-finalized by the watchdog never permanently blocks future run-nows.
+// Run IDs whose terminal cleanup has begun. Used by the 409 guard to
+// distinguish a stale in-memory entry from a genuinely live run, so a hung
+// run that was force-finalized by the watchdog never permanently blocks future
+// run-nows. `activeRunPromises` is deliberately not lifecycle authority: a
+// run is active before browser-surface acquisition installs its promise.
 const settledRunIds = new Set<string>();
 // Per-run watchdog timer handles, keyed by run_id. Armed after
 // activeRunPromises.set; cleared in finalizeRunCleanup so a normal
@@ -3157,10 +3157,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
     activeRunPromises.delete(input.runId);
     activeRunTraceContexts.delete(input.runId);
     activeRunCancellations.delete(input.runId);
-    clearPersistedActiveRun(input.connectorInstanceId, input.runId).catch((err) => {
+    try {
+      // Preserve the connector-instance + run-id fence, and make its durable
+      // completion part of the terminal cleanup promise before a caller can
+      // observe the run as fully cleaned up.
+      await clearPersistedActiveRun(input.connectorInstanceId, input.runId);
+    } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to clear active run ${input.runId} for ${input.connectorId}: ${message}`);
-    });
+    }
     clearStreamingNonceForRun(input.runId);
     if (input.browserSurfaceLease) {
       await opts.beforeBrowserSurfaceLeaseRelease?.({ runId: input.runId });
@@ -3180,9 +3185,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
    *
    * A stale entry arises when the watchdog force-finalizes a hung run but the
    * `activeRuns` map still contains the entry (race between the watchdog's async
-   * emitAndFinalize and the next run-now call). The entry is stale when its
-   * run_id appears in `settledRunIds` (marked by finalizeRunCleanup) or when
-   * there is no corresponding `activeRunPromises` entry (promise already gone).
+   * emitAndFinalize and the next run-now call). The entry is stale only when
+   * its run_id appears in `settledRunIds` (marked by finalizeRunCleanup).
+   * Promise installation follows browser-surface acquisition, so absence from
+   * `activeRunPromises` is a normal queued/starting lifecycle state, not
+   * evidence that the active row is stale.
    *
    * - If stale: clears the orphaned map entries and returns (allows new run).
    * - If live: throws 409 run_already_active.
@@ -3193,7 +3200,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       return;
     }
-    const isStale = settledRunIds.has(existing.run_id) || !activeRunPromises.has(existing.run_id);
+    const isStale = settledRunIds.has(existing.run_id);
     if (isStale) {
       log.warn?.(
         `[controller] reclaiming stale activeRuns entry for ${existing.connector_id} (run_id=${existing.run_id}); allowing new run`

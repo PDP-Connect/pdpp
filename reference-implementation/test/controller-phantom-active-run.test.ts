@@ -25,13 +25,14 @@
  *
  *   2. STALE-ENTRY RECONCILIATION (409 guard): before throwing 409
  *      run_already_active, checks whether the existing activeRuns entry's
- *      promise has already settled (settledRunIds set) or is absent from
- *      activeRunPromises. If stale, clears the entry and allows the new run
- *      to proceed. Genuinely-live in-flight runs still 409.
+ *      terminal cleanup has begun (`settledRunIds` set). Promise presence is
+ *      not lifecycle authority because browser-surface acquisition precedes
+ *      promise installation. If stale, clears the entry and allows the new
+ *      run to proceed. Genuinely-live runs still 409.
  *
  * Covered scenarios:
  *   (a) hung run self-heals via watchdog → subsequent run-now succeeds (not 409)
- *   (b) stale entry (settled promise / no activeRunPromises entry) → reclaimed
+ *   (b) stale entry marked settled → reclaimed
  *   (c) REGRESSION: genuinely live in-flight run still returns 409
  *   (d) watchdog emits a typed run_timed_out terminal spine event
  *   (e) watchdog does NOT fire for runs that complete within budget
