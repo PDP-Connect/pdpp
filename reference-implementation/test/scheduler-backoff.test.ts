@@ -274,9 +274,15 @@ test("a lone controller_restarted failure gets the bounded retry, not the full b
 test("controller_restarted bounded retry never waits LONGER than the ordinary base interval", () => {
   // A fast-polling connector (base interval shorter than the bounded retry)
   // must not be pushed OUT by the carve-out — only ever pulled in sooner.
+  // effectiveIntervalMs MUST agree with nextRunAt: the dispatch governor
+  // (scheduler/dispatch-governor.ts) gates the actual tick on
+  // `elapsed >= decision.effectiveIntervalMs`, never on nextRunAt — a
+  // hardcoded CONTROLLER_RESTART_RETRY_MS here would silently make the
+  // governor wait the full 60s even though nextRunAt (and the owner-facing
+  // "we'll try again" promise) both say the shorter base interval.
   const shortBaseIntervalMs = 10_000;
   const decision = computeNextRunWithBackoff([controllerRestartedRun()], shortBaseIntervalMs, T0);
-  assert.equal(decision.effectiveIntervalMs, CONTROLLER_RESTART_RETRY_MS);
+  assert.equal(decision.effectiveIntervalMs, shortBaseIntervalMs);
   assert.equal(decision.nextRunAt, new Date(T0 + shortBaseIntervalMs).toISOString());
 });
 

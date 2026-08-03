@@ -331,13 +331,19 @@ function controllerRestartRetryDecision(
   if (!(newestRecord && isControllerRestartRecord(newestRecord))) {
     return null;
   }
-  const boundedNextMs = normalizedLastRunAtMs + CONTROLLER_RESTART_RETRY_MS;
-  const baseNextMs = normalizedLastRunAtMs + normalizedBaseIntervalMs;
+  // effectiveIntervalMs MUST agree with nextRunAt: the dispatch governor
+  // (scheduler/dispatch-governor.ts) gates the actual tick on
+  // `elapsed >= decision.effectiveIntervalMs`, never on `nextRunAt` — a
+  // hardcoded CONTROLLER_RESTART_RETRY_MS here would silently make the
+  // governor wait the full 60s even when the shorter base interval already
+  // won the min() below, contradicting both this function's own contract
+  // and the audit-visible nextRunAt value.
+  const effectiveIntervalMs = Math.min(CONTROLLER_RESTART_RETRY_MS, normalizedBaseIntervalMs);
   return {
     backoffApplied: false,
     consecutiveFailures: 0,
-    effectiveIntervalMs: CONTROLLER_RESTART_RETRY_MS,
-    nextRunAt: toIsoTimestamp(Math.min(boundedNextMs, baseNextMs)),
+    effectiveIntervalMs,
+    nextRunAt: toIsoTimestamp(normalizedLastRunAtMs + effectiveIntervalMs),
     reasonClass: null,
     recommendedHealthState: null,
   };
