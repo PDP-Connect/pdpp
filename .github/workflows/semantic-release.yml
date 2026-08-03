@@ -127,6 +127,12 @@ jobs:
       - name: Test Docker release matrix consistency checks
         run: pnpm docker:release-matrix:check:test
 
+      - name: Test self-host bundle generator
+        run: pnpm docker:release-bundle:test
+
+      - name: Test self-host bundle publish verification
+        run: pnpm docker:release-bundle:verify-published:test
+
       - name: Typecheck operator console app
         run: pnpm --dir apps/console run types:check
 
@@ -385,3 +391,85 @@ jobs:
           sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           target: ${{ matrix.target }}
+
+  publish-selfhost-bundle:
+    name: publish version-coherent self-host bundle
+    needs: [release, publish-images]
+    # publish-images already gates on needs.release.outputs.published, and
+    # this job needs every one of its matrix legs to have actually pushed —
+    # a partial success here (e.g. neko's build fails but reference/web
+    # succeed) must NOT publish a bundle that references a digest that was
+    # never pushed. `needs` on a matrix job blocks until ALL legs finish;
+    # `result == 'success'` requires ALL legs to have succeeded.
+    if: needs.publish-images.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      # publish-images pushed each image tagged with the exact release
+      # version (`type=raw,value=${{ needs.release.outputs.version }}`), so
+      # resolving THAT tag's digest right now — rather than threading a
+      # per-matrix-leg output out of publish-images, which GitHub Actions
+      # matrix jobs cannot do without a leg-name-keyed output map — gets the
+      # exact digest this release just pushed. Uses the same GHCR
+      # anonymous-token probe as verify-published-docker-images.ts.
+      - name: Resolve this release's published image digests
+        id: digests
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          for image in reference web neko; do
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:pdp-connect/pdpp/${image}:pull&service=ghcr.io" | node -e "process.stdin.on('data',d=>process.stdout.write(JSON.parse(d).token))")
+            digest=$(curl -fsSI \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+              "https://ghcr.io/v2/pdp-connect/pdpp/${image}/manifests/${RELEASE_VERSION}" \
+              | tr -d '\r' | grep -i '^docker-content-digest:' | cut -d' ' -f2)
+            if [[ -z "${digest}" ]]; then
+              echo "::error::could not resolve a published digest for ${image}:${RELEASE_VERSION}"
+              exit 1
+            fi
+            echo "${image}=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Generate version-coherent self-host bundle
+        run: |
+          mkdir -p .release-bundle
+          pnpm docker:release-bundle:generate -- \
+            --version "${{ needs.release.outputs.version }}" \
+            --image "reference=${{ steps.digests.outputs.reference }}" \
+            --image "web=${{ steps.digests.outputs.web }}" \
+            --image "neko=${{ steps.digests.outputs.neko }}" \
+            --out .release-bundle/docker-compose.yml
+
+      - name: Upload bundle to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.release.outputs.git-tag }}" \
+            .release-bundle/docker-compose.yml \
+            --clobber
+
+      - name: Verify the published bundle is version-coherent and pullable
+        run: pnpm docker:release-bundle:verify-published -- --tag "${{ needs.release.outputs.git-tag }}"
