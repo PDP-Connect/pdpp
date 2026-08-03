@@ -31,9 +31,11 @@ interface Params {
   demo?: string;
   peek?: string;
   q?: string;
+  since?: string;
   source_id?: string;
   source_kind?: "connector" | "provider_native";
   status?: string;
+  until?: string;
 }
 
 function listHref(params: Params, overrides: Partial<Params> = {}): string {
@@ -86,7 +88,13 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     q: params.q,
     source_id: params.source_id,
     source_kind: params.source_kind,
+    // `since`/`until` are already applied server-side as HAVING clauses over
+    // MIN/MAX(occurred_at); the console simply had no affordance for them.
+    // Widen a bare date to cover the whole day so "active before 2026-07-01"
+    // does not silently exclude everything that happened on the 1st.
+    since: params.since ? `${params.since}T00:00:00.000Z` : undefined,
     status: params.status,
+    until: params.until ? `${params.until}T23:59:59.999Z` : undefined,
   };
 
   let result: ListResponse<GrantSummary>;
@@ -120,6 +128,9 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   const activeFilters = [
     params.status ? { label: "state", value: params.status } : null,
     params.q ? { label: "query", value: params.q } : null,
+    params.client_id ? { label: "client", value: params.client_id } : null,
+    params.since ? { label: "since", value: params.since } : null,
+    params.until ? { label: "before", value: params.until } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item));
   const preHeader = (
     <>
@@ -166,6 +177,19 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     emptyHint: "Grant artifacts appear after client/provider-connect consent flows issue or reject grants.",
     emptyTitle: "No grants yet",
     filters: {
+      // Filters reachable from row links but with no visible control. Without
+      // these hidden fields a GET submit would drop them.
+      carry: [
+        params.client_id ? { name: "client_id", value: params.client_id } : null,
+        params.source_id ? { name: "source_id", value: params.source_id } : null,
+        params.source_kind ? { name: "source_kind", value: params.source_kind } : null,
+      ].filter((f): f is { name: string; value: string } => Boolean(f)),
+      dateRange: {
+        sinceName: "since",
+        sinceValue: params.since ?? "",
+        untilName: "until",
+        untilValue: params.until ?? "",
+      },
       query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },
       status: {
         defaultValue: params.status ?? "",
@@ -189,7 +213,15 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     peekId: params.peek,
     preHeader,
     renderRow: (grant, { peeked, href, detailHref }) => (
-      <GrantRow detailHref={detailHref} grant={grant} href={href} peeked={peeked} />
+      <GrantRow
+        clientFilterHref={
+          grant.client_id ? listHref(params, { client_id: grant.client_id, cursor: undefined }) : null
+        }
+        detailHref={detailHref}
+        grant={grant}
+        href={href}
+        peeked={peeked}
+      />
     ),
     resetHref: "/grants",
     result,
@@ -249,11 +281,13 @@ function GrantRow({
   href,
   detailHref,
   peeked,
+  clientFilterHref,
 }: {
   grant: GrantSummary;
   href: string;
   detailHref: string;
   peeked: boolean;
+  clientFilterHref: string | null;
 }) {
   const packageHref = grant.grant_package_id ? `/grants/packages/${encodeURIComponent(grant.grant_package_id)}` : null;
   const clientCaption = grantClientCaption(grant);
@@ -309,14 +343,27 @@ function GrantRow({
       <Link className="hidden xl:block" href={href} scroll={false}>
         {rowContent}
       </Link>
-      {packageHref ? (
-        <div className="pdpp-caption mt-1">
-          <Link
-            className="rounded border border-border px-2 py-0.5 text-muted-foreground hover:bg-muted/60"
-            href={packageHref}
-          >
-            package {grant.grant_package_id} →
-          </Link>
+      {/* Pivots live OUTSIDE the row-wide links above — nesting an anchor
+          inside an anchor is invalid and breaks activation on both. */}
+      {packageHref || clientFilterHref ? (
+        <div className="pdpp-caption mt-1 flex flex-wrap gap-1.5">
+          {packageHref ? (
+            <Link
+              className="rounded border border-border px-2 py-0.5 text-muted-foreground hover:bg-muted/60"
+              href={packageHref}
+            >
+              package {grant.grant_package_id} →
+            </Link>
+          ) : null}
+          {clientFilterHref ? (
+            <Link
+              className="rounded border border-border px-2 py-0.5 text-muted-foreground hover:bg-muted/60"
+              href={clientFilterHref}
+              title={`Show only grants for ${grant.client_id}`}
+            >
+              only this client
+            </Link>
+          ) : null}
         </div>
       ) : null}
     </div>

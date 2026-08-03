@@ -34,6 +34,20 @@ import type { TimelineSubject } from "./timeline-detail-view.tsx";
 
 export interface FilterFormConfig {
   connector?: { name: string; defaultValue?: string };
+  /**
+   * Params that are active but have no visible control, carried as hidden
+   * inputs. A GET form submits only its own fields, so without this an active
+   * filter set elsewhere (e.g. `client_id` from a row link) is silently
+   * dropped the moment the operator touches any other filter.
+   */
+  carry?: { name: string; value: string }[];
+  /**
+   * Bounded date-window filter. Both bounds map to the `since`/`until` params
+   * the correlation list already applies server-side as HAVING clauses over
+   * MIN/MAX(occurred_at) — no new query surface, just an affordance for the
+   * filters the API already honours.
+   */
+  dateRange?: { sinceName: string; untilName: string; sinceValue?: string; untilValue?: string };
   /** URL query param this form reads/writes. */
   query?: { name: string; placeholder: string; defaultValue?: string };
   status?: { name: string; options: { value: string; label: string }[]; defaultValue?: string };
@@ -169,6 +183,9 @@ function titleCase(s: string): string {
 function ListFilterForm({ filters, active }: { filters: FilterFormConfig; active: "grants" | "runs" | "traces" }) {
   return (
     <form method="get">
+      {(filters.carry ?? []).map((field) => (
+        <input key={field.name} name={field.name} type="hidden" value={field.value} />
+      ))}
       <Toolbar>
         {filters.query ? (
           <label className="flex min-w-0 flex-col gap-1" htmlFor={`${active}-query`}>
@@ -208,6 +225,30 @@ function ListFilterForm({ filters, active }: { filters: FilterFormConfig; active
               ))}
             </Select>
           </label>
+        ) : null}
+        {filters.dateRange ? (
+          <>
+            <label className="flex min-w-0 flex-col gap-1" htmlFor={`${active}-since`}>
+              <span className="pdpp-eyebrow">Active since</span>
+              <Input
+                className="w-40"
+                defaultValue={filters.dateRange.sinceValue ?? ""}
+                id={`${active}-since`}
+                name={filters.dateRange.sinceName}
+                type="date"
+              />
+            </label>
+            <label className="flex min-w-0 flex-col gap-1" htmlFor={`${active}-until`}>
+              <span className="pdpp-eyebrow">Active before</span>
+              <Input
+                className="w-40"
+                defaultValue={filters.dateRange.untilValue ?? ""}
+                id={`${active}-until`}
+                name={filters.dateRange.untilName}
+                type="date"
+              />
+            </label>
+          </>
         ) : null}
         <Button className="mt-5" size="sm" type="submit">
           Filter
