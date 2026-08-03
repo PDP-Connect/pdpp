@@ -51,6 +51,11 @@ const UNVERIFIED_ALTERNATE_TAG_RE = /an unverified alternate image tag/;
 const UNKNOWN_REPOSITORY_RE = /unknown PDPP image repository/;
 const RETIRED_OWNER_PATH_RE = /contains the retired owner path/;
 const LEGACY_OWNER_PATH = ["/", "dashboard"].join("");
+const MATRIX_IMAGE_RE = /^\s*- image:\s*(\S+)\s*$/;
+const MATRIX_ENTRY_RE = /^\s*- image:/;
+const MATRIX_PROPERTY_RE = /^\s{2,}\w/;
+const MATRIX_TARGET_RE = /^\s*target:\s*(\S+)\s*$/;
+const MATRIX_TITLE_RE = /^\s*title:\s*(.+?)\s*$/;
 
 function readSources(paths: readonly (readonly [string, URL])[]) {
   return Promise.all(
@@ -202,20 +207,20 @@ function matrixEntries(workflow: string): { image: string; target?: string; titl
   const entries: { image: string; target?: string; title?: string }[] = [];
   const lines = workflow.split("\n");
   for (const [index, line] of lines.entries()) {
-    const match = /^\s*- image:\s*(\S+)\s*$/.exec(line);
+    const match = MATRIX_IMAGE_RE.exec(line);
     if (!match?.[1]) {
       continue;
     }
     const entry: { image: string; target?: string; title?: string } = { image: match[1] };
     for (const next of lines.slice(index + 1)) {
-      if (/^\s*- image:/.test(next) || !/^\s{2,}\w/.test(next)) {
+      if (MATRIX_ENTRY_RE.test(next) || !MATRIX_PROPERTY_RE.test(next)) {
         break;
       }
-      const target = /^\s*target:\s*(\S+)\s*$/.exec(next);
+      const target = MATRIX_TARGET_RE.exec(next);
       if (target?.[1]) {
         entry.target = target[1];
       }
-      const title = /^\s*title:\s*(.+?)\s*$/.exec(next);
+      const title = MATRIX_TITLE_RE.exec(next);
       if (title?.[1]) {
         entry.title = title[1];
       }
@@ -254,11 +259,15 @@ test("every self-hostable image is published by the release pipeline", async () 
 // one image with no labels and give its text to the next, which is how
 // `core-browser` briefly shipped labelled as the browser-free Railway node.
 test("each published image entry carries its own distinct title", async () => {
-  for (const [label, url] of [
+  const workflowPaths = [
     ["semantic-release", SEMANTIC_RELEASE_WORKFLOW],
     ["docker-images", DOCKER_IMAGES_WORKFLOW],
-  ] as const) {
-    const entries = matrixEntries(await readFile(fileURLToPath(url), "utf8")).filter((entry) =>
+  ] as const;
+  const workflows = await Promise.all(
+    workflowPaths.map(async ([label, url]) => [label, await readFile(fileURLToPath(url), "utf8")] as const)
+  );
+  for (const [label, workflow] of workflows) {
+    const entries = matrixEntries(workflow).filter((entry) =>
       SELF_HOSTABLE_IMAGES.includes(entry.image as (typeof SELF_HOSTABLE_IMAGES)[number])
     );
     const seen = new Map<string, string>();

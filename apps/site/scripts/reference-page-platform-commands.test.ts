@@ -39,18 +39,31 @@ const POSIX_ONLY_CONSTRUCTS: readonly (readonly [string, RegExp])[] = [
 // A doc that ships POSIX-only setup commands must name PowerShell somewhere,
 // so a Windows reader is not left running a command that cannot work.
 const POWERSHELL_MARKER = /PowerShell/i;
+const POWERSHELL_BLOCK_RE = /```powershell\n([\s\S]*?)```/g;
+const BACKSLASH_LINE_RE = /\\\n/;
+const OPENSSL_RE = /\bopenssl\s+rand\b/;
+const POSIX_SUBSHELL_RE = /\$\(/;
+const ENV_FILE_RE = /\.env\b/;
+const POWERSHELL_ENCODING_RE = /-Encoding\s+(ascii|utf8NoBOM|utf8)/i;
+const NEWLINE_RE = /\r?\n/;
+const HEX_KEY_RE = /^[0-9a-f]{64}$/;
 
-async function read(url: URL): Promise<string> {
+const PLATFORM_DOCS = [
+  ["Docker runbook", DOCKER_RUNBOOK],
+  ["self-host quickstart", QUICKSTART],
+] as const;
+
+function read(url: URL): Promise<string> {
   return readFile(fileURLToPath(url), "utf8");
 }
 
 test("docs shipping POSIX-only setup commands also address PowerShell", async () => {
-  for (const [label, url] of [
-    ["Docker runbook", DOCKER_RUNBOOK],
-    ["self-host quickstart", QUICKSTART],
-    ["public reference page", REFERENCE_PAGE],
-  ] as const) {
-    const source = await read(url);
+  const sources = await Promise.all(
+    [...PLATFORM_DOCS, ["public reference page", REFERENCE_PAGE] as const].map(
+      async ([label, url]) => [label, await read(url)] as const
+    )
+  );
+  for (const [label, source] of sources) {
     const posixOnly = POSIX_ONLY_CONSTRUCTS.filter(([, re]) => re.test(source)).map(([name]) => name);
     if (!posixOnly.length) {
       continue;
@@ -67,16 +80,13 @@ test("docs shipping POSIX-only setup commands also address PowerShell", async ()
 // exists to replace — a "Windows" block that still uses `\` and `$(openssl)`
 // is worse than none, because it looks authoritative.
 test("a PowerShell block does not carry POSIX-only syntax", async () => {
-  for (const [label, url] of [
-    ["Docker runbook", DOCKER_RUNBOOK],
-    ["self-host quickstart", QUICKSTART],
-  ] as const) {
-    const source = await read(url);
-    for (const block of source.matchAll(/```powershell\n([\s\S]*?)```/g)) {
+  const sources = await Promise.all(PLATFORM_DOCS.map(async ([label, url]) => [label, await read(url)] as const));
+  for (const [label, source] of sources) {
+    for (const block of source.matchAll(POWERSHELL_BLOCK_RE)) {
       const body = block[1] ?? "";
-      assert.doesNotMatch(body, /\\\n/, `${label} PowerShell block uses a backslash line continuation`);
-      assert.doesNotMatch(body, /\bopenssl\s+rand\b/, `${label} PowerShell block calls openssl`);
-      assert.doesNotMatch(body, /\$\(/, `${label} PowerShell block uses POSIX command substitution`);
+      assert.doesNotMatch(body, BACKSLASH_LINE_RE, `${label} PowerShell block uses a backslash line continuation`);
+      assert.doesNotMatch(body, OPENSSL_RE, `${label} PowerShell block calls openssl`);
+      assert.doesNotMatch(body, POSIX_SUBSHELL_RE, `${label} PowerShell block uses POSIX command substitution`);
     }
   }
 });
@@ -85,19 +95,16 @@ test("a PowerShell block does not carry POSIX-only syntax", async () => {
 // cannot read as a .env file. Any PowerShell block writing .env must pin the
 // encoding explicitly.
 test("PowerShell blocks writing .env pin a docker-readable encoding", async () => {
-  for (const [label, url] of [
-    ["Docker runbook", DOCKER_RUNBOOK],
-    ["self-host quickstart", QUICKSTART],
-  ] as const) {
-    const source = await read(url);
-    for (const block of source.matchAll(/```powershell\n([\s\S]*?)```/g)) {
+  const sources = await Promise.all(PLATFORM_DOCS.map(async ([label, url]) => [label, await read(url)] as const));
+  for (const [label, source] of sources) {
+    for (const block of source.matchAll(POWERSHELL_BLOCK_RE)) {
       const body = block[1] ?? "";
-      if (!/\.env\b/.test(body)) {
+      if (!ENV_FILE_RE.test(body)) {
         continue;
       }
       assert.match(
         body,
-        /-Encoding\s+(ascii|utf8NoBOM|utf8)/i,
+        POWERSHELL_ENCODING_RE,
         `${label} PowerShell block writes .env without pinning an encoding; PowerShell defaults to UTF-16LE which docker compose cannot parse`
       );
     }
@@ -126,7 +133,7 @@ function powershellAvailable(): boolean {
 // Extract the documented block so the test cannot drift from the runbook.
 async function documentedPowershellSecretBlock(): Promise<string> {
   const source = await read(DOCKER_RUNBOOK);
-  const block = [...source.matchAll(/```powershell\n([\s\S]*?)```/g)]
+  const block = [...source.matchAll(POWERSHELL_BLOCK_RE)]
     .map((match) => match[1] ?? "")
     .find((body) => body.includes("PDPP_CREDENTIAL_ENCRYPTION_KEY"));
   assert.ok(block, "Docker runbook must document a PowerShell block that writes the credential secrets");
@@ -150,7 +157,7 @@ test("documented PowerShell block really writes a docker-readable .env", { skip:
     const env = new Map(
       raw
         .toString("utf8")
-        .split(/\r?\n/)
+        .split(NEWLINE_RE)
         .filter(Boolean)
         .map((line) => {
           const at = line.indexOf("=");
@@ -161,7 +168,7 @@ test("documented PowerShell block really writes a docker-readable .env", { skip:
     assert.equal(env.get("PDPP_OWNER_PASSWORD")?.length, 32, "owner password must match `openssl rand -base64 24`");
     assert.match(
       env.get("PDPP_CREDENTIAL_ENCRYPTION_KEY") ?? "",
-      /^[0-9a-f]{64}$/,
+      HEX_KEY_RE,
       "encryption key must match `openssl rand -hex 32`"
     );
     assert.ok(env.get("PDPP_REFERENCE_ORIGIN"), "origin must be written");

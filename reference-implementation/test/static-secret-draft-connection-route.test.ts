@@ -12,6 +12,7 @@ import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/c
 import { CREDENTIAL_ENCRYPTION_KEY_ENV } from "../server/stores/credential-encryption.ts";
 
 const REGEXP_1 = /<input type="hidden" name="_csrf" value="([^"]+)"\s*\/>/;
+const TWO_STEP_VERIFICATION_RE = /2-Step Verification/;
 
 // Integration coverage for the owner-session static-secret DRAFT-connection
 // route — the first-connection lifecycle that creates an invisible `draft`
@@ -903,7 +904,7 @@ test("gmail setup form states the 2-Step Verification prerequisite", async () =>
       const helpText = String(secretField.help_text ?? "");
       assert.match(
         helpText,
-        /2-Step Verification/,
+        TWO_STEP_VERIFICATION_RE,
         "the app-password field must tell the owner 2-Step Verification is required first"
       );
       assert.equal(

@@ -183,15 +183,6 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
   }
   const displayName = displayNameForConnector(connectorId, manifest);
   return {
-    connector_id: connectorId,
-    credential_capture: {
-      description: capture.description,
-      fields: capture.fields.map(projectField),
-      kind: capture.kind,
-      label: capture.label,
-      submit_label: capture.submitLabel,
-    },
-    credential_kind: credentialKind,
     // A static-secret connector can still declare a required browser binding
     // (ChatGPT captures a username/password but drives a real browser session).
     // Capture would succeed and the first sync would then fail at browser
@@ -202,6 +193,15 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
       configured: browserSurfaceConfigured(),
       required: requiredBindingEnabled(manifest as Parameters<typeof requiredBindingEnabled>[0], "browser"),
     },
+    connector_id: connectorId,
+    credential_capture: {
+      description: capture.description,
+      fields: capture.fields.map(projectField),
+      kind: capture.kind,
+      label: capture.label,
+      submit_label: capture.submitLabel,
+    },
+    credential_kind: credentialKind,
     deployment_readiness: staticSecretDeploymentReadiness(),
     display_name: displayName,
     object: "static_secret_setup",
