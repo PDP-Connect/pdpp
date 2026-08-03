@@ -140,6 +140,74 @@ test("SQLite: after the fault clears, the SAME connection activates and schedule
 });
 
 test(
+  "Postgres: after the fault clears, the SAME connection activates and schedules cleanly on a subsequent authenticated run (retry reaches terminal success)",
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
+  async (t) => {
+    const postgresUrl = DEDICATED_POSTGRES_URL;
+    assert.ok(postgresUrl, "DEDICATED_POSTGRES_URL is required for this test");
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+    const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const connectorInstanceId = `cin_fault_retry_pg_${suffix}`;
+    t.after(async () => {
+      __setAuthenticatedDraftActivationFaultHookForTest(null);
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    });
+
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES ('amazon', $1::jsonb, $2)
+       ON CONFLICT (connector_id) DO NOTHING`,
+      [JSON.stringify(AMAZON_MANIFEST), "2026-06-01T00:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES ($1, 'owner_1', 'amazon', $1, 'draft', 'account', $1, $2::jsonb, $3, $3, NULL)`,
+      [connectorInstanceId, JSON.stringify({ kind: "static_secret_draft" }), "2026-06-01T00:00:00.000Z"]
+    );
+
+    __setAuthenticatedDraftActivationFaultHookForTest((point) => {
+      if (point === "after_activate_before_schedule") {
+        throw new Error("injected fault: schedule write failure");
+      }
+    });
+    await assert.rejects(() =>
+      activateDraftAndAttachScheduleAtomically({ connectorId: "amazon", connectorInstanceId, manifest: AMAZON_MANIFEST })
+    );
+    let instance = await postgresQuery<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(instance.rows[0]?.status, "draft", "rolled back after the first, faulted attempt");
+
+    __setAuthenticatedDraftActivationFaultHookForTest(null);
+    const result = await activateDraftAndAttachScheduleAtomically({
+      connectorId: "amazon",
+      connectorInstanceId,
+      manifest: AMAZON_MANIFEST,
+    });
+
+    assert.equal(result.activated, true);
+    assert.equal(result.scheduleAttached, true);
+    instance = await postgresQuery<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(instance.rows[0]?.status, "active");
+    const schedule = await postgresQuery(
+      "SELECT connector_instance_id FROM connector_schedules WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(schedule.rows.length, 1);
+  }
+);
+
+test(
   "Postgres: a fault thrown between the activation write and the schedule write rolls back BOTH — no stranded active-unscheduled row",
   { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
   async (t) => {
@@ -409,3 +477,123 @@ test("SQLite: an owner-paused (non-draft, non-active) connection never gets a sc
   assert.equal(sqliteInstanceStatus(connectorInstanceId), "paused", "status must remain paused, untouched");
   assert.equal(sqliteScheduleExists(connectorInstanceId), false);
 });
+
+test(
+  "Postgres: an owner-paused (non-draft, non-active) connection never gets a schedule attached, even for an automatic manifest",
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
+  async (t) => {
+    const postgresUrl = DEDICATED_POSTGRES_URL;
+    assert.ok(postgresUrl, "DEDICATED_POSTGRES_URL is required for this test");
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+    const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const connectorInstanceId = `cin_paused_not_draft_pg_${suffix}`;
+    t.after(async () => {
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    });
+
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES ('amazon', $1::jsonb, $2)
+       ON CONFLICT (connector_id) DO NOTHING`,
+      [JSON.stringify(AMAZON_MANIFEST), "2026-06-01T00:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES ($1, 'owner_1', 'amazon', $1, 'paused', 'account', $1, $2::jsonb, $3, $3, NULL)`,
+      [connectorInstanceId, JSON.stringify({ kind: "static_secret_draft" }), "2026-06-01T00:00:00.000Z"]
+    );
+
+    const result = await activateDraftAndAttachScheduleAtomically({
+      connectorId: "amazon",
+      connectorInstanceId,
+      manifest: AMAZON_MANIFEST,
+    });
+
+    assert.equal(result.activated, false, "a paused connection is never flipped to active by this call");
+    assert.equal(result.scheduleAttached, false, "a paused connection must never get a schedule attached");
+    const instance = await postgresQuery<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(instance.rows[0]?.status, "paused", "status must remain paused, untouched");
+    const schedule = await postgresQuery(
+      "SELECT connector_instance_id FROM connector_schedules WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(schedule.rows.length, 0);
+  }
+);
+
+test(
+  "Postgres: a manual-mode manifest never gets a schedule row, with or without the fault injected",
+  { skip: !DEDICATED_POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset" },
+  async (t) => {
+    const postgresUrl = DEDICATED_POSTGRES_URL;
+    assert.ok(postgresUrl, "DEDICATED_POSTGRES_URL is required for this test");
+    initDb(":memory:");
+    await initPostgresStorage({ backend: "postgres", databaseUrl: postgresUrl });
+    const manualManifest = {
+      ...AMAZON_MANIFEST,
+      capabilities: {
+        ...AMAZON_MANIFEST.capabilities,
+        refresh_policy: { ...AMAZON_MANIFEST.capabilities.refresh_policy, recommended_mode: "manual" },
+      },
+    };
+    const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const connectorInstanceId = `cin_manual_mode_pg_${suffix}`;
+    t.after(async () => {
+      __setAuthenticatedDraftActivationFaultHookForTest(null);
+      await postgresQuery("DELETE FROM connector_schedules WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]);
+      await closePostgresStorage();
+      closeDb();
+    });
+
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES ('amazon', $1::jsonb, $2)
+       ON CONFLICT (connector_id) DO UPDATE SET manifest = $1::jsonb`,
+      [JSON.stringify(manualManifest), "2026-06-01T00:00:00.000Z"]
+    );
+    await postgresQuery(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       ) VALUES ($1, 'owner_1', 'amazon', $1, 'draft', 'account', $1, $2::jsonb, $3, $3, NULL)`,
+      [connectorInstanceId, JSON.stringify({ kind: "static_secret_draft" }), "2026-06-01T00:00:00.000Z"]
+    );
+
+    let faultPointReached = false;
+    __setAuthenticatedDraftActivationFaultHookForTest((point) => {
+      if (point === "after_activate_before_schedule") {
+        faultPointReached = true;
+      }
+    });
+
+    const result = await activateDraftAndAttachScheduleAtomically({
+      connectorId: "amazon",
+      connectorInstanceId,
+      manifest: manualManifest,
+    });
+
+    assert.equal(faultPointReached, true, "the fault-injection point must still be reached for a manual manifest");
+    assert.equal(result.activated, true, "the draft still activates on genuine authenticated success");
+    assert.equal(result.scheduleAttached, false, "a manual-mode manifest never gets a schedule attached");
+    const instance = await postgresQuery<{ status: string }>(
+      "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(instance.rows[0]?.status, "active");
+    const schedule = await postgresQuery(
+      "SELECT connector_instance_id FROM connector_schedules WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(schedule.rows.length, 0, "no schedule row for a manual-mode manifest");
+  }
+);
