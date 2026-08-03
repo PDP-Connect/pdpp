@@ -155,6 +155,7 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   statements_scrape_failed: "We couldn't read your statements page",
   succeeded_with_gaps: "Some data couldn't be collected",
   temporary_unavailable: "We couldn't finish this item yet, so we'll try it again on the next run",
+  too_large: "This item was too large for us to import",
   // ─── Google Maps Timeline reason codes ────────────────────────────────────
   timeline_points_not_found: "We couldn't find any location points to import",
   timeline_segments_not_found: "We couldn't find any timeline segments to import",

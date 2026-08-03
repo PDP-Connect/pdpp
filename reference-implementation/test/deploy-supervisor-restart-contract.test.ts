@@ -98,7 +98,7 @@ test("Railway railway-core/platform-core Dockerfile stage bakes the flag only al
   const consoleConfig = await read("deploy/railway/railway.console.json");
 
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-  const railwayCoreStageMatch = dockerfile.match(/FROM base AS railway-core\n([\s\S]*?)(?=\nFROM )/);
+  const railwayCoreStageMatch = dockerfile.match(/FROM connector-runtime AS railway-core\n([\s\S]*?)(?=\nFROM )/);
   assert.ok(railwayCoreStageMatch, "could not isolate the railway-core Dockerfile stage");
   // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const railwayCoreStage = railwayCoreStageMatch[1];
@@ -140,7 +140,7 @@ test("root Dockerfile plain reference/reference-browser stages do NOT bake the r
   // bare image without a supervisor.
   const dockerfile = await read("Dockerfile");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-  const referenceStageMatch = dockerfile.match(/FROM base AS reference\n([\s\S]*?)(?=\nFROM )/);
+  const referenceStageMatch = dockerfile.match(/FROM connector-runtime AS reference\n([\s\S]*?)(?=\nFROM )/);
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   const referenceBrowserStageMatch = dockerfile.match(/FROM browsers AS reference-browser\n([\s\S]*?)(?=\nFROM )/);
   assert.ok(referenceStageMatch);
