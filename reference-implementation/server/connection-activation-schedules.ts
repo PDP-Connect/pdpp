@@ -42,6 +42,136 @@ interface RefreshPolicyLike {
   readonly recommended_mode?: unknown;
 }
 
+interface RuntimeCollectionFactStreamLike {
+  readonly checkpoint?: unknown;
+  readonly considered?: unknown;
+  readonly stream?: unknown;
+}
+
+interface RunTerminalDataLike {
+  readonly collection_facts?: {
+    readonly streams?: unknown;
+  } | null;
+  readonly recovery_only?: unknown;
+}
+
+interface ManifestStreamLike {
+  readonly name?: unknown;
+  readonly required?: unknown;
+}
+
+interface ManifestWithStreamsLike extends ManifestLike {
+  readonly streams?: unknown;
+}
+
+/**
+ * The manifest's own required-stream names (a stream is required unless it
+ * explicitly declares `required: false` — the same default `isRequiredStream`
+ * uses in `server/connector-coverage-policy.ts` and `streamPriority` uses in
+ * `runtime/connector-verdict-input.ts`; duplicated here as a narrow read
+ * rather than imported, to avoid pulling this activation-policy module into
+ * the coverage-projection module graph). A malformed or missing `streams`
+ * array yields an empty set — callers must treat that as "no required stream
+ * is provable", never as "every stream is required".
+ */
+function manifestRequiredStreamNames(manifest: unknown): ReadonlySet<string> {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return new Set();
+  }
+  const streams = (manifest as ManifestWithStreamsLike).streams;
+  if (!Array.isArray(streams)) {
+    return new Set();
+  }
+  const names = new Set<string>();
+  for (const raw of streams) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      continue;
+    }
+    const stream = raw as ManifestStreamLike;
+    if (typeof stream.name !== "string" || !stream.name) {
+      continue;
+    }
+    if (stream.required === false) {
+      continue;
+    }
+    names.add(stream.name);
+  }
+  return names;
+}
+
+/**
+ * Did this run's own terminal `collection_facts` prove it actually reached
+ * and completed a pass over one of THIS MANIFEST's declared required streams
+ * — as opposed to merely reporting terminal `status: "succeeded"` (which a
+ * run can claim without ever authenticating or touching a stream), and as
+ * opposed to any incidental/optional stream fact the connector happens to
+ * emit (which proves nothing about the manifest's own required-data
+ * boundary). Binding to the manifest is load-bearing: without it, a fact for
+ * an unrelated or explicitly `required: false` stream could activate a draft
+ * and attach an unattended schedule with no real proof the connector's
+ * required data was ever reached.
+ *
+ * Two independent, connector-shape-specific proofs are accepted for a
+ * required-stream entry, because different connector shapes prove "reached
+ * this stream" differently:
+ *
+ *   - `checkpoint` is anything other than `"not_staged"` — the runtime only
+ *     advances a stream's checkpoint past `not_staged` after a real `STATE`
+ *     commit, which a connector can only emit after its login-gated fetch for
+ *     that stream actually completed (see e.g. reddit's `collectStream`,
+ *     which emits `STATE` unconditionally right after its paginated fetch
+ *     succeeds, regardless of item count).
+ *   - `considered` is a declared, non-null value (including `0`) — connectors
+ *     that don't checkpoint every zero-record run still emit a `DETAIL_COVERAGE`
+ *     fact for their required list stream once its sweep completes without
+ *     throwing, INCLUDING the zero-considered steady-state (see amazon's
+ *     `emitOrdersCoverage`/`emitOrderItemsCoverage`, explicitly documented to
+ *     always emit "after the year loop... including that zero-required
+ *     steady-state case" so a brand-new, zero-order account still reads as
+ *     measured rather than silently unmeasured).
+ *
+ * A run that dies before authenticating (e.g. `credential_rejected`, a
+ * bot-challenge that aborts before any fetch) throws before either signal is
+ * produced for any stream, so `collection_facts` is either absent or every
+ * required-stream entry fails both checks — this deliberately does NOT trust
+ * records_emitted, event_count, or terminal `status` alone.
+ *
+ * `recovery_only` runs are excluded unconditionally: a recovery-only pass
+ * drains pending detail gaps only and performs no forward/list-pass inventory
+ * scan, so even a genuinely successful one carries no `collection_facts`
+ * block by design (see `buildCollectionFacts`'s own `recoveryOnly` branch) —
+ * treating its absence as "no evidence" here, not as a false negative.
+ */
+export function hasAuthenticatedRequiredStreamEvidence(terminalData: unknown, manifest: unknown): boolean {
+  if (!terminalData || typeof terminalData !== "object" || Array.isArray(terminalData)) {
+    return false;
+  }
+  const data = terminalData as RunTerminalDataLike;
+  if (data.recovery_only === true) {
+    return false;
+  }
+  const requiredStreamNames = manifestRequiredStreamNames(manifest);
+  if (requiredStreamNames.size === 0) {
+    return false;
+  }
+  const streams = data.collection_facts?.streams;
+  if (!Array.isArray(streams) || streams.length === 0) {
+    return false;
+  }
+  return streams.some((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return false;
+    }
+    const entry = raw as RuntimeCollectionFactStreamLike;
+    if (typeof entry.stream !== "string" || !requiredStreamNames.has(entry.stream)) {
+      return false;
+    }
+    const checkpointProven = typeof entry.checkpoint === "string" && entry.checkpoint !== "not_staged";
+    const consideredProven = typeof entry.considered === "number" && Number.isFinite(entry.considered);
+    return checkpointProven || consideredProven;
+  });
+}
+
 function getRefreshPolicy(manifest: unknown): RefreshPolicyLike | null {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     return null;

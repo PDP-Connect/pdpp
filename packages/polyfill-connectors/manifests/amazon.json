@@ -56,7 +56,7 @@
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "Live evidence since 2026-07-01 (112 succeeded, 1 controller_restarted, 3 owner cancellations, 0 interaction events) shows Amazon runs reliably unattended on a 12h schedule once the connection is authenticated. Sign-in and anti-bot checks are still possible on a fresh connection, so recommended_mode stays automatic only in the assisted-after-owner-auth sense: activation only attaches a schedule once the first authenticated collection has completed, never before."
+      "rationale": "Live evidence since 2026-07-01 (112 succeeded, 1 controller_restarted, 3 owner cancellations, 0 interaction events) shows Amazon runs reliably unattended on a 12h schedule once the connection is authenticated. Sign-in and anti-bot checks are still possible on a fresh connection, so recommended_mode stays automatic only in the assisted-after-owner-auth sense: activation only attaches a schedule once the first authenticated collection has completed, never before. maximum_staleness_seconds (86400s = 24h) is this connector's own recommended_interval_seconds x2: the freshness-age threshold tolerates missing and retrying one scheduled cycle before data is flagged stale to the owner. This is a data-freshness policy, a separate axis from OTP/bot-challenge recovery, which is handled by interaction_posture and the assisted-refresh advisory, not by widening this window."
     },
     "public_listing": {
       "listed": true,

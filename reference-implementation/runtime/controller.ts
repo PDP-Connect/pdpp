@@ -34,6 +34,7 @@ import {
   createTraceContext,
   emitSpineEvent,
   generateRunId,
+  getRunTerminalEvent,
   getRunTerminalStatus,
   type SpineTraceContext,
 } from "../lib/spine.ts";
@@ -42,6 +43,10 @@ import {
   getConnectorManifest,
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.ts";
+import {
+  hasAuthenticatedRequiredStreamEvidence,
+  resolveActivationRefreshContract,
+} from "../server/connection-activation-schedules.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import {
   getConnectorSummaryEvidence,
@@ -465,6 +470,19 @@ export interface ControllerOptions {
     connectorInstanceId: string | null;
     ownerSubjectId: string;
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
+  /**
+   * Flips a draft static-secret connection to `active` in the connector-
+   * instance store, called ONLY after the controller itself has confirmed
+   * (via `hasAuthenticatedRequiredStreamEvidence`) that this run's own
+   * terminal `collection_facts` prove authenticated required-stream
+   * engagement — never from terminal `status: "succeeded"` alone. The
+   * controller owns the timing (same rationale as
+   * `markStaticSecretCredentialRejected`: it alone holds both facts —
+   * `usedStaticSecret` and the run's real terminal evidence); this hook
+   * owns only the store write it cannot perform itself. A no-op DB write on
+   * an already-active or missing row is expected and must not throw.
+   */
+  activateDraftConnectionOnAuthenticatedSuccess?: ActivateDraftConnectionOnAuthenticatedSuccess;
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
   beforeBrowserSurfaceLeaseRelease?: (args: { readonly runId: string }) => Promise<void> | void;
@@ -668,6 +686,13 @@ export type MarkStaticSecretCredentialRejected = (args: {
   readonly ownerSubjectId: string;
   readonly reason: string | null;
   readonly rejectedAt: string;
+  readonly runId: string;
+}) => Promise<void> | void;
+
+export type ActivateDraftConnectionOnAuthenticatedSuccess = (args: {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly ownerSubjectId: string;
   readonly runId: string;
 }) => Promise<void> | void;
 
@@ -3998,6 +4023,50 @@ export function createController(opts: ControllerOptions = {}): Controller {
             const message = err instanceof Error ? err.message : String(err);
             log.warn?.(
               `[controller] failed to mark stored credential rejected for ${connectorId} ` +
+                `(connection=${connectorInstanceId}, run_id=${runId}): ${message}`
+            );
+          }
+        }
+        // First-authenticated-success activation: a draft static-secret
+        // connection whose FIRST run genuinely authenticates and completes a
+        // pass over a required stream must activate even when it emitted zero
+        // records (e.g. a brand-new account with no history yet) — but never
+        // from terminal status:"succeeded" alone, which a run can report
+        // without ever authenticating. `hasAuthenticatedRequiredStreamEvidence`
+        // reads THIS run's own terminal `collection_facts` (not
+        // records_emitted, not status) to distinguish the two. This is
+        // additive to (never a replacement for) the existing records-ingest
+        // activation trigger (`maybeActivateDraftAfterIngest`,
+        // server/routes/rs-mutation.ts) — that path still fires first and
+        // makes this one a no-op via activateDraft's idempotent status guard
+        // whenever a run emits at least one record.
+        if (usedStaticSecret && result?.status === "succeeded" && opts.activateDraftConnectionOnAuthenticatedSuccess) {
+          try {
+            const manifest = await getConnectorManifest(connectorId);
+            const terminalEvent = await getRunTerminalEvent(runId);
+            if (hasAuthenticatedRequiredStreamEvidence(terminalEvent?.data, manifest)) {
+              await opts.activateDraftConnectionOnAuthenticatedSuccess({
+                connectorId,
+                connectorInstanceId,
+                ownerSubjectId: runOwnerSubjectId,
+                runId,
+              });
+              const contract = resolveActivationRefreshContract(manifest);
+              if (contract.mode === "automatic") {
+                const existingSchedule = await getSchedule(connectorId, { connectorInstanceId });
+                if (!existingSchedule) {
+                  await upsertSchedule(
+                    connectorId,
+                    { enabled: true, interval_seconds: contract.intervalSeconds, jitter_seconds: 0 },
+                    { connectorInstanceId }
+                  );
+                }
+              }
+            }
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.warn?.(
+              `[controller] failed authenticated-success draft activation for ${connectorId} ` +
                 `(connection=${connectorInstanceId}, run_id=${runId}): ${message}`
             );
           }

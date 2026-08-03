@@ -8,6 +8,7 @@ import type { ConnectorSchedulePatch, ScheduleApi, ScheduleUpsertResult } from "
 import type { ActivationScheduleController } from "../server/connection-activation-schedules.ts";
 import {
   attachActivationScheduleIfAutomatic,
+  hasAuthenticatedRequiredStreamEvidence,
   resolveActivationRefreshContract,
 } from "../server/connection-activation-schedules.ts";
 
@@ -255,3 +256,106 @@ test("6.1: the contract resolver treats non-manual, background-safe policy as au
     }
   );
 });
+
+function manifestWithStreams(streams: Array<{ name: string; required?: boolean }>): unknown {
+  return { streams };
+}
+
+const AMAZON_MANIFEST = manifestWithStreams([{ name: "orders" }, { name: "order_items" }]);
+
+test("hasAuthenticatedRequiredStreamEvidence: no terminal data is never evidence", () => {
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(undefined, AMAZON_MANIFEST), false);
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(null, AMAZON_MANIFEST), false);
+  assert.equal(hasAuthenticatedRequiredStreamEvidence({}, AMAZON_MANIFEST), false);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: a manifest with no declared streams never proves evidence", () => {
+  const terminalData = { collection_facts: { streams: [{ considered: 0, stream: "orders" }] } };
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, {}), false);
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, { streams: [] }), false);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: a required stream with considered=0 after a completed pass is proof (zero-record success)", () => {
+  const terminalData = { collection_facts: { streams: [{ checkpoint: "not_staged", considered: 0, stream: "orders" }] } };
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, AMAZON_MANIFEST), true);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: a required stream with a committed/not_committed checkpoint is proof", () => {
+  for (const checkpoint of ["committed", "not_committed", "disabled"]) {
+    const terminalData = { collection_facts: { streams: [{ checkpoint, stream: "orders" }] } };
+    assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, AMAZON_MANIFEST), true, `checkpoint=${checkpoint}`);
+  }
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: a required stream that is only not_staged with no declared considered is NOT proof (unauthenticated/failed-before-fetch)", () => {
+  const terminalData = { collection_facts: { streams: [{ checkpoint: "not_staged", stream: "orders" }] } };
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, AMAZON_MANIFEST), false);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: an optional (required:false) stream's evidence does not count", () => {
+  const manifestWithOptional = manifestWithStreams([{ name: "orders" }, { name: "reviews", required: false }]);
+  const terminalData = { collection_facts: { streams: [{ considered: 3, stream: "reviews" }] } };
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, manifestWithOptional), false);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: an unrelated/unknown stream name's evidence does not count", () => {
+  const terminalData = { collection_facts: { streams: [{ considered: 3, stream: "totally_unrelated_stream" }] } };
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, AMAZON_MANIFEST), false);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: a recovery-only run is never proof even with strong per-stream facts", () => {
+  const terminalData = {
+    collection_facts: { streams: [{ checkpoint: "committed", considered: 5, stream: "orders" }] },
+    recovery_only: true,
+  };
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, AMAZON_MANIFEST), false);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: an empty collection_facts.streams array is never proof", () => {
+  assert.equal(hasAuthenticatedRequiredStreamEvidence({ collection_facts: { streams: [] } }, AMAZON_MANIFEST), false);
+});
+
+test("hasAuthenticatedRequiredStreamEvidence: one proven required stream among several unproven/optional/unrelated entries is still sufficient", () => {
+  const manifestWithOptional = manifestWithStreams([
+    { name: "orders" },
+    { name: "order_items" },
+    { name: "reviews", required: false },
+  ]);
+  const terminalData = {
+    collection_facts: {
+      streams: [
+        { checkpoint: "not_staged", stream: "order_items" },
+        { considered: 9, stream: "reviews" },
+        { considered: 0, stream: "totally_unrelated_stream" },
+        { considered: 0, stream: "orders" },
+      ],
+    },
+  };
+  assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, manifestWithOptional), true);
+});
+
+for (const connectorKey of ["amazon", "reddit", "heb"]) {
+  test(`hasAuthenticatedRequiredStreamEvidence: real ${connectorKey} manifest — zero-record authenticated success is proof`, () => {
+    const realManifest = loadRealManifest(connectorKey) as { streams: Array<{ name: string }> };
+    const primaryStream = realManifest.streams[0]?.name;
+    assert.ok(primaryStream, `${connectorKey} manifest must declare at least one stream`);
+    const terminalData = { collection_facts: { streams: [{ considered: 0, stream: primaryStream }] } };
+    assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, realManifest), true);
+  });
+
+  test(`hasAuthenticatedRequiredStreamEvidence: real ${connectorKey} manifest — a run with no collection_facts (auth-failed-before-fetch) is not proof`, () => {
+    const realManifest = loadRealManifest(connectorKey);
+    assert.equal(hasAuthenticatedRequiredStreamEvidence({}, realManifest), false);
+    assert.equal(hasAuthenticatedRequiredStreamEvidence({ connector_error: { code: "credential_rejected" } }, realManifest), false);
+  });
+
+  test(`hasAuthenticatedRequiredStreamEvidence: real ${connectorKey} manifest — a recovery-only run is not proof`, () => {
+    const realManifest = loadRealManifest(connectorKey) as { streams: Array<{ name: string }> };
+    const primaryStream = realManifest.streams[0]?.name;
+    const terminalData = {
+      collection_facts: { streams: [{ considered: 0, stream: primaryStream }] },
+      recovery_only: true,
+    };
+    assert.equal(hasAuthenticatedRequiredStreamEvidence(terminalData, realManifest), false);
+  });
+}

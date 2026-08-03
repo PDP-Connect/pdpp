@@ -1941,6 +1941,23 @@ function buildControllerStaticSecretCredentialRejectionMarker() {
   };
 }
 
+// Same store write `activateDraftConnection` (rsMutationContext, first-ingest
+// activation) already performs — `activateDraft` is a no-op on a non-draft
+// row, so calling this after the records-ingest path already activated the
+// connection, or a second time for the same run, is harmless. The controller
+// calls this ONLY after it has itself confirmed
+// (hasAuthenticatedRequiredStreamEvidence) that the run's own terminal
+// collection_facts prove authenticated required-stream engagement — this
+// builder performs no evidence check of its own, matching
+// buildControllerStaticSecretCredentialRejectionMarker's shape (the caller
+// owns the timing/evidence; the hook owns only the store write the caller
+// cannot perform itself).
+function buildControllerAuthenticatedDraftActivator() {
+  return async ({ connectorInstanceId }: { connectorInstanceId: string; [k: string]: unknown }) => {
+    await createRequestConnectorInstanceStore().activateDraft(connectorInstanceId);
+  };
+}
+
 function buildControllerManualUploadRunEnvResolver() {
   return async ({ connectorInstanceId }: { connectorInstanceId: string }) => {
     const instance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
@@ -6644,6 +6661,8 @@ export async function startServer(opts: ServerOpts = {}) {
         await presentationTerminalBarrier.invoke(args);
       }
     },
+    activateDraftConnectionOnAuthenticatedSuccess:
+      buildControllerAuthenticatedDraftActivator() as import("../runtime/controller.ts").ActivateDraftConnectionOnAuthenticatedSuccess,
     markStaticSecretCredentialRejected:
       buildControllerStaticSecretCredentialRejectionMarker() as import("../runtime/controller.ts").MarkStaticSecretCredentialRejected,
     resolveStaticSecretRunEnv:
