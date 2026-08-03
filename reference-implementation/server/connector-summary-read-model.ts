@@ -286,7 +286,7 @@ function createConnectorSummaryStore() {
                   stream_records_json, retained_bytes_json, total_retained_bytes,
                   record_checkpoint_json, manifest_fingerprint,
                   record_snapshot_state, record_snapshot_reason_code,
-                  terminal_facts_state, terminal_facts_reason_code,
+                  terminal_facts_state, terminal_facts_reason_code, terminal_facts_invalidated_at,
                   manifest_declaration_state, manifest_declaration_reason_code,
                   retained_bytes_state, retained_bytes_reason_code,
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
@@ -359,8 +359,8 @@ function createConnectorSummaryStore() {
         if (connectorInstanceIds && connectorInstanceIds.length === 0) {
           return;
         }
-        const where = connectorInstanceIds ? "WHERE connector_instance_id = ANY($4::text[])" : "";
-        const params: unknown[] = [sanitized, terminalFactsState, reasonCode];
+        const where = connectorInstanceIds ? "WHERE connector_instance_id = ANY($5::text[])" : "";
+        const params: unknown[] = [sanitized, terminalFactsState, reasonCode, new Date().toISOString()];
         if (connectorInstanceIds) {
           params.push(connectorInstanceIds);
         }
@@ -373,7 +373,11 @@ function createConnectorSummaryStore() {
                   list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = $2,
-                  terminal_facts_reason_code = $3
+                  terminal_facts_reason_code = $3,
+                  terminal_facts_invalidated_at = CASE
+                    WHEN $2 = 'current' THEN NULL
+                    ELSE COALESCE(terminal_facts_invalidated_at, $4)
+                  END
               ${where}`,
           params
         );
@@ -429,7 +433,7 @@ function createConnectorSummaryStore() {
                     stream_records_json, retained_bytes_json, total_retained_bytes,
                     record_checkpoint_json, manifest_fingerprint,
                     record_snapshot_state, record_snapshot_reason_code,
-                    terminal_facts_state, terminal_facts_reason_code,
+                    terminal_facts_state, terminal_facts_reason_code, terminal_facts_invalidated_at,
                     manifest_declaration_state, manifest_declaration_reason_code,
                     retained_bytes_state, retained_bytes_reason_code,
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
@@ -536,10 +540,21 @@ function createConnectorSummaryStore() {
                   list_summary_projection_state = 'stale',
                   list_summary_projection_reason_code = 'canonical_evidence_dirty',
                   terminal_facts_state = ?,
-                  terminal_facts_reason_code = ?
+                  terminal_facts_reason_code = ?,
+                  terminal_facts_invalidated_at = CASE
+                    WHEN ? = 'current' THEN NULL
+                    ELSE COALESCE(terminal_facts_invalidated_at, ?)
+                  END
               ${where}`
         )
-        .run(sanitized, terminalFactsState, reasonCode, ...(connectorInstanceIds ?? []));
+        .run(
+          sanitized,
+          terminalFactsState,
+          reasonCode,
+          terminalFactsState,
+          new Date().toISOString(),
+          ...(connectorInstanceIds ?? [])
+        );
     },
     markDirty({
       connectorInstanceId,
@@ -775,6 +790,11 @@ function shapeTerminalFacts(row: Row) {
     return {
       as_of: row.computed_at || null,
       event_seq: eventSeq,
+      // A version-ahead row is read-time fail-closed to stale for THIS
+      // binary's own observation without durably mutating the row (see
+      // this function's doc comment) — invalidated_at is surfaced
+      // unmodified from storage, exactly like every other field here.
+      invalidated_at: row.terminal_facts_invalidated_at || null,
       reason_code: REASON_CODES.FOLD_LOGIC_VERSION_INCOMPATIBLE_FUTURE,
       state: "stale",
     };
@@ -782,6 +802,13 @@ function shapeTerminalFacts(row: Row) {
   return {
     as_of: row.computed_at || null,
     event_seq: eventSeq,
+    // Durable "when did this row's terminal facts last enter a non-current
+    // state" anchor (fix-uat-manifest-reproof-governor) — NULL whenever
+    // `state` is 'current', stamped once at the moment of the transition
+    // otherwise. See the write-side CASE/COALESCE in
+    // createStreamFactsFoldStore().updateStreamFacts /
+    // createConnectorSummaryStore().markAllTerminalFactsFailed.
+    invalidated_at: row.terminal_facts_invalidated_at || null,
     reason_code: row.terminal_facts_reason_code || null,
     state: row.terminal_facts_state || "unobserved",
   };
@@ -1364,6 +1391,7 @@ function createStreamFactsFoldStore() {
         foldVersion,
         terminalFactsState,
         terminalFactsReasonCode,
+        invalidatedAtIso,
       }: {
         connectorInstanceId: string;
         factsJson: string | null;
@@ -1373,6 +1401,7 @@ function createStreamFactsFoldStore() {
         foldVersion: number | null;
         terminalFactsState: "current" | "stale";
         terminalFactsReasonCode: string | null;
+        invalidatedAtIso: string;
       }): Promise<boolean> {
         const result = await postgresQuery(
           `UPDATE connector_summary_evidence
@@ -1381,6 +1410,10 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = $5,
                   terminal_facts_state = $6,
                   terminal_facts_reason_code = $7,
+                  terminal_facts_invalidated_at = CASE
+                    WHEN $6 = 'current' THEN NULL
+                    ELSE COALESCE(terminal_facts_invalidated_at, $9)
+                  END,
                   canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = $1
               AND stream_facts_event_seq IS NOT DISTINCT FROM $4
@@ -1394,6 +1427,7 @@ function createStreamFactsFoldStore() {
             terminalFactsState,
             terminalFactsReasonCode,
             baselineFoldVersion,
+            invalidatedAtIso,
           ]
         );
         return (result.rowCount ?? 0) > 0;
@@ -1444,6 +1478,7 @@ function createStreamFactsFoldStore() {
       foldVersion,
       terminalFactsState,
       terminalFactsReasonCode,
+      invalidatedAtIso,
     }: {
       connectorInstanceId: string;
       factsJson: string | null;
@@ -1453,6 +1488,7 @@ function createStreamFactsFoldStore() {
       foldVersion: number | null;
       terminalFactsState: "current" | "stale";
       terminalFactsReasonCode: string | null;
+      invalidatedAtIso: string;
     }): boolean {
       const result = getDb()
         .prepare(
@@ -1462,6 +1498,10 @@ function createStreamFactsFoldStore() {
                   stream_facts_fold_version = ?,
                   terminal_facts_state = ?,
                   terminal_facts_reason_code = ?,
+                  terminal_facts_invalidated_at = CASE
+                    WHEN ? = 'current' THEN NULL
+                    ELSE COALESCE(terminal_facts_invalidated_at, ?)
+                  END,
                   canonical_evidence_revision = canonical_evidence_revision + 1
             WHERE connector_instance_id = ?
               AND stream_facts_event_seq IS ?
@@ -1473,6 +1513,8 @@ function createStreamFactsFoldStore() {
           foldVersion,
           terminalFactsState,
           terminalFactsReasonCode,
+          terminalFactsState,
+          invalidatedAtIso,
           connectorInstanceId,
           baselineEventSeq,
           baselineFoldVersion
@@ -1502,11 +1544,13 @@ export function __testOnlyUpdateStreamFactsCasWrite(args: {
   foldVersion?: number | null;
   terminalFactsState?: "current" | "stale";
   terminalFactsReasonCode?: string | null;
+  invalidatedAtIso?: string;
 }): Promise<boolean> | boolean {
   return createStreamFactsFoldStore().updateStreamFacts({
     ...args,
     baselineFoldVersion: args.baselineFoldVersion ?? null,
     foldVersion: args.foldVersion ?? STREAM_FACTS_FOLD_LOGIC_VERSION,
+    invalidatedAtIso: args.invalidatedAtIso ?? new Date().toISOString(),
     terminalFactsReasonCode: args.terminalFactsReasonCode ?? null,
     terminalFactsState: args.terminalFactsState ?? "current",
   });
@@ -2115,6 +2159,10 @@ async function stampZeroCheckpointForBootstrap(
       eventSeq: 0,
       factsJson: null,
       foldVersion: STREAM_FACTS_FOLD_LOGIC_VERSION,
+      // terminalFactsState is always "current" here (bootstrap: no terminal
+      // history to be historical about) so the write's own CASE clears
+      // terminal_facts_invalidated_at to NULL; this value is inert.
+      invalidatedAtIso: new Date().toISOString(),
       terminalFactsReasonCode: null,
       terminalFactsState: "current",
     });
@@ -2548,6 +2596,14 @@ async function writeParticipantStreamFacts(
     eventSeq: participantEventSeq,
     factsJson: Object.keys(facts).length > 0 ? JSON.stringify(facts) : null,
     foldVersion: STREAM_FACTS_FOLD_LOGIC_VERSION,
+    // Only takes effect the FIRST time this participant transitions
+    // non-current this pass — the write's own CASE/COALESCE preserves an
+    // already-stamped terminal_facts_invalidated_at across repeated
+    // still-non-current writes (fix-uat-manifest-reproof-governor: the
+    // reproof cadence anchor must mark the ORIGINAL invalidation moment,
+    // never reset on every reconcile/fold pass that re-observes the same
+    // still-stale row).
+    invalidatedAtIso: new Date().toISOString(),
     terminalFactsReasonCode,
     terminalFactsState: replayConverged ? "current" : "stale",
   });

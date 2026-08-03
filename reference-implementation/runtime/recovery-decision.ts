@@ -617,7 +617,18 @@ export interface StreamFactEvidenceLike {
  */
 export interface ForwardEvidenceLike {
   readonly stream_latest_facts?: unknown;
-  readonly terminal_facts?: { readonly state?: unknown } | null;
+  /**
+   * `invalidated_at` (fix-uat-manifest-reproof-governor, gate REVISE
+   * 2026-08-03): the durable moment `state` last transitioned away from
+   * `current` (`connector-summary-read-model.ts`'s `shapeTerminalFacts` ->
+   * `terminal_facts_invalidated_at` column) — `null` whenever `state` is
+   * `current`. This is the anchor the bounded reproof cadence
+   * (`decideForwardEvidenceReproof`) measures elapsed time from; it is
+   * NOT the same as `evidence_as_of`/`as_of` (per-fact or fold-observation
+   * timestamps), which say nothing about when the row itself became
+   * untrusted.
+   */
+  readonly terminal_facts?: { readonly invalidated_at?: unknown; readonly state?: unknown } | null;
 }
 
 /**
@@ -709,26 +720,60 @@ export function hasForwardEvidenceDebt(
 // gap: admit an early, non-interactive confirming run when forward evidence
 // is in debt, independent of the connector's own (possibly long)
 // `scheduleIntervalMs` and independent of whether any recovery-gap backlog
-// exists. Requires NO new durable state: it reuses the SAME per-instance
-// `elapsed` (time since last completed run) the ordinary forward-walk/
-// recovery-cadence gates already compute from `runtime.lastRunTime` /
-// `scheduler_last_run_times` (durable, one-row-per-instance, never pruned —
-// distinct from the fleet-global, evictable `run_history` window
-// `synthesized-attention-revalidation.ts`'s doc comment warns about). A
-// successful run naturally clears both the debt (fresh evidence) and the
-// anchor (elapsed resets to ~0), so this needs no separate cadence table or
-// attempt counter — the SAME durable anchor "since when have I not had a
-// good post-transition run" answers both.
+// exists.
 //
-// Fairness/anti-thundering-herd: `persistManifestAndAdvanceGenerations`
-// (server/auth.ts) bumps EVERY instance of one connector_id atomically, so
-// without desync every sibling instance would probe eligible on the exact
-// same tick the moment the ceiling elapses. `reproofJitterOffsetMs` derives a
-// STABLE per-instance offset (a deterministic hash of
-// `connectorInstanceId`, never `Math.random`/wall-clock — this module must
-// stay pure and reproducible) spread across `jitterSpanMs`, so a same-cohort
-// bump fans its reproof runs out across the jitter window rather than
-// dispatching all at once.
+// REVISE (gate 2026-08-03, first version reverted): the first version of
+// this module measured elapsed time since the connection's LAST RUN
+// (`runtime.lastRunTime`), reasoning that a successful run clears both the
+// debt and that anchor together. That reasoning is wrong for the case that
+// matters most: `lastRunTime` records when the connection last ran, which
+// has NO relationship to when its forward evidence actually became
+// invalid. For a connection idle/failing for days before a manifest bump,
+// or for a fleet-wide process restart re-evaluating every connector's
+// eligibility on the same tick using PERSISTED `lastRunTime` values, elapsed
+// time already vastly exceeds the ceiling+jitter band on the very first
+// eligible tick for every affected instance — the per-instance jitter only
+// ever varied the ADMISSION THRESHOLD, never the actual moment of admission
+// once `elapsed` had already blown past that threshold for every cohort
+// member simultaneously. Reproduced and confirmed: a 20-instance cohort
+// idle 5 days against a 12h schedule interval admitted ALL 20 on the
+// identical first eligible tick.
+//
+// The fix is the anchor, not the spreading mechanism: `invalidatedAtMs` is
+// now the durable `terminal_facts_invalidated_at` timestamp
+// (`connector-summary-read-model.ts`'s `shapeTerminalFacts` ->
+// `terminal_facts.invalidated_at`), stamped ATOMICALLY by the SAME write
+// that flips `terminal_facts_state` non-current
+// (`createStreamFactsFoldStore().updateStreamFacts` /
+// `createConnectorSummaryStore().markAllTerminalFactsFailed`, both SQLite
+// and Postgres), and cleared to NULL the moment the state returns to
+// `current`. Because `persistManifestAndAdvanceGenerations` (server/auth.ts)
+// invalidates every instance of one connector_id in a single atomic
+// transaction, every sibling instance in a same-cohort bump shares
+// (approximately) the SAME `invalidatedAtMs` — unlike `lastRunTime`, which
+// is different per instance and can be arbitrarily old. With a shared
+// anchor, `admit = (now - invalidatedAtMs) >= ceiling + perInstanceJitter`
+// genuinely spreads WHEN each instance first crosses its own threshold,
+// across the jitter window, no matter how long `now - invalidatedAtMs`
+// eventually grows — long-idle and restart-time re-evaluation cohorts are
+// bounded exactly like a freshly-bumped one, because the clock all cohort
+// members measure against starts at the same moment for all of them.
+//
+// This measured-from-invalidation design is deliberately NOT a modulo/
+// probabilistic gate against `now` (no `now % window` admission test) and
+// NOT an in-memory per-tick fan-out cap (no process-local admission
+// counter): both would be heuristics that either (a) can flip a connection
+// between admit/no-admit on successive ticks with no monotonic progress
+// guarantee, or (b) silently reset on every process restart, defeating the
+// exact restart cohort this fix must bound. A durable, monotonic,
+// invalidation-anchored deadline is the only mechanism that stays correct
+// under both long idle AND restart.
+//
+// `reproofJitterOffsetMs` derives a STABLE per-instance offset (a
+// deterministic hash of `connectorInstanceId`, never `Math.random`/wall-
+// clock — this module must stay pure and reproducible) spread across
+// `jitterSpanMs`, so a same-cohort bump fans its reproof runs out across
+// the jitter window rather than dispatching all at once.
 
 /** Ceiling on how long forward-evidence debt may go unattempted, regardless of the connector's own schedule interval. */
 export const DEFAULT_REPROOF_CEILING_MS = 30 * 60 * 1000; // 30 min
@@ -744,7 +789,7 @@ export interface ForwardEvidenceReproofOptions {
 export interface ForwardEvidenceReproofDecision {
   /** True when a bounded, early confirming run for forward-evidence debt should be admitted THIS tick. */
   readonly admit: boolean;
-  /** The (ceiling + per-instance jitter) delay this decision applied. */
+  /** The (ceiling + per-instance jitter) delay this decision applied, measured from `invalidatedAtMs`. */
   readonly delayMs: number;
 }
 
@@ -774,21 +819,34 @@ function reproofJitterOffsetMs(connectorInstanceId: string, jitterSpanMs: number
  * Decide whether a bounded, non-interactive confirming run is due to reprove
  * forward evidence currently in debt (see `hasForwardEvidenceDebt`).
  *
- * `elapsedMs` is time since the connection's last completed run (the same
- * value `evaluateBackoffDispatch` already derives from the durable
- * `runtime.lastRunTime`/`scheduler_last_run_times` anchor) — NOT gated by
- * `scheduleIntervalMs` the way ordinary forward-walk eligibility is; this
- * bound is `min(scheduleIntervalMs, ceilingMs) + per-instance jitter`, so a
+ * `invalidatedAtMs` is the durable, atomically-stamped
+ * `terminal_facts_invalidated_at` timestamp (epoch ms) — the moment this
+ * connection's terminal facts last transitioned away from `current`, NOT
+ * the last-run time. The bound is `min(scheduleIntervalMs, ceilingMs) +
+ * per-instance jitter`, measured from that invalidation moment, so a
  * slow-cadence connector (e.g. Amazon's 12h interval) is still reproved
- * promptly, while a connector whose OWN interval is already shorter than the
- * ceiling never fires earlier than its ordinary cadence would.
+ * promptly, a connector whose OWN interval is already shorter than the
+ * ceiling never fires earlier than its ordinary cadence would, and a
+ * same-cohort mass invalidation (or a fleet-wide restart re-evaluating a
+ * long-invalidated cohort) still spreads admission across the jitter window
+ * rather than admitting every instance on the identical first eligible tick.
+ *
+ * `invalidatedAtMs === null` (evidence reports debt for a reason OTHER than
+ * a tracked terminal-facts invalidation — e.g. missing/empty fact map with
+ * `state: "current"`, per `hasForwardEvidenceDebt`'s other branches) admits
+ * immediately: there is no invalidation anchor to measure from, and
+ * withholding admission indefinitely would silently reintroduce the
+ * original unbounded-wait defect for that debt class. This is the ONLY
+ * unconditional-admit branch; every anchored case goes through the
+ * ceiling+jitter bound.
  *
  * Caller contract: only call this when `hasForwardEvidenceDebt` is already
  * true for this connection — this function does not itself probe evidence,
  * mirroring `decideSynthesizedRevalidation`'s pure decide/probe separation.
  */
 export function decideForwardEvidenceReproof(
-  elapsedMs: number,
+  invalidatedAtMs: number | null,
+  nowMs: number,
   connectorInstanceId: string,
   scheduleIntervalMs: number,
   options: ForwardEvidenceReproofOptions = {}
@@ -799,7 +857,26 @@ export function decideForwardEvidenceReproof(
   const baseDelayMs = Math.min(normalizedInterval, ceilingMs);
   const jitterMs = reproofJitterOffsetMs(connectorInstanceId, jitterSpanMs);
   const delayMs = baseDelayMs + jitterMs;
-  return { admit: elapsedMs >= delayMs, delayMs };
+  if (invalidatedAtMs === null) {
+    return { admit: true, delayMs };
+  }
+  const now = normalizeEpochMs(nowMs);
+  return { admit: now - invalidatedAtMs >= delayMs, delayMs };
+}
+
+/**
+ * Extract `invalidatedAtMs` from a durable evidence row's `terminal_facts`
+ * for `decideForwardEvidenceReproof`'s anchor input. `null` when the state
+ * is `current` (nothing to reprove — the caller should not have reached
+ * here per `hasForwardEvidenceDebt`'s contract) OR the timestamp is
+ * missing/unparseable (debt from a non-invalidation-tracked reason, or a
+ * pre-migration row written before this column existed) — both cases defer
+ * to `decideForwardEvidenceReproof`'s unconditional-admit branch rather than
+ * silently waiting forever on an anchor that will never appear.
+ */
+export function forwardEvidenceInvalidatedAtMs(evidence: ForwardEvidenceLike | null | undefined): number | null {
+  const raw = evidence?.terminal_facts?.invalidated_at;
+  return parseIso(typeof raw === "string" ? raw : null);
 }
 
 // ─── Fresh-pressure re-arm guard (task 1.5 / design.md D4) ───────────────────

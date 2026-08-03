@@ -268,6 +268,27 @@ export type GetForwardEvidenceDebtHandler = (
 ) => Promise<boolean> | boolean;
 
 /**
+ * Returns the durable, atomically-stamped `terminal_facts_invalidated_at`
+ * moment (epoch ms, or `null`) this connection's terminal facts last
+ * transitioned away from `current` — `connector-summary-read-model.ts`'s
+ * `shapeTerminalFacts` -> `terminal_facts.invalidated_at`
+ * (`recovery-decision.ts`'s `forwardEvidenceInvalidatedAtMs`). This is a
+ * SEPARATE probe from `GetForwardEvidenceDebtHandler` (which only answers
+ * "is there debt", never "since when") because the bounded reproof cadence
+ * (`decideForwardEvidenceReproof`, fix-uat-manifest-reproof-governor) must
+ * measure elapsed time from the invalidation moment, not last-run time —
+ * reusing `runtime.lastRunTime` as that anchor was reverted after a gate
+ * REVISE proved it fails to bound a long-idle or fleet-restart cohort.
+ * Defaults to `() => null` so a host that does not wire it falls back to
+ * `decideForwardEvidenceReproof`'s unconditional-admit branch (never
+ * silently waits forever on an anchor the host cannot supply).
+ */
+export type GetForwardEvidenceInvalidatedAtMsHandler = (
+  connectorId: string,
+  connectorInstanceId: string
+) => Promise<number | null> | number | null;
+
+/**
  * Returns the epoch ms of the most recent GENUINELY-SUCCESSFUL run for this
  * connection from a durable cross-path projection (the spine run timeline),
  * regardless of which path dispatched it. The scheduler's own `runtime.history`
@@ -408,6 +429,12 @@ export interface SchedulerOptions {
    * in-history-only streak walk).
    */
   getForwardEvidenceDebt?: GetForwardEvidenceDebtHandler;
+  /**
+   * Optional. See `GetForwardEvidenceInvalidatedAtMsHandler`'s doc comment.
+   * Defaults to "no anchor known" (`decideForwardEvidenceReproof`'s
+   * unconditional-admit branch) when omitted.
+   */
+  getForwardEvidenceInvalidatedAtMs?: GetForwardEvidenceInvalidatedAtMsHandler;
   getLastSuccessfulRunAt?: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount?: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps?: GetSourcePressureGapsHandler;

@@ -1988,6 +1988,14 @@ export async function bootstrapPostgresSchema({
         ADD COLUMN IF NOT EXISTS terminal_facts_state TEXT NOT NULL DEFAULT 'unobserved';
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS terminal_facts_reason_code TEXT;
+      -- Durable "when did terminal_facts_state last enter a non-current
+      -- state" anchor (fix-uat-manifest-reproof-governor, gate REVISE
+      -- 2026-08-03) — see the matching SQLite column comment in
+      -- server/db.ts for the full rationale. Stamped atomically by the
+      -- same UPDATE that flips terminal_facts_state non-current, cleared
+      -- to NULL when it returns to 'current'.
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS terminal_facts_invalidated_at TEXT;
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS manifest_declaration_state TEXT NOT NULL DEFAULT 'unavailable';
       ALTER TABLE connector_summary_evidence

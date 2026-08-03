@@ -67,7 +67,7 @@ import {
 } from "../runtime/controller.ts";
 import { NekoSurfaceAllocatorClient } from "../runtime/neko-surface-allocator.ts";
 import { isClosedPipeWriteError } from "../runtime/pipe-errors.ts";
-import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
+import { forwardEvidenceInvalidatedAtMs, hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
 import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import { browserSurfaceConfigured } from "../runtime/scheduler-readiness.ts";
@@ -112,6 +112,7 @@ import {
   stageOAuthAuthorizationCodeRequest,
   updateRegisteredClientName,
 } from "./auth.ts";
+import { activateDraftAndAttachScheduleAtomically } from "./authenticated-draft-activation.ts";
 import { autoEnrollEligibleSchedules } from "./auto-enroll-eligible-schedules.ts";
 import type { CimdFetchDependencies } from "./cimd.ts";
 import { acquireDefaultDeliveryWorker, getDefaultDeliveryWorker } from "./client-event-delivery-worker.ts";
@@ -121,7 +122,6 @@ import {
   readCollectorProtocolHeader,
   SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
 } from "./collector-protocol.ts";
-import { activateDraftAndAttachScheduleAtomically } from "./authenticated-draft-activation.ts";
 import { attachActivationScheduleIfAutomatic } from "./connection-activation-schedules.ts";
 import { projectStorageDisplayName, resolveRequestConnectionId } from "./connection-id-request.ts";
 import {
@@ -6670,6 +6670,8 @@ export async function startServer(opts: ServerOpts = {}) {
           connectorPathResolver: opts.connectorPathResolver as import("../runtime/controller.ts").ConnectorPathResolver,
         }),
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
+    activateDraftConnectionOnAuthenticatedSuccess:
+      buildControllerAuthenticatedDraftActivator() as import("../runtime/controller.ts").ActivateDraftConnectionOnAuthenticatedSuccess,
     beforeBrowserSurfaceLeaseRelease: async (args) => {
       if (typeof presentationTerminalBarrier.releaseLease === "function") {
         await presentationTerminalBarrier.releaseLease(args);
@@ -6680,8 +6682,6 @@ export async function startServer(opts: ServerOpts = {}) {
         await presentationTerminalBarrier.invoke(args);
       }
     },
-    activateDraftConnectionOnAuthenticatedSuccess:
-      buildControllerAuthenticatedDraftActivator() as import("../runtime/controller.ts").ActivateDraftConnectionOnAuthenticatedSuccess,
     markStaticSecretCredentialRejected:
       buildControllerStaticSecretCredentialRejectionMarker() as import("../runtime/controller.ts").MarkStaticSecretCredentialRejected,
     resolveStaticSecretRunEnv:
@@ -7743,6 +7743,21 @@ function createReferenceSchedulerManager({
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] forward-evidence-debt probe failed for ${connectorId}`);
           return false;
+        }
+      },
+      // Durable "when did terminal facts last become invalid" anchor
+      // (fix-uat-manifest-reproof-governor, gate REVISE 2026-08-03) — see the
+      // matching wiring/comment in server/scheduler-manager-factory.ts.
+      getForwardEvidenceInvalidatedAtMs: async (connectorId, connectorInstanceId) => {
+        try {
+          const instanceId = connectorInstanceId || connectorId;
+          await reconcileDirtyConnectorSummaryEvidence([instanceId]);
+          const evidence = await getConnectorSummaryEvidence(instanceId);
+          return forwardEvidenceInvalidatedAtMs(evidence);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error({ err: message }, `[scheduler] forward-evidence-invalidated-at probe failed for ${connectorId}`);
+          return null;
         }
       },
       // Durable cross-path "latest successful run at" probe, read from the spine

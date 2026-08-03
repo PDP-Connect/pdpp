@@ -15,7 +15,7 @@
 import { getRunTerminalEvent } from "../lib/spine.ts";
 import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attention.ts";
 import { getScheduleIneligibilityReason, resolveDefaultConnectorPath } from "../runtime/controller.ts";
-import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
+import { forwardEvidenceInvalidatedAtMs, hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
 import type {
   ConnectorError,
   ConnectorSchedule,
@@ -523,6 +523,28 @@ export function createReferenceSchedulerManager({
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] forward-evidence-debt probe failed for ${connectorId}`);
           return false;
+        }
+      },
+      // Durable "when did terminal facts last become invalid" anchor
+      // (fix-uat-manifest-reproof-governor, gate REVISE 2026-08-03): reads
+      // the SAME reconciled evidence row `getForwardEvidenceDebt` reads,
+      // surfacing `terminal_facts.invalidated_at` for
+      // `decideForwardEvidenceReproof`'s bounded reproof cadence — measured
+      // from this atomic invalidation moment, never last-run time. Fail-
+      // CLOSED to `null` (no anchor) on error: `decideForwardEvidenceReproof`
+      // treats a `null` anchor as unconditional-admit, matching this probe's
+      // safe fallback (never silently stall reproof forever on a read
+      // failure) rather than a false positive that would defer it.
+      getForwardEvidenceInvalidatedAtMs: async (connectorId, connectorInstanceId) => {
+        try {
+          const instanceId = connectorInstanceId || connectorId;
+          await reconcileDirtyConnectorSummaryEvidence([instanceId]);
+          const evidence = await getConnectorSummaryEvidence(instanceId);
+          return forwardEvidenceInvalidatedAtMs(evidence);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error({ err: message }, `[scheduler] forward-evidence-invalidated-at probe failed for ${connectorId}`);
+          return null;
         }
       },
       // Durable cross-path "latest successful run at" probe, read from the spine

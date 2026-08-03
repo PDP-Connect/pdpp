@@ -361,6 +361,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getSourcePressureGaps = () => [],
     getNonPressureRecoverableCount = async () => 0,
     getForwardEvidenceDebt = async () => false,
+    getForwardEvidenceInvalidatedAtMs = async () => null,
     getLastSuccessfulRunAt = async () => null,
     isManagedConnector = () => false,
     maxRunWallClockMs,
@@ -655,6 +656,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
   const dispatchGovernor = createDispatchGovernor({
     getForwardEvidenceDebt,
+    getForwardEvidenceInvalidatedAtMs,
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,

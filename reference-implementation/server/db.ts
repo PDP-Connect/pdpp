@@ -2064,6 +2064,16 @@ function ensureConnectorSummaryEvidenceColumns(raw: SqliteDatabase): void {
   addColumnIfMissing(raw, "connector_summary_evidence", "record_snapshot_reason_code", "TEXT");
   addColumnIfMissing(raw, "connector_summary_evidence", "terminal_facts_state", "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, "connector_summary_evidence", "terminal_facts_reason_code", "TEXT");
+  // Durable "when did terminal_facts_state last enter a non-current state"
+  // anchor (fix-uat-manifest-reproof-governor, gate REVISE 2026-08-03):
+  // stamped atomically by the SAME write that flips terminal_facts_state
+  // non-current (updateStreamFacts/markAllTerminalFactsFailed — never a
+  // separate read-then-write), cleared back to NULL the moment the state
+  // returns to 'current'. This is the anchor a bounded reproof cadence
+  // measures elapsed time from — NOT last-run time, which does not track
+  // the manifest-generation invalidation moment and defeats jitter-based
+  // fleet spreading for any connection idle longer than the jitter window.
+  addColumnIfMissing(raw, "connector_summary_evidence", "terminal_facts_invalidated_at", "TEXT");
   addColumnIfMissing(
     raw,
     "connector_summary_evidence",

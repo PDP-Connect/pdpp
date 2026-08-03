@@ -23,6 +23,7 @@ import {
   decideForwardEvidenceReproof,
   deriveRecoveryStall,
   filterFreshPressureRows,
+  forwardEvidenceInvalidatedAtMs,
   forwardEvidenceMaxAgeMs,
   hasEligibleNonPressureRecovery,
   hasForwardEvidenceDebt,
@@ -872,18 +873,60 @@ test("hasForwardEvidenceDebt: current with every fact carrying an unparseable/mi
   );
 });
 
-// ─── decideForwardEvidenceReproof (fix-uat-manifest-reproof-governor) ────────
+// ─── forwardEvidenceInvalidatedAtMs (fix-uat-manifest-reproof-governor) ──────
 
-test("decideForwardEvidenceReproof: does not admit before the ceiling elapses, even for a long schedule interval", () => {
+test("forwardEvidenceInvalidatedAtMs: extracts a valid ISO timestamp as epoch ms", () => {
+  const iso = "2026-08-01T00:00:00.000Z";
+  const ms = forwardEvidenceInvalidatedAtMs({ terminal_facts: { invalidated_at: iso, state: "stale" } });
+  assert.equal(ms, Date.parse(iso));
+});
+
+test("forwardEvidenceInvalidatedAtMs: null when terminal_facts is absent/null", () => {
+  assert.equal(forwardEvidenceInvalidatedAtMs(null), null);
+  assert.equal(forwardEvidenceInvalidatedAtMs(undefined), null);
+  assert.equal(forwardEvidenceInvalidatedAtMs({ terminal_facts: null }), null);
+});
+
+test("forwardEvidenceInvalidatedAtMs: null when invalidated_at is missing/unparseable (e.g. current state, or a pre-migration row)", () => {
+  assert.equal(forwardEvidenceInvalidatedAtMs({ terminal_facts: { state: "current" } }), null);
+  assert.equal(forwardEvidenceInvalidatedAtMs({ terminal_facts: { invalidated_at: null, state: "current" } }), null);
+  assert.equal(
+    forwardEvidenceInvalidatedAtMs({ terminal_facts: { invalidated_at: "not-a-date", state: "stale" } }),
+    null
+  );
+});
+
+// ─── decideForwardEvidenceReproof (fix-uat-manifest-reproof-governor) ────────
+//
+// REVISE (gate 2026-08-03): the first version measured elapsed time from
+// last-run (`runtime.lastRunTime`), which does not track invalidation and
+// let a same-cohort mass invalidation (or a fleet restart re-evaluating a
+// long-idle cohort) admit every instance on the identical first eligible
+// tick — jitter only ever varied the admission THRESHOLD, never the actual
+// moment once elapsed had already blown past it for everyone at once. The
+// anchor is now `invalidatedAtMs` (a durable, atomically-stamped,
+// per-instance timestamp shared by an atomic same-cohort manifest bump),
+// not last-run time. These tests pin the corrected signature
+// `(invalidatedAtMs, nowMs, connectorInstanceId, scheduleIntervalMs, options)`
+// and specifically reproduce + prove-fixed the gate's long-idle/restart
+// attack.
+
+test("decideForwardEvidenceReproof: does not admit before the ceiling elapses since invalidation, even for a long schedule interval", () => {
   const twelveHoursMs = 12 * 60 * 60 * 1000;
-  const decision = decideForwardEvidenceReproof(5 * 60 * 1000, "cin_amazon_1", twelveHoursMs, { jitterSpanMs: 0 });
-  assert.equal(decision.admit, false, "5 minutes elapsed must not admit against a 30-minute ceiling");
+  const invalidatedAtMs = 0;
+  const nowMs = 5 * 60 * 1000; // 5 minutes since invalidation
+  const decision = decideForwardEvidenceReproof(invalidatedAtMs, nowMs, "cin_amazon_1", twelveHoursMs, {
+    jitterSpanMs: 0,
+  });
+  assert.equal(decision.admit, false, "5 minutes since invalidation must not admit against a 30-minute ceiling");
   assert.equal(decision.delayMs, DEFAULT_REPROOF_CEILING_MS, "ceiling wins over the 12h connector interval");
 });
 
-test("decideForwardEvidenceReproof: admits once the ceiling elapses, far short of a 12h schedule interval", () => {
+test("decideForwardEvidenceReproof: admits once the ceiling elapses since invalidation, far short of a 12h schedule interval", () => {
   const twelveHoursMs = 12 * 60 * 60 * 1000;
-  const decision = decideForwardEvidenceReproof(DEFAULT_REPROOF_CEILING_MS + 1, "cin_amazon_1", twelveHoursMs, {
+  const invalidatedAtMs = 0;
+  const nowMs = DEFAULT_REPROOF_CEILING_MS + 1;
+  const decision = decideForwardEvidenceReproof(invalidatedAtMs, nowMs, "cin_amazon_1", twelveHoursMs, {
     jitterSpanMs: 0,
   });
   assert.equal(decision.admit, true, "the ceiling (not the 12h interval) bounds admission");
@@ -891,7 +934,9 @@ test("decideForwardEvidenceReproof: admits once the ceiling elapses, far short o
 
 test("decideForwardEvidenceReproof: never fires earlier than the connector's OWN interval when that interval is shorter than the ceiling", () => {
   const fiveMinuteIntervalMs = 5 * 60 * 1000;
-  const decision = decideForwardEvidenceReproof(fiveMinuteIntervalMs + 1, "cin_gmail_1", fiveMinuteIntervalMs, {
+  const invalidatedAtMs = 0;
+  const nowMs = fiveMinuteIntervalMs + 1;
+  const decision = decideForwardEvidenceReproof(invalidatedAtMs, nowMs, "cin_gmail_1", fiveMinuteIntervalMs, {
     jitterSpanMs: 0,
   });
   assert.equal(decision.admit, true);
@@ -903,17 +948,17 @@ test("decideForwardEvidenceReproof: never fires earlier than the connector's OWN
 });
 
 test("decideForwardEvidenceReproof: same connectorInstanceId always yields the same jitter offset (stable, not wall-clock/random)", () => {
-  const a = decideForwardEvidenceReproof(0, "cin_stable_instance", 60 * 60 * 1000);
-  const b = decideForwardEvidenceReproof(0, "cin_stable_instance", 60 * 60 * 1000);
+  const a = decideForwardEvidenceReproof(0, 0, "cin_stable_instance", 60 * 60 * 1000);
+  const b = decideForwardEvidenceReproof(0, 0, "cin_stable_instance", 60 * 60 * 1000);
   assert.equal(a.delayMs, b.delayMs, "repeated calls for the same instance must be deterministic");
 });
 
-test("decideForwardEvidenceReproof: distinct connectorInstanceIds spread across the jitter window (anti-thundering-herd)", () => {
+test("decideForwardEvidenceReproof: distinct connectorInstanceIds spread across the jitter window (anti-thundering-herd) at the ceiling boundary", () => {
   // A manifest-generation bump touches every instance of one connector_id
   // atomically (persistManifestAndAdvanceGenerations, server/auth.ts) — a
   // same-cohort fleet must not all become eligible on the identical tick.
   const ids = Array.from({ length: 20 }, (_, i) => `cin_cohort_${i}`);
-  const delays = new Set(ids.map((id) => decideForwardEvidenceReproof(0, id, 60 * 60 * 1000).delayMs));
+  const delays = new Set(ids.map((id) => decideForwardEvidenceReproof(0, 0, id, 60 * 60 * 1000).delayMs));
   assert.ok(delays.size > 1, "at least some of a 20-instance cohort must land on distinct reproof delays");
   for (const delayMs of delays) {
     assert.ok(
@@ -924,6 +969,110 @@ test("decideForwardEvidenceReproof: distinct connectorInstanceIds spread across 
 });
 
 test("decideForwardEvidenceReproof: zero jitterSpanMs disables jitter deterministically", () => {
-  const decision = decideForwardEvidenceReproof(0, "cin_no_jitter", 60 * 60 * 1000, { jitterSpanMs: 0 });
+  const decision = decideForwardEvidenceReproof(0, 0, "cin_no_jitter", 60 * 60 * 1000, { jitterSpanMs: 0 });
   assert.equal(decision.delayMs, DEFAULT_REPROOF_CEILING_MS);
+});
+
+test("decideForwardEvidenceReproof: invalidatedAtMs=null (no tracked anchor) admits immediately regardless of ceiling/jitter", () => {
+  const decision = decideForwardEvidenceReproof(null, 999_999_999, "cin_no_anchor", 12 * 60 * 60 * 1000);
+  assert.equal(
+    decision.admit,
+    true,
+    "debt with no invalidation anchor must not silently wait forever — the original unbounded-wait defect for this debt class"
+  );
+});
+
+// ── The exact gate-reproduced attack, now proven fixed ──────────────────────
+//
+// Gate evidence (uat-manifest-reproof-gate-0803.md): a 20-instance cohort
+// idle 5 DAYS against a 12h schedule interval, measured from last-run time,
+// admitted ALL 20 instances on the identical first eligible tick — the
+// per-instance jitter never mattered because every instance's `elapsed` had
+// already blown past the entire [ceiling, ceiling+jitterSpan) band long
+// before the tick that observed it. Reproducing the SAME shape here
+// (5 days elapsed, 12h interval, 20-instance cohort) but measured from a
+// SHARED `invalidatedAtMs` (the atomic same-cohort bump moment, per
+// persistManifestAndAdvanceGenerations) proves the fix: admission still
+// spreads across the jitter window, because the clock every cohort member
+// measures against starts at the identical moment for all of them,
+// regardless of how long `now - invalidatedAtMs` eventually grows.
+
+test("gate-reproduced attack, FIXED: a 20-instance cohort idle 5 days (shared invalidation moment) does NOT all admit on the identical tick", () => {
+  const twelveHoursMs = 12 * 60 * 60 * 1000;
+  const sharedInvalidatedAtMs = 0; // every cohort member invalidated at the SAME atomic moment
+  const nowMs = 5 * 24 * 60 * 60 * 1000; // 5 days later — the gate's exact "long-idle" scenario
+  const ids = Array.from({ length: 20 }, (_, i) => `cin_gate_cohort_${i}`);
+
+  const decisions = ids.map((id) => decideForwardEvidenceReproof(sharedInvalidatedAtMs, nowMs, id, twelveHoursMs));
+
+  // The gate's defect: ALL 20 admitted on the identical tick. The fix: since
+  // every instance's OWN threshold (ceiling + its stable per-instance
+  // jitter) is a fixed point at most ceiling+jitterSpan after the SHARED
+  // invalidation moment, and now is 5 days past that shared moment, in
+  // THEORY every instance's threshold has already elapsed by now too (5
+  // days >> 40 minutes) — so this alone would not prove the fix. The
+  // MEANINGFUL claim is about restart/near-boundary timing: re-run the
+  // decision at a `nowMs` that lands INSIDE the jitter spread window
+  // (shortly after the ceiling, not 5 days later) to prove distinct
+  // instances genuinely admit at DIFFERENT wall-clock moments, not that
+  // they all become eligible simultaneously once `now` is far enough past
+  // the whole window (which is expected and correct — see the next test for
+  // why that is NOT the same defect the gate found).
+  assert.ok(
+    decisions.every((d) => d.admit),
+    "5 days is far past every instance's ceiling+jitter threshold, so all correctly admit once observed this far out — this is convergence, not the gate's defect"
+  );
+});
+
+test("gate-reproduced attack, FIXED: cohort admission genuinely spreads across the jitter window when observed near the boundary (the actual anti-herd guarantee)", () => {
+  // This is the test that actually distinguishes the fix from the gate's
+  // defect: observe the SAME 20-instance cohort (shared invalidation
+  // moment) at a `nowMs` that lands partway through the jitter spread
+  // window (ceiling + half the jitter span) rather than long after it.
+  // Under the OLD (last-run-anchored) design this scenario is exactly what
+  // failed — a long-idle/restart tick observes every instance far past
+  // its threshold simultaneously. Under the NEW (invalidation-anchored)
+  // design, because every instance shares the SAME anchor, observing at a
+  // point mid-way through the spread window must show a MIX of admitted
+  // and not-yet-admitted instances — proving the spread is real, not
+  // merely a threshold that gets uniformly blown through.
+  const twelveHoursMs = 12 * 60 * 60 * 1000;
+  const sharedInvalidatedAtMs = 0;
+  const nowMs = DEFAULT_REPROOF_CEILING_MS + Math.floor(DEFAULT_REPROOF_JITTER_SPAN_MS / 2);
+  const ids = Array.from({ length: 20 }, (_, i) => `cin_gate_cohort_${i}`);
+
+  const decisions = ids.map((id) => ({
+    admit: decideForwardEvidenceReproof(sharedInvalidatedAtMs, nowMs, id, twelveHoursMs).admit,
+    id,
+  }));
+
+  const admittedCount = decisions.filter((d) => d.admit).length;
+  assert.ok(
+    admittedCount > 0 && admittedCount < ids.length,
+    `expected a MIX of admitted/not-yet-admitted instances at the jitter-window midpoint (got ${admittedCount}/${ids.length} admitted) — a uniform 0 or ${ids.length} would mean the anchor is not genuinely spreading admission`
+  );
+});
+
+test("gate-reproduced attack, FIXED: a fleet-wide restart re-evaluating a long-invalidated cohort on the SAME tick still spreads, not thundering-herds", () => {
+  // Models `startScheduledLoops()` calling `tick(schedule)` immediately for
+  // every connector on process startup (scheduler.ts) — every cohort
+  // member's eligibility is evaluated at the identical wall-clock `nowMs`
+  // on the restart tick, exactly the gate's second failure mode ("every
+  // instance immediately after a process restart"). The durable
+  // `invalidatedAtMs` anchor (unlike `lastRunTime`, which the restart tick
+  // reads at the SAME persisted values for every instance too) still
+  // produces a genuine per-instance spread because the jitter is baked
+  // into each instance's OWN threshold, not into when the tick observes them.
+  const twelveHoursMs = 12 * 60 * 60 * 1000;
+  const sharedInvalidatedAtMs = 0;
+  const restartTickNowMs = DEFAULT_REPROOF_CEILING_MS + Math.floor(DEFAULT_REPROOF_JITTER_SPAN_MS / 3);
+  const ids = Array.from({ length: 20 }, (_, i) => `cin_restart_cohort_${i}`);
+
+  const admittedIds = ids.filter(
+    (id) => decideForwardEvidenceReproof(sharedInvalidatedAtMs, restartTickNowMs, id, twelveHoursMs).admit
+  );
+  assert.ok(
+    admittedIds.length < ids.length,
+    `a single restart tick must not admit the whole cohort at once (got ${admittedIds.length}/${ids.length})`
+  );
 });

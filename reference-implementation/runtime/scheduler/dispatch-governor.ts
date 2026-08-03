@@ -28,6 +28,7 @@ import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-ba
 import type {
   ConnectorSchedule,
   GetForwardEvidenceDebtHandler,
+  GetForwardEvidenceInvalidatedAtMsHandler,
   GetLastSuccessfulRunAtHandler,
   GetNonPressureRecoverableCountHandler,
   GetSourcePressureGapsHandler,
@@ -64,6 +65,14 @@ export interface DispatchGovernorRuntimeState {
 
 export interface DispatchGovernorDeps {
   getForwardEvidenceDebt: GetForwardEvidenceDebtHandler;
+  /**
+   * Optional. See `GetForwardEvidenceInvalidatedAtMsHandler`'s doc comment.
+   * Defaults to `() => null` when omitted — `decideForwardEvidenceReproof`
+   * then falls back to its unconditional-admit branch rather than silently
+   * withholding a reprove attempt forever for a host that cannot supply
+   * this anchor.
+   */
+  getForwardEvidenceInvalidatedAtMs?: GetForwardEvidenceInvalidatedAtMsHandler;
   getLastSuccessfulRunAt: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps: GetSourcePressureGapsHandler;
@@ -205,11 +214,14 @@ function shouldConsultReproof(input: { blocked: boolean; eligible: boolean }): b
  * `terminal_facts_historical` transition). Independent of both governors:
  * probe debt whenever the tick is not ALREADY dispatching something, and
  * admit a bounded early run once `decideForwardEvidenceReproof`'s own
- * ceiling+jitter cadence (never the connector's own possibly-long interval)
- * says a reprove attempt is due. Never overrides `blocked` — a genuinely
- * blocked connection has no safe automatic run, reproof included; a reproof
- * run is still admitted through the ordinary `automation_mode`/
- * `background_safe` choke point exactly like any other scheduled dispatch
+ * ceiling+jitter cadence — measured from the durable
+ * `terminal_facts_invalidated_at` anchor (`probeForwardEvidenceInvalidatedAtMs`),
+ * NOT last-run time (see `decideForwardEvidenceReproof`'s doc comment for
+ * why a gate REVISE reverted the last-run-anchored first version) — says a
+ * reprove attempt is due. Never overrides `blocked` — a genuinely blocked
+ * connection has no safe automatic run, reproof included; a reproof run is
+ * still admitted through the ordinary `automation_mode`/`background_safe`
+ * choke point exactly like any other scheduled dispatch
  * (`gateAutomationPolicy` in pre-run-gate.ts), so a manual/unsafe connector's
  * declared policy still blocks it.
  */
@@ -219,11 +231,13 @@ async function resolveRecoveryAndReproofEligibility(input: {
   elapsed: number;
   eligible: boolean;
   key: string;
+  now: number;
   probeForwardEvidenceDebt: (
     connectorId: string,
     connectorInstanceId: string,
     scheduleIntervalMs: number
   ) => Promise<boolean>;
+  probeForwardEvidenceInvalidatedAtMs: (connectorId: string, connectorInstanceId: string) => Promise<number | null>;
   probeNonPressureRecoverableCount: (connectorId: string, connectorInstanceId: string) => Promise<number>;
   reproofOptions: ForwardEvidenceReproofOptions;
   scheduleIntervalMs: number;
@@ -233,7 +247,9 @@ async function resolveRecoveryAndReproofEligibility(input: {
     connectorId,
     elapsed,
     key,
+    now,
     probeForwardEvidenceDebt,
+    probeForwardEvidenceInvalidatedAtMs,
     probeNonPressureRecoverableCount,
     reproofOptions,
     scheduleIntervalMs,
@@ -281,11 +297,13 @@ async function resolveRecoveryAndReproofEligibility(input: {
 
   if (shouldConsultReproof({ blocked, eligible })) {
     const debtForReproof = await probeForwardEvidenceDebtOnce();
-    const reproofAdmitted =
-      debtForReproof && decideForwardEvidenceReproof(elapsed, key, scheduleIntervalMs, reproofOptions).admit;
-    if (reproofAdmitted) {
-      eligible = true;
-      recoveryOnly = false;
+    if (debtForReproof) {
+      const invalidatedAtMs = await probeForwardEvidenceInvalidatedAtMs(connectorId, key);
+      const reproof = decideForwardEvidenceReproof(invalidatedAtMs, now, key, scheduleIntervalMs, reproofOptions);
+      if (reproof.admit) {
+        eligible = true;
+        recoveryOnly = false;
+      }
     }
   }
 
@@ -655,6 +673,7 @@ export interface DispatchGovernor {
 export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGovernor {
   const {
     getForwardEvidenceDebt,
+    getForwardEvidenceInvalidatedAtMs = () => null,
     getUnresolvedAttention,
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
@@ -665,6 +684,22 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     synthesizedRevalidationOptions = {},
     synthesizedRevalidationStore,
   } = deps;
+
+  // Fail-closed to `null` (no anchor) on any probe error — mirrors
+  // `decideForwardEvidenceReproof`'s own null handling: a probe failure
+  // must not silently stall reproof forever, so it falls through to the
+  // unconditional-admit branch exactly like a host that never wired this
+  // probe at all.
+  async function probeForwardEvidenceInvalidatedAtMs(connectorId: string, key: string): Promise<number | null> {
+    try {
+      const value = await getForwardEvidenceInvalidatedAtMs(connectorId, key);
+      return typeof value === "number" && Number.isFinite(value) ? value : null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] forward-evidence-invalidated-at probe failed for ${connectorId}: ${message}`);
+      return null;
+    }
+  }
 
   // Consulted ONLY when the tick is otherwise `blocked` — see
   // `synthesizedRevalidationDue`'s doc comment on `DecideBackoffDispatchInputs`.
@@ -970,7 +1005,9 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       elapsed,
       eligible,
       key,
+      now,
       probeForwardEvidenceDebt,
+      probeForwardEvidenceInvalidatedAtMs,
       probeNonPressureRecoverableCount,
       reproofOptions,
       scheduleIntervalMs,
