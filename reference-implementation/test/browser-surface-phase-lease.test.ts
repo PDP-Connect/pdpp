@@ -705,7 +705,9 @@ test("boot reconciliation releases an orphan with its durable exact connector_in
     .prepare("SELECT data_json FROM spine_events WHERE run_id = ? AND event_type = 'run.browser_surface_released'")
     .all(leased.run_id) as { data_json: string }[];
   assert.equal(releasedRows.length, 1);
-  assert.equal(JSON.parse(releasedRows[0].data_json).connector_instance_id, connectorInstanceId);
+  const releasedRow = releasedRows[0];
+  assert.ok(releasedRow, "expected a single run.browser_surface_released spine event");
+  assert.equal(JSON.parse(releasedRow.data_json).connector_instance_id, connectorInstanceId);
   assert.equal(
     warnings.some((warning) => warning.includes("refusing to persist an unbound run event")),
     false,

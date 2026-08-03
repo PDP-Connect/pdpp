@@ -882,7 +882,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       );
       const surface =
         options.hydrateSurface && lease.surface_id
-          ? browserSurfaceLeaseManager.getSurface(lease.surface_id)
+          ? browserSurfaceLeaseManager?.getSurface(lease.surface_id)
           : undefined;
       await persistBrowserSurfaceLeaseMutation(lease, surface);
     }

@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { closeDb, initDb } from '../server/db.ts';
 import { __resetControllerInteractionStateForTests, createController } from '../runtime/controller.ts';
+import type { RuntimeRunConnectorResult } from '../runtime/index.ts';
 
 const CONNECTOR_ID = 'test/recovery-continuation';
 
@@ -99,7 +100,7 @@ function freshDb(t: any) {
 // a continuation) and records each call so the test can assert how many runs
 // actually happened.
 function fakeRunConnectorImplReportingRecoveredGap(calls: any[]) {
-  return (opts: any) => {
+  return (opts: any): Promise<RuntimeRunConnectorResult> => {
     calls.push(opts);
     return Promise.resolve({
       status: 'succeeded',
