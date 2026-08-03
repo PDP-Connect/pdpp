@@ -834,18 +834,21 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
 // reason, "PDPP_TEST_POSTGRES_URL must target the dedicated loopback proof
 // service" (a new Postgres-gated test in
 // requeue-gmail-precontract-too-large-detail-gaps.test.ts), for a final
-// baseline of 210.
+// baseline of 210. The UAT integration adds four PostgreSQL-only lifecycle
+// regressions: two existing-reason skips and two explicitly named
+// "set PDPP_TEST_POSTGRES_URL to run" skips, for a final baseline of 214.
 test("the memory-default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 181,
+    "PDPP_TEST_POSTGRES_URL unset": 183,
     "skipped: PDPP_TEST_POSTGRES_URL unset": 5,
     "Skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
     "Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset": 1,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
+    "set PDPP_TEST_POSTGRES_URL to run": 2,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,
     "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
