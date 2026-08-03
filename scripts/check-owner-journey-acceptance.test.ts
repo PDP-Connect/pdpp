@@ -1118,6 +1118,258 @@ test("live semantic probe accepts visible source count claims that match connect
   assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
 });
 
+test("live semantic probe accepts a declared stream with zero rows this run (stream_count undercounts a healthy source)", async () => {
+  // stream_count is a health signal (streams with non-zero canonical records
+  // THIS RUN), not "how many streams this source has." A declared stream
+  // that produced zero rows this run must not make the harness expect a
+  // smaller count than what the real Sources page (streams.length) renders.
+  // See uat-owner-journey-rootcause-0803.md finding 2A.
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          has_more: false,
+          data: [
+            {
+              connection_id: "cin_chatgpt",
+              connector_id: "chatgpt",
+              display_name: "ChatGPT - everyone@appears.blue",
+              stream_count: 5,
+              streams: [
+                "conversations",
+                "messages",
+                "memories",
+                "custom_gpts",
+                "custom_instructions",
+                "shared_conversations",
+              ],
+              total_records: 900,
+              rendered_verdict: {
+                channel: "calm",
+                pill: { tone: "green", label: "Healthy" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/sources")) {
+      return response(
+        200,
+        "<main><h1>Sources</h1><a>ChatGPT - everyone@appears.blue 900 records · 6 streams</a></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
+});
+
+test("live semantic probe still rejects a rendered stream count the connector summaries do not support at all", async () => {
+  // Mutation guard for the fix above: proves the comparison did not become a
+  // no-op. streams.length is 6 here; the page claims 7 — no field (declared
+  // streams, collection_report, or non-retired stream_records) supports 7.
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          has_more: false,
+          data: [
+            {
+              connection_id: "cin_chatgpt",
+              connector_id: "chatgpt",
+              display_name: "ChatGPT - everyone@appears.blue",
+              stream_count: 5,
+              streams: [
+                "conversations",
+                "messages",
+                "memories",
+                "custom_gpts",
+                "custom_instructions",
+                "shared_conversations",
+              ],
+              total_records: 900,
+              rendered_verdict: {
+                channel: "calm",
+                pill: { tone: "green", label: "Healthy" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/sources")) {
+      return response(
+        200,
+        "<main><h1>Sources</h1><a>ChatGPT - everyone@appears.blue 900 records · 7 streams</a></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "records-source-count-mismatch"));
+});
+
+test("live semantic probe rejects a rendered stream count that includes a retired/dormant stream", async () => {
+  // A stream_records entry with declaration_state "dormant" has historical
+  // records but the current manifest no longer declares it. The rendered
+  // "N streams" figure must reflect only currently-declared streams — a page
+  // that counts the dormant stream as current is a real product defect, and
+  // the harness must catch it (not silently allow the inflated figure by
+  // treating stream_records membership alone as "current").
+  // See uat-owner-journey-rootcause-0803.md finding 2B (peregrine connectors).
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          has_more: false,
+          data: [
+            {
+              connection_id: "cin_peregrine",
+              connector_id: "peregrine",
+              display_name: "peregrine Claude Code",
+              streams: ["messages", "sessions"],
+              stream_records: [
+                { stream: "messages", declaration_state: "declared", record_count: 10 },
+                { stream: "sessions", declaration_state: "declared", record_count: 4 },
+                { stream: "context_mode", declaration_state: "dormant", record_count: 1 },
+              ],
+              total_records: 15,
+              rendered_verdict: {
+                channel: "calm",
+                pill: { tone: "green", label: "Healthy" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/sources")) {
+      // The page wrongly folds the dormant stream into the visible count.
+      return response(200, "<main><h1>Sources</h1><a>peregrine Claude Code 15 records · 3 streams</a></main>");
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "records-source-count-mismatch"));
+});
+
+test("live semantic probe accepts a stream count that correctly excludes a retired/dormant stream", async () => {
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          has_more: false,
+          data: [
+            {
+              connection_id: "cin_peregrine",
+              connector_id: "peregrine",
+              display_name: "peregrine Claude Code",
+              streams: ["messages", "sessions"],
+              stream_records: [
+                { stream: "messages", declaration_state: "declared", record_count: 10 },
+                { stream: "sessions", declaration_state: "declared", record_count: 4 },
+                { stream: "context_mode", declaration_state: "dormant", record_count: 1 },
+              ],
+              total_records: 15,
+              rendered_verdict: {
+                channel: "calm",
+                pill: { tone: "green", label: "Healthy" },
+                required_actions: [],
+              },
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/sources")) {
+      return response(200, "<main><h1>Sources</h1><a>peregrine Claude Code 15 records · 2 streams</a></main>");
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
+});
+
 test("live semantic probe rejects direct browser-session new-source controls", async () => {
   const response = (
     status: number,
@@ -1232,6 +1484,88 @@ test("live semantic probe rejects shell-only Schedules and Explore pages", async
   assert.ok(result.findings.some((f) => f.ruleId === "schedules-content-rendered"));
   assert.ok(result.findings.some((f) => f.ruleId === "explore-content-rendered"));
   assert.equal(result.semanticChecks.find((check) => check.id === "schedules-content-rendered")?.status, "fail");
+  assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
+});
+
+test("live semantic probe accepts an Explore page with the core rendered content but no sort-direction toggle", async () => {
+  // The oldest/newest toggle is a real, deliberate opt-in capability gate
+  // (commit 93daaace6) — the sandbox/demo data source hardcodes it on, but a
+  // live deployment only renders it when PDPP_EXPLORE_TIMELINE_DIRECTION=1.
+  // A deployment without that flag set (e.g. an older compose file) must not
+  // fail the acceptance gate over an optional capability it never claimed to
+  // support — the core Explore surface (title, query controls, filters) is
+  // what proves the owner can use this journey.
+  // See uat-owner-journey-rootcause-0803.md finding 1.
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
+    }
+    if (href.endsWith("/explore")) {
+      return response(
+        200,
+        "<main><h1>Explore</h1><label>Search names, fields, and values — or type an operator</label><details><summary>Filters</summary></details></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "pass");
+  assert.ok(
+    result.semanticChecks.some(
+      (check) => check.id === "explore-content-rendered-optional" && check.detail.includes("record sort controls")
+    )
+  );
+});
+
+test("live semantic probe still rejects Explore pages missing core rendered content, sort toggle or not", async () => {
+  // Mutation guard for the fix above: proves demoting the sort toggle to
+  // optional did not accidentally demote the core content checks too.
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
+    }
+    if (href.endsWith("/explore")) {
+      // Has the toggle, but is missing the query controls and filters.
+      return response(200, "<main><h1>Explore</h1><button>newest</button><button>oldest</button></main>");
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "explore-content-rendered"));
   assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
 });
 

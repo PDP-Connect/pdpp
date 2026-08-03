@@ -47,6 +47,8 @@ const RECORDS_UNAVAILABLE_RE = /records unavailable/;
 const NUMERIC_RECORDS_RE = /\d records/;
 const PASSPORT_42_UNVERIFIED_RE = /42.*unverified/;
 const PASSPORT_0_UNVERIFIED_RE = /0.*unverified/;
+const TWO_STREAMS_SUFFIX_RE = /2 streams$/;
+const CONTEXT_MODE_STREAM_HREF_RE = /stream=context_mode/;
 
 const EMPTY_AXES = {
   attention: {} as RefConnectionHealthSnapshot["axes"]["attention"],
@@ -682,6 +684,130 @@ test("toSourceInstanceView keeps collection-report-only streams visible", () => 
   );
   assert.equal(view.streams[0]?.collection?.countsLabel, "8 / 10 collected");
   assert.match(view.streams[0]?.exploreHref, MESSAGES_STREAM_HREF_RE);
+});
+
+test("toSourceInstanceView excludes dormant/retired streams from the current stream count", () => {
+  // A stream_records entry with declaration_state "dormant" has historical
+  // canonical records but the current connector manifest no longer declares
+  // it (a retired stream from an older manifest version). The visible
+  // "N streams" figure must answer "how many streams this source has now,"
+  // not silently fold in retired streams — see
+  // uat-owner-journey-rootcause-0803.md finding 2B (peregrine connectors).
+  const view = toSourceInstanceView(
+    summary({
+      streams: ["messages", "sessions"],
+      stream_count: 2,
+      stream_records: [
+        {
+          declaration_state: "declared",
+          last_updated: "2026-06-17T11:00:00.000Z",
+          record_count: 42,
+          stream: "messages",
+        },
+        {
+          declaration_state: "declared",
+          last_updated: "2026-06-17T11:00:00.000Z",
+          record_count: 4,
+          stream: "sessions",
+        },
+        {
+          declaration_state: "dormant",
+          last_updated: "2020-01-01T00:00:00.000Z",
+          record_count: 1,
+          stream: "context_mode",
+        },
+      ],
+    })
+  );
+
+  assert.equal(passportField(view, "config"), "2 streams", "the passport count must exclude the dormant stream");
+  assert.match(view.accountLine, TWO_STREAMS_SUFFIX_RE, "the list account line must exclude the dormant stream");
+});
+
+test("toSourceInstanceView retains dormant/retired streams as visible rows, marked isRetired", () => {
+  // Historical access must NOT be deleted, only excluded from the current
+  // count — an owner can still see and open the retired stream's records.
+  const view = toSourceInstanceView(
+    summary({
+      streams: ["messages"],
+      stream_count: 1,
+      stream_records: [
+        {
+          declaration_state: "declared",
+          last_updated: "2026-06-17T11:00:00.000Z",
+          record_count: 42,
+          stream: "messages",
+        },
+        {
+          declaration_state: "dormant",
+          last_updated: "2020-01-01T00:00:00.000Z",
+          record_count: 1,
+          stream: "context_mode",
+        },
+      ],
+    })
+  );
+
+  const retired = view.streams.find((stream) => stream.name === "context_mode");
+  const current = view.streams.find((stream) => stream.name === "messages");
+  assert.ok(retired, "the dormant stream must still be present in the manifest rows");
+  assert.equal(retired.isRetired, true);
+  assert.equal(retired.recordCount, 1, "the dormant stream's historical record count must remain readable");
+  assert.match(
+    retired.exploreHref,
+    CONTEXT_MODE_STREAM_HREF_RE,
+    "the dormant stream must still deep-link into Explore"
+  );
+  assert.equal(current?.isRetired, false);
+});
+
+test("toSourceInstanceView treats an unexpected stream_records entry as retired too", () => {
+  const view = toSourceInstanceView(
+    summary({
+      streams: ["messages"],
+      stream_count: 1,
+      stream_records: [
+        {
+          declaration_state: "declared",
+          last_updated: "2026-06-17T11:00:00.000Z",
+          record_count: 42,
+          stream: "messages",
+        },
+        {
+          declaration_state: "unexpected",
+          last_updated: "2020-01-01T00:00:00.000Z",
+          record_count: 1,
+          stream: "legacy_export",
+        },
+      ],
+    })
+  );
+
+  assert.equal(passportField(view, "config"), "1 streams");
+  assert.equal(view.streams.find((stream) => stream.name === "legacy_export")?.isRetired, true);
+});
+
+test("toSourceInstanceView does not mark a manifest-declared stream retired even if its stream_records entry looks dormant", () => {
+  // Guards against over-eager exclusion: a stream present in the current
+  // manifest (summary.streams) is never retired, regardless of what its
+  // stream_records declaration_state says — declared-elsewhere wins.
+  const view = toSourceInstanceView(
+    summary({
+      streams: ["messages"],
+      stream_count: 1,
+      stream_records: [
+        {
+          declaration_state: "dormant",
+          last_updated: "2026-06-17T11:00:00.000Z",
+          record_count: 42,
+          stream: "messages",
+        },
+      ],
+    })
+  );
+
+  assert.equal(view.streams.find((stream) => stream.name === "messages")?.isRetired, false);
+  assert.equal(passportField(view, "config"), "1 streams");
 });
 
 test("toSourceInstanceView drops blank stream names", () => {

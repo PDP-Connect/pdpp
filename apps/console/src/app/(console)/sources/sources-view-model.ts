@@ -83,6 +83,15 @@ export interface SourceStreamManifestRow {
   cursor: string | null;
   /** Deep-link into Explore for this connection + stream. */
   exploreHref: string;
+  /**
+   * True when this stream's `stream_records` entry has `declaration_state`
+   * `"dormant"` or `"unexpected"` — it has retained historical records but
+   * the connector's current manifest no longer declares it. Retired rows
+   * stay visible/clickable (the owner's historical records are not hidden)
+   * but are excluded from the "N streams" count everywhere else on this
+   * surface, which answers "how many streams does this source have now."
+   */
+  isRetired: boolean;
   name: string;
   /** Server-retained record count for the stream, or null when unknown. */
   recordCount: number | null;
@@ -379,32 +388,50 @@ export function manualUploadHrefForSource(
   return `/connect/manual-upload/${encodeURIComponent(connectorKey)}?${params.toString()}`;
 }
 
+/**
+ * Retired: a `stream_records` entry with historical canonical records whose
+ * `declaration_state` shows the current connector manifest no longer
+ * declares it (`"dormant"`) or never declared it (`"unexpected"`). These
+ * streams keep their historical records reachable in the manifest table
+ * below, but must not inflate the "N streams" figure the owner reads as
+ * "how many streams this source currently has" — see
+ * uat-owner-journey-rootcause-0803.md finding 2B.
+ */
+function isRetiredDeclarationState(state: string | undefined): boolean {
+  return state === "dormant" || state === "unexpected";
+}
+
 function streamNamesForSource(
   summary: RefConnectorSummary,
   collectionFactsByStream: ReadonlyMap<string, unknown>,
-  streamRecordsByStream: ReadonlyMap<string, unknown>
-): string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
-  const add = (candidate: string | null | undefined) => {
+  streamRecordsByStream: ReadonlyMap<string, { declaration_state?: string }>
+): { name: string; isRetired: boolean }[] {
+  const seen = new Map<string, boolean>();
+  const add = (candidate: string | null | undefined, isRetired: boolean) => {
     const name = candidate?.trim() ?? "";
-    if (!name || seen.has(name)) {
+    if (!name) {
       return;
     }
-    seen.add(name);
-    names.push(name);
+    const existing = seen.get(name);
+    if (existing === undefined) {
+      seen.set(name, isRetired);
+    } else if (!isRetired) {
+      // A stream declared elsewhere (manifest/collection report) is never
+      // retired, even if its stream_records entry looks dormant.
+      seen.set(name, false);
+    }
   };
 
   for (const name of summary.streams) {
-    add(name);
+    add(name, false);
   }
   for (const name of collectionFactsByStream.keys()) {
-    add(name);
+    add(name, false);
   }
-  for (const name of streamRecordsByStream.keys()) {
-    add(name);
+  for (const [name, entry] of streamRecordsByStream) {
+    add(name, isRetiredDeclarationState(entry.declaration_state));
   }
-  return names;
+  return [...seen.entries()].map(([name, isRetired]) => ({ isRetired, name }));
 }
 
 /**
@@ -475,6 +502,7 @@ export function toSourceInstanceView(
   );
   const streamRecordsByStream = new Map((summary.stream_records ?? []).map((entry) => [entry.stream, entry]));
   const sourceStreamNames = streamNamesForSource(summary, collectionFactsByStream, streamRecordsByStream);
+  const currentStreamCount = sourceStreamNames.filter((entry) => !entry.isRetired).length;
 
   const baseDisplayName = formatConnectorNameForDisplay({
     connectorId,
@@ -498,19 +526,20 @@ export function toSourceInstanceView(
   const listKind = listKindForDisplayName(displayName, kind);
   let accountLine: string;
   if (hasFallbackLabel) {
-    accountLine = `Unnamed source · ${formatSourceListFacts(summary, sourceStreamNames.length)}`;
+    accountLine = `Unnamed source · ${formatSourceListFacts(summary, currentStreamCount)}`;
   } else {
-    accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
+    accountLine = formatSourceListFacts(summary, currentStreamCount);
   }
   const { primaryVerdictAction } = actionability;
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
   const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
 
-  const streams: SourceStreamManifestRow[] = sourceStreamNames.map((name) => {
+  const streams: SourceStreamManifestRow[] = sourceStreamNames.map(({ isRetired, name }) => {
     const facts = collectionFactsByStream.get(name) ?? null;
     const retained = streamRecordsByStream.get(name) ?? null;
     return {
+      isRetired,
       collection: facts
         ? {
             countsLabel: facts.countsLabel,
@@ -539,7 +568,7 @@ export function toSourceInstanceView(
 
   const passportFields: SourcePassportField[] = [
     ...(listKind ? [{ k: "type", mono: false, value: kind } satisfies SourcePassportField] : []),
-    { k: "config", mono: true, value: `${sourceStreamNames.length} streams` },
+    { k: "config", mono: true, value: `${currentStreamCount} streams` },
     { k: "auth", value: deriveAuthLine(primaryVerdictAction, isLocalDevicePush, manualUploadHref) },
     { k: "schedule", mono: true, value: formatSchedule(summary.schedule) },
     { k: "last run", mono: true, value: formatLastRun(summary.last_run) },

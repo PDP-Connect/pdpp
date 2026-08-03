@@ -801,11 +801,12 @@ function ReactivateCeremony({
 }
 
 function StreamManifest({ instance }: { instance: SourceInstanceView }) {
+  const currentStreamCount = instance.streams.filter((stream) => !stream.isRetired).length;
   return (
     <div className="rr-s-manifest">
       <div className="rr-s-mini-head">
         <h3 className="rr-s-mini-head__t">Streams on this source</h3>
-        <span className="rr-s-mini-head__n">{instance.streams.length}</span>
+        <span className="rr-s-mini-head__n">{currentStreamCount}</span>
       </div>
       {instance.streams.length === 0 ? (
         <p className="rr-s-note">No streams declared on this source yet.</p>
@@ -836,6 +837,15 @@ function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][n
     <Link className="pdpp-table__row rr-s-stream-row" href={stream.exploreHref} style={{ display: "grid" }}>
       <TableCell>
         <span className="rr-s-stream">{stream.name}</span>
+        {stream.isRetired ? (
+          <span
+            className="rr-s-stream-chip"
+            data-tone="neutral"
+            title="This connector's current manifest no longer declares this stream. Its historical records are still retained and readable in Explore."
+          >
+            Retired
+          </span>
+        ) : null}
       </TableCell>
       <TableCell>
         <StreamRecordCount stream={stream} />

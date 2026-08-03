@@ -249,10 +249,52 @@ function connectorLabel(connector: Connector): string {
   );
 }
 
+/**
+ * The count of streams a source "currently has," matching
+ * `streamNamesForSource` in `apps/console/.../sources/sources-view-model.ts`
+ * — the union of declared manifest streams, collection-report stream names,
+ * and `stream_records` stream names, EXCLUDING `stream_records` entries whose
+ * `declaration_state` is `"dormant"` or `"unexpected"` (retired streams with
+ * historical records the current manifest no longer declares).
+ *
+ * `connector.stream_count` is intentionally NOT used here — it is a health
+ * signal (streams with non-zero canonical records this run), not "how many
+ * streams this source has." Comparing against it produces false mismatches
+ * whenever a declared stream has zero rows this run. See
+ * uat-owner-journey-rootcause-0803.md finding 2A.
+ */
+function addStreamName(names: Set<string>, candidate: unknown): void {
+  if (typeof candidate === "string" && candidate.trim()) {
+    names.add(candidate.trim());
+  }
+}
+
+function isRetiredStreamRecord(entry: Connector): boolean {
+  const declarationState = entry.declaration_state;
+  return declarationState === "dormant" || declarationState === "unexpected";
+}
+
+function currentStreamCount(connector: Connector): number | null {
+  const names = new Set<string>();
+  for (const name of Array.isArray(connector.streams) ? (connector.streams as unknown[]) : []) {
+    addStreamName(names, name);
+  }
+  for (const entry of Array.isArray(connector.collection_report) ? (connector.collection_report as Connector[]) : []) {
+    addStreamName(names, entry.stream);
+  }
+  for (const entry of Array.isArray(connector.stream_records) ? (connector.stream_records as Connector[]) : []) {
+    if (!isRetiredStreamRecord(entry)) {
+      addStreamName(names, entry.stream);
+    }
+  }
+  return names.size > 0 || Array.isArray(connector.streams) || Array.isArray(connector.stream_records)
+    ? names.size
+    : null;
+}
+
 function sourceCountPhrase(connector: Connector): string | null {
   const records = Number(connector.total_records);
-  const rawStreamCount =
-    connector.stream_count ?? (Array.isArray(connector.streams) ? (connector.streams as unknown[]).length : null);
+  const rawStreamCount = currentStreamCount(connector);
   const streams = Number(rawStreamCount);
   if (!(Number.isFinite(records) && Number.isFinite(streams))) {
     return null;
@@ -628,13 +670,24 @@ async function runLiveSemanticChecks({
           pattern: SEARCH_NAMES_FIELDS_AND_PATTERN,
         },
         { label: "record filters", pattern: BFILTERS_PATTERN },
-        { label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN },
       ],
+      // The oldest/newest sort-direction toggle is a real, deliberate opt-in
+      // capability gate (commit 93daaace6, "feat(explore): gate frontend sort
+      // direction") — NOT a rendering defect. The sandbox/demo data source
+      // hardcodes it on, but a live deployment only renders it when
+      // PDPP_EXPLORE_TIMELINE_DIRECTION=1 is set (now the reference compose
+      // default; see deploy/docker/docker-compose.yml). Demanding it
+      // unconditionally would fail any deployment running an older compose
+      // or a deliberately-disabled variant, even though the core Explore
+      // surface — title, query, filters — is fully usable. Report it, don't
+      // gate the core content check on it.
+      optional: [{ label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN }],
     },
   ];
   for (const expectation of contentExpectations) {
     const pageText = htmlToText(htmlByPath.get(expectation.path) ?? "");
     const missing = expectation.required.filter((item) => !item.pattern.test(pageText));
+    const missingOptional = (expectation.optional ?? []).filter((item) => !item.pattern.test(pageText));
     if (missing.length > 0) {
       findings.push({
         ruleId: expectation.id,
@@ -653,6 +706,13 @@ async function runLiveSemanticChecks({
           ? `missing ${missing.map((item) => item.label).join(", ")}`
           : `${expectation.title} rendered core owner controls`,
     });
+    if (missingOptional.length > 0) {
+      checks.push({
+        id: `${expectation.id}-optional`,
+        status: "pass",
+        detail: `optional capability not enabled on this deployment: ${missingOptional.map((item) => item.label).join(", ")} (set PDPP_EXPLORE_TIMELINE_DIRECTION=1 to enable)`,
+      });
+    }
   }
 
   const recordsText = htmlToText(htmlByPath.get("/sources") ?? "");
