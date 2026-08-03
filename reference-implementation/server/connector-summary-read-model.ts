@@ -619,6 +619,53 @@ export async function getConnectorSummaryEvidence(connectorInstanceId: string | 
 }
 
 /**
+ * Bounded, backend-neutral, one-row rollout repair for a legacy connection
+ * whose `terminal_facts_state` is already non-`current` but predates the
+ * `terminal_facts_invalidated_at` column (fix-uat-manifest-reproof-governor,
+ * second gate REVISE 2026-08-03: automatic rollout for pre-existing
+ * non-current rows, so future AND existing manifest-generation debt has a
+ * durable anchor — a legacy row would otherwise sit at `invalidatedAtMs:
+ * null` forever, never entering bounded reproof at all).
+ *
+ * A single atomic UPDATE per backend, scoped to exactly this
+ * `connector_instance_id`, guarded by `terminal_facts_state != 'current' AND
+ * terminal_facts_invalidated_at IS NULL` so it is a genuine no-op for a
+ * `current` row or one already anchored (by the ordinary fold/repair write
+ * path in `createStreamFactsFoldStore().updateStreamFacts` /
+ * `createConnectorSummaryStore().markAllTerminalFactsFailed`, which always
+ * wins the race if it lands first). This intentionally does NOT touch the
+ * fold engine's own internals or add a new sweep/table — it is the same
+ * one-off, narrowly-scoped repair shape `reconcileDirtyConnectorSummaryEvidence`
+ * already performs for other columns, applied once per already-reconciled
+ * read. Returns void; callers that need the backfilled value re-read the
+ * evidence row afterward (the existing `getConnectorSummaryEvidence` call
+ * every probe site already makes).
+ */
+export async function backfillTerminalFactsInvalidatedAt(connectorInstanceId: string): Promise<void> {
+  const nowIso = new Date().toISOString();
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      `UPDATE connector_summary_evidence
+          SET terminal_facts_invalidated_at = $2
+        WHERE connector_instance_id = $1
+          AND terminal_facts_state != 'current'
+          AND terminal_facts_invalidated_at IS NULL`,
+      [connectorInstanceId, nowIso]
+    );
+    return;
+  }
+  getDb()
+    .prepare(
+      `UPDATE connector_summary_evidence
+          SET terminal_facts_invalidated_at = ?
+        WHERE connector_instance_id = ?
+          AND terminal_facts_state != 'current'
+          AND terminal_facts_invalidated_at IS NULL`
+    )
+    .run(nowIso, connectorInstanceId);
+}
+
+/**
  * Return the stored terminal owner-LIST projection for exactly one
  * connection. This is a read-only evidence lookup: it never reconciles,
  * rebuilds, observes runtime state, or upgrades a stale payload to current.

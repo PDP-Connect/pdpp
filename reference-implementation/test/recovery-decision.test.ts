@@ -28,6 +28,7 @@ import {
   hasEligibleNonPressureRecovery,
   hasForwardEvidenceDebt,
   hasFreshPressureEvidence,
+  isManifestGenerationInvalidatedDebt,
   lastPressureAtForGap,
   type ProviderWorkDomain,
   partitionPressureEvidence,
@@ -973,13 +974,47 @@ test("decideForwardEvidenceReproof: zero jitterSpanMs disables jitter determinis
   assert.equal(decision.delayMs, DEFAULT_REPROOF_CEILING_MS);
 });
 
-test("decideForwardEvidenceReproof: invalidatedAtMs=null (no tracked anchor) admits immediately regardless of ceiling/jitter", () => {
+test("decideForwardEvidenceReproof: invalidatedAtMs=null (no tracked anchor) NEVER admits, regardless of how much time has passed (second gate REVISE)", () => {
   const decision = decideForwardEvidenceReproof(null, 999_999_999, "cin_no_anchor", 12 * 60 * 60 * 1000);
   assert.equal(
     decision.admit,
-    true,
-    "debt with no invalidation anchor must not silently wait forever — the original unbounded-wait defect for this debt class"
+    false,
+    "a null anchor must not admit unconditionally — the first REVISE's unconditional-admit branch was itself a correlated-cohort thundering-herd defect (every connection sharing a null anchor for the same structural reason, e.g. a probe-error window, would admit on the same tick with no ceiling/jitter). A null anchor only skips this tick's EARLY-reproof optimization; it never blocks or delays the connection's ordinary scheduled cadence, which is computed completely independently of this function."
   );
+});
+
+test("decideForwardEvidenceReproof: invalidatedAtMs=null never admits even when nowMs is enormous (no silent unbounded admit either direction)", () => {
+  const decision = decideForwardEvidenceReproof(null, Number.MAX_SAFE_INTEGER, "cin_no_anchor_huge_now", 5 * 60 * 1000);
+  assert.equal(decision.admit, false);
+});
+
+// ── isManifestGenerationInvalidatedDebt (second gate REVISE) ────────────────
+
+test("isManifestGenerationInvalidatedDebt: true for any non-current terminal_facts state", () => {
+  assert.equal(isManifestGenerationInvalidatedDebt({ terminal_facts: { state: "stale" } }), true);
+  assert.equal(isManifestGenerationInvalidatedDebt({ terminal_facts: { state: "unobserved" } }), true);
+  assert.equal(isManifestGenerationInvalidatedDebt({ terminal_facts: { state: "failed" } }), true);
+});
+
+test("isManifestGenerationInvalidatedDebt: false for state=current REGARDLESS of the fact map (the out-of-scope debt class)", () => {
+  assert.equal(
+    isManifestGenerationInvalidatedDebt({ stream_latest_facts: {}, terminal_facts: { state: "current" } }),
+    false,
+    "a current-state row with a stale/empty fact map is hasForwardEvidenceDebt's OTHER debt branch -- explicitly out of scope for manifest-generation reproof"
+  );
+  assert.equal(
+    isManifestGenerationInvalidatedDebt({ stream_latest_facts: null, terminal_facts: { state: "current" } }),
+    false
+  );
+});
+
+test("isManifestGenerationInvalidatedDebt: false for missing/null evidence or terminal_facts (never silently treated as in scope)", () => {
+  assert.equal(
+    isManifestGenerationInvalidatedDebt(null),
+    true,
+    "missing evidence entirely reads as non-current -- consistent with hasForwardEvidenceDebt's own missing-evidence stance (fail closed to debt), and IS legitimately in scope, since a never-observed connection has no 'current' state to be out of scope from"
+  );
+  assert.equal(isManifestGenerationInvalidatedDebt({ terminal_facts: null }), true);
 });
 
 // ── The exact gate-reproduced attack, now proven fixed ──────────────────────

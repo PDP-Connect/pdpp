@@ -361,7 +361,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getSourcePressureGaps = () => [],
     getNonPressureRecoverableCount = async () => 0,
     getForwardEvidenceDebt = async () => false,
-    getForwardEvidenceInvalidatedAtMs = async () => null,
+    getForwardEvidenceInvalidatedAtMs = async () => ({ inScope: false, invalidatedAtMs: null }),
     getLastSuccessfulRunAt = async () => null,
     isManagedConnector = () => false,
     maxRunWallClockMs,

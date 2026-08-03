@@ -15,7 +15,11 @@
 import { getRunTerminalEvent } from "../lib/spine.ts";
 import { isHealthRelevant as isAttentionHealthRelevant } from "../runtime/attention.ts";
 import { getScheduleIneligibilityReason, resolveDefaultConnectorPath } from "../runtime/controller.ts";
-import { forwardEvidenceInvalidatedAtMs, hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
+import {
+  forwardEvidenceInvalidatedAtMs,
+  hasForwardEvidenceDebt,
+  isManifestGenerationInvalidatedDebt,
+} from "../runtime/recovery-decision.ts";
 import type {
   ConnectorError,
   ConnectorSchedule,
@@ -30,7 +34,11 @@ import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressur
 import { getConnectorManifest } from "./auth.ts";
 import { buildConnectionScopedRunEnvResolver } from "./connection-scoped-run-env.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
-import { getConnectorSummaryEvidence, reconcileDirtyConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
+import {
+  backfillTerminalFactsInvalidatedAt,
+  getConnectorSummaryEvidence,
+  reconcileDirtyConnectorSummaryEvidence,
+} from "./connector-summary-read-model.ts";
 import { unresolvedOwnerActionEvidenceFromSummary } from "./owner-action-gate.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
 import { getSyncState, putSyncState } from "./records.ts";
@@ -525,26 +533,42 @@ export function createReferenceSchedulerManager({
           return false;
         }
       },
-      // Durable "when did terminal facts last become invalid" anchor
-      // (fix-uat-manifest-reproof-governor, gate REVISE 2026-08-03): reads
-      // the SAME reconciled evidence row `getForwardEvidenceDebt` reads,
-      // surfacing `terminal_facts.invalidated_at` for
-      // `decideForwardEvidenceReproof`'s bounded reproof cadence — measured
-      // from this atomic invalidation moment, never last-run time. Fail-
-      // CLOSED to `null` (no anchor) on error: `decideForwardEvidenceReproof`
-      // treats a `null` anchor as unconditional-admit, matching this probe's
-      // safe fallback (never silently stall reproof forever on a read
-      // failure) rather than a false positive that would defer it.
+      // Durable "is this the manifest-generation-invalidated debt class, and
+      // if so since when" probe (fix-uat-manifest-reproof-governor, second
+      // gate REVISE 2026-08-03): reads the SAME reconciled evidence row
+      // `getForwardEvidenceDebt` reads, but narrows scope to
+      // `isManifestGenerationInvalidatedDebt` (terminal_facts.state !==
+      // "current") rather than the broader debt boolean — the OTHER debt
+      // class (current-state, stale/missing fact map) never has
+      // `terminal_facts_invalidated_at` stamped for it at all, so including
+      // it here would let `decideForwardEvidenceReproof` see a permanently-
+      // null anchor for that class and admit unconditionally, which is
+      // exactly the correlated-cohort defect the gate found. Fail-CLOSED to
+      // `{ inScope: false, invalidatedAtMs: null }` on error: a probe
+      // failure never enters the bounded reproof path at all, matching a
+      // host that never wired this probe.
       getForwardEvidenceInvalidatedAtMs: async (connectorId, connectorInstanceId) => {
         try {
           const instanceId = connectorInstanceId || connectorId;
           await reconcileDirtyConnectorSummaryEvidence([instanceId]);
-          const evidence = await getConnectorSummaryEvidence(instanceId);
-          return forwardEvidenceInvalidatedAtMs(evidence);
+          let evidence = await getConnectorSummaryEvidence(instanceId);
+          if (!isManifestGenerationInvalidatedDebt(evidence)) {
+            return { inScope: false, invalidatedAtMs: null };
+          }
+          // Automatic rollout for a legacy non-current row that predates
+          // this column (fix-uat-manifest-reproof-governor, second gate
+          // REVISE 2026-08-03): backfill once, then re-read. A no-op when
+          // already anchored (the guarded UPDATE's WHERE clause matches
+          // zero rows).
+          if (forwardEvidenceInvalidatedAtMs(evidence) === null) {
+            await backfillTerminalFactsInvalidatedAt(instanceId);
+            evidence = await getConnectorSummaryEvidence(instanceId);
+          }
+          return { inScope: true, invalidatedAtMs: forwardEvidenceInvalidatedAtMs(evidence) };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] forward-evidence-invalidated-at probe failed for ${connectorId}`);
-          return null;
+          return { inScope: false, invalidatedAtMs: null };
         }
       },
       // Durable cross-path "latest successful run at" probe, read from the spine

@@ -27,6 +27,7 @@ import {
 import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-backoff.ts";
 import type {
   ConnectorSchedule,
+  ForwardEvidenceInvalidationProbeResult,
   GetForwardEvidenceDebtHandler,
   GetForwardEvidenceInvalidatedAtMsHandler,
   GetLastSuccessfulRunAtHandler,
@@ -212,18 +213,35 @@ function shouldConsultReproof(input: { blocked: boolean; eligible: boolean }): b
  * for up to 12h after a manifest-generation bump, per
  * connector-summary-read-model.ts's `terminal_facts_state: 'stale'`/
  * `terminal_facts_historical` transition). Independent of both governors:
- * probe debt whenever the tick is not ALREADY dispatching something, and
- * admit a bounded early run once `decideForwardEvidenceReproof`'s own
- * ceiling+jitter cadence — measured from the durable
- * `terminal_facts_invalidated_at` anchor (`probeForwardEvidenceInvalidatedAtMs`),
- * NOT last-run time (see `decideForwardEvidenceReproof`'s doc comment for
- * why a gate REVISE reverted the last-run-anchored first version) — says a
- * reprove attempt is due. Never overrides `blocked` — a genuinely blocked
- * connection has no safe automatic run, reproof included; a reproof run is
- * still admitted through the ordinary `automation_mode`/`background_safe`
- * choke point exactly like any other scheduled dispatch
- * (`gateAutomationPolicy` in pre-run-gate.ts), so a manual/unsafe connector's
- * declared policy still blocks it.
+ * probe `inScope`/anchor whenever the tick is not ALREADY dispatching
+ * something, and admit a bounded early run once `decideForwardEvidenceReproof`'s
+ * own ceiling+jitter cadence — measured from the durable
+ * `terminal_facts_invalidated_at` anchor, NOT last-run time (see
+ * `decideForwardEvidenceReproof`'s doc comment for why a gate REVISE
+ * reverted the last-run-anchored first version) — says a reprove attempt is
+ * due.
+ *
+ * SCOPE (second gate REVISE, 2026-08-03): this consults
+ * `probeForwardEvidenceInvalidatedAtMs`'s `inScope` flag directly —
+ * deliberately NOT the recovery-only sub-flow's `forwardEvidenceDebt`
+ * boolean (which also covers a structurally distinct, out-of-scope debt
+ * class: a `current`-state row with a stale/missing per-stream fact map,
+ * which never has an invalidation anchor stamped for it at all and whose
+ * remediation is an explicitly separate concern). Gating on the broad
+ * boolean previously let that out-of-scope class reach
+ * `decideForwardEvidenceReproof` with a permanently-null anchor, and a
+ * shared periodic fold-sweep stall correlated every connection in that
+ * class onto the identical tick with the identical null-anchor shape — the
+ * confirmed correlated-cohort defect this narrowing closes. A `null`
+ * anchor (missing backfill, or a probe read failure) never admits either
+ * (see `decideForwardEvidenceReproof`) — it only skips this tick's early-
+ * reproof optimization, never the connection's ordinary scheduled cadence.
+ *
+ * Never overrides `blocked` — a genuinely blocked connection has no safe
+ * automatic run, reproof included; a reproof run is still admitted through
+ * the ordinary `automation_mode`/`background_safe` choke point exactly like
+ * any other scheduled dispatch (`gateAutomationPolicy` in pre-run-gate.ts),
+ * so a manual/unsafe connector's declared policy still blocks it.
  */
 async function resolveRecoveryAndReproofEligibility(input: {
   blocked: boolean;
@@ -237,7 +255,10 @@ async function resolveRecoveryAndReproofEligibility(input: {
     connectorInstanceId: string,
     scheduleIntervalMs: number
   ) => Promise<boolean>;
-  probeForwardEvidenceInvalidatedAtMs: (connectorId: string, connectorInstanceId: string) => Promise<number | null>;
+  probeForwardEvidenceInvalidatedAtMs: (
+    connectorId: string,
+    connectorInstanceId: string
+  ) => Promise<ForwardEvidenceInvalidationProbeResult>;
   probeNonPressureRecoverableCount: (connectorId: string, connectorInstanceId: string) => Promise<number>;
   reproofOptions: ForwardEvidenceReproofOptions;
   scheduleIntervalMs: number;
@@ -296,9 +317,18 @@ async function resolveRecoveryAndReproofEligibility(input: {
   }
 
   if (shouldConsultReproof({ blocked, eligible })) {
-    const debtForReproof = await probeForwardEvidenceDebtOnce();
-    if (debtForReproof) {
-      const invalidatedAtMs = await probeForwardEvidenceInvalidatedAtMs(connectorId, key);
+    // Gates on `inScope` (isManifestGenerationInvalidatedDebt), NOT the
+    // broader forward-evidence-debt boolean the recovery-only sub-flow
+    // above uses — this is the second gate REVISE's required narrowing.
+    // The OTHER debt class (current-state, stale/missing fact map) never
+    // has an anchor stamped for it (state never leaves `current`), so
+    // gating on the broad boolean would let a shared fold-sweep stall
+    // correlate every connection in THAT class onto the same
+    // permanently-null-anchor, unconditional-admit tick. inScope=false
+    // short-circuits before ever probing the anchor or calling
+    // decideForwardEvidenceReproof for that class.
+    const { inScope, invalidatedAtMs } = await probeForwardEvidenceInvalidatedAtMs(connectorId, key);
+    if (inScope) {
       const reproof = decideForwardEvidenceReproof(invalidatedAtMs, now, key, scheduleIntervalMs, reproofOptions);
       if (reproof.admit) {
         eligible = true;
@@ -673,7 +703,7 @@ export interface DispatchGovernor {
 export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGovernor {
   const {
     getForwardEvidenceDebt,
-    getForwardEvidenceInvalidatedAtMs = () => null,
+    getForwardEvidenceInvalidatedAtMs = () => ({ inScope: false, invalidatedAtMs: null }),
     getUnresolvedAttention,
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
@@ -685,19 +715,27 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     synthesizedRevalidationStore,
   } = deps;
 
-  // Fail-closed to `null` (no anchor) on any probe error — mirrors
-  // `decideForwardEvidenceReproof`'s own null handling: a probe failure
-  // must not silently stall reproof forever, so it falls through to the
-  // unconditional-admit branch exactly like a host that never wired this
-  // probe at all.
-  async function probeForwardEvidenceInvalidatedAtMs(connectorId: string, key: string): Promise<number | null> {
+  // Fail-closed to `{ inScope: false, invalidatedAtMs: null }` on any probe
+  // error — a probe failure must NEVER be read as "in scope with no anchor"
+  // (which `decideForwardEvidenceReproof` itself now also refuses to admit
+  // on, per the second gate REVISE, but `inScope: false` additionally
+  // ensures this connector's tick never even calls that function on a
+  // read failure, matching a host that never wired the probe at all).
+  async function probeForwardEvidenceInvalidatedAtMs(
+    connectorId: string,
+    key: string
+  ): Promise<ForwardEvidenceInvalidationProbeResult> {
     try {
-      const value = await getForwardEvidenceInvalidatedAtMs(connectorId, key);
-      return typeof value === "number" && Number.isFinite(value) ? value : null;
+      const result = await getForwardEvidenceInvalidatedAtMs(connectorId, key);
+      const invalidatedAtMs =
+        typeof result.invalidatedAtMs === "number" && Number.isFinite(result.invalidatedAtMs)
+          ? result.invalidatedAtMs
+          : null;
+      return { inScope: result.inScope === true, invalidatedAtMs };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] forward-evidence-invalidated-at probe failed for ${connectorId}: ${message}`);
-      return null;
+      return { inScope: false, invalidatedAtMs: null };
     }
   }
 

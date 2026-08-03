@@ -67,7 +67,11 @@ import {
 } from "../runtime/controller.ts";
 import { NekoSurfaceAllocatorClient } from "../runtime/neko-surface-allocator.ts";
 import { isClosedPipeWriteError } from "../runtime/pipe-errors.ts";
-import { forwardEvidenceInvalidatedAtMs, hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
+import {
+  forwardEvidenceInvalidatedAtMs,
+  hasForwardEvidenceDebt,
+  isManifestGenerationInvalidatedDebt,
+} from "../runtime/recovery-decision.ts";
 import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
 import { browserSurfaceConfigured } from "../runtime/scheduler-readiness.ts";
@@ -137,6 +141,7 @@ import {
 import { canonicalConnectorKey, isInternalConnectorId } from "./connector-key.ts";
 import { createResumableConnectorMaintenanceSweep } from "./connector-maintenance-sweep.ts";
 import {
+  backfillTerminalFactsInvalidatedAt,
   getConnectorSummaryEvidence,
   markConnectorSummaryEvidenceDirty,
   reconcileDirtyConnectorSummaryEvidence,
@@ -7745,19 +7750,31 @@ function createReferenceSchedulerManager({
           return false;
         }
       },
-      // Durable "when did terminal facts last become invalid" anchor
-      // (fix-uat-manifest-reproof-governor, gate REVISE 2026-08-03) — see the
-      // matching wiring/comment in server/scheduler-manager-factory.ts.
+      // Durable "is this the manifest-generation-invalidated debt class, and
+      // if so since when" probe (fix-uat-manifest-reproof-governor, second
+      // gate REVISE 2026-08-03) — see the matching wiring/comment in
+      // server/scheduler-manager-factory.ts.
       getForwardEvidenceInvalidatedAtMs: async (connectorId, connectorInstanceId) => {
         try {
           const instanceId = connectorInstanceId || connectorId;
           await reconcileDirtyConnectorSummaryEvidence([instanceId]);
-          const evidence = await getConnectorSummaryEvidence(instanceId);
-          return forwardEvidenceInvalidatedAtMs(evidence);
+          let evidence = await getConnectorSummaryEvidence(instanceId);
+          if (!isManifestGenerationInvalidatedDebt(evidence)) {
+            return { inScope: false, invalidatedAtMs: null };
+          }
+          // Automatic rollout for a legacy non-current row that predates
+          // this column (fix-uat-manifest-reproof-governor, second gate
+          // REVISE 2026-08-03): backfill once, then re-read. A no-op when
+          // already anchored.
+          if (forwardEvidenceInvalidatedAtMs(evidence) === null) {
+            await backfillTerminalFactsInvalidatedAt(instanceId);
+            evidence = await getConnectorSummaryEvidence(instanceId);
+          }
+          return { inScope: true, invalidatedAtMs: forwardEvidenceInvalidatedAtMs(evidence) };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] forward-evidence-invalidated-at probe failed for ${connectorId}`);
-          return null;
+          return { inScope: false, invalidatedAtMs: null };
         }
       },
       // Durable cross-path "latest successful run at" probe, read from the spine

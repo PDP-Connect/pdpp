@@ -817,7 +817,11 @@ function reproofJitterOffsetMs(connectorInstanceId: string, jitterSpanMs: number
 
 /**
  * Decide whether a bounded, non-interactive confirming run is due to reprove
- * forward evidence currently in debt (see `hasForwardEvidenceDebt`).
+ * forward evidence currently in debt, SCOPED STRICTLY to the
+ * manifest-generation-invalidated debt class (see
+ * `isManifestGenerationInvalidatedDebt` — the caller MUST gate on that
+ * predicate before ever calling this; never on the broader
+ * `hasForwardEvidenceDebt`).
  *
  * `invalidatedAtMs` is the durable, atomically-stamped
  * `terminal_facts_invalidated_at` timestamp (epoch ms) — the moment this
@@ -831,18 +835,25 @@ function reproofJitterOffsetMs(connectorInstanceId: string, jitterSpanMs: number
  * long-invalidated cohort) still spreads admission across the jitter window
  * rather than admitting every instance on the identical first eligible tick.
  *
- * `invalidatedAtMs === null` (evidence reports debt for a reason OTHER than
- * a tracked terminal-facts invalidation — e.g. missing/empty fact map with
- * `state: "current"`, per `hasForwardEvidenceDebt`'s other branches) admits
- * immediately: there is no invalidation anchor to measure from, and
- * withholding admission indefinitely would silently reintroduce the
- * original unbounded-wait defect for that debt class. This is the ONLY
- * unconditional-admit branch; every anchored case goes through the
- * ceiling+jitter bound.
+ * `invalidatedAtMs === null` — the anchor is missing (a not-yet-backfilled
+ * legacy row, per `backfillTerminalFactsInvalidatedAt`, or a probe read
+ * failure) — does NOT admit (second gate REVISE, 2026-08-03: the first
+ * version's unconditional `admit: true` here was itself a correlated-cohort
+ * thundering-herd bug — every connection sharing a null anchor for the SAME
+ * structural reason, e.g. a fleet-wide probe-error window, admitted on the
+ * SAME tick with no ceiling and no jitter). A `null` anchor `admit: false`
+ * only skips THIS tick's early-reproof optimization; it never blocks or
+ * delays the connection's ordinary scheduled cadence, which the caller
+ * (`evaluateBackoffDispatch`) computes completely independently of this
+ * function's result. The next tick re-probes and re-evaluates from scratch;
+ * once the backfill (or a transient probe failure resolving) supplies a real
+ * anchor, the ordinary ceiling+jitter bound takes over exactly as for any
+ * other anchored row.
  *
- * Caller contract: only call this when `hasForwardEvidenceDebt` is already
- * true for this connection — this function does not itself probe evidence,
- * mirroring `decideSynthesizedRevalidation`'s pure decide/probe separation.
+ * Caller contract: only call this when `isManifestGenerationInvalidatedDebt`
+ * is already true for this connection — this function does not itself probe
+ * evidence, mirroring `decideSynthesizedRevalidation`'s pure decide/probe
+ * separation.
  */
 export function decideForwardEvidenceReproof(
   invalidatedAtMs: number | null,
@@ -858,7 +869,7 @@ export function decideForwardEvidenceReproof(
   const jitterMs = reproofJitterOffsetMs(connectorInstanceId, jitterSpanMs);
   const delayMs = baseDelayMs + jitterMs;
   if (invalidatedAtMs === null) {
-    return { admit: true, delayMs };
+    return { admit: false, delayMs };
   }
   const now = normalizeEpochMs(nowMs);
   return { admit: now - invalidatedAtMs >= delayMs, delayMs };
@@ -866,17 +877,41 @@ export function decideForwardEvidenceReproof(
 
 /**
  * Extract `invalidatedAtMs` from a durable evidence row's `terminal_facts`
- * for `decideForwardEvidenceReproof`'s anchor input. `null` when the state
- * is `current` (nothing to reprove — the caller should not have reached
- * here per `hasForwardEvidenceDebt`'s contract) OR the timestamp is
- * missing/unparseable (debt from a non-invalidation-tracked reason, or a
- * pre-migration row written before this column existed) — both cases defer
- * to `decideForwardEvidenceReproof`'s unconditional-admit branch rather than
- * silently waiting forever on an anchor that will never appear.
+ * for `decideForwardEvidenceReproof`'s anchor input. `null` when the
+ * timestamp is missing/unparseable — including a genuinely `current` row
+ * (which never had it stamped, or had it cleared on healing) and a
+ * non-current row whose anchor has not yet been backfilled (see
+ * `backfillTerminalFactsInvalidatedAt`). Callers MUST gate on
+ * `isManifestGenerationInvalidatedDebt` before calling this — a `null`
+ * result alone does not distinguish "not in scope" from "in scope but not
+ * yet anchored," and `decideForwardEvidenceReproof` treats `null` as
+ * "skip early-reproof this tick" either way (never an unconditional admit).
  */
 export function forwardEvidenceInvalidatedAtMs(evidence: ForwardEvidenceLike | null | undefined): number | null {
   const raw = evidence?.terminal_facts?.invalidated_at;
   return parseIso(typeof raw === "string" ? raw : null);
+}
+
+/**
+ * True ONLY for the manifest-generation-invalidated debt class this fix
+ * addresses: `terminal_facts.state !== "current"` (fix-uat-manifest-reproof-governor,
+ * second gate REVISE 2026-08-03). Deliberately narrower than
+ * `hasForwardEvidenceDebt`, which also reports debt for a `current`-state row
+ * with a missing/aged fact map (a structurally different problem — the
+ * fold-sweep-driven per-stream `evidence_as_of` staleness case, `state` never
+ * leaves `current` so `terminal_facts_invalidated_at` is never stamped for
+ * it, and its own remediation is out of scope here per this fix's explicit
+ * charter: do not expand bounded early reproof into a general stale-fact-map
+ * recovery project). The scheduler's reproof consultation MUST gate on this
+ * predicate, not on `hasForwardEvidenceDebt` directly — otherwise the
+ * `current`-state debt class reaches `decideForwardEvidenceReproof` with a
+ * permanently-null anchor (nothing ever stamps one for it), and every
+ * connection in that class across a shared periodic fold-sweep stall would
+ * simultaneously present the SAME null-anchor shape on the SAME tick — the
+ * second gate's confirmed correlated-cohort finding.
+ */
+export function isManifestGenerationInvalidatedDebt(evidence: ForwardEvidenceLike | null | undefined): boolean {
+  return evidence?.terminal_facts?.state !== "current";
 }
 
 // ─── Fresh-pressure re-arm guard (task 1.5 / design.md D4) ───────────────────

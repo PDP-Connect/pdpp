@@ -23,8 +23,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { forwardEvidenceInvalidatedAtMs, hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
 import {
+  forwardEvidenceInvalidatedAtMs,
+  hasForwardEvidenceDebt,
+  isManifestGenerationInvalidatedDebt,
+} from "../runtime/recovery-decision.ts";
+import {
+  backfillTerminalFactsInvalidatedAt,
   foldConnectorSummaryStreamFacts,
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
@@ -310,6 +315,115 @@ test("SQLite restart: the invalidation anchor survives closing and reopening the
   });
 });
 
+// ─── backfillTerminalFactsInvalidatedAt (second gate REVISE, item 3) ───────
+//
+// Automatic rollout for a PRE-EXISTING non-current row that predates this
+// column: the write path above only stamps an anchor at the MOMENT
+// terminal_facts_state transitions non-current, which never happens for a
+// legacy row that was ALREADY non-current before this migration landed.
+// Without a repair, that row would sit at invalidatedAtMs: null forever,
+// meaning it (a) never enters bounded reproof (out-of-scope check is
+// unaffected, but even once in scope, it can never admit) OR (b) if scope
+// were determined differently, would keep re-triggering the second gate's
+// null-anchor defect. backfillTerminalFactsInvalidatedAt closes this: a
+// bounded, backend-neutral, single-row repair the scheduler probe calls
+// once it observes an in-scope row with no anchor.
+
+test("SQLite: backfillTerminalFactsInvalidatedAt stamps a legacy non-current row that predates the column", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_legacy", "gmail");
+    await rebuildConnectorSummaryEvidence();
+    // Simulate a legacy row: non-current state, but NO invalidated_at (as if
+    // this row was written before the column/write-path existed).
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET terminal_facts_state = 'stale' WHERE connector_instance_id = ?")
+      .run("cin_legacy");
+    assert.equal(rawInvalidatedAt("cin_legacy"), null, "premise: genuinely legacy — non-current but unanchored");
+
+    const before = Date.now();
+    await backfillTerminalFactsInvalidatedAt("cin_legacy");
+    const after = Date.now();
+
+    const evidence = await getConnectorSummaryEvidence("cin_legacy");
+    const invalidatedAtMs = forwardEvidenceInvalidatedAtMs(evidence);
+    assert.ok(invalidatedAtMs !== null, "the legacy row now has a durable anchor");
+    assert.ok(invalidatedAtMs >= before && invalidatedAtMs <= after, "stamped at the moment of the repair call");
+    assert.equal(isManifestGenerationInvalidatedDebt(evidence), true, "still correctly in scope after backfill");
+  });
+});
+
+test("SQLite: backfillTerminalFactsInvalidatedAt is a no-op for a row already anchored (never resets an existing stamp)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_already_anchored", "gmail");
+    await rebuildConnectorSummaryEvidence();
+    bumpEvidenceGeneration("cin_already_anchored", 1);
+    seedTerminalEventAtGeneration({
+      collected: 10,
+      connectorInstanceId: "cin_already_anchored",
+      manifestGeneration: 0,
+      occurredAt: "2026-08-01T00:01:00.000Z",
+      runId: "run_old",
+    });
+    await foldConnectorSummaryStreamFacts();
+    const originalAnchor = rawInvalidatedAt("cin_already_anchored");
+    assert.ok(originalAnchor, "premise: already anchored by the ordinary write path");
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await backfillTerminalFactsInvalidatedAt("cin_already_anchored");
+
+    assert.equal(
+      rawInvalidatedAt("cin_already_anchored"),
+      originalAnchor,
+      "the guarded UPDATE's WHERE clause (terminal_facts_invalidated_at IS NULL) must never overwrite an existing anchor"
+    );
+  });
+});
+
+test("SQLite: backfillTerminalFactsInvalidatedAt is a no-op for a genuinely current row (never fabricates an anchor for in-scope=false)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_current", "gmail");
+    await rebuildConnectorSummaryEvidence();
+    // Fresh row: current, unobserved -> terminal_facts_state defaults to
+    // 'unobserved', which IS non-current (in scope) until a genuine fold
+    // pass proves otherwise. Force it explicitly to 'current' to test the
+    // out-of-scope guard specifically.
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET terminal_facts_state = 'current' WHERE connector_instance_id = ?")
+      .run("cin_current");
+
+    await backfillTerminalFactsInvalidatedAt("cin_current");
+
+    assert.equal(
+      rawInvalidatedAt("cin_current"),
+      null,
+      "a genuinely current row must never receive a fabricated anchor — the WHERE clause's terminal_facts_state != 'current' guard prevents it"
+    );
+  });
+});
+
+test("SQLite: a probe-driven backfill-then-reread sequence produces a usable anchor on the VERY NEXT read (the scheduler wiring's own pattern)", async () => {
+  await withTempDb(async () => {
+    seedInstance("cin_probe_backfill", "gmail");
+    await rebuildConnectorSummaryEvidence();
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET terminal_facts_state = 'stale' WHERE connector_instance_id = ?")
+      .run("cin_probe_backfill");
+
+    // Mirrors scheduler-manager-factory.ts's getForwardEvidenceInvalidatedAtMs:
+    // read, detect null-but-in-scope, backfill, re-read.
+    let evidence = await getConnectorSummaryEvidence("cin_probe_backfill");
+    assert.equal(isManifestGenerationInvalidatedDebt(evidence), true);
+    assert.equal(forwardEvidenceInvalidatedAtMs(evidence), null, "premise: legacy row, no anchor yet");
+    await backfillTerminalFactsInvalidatedAt("cin_probe_backfill");
+    evidence = await getConnectorSummaryEvidence("cin_probe_backfill");
+
+    assert.ok(
+      forwardEvidenceInvalidatedAtMs(evidence) !== null,
+      "the very next read after backfill returns a usable anchor -- this is the automatic rollout path for every pre-existing manifest-generation-invalidated connection, not just newly-invalidated ones"
+    );
+  });
+});
+
 // ─── Postgres (gated) — schema/write/read parity ───────────────────────────
 
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
@@ -407,6 +521,14 @@ test("real PostgreSQL: a manifest-generation transition atomically stamps termin
   try {
     const now = new Date().toISOString();
     await seedPostgresConnection(connectorInstanceId, now);
+    // Second gate REVISE (2026-08-03): the prior version of this test never
+    // called rebuildConnectorSummaryEvidence() after seeding the connection,
+    // so connector_summary_evidence had no row at all when the test read it
+    // -- the test failed with "evidence row exists" and had never actually
+    // exercised the Postgres write path it claimed to prove. Mirrors every
+    // SQLite test above (each calls rebuildConnectorSummaryEvidence()
+    // immediately after seedInstance()).
+    await rebuildConnectorSummaryEvidence();
     await bumpPostgresEvidenceGeneration(connectorInstanceId, 1);
     assert.equal(await rawPostgresInvalidatedAt(connectorInstanceId), null, "premise: no anchor before any fold pass");
 
@@ -441,6 +563,62 @@ test("real PostgreSQL: a manifest-generation transition atomically stamps termin
     );
   } finally {
     await cleanupPostgres([connectorInstanceId]);
+    await closePostgresStorage();
+  }
+});
+
+test("real PostgreSQL: backfillTerminalFactsInvalidatedAt stamps a legacy non-current row, is a no-op once anchored or when current (skipped: PDPP_TEST_POSTGRES_URL unset)", {
+  skip: !POSTGRES_URL && "PDPP_TEST_POSTGRES_URL unset",
+}, async () => {
+  if (!POSTGRES_URL) {
+    return;
+  }
+  await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+  const connectorInstanceId = "cin_pg_backfill";
+  const currentInstanceId = "cin_pg_backfill_current";
+  try {
+    const now = new Date().toISOString();
+    await seedPostgresConnection(connectorInstanceId, now);
+    await rebuildConnectorSummaryEvidence();
+    // Simulate a legacy row: non-current but predating the column/write path.
+    await postgresQuery(
+      "UPDATE connector_summary_evidence SET terminal_facts_state = 'stale' WHERE connector_instance_id = $1",
+      [connectorInstanceId]
+    );
+    assert.equal(await rawPostgresInvalidatedAt(connectorInstanceId), null, "premise: legacy, unanchored");
+
+    await backfillTerminalFactsInvalidatedAt(connectorInstanceId);
+    const stamped = await rawPostgresInvalidatedAt(connectorInstanceId);
+    assert.ok(stamped, "backfill stamps a legacy non-current row on Postgres too");
+
+    // No-op once anchored.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await backfillTerminalFactsInvalidatedAt(connectorInstanceId);
+    assert.equal(
+      await rawPostgresInvalidatedAt(connectorInstanceId),
+      stamped,
+      "backfill never overwrites an existing anchor on Postgres"
+    );
+
+    // No-op for a genuinely current row.
+    await seedPostgresConnection(currentInstanceId, now);
+    await rebuildConnectorSummaryEvidence();
+    await postgresQuery(
+      "UPDATE connector_summary_evidence SET terminal_facts_state = 'current' WHERE connector_instance_id = $1",
+      [currentInstanceId]
+    );
+    await backfillTerminalFactsInvalidatedAt(currentInstanceId);
+    assert.equal(
+      await rawPostgresInvalidatedAt(currentInstanceId),
+      null,
+      "backfill never fabricates an anchor for a genuinely current row on Postgres"
+    );
+  } finally {
+    // Both instances share PG_MANIFEST.connector_id — clean up together in
+    // one call so the shared connectors row is only deleted once every
+    // referencing instance is already gone (a partial cleanup mid-failure
+    // would otherwise violate the connector_instances FK).
+    await cleanupPostgres([connectorInstanceId, currentInstanceId]);
     await closePostgresStorage();
   }
 });

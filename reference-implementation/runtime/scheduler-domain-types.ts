@@ -268,25 +268,55 @@ export type GetForwardEvidenceDebtHandler = (
 ) => Promise<boolean> | boolean;
 
 /**
- * Returns the durable, atomically-stamped `terminal_facts_invalidated_at`
- * moment (epoch ms, or `null`) this connection's terminal facts last
- * transitioned away from `current` — `connector-summary-read-model.ts`'s
- * `shapeTerminalFacts` -> `terminal_facts.invalidated_at`
- * (`recovery-decision.ts`'s `forwardEvidenceInvalidatedAtMs`). This is a
- * SEPARATE probe from `GetForwardEvidenceDebtHandler` (which only answers
- * "is there debt", never "since when") because the bounded reproof cadence
- * (`decideForwardEvidenceReproof`, fix-uat-manifest-reproof-governor) must
- * measure elapsed time from the invalidation moment, not last-run time —
- * reusing `runtime.lastRunTime` as that anchor was reverted after a gate
- * REVISE proved it fails to bound a long-idle or fleet-restart cohort.
- * Defaults to `() => null` so a host that does not wire it falls back to
- * `decideForwardEvidenceReproof`'s unconditional-admit branch (never
- * silently waits forever on an anchor the host cannot supply).
+ * Result of `GetForwardEvidenceInvalidatedAtMsHandler`: whether this
+ * connection's debt is the manifest-generation-invalidated class this fix
+ * bounds (`inScope`, `recovery-decision.ts`'s
+ * `isManifestGenerationInvalidatedDebt` — `terminal_facts.state !==
+ * "current"`), and if so, its durable `terminal_facts_invalidated_at`
+ * anchor (epoch ms, or `null` when not yet backfilled/probe error).
+ * `inScope: false` means the caller must NEVER consult the bounded reproof
+ * cadence for this tick — a `current`-state row with stale/missing
+ * per-stream facts (`hasForwardEvidenceDebt`'s OTHER debt branch) never has
+ * an anchor stamped for it at all (state never left `current`), and is
+ * explicitly out of scope for this fix (fix-uat-manifest-reproof-governor,
+ * second gate REVISE 2026-08-03: gating reproof on the broader
+ * `hasForwardEvidenceDebt` boolean let that debt class reach
+ * `decideForwardEvidenceReproof` with a permanently-null anchor, and a
+ * shared fold-sweep stall correlated every connection in that class onto
+ * the same tick with the same null-anchor shape — the confirmed
+ * correlated-cohort thundering-herd this narrower contract closes).
+ */
+export interface ForwardEvidenceInvalidationProbeResult {
+  readonly inScope: boolean;
+  readonly invalidatedAtMs: number | null;
+}
+
+/**
+ * Returns whether this connection is in scope for bounded manifest-
+ * generation reproof, and its durable, atomically-stamped
+ * `terminal_facts_invalidated_at` moment (epoch ms, or `null`) if so —
+ * `connector-summary-read-model.ts`'s `shapeTerminalFacts` ->
+ * `terminal_facts.invalidated_at`/`state`
+ * (`recovery-decision.ts`'s `forwardEvidenceInvalidatedAtMs`/
+ * `isManifestGenerationInvalidatedDebt`). This is a SEPARATE probe from
+ * `GetForwardEvidenceDebtHandler` (which only answers "is there debt of
+ * EITHER class", never "which class, since when") because the bounded
+ * reproof cadence (`decideForwardEvidenceReproof`) must measure elapsed
+ * time from the invalidation moment, never last-run time (reusing
+ * `runtime.lastRunTime` as that anchor was reverted after a gate REVISE
+ * proved it fails to bound a long-idle or fleet-restart cohort), and must
+ * never be consulted at all for the OTHER debt class (a second gate REVISE
+ * proved doing so lets that class's permanently-null anchor collapse a
+ * shared-fold-sweep-stall cohort onto one unconditional-admit tick).
+ * Defaults to `() => ({ inScope: false, invalidatedAtMs: null })` so a host
+ * that does not wire it never enters the bounded reproof path at all — the
+ * safe, conservative default (no early reproof, ordinary cadence only),
+ * never the removed unconditional-admit shape.
  */
 export type GetForwardEvidenceInvalidatedAtMsHandler = (
   connectorId: string,
   connectorInstanceId: string
-) => Promise<number | null> | number | null;
+) => Promise<ForwardEvidenceInvalidationProbeResult> | ForwardEvidenceInvalidationProbeResult;
 
 /**
  * Returns the epoch ms of the most recent GENUINELY-SUCCESSFUL run for this
