@@ -23,6 +23,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import type { OwnerIssuedClient } from "../../lib/ref-client.ts";
+import { byCleanupPriority } from "./token-cleanup-priority.ts";
+
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
@@ -142,4 +145,57 @@ test("tokens page orders credentials for cleanup (never-used first, then least-r
   assert.match(src, CLEANUP_ORDER_RE);
   // The list must render the SORTED collection, not the raw server order.
   assert.match(src, /ordered\.map\(/);
+});
+
+function client(overrides: Partial<OwnerIssuedClient>): OwnerIssuedClient {
+  return {
+    active_token_count: 1,
+    client_id: "cli_default",
+    client_name: "Client",
+    created_at: "2031-01-01T00:00:00.000Z",
+    last_used_at: null,
+    ...overrides,
+  };
+}
+
+// Behavioral proof: a source-regex match on `[...tokens].sort(byCleanupPriority)`
+// (above) proves the sort is CALLED, but not that the comparator actually
+// orders never-used first — that claim is only provable by exercising the
+// real comparator against real inputs it must discriminate.
+test("byCleanupPriority sorts never-used credentials before any used credential, regardless of issuance order", () => {
+  const recentlyUsed = client({
+    client_id: "cli_recent",
+    created_at: "2031-01-01T00:00:00.000Z",
+    last_used_at: "2031-06-01T00:00:00.000Z",
+  });
+  const staleUsed = client({
+    client_id: "cli_stale",
+    created_at: "2031-01-02T00:00:00.000Z",
+    last_used_at: "2031-02-01T00:00:00.000Z",
+  });
+  // Issued LAST (newest created_at) but NEVER used — must still sort FIRST.
+  const neverUsed = client({
+    client_id: "cli_never",
+    created_at: "2031-12-31T00:00:00.000Z",
+    last_used_at: null,
+  });
+
+  const ordered = [recentlyUsed, staleUsed, neverUsed].sort(byCleanupPriority);
+  assert.deepEqual(
+    ordered.map((c) => c.client_id),
+    ["cli_never", "cli_stale", "cli_recent"],
+    "never-used sorts first despite being issued most recently; used credentials then order least-recently-used first"
+  );
+});
+
+test("byCleanupPriority breaks ties among multiple never-used credentials by issuance order (oldest first)", () => {
+  const neverUsedNewer = client({ client_id: "cli_never_newer", created_at: "2031-06-01T00:00:00.000Z", last_used_at: null });
+  const neverUsedOlder = client({ client_id: "cli_never_older", created_at: "2031-01-01T00:00:00.000Z", last_used_at: null });
+
+  const ordered = [neverUsedNewer, neverUsedOlder].sort(byCleanupPriority);
+  assert.deepEqual(
+    ordered.map((c) => c.client_id),
+    ["cli_never_older", "cli_never_newer"],
+    "among never-used credentials, the older issuance sorts first"
+  );
 });

@@ -22,6 +22,7 @@ import {
   revokeOwnerClientTokenAction,
   revokeOwnerTokenAction,
 } from "./actions.ts";
+import { byCleanupPriority } from "./token-cleanup-priority.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -376,24 +377,6 @@ function LastUsed({ value }: { value: string | null }) {
       last used <IcTimestamp value={value} />
     </span>
   );
-}
-
-/**
- * Cleanup order: never-used credentials first (highest risk — live access,
- * zero usage), then least-recently-used. Issuance order is the wrong default
- * for a page whose main job is revoking stale credentials.
- */
-function byCleanupPriority(a: OwnerIssuedClient, b: OwnerIssuedClient): number {
-  if (!(a.last_used_at || b.last_used_at)) {
-    return a.created_at.localeCompare(b.created_at);
-  }
-  if (!a.last_used_at) {
-    return -1;
-  }
-  if (!b.last_used_at) {
-    return 1;
-  }
-  return a.last_used_at.localeCompare(b.last_used_at);
 }
 
 function TokensListSection({
