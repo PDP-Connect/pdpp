@@ -218,8 +218,11 @@ function loadPackageManifest(name: string): ReferenceManifest {
 
 // The reference-implementation's own spotify manifest declares no restrictive
 // refresh policy, so its schedule is automation-eligible — resume (enabled:
-// true) is allowed. The packaged amazon manifest recommends manual refresh, so
-// resuming amazon is intentionally blocked (covered by a dedicated test).
+// true) is allowed. The packaged usaa manifest is background_safe:false, so
+// resuming usaa is intentionally blocked (see "owner-agent resume is blocked
+// when the connector refresh policy forbids automation" below). Amazon and
+// Reddit no longer fit the blocked case: both declare recommended_mode
+// automatic + background_safe:true + assisted_after_owner_auth:true.
 function loadReferenceManifest(name: string): ReferenceManifest {
   return JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests", `${name}.json`), "utf8"));
 }

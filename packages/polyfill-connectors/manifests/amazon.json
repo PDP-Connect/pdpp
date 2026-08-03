@@ -47,7 +47,8 @@
   "capabilities": {
     "human_interaction": ["manual_action", "otp"],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 43200,
       "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "otp_likely",
@@ -55,7 +56,7 @@
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "Amazon remains manual by default because sign-in and anti-bot checks are common, but an owner can explicitly opt into a background schedule after authenticating the connection."
+      "rationale": "Live evidence since 2026-07-01 (112 succeeded, 1 controller_restarted, 3 owner cancellations, 0 interaction events) shows Amazon runs reliably unattended on a 12h schedule once the connection is authenticated. Sign-in and anti-bot checks are still possible on a fresh connection, so recommended_mode stays automatic only in the assisted-after-owner-auth sense: activation only attaches a schedule once the first authenticated collection has completed, never before."
     },
     "public_listing": {
       "listed": true,

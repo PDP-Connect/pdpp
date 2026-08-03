@@ -235,7 +235,7 @@ test("USAA remains an owner-present managed n.eko connector in the committed run
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${USAA_CONNECTOR_ID}`));
 });
 
-test("Amazon remains manual-default and owner-present managed on n.eko, with owner opt-in background scheduling declared", async () => {
+test("Amazon remains owner-present managed on n.eko, with assisted-after-owner-auth automatic scheduling declared", async () => {
   const amazonManifest = JSON.parse(
     await readFile(`${REPO_ROOT}packages/polyfill-connectors/manifests/amazon.json`, "utf8")
   );
@@ -244,16 +244,18 @@ test("Amazon remains manual-default and owner-present managed on n.eko, with own
   assert.equal(amazonManifest.connector_id, AMAZON_CONNECTOR_ID);
   assert.equal(amazonManifest.runtime_requirements.bindings.browser.required, true);
   assert.deepEqual(amazonManifest.capabilities.human_interaction, ["manual_action", "otp"]);
-  assert.equal(amazonManifest.capabilities.refresh_policy.recommended_mode, "manual");
-  // background_safe:true only permits an explicit owner-created schedule; it
-  // does not auto-enroll (recommended_mode stays "manual"), so Amazon stays
-  // an owner-present managed n.eko connector by default.
+  // recommended_mode is "automatic" (live evidence proved it runs reliably
+  // unattended), but assisted_after_owner_auth:true means activation only
+  // attaches a schedule once the connection has an authenticated first run —
+  // login/OTP still routes through the owner-present managed n.eko surface
+  // for that first run and for any subsequent session-repair prompt.
+  assert.equal(amazonManifest.capabilities.refresh_policy.recommended_mode, "automatic");
   assert.equal(amazonManifest.capabilities.refresh_policy.background_safe, true);
   assert.equal(amazonManifest.capabilities.refresh_policy.assisted_after_owner_auth, true);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${AMAZON_CONNECTOR_ID}`));
 });
 
-test("Reddit remains manual-default and owner-present managed on n.eko, with owner opt-in background scheduling declared", async () => {
+test("Reddit remains owner-present managed on n.eko, with assisted-after-owner-auth automatic scheduling declared", async () => {
   const redditManifest = JSON.parse(
     await readFile(`${REPO_ROOT}packages/polyfill-connectors/manifests/reddit.json`, "utf8")
   );
@@ -266,7 +268,7 @@ test("Reddit remains manual-default and owner-present managed on n.eko, with own
   // manual_action) — human_interaction now declares that honestly instead
   // of under-stating it as bare "credentials".
   assert.deepEqual(redditManifest.capabilities.human_interaction, ["manual_action", "otp"]);
-  assert.equal(redditManifest.capabilities.refresh_policy.recommended_mode, "manual");
+  assert.equal(redditManifest.capabilities.refresh_policy.recommended_mode, "automatic");
   assert.equal(redditManifest.capabilities.refresh_policy.background_safe, true);
   assert.equal(redditManifest.capabilities.refresh_policy.assisted_after_owner_auth, true);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${REDDIT_CONNECTOR_ID}`));

@@ -365,6 +365,37 @@ test("assisted_after_owner_auth=true is never auto-enrolled even when env is pre
   assert.equal(controller.schedules.size, 0);
 });
 
+test("an assisted browser-backed manifest shaped like Amazon/Reddit/H-E-B is never boot-auto-enrolled, on three independent grounds", async () => {
+  // Mirrors the shipped Amazon/Reddit/H-E-B manifests after the
+  // manual->automatic assisted-after-owner-auth flip: recommended_mode
+  // automatic, background_safe true, assisted_after_owner_auth true,
+  // public_listing.status needs_human_auth, and no capabilities.auth block
+  // (they use setup.modality: static_secret, not env-based auth). Each of
+  // these three facts independently excludes boot auto-enrollment; this test
+  // guards against a future edit that fixes one and silently reopens the
+  // unauthenticated-schedule risk via the other two.
+  const controller = createFakeController();
+  const m = manifest({
+    capabilities: {
+      public_listing: { listed: true, status: "needs_human_auth" },
+      refresh_policy: {
+        assisted_after_owner_auth: true,
+        background_safe: true,
+        recommended_interval_seconds: 43_200,
+        recommended_mode: "automatic",
+      },
+    },
+    connector_id: "https://registry.pdpp.org/connectors/amazon",
+  });
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: {},
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 0);
+  assert.equal(controller.schedules.size, 0);
+});
+
 test('public_listing.status != "proven" is never auto-enrolled', async () => {
   const controller = createFakeController();
   const m = manifest();

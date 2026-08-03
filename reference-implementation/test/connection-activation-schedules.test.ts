@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { ConnectorSchedulePatch, ScheduleApi, ScheduleUpsertResult } from "../runtime/controller.ts";
 import type { ActivationScheduleController } from "../server/connection-activation-schedules.ts";
@@ -9,6 +10,12 @@ import {
   attachActivationScheduleIfAutomatic,
   resolveActivationRefreshContract,
 } from "../server/connection-activation-schedules.ts";
+
+function loadRealManifest(name: string): unknown {
+  return JSON.parse(
+    readFileSync(new URL(`../../packages/polyfill-connectors/manifests/${name}.json`, import.meta.url), "utf8")
+  );
+}
 
 function manifest(refreshPolicy: unknown) {
   return {
@@ -119,6 +126,59 @@ test("6.1: assisted automatic manifests still attach schedules; credential prese
   assert.ok(scheduleRow);
   assert.equal(scheduleRow.interval_seconds, 3600);
 });
+
+for (const { connectorKey, expectedIntervalSeconds } of [
+  { connectorKey: "amazon", expectedIntervalSeconds: 43_200 },
+  { connectorKey: "reddit", expectedIntervalSeconds: 43_200 },
+  { connectorKey: "heb", expectedIntervalSeconds: 86_400 },
+]) {
+  test(`assisted-after-auth: the real ${connectorKey} manifest attaches an automatic schedule at post-auth activation, at its evidence-backed interval`, async () => {
+    const realManifest = loadRealManifest(connectorKey);
+    const controller = createFakeController();
+    const result = await attachActivationScheduleIfAutomatic({
+      connectorId: connectorKey,
+      connectorInstanceId: `cin_${connectorKey}_1`,
+      controller,
+      manifest: realManifest,
+    });
+
+    assert.equal(result.reason, "attached");
+    assert.equal(result.attached, true);
+    assert.equal(result.contract.mode, "automatic");
+    const scheduleRow = controller.schedules.get(`cin_${connectorKey}_1`);
+    assert.ok(scheduleRow);
+    assert.equal(scheduleRow.interval_seconds, expectedIntervalSeconds);
+    assert.equal(scheduleRow.enabled, true);
+  });
+
+  test(`assisted-after-auth: activation for the real ${connectorKey} manifest never overwrites an owner-paused or owner-customized schedule row`, async () => {
+    const realManifest = loadRealManifest(connectorKey);
+    const controller = createFakeController([
+      {
+        connector_id: connectorKey,
+        connector_instance_id: `cin_${connectorKey}_owner_paused`,
+        enabled: false,
+        interval_seconds: 999_999,
+        jitter_seconds: 42,
+      },
+    ]);
+    const result = await attachActivationScheduleIfAutomatic({
+      connectorId: connectorKey,
+      connectorInstanceId: `cin_${connectorKey}_owner_paused`,
+      controller,
+      manifest: realManifest,
+    });
+
+    assert.equal(result.reason, "already_attached");
+    assert.equal(result.attached, false);
+    assert.equal(controller.upserts.length, 0);
+    const scheduleRow = controller.schedules.get(`cin_${connectorKey}_owner_paused`);
+    assert.ok(scheduleRow);
+    assert.equal(scheduleRow.enabled, false, "owner pause must survive re-activation");
+    assert.equal(scheduleRow.interval_seconds, 999_999, "owner custom interval must survive re-activation");
+    assert.equal(scheduleRow.jitter_seconds, 42, "owner custom jitter must survive re-activation");
+  });
+}
 
 test("6.1: activation preserves an existing schedule row instead of overwriting operator intent", async () => {
   const controller = createFakeController([

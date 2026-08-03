@@ -67,10 +67,12 @@ function succeededRun(): ConnectorRunSummary {
 }
 
 const MANUAL_BACKGROUND_UNSAFE_CONNECTORS = ["chase", "usaa"];
-// Owner-opt-in manual-default connectors: manual by default, but
-// background_safe:true + assisted_after_owner_auth:true, so they behave
-// like Amazon (never auto-enrolled, but explicitly owner-schedulable).
-const OWNER_OPT_IN_CONNECTORS = ["amazon", "reddit"];
+// Assisted-automatic browser-backed connectors: live evidence proved they run
+// reliably unattended, so recommended_mode is "automatic" with
+// assisted_after_owner_auth:true — activation only attaches the schedule once
+// the connection has completed its first authenticated run (never before).
+// They are NOT manual-refresh-only; they behave like ChatGPT (6.4 below).
+const ASSISTED_AUTOMATIC_CONNECTORS = ["amazon", "reddit", "heb"];
 
 test("6.3: the manual/background-unsafe committed manifests stay manual-only", () => {
   for (const connector of MANUAL_BACKGROUND_UNSAFE_CONNECTORS) {
@@ -81,11 +83,11 @@ test("6.3: the manual/background-unsafe committed manifests stay manual-only", (
   }
 });
 
-test("6.3: Amazon and Reddit are manual-by-default but background-safe and owner-opt-in after auth", () => {
-  for (const connector of OWNER_OPT_IN_CONNECTORS) {
+test("6.3: Amazon, Reddit, and H-E-B are automatic + background-safe + assisted-after-owner-auth", () => {
+  for (const connector of ASSISTED_AUTOMATIC_CONNECTORS) {
     const policy = readRefreshPolicy(connector);
     assert.ok(policy, `${connector} manifest has a refresh_policy`);
-    assert.equal(policy.recommended_mode, "manual", `${connector} recommended_mode is manual`);
+    assert.equal(policy.recommended_mode, "automatic", `${connector} recommended_mode is automatic`);
     assert.equal(policy.background_safe, true, `${connector} background_safe is true`);
     assert.equal(policy.assisted_after_owner_auth, true, `${connector} assisted_after_owner_auth is true`);
   }
@@ -95,10 +97,8 @@ test("6.3: the projected refresh evidence makes isManualRefreshOnly true for eac
   // Reproduce buildRefreshEvidence's projection from the raw manifest policy and
   // assert the predicate the projection uses returns true. (buildRefreshEvidence is
   // not exported; this mirrors its exact field mapping and the projection proves the
-  // full path below.) Owner-opt-in connectors (Amazon, Reddit) stay manual-refresh-only
-  // too: background_safe:true only permits an explicit owner schedule, it does not
-  // change the manifest's own recommended_mode.
-  for (const connector of [...MANUAL_BACKGROUND_UNSAFE_CONNECTORS, ...OWNER_OPT_IN_CONNECTORS]) {
+  // full path below.)
+  for (const connector of MANUAL_BACKGROUND_UNSAFE_CONNECTORS) {
     const policy = readRefreshPolicy(connector);
     const refresh: ConnectionRefreshEvidence = {
       backgroundSafe: policy.background_safe ?? null,
@@ -106,6 +106,24 @@ test("6.3: the projected refresh evidence makes isManualRefreshOnly true for eac
       recommendedMode: policy.recommended_mode ?? null,
     };
     assert.equal(isManualRefreshOnly(refresh), true, `${connector} is manual-refresh-only`);
+  }
+});
+
+test("6.3: assisted-automatic connectors (Amazon, Reddit, H-E-B) are NOT manual-refresh-only and ARE assisted-refresh", () => {
+  // recommended_mode:"automatic" + background_safe:true takes these out of
+  // isManualRefreshOnly entirely (mirrors ChatGPT, 6.4 below) — the
+  // assisted_after_owner_auth flag governs WHEN activation attaches the
+  // schedule (post-auth only), not whether the projection treats it as
+  // schedulable.
+  for (const connector of ASSISTED_AUTOMATIC_CONNECTORS) {
+    const policy = readRefreshPolicy(connector);
+    const refresh: ConnectionRefreshEvidence = {
+      backgroundSafe: policy.background_safe ?? null,
+      interactionPosture: policy.interaction_posture ?? null,
+      recommendedMode: policy.recommended_mode ?? null,
+    };
+    assert.equal(isManualRefreshOnly(refresh), false, `${connector} is not manual-refresh-only`);
+    assert.equal(isAssistedRefresh(refresh), true, `${connector} is assisted-refresh`);
   }
 });
 
@@ -131,46 +149,31 @@ test("6.3: a stale manual/background-unsafe account projects owner_refresh_due w
   }
 });
 
-test("6.3: a stale owner-opt-in connection with an enabled owner schedule is scheduled, not stale_manual_refresh", () => {
-  for (const connector of OWNER_OPT_IN_CONNECTORS) {
+test("6.3: a stale assisted-automatic connection projects stale_assisted_refresh and owner_refresh_due whether or not a schedule row exists", () => {
+  // Amazon/Reddit/H-E-B are assisted-refresh (recommended_mode:automatic,
+  // background_safe:true, otp_likely posture), not manual-refresh-only, so
+  // isAssistedRefresh drives this path regardless of the schedule param —
+  // unlike the old manual owner-opt-in path, presence/absence of an explicit
+  // schedule row does not change the projection here.
+  for (const connector of ASSISTED_AUTOMATIC_CONNECTORS) {
     const run = succeededRun();
     const policy = readRefreshPolicy(connector);
-    const snap = projectConnectorSummaryConnectionHealth({
-      freshness: STALE_FRESHNESS,
-      lastRun: run,
-      lastSuccessfulRun: run,
-      nowIso: NOW,
-      outbox: { axis: "idle" },
-      refreshPolicy: policy,
-      schedule: { enabled: true },
-    });
-    assert.equal(snap.state, "degraded", `${connector} degrades once scheduled`);
-    assert.equal(snap.reason_code, null, `${connector} reason_code is null`);
-    assert.equal(snap.axes.freshness, "stale");
-    assert.equal(snap.badges.stale, true);
-    assert.equal(snap.forward_disposition, "complete", `${connector} disposition is complete`);
-    assert.notEqual(snap.forward_disposition, "owner_refresh_due");
-  }
-});
-
-test("6.3: a stale owner-opt-in connection with no enabled schedule stays manual and owner_refresh_due", () => {
-  for (const connector of OWNER_OPT_IN_CONNECTORS) {
-    const run = succeededRun();
-    const policy = readRefreshPolicy(connector);
-    const snap = projectConnectorSummaryConnectionHealth({
-      freshness: STALE_FRESHNESS,
-      lastRun: run,
-      lastSuccessfulRun: run,
-      nowIso: NOW,
-      outbox: { axis: "idle" },
-      refreshPolicy: policy,
-      schedule: null,
-    });
-    assert.equal(snap.state, "idle", `${connector} stays idle unscheduled`);
-    assert.equal(snap.reason_code, "stale_manual_refresh");
-    assert.equal(snap.axes.freshness, "stale");
-    assert.equal(snap.badges.stale, true);
-    assert.equal(snap.forward_disposition, "owner_refresh_due");
+    for (const schedule of [{ enabled: true }, null] as const) {
+      const snap = projectConnectorSummaryConnectionHealth({
+        freshness: STALE_FRESHNESS,
+        lastRun: run,
+        lastSuccessfulRun: run,
+        nowIso: NOW,
+        outbox: { axis: "idle" },
+        refreshPolicy: policy,
+        schedule,
+      });
+      assert.equal(snap.state, "idle", `${connector} projects idle advisory (schedule=${JSON.stringify(schedule)})`);
+      assert.equal(snap.reason_code, "stale_assisted_refresh", `${connector} reason is stale_assisted_refresh`);
+      assert.equal(snap.axes.freshness, "stale");
+      assert.equal(snap.badges.stale, true);
+      assert.equal(snap.forward_disposition, "owner_refresh_due", `${connector} disposition is owner_refresh_due`);
+    }
   }
 });
 

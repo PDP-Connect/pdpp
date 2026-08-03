@@ -41,6 +41,7 @@ interface ManifestAuthCapability {
 }
 
 interface ManifestRefreshPolicy {
+  assisted_after_owner_auth?: boolean;
   background_safe?: boolean;
   recommended_mode?: string;
 }
@@ -181,9 +182,10 @@ test(
 test(
   "enrollment is a no-op for connectors whose manifest is manual or background-unsafe",
   withTmpDb(async () => {
-    // Reddit ships recommended_mode=manual (background_safe=true only
-    // permits an explicit owner-created schedule, not boot auto-enroll),
-    // so its row must not appear even if a putative env existed.
+    // Reddit ships recommended_mode=automatic + assisted_after_owner_auth=true
+    // (background_safe=true only permits activation-triggered or explicit
+    // owner-created scheduling, not boot auto-enroll), so its row must not
+    // appear even if a putative env existed.
     const reddit = readManifest("reddit");
     await registerConnector(reddit);
     const controller = createController({});
@@ -202,13 +204,18 @@ test(
 test(
   "reddit manifest still does not auto-enroll but accepts an explicit owner schedule",
   withTmpDb(async () => {
-    // Reddit ships background_safe=true (session persists in the profile
-    // after first login), so it must stay out of boot auto-enrollment
-    // (recommended_mode=manual) while still accepting an explicit
-    // owner-created schedule via the same opt-in path proven for Amazon.
+    // Reddit ships recommended_mode=automatic + background_safe=true +
+    // assisted_after_owner_auth=true (session persists in the profile after
+    // first login, and live evidence proves it runs reliably unattended), so
+    // activation attaches a schedule once the connection is authenticated
+    // (see connection-activation-schedules.test.ts). It must still stay out
+    // of *boot* auto-enrollment — assisted_after_owner_auth=true and
+    // public_listing.status=needs_human_auth each independently exclude it,
+    // and it also declares no capabilities.auth.required block to gate on.
     const reddit = readManifest("reddit");
-    assert.equal(reddit.capabilities?.refresh_policy?.recommended_mode, "manual");
+    assert.equal(reddit.capabilities?.refresh_policy?.recommended_mode, "automatic");
     assert.equal(reddit.capabilities?.refresh_policy?.background_safe, true);
+    assert.equal(reddit.capabilities?.refresh_policy?.assisted_after_owner_auth, true);
     await registerConnector(reddit);
     const controller = createController({});
     const summary = await autoEnrollEligibleSchedules({
@@ -216,7 +223,7 @@ test(
       env: { REDDIT_PASSWORD: "p", REDDIT_USERNAME: "u" },
       listConnectors: buildListConnectors(),
     });
-    assert.equal(summary.enrolled, 0, "manual-default connectors never auto-enroll on boot");
+    assert.equal(summary.enrolled, 0, "assisted-after-owner-auth connectors never auto-enroll on boot");
     assert.equal(await controller.getSchedule(reddit.connector_id), null);
 
     const result = await controller.upsertSchedule(reddit.connector_id, {

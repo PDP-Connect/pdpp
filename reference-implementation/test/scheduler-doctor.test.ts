@@ -220,6 +220,15 @@ test("scheduler-doctor surfaces NOSCHED for auto-eligible registered connectors 
   // that simply have no schedule row yet (e.g., notion/oura/strava in
   // SLVP Docker before the operator enrolls them). MANUAL flags rows
   // that are correctly absent because the manifest gates them.
+  //
+  // The two manual-gated fixtures below use synthetic ids ("fixture-manual-a"/
+  // "fixture-manual-b"), not real shipped connector ids: no first-party
+  // manifest currently declares background_safe:false + recommended_mode:
+  // manual together in the way this fixture does (Amazon/Reddit/H-E-B are
+  // background_safe:true + recommended_mode:automatic + assisted_after_owner_
+  // auth:true; USAA/Chase are background_safe:false + recommended_mode:
+  // manual, without a "reddit"/"amazon"-named identity). Keeping the ids
+  // generic here avoids implying either real connector is gated this way.
   const schedules = { data: [], object: "list" };
   const connectors = {
     data: [
@@ -231,14 +240,14 @@ test("scheduler-doctor surfaces NOSCHED for auto-eligible registered connectors 
         },
       },
       {
-        connector_id: "amazon",
+        connector_id: "fixture-manual-a",
         refresh_policy: {
           background_safe: false,
           recommended_mode: "manual",
         },
       },
       {
-        connector_id: "reddit",
+        connector_id: "fixture-manual-b",
         refresh_policy: {
           background_safe: false,
           recommended_mode: "manual",
@@ -254,16 +263,16 @@ test("scheduler-doctor surfaces NOSCHED for auto-eligible registered connectors 
     const summary = parseSummary(stdout);
     assert.equal(summary.total, 0, "no persisted schedule rows");
     assert.equal(summary.eligible_unscheduled, 1, "one auto-eligible connector lacks a schedule row");
-    assert.equal(summary.manual_unscheduled, 2, "amazon and reddit are correctly unscheduled");
+    assert.equal(summary.manual_unscheduled, 2, "both manual fixtures are correctly unscheduled");
 
     const byId = new Map(summary.schedules.map((s) => [s.connector_id, s]));
     assert.equal(getEntry(byId, "notion").kind, "no_schedule_eligible");
     assert.equal(getEntry(byId, "notion").would_fire, false, "no row means no automatic fire");
     assert.equal(getEntry(byId, "notion").ineligibility_reason, null);
-    assert.equal(getEntry(byId, "amazon").kind, "no_schedule_manual");
+    assert.equal(getEntry(byId, "fixture-manual-a").kind, "no_schedule_manual");
     // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-    assert.match(getEntry(byId, "amazon").ineligibility_reason ?? "", /background-safe|manual|paused/);
-    assert.equal(getEntry(byId, "reddit").kind, "no_schedule_manual");
+    assert.match(getEntry(byId, "fixture-manual-a").ineligibility_reason ?? "", /background-safe|manual|paused/);
+    assert.equal(getEntry(byId, "fixture-manual-b").kind, "no_schedule_manual");
   } finally {
     server.close();
   }
