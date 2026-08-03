@@ -105,6 +105,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     overviewLoadIssues: [],
     sourceIssues: [],
     ...over,
+    fleetHealth: over.fleetHealth ?? null,
   };
 }
 

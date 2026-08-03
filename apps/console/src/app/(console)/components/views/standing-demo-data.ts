@@ -210,6 +210,7 @@ export function buildDemoInputs(scenario: DemoScenario, hrefs: StandingHrefs): S
     attentionConnections: [],
     overviewLoadIssues: [],
     sourceIssues: [],
+    fleetHealth: null,
   };
   if (scenario === "decide") {
     return { ...base, pendingApprovals: PENDING };
