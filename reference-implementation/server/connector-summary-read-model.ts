@@ -2211,7 +2211,28 @@ async function drainTerminalEventBatches({
 
 export async function foldConnectorSummaryStreamFacts(
   connectorInstanceIds: readonly string[] | null = null,
-  options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
+  options: {
+    readonly deadline?: number;
+    readonly maxDurationMs?: number;
+    readonly maxEvents?: number;
+    /**
+     * Widens ONLY the `maxSeq` high-water-mark read to a broader scope
+     * than the fold's own event drain/write/CAS scope (`connectorInstanceIds`,
+     * unchanged). Additive, optional, defaults to `connectorInstanceIds`
+     * (byte-for-byte the prior behavior for every existing caller that
+     * omits it). Exists for a caller that scopes a fold call down to ONE
+     * participant for isolation/cost reasons (`foldParticipantsFairly`)
+     * but still needs that participant's convergence judged against the
+     * SAME shared high-water mark a wider-scoped sibling call would see —
+     * a participant with zero attributable events of its OWN would
+     * otherwise read a `null` maxSeq (its own scope has no terminal
+     * events at all) and wrongly bootstrap to checkpoint 0 instead of
+     * correctly proving "no coverage debt, current up to the shared
+     * maxSeq" the way it would under a single call scoped to the whole
+     * page.
+     */
+    readonly maxSeqScope?: readonly string[] | null;
+  } = {}
 ): Promise<FoldStreamFactsResult> {
   let result: FoldStreamFactsResult | null = null;
   for (let attempt = 0; attempt < STREAM_FACTS_CAS_REPLAY_ATTEMPTS; attempt += 1) {
@@ -2230,7 +2251,12 @@ export async function foldConnectorSummaryStreamFacts(
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This protocol transition owns ordered state invariants that must remain local.
 async function foldConnectorSummaryStreamFactsOnce(
   connectorInstanceIds: readonly string[] | null,
-  options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number }
+  options: {
+    readonly deadline?: number;
+    readonly maxDurationMs?: number;
+    readonly maxEvents?: number;
+    readonly maxSeqScope?: readonly string[] | null;
+  }
 ): Promise<FoldStreamFactsResult> {
   const store = createConnectorSummaryStore();
   const foldStore = createStreamFactsFoldStore();
@@ -2248,7 +2274,9 @@ async function foldConnectorSummaryStreamFactsOnce(
       resumeAfterSeq: null,
     };
   }
-  const maxSeq = await foldStore.readMaxTerminalEventSeq(connectorInstanceIds);
+  const maxSeq = await foldStore.readMaxTerminalEventSeq(
+    options.maxSeqScope === undefined ? connectorInstanceIds : options.maxSeqScope
+  );
   const participants = rows.filter((row) => rowNeedsFoldParticipation(row, maxSeq));
   if (participants.length === 0) {
     return {
@@ -2529,7 +2557,12 @@ async function writeParticipantStreamFacts(
  */
 async function foldStreamFactsBestEffort(
   connectorInstanceIds: readonly string[] | null = null,
-  options: { readonly deadline?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
+  options: {
+    readonly deadline?: number;
+    readonly maxDurationMs?: number;
+    readonly maxEvents?: number;
+    readonly maxSeqScope?: readonly string[] | null;
+  } = {}
 ): Promise<{
   eventsRead: number;
   ok: boolean;
@@ -2624,6 +2657,172 @@ function emptyFoldOutcome(): FoldOutcome {
     ok: true,
     participants: 0,
     resumeAfterSeq: null,
+  };
+}
+
+/**
+ * Per-connection progress isolation (2026-08-03 fairness fix — live symptom
+ * on `5a8049afc`'s fleet stream-health audit): a page's fold used to run
+ * ONE `foldStreamFactsBestEffort(pageIds, {...})` call sharing the whole
+ * page's `connectorInstanceIds` scope. Inside that single call,
+ * `foldConnectorSummaryStreamFacts`'s own `sinceSeq = Math.min(every
+ * participant's checkpoint)` floors the shared drain's start position at
+ * whichever participant is furthest behind — observed live: one connection
+ * whose checkpoint sat ~97,000 events behind the fleet's terminal high-
+ * water mark (having last folded a week earlier) floored the drain for
+ * every OTHER co-scoped participant too, including a near-current
+ * participant whose own checkpoint was only a few hundred events behind.
+ * Because the page's write phase shares the same deadline as the read
+ * phase, the straggler's huge gap alone could exhaust the whole page's
+ * bounded budget before ANY participant's checkpoint write landed — so a
+ * near-current participant's own tiny, genuinely convergeable gap was
+ * never drained on its own, every single sweep tick, forever.
+ *
+ * This function composes the EXISTING, unmodified, already-tested
+ * SINGLETON-scoped `foldStreamFactsBestEffort([oneId], {...})` call —
+ * proven safe and correctly isolated by
+ * `connector-summary-fold-fleet-scope-contamination.test.ts` and
+ * `connector-summary-evidence-scoped-fold-unrelated-terminal-history.test.ts`
+ * — once per participant in `connectorInstanceIds`, instead of widening
+ * the fold engine's own internals. Nothing about `foldTerminalEventFacts`,
+ * `seedFoldState`, `drainTerminalEventBatches`, or the CAS write path
+ * changes: each call is byte-for-byte the same call a single-connection
+ * scoped caller already makes today.
+ *
+ * Fairness has two halves:
+ *   - ISOLATION: each participant's own scoped call gets its own
+ *     independent `sinceSeq`/drain — a straggler sharing the page can no
+ *     longer floor a near-current participant's start position, because
+ *     they are never in the same `foldConnectorSummaryStreamFacts` call.
+ *   - EVENTUAL SERVICE: `startIndex` rotates which participant is served
+ *     FIRST (and therefore gets first claim on the remaining per-page
+ *     budget) using `phaseTurnGeneration` — the SAME durable, fenced,
+ *     monotonic lease generation `runBoundedObservationPhases` already
+ *     uses to alternate fold/repair phase order (`createResumableConnectorMaintenanceSweep`'s
+ *     lease, connector-maintenance-sweep.ts). No new durable state: this
+ *     reuses the existing round-robin/resume cursor the maintenance sweep
+ *     already carries across ticks, so a laggard that lands late in one
+ *     tick's rotation lands earlier in a later tick's, guaranteeing it
+ *     eventually gets first claim on the budget rather than perpetually
+ *     losing to a persistently near-current page-mate.
+ *
+ * Budget is spent as a shrinking pool across participants (each call's
+ * own `maxEvents`/`deadline` narrows to what's left after the prior
+ * participant's call), so the page's TOTAL bounded-work contract
+ * (`maxEvents`/`deadline` as an absolute ceiling for the whole page, not a
+ * per-participant allowance re-granted to each one) is unchanged from the
+ * pre-fix single-call shape.
+ */
+/** Rotates `ids` so element `startIndexSeed % ids.length` (wrapped positive) comes first — the durable round-robin fairness key. */
+export function rotateForFairTurn(ids: readonly string[], startIndexSeed: number): string[] {
+  const startIndex = ((startIndexSeed % ids.length) + ids.length) % ids.length;
+  return [...ids.slice(startIndex), ...ids.slice(0, startIndex)];
+}
+
+/** Mutable accumulator `foldParticipantsFairly` folds each participant's own `FoldOutcome` into. */
+interface FairFoldAccumulator {
+  eventsRead: number;
+  failedRows: Map<string, Row>;
+  incomplete: boolean;
+  minimumCheckpointAfter: number | null;
+  minimumCheckpointBefore: number | null;
+  ok: boolean;
+  participants: number;
+  remainingEvents: number;
+  resumeAfterSeq: number | null;
+}
+
+function mergeFoldOutcomeInto(accumulator: FairFoldAccumulator, outcome: FoldOutcome): void {
+  if (outcome.eventsRead > 0) {
+    accumulator.remainingEvents -= outcome.eventsRead;
+  }
+  accumulator.eventsRead += outcome.eventsRead;
+  accumulator.participants += outcome.participants;
+  accumulator.ok &&= outcome.ok;
+  accumulator.incomplete ||= outcome.incomplete;
+  for (const [id, row] of outcome.failedRows) {
+    accumulator.failedRows.set(id, row);
+  }
+  accumulator.minimumCheckpointBefore = minOrReplace(
+    accumulator.minimumCheckpointBefore,
+    outcome.minimumCheckpointBefore
+  );
+  accumulator.minimumCheckpointAfter = minOrReplace(accumulator.minimumCheckpointAfter, outcome.minimumCheckpointAfter);
+  accumulator.resumeAfterSeq = minOrReplace(accumulator.resumeAfterSeq, outcome.resumeAfterSeq);
+}
+
+/** `null` propagates as "no value yet"; two non-null values take the smaller (the fold engine's own "worst case any participant landed at" convention). */
+function minOrReplace(current: number | null, incoming: number | null): number | null {
+  if (incoming === null) {
+    return current;
+  }
+  return current === null ? incoming : Math.min(current, incoming);
+}
+
+/**
+ * Runs each participant's own scoped fold call in fair rotation order,
+ * stopping (not skipping ahead with a zero budget) once the page's shared
+ * deadline or event budget is spent. See the block comment above for the
+ * fairness rationale; this function is deliberately a thin loop over the
+ * EXISTING `foldStreamFactsBestEffort` singleton-scoped call — no fold
+ * engine internals are touched.
+ */
+export async function foldParticipantsFairly(
+  connectorInstanceIds: readonly string[],
+  deadline: number,
+  maxEvents: number,
+  phaseTurnGeneration: number
+): Promise<FoldOutcome> {
+  if (connectorInstanceIds.length === 0) {
+    return emptyFoldOutcome();
+  }
+  const rotated = rotateForFairTurn(connectorInstanceIds, phaseTurnGeneration);
+  const accumulator: FairFoldAccumulator = {
+    eventsRead: 0,
+    failedRows: new Map(),
+    incomplete: false,
+    minimumCheckpointAfter: null,
+    minimumCheckpointBefore: null,
+    ok: true,
+    participants: 0,
+    remainingEvents: maxEvents,
+    resumeAfterSeq: null,
+  };
+  for (const instanceId of rotated) {
+    if (Date.now() >= deadline || accumulator.remainingEvents <= 0) {
+      // The page's own budget is already spent: every remaining
+      // participant is skipped, not called with a zero/negative budget —
+      // it keeps its prior checkpoint and durably re-participates next
+      // sweep tick via the existing checkpoint-lag predicate
+      // (`rowNeedsFoldParticipation`, unchanged), identical to the pre-fix
+      // "budget spent before this participant's turn" outcome.
+      accumulator.incomplete = true;
+      break;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Each participant's own scoped call must complete (or hit the shared deadline) before the next participant's remaining budget is known — that ordering IS the fairness mechanism.
+    const outcome = await foldStreamFactsBestEffort([instanceId], {
+      deadline,
+      maxEvents: accumulator.remainingEvents,
+      // The event DRAIN/write/CAS stay scoped to this ONE participant
+      // (isolation), but `maxSeq` is judged against the WHOLE page — a
+      // participant with zero attributable events of its own still
+      // correctly converges to "no coverage debt, current up to the
+      // shared high-water mark" instead of wrongly reading a null/absent
+      // maxSeq from its own empty scope. See `maxSeqScope`'s doc on
+      // `foldConnectorSummaryStreamFacts`.
+      maxSeqScope: connectorInstanceIds,
+    });
+    mergeFoldOutcomeInto(accumulator, outcome);
+  }
+  return {
+    eventsRead: accumulator.eventsRead,
+    failedRows: accumulator.failedRows,
+    incomplete: accumulator.incomplete,
+    minimumCheckpointAfter: accumulator.minimumCheckpointAfter,
+    minimumCheckpointBefore: accumulator.minimumCheckpointBefore,
+    ok: accumulator.ok,
+    participants: accumulator.participants,
+    resumeAfterSeq: accumulator.resumeAfterSeq,
   };
 }
 
@@ -2737,10 +2936,25 @@ async function runBoundedObservationPhases(
       return Promise.resolve(null);
     }
     noWorkStartedYet = false;
-    return foldStreamFactsBestEffort(connectorInstanceIds, {
+    // `connectorInstanceIds` is always a concrete, non-null page id list on
+    // every real call into this bounded branch (`runBoundedSummaryEvidenceSweep`
+    // always resolves a page before calling here) — `foldParticipantsFairly`
+    // composes the existing singleton-scoped fold per participant instead
+    // of one call sharing the whole page's scope. The `null` (unscoped)
+    // case cannot occur here in practice, but falls back to the
+    // pre-existing single whole-scope call for totality.
+    if (connectorInstanceIds === null) {
+      return foldStreamFactsBestEffort(connectorInstanceIds, {
+        deadline,
+        maxEvents: options.maxEvents ?? BOUNDED_FOLD_MAX_EVENTS,
+      });
+    }
+    return foldParticipantsFairly(
+      connectorInstanceIds,
       deadline,
-      maxEvents: options.maxEvents ?? BOUNDED_FOLD_MAX_EVENTS,
-    });
+      options.maxEvents ?? BOUNDED_FOLD_MAX_EVENTS,
+      options.phaseTurnGeneration ?? 0
+    );
   };
   // Discovered once per page and shared by BOTH repair phases below (2026-08-01
   // fairness fix): `missing` and every `GENERIC_REPAIR_CANDIDATE_REASONS`
