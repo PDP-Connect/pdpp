@@ -9,7 +9,6 @@
  * without inventing a second token minting surface.
  */
 import { describeError } from "./describe-error.ts";
-import { DEFAULT_DCR_INITIAL_ACCESS_TOKEN } from "./operator-grant-request.ts";
 import {
   getAsInternalUrl,
   getReferencePublicOrigin,
@@ -113,9 +112,18 @@ export function setOwnerBootstrapFlowError(flowId: string, message: string): Own
 /**
  * Issue an owner self-export bearer by:
  *   1. Registering a fresh OAuth client (RFC 7591 DCR) with the operator-
- *      supplied name. The AS stamps `metadata.issuer_subject_id` from the
- *      forwarded owner-session cookie so the client is scoped to this
- *      operator and shows up in `/_ref/clients?owner=true`.
+ *      supplied name. `requireDashboardAccess` has already verified the
+ *      caller's owner session before this runs, and `fetchAs` forwards that
+ *      same session cookie to the AS — so registration authenticates via the
+ *      AS's owner-session DCR mode (see `executeAsDcrRegister`), which
+ *      stamps `metadata.issuer_subject_id` from the session and needs no
+ *      initial-access-token bearer. This deliberately does NOT send the
+ *      reference-local initial-access-token default: that default is public,
+ *      always-known-plaintext convenience for a forkable local dev stack, and
+ *      is stripped by public-origin filtering
+ *      (`resolveDynamicClientRegistrationInitialAccessTokensForRequest`) on
+ *      any non-local/private request origin — so a bearer-based dashboard
+ *      form action would fail exactly where owner auth matters most.
  *   2. Running the canonical RFC 8628 device flow against the freshly-
  *      registered client_id (not the shared bootstrap client).
  *
@@ -140,7 +148,6 @@ export async function startOwnerBootstrapFlow(
       token_endpoint_auth_method: "none",
     }),
     headers: {
-      Authorization: `Bearer ${DEFAULT_DCR_INITIAL_ACCESS_TOKEN}`,
       "Content-Type": "application/json",
     },
     method: "POST",
