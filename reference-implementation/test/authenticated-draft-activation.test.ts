@@ -22,6 +22,7 @@ import test from "node:test";
 import { emitSpineEvent, setCurrentBootEpoch } from "../lib/spine.ts";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
 import type { RuntimeRunConnectorOptions, RuntimeRunConnectorResult } from "../runtime/index.ts";
+import { activateDraftAndAttachScheduleAtomically } from "../server/authenticated-draft-activation.ts";
 import { registerConnector } from "../server/auth.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
@@ -138,10 +139,8 @@ function makeController(
   runConnectorImpl: (opts: RuntimeRunConnectorOptions) => Promise<RuntimeRunConnectorResult>
 ) {
   return createController({
-    activateDraftConnectionOnAuthenticatedSuccess: ({ connectorInstanceId }) => {
-      createSqliteConnectorInstanceStore().activateDraft(connectorInstanceId);
-      return Promise.resolve();
-    },
+    activateDraftConnectionOnAuthenticatedSuccess: ({ connectorId, connectorInstanceId, manifest }) =>
+      activateDraftAndAttachScheduleAtomically({ connectorId, connectorInstanceId, manifest }),
     admitRunConnection: ({ connectorId, connectorInstanceId, ownerSubjectId }) =>
       Promise.resolve({
         connectorId,

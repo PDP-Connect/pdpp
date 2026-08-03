@@ -43,10 +43,7 @@ import {
   getConnectorManifest,
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.ts";
-import {
-  hasAuthenticatedRequiredStreamEvidence,
-  resolveActivationRefreshContract,
-} from "../server/connection-activation-schedules.ts";
+import { hasAuthenticatedRequiredStreamEvidence } from "../server/connection-activation-schedules.ts";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.ts";
 import {
   getConnectorSummaryEvidence,
@@ -471,16 +468,22 @@ export interface ControllerOptions {
     ownerSubjectId: string;
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   /**
-   * Flips a draft static-secret connection to `active` in the connector-
-   * instance store, called ONLY after the controller itself has confirmed
-   * (via `hasAuthenticatedRequiredStreamEvidence`) that this run's own
-   * terminal `collection_facts` prove authenticated required-stream
+   * Atomically flips a draft static-secret connection to `active` AND
+   * attaches its schedule (when the manifest resolves to automatic) in ONE
+   * durable transaction, called ONLY after the controller itself has
+   * confirmed (via `hasAuthenticatedRequiredStreamEvidence`) that this run's
+   * own terminal `collection_facts` prove authenticated required-stream
    * engagement — never from terminal `status: "succeeded"` alone. The
    * controller owns the timing (same rationale as
    * `markStaticSecretCredentialRejected`: it alone holds both facts —
-   * `usedStaticSecret` and the run's real terminal evidence); this hook
-   * owns only the store write it cannot perform itself. A no-op DB write on
-   * an already-active or missing row is expected and must not throw.
+   * `usedStaticSecret` and the run's real terminal evidence); this hook owns
+   * the atomic store write the controller cannot perform itself (it does not
+   * share a transaction/connection with the connector-instance and schedule
+   * stores). A failure partway through MUST roll back both writes — a
+   * connection must never observably become active with no schedule row.
+   * Idempotent: a no-op on an already-active row or an already-existing
+   * schedule row (owner pauses/custom intervals on an existing row are read,
+   * never overwritten) is expected and must not throw.
    */
   activateDraftConnectionOnAuthenticatedSuccess?: ActivateDraftConnectionOnAuthenticatedSuccess;
   asPublicUrl?: string;
@@ -689,12 +692,18 @@ export type MarkStaticSecretCredentialRejected = (args: {
   readonly runId: string;
 }) => Promise<void> | void;
 
+export interface ActivateDraftConnectionOnAuthenticatedSuccessResult {
+  readonly activated: boolean;
+  readonly scheduleAttached: boolean;
+}
+
 export type ActivateDraftConnectionOnAuthenticatedSuccess = (args: {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  readonly manifest: unknown;
   readonly ownerSubjectId: string;
   readonly runId: string;
-}) => Promise<void> | void;
+}) => Promise<ActivateDraftConnectionOnAuthenticatedSuccessResult>;
 
 export interface Controller {
   autoResumeSatisfiedActions: (input: AutoResumeSatisfiedActionsInput) => Promise<AutoResumeSatisfiedActionsResult>;
@@ -4045,23 +4054,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
             const manifest = await getConnectorManifest(connectorId);
             const terminalEvent = await getRunTerminalEvent(runId);
             if (hasAuthenticatedRequiredStreamEvidence(terminalEvent?.data, manifest)) {
+              // Atomic: the hook flips draft->active AND attaches the
+              // schedule in one durable transaction. It must never leave
+              // this connection active with no schedule row — see
+              // server/authenticated-draft-activation.ts.
               await opts.activateDraftConnectionOnAuthenticatedSuccess({
                 connectorId,
                 connectorInstanceId,
+                manifest,
                 ownerSubjectId: runOwnerSubjectId,
                 runId,
               });
-              const contract = resolveActivationRefreshContract(manifest);
-              if (contract.mode === "automatic") {
-                const existingSchedule = await getSchedule(connectorId, { connectorInstanceId });
-                if (!existingSchedule) {
-                  await upsertSchedule(
-                    connectorId,
-                    { enabled: true, interval_seconds: contract.intervalSeconds, jitter_seconds: 0 },
-                    { connectorInstanceId }
-                  );
-                }
-              }
             }
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err);

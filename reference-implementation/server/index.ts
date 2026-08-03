@@ -121,6 +121,7 @@ import {
   readCollectorProtocolHeader,
   SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
 } from "./collector-protocol.ts";
+import { activateDraftAndAttachScheduleAtomically } from "./authenticated-draft-activation.ts";
 import { attachActivationScheduleIfAutomatic } from "./connection-activation-schedules.ts";
 import { projectStorageDisplayName, resolveRequestConnectionId } from "./connection-id-request.ts";
 import {
@@ -1941,20 +1942,38 @@ function buildControllerStaticSecretCredentialRejectionMarker() {
   };
 }
 
-// Same store write `activateDraftConnection` (rsMutationContext, first-ingest
-// activation) already performs — `activateDraft` is a no-op on a non-draft
-// row, so calling this after the records-ingest path already activated the
-// connection, or a second time for the same run, is harmless. The controller
-// calls this ONLY after it has itself confirmed
+// Atomically performs the SAME status flip `activateDraftConnection`
+// (rsMutationContext, first-ingest activation) performs, PLUS the schedule
+// attach, in one durable transaction (server/authenticated-draft-activation.ts)
+// — calling this after the records-ingest path already activated the
+// connection, or a second time for the same run, is harmless (both writes are
+// idempotent no-ops on an already-active row / already-existing schedule).
+// The controller calls this ONLY after it has itself confirmed
 // (hasAuthenticatedRequiredStreamEvidence) that the run's own terminal
 // collection_facts prove authenticated required-stream engagement — this
 // builder performs no evidence check of its own, matching
 // buildControllerStaticSecretCredentialRejectionMarker's shape (the caller
-// owns the timing/evidence; the hook owns only the store write the caller
-// cannot perform itself).
+// owns the timing/evidence; the hook owns only the atomic store write the
+// caller cannot perform itself, since the controller does not share a
+// transaction/connection with the connector-instance and schedule stores).
 function buildControllerAuthenticatedDraftActivator() {
-  return async ({ connectorInstanceId }: { connectorInstanceId: string; [k: string]: unknown }) => {
-    await createRequestConnectorInstanceStore().activateDraft(connectorInstanceId);
+  return async ({
+    connectorId,
+    connectorInstanceId,
+    manifest,
+  }: {
+    connectorId: string;
+    connectorInstanceId: string;
+    manifest: unknown;
+    [k: string]: unknown;
+  }) => {
+    const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const result = await activateDraftAndAttachScheduleAtomically({
+      connectorId: canonicalId,
+      connectorInstanceId,
+      manifest,
+    });
+    return { activated: result.activated, scheduleAttached: result.scheduleAttached };
   };
 }
 

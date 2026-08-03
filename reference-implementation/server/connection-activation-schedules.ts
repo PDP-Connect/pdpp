@@ -155,7 +155,7 @@ export function hasAuthenticatedRequiredStreamEvidence(terminalData: unknown, ma
     return false;
   }
   const streams = data.collection_facts?.streams;
-  if (!Array.isArray(streams) || streams.length === 0) {
+  if (!Array.isArray(streams)) {
     return false;
   }
   return streams.some((raw) => {
@@ -163,7 +163,10 @@ export function hasAuthenticatedRequiredStreamEvidence(terminalData: unknown, ma
       return false;
     }
     const entry = raw as RuntimeCollectionFactStreamLike;
-    if (typeof entry.stream !== "string" || !requiredStreamNames.has(entry.stream)) {
+    // `requiredStreamNames.has(entry.stream)` uses Set strict-equality, so a
+    // non-string entry.stream (number/undefined/null/object) can never match
+    // any string key here — no separate typeof guard needed.
+    if (!requiredStreamNames.has(entry.stream as string)) {
       return false;
     }
     const checkpointProven = typeof entry.checkpoint === "string" && entry.checkpoint !== "not_staged";
