@@ -188,7 +188,7 @@ printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:${PINNED_IMAGE_T
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 docker compose up -d`}
               eyebrow="Your machine, pinned Compose"
-              footer="Open http://localhost:3000/owner/login. Use local HTTP only on the host; put a remote deployment behind HTTPS and set its real origin."
+              footer="Open http://localhost:3000/owner/login. This block is macOS/Linux shell; on Windows PowerShell use the equivalent in the Docker runbook, because the backslash continuations and openssl call do not work there. Use local HTTP only on the host; put a remote deployment behind HTTPS and set its real origin."
               title="Deploy with Docker Compose"
             />
           </div>

@@ -70,6 +70,7 @@ import { isClosedPipeWriteError } from "../runtime/pipe-errors.ts";
 import { hasForwardEvidenceDebt } from "../runtime/recovery-decision.ts";
 import { projectRunAutomationPolicy } from "../runtime/run-automation-policy.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
+import { browserSurfaceConfigured } from "../runtime/scheduler-readiness.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import {
   buildPendingConsentRequestUri,
@@ -4350,7 +4351,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
             return {
               accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
               bindings: {
-                browser: false,
+                // Report the browser binding this deployment actually has,
+                // using the same predicate that decides whether a
+                // browser-required connector may be set up or scheduled. A
+                // hardcoded `false` told an owner with a working browser
+                // surface that they had none, which is precisely backwards
+                // when they are diagnosing a browser-backed connector.
+                browser: browserSurfaceConfigured(),
                 filesystem: true,
                 local_device: false,
                 network: true,

@@ -161,6 +161,20 @@ jobs:
             target: console
             title: PDPP reference operator console
             description: PDPP browser-facing reference operator console
+          # The single-container self-host node. Without it in this matrix the
+          # one-command `docker run` path could only ever reference `:main` or
+          # `sha-*` from a manual docker-images dispatch, so the image the
+          # self-host docs recommend had no immutable released tag at all.
+          - image: railway-core
+            target: railway-core
+            title: PDPP Core node (single container)
+            description: PDPP single-container Core node (AS/RS + operator console) for one-command self-hosting
+          # Same single-container node plus Chromium, for owners who want
+          # browser-backed connectors without assembling a Compose stack.
+          - image: core-browser
+            target: core-browser
+            title: PDPP Core node (single container, browser-capable)
+            description: PDPP single-container Core node with Patchright/Chromium for browser-backed connectors
 
     steps:
       - name: Checkout
@@ -284,6 +298,20 @@ jobs:
             target: console
             title: PDPP reference operator console
             description: PDPP browser-facing reference operator console
+          # The single-container self-host node. Without it in this matrix the
+          # one-command `docker run` path could only ever reference `:main` or
+          # `sha-*` from a manual docker-images dispatch, so the image the
+          # self-host docs recommend had no immutable released tag at all.
+          - image: railway-core
+            target: railway-core
+            title: PDPP Core node (single container)
+            description: PDPP single-container Core node (AS/RS + operator console) for one-command self-hosting
+          # Same single-container node plus Chromium, for owners who want
+          # browser-backed connectors without assembling a Compose stack.
+          - image: core-browser
+            target: core-browser
+            title: PDPP Core node (single container, browser-capable)
+            description: PDPP single-container Core node with Patchright/Chromium for browser-backed connectors
 
     steps:
       - name: Checkout

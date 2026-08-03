@@ -64,10 +64,36 @@ self-host entry point.
 
 ### 2. Generate secrets and set the required variables
 
+macOS and Linux (bash or zsh):
+
 ```sh
 printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 ```
+
+Windows PowerShell (the block above cannot work there: `\` is not a line
+continuation, `openssl` is usually absent, and `>` writes UTF-16LE, which
+`docker compose` cannot parse):
+
+```powershell
+$ownerBytes = [byte[]]::new(24)
+$keyBytes = [byte[]]::new(32)
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($ownerBytes); $rng.GetBytes($keyBytes)
+$owner = [Convert]::ToBase64String($ownerBytes)
+$key = ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+@(
+  'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a'
+  'PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a'
+  'PDPP_REFERENCE_ORIGIN=http://localhost:3000'
+  'PDPP_WEB_PORT=3000'
+  "PDPP_OWNER_PASSWORD=$owner"
+  "PDPP_CREDENTIAL_ENCRYPTION_KEY=$key"
+) | Set-Content -Path .env -Encoding ascii
+```
+
+In step 1, use `curl.exe` rather than `curl` on PowerShell — bare `curl` is an
+alias for `Invoke-WebRequest` and does not accept those flags.
 
 The compose file refuses to boot until `PDPP_OWNER_PASSWORD` and
 `PDPP_CREDENTIAL_ENCRYPTION_KEY` exist in `.env` — the password gates the

@@ -466,20 +466,25 @@ public address and TURN credentials for that host. TURN is a relay fallback and
 adds bandwidth/latency only when WebRTC selects it; direct LAN/public candidates
 remain the preferred path when they work.
 
-Default public images:
+The development Compose file at the repository root defaults to the moving
+default-branch builds (`ghcr.io/pdp-connect/pdpp/reference:main` and
+`.../web:main`). That is a deliberate choice for **development only**: it tracks
+the default branch so contributors test what just merged.
 
-- `ghcr.io/pdp-connect/pdpp/reference:main`
-- `ghcr.io/pdp-connect/pdpp/web:main`
-
-The `main` tag is a moving default-branch build. Stable semantic-release images
-are published as exact version tags such as `1.2.3`, moving minor-series tags
-such as `1.2`, and `latest`. For durable self-hosting, pin an exact version,
-`sha-*` tag, or digest in `.env.docker`:
+**Do not self-host from `main`.** It is a moving tag with no release gate, so a
+`docker compose pull` can change your node's behavior without warning. The
+release pipeline publishes every image — `reference`, `reference-browser`,
+`web`, and `railway-core` — as exact version tags such as `1.2.3`, moving
+minor-series tags such as `1.2`, `latest`, and `sha-*`. For any node you intend
+to keep, pin an exact version or digest in `.env.docker`:
 
 ```bash
 PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:1.2.3
 PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:1.2.3
 ```
+
+Self-hosting runbooks (`deploy/docker/README.md`, `docs/operator/selfhost-quickstart.md`)
+pin a released tag for exactly this reason.
 
 The important topology rule is that `PDPP_REFERENCE_ORIGIN` is what the
 browser uses, while `PDPP_AS_URL` and `PDPP_RS_URL` are container-internal

@@ -886,3 +886,31 @@ test("a network-only connector stays addable on a browser-free deployment", asyn
     });
   });
 });
+
+// Google only exposes app passwords once 2-Step Verification is enabled. An
+// owner who does not know that hits a dead end on Google's own page with no
+// hint from PDPP, so the prerequisite belongs in the generated setup form
+// itself, not only in a runbook.
+test("gmail setup form states the 2-Step Verification prerequisite", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const { body } = await getSetup(asUrl, cookie, "gmail");
+      const capture = credentialCaptureOf(body);
+      const secretField = capture.fields.find((field) => field.name === "secret");
+      assert.ok(secretField, "gmail must declare the app-password field");
+      const helpText = String(secretField.help_text ?? "");
+      assert.match(
+        helpText,
+        /2-Step Verification/,
+        "the app-password field must tell the owner 2-Step Verification is required first"
+      );
+      assert.equal(
+        secretField.help_url,
+        "https://myaccount.google.com/apppasswords",
+        "the field must still link Google's app-password page"
+      );
+    });
+  });
+});

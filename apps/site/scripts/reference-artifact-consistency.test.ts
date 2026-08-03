@@ -181,3 +181,24 @@ test("touched landing/docs/page/test surface has no legacy owner path", async ()
     assertNoLegacyOwnerPath(sourceName, source);
   }
 });
+
+// An image a self-host doc can recommend MUST be published by the normal
+// release pipeline, or its only tags are the moving `main`/`sha-*` builds a
+// manual docker-images dispatch produces — which is how the one-command
+// `railway-core` path ended up advertised at `:main` with no released version
+// to pin instead. This oracle makes that structural, not editorial: adding a
+// self-hostable image without adding it to the release matrix fails here.
+const SEMANTIC_RELEASE_WORKFLOW = new URL("../../../.github/workflows/semantic-release.yml", import.meta.url);
+const SELF_HOSTABLE_IMAGES = ["reference", "reference-browser", "web", "railway-core", "core-browser"] as const;
+
+test("every self-hostable image is published by the release pipeline", async () => {
+  const workflow = await readFile(fileURLToPath(SEMANTIC_RELEASE_WORKFLOW), "utf8");
+  for (const image of SELF_HOSTABLE_IMAGES) {
+    const occurrences = workflow.split(`- image: ${image}\n`).length - 1;
+    assert.equal(
+      occurrences,
+      2,
+      `${image} must appear in BOTH the validate-release-images and publish-images matrices (found ${occurrences})`
+    );
+  }
+});

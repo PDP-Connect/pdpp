@@ -6,14 +6,18 @@
  * servers. A loopback or plain-http origin is unreachable for them no matter
  * what the owner does locally, so the connect page must not promise those
  * clients will work. Local agents are unaffected.
+ *
+ * This is a SHAPE check: failing it proves unreachability, passing it proves
+ * only that the syntax bar is cleared. DNS, firewalls, proxies, and
+ * certificates still decide whether a hosted client actually connects.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isHostedMcpReachableOrigin } from "./hosted-mcp-origin.ts";
+import { classifyHostedMcpOrigin, hasPublicHttpsShape } from "./hosted-mcp-origin.ts";
 
-test("loopback and private origins are not reachable by hosted MCP clients", () => {
+test("loopback and private origins never clear the public-HTTPS shape bar", () => {
   for (const origin of [
     "http://localhost:3000",
     "https://localhost:3000",
@@ -26,25 +30,58 @@ test("loopback and private origins are not reachable by hosted MCP clients", () 
     "https://169.254.10.1",
     "not-a-url",
   ]) {
-    assert.equal(isHostedMcpReachableOrigin(origin), false, `${origin} must not be advertised as hosted-reachable`);
+    assert.equal(hasPublicHttpsShape(origin), false, `${origin} must not clear the public-HTTPS shape bar`);
   }
 });
 
-test("plain http on a public host is still unreachable for hosted clients", () => {
-  assert.equal(isHostedMcpReachableOrigin("http://pdpp.example.com"), false);
+test("plain http on a public host fails the shape bar", () => {
+  assert.equal(hasPublicHttpsShape("http://pdpp.example.com"), false);
 });
 
-test("public https origins are reachable by hosted MCP clients", () => {
+test("public https origins clear the shape bar", () => {
   for (const origin of [
     "https://pdpp.example.com",
     "https://pdpp.example.com:8443",
     "https://friendly-name.trycloudflare.com",
   ]) {
-    assert.equal(isHostedMcpReachableOrigin(origin), true, `${origin} must be advertised as hosted-reachable`);
+    assert.equal(hasPublicHttpsShape(origin), true, `${origin} must clear the public-HTTPS shape bar`);
   }
 });
 
 // 172.32 is outside the RFC1918 172.16/12 block and must not be misclassified.
-test("public addresses adjacent to private ranges stay reachable", () => {
-  assert.equal(isHostedMcpReachableOrigin("https://172.32.0.1"), true);
+test("public addresses adjacent to private ranges still clear the bar", () => {
+  assert.equal(hasPublicHttpsShape("https://172.32.0.1"), true);
+});
+
+// Address families a plain "is it localhost" string check misses. Each of these
+// is unroutable from a hosted client, so none may clear the shape bar.
+test("CGNAT, private IPv6, mDNS and private-DNS hosts are rejected", () => {
+  for (const origin of [
+    "https://100.64.0.1",
+    "https://100.127.255.255",
+    "https://[::1]",
+    "https://[fd00::1]",
+    "https://[fe80::1]",
+    "https://[::ffff:127.0.0.1]",
+    "https://pdpp.local",
+    "https://pdpp.internal",
+    "https://pdpp.home.arpa",
+    "https://nas.lan",
+    "https://pdpp",
+  ]) {
+    assert.equal(hasPublicHttpsShape(origin), false, `${origin} must not clear the public-HTTPS shape bar`);
+  }
+});
+
+// 100.128/9 is public even though it neighbours the CGNAT block.
+test("addresses adjacent to the CGNAT block stay public", () => {
+  assert.equal(hasPublicHttpsShape("https://100.128.0.1"), true);
+  assert.equal(hasPublicHttpsShape("https://99.63.0.1"), true);
+});
+
+test("classification distinguishes why an origin fails, for honest copy", () => {
+  assert.equal(classifyHostedMcpOrigin("http://pdpp.example.com"), "not_https");
+  assert.equal(classifyHostedMcpOrigin("https://192.168.1.10"), "not_public_address");
+  assert.equal(classifyHostedMcpOrigin("not-a-url"), "malformed");
+  assert.equal(classifyHostedMcpOrigin("https://pdpp.example.com"), "public_https_shape");
 });

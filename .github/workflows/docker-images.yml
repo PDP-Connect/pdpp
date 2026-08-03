@@ -57,6 +57,7 @@ on:
           - reference-browser
           - web
           - railway-core
+          - core-browser
       platforms:
         description: Publish platforms on manual dispatch
         required: false
@@ -94,6 +95,8 @@ jobs:
             description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
           - image: railway-core
             target: railway-core
+          - image: core-browser
+            target: core-browser
             title: PDPP Railway Core node
             description: PDPP Railway pushbutton Core node with console and loopback AS/RS
 
@@ -182,6 +185,8 @@ jobs:
             description: PDPP browser-facing reference operator console
           - image: railway-core
             target: railway-core
+          - image: core-browser
+            target: core-browser
             title: PDPP Railway Core node
             description: PDPP Railway pushbutton Core node with console and loopback AS/RS
 

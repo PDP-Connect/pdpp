@@ -17,7 +17,7 @@
     "credential_capture": {
       "kind": "app_password",
       "label": "Google app password",
-      "description": "Use a Gmail address and a Google app password for the mailbox this connection should collect.",
+      "description": "Use a Gmail address and a Google app password for the mailbox this connection should collect. An app password is not your normal Google password: it is a 16-character code Google generates for one app, and it only appears as an option once 2-Step Verification is enabled.",
       "submit_label": "Create Gmail connection and start first sync",
       "fields": [
         {
@@ -39,7 +39,7 @@
           "secret": true,
           "autocomplete": "one-time-code",
           "help_url": "https://myaccount.google.com/apppasswords",
-          "help_text": "Create an app password in your Google Account, then paste it here.",
+          "help_text": "Google only offers app passwords when 2-Step Verification is ON for the account. Turn that on first, then create an app password and paste the 16-character code here (spaces are fine).",
           "env": ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"]
         }
       ]
