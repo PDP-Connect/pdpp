@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { CLAUDE_CODE_DEFAULT_STREAMS } from "../connectors/claude_code/collector-definition.ts";
+import { CODEX_DEFAULT_STREAMS } from "../connectors/codex/collector-definition.ts";
 import { buildAgentVersion } from "./collector-build-info.ts";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.ts";
@@ -19,15 +21,10 @@ import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queu
 export const CODEX_CONNECTOR_ID = "codex";
 export const CLAUDE_CODE_CONNECTOR_ID = "claude-code";
 export const AMAZON_CONNECTOR_ID = "amazon";
-export const DEFAULT_CODEX_STREAMS = ["sessions", "messages", "function_calls", "rules", "prompts", "skills"] as const;
-export const DEFAULT_CLAUDE_CODE_STREAMS = [
-  "sessions",
-  "messages",
-  "attachments",
-  "memory_notes",
-  "skills",
-  "slash_commands",
-] as const;
+/** @deprecated use {@link CODEX_DEFAULT_STREAMS} from the codex collector-definition; kept for back-compat re-export. */
+export const DEFAULT_CODEX_STREAMS = CODEX_DEFAULT_STREAMS;
+/** @deprecated use {@link CLAUDE_CODE_DEFAULT_STREAMS} from the claude_code collector-definition; kept for back-compat re-export. */
+export const DEFAULT_CLAUDE_CODE_STREAMS = CLAUDE_CODE_DEFAULT_STREAMS;
 export const DEFAULT_AMAZON_STREAMS = ["orders", "order_items"] as const;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
@@ -52,12 +49,12 @@ export interface LocalDeviceConnectorProfile {
 export const LOCAL_DEVICE_CONNECTOR_PROFILES: Readonly<Record<string, LocalDeviceConnectorProfile>> = {
   [CODEX_CONNECTOR_ID]: {
     connectorId: CODEX_CONNECTOR_ID,
-    defaultStreams: DEFAULT_CODEX_STREAMS,
+    defaultStreams: CODEX_DEFAULT_STREAMS,
     entrypoint: "connectors/codex/index.ts",
   },
   [CLAUDE_CODE_CONNECTOR_ID]: {
     connectorId: CLAUDE_CODE_CONNECTOR_ID,
-    defaultStreams: DEFAULT_CLAUDE_CODE_STREAMS,
+    defaultStreams: CLAUDE_CODE_DEFAULT_STREAMS,
     entrypoint: "connectors/claude_code/index.ts",
   },
   // Amazon is a browser-bound connector. Unlike codex/claude-code it requires a
@@ -215,7 +212,7 @@ export function buildLocalDeviceStartMessage(streams: readonly string[]): StartM
 }
 
 /** @deprecated use {@link buildLocalDeviceStartMessage}. */
-export function buildCodexStartMessage(streams: readonly string[] = DEFAULT_CODEX_STREAMS): StartMessage {
+export function buildCodexStartMessage(streams: readonly string[] = CODEX_DEFAULT_STREAMS): StartMessage {
   return buildLocalDeviceStartMessage(streams);
 }
 

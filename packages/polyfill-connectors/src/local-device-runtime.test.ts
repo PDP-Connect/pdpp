@@ -6,6 +6,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { CLAUDE_CODE_DEFAULT_STREAMS } from "../connectors/claude_code/collector-definition.ts";
+import { CODEX_DEFAULT_STREAMS } from "../connectors/codex/collector-definition.ts";
 import type { IngestBatchRequest } from "./local-device-client.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import {
@@ -146,4 +148,43 @@ test("local-device profile registry covers exactly codex, claude-code, and amazo
 
 test("resolveLocalDeviceConnectorProfile still rejects an unknown connector", () => {
   assert.throws(() => resolveLocalDeviceConnectorProfile("totally-unknown"), /unsupported local-device connector/);
+});
+
+// ─── runtime_evidence_missing regression (local-device-runtime-evidence-0803) ──
+// A drained-outbox, fresh-heartbeat local_device connection still showed
+// `runtime_evidence_missing` on every stream because the local-device runner's
+// unscoped default stream set omitted `coverage_diagnostics` — the one stream
+// that promotes a drained local collector off `coverage_unknown`. The
+// connector's own canonical collector-definition (what the connection-health
+// rollup's manifest treats as the "unscoped run" contract) DOES declare it;
+// only this runner-side default-stream table had drifted stale. An unscoped
+// exporter run must request every stream the connector declares, or evidence
+// silently never gets generated even though ordinary data streams upload fine.
+
+test("codex profile default streams match the connector's own declared stream set (must include coverage_diagnostics)", () => {
+  const profile = resolveLocalDeviceConnectorProfile(CODEX_CONNECTOR_ID);
+  assert.deepEqual([...profile.defaultStreams], [...CODEX_DEFAULT_STREAMS]);
+  assert.ok(
+    profile.defaultStreams.includes("coverage_diagnostics"),
+    "an unscoped codex local-device run must request coverage_diagnostics, or a drained/healthy device never produces the evidence stream-health needs to clear runtime_evidence_missing"
+  );
+});
+
+test("claude-code profile default streams match the connector's own declared stream set (must include coverage_diagnostics)", () => {
+  const profile = resolveLocalDeviceConnectorProfile(CLAUDE_CODE_CONNECTOR_ID);
+  assert.deepEqual([...profile.defaultStreams], [...CLAUDE_CODE_DEFAULT_STREAMS]);
+  assert.ok(
+    profile.defaultStreams.includes("coverage_diagnostics"),
+    "an unscoped claude-code local-device run must request coverage_diagnostics, or a drained/healthy device never produces the evidence stream-health needs to clear runtime_evidence_missing"
+  );
+});
+
+test("unscoped codex START scope requests coverage_diagnostics alongside every other declared stream", () => {
+  const profile = resolveLocalDeviceConnectorProfile(CODEX_CONNECTOR_ID);
+  const start = buildLocalDeviceStartMessage(profile.defaultStreams);
+  const requested = new Set(start.scope.streams.map((s) => s.name));
+  assert.ok(
+    requested.has("coverage_diagnostics"),
+    "fresh-heartbeat + drained-outbox + no-active-run devices only clear runtime_evidence_missing if coverage_diagnostics was in the requested scope"
+  );
 });
