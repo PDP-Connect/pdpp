@@ -206,6 +206,53 @@ test("setup pending alone prevents a strict fully-healthy claim", () => {
   assert.equal(result.fully_healthy, false);
 });
 
+// A never-activated `local_device` connector instance (e.g. an orphaned
+// duplicate device enrollment that never received a working device binding)
+// stores `status: "active"` in `connector_instances` — it was never flipped
+// to `draft`-then-back, it was simply born `active` under the pre-fix
+// enrollment path, or (post-fix) a genuinely new enrollment attempt that
+// hasn't checked in yet. Either way, `ref-control.ts`'s
+// `synthesizeConnectorSummary` derives `owner_state.resolver:
+// "setup_in_progress"` for it (see `hasDeviceActivationEvidence`), the SAME
+// resolver value a genuine `status: "draft"` row gets. This proves
+// `inventoryScope`/`reconcileFleetScope` honor that derived resolver and
+// scope the connection `setup_pending` — NOT `assessed`/`operational` — even
+// though the raw inventory row's own `status` field still reads `active`
+// (and must keep reading `active` there; this test also asserts the
+// inventory item itself is untouched by asserting scope classification only,
+// never a raw-status rewrite).
+test("a local_device instance with active status but setup_in_progress owner_state scopes as setup_pending, not assessed", () => {
+  const neverActivated = summary("codex-orphan-a", { owner_state: { resolver: "setup_in_progress" } });
+  const result = compose([inventory("codex-orphan-a", { status: "active" })], [neverActivated]);
+  assert.deepEqual(
+    result.scope.setup_pending.map((item) => item.connection_id),
+    ["codex-orphan-a"]
+  );
+  assert.deepEqual(
+    result.scope.assessed.map((item) => item.connection_id),
+    []
+  );
+  assert.equal(result.state, "indeterminate");
+});
+
+// The healthy sibling case: an `active`-status `local_device` instance whose
+// owner_state resolver is genuinely `healthy` (activation evidence exists)
+// must still land in `assessed`/`operational` — this derivation must never
+// blanket-exclude every `local_device` connection, only ones with no proof
+// of activation.
+test("a local_device instance with active status and healthy owner_state remains assessed", () => {
+  const activated = summary("codex-healthy-a", { owner_state: { resolver: "healthy" } });
+  const result = compose([inventory("codex-healthy-a", { status: "active" })], [activated]);
+  assert.deepEqual(
+    result.scope.assessed.map((item) => item.connection_id),
+    ["codex-healthy-a"]
+  );
+  assert.deepEqual(
+    result.scope.setup_pending.map((item) => item.connection_id),
+    []
+  );
+});
+
 test("active and unknown work are indeterminate, while fresh manual and paused policy are healthy", () => {
   const active = summary("active-a", {
     connection_health: { ...summary("x").connection_health, badges: { syncing: true } },

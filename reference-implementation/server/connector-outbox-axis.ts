@@ -243,6 +243,32 @@ function normalizeHeartbeatStatusForAxis(
 }
 
 /**
+ * Has a `local_device`-backed connector instance ever been proven activated
+ * by its physical device — first heartbeat or first accepted ingest batch,
+ * whichever landed first? Read-time-only, connector-agnostic evidence check:
+ * `lastHeartbeatAt`/`lastIngestAt` are durable, all-time facts (never reset
+ * once set — see `list-source-instance-heartbeats-by-connector.sql`'s
+ * `MAX(accepted_at)` over `device_ingest_batch_outcomes` and
+ * `device_source_instances.last_heartbeat_at`), so this is monotonic: once
+ * true for a given source-instance row, it stays true forever, independent
+ * of any later staleness/revocation. Deliberately checks EVERY row (not only
+ * currently-trusted ones — see `projectLocalDeviceProgress`'s trusted
+ * filter): a device or source instance that was later revoked still
+ * genuinely activated if it once checked in, and that history must not be
+ * erased by a subsequent revoke.
+ *
+ * Callers use this to decide whether a `status: "active"` `local_device`
+ * connector instance should be judged settled — never to gate whether the
+ * device may currently heartbeat/ingest (that authorization lives in
+ * `resolveAuthorizedDeviceSource`/`resolveActiveDeviceConnectorInstance` in
+ * `routes/ref-device-exporters.ts`, which must accept `"draft"` too so a
+ * pre-activation device can still reach its first heartbeat/ingest).
+ */
+export function hasDeviceActivationEvidence(heartbeats: readonly HeartbeatRow[]): boolean {
+  return heartbeats.some((row) => row.lastHeartbeatAt !== null || row.lastIngestAt !== null);
+}
+
+/**
  * Project a single `LocalDeviceProgress` from already-collected heartbeat
  * rows. Pure — the caller (typically `getConnectorOutboxAxis`) is
  * responsible for scoping the rows to one `connector_instance_id`.

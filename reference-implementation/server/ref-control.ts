@@ -116,6 +116,7 @@ import {
 } from "./connector-gap-classification.ts";
 import {
   type HeartbeatRow,
+  hasDeviceActivationEvidence,
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
@@ -5113,17 +5114,34 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     classifiedRunForOwnerState(authoritativeLastRun, authoritativeLastSuccessfulRun),
     freshness.captured_at ?? null
   );
+  // Read-time-only lifecycle honesty for `local_device` connections: a
+  // connector-agnostic device instance that has never once proven activation
+  // (no heartbeat, no accepted ingest batch — ever, see
+  // `hasDeviceActivationEvidence`) is judged as though it were still `draft`,
+  // even when its stored `status` is `active` — the same signal the owner-
+  // state resolver already trusts for a genuine `draft` row (design gate #2,
+  // owner-state.ts). This NEVER mutates `connector_instances.status`: an
+  // already-`active` row keeps reading `active` on every owner-facing list/
+  // console surface exactly as before, and once activation evidence exists
+  // this derivation is permanently a no-op for that instance (monotonic, see
+  // `hasDeviceActivationEvidence`'s doc comment) — it only narrows what
+  // `owner_state`/settled-audit judgment is willing to claim about a device
+  // that has never checked in.
+  const effectiveLifecycleStatus =
+    localDeviceBacked && instance.status === "active" && !hasDeviceActivationEvidence(outbox.heartbeats)
+      ? "draft"
+      : instance.status;
   const ownerStateEvidence: OwnerStateEvidence = activeRun
     ? {
         as_of: activeRun.started_at,
-        lifecycle: { status: instance.status },
+        lifecycle: { status: effectiveLifecycleStatus },
         progress: { active: true },
         schedule_mode: scheduleModeFrom(scheduleApiShape(localDeviceBacked ? null : schedule)),
         source: "active_progress",
       }
     : {
         as_of: causalEvidence.as_of,
-        lifecycle: { status: instance.status },
+        lifecycle: { status: effectiveLifecycleStatus },
         progress: { active: false },
         schedule_mode: scheduleModeFrom(scheduleApiShape(localDeviceBacked ? null : schedule)),
         source: causalEvidence.source,

@@ -1718,7 +1718,15 @@ test("re-enrolling the same connector + local_binding_name resumes one stable co
     assert.equal(activeRows.length, 1, "re-enrollment must not fork a second connector_instances row");
     const activeRow = mustExist(activeRows[0], "active connector instance row must exist");
     assert.equal(activeRow.connector_instance_id, first.connector_instance_id);
-    assert.equal(activeRow.status, "active");
+    // waspflow/uat-local-device-orphan-lifecycle-0803: a device-backed
+    // connector instance is now born `draft`, not `active` — neither enroll
+    // in this test has ever heartbeated or ingested, so it has no proof of
+    // activation yet. This is the fix working as intended: this exact
+    // shape (repeated enrollment, no device ever checking in) is the
+    // orphaned-instance defect the change closes. See the sibling
+    // "re-enrollment never demotes an already-activated instance" test
+    // below for the complementary guarantee.
+    assert.equal(activeRow.status, "draft");
     // Debugging payload retains the most recent device/source identifiers
     // for inspection, even though they no longer participate in identity.
     const binding = JSON.parse(activeRow.source_binding_json);
@@ -1739,6 +1747,101 @@ test("re-enrolling the same connector + local_binding_name resumes one stable co
       )
       .all("codex");
     assert.equal(distinctRows.length, 2);
+  });
+});
+
+function connectorInstanceStatus(connectorInstanceId: string): string {
+  return selectRow<{ status: string }>(
+    "SELECT status FROM connector_instances WHERE connector_instance_id = ?",
+    connectorInstanceId
+  ).status;
+}
+
+// waspflow/uat-local-device-orphan-lifecycle-0803: proves the full
+// activation lifecycle a never-checked-in `local_device` orphan is missing.
+// A fresh enrollment is `draft` (never poisons fleet-health as
+// `runtime_evidence_missing`, since draft is excluded from settled
+// judgment — see fleet-health.test.ts); its OWN first heartbeat flips it to
+// `active`, closing the lifecycle exactly once, honestly, without any
+// connector-specific logic (this test uses "codex" only because
+// `enrollDevice`'s default connector happens to be codex; the mechanism is
+// generic over every `local_device` connector).
+test("a fresh local_device enrollment starts draft and its first heartbeat activates it exactly once", async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "orphan-lifecycle-activation");
+    assert.equal(
+      connectorInstanceStatus(device.connector_instance_id),
+      "draft",
+      "a never-checked-in device instance must not read as active"
+    );
+
+    const heartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/heartbeat`,
+      {
+        connector_id: "codex",
+        records_pending: 0,
+        source_instances: [{ records_pending: 0, source_instance_id: device.source_instance_id, status: "healthy" }],
+      },
+      authHeaders(device.device_token)
+    );
+    assert.equal(
+      heartbeat.status,
+      200,
+      "the device's OWN first heartbeat must be authorized against its draft instance"
+    );
+    assert.equal(
+      connectorInstanceStatus(device.connector_instance_id),
+      "active",
+      "the first heartbeat must activate the instance"
+    );
+
+    // A second heartbeat is an idempotent no-op transition — proves
+    // `activateDraft`'s own no-op contract holds end-to-end through the
+    // route, not just at the store layer.
+    const secondHeartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/heartbeat`,
+      {
+        connector_id: "codex",
+        records_pending: 0,
+        source_instances: [{ records_pending: 0, source_instance_id: device.source_instance_id, status: "healthy" }],
+      },
+      authHeaders(device.device_token)
+    );
+    assert.equal(secondHeartbeat.status, 200);
+    assert.equal(connectorInstanceStatus(device.connector_instance_id), "active");
+  });
+});
+
+// The complementary guarantee to the "starts draft" test above: an
+// ALREADY-ACTIVATED instance (proven by a real heartbeat) must never be
+// silently demoted back to draft by a later re-enrollment of the same
+// binding — `performFirstEnrollment` must preserve, not overwrite, an
+// existing instance's status. Regression target: a naive fix that always
+// passes `status: "draft"` to the enrollment upsert would intermittently
+// hide a live, healthy, currently-running connection from the owner's own
+// connection list (drafts are hidden there) every time its device merely
+// restarts and re-enrolls.
+test("re-enrollment never demotes an already-activated local_device instance back to draft", async () => {
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, "stable-post-activation");
+    await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      {
+        connector_id: "codex",
+        records_pending: 0,
+        source_instances: [{ records_pending: 0, source_instance_id: first.source_instance_id, status: "healthy" }],
+      },
+      authHeaders(first.device_token)
+    );
+    assert.equal(connectorInstanceStatus(first.connector_instance_id), "active");
+
+    const second = await enrollDevice(asUrl, "stable-post-activation");
+    assert.equal(second.connector_instance_id, first.connector_instance_id);
+    assert.equal(
+      connectorInstanceStatus(second.connector_instance_id),
+      "active",
+      "re-enrolling an already-activated binding must preserve its active status"
+    );
   });
 });
 

@@ -388,6 +388,14 @@ interface DeviceExporterStore {
 }
 
 interface ConnectorInstanceStore {
+  // First-activation flip for a `draft` device connector instance: an
+  // atomic, idempotent `status='draft' -> 'active'` UPDATE (no-op when the
+  // row is missing or already non-draft), the SAME primitive
+  // `authenticated-draft-activation.ts` uses for controller-run activation —
+  // reused here (without its schedule-attach step, which is n/a for
+  // heartbeat/ingest-driven device connectors) so a device instance's first
+  // genuine heartbeat or ingest closes its own draft lifecycle the same way.
+  activateDraft: (connectorInstanceId: string, options?: { now?: string }) => Promise<ConnectorInstanceRow | null>;
   get: (connectorInstanceId: string) => Promise<ConnectorInstanceRow | null>;
   getByBinding: (params: {
     ownerSubjectId: string;
@@ -775,6 +783,14 @@ function respondEnrollError(ctx: MountRefDeviceExportersContext, res: RouteRespo
 // device is a no-op; the connector-instance/source-instance upserts and the
 // credential rotation are unconditionally safe under concurrency by
 // construction (see their own comments below).
+// A brand-new `local_device` connector instance starts `draft` (no device
+// binding proven yet); every other source kind (e.g. `browser_collector`)
+// keeps starting `active`, unchanged from before this fix — see
+// `performFirstEnrollment`'s call site for the full rationale.
+function initialEnrollmentStatus(sourceKind: string): string {
+  return sourceKind === "local_device" ? "draft" : "active";
+}
+
 async function performFirstEnrollment(
   ctx: MountRefDeviceExportersContext,
   req: RouteRequest,
@@ -832,7 +848,44 @@ async function performFirstEnrollment(
 
   await ctx.ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
   const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId, sourceKind);
-  const connectorInstance = await ctx.createRequestConnectorInstanceStore().upsertForEnrollment({
+  const connectorInstanceStore = ctx.createRequestConnectorInstanceStore();
+  const sourceBindingKey = ctx.makeConnectorInstanceSourceBindingKey(sourceBindingIdentity);
+  // A `local_device` connector instance is born `draft`, not `active` — it
+  // has no device binding proven yet, and only its own first heartbeat/
+  // ingest (see `resolveAuthorizedDeviceSource`'s `activateDraft` call) may
+  // close that lifecycle. This closes the orphan-instance defect class: a
+  // never-checked-in `local_device` registration used to start `active` and
+  // poison fleet-health/coverage audits as `runtime_evidence_missing`
+  // forever, indistinguishable from a genuinely broken connector.
+  //
+  // Scoped to `local_device` ONLY: `performFirstEnrollment` is shared by
+  // every source kind this enroll endpoint serves (e.g. `browser_collector`
+  // connectors also enroll here), and those kinds have their own,
+  // already-correct activation story (browser-session-driven, not
+  // heartbeat/ingest-driven) that this change must not disturb — a
+  // `browser_collector` instance keeps starting `active` exactly as before.
+  //
+  // EXCEPT: `upsertForEnrollment` is an upsert keyed on
+  // `(owner_subject_id, connector_id, source_kind, source_binding_key)` — a
+  // re-enrollment of the SAME binding (e.g. a device re-registering after an
+  // app restart; see `resolveOrCreateEnrollmentDevice`'s "resuming only the
+  // stable connector_instance" contract) hits this exact row again. Blindly
+  // passing `status: "draft"` here would silently demote an already-active,
+  // healthy, currently-running instance back to draft on every routine
+  // re-enroll — the inverse defect, and worse (it would make an owner's
+  // live connection intermittently disappear from their own connection
+  // list, since drafts are hidden there). So: preserve whatever status an
+  // EXISTING row already has (revoked/paused/active all pass through
+  // unchanged); only a genuinely new `local_device` row (no existing
+  // binding) defaults to `draft`.
+  const existingInstance = await connectorInstanceStore.getByBinding({
+    connectorId: enrollConnectorKey,
+    ownerSubjectId: enrollment.ownerSubjectId,
+    sourceBindingKey,
+    sourceKind,
+  });
+  const initialStatus = existingInstance ? existingInstance.status : initialEnrollmentStatus(sourceKind);
+  const connectorInstance = await connectorInstanceStore.upsertForEnrollment({
     connectorId: enrollConnectorKey,
     createdAt: now.toISOString(),
     displayName,
@@ -843,9 +896,9 @@ async function performFirstEnrollment(
       local_binding_name: enrollment.localBindingId,
       source_instance_id: sourceInstanceId,
     },
-    sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
+    sourceBindingKey,
     sourceKind,
-    status: "active",
+    status: initialStatus,
     updatedAt: now.toISOString(),
   });
   await ctx.deviceExporterStore.upsertSourceInstance({
@@ -1875,7 +1928,28 @@ async function resolveAuthorizedDeviceSource(
     );
     return null;
   }
+  // First-activation closure: this call just proved the device genuinely
+  // reached its own heartbeat/ingest/gap route with a valid credential
+  // against this exact connector instance — the same "first authenticated
+  // touch" proof `authenticated-draft-activation.ts` requires for its own
+  // draft flip, specialized to what a device-backed connector can prove (it
+  // has no runtime terminal-facts run to inspect). `activateDraft` is a
+  // no-op UPDATE ... WHERE status = 'draft' (see its own doc comment): an
+  // already-active instance reaching here again costs one no-op read/no-op
+  // conditional write, never a second transition or duplicate side effect.
+  await ctx.createRequestConnectorInstanceStore().activateDraft(connectorInstance.connectorInstanceId);
   return { connectorInstance, sourceInstance };
+}
+
+// `draft` is authorized here alongside `active`: a freshly-enrolled device
+// instance now starts `draft` (see `performFirstEnrollment`) and must be
+// able to reach its OWN first heartbeat/ingest to prove activation —
+// rejecting it here would make first activation unreachable. `resolveAuthorizedDeviceSource`
+// flips a `draft` instance to `active` (via `activateDraft`) once this
+// authorization succeeds, so a device only ever observes the pre-activation
+// `draft` authorization on its very first call.
+function isAuthorizableDeviceInstanceStatus(status: string): boolean {
+  return status === "active" || status === "draft";
 }
 
 async function resolveActiveDeviceConnectorInstance(
@@ -1889,7 +1963,7 @@ async function resolveActiveDeviceConnectorInstance(
     const instance = await store.get(sourceInstance.connectorInstanceId);
     if (
       instance &&
-      instance.status === "active" &&
+      isAuthorizableDeviceInstanceStatus(instance.status) &&
       instance.ownerSubjectId === ownerSubjectId &&
       sameConnectorType(ctx, instance.connectorId, sourceInstance.connectorId)
     ) {
@@ -1904,7 +1978,7 @@ async function resolveActiveDeviceConnectorInstance(
     sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(identity),
     sourceKind: "local_device",
   });
-  if (instance?.status !== "active") {
+  if (!(instance && isAuthorizableDeviceInstanceStatus(instance.status))) {
     return null;
   }
   return instance;

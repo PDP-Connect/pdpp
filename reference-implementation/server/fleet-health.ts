@@ -211,9 +211,24 @@ function summaryReference(summary: FleetSummary): FleetConnectionReference {
   };
 }
 
-function inventoryScope(connection: FleetConfiguredConnection): InventoryScope {
+// `summaryResolver` is the SAME read-time-derived `owner_state.resolver` the
+// synthesized `ConnectorSummary` already carries (`ref-control.ts`'s
+// `hasDeviceActivationEvidence` derivation) — checked here too so a
+// `local_device` connection whose STORED `status` is `active` but has never
+// once proven activation (no heartbeat, no accepted ingest, ever) is scoped
+// `setup_pending` here exactly as `stream-health-audit/audit.ts`'s
+// `isSettledConnection` already treats it, rather than `operational`. This
+// mirrors `isSettledConnection`'s own dual check (raw `status` OR
+// `owner_state.resolver === "setup_in_progress"`) without mutating
+// `connector_instances.status` or the raw inventory row at all — an
+// already-`active` row keeps reading `active` on every raw-inventory
+// surface; only the fleet-scope judgment narrows.
+function inventoryScope(connection: FleetConfiguredConnection, summaryResolver?: OwnerStateResolver): InventoryScope {
   if (connection.revokedAt !== null) {
     return "excluded";
+  }
+  if (summaryResolver === "setup_in_progress" && connection.status !== "revoked") {
+    return "setup_pending";
   }
   switch (connection.status) {
     case "active":
@@ -308,7 +323,8 @@ function reconcileFleetScope(
 
   for (const connection of inventory) {
     const ref = inventoryReference(connection);
-    const scope = inventoryScope(connection);
+    const summary = summariesByConnectionId.get(connection.connectorInstanceId);
+    const scope = inventoryScope(connection, summary?.owner_state.resolver);
     if (scope === "excluded") {
       intentionalExclusions.push(ref);
       continue;
@@ -317,7 +333,6 @@ function reconcileFleetScope(
       setupPending.push(ref);
       continue;
     }
-    const summary = summariesByConnectionId.get(connection.connectorInstanceId);
     if (scope !== "operational" || !summary) {
       unassessed.push(ref);
       continue;

@@ -409,7 +409,7 @@ test("the minted enrollment code is genuine: exchanging it materializes a real c
     assert.ok(intent.next_step.enroll_endpoint, "next_step carries an enroll_endpoint");
 
     // Before enroll: the intent wrote no connection row.
-    const beforeStore = await createSqliteConnectorInstanceStore().listByOwner(OWNER_SUBJECT_ID);
+    const beforeStore = await createSqliteConnectorInstanceStore().listByOwnerIncludingDrafts(OWNER_SUBJECT_ID);
     assert.equal(beforeStore.length, 0, "the intent itself must not create a connection");
 
     // Exchange the minted code at the enroll endpoint named by the intent.
@@ -424,13 +424,22 @@ test("the minted enrollment code is genuine: exchanging it materializes a real c
     // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
     assert.match(enrollBody.connector_instance_id ?? "", /^cin_/);
 
-    // After enroll: a real codex connection now exists for the owner.
-    const after = await createSqliteConnectorInstanceStore().listByOwner(OWNER_SUBJECT_ID);
+    // After enroll: a real codex connection now exists for the owner. It
+    // reads `draft` (waspflow/uat-local-device-orphan-lifecycle-0803: a
+    // local_device connector instance is no longer born `active` before its
+    // own device has ever proven activation), so this asserts via
+    // `listByOwnerIncludingDrafts` — the same choke point the dashboard uses
+    // to surface a not-yet-ingested connection as "setup in progress" rather
+    // than treating it as invisible. `listByOwner` (used elsewhere in this
+    // suite) correctly hides it until activation; that is not a regression
+    // in "the code is genuine," which this test is about.
+    const after = await createSqliteConnectorInstanceStore().listByOwnerIncludingDrafts(OWNER_SUBJECT_ID);
     assert.equal(after.length, 1);
     // biome-ignore lint/style/useDestructuring: the property access names the fixture value at its point of use.
     const afterRow = after[0];
     assert.ok(afterRow, "expected the newly enrolled connection row");
     assert.equal(afterRow.connectorId, "codex");
+    assert.equal(afterRow.status, "draft");
   });
 });
 

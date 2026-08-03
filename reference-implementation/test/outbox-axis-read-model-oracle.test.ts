@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   type HeartbeatRow,
+  hasDeviceActivationEvidence,
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
 } from "../server/connector-outbox-axis.ts";
@@ -131,4 +132,52 @@ test("a revoked device row does not poison outbox reliability when order is reve
   const axis = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
   assert.equal(axis.axis, "idle");
   assert.equal(axis.unreliable, false);
+});
+
+// `hasDeviceActivationEvidence` is the read-time-only signal
+// `ref-control.ts`'s `synthesizeConnectorSummary` uses to decide whether a
+// `status: "active"` `local_device` connector instance should be judged as
+// though it were still `draft` (see waspflow/uat-local-device-orphan-
+// lifecycle-0803). It must be a durable, all-time OR across every row's
+// `lastHeartbeatAt`/`lastIngestAt` — never gated on the row's current
+// `deviceStatus`/`sourceStatus` trust (a revoked device that once genuinely
+// checked in still proves activation forever; see the doc comment on the
+// function itself).
+test("hasDeviceActivationEvidence: no rows at all is never activated", () => {
+  assert.equal(hasDeviceActivationEvidence([]), false);
+});
+
+test("hasDeviceActivationEvidence: a row with both timestamps null (never checked in) is not activated", () => {
+  const neverCheckedIn = hbRow({ lastHeartbeatAt: null, lastIngestAt: null });
+  assert.equal(hasDeviceActivationEvidence([neverCheckedIn]), false);
+});
+
+test("hasDeviceActivationEvidence: a heartbeat alone (no ingest yet) proves activation", () => {
+  const heartbeatOnly = hbRow({ lastHeartbeatAt: FRESH, lastIngestAt: null });
+  assert.equal(hasDeviceActivationEvidence([heartbeatOnly]), true);
+});
+
+test("hasDeviceActivationEvidence: an ingest alone (no heartbeat recorded) proves activation", () => {
+  const ingestOnly = hbRow({ lastHeartbeatAt: null, lastIngestAt: FRESH });
+  assert.equal(hasDeviceActivationEvidence([ingestOnly]), true);
+});
+
+test("hasDeviceActivationEvidence: a revoked/inactive row that once checked in still proves activation", () => {
+  // Mirrors the exact shape a later-revoked device leaves behind: trust
+  // flags (`deviceStatus`/`sourceStatus`/`deviceRevokedAt`) are irrelevant to
+  // this check by design — activation is a monotonic historical fact, not a
+  // current-trust fact (see the function's own doc comment).
+  const revokedButOnceActivated = revokedStalledRow({ lastHeartbeatAt: STALE, lastIngestAt: STALE });
+  assert.equal(hasDeviceActivationEvidence([revokedButOnceActivated]), true);
+});
+
+test("hasDeviceActivationEvidence: one never-activated orphan row plus one genuinely activated sibling row is activated (per-instance scoping is the caller's job)", () => {
+  // This function itself has no connector_instance_id filter — callers (see
+  // `getConnectorOutboxAxis`'s `connectorInstanceId` scoping) are responsible
+  // for passing only the rows for ONE connector instance. This test proves
+  // the OR-across-rows semantics the function itself implements, given
+  // already-scoped input.
+  const neverActivated = hbRow({ lastHeartbeatAt: null, lastIngestAt: null, sourceInstanceId: "src_orphan" });
+  const activated = hbRow({ lastHeartbeatAt: FRESH, lastIngestAt: FRESH, sourceInstanceId: "src_healthy" });
+  assert.equal(hasDeviceActivationEvidence([neverActivated, activated]), true);
 });
