@@ -231,6 +231,42 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const SCHEDULER_RUN_SUPERSEDED = "scheduler_run_superseded";
+
+function schedulerRunSupersededError(): Error {
+  return new Error(SCHEDULER_RUN_SUPERSEDED);
+}
+
+function throwIfSchedulerStopped(runtimeRunning: boolean): void {
+  if (!runtimeRunning) {
+    throw schedulerRunSupersededError();
+  }
+}
+
+function throwIfScheduledLaunchSuperseded(isManual: boolean, runtimeRunning: boolean): void {
+  if (isManual || runtimeRunning) {
+    return;
+  }
+  throw schedulerRunSupersededError();
+}
+
+function throwIfControllerResultSuperseded(runtimeRunning: boolean, runId: string | null | undefined): void {
+  if (runtimeRunning || runId) {
+    return;
+  }
+  throw schedulerRunSupersededError();
+}
+
+function shouldStopBeforeSchedulerAttempt(runtimeRunning: boolean, attempt: number): boolean {
+  if (runtimeRunning) {
+    return false;
+  }
+  if (attempt === 0) {
+    throw schedulerRunSupersededError();
+  }
+  return true;
+}
+
 function narrowState(state: unknown): Record<string, unknown> | null {
   if (state && typeof state === "object" && !Array.isArray(state)) {
     return state as Record<string, unknown>;
@@ -1018,7 +1054,12 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     let lastError: RunConnectorError | null = null;
 
     while (attempt <= maxRetries) {
-      if (!runtime.running) {
+      // `scheduler.stop()` can race the async launch path during a schedule
+      // pause/resume refresh. With no attempt started, there is no provider
+      // terminal outcome to record; falling through to
+      // `finalizeExhaustedFailure` would fabricate a failed row with no
+      // run_id/events and poison the latest-run projection.
+      if (shouldStopBeforeSchedulerAttempt(runtime.running, attempt)) {
         break;
       }
       // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
@@ -1184,6 +1225,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
           triggerKind: revalidationProbe ? "revalidation" : "scheduled",
         });
       } catch (err) {
+        // A schedule refresh stops the old scheduler lifecycle while this
+        // controller call may still be awaiting. Do not turn that lifecycle
+        // teardown into a synthetic controller failure row.
+        throwIfSchedulerStopped(runtime.running);
         const deferReason = controllerRunNowDeferReason(err);
         if (deferReason) {
           return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, deferReason, connectorInstanceId));
@@ -1195,8 +1240,16 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       }
 
       if (runNowResult === null) {
+        throwIfSchedulerStopped(runtime.running);
         return null;
       }
+
+      // A controller result without a run id is pre-dispatch lifecycle
+      // evidence, not a provider terminal. If the scheduler was stopped
+      // before that result arrived, suppress it just like the throw path
+      // above. Real dispatched results retain their run id and remain
+      // reportable even if a pause races their completion.
+      throwIfControllerResultSuperseded(runtime.running, runNowResult.run_id);
 
       if (runNowResult.status && BROWSER_SURFACE_UNAVAILABLE_STATUSES.has(runNowResult.status)) {
         return recordAndNotify(
@@ -1347,6 +1400,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       isManual,
       currentRunIdBox
     );
+
+    throwIfScheduledLaunchSuperseded(isManual, runtime.running);
 
     // ── Restart-race guard: managed connector with no routing seam → DEFER ────
     //

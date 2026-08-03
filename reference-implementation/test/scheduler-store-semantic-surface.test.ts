@@ -275,6 +275,88 @@ test("scheduler run history and last-run time round-trip through semantic method
   });
 });
 
+test("product latest-run readers ignore only the inert pre-dispatch scheduler failure", async () => {
+  await withFreshStore(async (store) => {
+    const connectorInstanceId = "cin_semantic_latest";
+    const source = { id: SEMANTIC_CONNECTOR, kind: "connector" };
+
+    await store.appendRunHistory({
+      attempt: 1,
+      checkpointSummary: null,
+      completedAt: "2026-04-29T01:00:01.000Z",
+      connectorError: null,
+      connectorId: SEMANTIC_CONNECTOR,
+      connectorInstanceId,
+      failureReason: null,
+      knownGaps: [],
+      recordsEmitted: 1,
+      reportedRecordsEmitted: 1,
+      runId: "run_semantic_latest_success",
+      source,
+      startedAt: "2026-04-29T01:00:00.000Z",
+      status: "succeeded",
+      terminalReason: null,
+      traceId: "trc_semantic_latest_success",
+    });
+    await store.appendRunHistory({
+      attempt: 0,
+      checkpointSummary: null,
+      completedAt: "2026-04-29T01:01:01.000Z",
+      connectorError: null,
+      connectorId: SEMANTIC_CONNECTOR,
+      connectorInstanceId,
+      error: "unknown",
+      failureReason: null,
+      knownGaps: [],
+      recordsEmitted: 0,
+      reportedRecordsEmitted: null,
+      runId: null,
+      source,
+      startedAt: "2026-04-29T01:01:00.000Z",
+      status: "failed",
+      terminalReason: null,
+      traceId: null,
+    });
+
+    assert.ok(store.getLatestRunHistoryForProductByConnectionId);
+    assert.ok(store.listLatestRunHistoryForProductByConnectionIds);
+    const productSingle = await store.getLatestRunHistoryForProductByConnectionId(connectorInstanceId);
+    const productBatch = await store.listLatestRunHistoryForProductByConnectionIds([connectorInstanceId]);
+    assert.equal(productSingle?.runId, "run_semantic_latest_success");
+    assert.equal(productBatch[0]?.runId, "run_semantic_latest_success");
+
+    // Scheduler-scoped history retains the inert row for diagnosis; only the
+    // product latest-run projections treat it as non-run evidence.
+    const schedulerLatest = await store.getLatestRunHistoryForConnection(connectorInstanceId);
+    assert.equal(schedulerLatest?.runId, null);
+    assert.equal(schedulerLatest?.error, "unknown");
+
+    await store.appendRunHistory({
+      attempt: 0,
+      checkpointSummary: null,
+      completedAt: "2026-04-29T01:02:01.000Z",
+      connectorError: null,
+      connectorId: SEMANTIC_CONNECTOR,
+      connectorInstanceId,
+      error: "slack_auth_failed",
+      failureReason: "auth_error",
+      knownGaps: [],
+      recordsEmitted: 0,
+      reportedRecordsEmitted: null,
+      runId: null,
+      source,
+      startedAt: "2026-04-29T01:02:00.000Z",
+      status: "failed",
+      terminalReason: null,
+      traceId: null,
+    });
+
+    const genuineFailure = await store.getLatestRunHistoryForProductByConnectionId(connectorInstanceId);
+    assert.equal(genuineFailure?.status, "failed");
+    assert.equal(genuineFailure?.error, "slack_auth_failed");
+  });
+});
+
 test("same connector instances keep separate schedules, active runs, and last-run times", async () => {
   await withFreshStore(async (store) => {
     const now = "2026-04-29T02:00:00.000Z";

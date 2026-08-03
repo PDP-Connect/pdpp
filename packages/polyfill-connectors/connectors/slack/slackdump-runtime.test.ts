@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { BrowserSurfacePhaseResult, EmittedMessage } from "../../src/connector-runtime.ts";
+import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import {
   ensureArchiveOnDisk,
@@ -21,7 +21,6 @@ import {
   runSlackdump,
   runSlackdumpIdentityHelper,
   SLACK_RETRYABLE_FAILURE_RE,
-  type SlackApiIsolatedBrowser,
   type StreamDeps,
   slackdumpProgressChanged,
 } from "./index.ts";
@@ -376,7 +375,7 @@ if (process.env.HELPER_MODE === "timeout") {
   }
 });
 
-test("cold skip bootstrap after container replacement authenticates optional browser streams", async () => {
+test("cold skip bootstrap after container replacement authenticates optional direct API streams", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-skip-gap-"));
   const cacheDir = join(homeDir, "cache");
   const fakeSlackdump = join(homeDir, "fake-slackdump.mjs");
@@ -451,8 +450,12 @@ process.stdin.on("end", () => {
   await rm(observationPath, { force: true });
   process.env.SLACKDUMP_IDENTITY_BIN = helper;
   process.env.PDPP_SLACK_SKIP_SLACKDUMP = "1";
-  globalThis.fetch = () => {
+  globalThis.fetch = (_url, init) => {
     seen.fetches += 1;
+    const body = new URLSearchParams(String(init?.body ?? ""));
+    const headers = new Headers(init?.headers);
+    seen.token = body.get("token") === providerToken ? "provider" : "other";
+    seen.cookie = headers.get("Cookie")?.includes(`d=${providerCookie};`) ? "provider" : "other";
     return Promise.resolve(Response.json({ ok: true, items: [] }));
   };
   try {
@@ -519,44 +522,10 @@ process.stdin.on("end", () => {
       emittedAt: "2026-08-02T00:00:00.000Z",
       fingerprintCursors: new Map(),
       progress: () => Promise.resolve(),
-      requestBrowserSurfacePhase: () =>
-        Promise.resolve({
-          kind: "granted",
-          handle: {
-            env: { PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://managed-neko:9223" },
-            leaseId: "skip-gap-lease",
-            release: () => Promise.resolve(),
-            remoteCdpUrl: "http://managed-neko:9223",
-          },
-        } as BrowserSurfacePhaseResult),
+      requestBrowserSurfacePhase: () => Promise.reject(new Error("browser phase must not be requested")),
       requested: new Map([["stars", { name: "stars" }]]),
     };
-    const acquire = async (): Promise<SlackApiIsolatedBrowser> => ({
-      context: {
-        addCookies: () => Promise.resolve(),
-        newPage: () =>
-          Promise.resolve({
-            evaluate: async <R, Arg>(fn: (arg: Arg) => R | Promise<R>, arg: Arg): Promise<R> => {
-              const request = arg as Arg & { body?: string; headers: Record<string, string> };
-              const token = new URLSearchParams(request.body ?? "").get("token");
-              if (token === providerToken) {
-                seen.token = "provider";
-              } else if (token === explicitToken) {
-                seen.token = "explicit";
-              } else {
-                seen.token = "other";
-              }
-              const cookieHeader = request.headers.Cookie ?? "";
-              seen.cookie = cookieHeader.includes(`d=${providerCookie};`) ? "provider" : "other";
-              return await fn(arg);
-            },
-            goto: () => Promise.resolve(),
-            url: () => "https://slack.com/api/api.test",
-          }),
-      },
-      release: () => Promise.resolve(),
-    });
-    await runGapStreamsIfRequested(deps, credentials, () => Promise.resolve(), acquire);
+    await runGapStreamsIfRequested(deps, credentials, () => Promise.resolve());
     assert.deepEqual(seen, { cookie: "provider", fetches: 1, token: "provider" });
   } finally {
     globalThis.fetch = priorFetch;
@@ -1095,8 +1064,15 @@ process.stdin.on("end", () => {
   process.env.SLACKDUMP_IDENTITY_BIN = fakeIdentityHelper;
   delete process.env.PDPP_SLACK_SKIP_SLACKDUMP;
   const seen = { cookies: [] as string[], methods: [] as string[], tokens: [] as string[] };
-  globalThis.fetch = () =>
-    Promise.resolve(Response.json({ ok: true, items: [], usergroups: [], reminders: [], channel: {} }));
+  globalThis.fetch = (url, init) => {
+    const body = new URLSearchParams(String(init?.body ?? ""));
+    const headers = new Headers(init?.headers);
+    const token = body.get("token");
+    seen.tokens.push(token === postToken ? "post" : "other");
+    seen.cookies.push(headers.get("Cookie")?.includes(`d=${postCookie};`) ? "post" : "other");
+    seen.methods.push(String(url).slice(String(url).lastIndexOf("/") + 1));
+    return Promise.resolve(Response.json({ ok: true, items: [], usergroups: [], reminders: [], channel: {} }));
+  };
 
   try {
     const proof = await ensureArchiveOnDisk({
@@ -1153,16 +1129,7 @@ process.stdin.on("end", () => {
       emittedAt: "2026-08-02T00:00:00.000Z",
       fingerprintCursors: new Map(),
       progress: () => Promise.resolve(),
-      requestBrowserSurfacePhase: () =>
-        Promise.resolve({
-          kind: "granted",
-          handle: {
-            env: {},
-            leaseId: "postrun-rotation",
-            release: () => Promise.resolve(),
-            remoteCdpUrl: "http://managed-neko:9223",
-          },
-        } as BrowserSurfacePhaseResult),
+      requestBrowserSurfacePhase: () => Promise.reject(new Error("browser phase must not be requested")),
       requested: new Map([
         ["stars", { name: "stars" }],
         ["user_groups", { name: "user_groups" }],
@@ -1170,38 +1137,7 @@ process.stdin.on("end", () => {
         ["dm_read_states", { name: "dm_read_states" }],
       ]),
     };
-    const acquire = async (): Promise<SlackApiIsolatedBrowser> => ({
-      context: {
-        addCookies: (cookies) => {
-          assert.equal(
-            cookies.some((cookie) => cookie.name === "d" && cookie.value === postCookie),
-            true
-          );
-          return Promise.resolve();
-        },
-        newPage: () =>
-          Promise.resolve({
-            evaluate: <R, Arg>(fn: (arg: Arg) => R | Promise<R>, arg: Arg): Promise<R> => {
-              const request = arg as Arg & { body?: string; headers: Record<string, string>; url: string };
-              const token = new URLSearchParams(request.body ?? "").get("token") ?? "";
-              let tokenClass = "other";
-              if (token === postToken) {
-                tokenClass = "post";
-              } else if (token === explicit.token) {
-                tokenClass = "explicit";
-              }
-              seen.tokens.push(tokenClass);
-              seen.cookies.push(request.headers.Cookie?.includes(`d=${postCookie};`) ? "post" : "other");
-              seen.methods.push(request.url.slice(request.url.lastIndexOf("/") + 1));
-              return Promise.resolve(fn(arg));
-            },
-            goto: () => Promise.resolve(),
-            url: () => "https://slack.com/api/api.test",
-          }),
-      },
-      release: () => Promise.resolve(),
-    });
-    await runGapStreamsIfRequested(deps, credentials, () => Promise.resolve(), acquire);
+    await runGapStreamsIfRequested(deps, credentials, () => Promise.resolve());
     assert.deepEqual(
       seen.methods.toSorted((left, right) => left.localeCompare(right)),
       ["conversations.info", "reminders.list", "stars.list", "usergroups.list"]
@@ -1507,27 +1443,16 @@ test("slack manifest declares no unsupported-in-mode streams (all four gap strea
   }
 });
 
-test("slack manifest declares an OPTIONAL browser binding for the gap streams' browser transport", async () => {
-  // stars/user_groups/reminders/dm_read_states need a real Chromium page
-  // (see slack-api.ts module header + index.ts acquireSlackApiBrowserTransport
-  // for the full root cause: browser capability) — but the connector's core
-  // value (messages/channels/files/etc., all slackdump-archive-derived)
-  // must stay fully headless. `required: false` is the load-bearing part:
-  // `true` would make the RUNTIME refuse to spawn the whole connector on any
-  // runtime that doesn't advertise a browser binding (validateRequiredRuntimeBindings
-  // in reference-implementation/runtime/index.ts), even though only these
-  // four optional streams ever touch it.
+test("slack manifest does not require a browser for direct gap-stream collection", async () => {
+  // Slackdump's durable token/cookie provider and the four direct Web API
+  // calls all use HTTPS. A browser binding here would make the manifest claim
+  // a capability the collector does not need and would regress healthy
+  // headless scheduling on runtimes such as the live UAT candidate.
   const manifest = JSON.parse(await readFile(SLACK_MANIFEST, "utf8")) as {
     runtime_requirements?: { bindings?: Record<string, { required?: boolean }> };
   };
   const browserBinding = manifest.runtime_requirements?.bindings?.browser;
-  assert.ok(browserBinding, "expected runtime_requirements.bindings.browser to be declared");
-  assert.equal(
-    browserBinding?.required,
-    false,
-    "the browser binding MUST be optional — required:true would block the whole connector's spawn on a " +
-      "runtime with no browser binding, for the sake of four non-core streams"
-  );
+  assert.equal(browserBinding, undefined, "direct gap streams must not advertise a browser runtime dependency");
 });
 
 test("slack connector reports DONE.records_emitted from runtime-counted RECORDs", async () => {

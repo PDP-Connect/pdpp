@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, before, test } from "node:test";
-import type { BrowserSurfacePhaseResult, EmittedMessage } from "../../src/connector-runtime.ts";
+import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { RetryExhaustedError } from "../../src/http-retry.ts";
 import {
   acquireSlackApiBrowserTransport,
@@ -421,17 +421,11 @@ test("contrast: a REQUIRED stream's failure is NOT caught by runOptionalStream a
   await assert.rejects(() => runUsersStream(deps), /emitRecord_boom/);
 });
 
-// ─── acquireSlackApiBrowserTransport: browser transport wiring ─────────────
+// ─── acquireSlackApiBrowserTransport: legacy compatibility wiring ─────────
 //
-// Root cause (see slack-api.ts module header, also documented on
-// acquireSlackApiBrowserTransport itself): a plain Node fetch cannot
-// authenticate stars/user_groups/reminders/dm_read_states against Slack's
-// edge even with a byte-identical, valid token+cookie pair, because it
-// lacks a real authenticated Slack browser session. These tests prove the
-// acquisition + cookie-seeding + failure-isolation contract using a
-// fake acquire function (the real one launches actual Chromium, which is
-// out of scope for a fast unit test) — not that Slack's edge accepts the
-// resulting fingerprint, which only a live call can prove.
+// Production collection now uses the durable Node HTTP transport. These tests
+// retain coverage for callers that still inject the optional browser helper:
+// acquisition, cookie seeding, and failure isolation stay bounded and honest.
 
 interface FakeCookie {
   domain?: string;
@@ -694,27 +688,10 @@ test("acquireSlackApiBrowserTransport: a cookie-seeding failure is isolated the 
   assert.equal(releaseCalls.length, 1, "the underlying browser must still be released even though setup failed");
 });
 
-// ─── withResolvedRemoteCdpUrl: production-image / managed-surface contract ─
+// ─── withResolvedRemoteCdpUrl: legacy compatibility contract ──────────────
 //
-// Regression for the exact production incident this fix addresses: a live
-// canary run (run_1785549724534) proved stars/user_groups/reminders/
-// dm_read_states cannot acquire a browser in the `reference` production
-// image, because `browserType.launchPersistentContext` tried to launch a
-// local Chromium executable
-// (`/opt/patchright-browsers/chromium_headless_shell-1228/...`) that image
-// intentionally never bundles (only `reference-browser` does — see
-// Dockerfile). The canonical browser authority in that image is the managed
-// Remote Surface/n.eko service, reached via a leased `remoteCdpUrl` — never
-// a local executable.
-//
-// OLD BEHAVIOR (pre-fix): `acquireSlackApiBrowserTransport`'s default
-// `acquire` called `acquireBrowserForConnector` with no `remoteCdpUrl`,
-// regardless of environment — so even with a managed n.eko lease active
-// (`PDPP_BROWSER_SURFACE_REMOTE_CDP_URL` set), the four gap streams still
-// attempted a local Chromium launch and failed with the exact production
-// error above. These tests assert the fixed composition directly, and
-// would have failed against the old (options) => options identity
-// passthrough.
+// These tests pin the managed-browser URL composition retained by the helper
+// for callers that explicitly use the compatibility browser transport.
 test("withResolvedRemoteCdpUrl: composes remoteCdpUrl from a managed n.eko lease, mirroring connector-runtime.ts's acquireBrowser", () => {
   const options = withResolvedRemoteCdpUrl(
     { headless: true, profileName: "slack" },
@@ -758,271 +735,97 @@ test("withResolvedRemoteCdpUrl: fails closed (throws) when a managed n.eko lease
   );
 });
 
-// ─── runGapStreamsIfRequested: mid-run phase-scoped surface wiring ─────────
-//
-// OLD BEHAVIOR (the exact bug this fixes): Slack is declared
-// `surfaceScope: "phase"` in browser-surface-policy.ts, so the controller
-// never reserves a run-level managed surface for it and never sets
-// `PDPP_BROWSER_SURFACE_REMOTE_CDP_URL` in `process.env` for the run.
-// `runGapStreamsIfRequested` never called `deps.requestBrowserSurfacePhase`
-// at all — it went straight to `acquireSlackApiBrowserTransport` with no
-// phase grant, so `withResolvedRemoteCdpUrl`'s default `process.env` read
-// found nothing and the acquisition fell through to a local Chromium
-// launch, which does not exist in the production `reference` image. These
-// tests exercise the real call site (`runGapStreamsIfRequested`), not just
-// the `withResolvedRemoteCdpUrl` composition helper, so they would have
-// failed against the pre-fix code (no `requestBrowserSurfacePhase` call at
-// all) even though `withResolvedRemoteCdpUrl` itself was already correct.
+// ─── runGapStreamsIfRequested: durable terminal HTTP wiring ────────────────
 
-interface FakeCookie2 {
-  domain?: string;
-  name: string;
-  path?: string;
-  value: string;
-}
-
-function fakeGrantedBrowser(seen: { addCookiesCalls: FakeCookie2[][] }): SlackApiIsolatedBrowser {
+function fakeGapDeps(requested: readonly string[], phaseCalls?: { count: number }): StreamDeps {
+  const db = new DatabaseSync(":memory:");
+  if (requested.includes("dm_read_states")) {
+    db.exec("CREATE TABLE CHANNEL (ID TEXT NOT NULL, DATA TEXT, CHUNK_ID INTEGER NOT NULL)");
+    db.prepare("INSERT INTO CHANNEL (ID, DATA, CHUNK_ID) VALUES (?, ?, ?)").run(
+      "D01",
+      JSON.stringify({ is_im: true }),
+      1
+    );
+  }
   return {
-    context: {
-      addCookies: (cookies) => {
-        seen.addCookiesCalls.push([...(cookies as readonly FakeCookie2[])]);
-        return Promise.resolve();
-      },
-      // Real `createBrowserSlackApiTransport` calls `page.evaluate(slackApiFetchInBrowser, req)`
-      // — actually invoke the passed function against the fake request so
-      // it drives the real `globalThis.fetch` mock below, instead of a
-      // canned response that would let the test pass with zero real calls.
-      newPage: () =>
-        Promise.resolve({
-          evaluate: <R, Arg>(fn: (arg: Arg) => R | Promise<R>, arg: Arg) => Promise.resolve(fn(arg)),
-          goto: () => Promise.resolve(),
-          url: () => "https://slack.com/api/api.test",
-        }),
-    },
-    release: () => Promise.resolve(),
-  };
-}
-
-function fakeGapDeps(
-  requested: readonly string[],
-  requestBrowserSurfacePhase: () => Promise<BrowserSurfacePhaseResult>
-): StreamDeps {
-  return {
-    db: new DatabaseSync(":memory:"),
+    db,
     emit: () => Promise.resolve(),
     emitRecord: () => Promise.resolve(),
     emittedAt: "2026-07-31T00:00:00.000Z",
     fingerprintCursors: new Map(),
     progress: () => Promise.resolve(),
-    requestBrowserSurfacePhase,
+    requestBrowserSurfacePhase: () => {
+      if (phaseCalls) {
+        phaseCalls.count += 1;
+      }
+      return Promise.reject(new Error("browser phase must not be requested"));
+    },
     requested: new Map(requested.map((name) => [name, { name }])),
   };
 }
 
 test("runGapStreamsIfRequested: no gap stream requested never calls requestBrowserSurfacePhase", async () => {
-  let requestCalls = 0;
-  const deps = fakeGapDeps(["channels"], () => {
-    requestCalls += 1;
-    return Promise.resolve({ kind: "unavailable", reason: "should_not_be_called" });
-  });
+  const phaseCalls = { count: 0 };
+  const deps = fakeGapDeps(["channels"], phaseCalls);
   await runGapStreamsIfRequested(deps, { cookie: "d-fake", token: "xoxc-fake", workspace: "W1" }, () =>
     Promise.resolve()
   );
-  assert.equal(requestCalls, 0, "acquiring a phase surface when no gap stream is due wastes a scarce shared lease");
+  assert.equal(phaseCalls.count, 0, "the direct transport must not request a browser phase when no gap is due");
 });
 
-test("runGapStreamsIfRequested: granted phase lease -> remote CDP URL composed -> all four streams run -> release ordering, no local launch", async () => {
-  const order: string[] = [];
-  globalThis.fetch = (url) => {
-    const parsed = new URL(String(url));
-    order.push(`fetch:${parsed.pathname}`);
-    if (parsed.pathname.endsWith("/stars.list")) {
+test("runGapStreamsIfRequested: all four streams use durable Node HTTP auth without a browser phase", async () => {
+  const phaseCalls = { count: 0 };
+  const requests: Array<{ method: string; cookie: string | null; token: string | null }> = [];
+  globalThis.fetch = (url, init) => {
+    const body = new URLSearchParams(String(init?.body ?? ""));
+    requests.push({
+      method: String(url).slice(String(url).lastIndexOf("/") + 1),
+      cookie: new Headers(init?.headers).get("Cookie"),
+      token: body.get("token"),
+    });
+    const path = new URL(String(url)).pathname;
+    if (path.endsWith("/stars.list")) {
       return Promise.resolve(jsonResponse({ ok: true, items: [] }));
     }
-    if (parsed.pathname.endsWith("/usergroups.list")) {
+    if (path.endsWith("/usergroups.list")) {
       return Promise.resolve(jsonResponse({ ok: true, usergroups: [] }));
     }
-    if (parsed.pathname.endsWith("/reminders.list")) {
+    if (path.endsWith("/reminders.list")) {
       return Promise.resolve(jsonResponse({ ok: true, reminders: [] }));
     }
-    return Promise.resolve(jsonResponse({ ok: true }));
+    return Promise.resolve(jsonResponse({ ok: true, channel: { id: "D01" } }));
   };
 
-  const releaseCalls: string[] = [];
-  const seenAcquireOptions: Record<string, unknown>[] = [];
-  const acquire = (options: { headless?: boolean; profileName: string; remoteCdpUrl?: string }) => {
-    order.push("acquire");
-    seenAcquireOptions.push(options);
-    return Promise.resolve(fakeGrantedBrowser({ addCookiesCalls: [] }));
-  };
-
-  const requested = ["stars", "user_groups", "reminders", "dm_read_states"];
-  const deps = fakeGapDeps(requested, () => {
-    order.push("phase:acquire");
-    return Promise.resolve({
-      handle: {
-        env: { PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://managed-neko:9223", PDPP_BROWSER_SURFACE_REQUIRED: "neko" },
-        leaseId: "lease-1",
-        release: () => {
-          order.push("phase:release");
-          releaseCalls.push("phase");
-          return Promise.resolve();
-        },
-        remoteCdpUrl: "http://managed-neko:9223",
-      },
-      kind: "granted",
-    });
-  });
-
-  await runGapStreamsIfRequested(
-    deps,
-    { cookie: "d-fake", token: "xoxc-fake", workspace: "W1" },
-    () => Promise.resolve(),
-    acquire
+  const deps = fakeGapDeps(["stars", "user_groups", "reminders", "dm_read_states"], phaseCalls);
+  await runGapStreamsIfRequested(deps, { cookie: "d-fake", token: "xoxc-fake", workspace: "W1" }, () =>
+    Promise.resolve()
   );
 
+  assert.equal(phaseCalls.count, 0, "direct Slack API collection must not wait for a browser surface");
   assert.deepEqual(
-    order,
-    [
-      "phase:acquire",
-      "acquire",
-      "fetch:/api/stars.list",
-      "fetch:/api/usergroups.list",
-      "fetch:/api/reminders.list",
-      "phase:release",
-    ],
-    "phase acquire must happen before browser acquire, all four streams must run against the granted transport, and the phase lease must release only after the stream group finishes"
+    requests.map(({ method }) => method).toSorted((left, right) => left.localeCompare(right)),
+    ["conversations.info", "reminders.list", "stars.list", "usergroups.list"]
   );
-  assert.equal(seenAcquireOptions.length, 1, "one shared browser page across all four gap streams, not one per stream");
-  assert.equal(
-    seenAcquireOptions[0]?.remoteCdpUrl,
-    "http://managed-neko:9223",
-    "the granted phase lease's remote CDP URL must be composed into the acquire options — this is what prevents the local Chromium fallback"
-  );
-  assert.equal(releaseCalls.length, 1, "the phase lease must be released exactly once");
+  assert.ok(requests.every((request) => request.token === "xoxc-fake"));
+  assert.ok(requests.every((request) => request.cookie?.startsWith("d=d-fake; d-s=")));
 });
 
-test("runGapStreamsIfRequested: unavailable phase lease short-circuits BEFORE any transport/browser/HTTP call and emits one honest capability-missing skip per due stream", async () => {
-  // Phase acquire is a capability precondition, not an HTTP request: an
-  // `unavailable` result must never create a transport, call `acquire`, or
-  // enter the HTTP governor/retry path for ANY due stream — it goes
-  // straight to the existing typed `optional_stream_capability_missing`
-  // skip. Proven three ways here: zero `acquire` calls, zero `fetch` calls,
-  // and one correctly-classified SKIP_RESULT per due stream (not just one
-  // shared/ambiguous failure).
-  let localAcquireCalls = 0;
-  const acquire = () => {
-    localAcquireCalls += 1;
-    return Promise.reject(new Error("chromium_not_installed: this call must never happen"));
-  };
-  let fetchCalls = 0;
-  globalThis.fetch = () => {
-    fetchCalls += 1;
-    return Promise.reject(new Error("fetch must never be called when the phase lease is unavailable"));
-  };
-
+test("runGapStreamsIfRequested: a genuine direct API failure stays optional and is not relabeled as a capability gap", async () => {
   const messages: EmittedMessage[] = [];
   const emit = (msg: EmittedMessage) => {
     messages.push(msg);
     return Promise.resolve();
   };
-
-  const deps = fakeGapDeps(["stars", "reminders"], () => Promise.resolve({ kind: "unavailable", reason: "timeout" }));
-
-  await runGapStreamsIfRequested(deps, { cookie: "d-fake", token: "xoxc-fake", workspace: "W1" }, emit, acquire);
-
-  assert.equal(localAcquireCalls, 0, "an unavailable phase lease must NEVER fall through to a local Chromium launch");
-  assert.equal(fetchCalls, 0, "an unavailable phase lease must NEVER reach the HTTP transport/governor");
-  assert.equal(messages.length, 2, "one honest skip per due stream, not one shared/ambiguous failure");
-  for (const [msg, stream] of [
-    [messages[0], "stars"],
-    [messages[1], "reminders"],
-  ] as const) {
-    assert.equal(msg?.type, "SKIP_RESULT");
-    assert.equal((msg as { stream?: string }).stream, stream);
-    assert.equal(
-      (msg as { reason?: string }).reason,
-      "optional_stream_capability_missing",
-      "an unavailable phase surface is a structural capability gap, not a live Slack API failure"
-    );
-    assert.equal(
-      (msg as { recovery_hint?: { retryable?: boolean } }).recovery_hint?.retryable,
-      false,
-      "retrying the SAME runtime cannot conjure a browser surface into existence"
-    );
-    assert.match(
-      (msg as { message?: string }).message ?? "",
-      /browser_surface_phase_unavailable: timeout/,
-      "the phase-unavailable reason must be visible in the honest skip message"
-    );
-  }
-});
-
-test("runGapStreamsIfRequested: releases the phase lease in finally even when a gap stream throws", async () => {
-  globalThis.fetch = () => Promise.reject(new Error("network_boom"));
-
-  const releaseCalls: number[] = [];
-  const acquire = () => Promise.resolve(fakeGrantedBrowser({ addCookiesCalls: [] }));
-  const deps = fakeGapDeps(["stars"], () =>
-    Promise.resolve({
-      handle: {
-        env: { PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://managed-neko:9223", PDPP_BROWSER_SURFACE_REQUIRED: "neko" },
-        leaseId: "lease-2",
-        release: () => {
-          releaseCalls.push(1);
-          return Promise.resolve();
-        },
-        remoteCdpUrl: "http://managed-neko:9223",
-      },
-      kind: "granted",
-    })
+  globalThis.fetch = () => Promise.reject(new Error("slack_auth_failed"));
+  const phaseCalls = { count: 0 };
+  await runGapStreamsIfRequested(
+    fakeGapDeps(["stars"], phaseCalls),
+    { cookie: "d-fake", token: "xoxc-fake", workspace: "W1" },
+    emit
   );
-
-  // runOptionalStream isolates the per-stream failure, so this must not
-  // reject — the release-in-finally guarantee is what's under test here,
-  // not error propagation (already covered by the runOptionalStream tests
-  // above).
-  await assert.doesNotReject(() =>
-    runGapStreamsIfRequested(
-      deps,
-      { cookie: "d-fake", token: "xoxc-fake", workspace: "W1" },
-      () => Promise.resolve(),
-      acquire
-    )
-  );
-
-  assert.equal(releaseCalls.length, 1, "the phase lease must release even though the stream call failed");
-});
-
-test("runGapStreamsIfRequested: a cancelled phase request (stdin-close style) is treated exactly like any other unavailable outcome — no acquire, no fetch, no lease to release", async () => {
-  // `deps.requestBrowserSurfacePhase`'s own contract (connector-runtime.ts)
-  // resolves `{kind:"unavailable", reason:"cancelled"}` on stdin close
-  // rather than hanging or rejecting — this proves the caller's
-  // capability-precondition short-circuit applies uniformly to every
-  // `unavailable` reason, not just `timeout`.
-  let localAcquireCalls = 0;
-  const acquire = () => {
-    localAcquireCalls += 1;
-    return Promise.reject(new Error("must never be called"));
-  };
-  let fetchCalls = 0;
-  globalThis.fetch = () => {
-    fetchCalls += 1;
-    return Promise.reject(new Error("fetch must never be called when the phase request was cancelled"));
-  };
-  const messages: EmittedMessage[] = [];
-  const emit = (msg: EmittedMessage) => {
-    messages.push(msg);
-    return Promise.resolve();
-  };
-  const deps = fakeGapDeps(["reminders"], () => Promise.resolve({ kind: "unavailable", reason: "cancelled" }));
-
-  await assert.doesNotReject(() =>
-    runGapStreamsIfRequested(deps, { cookie: "d-fake", token: "xoxc-fake", workspace: "W1" }, emit, acquire)
-  );
-
-  assert.equal(localAcquireCalls, 0);
-  assert.equal(fetchCalls, 0);
-  assert.equal((messages[0] as { reason?: string })?.reason, "optional_stream_capability_missing");
-  assert.match((messages[0] as { message?: string })?.message ?? "", /browser_surface_phase_unavailable: cancelled/);
+  assert.equal(phaseCalls.count, 0);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.type, "SKIP_RESULT");
+  assert.equal((messages[0] as { reason?: string }).reason, "optional_stream_failed");
+  assert.equal((messages[0] as { recovery_hint?: { retryable?: boolean } }).recovery_hint?.retryable, false);
 });

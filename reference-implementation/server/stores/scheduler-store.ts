@@ -162,8 +162,9 @@ export interface SchedulerStore {
   ) => Promise<SchedulerRunHistoryRecord | null> | SchedulerRunHistoryRecord | null;
   /**
    * Product-reader (LIST/detail) single-connection fallback for callers
-   * that did not pre-load the page batch — the newest run-history row of
-   * EVERY kind (no `scheduler_managed` scope). Mirrors
+   * that did not pre-load the page batch — the newest product-visible
+   * run-history row of EVERY kind (no `scheduler_managed` scope, except the
+   * inert pre-dispatch scheduler failure described below). Mirrors
    * `getLatestRunHistoryForConnection`'s role for
    * `listLatestRunHistoryForProductByConnectionIds`. R9.2.
    */
@@ -185,8 +186,9 @@ export interface SchedulerStore {
     status?: string | null
   ) => Promise<readonly SchedulerRunHistoryRecord[]> | readonly SchedulerRunHistoryRecord[];
   /**
-   * Product-reader (LIST/detail) batch: the newest run-history row per
-   * connection, EVERY run kind — no `scheduler_managed` scope, unlike
+   * Product-reader (LIST/detail) batch: the newest product-visible
+   * run-history row per connection, EVERY run kind — no `scheduler_managed`
+   * scope, unlike
    * `listLatestRunHistoryByConnectionIds` (which stays scheduler-only per
    * §7/R7.5). Includes `running` rows (status not filtered to terminal)
    * so the caller can compose the live active-run/lease overlay; includes
@@ -292,6 +294,24 @@ const SCHEDULER_RUN_HISTORY_COLUMNS = `
 // per-run `readRunTerminalEventData` spine read on GET (G1).
 const PRODUCT_RUN_HISTORY_COLUMNS = `${SCHEDULER_RUN_HISTORY_COLUMNS},
   facts_json`;
+
+// A scheduler launch that was superseded before dispatch used to be finalized
+// as this inert row: it has no provider run id or spine events, so exposing it
+// as the product's latest run is false evidence. Keep this predicate narrow:
+// real failures with a provider error, failure reason, or emitted records must
+// remain visible. Scheduler-scoped history intentionally keeps the row for
+// diagnosis; only product latest-run projections omit it.
+const PRODUCT_RUN_HISTORY_EXCLUDES_SUPERSEDED_FAILURE = `
+NOT (
+  scheduler_managed
+  AND status = 'failed'
+  AND run_id IS NULL
+  AND attempt = 0
+  AND error = 'unknown'
+  AND records_emitted = 0
+  AND failure_reason IS NULL
+  AND terminal_reason IS NULL
+)`;
 
 // ─── SQLite implementation ──────────────────────────────────────────────────
 
@@ -512,13 +532,15 @@ export function createSqliteSchedulerStore(): SchedulerStoreWithSynthesizedReval
 
     getLatestRunHistoryForProductByConnectionId(connectorInstanceId, status = null) {
       // REVIEWED-DYNAMIC: single-connection fallback for the product
-      // reader — no scheduler_managed scope, every run kind. Mirrors
+      // reader — no scheduler_managed scope, every product-visible run kind.
+      // Mirrors
       // get-latest-run-history-for-connection.sql minus that scope.
       const row = [
         ...iterateDynamicSqlAcknowledged<SchedulerRunHistoryRow>(
           `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
            FROM run_history
            WHERE connector_instance_id = ?
+             AND ${PRODUCT_RUN_HISTORY_EXCLUDES_SUPERSEDED_FAILURE}
              AND (? IS NULL OR status = ?)
            ORDER BY COALESCE(completed_at, started_at) DESC, id DESC
            LIMIT 1`,
@@ -633,7 +655,8 @@ export function createSqliteSchedulerStore(): SchedulerStoreWithSynthesizedReval
       for (const ids of chunks) {
         // REVIEWED-DYNAMIC: SQLite has no bound array type; this ranks one
         // history row per bound page connection id, EVERY run kind (no
-        // scheduler_managed filter). `status = null` includes `running`
+        // scheduler_managed filter). The inert superseded pre-dispatch
+        // failure is excluded by the shared product predicate. `status = null` includes `running`
         // rows so the caller can compose the live-lease overlay; a
         // non-null status (e.g. "succeeded") filters same as the
         // scheduler-scoped reader — a `running` row never matches a
@@ -651,6 +674,7 @@ export function createSqliteSchedulerStore(): SchedulerStoreWithSynthesizedReval
                  ) AS row_rank
                FROM run_history
                WHERE connector_instance_id IN (${sqliteMembershipPlaceholders(ids)})
+                 AND ${PRODUCT_RUN_HISTORY_EXCLUDES_SUPERSEDED_FAILURE}
                  AND (? IS NULL OR status = ?)
             ) ranked
              WHERE row_rank = 1
@@ -908,6 +932,7 @@ export function createPostgresSchedulerStore(): SchedulerStoreWithSynthesizedRev
         `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
          FROM run_history
          WHERE connector_instance_id = $1
+           AND ${PRODUCT_RUN_HISTORY_EXCLUDES_SUPERSEDED_FAILURE}
            AND ($2::text IS NULL OR status = $2)
          ORDER BY COALESCE(completed_at, started_at) DESC, id DESC
          LIMIT 1`,
@@ -1073,7 +1098,8 @@ export function createPostgresSchedulerStore(): SchedulerStoreWithSynthesizedRev
                   ) AS row_rank
            FROM unnest($1::text[]) AS input(connector_instance_id)
            JOIN run_history AS history USING (connector_instance_id)
-           WHERE ($2::text IS NULL OR history.status = $2)
+           WHERE ${PRODUCT_RUN_HISTORY_EXCLUDES_SUPERSEDED_FAILURE}
+             AND ($2::text IS NULL OR history.status = $2)
          )
          SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
          FROM scoped_history

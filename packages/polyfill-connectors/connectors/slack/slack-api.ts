@@ -15,17 +15,12 @@
  * evidence that these methods are reachable with that credential and are
  * not exposed by slackdump's own CLI.
  *
- * Transport: these calls MUST run through a real Chromium page
- * (`SlackApiBrowserTransport`, provided by `index.ts`'s `runOptionalStream`
- * caller), not plain Node `fetch`. Slackdump v3.1.13's
- * `auth.simpleProvider.HTTPClient` uses `chttp.New`'s cookie jar and the
- * `rusq/slack` form request methods used by these streams. The browser
- * handoff mirrors that contract by seeding the page cookie jar and passing
- * only the form token into page `fetch`. JavaScript `fetch` cannot set the `Cookie` request
- * header; forwarding that header from Node-shaped request data is an invalid
- * browser transport boundary and was the live auth failure. Before those
- * requests, the page is navigated to Slack's documented `api.test` document
- * and its final URL is checked so credentialed fetches remain same-origin.
+ * Transport: the production path uses `nodeFetchSlackApiTransport`, matching
+ * Slackdump's current `auth.simpleProvider.HTTPClient`/`chttp.New` HTTP
+ * client and cookie-jar contract. The request carries the same form token,
+ * `d`/`d-s` cookies, and user agent that Slackdump uses. The browser helpers
+ * below remain as an isolated test/compatibility seam; they are not required
+ * to collect these streams.
  */
 
 import { type ConnectorHttpGovernor, createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
@@ -69,17 +64,16 @@ export const SLACK_API_RETRYABLE_FAILURE_RE =
 export const SLACK_API_AUTH_FAILURE_RE = /slack_auth_failed/;
 
 /**
- * A failure whose error message identifies it as this RUNTIME structurally
- * lacking a browser (`slack_api_browser_unavailable`/`slack_api_browser_setup_failed`,
- * thrown by `acquireSlackApiBrowserTransport` in `index.ts` when Chromium
- * acquisition or cookie-seeding fails). Distinct from both
+ * A failure whose error message identifies a caller's optional browser
+ * transport as structurally unavailable
+ * (`slack_api_browser_unavailable`/`slack_api_browser_setup_failed`, thrown by
+ * `acquireSlackApiBrowserTransport` in `index.ts`). Distinct from both
  * `SLACK_API_AUTH_FAILURE_RE` (the session/token was rejected — an
  * operator should re-authenticate) and `SLACK_API_RETRYABLE_FAILURE_RE` (a
  * transient upstream condition that clears on its own): a missing browser
  * capability will not clear by retrying on the SAME runtime, and it is not
- * a Slack-side rejection at all — the fix is to run this connector on a
- * runtime that advertises a `browser` binding, not to re-authenticate or
- * wait. Must resolve to its own `reason`/`recovery_hint` in
+ * a Slack-side rejection at all. If a caller uses the compatibility helper,
+ * it must resolve to its own `reason`/`recovery_hint` in
  * `runOptionalStream`, never collapsed into the generic
  * `optional_stream_failed` an API-layer failure gets — see
  * `OPTIONAL_STREAM_CAPABILITY_MISSING_REASON`.
@@ -151,12 +145,8 @@ export interface SlackApiRequestInit {
 
 /**
  * Issues one HTTP request and returns its status/body/retry-after. The
- * default (`nodeFetchSlackApiTransport`) uses Node `fetch` — this is the
- * ORIGINAL, still-available transport, kept as the fallback for tests and
- * for any caller that hasn't wired a browser page. Every live call from
- * `index.ts`'s `runOptionalStream` MUST use `createBrowserSlackApiTransport`
- * instead so the request uses the seeded browser cookie jar and browser-owned
- * request headers.
+ * production Slack gap streams use `nodeFetchSlackApiTransport` directly;
+ * callers can still inject another transport for tests or compatibility.
  */
 export type SlackApiTransport = (req: SlackApiRequestInit) => Promise<SlackApiRawResponse>;
 
@@ -182,8 +172,8 @@ export async function nodeFetchSlackApiTransport(req: SlackApiRequestInit): Prom
  * (mirrors `chatGptBackendFetchInBrowser` in `connectors/chatgpt/index.ts`).
  * Runs as
  * `window.fetch` inside the page, riding Chromium's real network stack —
- * the whole reason this function exists instead of calling Node `fetch`
- * directly. The page's cookie jar (seeded by the caller via
+ * the reason this compatibility function exists. The page's cookie jar
+ * (seeded by the caller via
  * `context.addCookies` before this ever runs) supplies `d`/`d-s`; only the
  * bearer/form token and browser-permitted headers are passed in explicitly.
  * `Cookie` and `User-Agent` are deliberately removed here because browser
@@ -235,7 +225,7 @@ export function createBrowserSlackApiTransport(page: SlackApiBrowserPage): Slack
  * POST a Slack Web API method with `application/x-www-form-urlencoded`
  * params, authenticated as `token` (matches `rusq/slack`'s `postForm` —
  * the same call shape slackdump's own dependency uses for these methods)
- * plus the derived session cookie pair (`d` + `d-s`) and browser UA that
+ * plus the derived session cookie pair (`d` + `d-s`) and user agent that
  * Slackdump's auth substrate sends for client tokens.
  */
 async function slackApiPost<T extends { error?: string; ok: boolean }>(

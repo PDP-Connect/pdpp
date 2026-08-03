@@ -833,6 +833,66 @@ test("T6: controller.runNow throw produces a failed RunRecord (scheduler stays a
   );
 });
 
+test("schedule refresh teardown aborts a pre-dispatch launch without a synthetic failed history row", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "sched-refresh-race-"));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const completedRuns: RunRecord[] = [];
+    const persisted: unknown[] = [];
+    const schedulerStore = {
+      ...anchorStore("chatgpt", Date.now()),
+      appendRunHistory: (record: unknown) => {
+        persisted.push(record);
+      },
+    };
+    let releaseState!: () => void;
+    let stateEntered!: () => void;
+    const stateReady = new Promise<void>((resolve) => {
+      releaseState = resolve;
+    });
+    const stateStarted = new Promise<void>((resolve) => {
+      stateEntered = resolve;
+    });
+
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: "chatgpt",
+          connectorInstanceId: "chatgpt",
+          connectorPath,
+          intervalMs: 25,
+          manifest: BACKGROUND_SAFE_MANIFEST,
+          maxRetries: 0,
+          ownerToken: "owner-token",
+        },
+      ],
+      getState: async () => {
+        stateEntered();
+        await stateReady;
+        return null;
+      },
+      onInteraction: async () => ({ accepted: true, status: "cancelled" }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: "http://localhost.invalid",
+      schedulerStore,
+    });
+
+    try {
+      scheduler.start();
+      await stateStarted;
+      scheduler.stop();
+      releaseState();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(completedRuns, [], "a stopped pre-dispatch launch must not publish a terminal record");
+      assert.deepEqual(persisted, [], "a stopped pre-dispatch launch must not append run history");
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { force: true, recursive: true });
+  }
+});
+
 test("T6b: arbitrary controller throw values remain terminal and redacted", async () => {
   const hostileGetter = Object.create(null, {
     code: {
