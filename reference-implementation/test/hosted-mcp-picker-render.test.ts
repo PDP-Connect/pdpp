@@ -37,6 +37,7 @@ import {
 } from "../server/hosted-mcp-selection.ts";
 import { escapeHtml } from "../server/hosted-ui.ts";
 import {
+  type ConsentClient,
   type ConsentPickerBinding,
   type ConsentPickerCapabilities,
   type ConsentUiRenderer,
@@ -53,7 +54,10 @@ const ui: ConsentUiRenderer = {
   escapeHtml,
   renderActionRow: (actions) => actions.map((a) => `<button>${escapeHtml(a.label)}</button>`).join("\n"),
   renderHostedDocument: ({ body }) => `<!doctype html><html><body>${body}</body></html>`,
-  renderKeyValueList: (items) => items.map((i) => `<div>${escapeHtml(i.label)}</div>`).join("\n"),
+  renderKeyValueList: (items) =>
+    items
+      .map((i) => `<div><span>${escapeHtml(i.label)}</span><span>${i.html ?? escapeHtml(i.value ?? "")}</span></div>`)
+      .join("\n"),
   renderPageIntro: ({ title }) => `<h1>${escapeHtml(title)}</h1>`,
   renderResultState: ({ title, body }) => `<div>${escapeHtml(title)}${escapeHtml(body)}</div>`,
   renderSurface: ({ children }) => `<section>${children}</section>`,
@@ -141,14 +145,49 @@ const AUTHORIZE_QUERY = {
   state: "render-test",
 };
 
+const DEFAULT_CLIENT: ConsentClient = {
+  client_id: "cli_picker_default",
+  metadata: { client_name: "Hosted MCP requester" },
+  registration_mode: "dynamic",
+};
+
+const LOOPBACK_REDIRECT_URI = "http://127.0.0.1:43123/callback";
+
+const OPAQUE_DCR_CLIENT = {
+  client_id: "cli_opaque_dcr",
+  metadata: { client_name: "Opaque MCP requester" },
+  registration_mode: "dynamic",
+} satisfies ConsentClient;
+
+const CIMD_CLIENT = {
+  client_id: "https://cimd.example/clients/opaque-1",
+  metadata: { client_name: "CIMD self-description" },
+  registration_mode: "client_id_metadata_document",
+} satisfies ConsentClient;
+
 function mustExist<T>(value: T | null | undefined, description: string): T {
   assert.ok(value, description);
   return value;
 }
 
 // biome-ignore lint/suspicious/useAwait: preserve the async helper contract used by the async render tests.
-async function renderPicker(caps: ConsentPickerCapabilities = makeCaps()): Promise<string> {
-  return renderHostedMcpSourceSelection("owner_local", AUTHORIZE_QUERY, "csrf-token", "PDPP", caps, ui);
+async function renderPicker(
+  caps: ConsentPickerCapabilities = makeCaps(),
+  client: ConsentClient = DEFAULT_CLIENT,
+  query: typeof AUTHORIZE_QUERY = AUTHORIZE_QUERY,
+  opts: { validationError?: string | null } = {}
+): Promise<string> {
+  return renderHostedMcpSourceSelection(
+    "owner_local",
+    query,
+    "csrf-token",
+    "PDPP",
+    caps,
+    ui,
+    client,
+    query.redirect_uri,
+    opts
+  );
 }
 
 // Returns the array of full `<input ...>` tags matching a marker attribute.
@@ -367,7 +406,7 @@ test("picker copy states the source-is-its-streams model in owner-facing languag
   // promise of an owner-narrowable retention knob.
   assert.match(
     html,
-    /does not set a time limit on data the app keeps/i,
+    /does not set a time limit on data the client keeps/i,
     "copy is honest that the page sets no machine-readable retention bound"
   );
   assert.equal(html.includes("retention limit"), false, 'copy avoids the jargon "retention limit"');
@@ -389,13 +428,105 @@ test("picker does not explain the selection model in two competing paragraphs", 
   // model detail. Guard against re-introducing the old duplicate lede sentence
   // that restated stream selection a second time.
   assert.equal(
-    html.includes("Select streams from the sources this app may use"),
+    html.includes("Select streams from the sources this client may use"),
     false,
     "the lede must not duplicate the model explanation carried by the risk copy"
   );
-  // Exactly one owner-facing "Share only what this app needs" model paragraph.
-  const modelParagraphs = [...html.matchAll(/Share only what this app needs/g)];
+  // Exactly one owner-facing "Share only what this client needs" model paragraph.
+  const modelParagraphs = [...html.matchAll(/Share only what this client needs/g)];
   assert.equal(modelParagraphs.length, 1, "the model is stated once, not repeated");
+});
+
+test("opaque DCR picker identifies the requester and separates claims from protocol facts", async () => {
+  const query = { ...AUTHORIZE_QUERY, client_id: OPAQUE_DCR_CLIENT.client_id, redirect_uri: LOOPBACK_REDIRECT_URI };
+  const html = await renderPicker(makeCaps(), OPAQUE_DCR_CLIENT, query);
+
+  assert.match(html, /Choose what Opaque MCP requester can read/);
+  assert.match(html, /data-authorship="client"/);
+  assert.match(html, /They claim — not verified by your server/);
+  assert.match(html, /Self-described client name/);
+  assert.match(html, /Opaque MCP requester/);
+  assert.match(html, /data-authorship="protocol"/);
+  assert.match(html, /Client ID/);
+  assert.match(html, /cli_opaque_dcr/);
+  assert.match(html, /Redirect URI/);
+  assert.match(html, new RegExp(LOOPBACK_REDIRECT_URI.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(html, /Client identity/, "opaque clients must not be presented as CIMD origins");
+});
+
+test("CIMD picker preserves URL-origin identity and labels metadata as self-description", async () => {
+  const query = { ...AUTHORIZE_QUERY, client_id: CIMD_CLIENT.client_id, redirect_uri: LOOPBACK_REDIRECT_URI };
+  const html = await renderPicker(makeCaps(), CIMD_CLIENT, query);
+
+  assert.match(html, /Choose what https:\/\/cimd\.example can read/);
+  assert.match(html, /Client identity/);
+  assert.match(html, /https:\/\/cimd\.example/);
+  assert.match(html, /Metadata document/);
+  assert.match(html, /https:\/\/cimd\.example\/clients\/opaque-1/);
+  assert.match(html, /Self-described client name/);
+  assert.match(html, /CIMD self-description/);
+  assert.match(html, /data-authorship="protocol"/);
+  assert.match(html, /data-authorship="client"/);
+  assert.doesNotMatch(html, /Choose what CIMD self-description can read/);
+});
+
+test("picker remains honest when the registered client has no optional name", async () => {
+  const client: ConsentClient = {
+    client_id: "cli_missing_name",
+    metadata: { redirect_uris: [LOOPBACK_REDIRECT_URI] },
+    registration_mode: "pre_registered_public",
+  };
+  const query = { ...AUTHORIZE_QUERY, client_id: client.client_id as string, redirect_uri: LOOPBACK_REDIRECT_URI };
+  const html = await renderPicker(makeCaps(), client, query);
+
+  assert.match(html, /Choose what cli_missing_name can read/);
+  assert.match(html, /Client ID/);
+  assert.match(html, /cli_missing_name/);
+  assert.match(html, /Redirect URI/);
+  assert.match(html, /127\.0\.0\.1:43123\/callback/);
+  assert.doesNotMatch(html, /Self-described client name/);
+  assert.doesNotMatch(html, /They claim — not verified by your server/);
+  assert.doesNotMatch(html, /this app|the app/i, "unknown app-ness must use client/requester language");
+});
+
+test("hostile client metadata is escaped in requester identity facts", async () => {
+  const hostileName = '<img src=x onerror="alert(1)"> & "untrusted"';
+  const hostileRedirect = 'http://127.0.0.1:43123/callback?next=<x>&q="quote"';
+  const client: ConsentClient = {
+    client_id: "cli_hostile_metadata",
+    metadata: { client_name: hostileName },
+    registration_mode: "dynamic",
+  };
+  const query = { ...AUTHORIZE_QUERY, client_id: client.client_id as string, redirect_uri: hostileRedirect };
+  const html = await renderPicker(makeCaps(), client, query);
+
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt; &amp; &quot;untrusted&quot;/);
+  assert.match(html, /next=&lt;x&gt;&amp;q=&quot;quote&quot;/);
+});
+
+test("validation-error re-render preserves the exact requester identity facts", async () => {
+  const query = { ...AUTHORIZE_QUERY, client_id: OPAQUE_DCR_CLIENT.client_id, redirect_uri: LOOPBACK_REDIRECT_URI };
+  const first = await renderPicker(makeCaps(), OPAQUE_DCR_CLIENT, query);
+  const rerendered = await renderPicker(makeCaps(), OPAQUE_DCR_CLIENT, query, {
+    validationError: "Choose a stream <before approving>.",
+  });
+
+  const identityFacts = [
+    "Opaque MCP requester",
+    "Self-described client name",
+    "They claim — not verified by your server",
+    "Client ID",
+    "cli_opaque_dcr",
+    "Redirect URI",
+    LOOPBACK_REDIRECT_URI,
+  ];
+  for (const fact of identityFacts) {
+    const count = (html: string) => html.split(fact).length - 1;
+    assert.equal(count(rerendered), count(first), `${fact} must survive validation re-render unchanged`);
+  }
+  assert.match(rerendered, /data-hosted-mcp-picker-error/);
+  assert.match(rerendered, /Choose a stream &lt;before approving&gt;\./);
 });
 
 // ── Empty-state: no sources registered ───────────────────────────────────────

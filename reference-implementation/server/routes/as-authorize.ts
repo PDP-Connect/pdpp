@@ -66,7 +66,9 @@ interface AppLike {
 
 // Shape expected by requireRegisteredRedirectUri (mirrors as-consent-ui-helpers.ts internal type).
 interface OAuthClient {
-  readonly metadata?: { redirect_uris?: string[] } | null;
+  readonly client_id?: string | null;
+  readonly metadata?: { client_name?: string | null; redirect_uris?: string[] } | null;
+  readonly registration_mode?: string | null;
 }
 
 interface ConsentStoreOutput {
@@ -294,7 +296,7 @@ function resolveNarrowedStreams(
   streamSelectionsBySource: Map<string, Set<string>>
 ): string[] | null | "deselected" {
   const manifestStreamNames = Array.isArray(manifest?.streams)
-    ? (manifest?.streams?.map((s) => s.name).filter((n): n is string => typeof n === "string") ?? [])
+    ? manifest.streams.map((s) => s.name).filter((n): n is string => typeof n === "string")
     : [];
   if (manifestStreamNames.length === 0) {
     return null; // (a)
@@ -462,6 +464,8 @@ async function renderHostedMcpPickerValidationPage(
   req: RouteRequest,
   res: RouteResponse,
   ctx: Pick<MountAsAuthorizeContext, "consentPickerCaps" | "consentUi" | "ensureCsrfToken" | "providerName">,
+  client: OAuthClient,
+  redirectUri: string,
   message: string
 ): Promise<unknown> {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
@@ -474,6 +478,8 @@ async function renderHostedMcpPickerValidationPage(
     ctx.providerName,
     ctx.consentPickerCaps,
     ctx.consentUi,
+    client,
+    redirectUri,
     { validationError: message }
   );
   return res.status(400).send(html);
@@ -486,6 +492,8 @@ function rejectMissingHostedMcpSelection(
     MountAsAuthorizeContext,
     "consentPickerCaps" | "consentUi" | "ensureCsrfToken" | "oauthError" | "providerName"
   >,
+  client: OAuthClient,
+  redirectUri: string,
   rawSelection: unknown
 ): Promise<unknown> | unknown {
   if (hasSubmittedSelectionInput(rawSelection)) {
@@ -495,6 +503,8 @@ function rejectMissingHostedMcpSelection(
     req,
     res,
     ctx,
+    client,
+    redirectUri,
     "Select at least one source and one stream inside each selected source before approving."
   );
 }
@@ -512,6 +522,7 @@ async function buildPackageAndRedirect(
     redirectUri: string;
     state: string | null;
   },
+  client: OAuthClient,
   ownerSubjectId: string,
   ctx: Pick<
     MountAsAuthorizeContext,
@@ -533,13 +544,22 @@ async function buildPackageAndRedirect(
       req,
       res,
       ctx,
+      client,
+      pkce.redirectUri,
       labels
         ? `Choose at least one stream for ${labels}, or clear that source.`
         : "Choose at least one stream inside each selected source, or clear that source."
     );
   }
   if (acc.authorizationDetails.length === 0) {
-    return renderHostedMcpPickerValidationPage(req, res, ctx, "Select at least one source before approving.");
+    return renderHostedMcpPickerValidationPage(
+      req,
+      res,
+      ctx,
+      client,
+      pkce.redirectUri,
+      "Select at least one source before approving."
+    );
   }
   const packageResult = await ctx.createHostedMcpGrantPackage({
     authorizationDetails: acc.authorizationDetails,
@@ -611,7 +631,9 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
             csrfToken,
             ctx.providerName,
             ctx.consentPickerCaps,
-            ctx.consentUi
+            ctx.consentUi,
+            client,
+            redirectUri
           )
         );
       }
@@ -675,7 +697,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
 
         const selections = ctx.selectionParsers.parseHostedMcpSelections(body.selection);
         if (selections.length === 0) {
-          return rejectMissingHostedMcpSelection(req, res, ctx, body.selection);
+          return rejectMissingHostedMcpSelection(req, res, ctx, client, redirectUri, body.selection);
         }
 
         // Per-source stream subsets submitted by the picker. Each entry is a
@@ -712,6 +734,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
           res,
           acc,
           { clientId, codeChallenge, codeChallengeMethod, redirectUri, state },
+          client,
           ownerSubjectId,
           ctx
         );

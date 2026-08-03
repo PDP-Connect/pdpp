@@ -1039,7 +1039,10 @@ test("hosted MCP source selection uses hosted-ui option styles", async () => {
     const resp = await fetch(authorizeUrl);
     assert.equal(resp.status, 200);
     const html = await resp.text();
-    assert.match(html, /Choose what this app can read/);
+    assert.match(html, /Choose what Hosted MCP test client can read/);
+    assert.match(html, /data-authorship="protocol"/);
+    assert.match(html, /Self-described client name/);
+    assert.ok(html.includes(client.client_id), "picker must render the resolved requester client ID");
     assert.match(html, /class="hosted-ui-option-group"/);
     assert.match(html, /class="hosted-ui-option"/);
     assert.match(html, /<details class="hosted-ui-option-source"[^>]*>/);
@@ -1066,7 +1069,7 @@ test("hosted MCP source selection uses hosted-ui option styles", async () => {
     assert.match(html, /spotify/, "picker meta copy should show canonical key `spotify`");
     assert.match(
       html,
-      /Share only what this app needs/,
+      /Share only what this client needs/,
       "picker copy should present the flow as an owner-facing setup"
     );
 
@@ -2448,7 +2451,10 @@ test("POST /oauth/authorize/mcp-package renders picker error when a selected sou
     assert.equal(resp.status, 400);
     assert.match(resp.headers.get("content-type") || "", /text\/html/);
     const html = await resp.text();
-    assert.match(html, /Choose what this app can read/);
+    assert.match(html, /Choose what Hosted MCP test client can read/);
+    assert.match(html, /data-authorship="protocol"/);
+    assert.match(html, /Self-described client name/);
+    assert.ok(html.includes(client.client_id), "validation rerender must retain the resolved requester client ID");
     assert.match(html, /Choose at least one stream for/i);
     assert.match(html, /data-hosted-mcp-picker-error/);
     assert.match(html, /class="hosted-ui-error hosted-ui-picker-error"/);
@@ -2536,7 +2542,10 @@ test("POST /oauth/authorize/mcp-package renders picker error when streams are su
     assert.match(resp.headers.get("content-type") || "", /text\/html/);
     const html = await resp.text();
 
-    assert.match(html, /Choose what this app can read/);
+    assert.match(html, /Choose what Hosted MCP test client can read/);
+    assert.match(html, /data-authorship="protocol"/);
+    assert.match(html, /Self-described client name/);
+    assert.ok(html.includes(client.client_id), "validation rerender must retain the resolved requester client ID");
     assert.match(html, /data-hosted-mcp-picker-error/);
     assert.match(html, /Select at least one source and one stream inside each selected source before approving/);
     assert.equal(
@@ -2687,7 +2696,7 @@ test("hosted MCP picker renders an access-mode radio with continuous default and
     assert.ok(!html.includes("client_policy"), "picker must not surface the off-spec retention.classification value");
     assert.match(
       html,
-      /does not set a time limit on data the app keeps/i,
+      /does not set a time limit on data the client keeps/i,
       "picker should tell the owner that this page does not set a retention/time limit for data the app keeps"
     );
   } finally {

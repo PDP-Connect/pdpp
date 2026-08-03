@@ -553,12 +553,16 @@ export function renderPendingConsentNotFoundHtml(providerName: string, ui: Conse
   });
 }
 
+export interface ConsentClient {
+  client_display?: { name?: string | null } | null;
+  client_id?: string | null;
+  metadata?: { client_name?: string | null; redirect_uris?: string[] | null } | null;
+  redirect_uri?: string | null;
+  registration_mode?: string | null;
+}
+
 export interface PendingGrantRequest {
-  client?: {
-    client_display?: { name?: string | null } | null;
-    client_id?: string | null;
-    registration_mode?: string | null;
-  } | null;
+  client?: ConsentClient | null;
   selection?: {
     streams?: Array<{
       name: string;
@@ -672,10 +676,10 @@ function renderAuthorshipBlock(
 }
 
 interface ConsentClientDisplay {
-  // CLIENT: the client's own self-described display (its app name).
+  // CLIENT: the client's own self-described display (its client name).
   clientFacts: Array<{ label: string; value?: unknown; html?: string }>;
   // PROTOCOL: server-resolved identity facts (the client_id origin / metadata
-  // document URL). Empty for pre-registered clients with no derived identity.
+  // document URL, and picker-only redirect details for opaque clients).
   protocolFacts: Array<{ label: string; value?: unknown; html?: string }>;
   titleName: string;
 }
@@ -691,37 +695,103 @@ function clientOriginFromClientId(clientId: string | null | undefined): string |
   }
 }
 
-function buildConsentClientDisplay(
-  client: NonNullable<PendingGrantRequest["client"]>,
+interface ConsentClientFact {
+  html?: string;
+  label: string;
+  value?: unknown;
+}
+
+function trimClientName(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function consentClientName(client: ConsentClient): string | null {
+  return trimClientName(client.client_display?.name) || trimClientName(client.metadata?.client_name);
+}
+
+function buildOpaqueConsentClientDisplay(
+  client: ConsentClient,
+  clientName: string | null,
+  clientNameLabel: string,
   ui: ConsentUiRenderer
 ): ConsentClientDisplay {
   const clientId = typeof client.client_id === "string" ? client.client_id : null;
-  const clientName = client.client_display?.name || clientId || "Client application";
-  if (client.registration_mode !== "client_id_metadata_document") {
-    // Pre-registered/public client: the "Requesting app" name is whatever the
-    // client supplied at registration — a client-authored claim, not a fact.
-    return {
-      clientFacts: [{ label: "Requesting app", value: clientName }],
-      protocolFacts: [],
-      titleName: clientName,
-    };
+  // Opaque client: the registered name is a client-authored claim. The
+  // picker supplies redirect_uri so it can also show the exact protocol
+  // details that led here without changing the pending-consent surface.
+  const protocolFacts: ConsentClientFact[] = [];
+  if (client.redirect_uri) {
+    if (clientId) {
+      protocolFacts.push({ html: `<code>${ui.escapeHtml(clientId)}</code>`, label: "Client ID" });
+    }
+    protocolFacts.push({ html: `<code>${ui.escapeHtml(client.redirect_uri)}</code>`, label: "Redirect URI" });
   }
+  return {
+    clientFacts: clientName ? [{ label: clientNameLabel, value: clientName }] : [],
+    protocolFacts,
+    titleName: clientName || clientId || "Requesting client",
+  };
+}
 
+function buildCimdConsentClientDisplay(
+  client: ConsentClient,
+  clientName: string | null,
+  clientNameLabel: string,
+  ui: ConsentUiRenderer
+): ConsentClientDisplay {
+  const clientId = typeof client.client_id === "string" ? client.client_id : null;
   // CIMD client: the URL-origin identity is a protocol fact (it is the
   // verifiable identifier the client authenticated as); the self-described
-  // app name is a client-authored claim (see the CIMD consent-display spec).
-  const identity = clientOriginFromClientId(clientId) || clientId || "Client application";
-  const protocolFacts: Array<{ label: string; value?: unknown; html?: string }> = [
+  // client name is a client-authored claim (see the CIMD consent-display spec).
+  const identity = clientOriginFromClientId(clientId) || clientId || "Requesting client";
+  const protocolFacts: ConsentClientFact[] = [
     { html: `<code>${ui.escapeHtml(identity)}</code>`, label: "Client identity" },
   ];
   if (clientId) {
     protocolFacts.push({ html: `<code>${ui.escapeHtml(clientId)}</code>`, label: "Metadata document" });
   }
-  const clientFacts: Array<{ label: string; value?: unknown; html?: string }> = [];
+  const clientFacts: ConsentClientFact[] = [];
   if (clientName && clientName !== identity) {
-    clientFacts.push({ label: "Self-described app name", value: clientName });
+    clientFacts.push({ label: clientNameLabel, value: clientName });
   }
   return { clientFacts, protocolFacts, titleName: identity };
+}
+
+function buildConsentClientDisplay(client: ConsentClient, ui: ConsentUiRenderer): ConsentClientDisplay {
+  const clientName = consentClientName(client);
+  const clientNameLabel = client.redirect_uri ? "Self-described client name" : "Requesting app";
+  return client.registration_mode === "client_id_metadata_document"
+    ? buildCimdConsentClientDisplay(client, clientName, clientNameLabel, ui)
+    : buildOpaqueConsentClientDisplay(client, clientName, clientNameLabel, ui);
+}
+
+function renderRequesterIdentityBlock(clientDisplay: ConsentClientDisplay, ui: ConsentUiRenderer): string {
+  const blocks: string[] = [];
+  if (clientDisplay.protocolFacts.length > 0) {
+    blocks.push(
+      renderAuthorshipBlock(
+        "protocol",
+        "Requester protocol details",
+        ui.renderKeyValueList(clientDisplay.protocolFacts),
+        ui
+      )
+    );
+  }
+  if (clientDisplay.clientFacts.length > 0) {
+    blocks.push(
+      renderAuthorshipBlock(
+        "client",
+        "Requester self-description",
+        ui.renderKeyValueList(clientDisplay.clientFacts),
+        ui
+      )
+    );
+  }
+  return blocks.join("\n");
 }
 
 /**
@@ -1251,9 +1321,19 @@ export async function renderHostedMcpSourceSelection(
   providerName: string,
   caps: ConsentPickerCapabilities,
   ui: ConsentUiRenderer,
+  client: ConsentClient,
+  redirectUri: string | null,
   opts: { validationError?: string | null } = {}
 ): Promise<string> {
   const rows = await listHostedMcpPickerRows(caps, ownerSubjectId);
+  const clientDisplay = buildConsentClientDisplay(
+    {
+      ...client,
+      redirect_uri: redirectUri,
+    },
+    ui
+  );
+  const requesterIdentityBlock = renderRequesterIdentityBlock(clientDisplay, ui);
 
   const hidden = [
     "client_id",
@@ -1345,8 +1425,8 @@ export async function renderHostedMcpSourceSelection(
     : "";
 
   const riskCopy = rows.length
-    ? `<p class="pdpp-body"><strong>Share only what this app needs.</strong> A source is its streams: check the streams you want to share, and that source is included. Check one stream to share just that stream, or use the per-source buttons to share all of it. A source with no streams checked is not shared, and you can revoke any source you approve here later.</p>
-            <p class="pdpp-body hosted-ui-retention-note">This page does not set a time limit on data the app keeps after reading it from your server. Review the app's own terms before approving.</p>`
+    ? `<p class="pdpp-body"><strong>Share only what this client needs.</strong> A source is its streams: check the streams you want to share, and that source is included. Check one stream to share just that stream, or use the per-source buttons to share all of it. A source with no streams checked is not shared, and you can revoke any source you approve here later.</p>
+            <p class="pdpp-body hosted-ui-retention-note">This page does not set a time limit on data the client keeps after reading it from your server. Review the client's own terms before approving.</p>`
     : "";
 
   const validationError = typeof opts.validationError === "string" ? opts.validationError.trim() : "";
@@ -1374,7 +1454,7 @@ export async function renderHostedMcpSourceSelection(
             <input type="radio" name="access_mode" value="continuous" checked />
             <span class="hosted-ui-access-mode-body">
               <span class="hosted-ui-access-mode-label">Keep access until I revoke it</span>
-              <span class="hosted-ui-access-mode-meta">Best for apps that need to stay up to date.</span>
+            <span class="hosted-ui-access-mode-meta">Best for clients that need to stay up to date.</span>
             </span>
           </label>
           <label class="hosted-ui-access-mode-option">
@@ -1580,12 +1660,13 @@ export async function renderHostedMcpSourceSelection(
     body: [
       ui.renderPageIntro({
         eyebrow: "Data access request",
-        lede: "Pick the streams this app may read. Anything you leave unchecked stays private.",
-        title: "Choose what this app can read",
+        lede: `Pick the streams ${clientDisplay.titleName} may read. Anything you leave unchecked stays private.`,
+        title: `Choose what ${clientDisplay.titleName} can read`,
       }),
       ui.renderSurface({
         children: `
             ${pickerBehaviorStyles}
+            ${requesterIdentityBlock}
             ${riskCopy}
             <form method="POST" action="/oauth/authorize/mcp-package" data-hosted-mcp-picker-form>
               <input type="hidden" name="_csrf" value="${ui.escapeHtml(csrfToken)}" />
