@@ -83,6 +83,7 @@ export const RECOVERY_ACTIONS = new Set([
   "manual_action_required",
   "update_selector",
   "capture_live_surface",
+  "requires_browser_runtime",
   "upstream_unblock",
   "not_retriable",
   "unknown",

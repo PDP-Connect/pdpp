@@ -5548,6 +5548,55 @@ rl.on('line', (line) => {
     }
   );
 
+  await t.test("run timeline accepts SKIP_RESULT.recovery_hint action requires_browser_runtime", async () => {
+    await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      const ownerToken = await issueOwnerToken(asUrl, "cli_owner");
+      const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-cli-run-skip-requires-browser-runtime-"));
+      const connectorPath = join(tmpDir, "connector.mjs");
+      writeFileSync(
+        connectorPath,
+        `
+        console.log(JSON.stringify({
+          type: 'SKIP_RESULT',
+          stream: 'saved_tracks',
+          reason: 'not_available_in_mode',
+          message: 'this runtime has no browser available',
+          recovery_hint: { action: 'requires_browser_runtime', retryable: false },
+        }));
+        console.log(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }));
+      `
+      );
+
+      try {
+        const result = await runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "full_refresh",
+          connectorId: spotifyManifest.connector_id,
+          connectorPath,
+          manifest: spotifyManifest,
+          ownerToken,
+          rsUrl,
+          state: null,
+        });
+
+        assert.ok(result.run_id, "requires_browser_runtime skip should not raise connector_protocol_violation");
+
+        const timeline = await runCli(["run", "timeline", requireRunId(result), "--as-url", asUrl, "--format", "json"]);
+        assert.ok(timeline.json, "expected CLI --format json output to parse");
+
+        const skippedEvent = (timeline.json.data || []).find((event) => event.event_type === "run.stream_skipped");
+        assert.ok(skippedEvent, "run timeline should include run.stream_skipped");
+        assert.equal(skippedEvent.stream_id, "saved_tracks");
+
+        const completedEvent = (timeline.json.data || []).find((event) => event.event_type === "run.completed");
+        assert.ok(completedEvent, "run timeline should include run.completed, not run.failed");
+        assert.equal(timeline.stderr, "");
+      } finally {
+        rmSync(tmpDir, { force: true, recursive: true });
+      }
+    });
+  });
+
   await t.test(
     "run timeline keeps undeclared-stream SKIP_RESULT failures inspectable without skip artifacts",
     async () => {
