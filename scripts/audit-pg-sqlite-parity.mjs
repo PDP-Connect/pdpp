@@ -16,13 +16,38 @@
  *      hasOnlyFirstPageRecentFilters() but never applied in the query builder
  *      — that is the exact shape of the cursor bug.
  *
- * Exit 1 if any parity gap is found. Intended to run in CI as a regression gate.
+ * Exit 1 if any parity gap is found.
+ *
+ * ---------------------------------------------------------------------------
+ * SCOPE OF GUARANTEE — read before trusting a clean run
+ *
+ * This is a TEXTUAL-PRESENCE check, not a control-flow or execution check.
+ *
+ * It CATCHES:   a filter the Postgres path never mentions at all (the original
+ *               `filters.cursor` bug), and ORDER BY tiebreaks that disagree
+ *               across backends.
+ * It MISSES:    a filter that is textually present but DEAD. An independent
+ *               gate demonstrated this concretely: patching the Postgres path
+ *               to `if (false && filters.since)` leaves the token
+ *               `filters.since` in the source, so this script reports
+ *               "no gaps found" (exit 0) while Postgres really does leak a
+ *               pre-cutoff row. Commented-out handling and tokens inside
+ *               strings fail the same way.
+ *
+ * Therefore: DO NOT treat a clean run of this script alone as proof of
+ * PG/SQLite parity, and do not land it as unattended CI authority on its own.
+ * The authority is the executable cross-backend test at
+ * `test/spine-correlation-filter-parity-postgres.test.ts`, which seeds
+ * identical data into both backends and diffs observable results — immune to
+ * the dead-code class by construction. This script remains valuable as a fast
+ * local diagnostic that points at a specific line.
+ * ---------------------------------------------------------------------------
  */
 
 import { readFileSync } from "node:fs";
 import { argv, exit } from "node:process";
 
-const PG = "reference-implementation/lib/postgres-spine.js";
+const PG = "reference-implementation/lib/postgres-spine.ts";
 const SQLITE = "reference-implementation/lib/spine.ts";
 
 /** Every `bag.key` member read in a source, grouped by bag name. */
