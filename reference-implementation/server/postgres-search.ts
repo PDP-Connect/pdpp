@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Postgres-backed retrieval index primitives.
  *
@@ -8,68 +11,147 @@
  * Spec: openspec/changes/add-postgres-runtime-storage/
  */
 
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
 import {
   isPostgresSemanticIterativeScanSupported,
   isPostgresSemanticVectorEmbedding,
   postgresQuery,
   withPostgresTransaction,
-} from './postgres-storage.js';
-import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
-import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
-import { sumCountRows } from './search-index-counts.ts';
+} from "./postgres-storage.ts";
+import { sumCountRows } from "./search-index-counts.ts";
+import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.ts";
 
-function lexicalTextEntries(fields) {
-  if (!fields || typeof fields !== 'object') return [];
+type SearchEnvironment = NodeJS.ProcessEnv;
+
+interface ConnectorStreamScope {
+  connectorId: string;
+  connectorInstanceId?: string;
+  stream: string;
+}
+
+interface RecordScope extends ConnectorStreamScope {
+  recordKey: string;
+}
+
+interface LexicalIndexEntry {
+  field: string;
+  recordKey: string;
+  text: string;
+}
+
+interface LexicalTextEntry {
+  field: string;
+  value: string;
+}
+
+interface SemanticIndexEntry {
+  connectorId?: string;
+  connectorInstanceId?: string;
+  recordKey: string;
+  scopeKey: string;
+  vector?: Iterable<number>;
+}
+
+interface NormalizedSemanticIndexEntry {
+  connectorId: string;
+  connectorInstanceId: string;
+  recordKey: string;
+  scopeKey: string;
+  values: number[];
+}
+
+interface SemanticHit {
+  connectorId: string;
+  connectorInstanceId: string;
+  distance: number;
+  recordKey: string;
+  scopeKey: string;
+}
+
+interface EnvironmentOptions {
+  env?: SearchEnvironment;
+}
+
+function lexicalTextEntries(fields: Record<string, unknown> | null | undefined): LexicalTextEntry[] {
+  if (!fields || typeof fields !== "object") {
+    return [];
+  }
   return Object.entries(fields)
-    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== '')
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "")
     .map(([field, value]) => ({ field, value: String(value) }));
 }
 
-function defaultConnectorInstanceId(connectorId) {
+function defaultConnectorInstanceId(connectorId: string): string {
   return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
-export function postgresLexicalCandidateLimit({ env = process.env } = {}) {
-  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_CANDIDATE_LIMIT || '', 10);
+async function upsertLexicalEntries(
+  entries: readonly LexicalTextEntry[],
+  index: number,
+  scope: Required<RecordScope>
+): Promise<void> {
+  const entry = entries[index];
+  if (!entry) {
+    return;
+  }
+  await postgresQuery(
+    `INSERT INTO lexical_search_index (connector_id, connector_instance_id, stream, record_key, field, value)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (connector_instance_id, stream, record_key, field) DO UPDATE
+         SET value = EXCLUDED.value`,
+    [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.recordKey, entry.field, entry.value]
+  );
+  await upsertLexicalEntries(entries, index + 1, scope);
+}
+
+export function postgresLexicalCandidateLimit({ env = process.env }: EnvironmentOptions = {}): number {
+  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_CANDIDATE_LIMIT || "", 10);
   if (Number.isFinite(parsed) && parsed > 0) {
-    return Math.min(Math.max(parsed, 100), 10000);
+    return Math.min(Math.max(parsed, 100), 10_000);
   }
   return 200;
 }
 
-export async function postgresLexicalIndexUpsert({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, fields }) {
+export async function postgresLexicalIndexUpsert({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  recordKey,
+  fields,
+}: RecordScope & { fields: Record<string, unknown> }) {
   await postgresQuery(
-    'DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3',
-    [connectorInstanceId, stream, recordKey],
+    "DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3",
+    [connectorInstanceId, stream, recordKey]
   );
   const entries = lexicalTextEntries(fields);
-  for (const entry of entries) {
-    await postgresQuery(
-      `INSERT INTO lexical_search_index (connector_id, connector_instance_id, stream, record_key, field, value)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (connector_instance_id, stream, record_key, field) DO UPDATE
-         SET value = EXCLUDED.value`,
-      [connectorId, connectorInstanceId, stream, recordKey, entry.field, entry.value],
-    );
-  }
+  await upsertLexicalEntries(entries, 0, { connectorId, connectorInstanceId, recordKey, stream });
 }
 
-export async function postgresLexicalIndexDelete({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey }) {
+export async function postgresLexicalIndexDelete({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  recordKey,
+}: RecordScope) {
   await postgresQuery(
-    'DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3',
-    [connectorInstanceId, stream, recordKey],
+    "DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3",
+    [connectorInstanceId, stream, recordKey]
   );
 }
 
-export async function postgresLexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream }) {
-  await postgresQuery(
-    'DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
-  );
-  await postgresQuery(
-    'DELETE FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
-  );
+export async function postgresLexicalIndexDeleteByConnectorStream({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+}: ConnectorStreamScope) {
+  await postgresQuery("DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2", [
+    connectorInstanceId,
+    stream,
+  ]);
+  await postgresQuery("DELETE FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2", [
+    connectorInstanceId,
+    stream,
+  ]);
 }
 
 export async function postgresLexicalIndexInsertMany({
@@ -77,8 +159,10 @@ export async function postgresLexicalIndexInsertMany({
   connectorInstanceId = defaultConnectorInstanceId(connectorId),
   stream,
   entries,
-}) {
-  if (!Array.isArray(entries) || entries.length === 0) return 0;
+}: ConnectorStreamScope & { entries: readonly LexicalIndexEntry[] }) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return 0;
+  }
   await postgresQuery(
     `INSERT INTO lexical_search_index (connector_id, connector_instance_id, stream, record_key, field, value)
      SELECT $1, $2, $3, rows.record_key, rows.field, rows.value
@@ -93,15 +177,18 @@ export async function postgresLexicalIndexInsertMany({
       entries.map((entry) => entry.recordKey),
       entries.map((entry) => entry.field),
       entries.map((entry) => entry.text),
-    ],
+    ]
   );
   return entries.length;
 }
 
-export async function postgresLexicalMetaGetFingerprint({ connectorInstanceId, stream }) {
+export async function postgresLexicalMetaGetFingerprint({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
   const result = await postgresQuery(
-    'SELECT fields_fingerprint FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
+    "SELECT fields_fingerprint FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2",
+    [connectorInstanceId, stream]
   );
   return result.rows[0] || null;
 }
@@ -112,7 +199,7 @@ export async function postgresLexicalMetaUpsertFingerprint({
   stream,
   fieldsFingerprint,
   updatedAt,
-}) {
+}: ConnectorStreamScope & { fieldsFingerprint: string; updatedAt: string }) {
   await postgresQuery(
     `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
      VALUES($1, $2, $3, $4, $5)
@@ -120,37 +207,51 @@ export async function postgresLexicalMetaUpsertFingerprint({
        connector_id = EXCLUDED.connector_id,
        fields_fingerprint = EXCLUDED.fields_fingerprint,
        updated_at = EXCLUDED.updated_at`,
-    [connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt],
+    [connectorId, connectorInstanceId, stream, fieldsFingerprint, updatedAt]
   );
 }
 
-export async function postgresLexicalMetaListStreamsForConnector({ connectorInstanceId }) {
+export async function postgresLexicalMetaListStreamsForConnector({
+  connectorInstanceId,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId">>) {
   const result = await postgresQuery(
-    'SELECT stream FROM lexical_search_meta WHERE connector_instance_id = $1 ORDER BY stream',
-    [connectorInstanceId],
+    "SELECT stream FROM lexical_search_meta WHERE connector_instance_id = $1 ORDER BY stream",
+    [connectorInstanceId]
   );
   return result.rows;
 }
 
-export async function postgresLexicalIndexCountByStream({ connectorInstanceId, stream }) {
+export async function postgresLexicalIndexCountByStream({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
   const result = await postgresQuery(
-    'SELECT COUNT(*) AS n FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
+    "SELECT COUNT(*) AS n FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2",
+    [connectorInstanceId, stream]
   );
   return Number(result.rows[0]?.n || 0);
 }
 
-export async function postgresLexicalRecordsCountNonDeleted({ connectorInstanceId, stream }) {
+export async function postgresLexicalRecordsCountNonDeleted({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
   const result = await postgresQuery(
-    'SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE',
-    [connectorInstanceId, stream],
+    "SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE",
+    [connectorInstanceId, stream]
   );
   return Number(result.rows[0]?.n || 0);
 }
 
-export async function postgresLexicalCountIndexableTextValues({ connectorInstanceId, stream, declaredFields }) {
+export async function postgresLexicalCountIndexableTextValues({
+  connectorInstanceId,
+  stream,
+  declaredFields,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">> & { declaredFields?: readonly string[] }) {
   const fields = declaredFields || [];
-  if (fields.length === 0) return 0;
+  if (fields.length === 0) {
+    return 0;
+  }
   const result = await postgresQuery(
     `SELECT declared_fields.field_ordinal, declared_fields.field, COUNT(*) AS n
      FROM unnest($3::text[]) WITH ORDINALITY AS declared_fields(field, field_ordinal)
@@ -160,7 +261,7 @@ export async function postgresLexicalCountIndexableTextValues({ connectorInstanc
       AND records.deleted = FALSE
       AND COALESCE(records.record_json ->> declared_fields.field, '') <> ''
      GROUP BY declared_fields.field_ordinal, declared_fields.field`,
-    [connectorInstanceId, stream, fields],
+    [connectorInstanceId, stream, fields]
   );
   return sumCountRows(result.rows);
 }
@@ -170,7 +271,7 @@ export async function postgresLexicalRecordsPageNonDeleted({
   stream,
   afterId,
   limit,
-}) {
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">> & { afterId: number; limit: number }) {
   const result = await postgresQuery(
     `SELECT id, record_key, record_json::text AS record_json
      FROM records
@@ -180,7 +281,7 @@ export async function postgresLexicalRecordsPageNonDeleted({
        AND id > $3
      ORDER BY id ASC
      LIMIT $4`,
-    [connectorInstanceId, stream, afterId, limit],
+    [connectorInstanceId, stream, afterId, limit]
   );
   return result.rows;
 }
@@ -193,25 +294,31 @@ export async function postgresLexicalSearch({
   q,
   limit = 25,
   recordKeys = null,
+}: ConnectorStreamScope & {
+  searchableFields?: readonly string[];
+  q: string;
+  limit?: number;
+  recordKeys?: readonly string[] | null;
 }) {
-  const fields = Array.isArray(searchableFields) && searchableFields.length > 0
-    ? searchableFields
-    : null;
-  const params = [connectorInstanceId, stream, q, Math.min(Math.max(Number(limit) || 25, 1), 100)];
-  let fieldParam = null;
+  const fields = Array.isArray(searchableFields) && searchableFields.length > 0 ? searchableFields : null;
+  const params: unknown[] = [connectorInstanceId, stream, q, Math.min(Math.max(Number(limit) || 25, 1), 100)];
+  let fieldParam: number | null = null;
   if (fields) {
     params.push(fields);
     fieldParam = params.length;
   }
-  let recordClause = '';
+  let recordClause = "";
   if (Array.isArray(recordKeys)) {
-    if (recordKeys.length === 0) return [];
+    if (recordKeys.length === 0) {
+      return [];
+    }
     params.push(recordKeys);
     recordClause = `AND lsi.record_key = ANY($${params.length}::text[])`;
   }
-  const fieldClause = (alias = 'lsi') => fieldParam === null ? '' : `AND ${alias}.field = ANY($${fieldParam}::text[])`;
+  const fieldClause = (alias = "lsi") =>
+    fieldParam === null ? "" : `AND ${alias}.field = ANY($${fieldParam}::text[])`;
   const broadCandidateWindow = !Array.isArray(recordKeys);
-  let sql;
+  let sql = "";
   if (broadCandidateWindow) {
     params.push(postgresLexicalCandidateLimit());
     const candidateLimitParam = params.length;
@@ -220,7 +327,7 @@ export async function postgresLexicalSearch({
        FROM lexical_search_index lsi
        WHERE lsi.connector_instance_id = $1
          AND lsi.stream = $2
-         ${fieldClause('lsi')}
+         ${fieldClause("lsi")}
          AND lsi.document @@ plainto_tsquery('simple', $3)
        LIMIT $${candidateLimitParam}
      )
@@ -252,7 +359,7 @@ export async function postgresLexicalSearch({
       AND r.record_key = lsi.record_key
      WHERE lsi.connector_instance_id = $1
        AND lsi.stream = $2
-       ${fieldClause('lsi')}
+       ${fieldClause("lsi")}
        ${recordClause}
        AND document @@ plainto_tsquery('simple', $3)
        AND r.deleted = FALSE
@@ -264,37 +371,49 @@ export async function postgresLexicalSearch({
     // /dev/shm is small enough that broad owner searches can fail with 53100.
     // Keep this scoped to the lexical read transaction rather than mutating
     // global Postgres settings.
-    await client.query('SET LOCAL max_parallel_workers_per_gather = 0');
+    await client.query("SET LOCAL max_parallel_workers_per_gather = 0");
     return client.query(sql, params);
   });
   return result.rows;
 }
 
-export async function postgresSemanticIndexDelete({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey }) {
+export async function postgresSemanticIndexDelete({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  recordKey,
+}: RecordScope) {
   const scopePrefix = `[${JSON.stringify(stream)},`;
   await postgresQuery(
-    'DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2 AND record_key = $3',
-    [connectorInstanceId, `${scopePrefix}%`, recordKey],
+    "DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2 AND record_key = $3",
+    [connectorInstanceId, `${scopePrefix}%`, recordKey]
   );
 }
 
-export async function postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream }) {
+export async function postgresSemanticIndexDeleteByConnectorStream({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+}: ConnectorStreamScope) {
   const scopePrefix = `[${JSON.stringify(stream)},`;
+  await postgresQuery("DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2", [
+    connectorInstanceId,
+    `${scopePrefix}%`,
+  ]);
+  await postgresQuery("DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2", [
+    connectorInstanceId,
+    stream,
+  ]);
   await postgresQuery(
-    'DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2',
-    [connectorInstanceId, `${scopePrefix}%`],
-  );
-  await postgresQuery(
-    'DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
-  );
-  await postgresQuery(
-    'DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
+    "DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2",
+    [connectorInstanceId, stream]
   );
 }
 
-export async function postgresListSemanticConnectorInstanceIds({ connectorId, stream }) {
+export async function postgresListSemanticConnectorInstanceIds({
+  connectorId,
+  stream,
+}: Pick<ConnectorStreamScope, "connectorId" | "stream">) {
   const result = await postgresQuery(
     `SELECT connector_instance_id
      FROM (
@@ -312,22 +431,31 @@ export async function postgresListSemanticConnectorInstanceIds({ connectorId, st
      ) ids
      WHERE connector_instance_id IS NOT NULL
      ORDER BY connector_instance_id`,
-    [connectorId, stream],
+    [connectorId, stream]
   );
   return result.rows.map((row) => row.connector_instance_id).filter(Boolean);
 }
 
-export async function postgresCountSemanticRecords({ connectorInstanceId, stream }) {
+export async function postgresCountSemanticRecords({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
   const result = await postgresQuery(
-    'SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE',
-    [connectorInstanceId, stream],
+    "SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE",
+    [connectorInstanceId, stream]
   );
   return Number(result.rows[0]?.n || 0);
 }
 
-export async function postgresCountIndexableSemanticValues({ connectorInstanceId, stream, declaredFields }) {
+export async function postgresCountIndexableSemanticValues({
+  connectorInstanceId,
+  stream,
+  declaredFields,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">> & { declaredFields?: readonly string[] }) {
   const fields = declaredFields || [];
-  if (fields.length === 0) return 0;
+  if (fields.length === 0) {
+    return 0;
+  }
   const result = await postgresQuery(
     `SELECT declared_fields.field_ordinal, declared_fields.field, COUNT(*) AS n
      FROM unnest($3::text[]) WITH ORDINALITY AS declared_fields(field, field_ordinal)
@@ -337,22 +465,30 @@ export async function postgresCountIndexableSemanticValues({ connectorInstanceId
       AND records.deleted = FALSE
       AND NULLIF(BTRIM(records.record_json ->> declared_fields.field), '') IS NOT NULL
      GROUP BY declared_fields.field_ordinal, declared_fields.field`,
-    [connectorInstanceId, stream, fields],
+    [connectorInstanceId, stream, fields]
   );
   return sumCountRows(result.rows);
 }
 
-export async function postgresCountSemanticIndexByScope({ connectorId, connectorInstanceId, scopeKey }) {
+export async function postgresCountSemanticIndexByScope({
+  connectorId,
+  connectorInstanceId,
+  scopeKey,
+}: Required<Pick<ConnectorStreamScope, "connectorId" | "connectorInstanceId">> & { scopeKey: string }) {
   const result = await postgresQuery(
     `SELECT COUNT(*) AS n
      FROM semantic_search_blob
      WHERE connector_id = $1 AND connector_instance_id = $2 AND scope_key = $3`,
-    [connectorId, connectorInstanceId, scopeKey],
+    [connectorId, connectorInstanceId, scopeKey]
   );
   return Number(result.rows[0]?.n || 0);
 }
 
-export async function postgresListExistingSemanticKeys({ connectorId, connectorInstanceId, stream }) {
+export async function postgresListExistingSemanticKeys({
+  connectorId,
+  connectorInstanceId,
+  stream,
+}: Required<ConnectorStreamScope>) {
   const scopePrefix = `[${JSON.stringify(stream)},`;
   const result = await postgresQuery(
     `SELECT scope_key, record_key
@@ -360,40 +496,57 @@ export async function postgresListExistingSemanticKeys({ connectorId, connectorI
      WHERE connector_id = $1
        AND connector_instance_id = $2
        AND scope_key LIKE $3`,
-    [connectorId, connectorInstanceId, `${scopePrefix}%`],
+    [connectorId, connectorInstanceId, `${scopePrefix}%`]
   );
-  return new Set(result.rows.map((row) => JSON.stringify([row.scope_key, `${connectorInstanceId}\u0000${row.record_key}`])));
+  return new Set(
+    result.rows.map((row) => JSON.stringify([row.scope_key, `${connectorInstanceId}\u0000${row.record_key}`]))
+  );
 }
 
-function dedupeSemanticEntries({ connectorId, connectorInstanceId, entries }) {
-  const deduped = new Map();
-  for (const entry of entries || []) {
+function dedupeSemanticEntries({
+  connectorId,
+  connectorInstanceId,
+  entries,
+}: Required<Pick<ConnectorStreamScope, "connectorId" | "connectorInstanceId">> & {
+  entries?: readonly SemanticIndexEntry[];
+}): NormalizedSemanticIndexEntry[] {
+  const deduped = new Map<string, NormalizedSemanticIndexEntry>();
+  for (const entry of entries ?? []) {
     const resolvedConnectorInstanceId = entry.connectorInstanceId ?? connectorInstanceId;
     const key = JSON.stringify([resolvedConnectorInstanceId, entry.scopeKey, entry.recordKey]);
     deduped.set(key, {
       connectorId: entry.connectorId ?? connectorId,
       connectorInstanceId: resolvedConnectorInstanceId,
-      scopeKey: entry.scopeKey,
       recordKey: entry.recordKey,
+      scopeKey: entry.scopeKey,
       values: Array.from(entry.vector || []),
     });
   }
   return Array.from(deduped.values());
 }
 
-export async function postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), entries }) {
+export async function postgresSemanticIndexInsertMany({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  entries,
+}: Required<Pick<ConnectorStreamScope, "connectorId">> & {
+  connectorInstanceId?: string;
+  entries: readonly SemanticIndexEntry[];
+}) {
   const vectorMode = isPostgresSemanticVectorEmbedding();
   const rows = dedupeSemanticEntries({ connectorId, connectorInstanceId, entries })
     // pgvector rejects empty vectors; an empty embedding could never match a
     // query anyway (the JSONB path scored it at infinite distance).
     .filter((entry) => !vectorMode || entry.values.length > 0);
-  if (rows.length === 0) return 0;
+  if (rows.length === 0) {
+    return 0;
+  }
   await postgresQuery(
     // The embedding parameter is text: pg accepts a JSON array literal as both
     // valid JSON and valid pgvector input, but the target type differs between
     // the two storage modes.
     `INSERT INTO semantic_search_blob (connector_id, connector_instance_id, scope_key, record_key, embedding)
-     SELECT rows.connector_id, rows.connector_instance_id, rows.scope_key, rows.record_key, rows.embedding::${vectorMode ? 'vector' : 'jsonb'}
+     SELECT rows.connector_id, rows.connector_instance_id, rows.scope_key, rows.record_key, rows.embedding::${vectorMode ? "vector" : "jsonb"}
      FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
        AS rows(connector_id, connector_instance_id, scope_key, record_key, embedding)
      ON CONFLICT (connector_instance_id, scope_key, record_key) DO UPDATE
@@ -404,17 +557,28 @@ export async function postgresSemanticIndexInsertMany({ connectorId, connectorIn
       rows.map((entry) => entry.scopeKey),
       rows.map((entry) => entry.recordKey),
       rows.map((entry) => JSON.stringify(entry.values)),
-    ],
+    ]
   );
   return rows.length;
 }
 
-export async function postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, entries }) {
-  await postgresSemanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
+export async function postgresSemanticIndexUpsertMany({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  recordKey,
+  entries,
+}: RecordScope & { entries: readonly SemanticIndexEntry[] }) {
+  await postgresSemanticIndexDelete({ connectorId, connectorInstanceId, recordKey, stream });
   return await postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId, entries });
 }
 
-export async function postgresSemanticRecordsPage({ connectorInstanceId, stream, lastId, limit }) {
+export async function postgresSemanticRecordsPage({
+  connectorInstanceId,
+  stream,
+  lastId,
+  limit,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">> & { lastId: number; limit: number }) {
   const result = await postgresQuery(
     `SELECT id, record_key, record_json
      FROM records
@@ -424,22 +588,33 @@ export async function postgresSemanticRecordsPage({ connectorInstanceId, stream,
        AND id > $3
      ORDER BY id ASC
      LIMIT $4`,
-    [connectorInstanceId, stream, lastId, limit],
+    [connectorInstanceId, stream, lastId, limit]
   );
   return result.rows;
 }
 
-export async function postgresGetSemanticMeta({ connectorInstanceId, stream }) {
+export async function postgresGetSemanticMeta({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
   const result = await postgresQuery(
     `SELECT fields_fingerprint, model_id, dimensions, distance_metric
      FROM semantic_search_meta
      WHERE connector_instance_id = $1 AND stream = $2`,
-    [connectorInstanceId, stream],
+    [connectorInstanceId, stream]
   );
   return result.rows[0] || null;
 }
 
-export async function postgresUpsertSemanticMeta({ connectorId, connectorInstanceId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric }) {
+export async function postgresUpsertSemanticMeta({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  fieldsFingerprint,
+  modelId,
+  dimensions,
+  distanceMetric,
+}: ConnectorStreamScope & { dimensions: number; distanceMetric: string; fieldsFingerprint: string; modelId: string }) {
   await postgresQuery(
     `INSERT INTO semantic_search_meta(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -450,28 +625,56 @@ export async function postgresUpsertSemanticMeta({ connectorId, connectorInstanc
            dimensions = EXCLUDED.dimensions,
            distance_metric = EXCLUDED.distance_metric,
            updated_at = EXCLUDED.updated_at`,
-    [connectorInstanceId, connectorId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric, new Date().toISOString()],
+    [
+      connectorInstanceId,
+      connectorId,
+      stream,
+      fieldsFingerprint,
+      modelId,
+      dimensions,
+      distanceMetric,
+      new Date().toISOString(),
+    ]
   );
 }
 
-export async function postgresDeleteSemanticMeta({ connectorInstanceId, stream }) {
-  await postgresQuery(
-    'DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
-  );
+export async function postgresDeleteSemanticMeta({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
+  await postgresQuery("DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2", [
+    connectorInstanceId,
+    stream,
+  ]);
 }
 
-export async function postgresGetSemanticProgress({ connectorInstanceId, stream }) {
+export async function postgresGetSemanticProgress({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
   const result = await postgresQuery(
     `SELECT fields_fingerprint, model_id, dimensions, distance_metric
      FROM semantic_search_backfill_progress
      WHERE connector_instance_id = $1 AND stream = $2`,
-    [connectorInstanceId, stream],
+    [connectorInstanceId, stream]
   );
   return result.rows[0] || null;
 }
 
-export async function postgresUpsertSemanticProgress({ connectorId, connectorInstanceId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric }) {
+export async function postgresUpsertSemanticProgress({
+  connectorId,
+  connectorInstanceId,
+  stream,
+  fieldsFingerprint,
+  modelId,
+  dimensions,
+  distanceMetric,
+}: Required<ConnectorStreamScope> & {
+  dimensions: number;
+  distanceMetric: string;
+  fieldsFingerprint: string;
+  modelId: string;
+}) {
   await postgresQuery(
     `INSERT INTO semantic_search_backfill_progress(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -482,34 +685,42 @@ export async function postgresUpsertSemanticProgress({ connectorId, connectorIns
            dimensions = EXCLUDED.dimensions,
            distance_metric = EXCLUDED.distance_metric,
            updated_at = EXCLUDED.updated_at`,
-    [connectorInstanceId, connectorId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric, new Date().toISOString()],
+    [
+      connectorInstanceId,
+      connectorId,
+      stream,
+      fieldsFingerprint,
+      modelId,
+      dimensions,
+      distanceMetric,
+      new Date().toISOString(),
+    ]
   );
 }
 
-export async function postgresDeleteSemanticProgress({ connectorInstanceId, stream }) {
+export async function postgresDeleteSemanticProgress({
+  connectorInstanceId,
+  stream,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId" | "stream">>) {
   await postgresQuery(
-    'DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2',
-    [connectorInstanceId, stream],
+    "DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2",
+    [connectorInstanceId, stream]
   );
 }
 
 export async function postgresAnySemanticProgressRow() {
-  const result = await postgresQuery(
-    'SELECT 1 AS n FROM semantic_search_backfill_progress LIMIT 1',
-    [],
-  );
+  const result = await postgresQuery("SELECT 1 AS n FROM semantic_search_backfill_progress LIMIT 1", []);
   return result.rows[0] || null;
 }
 
 export async function postgresListAllSemanticMetaIdentities() {
-  const result = await postgresQuery(
-    'SELECT model_id, dimensions, distance_metric FROM semantic_search_meta',
-    [],
-  );
+  const result = await postgresQuery("SELECT model_id, dimensions, distance_metric FROM semantic_search_meta", []);
   return result.rows;
 }
 
-export async function postgresListSemanticStreamsForConnector({ connectorId }) {
+export async function postgresListSemanticStreamsForConnector({
+  connectorId,
+}: Pick<ConnectorStreamScope, "connectorId">) {
   const result = await postgresQuery(
     `SELECT stream
      FROM (
@@ -518,12 +729,12 @@ export async function postgresListSemanticStreamsForConnector({ connectorId }) {
        SELECT DISTINCT stream FROM semantic_search_backfill_progress WHERE connector_id = $1
      ) streams
      ORDER BY stream`,
-    [connectorId],
+    [connectorId]
   );
   return result.rows.map((row) => row.stream).filter(Boolean);
 }
 
-function cosineDistance(a, b) {
+function cosineDistance(a: readonly number[], b: readonly number[]): number {
   let dot = 0;
   let magA = 0;
   let magB = 0;
@@ -535,42 +746,56 @@ function cosineDistance(a, b) {
     magA += av * av;
     magB += bv * bv;
   }
-  if (magA === 0 || magB === 0) return Number.POSITIVE_INFINITY;
+  if (magA === 0 || magB === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
   return 1 - dot / (Math.sqrt(magA) * Math.sqrt(magB));
 }
 
-function compareSemanticHits(a, b) {
-  return a.distance - b.distance || a.connectorId.localeCompare(b.connectorId) || a.scopeKey.localeCompare(b.scopeKey) || a.recordKey.localeCompare(b.recordKey);
+function compareSemanticHits(a: SemanticHit, b: SemanticHit): number {
+  return (
+    a.distance - b.distance ||
+    a.connectorId.localeCompare(b.connectorId) ||
+    a.scopeKey.localeCompare(b.scopeKey) ||
+    a.recordKey.localeCompare(b.recordKey)
+  );
 }
 
-function postgresSemanticCandidateLimit(limit, { env = process.env } = {}) {
-  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT || '', 10);
+function postgresSemanticCandidateLimit(limit: number, { env = process.env }: EnvironmentOptions = {}): number {
+  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT || "", 10);
   const configured = Number.isInteger(parsed) && parsed > 0 ? parsed : 200;
   const requested = Math.max(Number(limit) || 200, 1);
   return Math.min(Math.max(configured, requested), 10_000);
 }
 
-function postgresSemanticExactMaxRows({ env = process.env } = {}) {
-  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS || '', 10);
+function postgresSemanticExactMaxRows({ env = process.env }: EnvironmentOptions = {}): number {
+  const parsed = Number.parseInt(env.PDPP_RS_SEARCH_POSTGRES_SEMANTIC_EXACT_MAX_ROWS || "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100_000) : 10_000;
 }
 
-function semanticStreamsFromScopeKeys(scopeKeys) {
-  const streams = new Set();
-  for (const scopeKey of scopeKeys || []) {
+function semanticStreamsFromScopeKeys(scopeKeys: readonly string[] | null | undefined): string[] {
+  const streams = new Set<string>();
+  for (const scopeKey of scopeKeys ?? []) {
     try {
       const parsed = JSON.parse(scopeKey);
-      if (Array.isArray(parsed) && typeof parsed[0] === 'string' && parsed[0]) {
+      if (Array.isArray(parsed) && typeof parsed[0] === "string" && parsed[0]) {
         streams.add(parsed[0]);
       }
-    } catch {}
+    } catch {
+      // Malformed legacy scope keys are ignored: they cannot name a stream.
+    }
   }
   return [...streams].sort();
 }
 
-async function postgresSemanticRetainedRowEstimate({ connectorInstanceId, scopeKeys }) {
+async function postgresSemanticRetainedRowEstimate({
+  connectorInstanceId,
+  scopeKeys,
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId">> & { scopeKeys: readonly string[] }) {
   const streams = semanticStreamsFromScopeKeys(scopeKeys);
-  if (streams.length === 0) return null;
+  if (streams.length === 0) {
+    return null;
+  }
   const result = await postgresQuery(
     `SELECT COALESCE(SUM(record_count), 0)::bigint AS total,
             COUNT(*)::integer AS matched,
@@ -578,11 +803,15 @@ async function postgresSemanticRetainedRowEstimate({ connectorInstanceId, scopeK
        FROM retained_size_stream
       WHERE connector_instance_id = $1
         AND stream = ANY($2::text[])`,
-    [connectorInstanceId, streams],
+    [connectorInstanceId, streams]
   );
   const row = result.rows[0] || {};
-  if (Number(row.matched || 0) !== streams.length) return null;
-  if (Number(row.max_dirty || 0) !== 0) return null;
+  if (Number(row.matched || 0) !== streams.length) {
+    return null;
+  }
+  if (Number(row.max_dirty || 0) !== 0) {
+    return null;
+  }
   return Number(row.total || 0);
 }
 
@@ -592,20 +821,31 @@ async function postgresSemanticSearchVector({
   queryVector,
   limit,
   recordKeys,
-}) {
+}: Required<Pick<ConnectorStreamScope, "connectorInstanceId">> & {
+  scopeKeys: readonly string[];
+  queryVector: Iterable<number>;
+  limit: number;
+  recordKeys: readonly string[] | null;
+}): Promise<SemanticHit[]> {
   const values = Array.from(queryVector || [], Number);
   const dims = values.length;
   // Typmods cannot be bound parameters; `dims` is validated as a small
   // positive integer (pgvector caps vectors at 16000 dims) before it is
   // interpolated. Non-finite query components cannot form a vector literal
   // and could never produce meaningful distances.
-  if (!Number.isInteger(dims) || dims < 1 || dims > 16_000) return [];
-  if (!values.every(Number.isFinite)) return [];
+  if (!Number.isInteger(dims) || dims < 1 || dims > 16_000) {
+    return [];
+  }
+  if (!values.every(Number.isFinite)) {
+    return [];
+  }
   const boundedLimit = Math.max(Number(limit) || 200, 1);
-  const params = [connectorInstanceId, scopeKeys, `[${values.join(',')}]`, boundedLimit];
-  let recordClause = '';
+  const params: unknown[] = [connectorInstanceId, scopeKeys, `[${values.join(",")}]`, boundedLimit];
+  let recordClause = "";
   if (Array.isArray(recordKeys)) {
-    if (recordKeys.length === 0) return [];
+    if (recordKeys.length === 0) {
+      return [];
+    }
     params.push(recordKeys);
     recordClause = `AND record_key = ANY($${params.length}::text[])`;
   }
@@ -613,12 +853,9 @@ async function postgresSemanticSearchVector({
   const retainedEstimate = broadProductionSearch
     ? await postgresSemanticRetainedRowEstimate({ connectorInstanceId, scopeKeys })
     : null;
-  const useCandidateWindow = broadProductionSearch
-    && retainedEstimate !== null
-    && retainedEstimate > postgresSemanticExactMaxRows();
-  const candidateLimit = useCandidateWindow
-    ? postgresSemanticCandidateLimit(boundedLimit)
-    : boundedLimit;
+  const useCandidateWindow =
+    broadProductionSearch && retainedEstimate !== null && retainedEstimate > postgresSemanticExactMaxRows();
+  const candidateLimit = useCandidateWindow ? postgresSemanticCandidateLimit(boundedLimit) : boundedLimit;
   // The HNSW default ef_search (40) would silently cap a larger overscan;
   // clamp to pgvector's [1, 1000] GUC range. Integer-validated above via
   // candidateLimit/boundedLimit (Number(...) || 200, Math.max 1).
@@ -651,7 +888,7 @@ async function postgresSemanticSearchVector({
           WHERE scope_key = ANY($2::text[])
           ORDER BY distance ASC, connector_id ASC, scope_key ASC, record_key ASC
           LIMIT $5`,
-        [connectorInstanceId, scopeKeys, params[2], candidateLimit, boundedLimit],
+        [connectorInstanceId, scopeKeys, params[2], candidateLimit, boundedLimit]
       );
     }
     // Secondary tie-break keys stay out of ORDER BY (they would disqualify
@@ -667,18 +904,18 @@ async function postgresSemanticSearchVector({
          ${recordClause}
        ORDER BY embedding::vector(${dims}) <=> $3::vector(${dims})
        LIMIT $4`,
-      params,
+      params
     );
   });
   return result.rows
     .map((row) => ({
       connectorId: row.connector_id,
       connectorInstanceId: row.connector_instance_id,
-      scopeKey: row.scope_key,
-      recordKey: row.record_key,
       // Zero-magnitude embeddings score NaN under pgvector cosine distance;
       // the JS path scored them Infinity. Normalize for parity.
       distance: Number.isNaN(Number(row.distance)) ? Number.POSITIVE_INFINITY : Number(row.distance),
+      recordKey: row.record_key,
+      scopeKey: row.scope_key,
     }))
     .sort(compareSemanticHits);
 }
@@ -690,37 +927,33 @@ export async function postgresSemanticSearch({
   queryVector,
   limit = 200,
   recordKeys = null,
-}) {
+}: ConnectorStreamScope & {
+  scopeKeys: readonly string[];
+  queryVector: readonly number[];
+  limit?: number;
+  recordKeys?: readonly string[] | null;
+}): Promise<SemanticHit[]> {
   if (isPostgresSemanticVectorEmbedding()) {
-    return postgresSemanticSearchVector({ connectorInstanceId, scopeKeys, queryVector, limit, recordKeys });
+    return postgresSemanticSearchVector({ connectorInstanceId, limit, queryVector, recordKeys, scopeKeys });
   }
-  const boundedLimit = Math.max(Number(limit) || 200, 1);
   // JSONB fallback (no pgvector extension): the database cannot score cosine
-  // distance, so candidates are fetched and ranked in JS. A naive `LIMIT
-  // boundedLimit` on the fetch would truncate the candidate set BEFORE
-  // scoring, returning an arbitrary (physical-order) slice instead of the
-  // true nearest neighbours whenever the in-scope corpus exceeds the
-  // requested limit — the bug this function used to have.
-  //
-  // Fix: fetch a candidate window bounded by postgresSemanticCandidateLimit
-  // (same helper the pgvector ANN path uses for its overscan window — default
-  // 200, override via PDPP_RS_SEARCH_POSTGRES_SEMANTIC_CANDIDATE_LIMIT, hard
-  // capped at 10_000), THEN score/sort/slice over that whole window. This
-  // bounds memory (at most candidateLimit embedding rows in memory at once,
-  // not the full corpus) while making truncation-before-ranking astronomically
-  // unlikely for realistic corpora: 10_000 rows is far beyond any single
-  // (connector_instance_id, scope_key) grant scope seen in production. If the
-  // in-scope corpus DOES exceed the candidate cap, ranking again becomes
-  // partial over the fetched window (the same class of bug, just at a much
-  // higher threshold) — that residual risk is the reason production
-  // deployments should run the pgvector-backed path (postgresSemanticSearchVector),
-  // which scores the full corpus in the database via HNSW/exact scan instead
-  // of pulling rows into JS at all.
+  // distance, so candidates are fetched and ranked in JS. A naive
+  // `LIMIT boundedLimit` on the fetch would truncate the candidate set
+  // BEFORE scoring, returning an arbitrary (physical-order) slice instead of
+  // the true nearest neighbours whenever the in-scope corpus exceeds the
+  // requested limit. Fix: fetch a candidate window bounded by
+  // postgresSemanticCandidateLimit (the same helper the pgvector ANN path
+  // uses for its overscan window), score/sort the WHOLE window, then slice
+  // to the requested limit — matching the SQLite path's score-then-limit
+  // order.
+  const boundedLimit = Math.max(Number(limit) || 200, 1);
   const candidateLimit = postgresSemanticCandidateLimit(boundedLimit);
-  const params = [connectorInstanceId, scopeKeys, candidateLimit];
-  let recordClause = '';
+  const params: unknown[] = [connectorInstanceId, scopeKeys, candidateLimit];
+  let recordClause = "";
   if (Array.isArray(recordKeys)) {
-    if (recordKeys.length === 0) return [];
+    if (recordKeys.length === 0) {
+      return [];
+    }
     params.push(recordKeys);
     recordClause = `AND record_key = ANY($${params.length}::text[])`;
   }
@@ -731,26 +964,31 @@ export async function postgresSemanticSearch({
        AND scope_key = ANY($2::text[])
        ${recordClause}
      LIMIT $3`,
-    params,
+    params
   );
   return result.rows
     .map((row) => ({
       connectorId: row.connector_id,
       connectorInstanceId: row.connector_instance_id,
-      scopeKey: row.scope_key,
-      recordKey: row.record_key,
       distance: cosineDistance(queryVector, Array.isArray(row.embedding) ? row.embedding : []),
+      recordKey: row.record_key,
+      scopeKey: row.scope_key,
     }))
     .sort(compareSemanticHits)
     .slice(0, boundedLimit);
 }
 
-export async function postgresGetSemanticRecord({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey }) {
+export async function postgresGetSemanticRecord({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  recordKey,
+}: RecordScope) {
   const result = await postgresQuery(
     `SELECT emitted_at, record_json
      FROM records
      WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE`,
-    [connectorInstanceId, stream, recordKey],
+    [connectorInstanceId, stream, recordKey]
   );
   return result.rows[0] || null;
 }
