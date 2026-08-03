@@ -8,6 +8,7 @@
 // route and it never returns the submitted secret. Owner-agent intent may point
 // at the owner-session capture page, but it never carries the credential itself.
 
+import { browserSurfaceConfigured, requiredBindingEnabled } from "../../runtime/scheduler-readiness.ts";
 import { type ConnectorManifestLike, expectedStaticSecretCredentialKind } from "../connection-setup-plan.ts";
 import { isCredentialEncryptionConfigured } from "../stores/credential-encryption.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -207,6 +208,22 @@ async function expectedCredentialKindForConnector(
 ): Promise<string | null> {
   const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
   return expectedStaticSecretCredentialKind(connectorId, manifest);
+}
+
+// Same refusal the draft-connection route applies, enforced here too because
+// this is the OTHER way a provider secret enters the system: reconnect/repair
+// captures onto an EXISTING connection and never touches draft creation. A node
+// that had a browser surface when the connection was created and lost it since
+// would otherwise still accept a rotated ChatGPT password it can never use.
+async function browserRequiredButUnavailableForConnector(
+  ctx: MountRefStaticSecretCredentialsContext,
+  connectorId: string
+): Promise<boolean> {
+  const manifest = await ctx.resolveRegisteredConnectorManifest(connectorId);
+  return (
+    requiredBindingEnabled(manifest as Parameters<typeof requiredBindingEnabled>[0], "browser") &&
+    !browserSurfaceConfigured()
+  );
 }
 
 function projectCredentialMetadata(meta: CredentialMetadata): Record<string, unknown> {
@@ -505,6 +522,23 @@ async function validateCredentialKind(
       409,
       "static_secret_credential_unsupported",
       `Connection '${namespace.connectorInstanceId}' belongs to connector '${namespace.connectorId}', which is not a static-secret connector.`
+    );
+    return false;
+  }
+  if (await browserRequiredButUnavailableForConnector(ctx, namespace.connectorId)) {
+    await emitCaptureAudit(ctx, req, res, {
+      connectionId: namespace.connectorInstanceId,
+      connectorId: namespace.connectorId,
+      credentialKind,
+      error: errWithCode("browser_runtime_unavailable"),
+      outcome: "failed",
+      ownerSubjectId,
+    });
+    ctx.pdppError(
+      res,
+      503,
+      "browser_runtime_unavailable",
+      `Connector '${namespace.connectorId}' requires a browser runtime and this deployment has none configured. Run a browser-enabled image, or set PDPP_BROWSER_SURFACE_REMOTE_CDP_URL / PDPP_NEKO_CDP_HTTP_URL, before storing this credential.`
     );
     return false;
   }

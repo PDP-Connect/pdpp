@@ -914,3 +914,55 @@ test("gmail setup form states the 2-Step Verification prerequisite", async () =>
     });
   });
 });
+
+// The reconnect/repair path is the OTHER way a provider secret enters the
+// system: it captures onto an EXISTING connection and never touches draft
+// creation, so guarding only the draft route left a real hole. A node that had
+// a browser surface when the connection was created and lost it since (image
+// swapped, neko container stopped) would otherwise still accept a rotated
+// ChatGPT password it can never use.
+test("reconnect capture refuses a browser-required connector with no surface", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "chatgpt");
+      const cookie = await login(asUrl);
+
+      // The connection exists because a surface was configured at creation.
+      const connectionId = await withBrowserSurfaceEnv(true, async () => {
+        const created = await createDraft(asUrl, cookie, "chatgpt", {});
+        assert.equal(created.status, 201, created.text);
+        return String(created.body.connection_id);
+      });
+
+      // The surface is now gone. Reconnect must refuse rather than seal a
+      // credential this deployment can never use.
+      await withBrowserSurfaceEnv(false, async () => {
+        const captured = await fetchJson(
+          `${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/static-secret-credential`,
+          {
+            body: JSON.stringify({ credential_kind: "username_password", secret: SECRET }),
+            headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
+            method: "POST",
+          }
+        );
+        assert.equal(captured.status, 503, `reconnect must be refused: ${captured.text}`);
+        assert.equal(errorOf(captured.body).code, "browser_runtime_unavailable");
+        assert.ok(!captured.text.includes(SECRET), "refusal must not echo the secret");
+      });
+
+      // The same capture succeeds again once a surface is back, so the guard
+      // is a capability check and not a permanent lockout.
+      await withBrowserSurfaceEnv(true, async () => {
+        const recaptured = await fetchJson(
+          `${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/static-secret-credential`,
+          {
+            body: JSON.stringify({ credential_kind: "username_password", secret: SECRET }),
+            headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
+            method: "POST",
+          }
+        );
+        assert.equal(recaptured.status, 201, `capture must succeed with a surface: ${recaptured.text}`);
+      });
+    });
+  });
+});
