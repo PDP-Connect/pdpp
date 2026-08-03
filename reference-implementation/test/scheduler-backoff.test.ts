@@ -4,7 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { computeNextRunWithBackoff, DEFAULT_BACKOFF_THRESHOLD, reasonClassOf } from "../runtime/scheduler-backoff.ts";
+import {
+  CONTROLLER_RESTART_RETRY_MS,
+  computeNextRunWithBackoff,
+  DEFAULT_BACKOFF_THRESHOLD,
+  reasonClassOf,
+} from "../runtime/scheduler-backoff.ts";
 import type { RunRecord } from "../runtime/scheduler-domain-types.ts";
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
@@ -65,6 +70,10 @@ function successRun() {
 
 function skippedRun() {
   return record({ status: "skipped" });
+}
+
+function controllerRestartedRun(overrides: Partial<Omit<RunRecord, "connectorError">> = {}) {
+  return record({ failureReason: "controller_restarted", status: "failed", ...overrides });
 }
 
 // ─── reasonClassOf ─────────────────────────────────────────────────────────
@@ -248,6 +257,79 @@ test("skipped records are ignored when counting the streak (neither reset nor ex
   const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0);
   assert.equal(decision.consecutiveFailures, 3);
   assert.equal(decision.backoffApplied, true);
+});
+
+// ─── controller_restarted: bounded retry, not a genuine failure streak ─────
+
+test("a lone controller_restarted failure gets the bounded retry, not the full base interval", () => {
+  const longBaseIntervalMs = 5_400_000; // 90 minutes, matching the live Slack schedule
+  const decision = computeNextRunWithBackoff([controllerRestartedRun()], longBaseIntervalMs, T0);
+  assert.equal(decision.backoffApplied, false);
+  assert.equal(decision.consecutiveFailures, 0);
+  assert.equal(decision.reasonClass, null);
+  assert.equal(decision.effectiveIntervalMs, CONTROLLER_RESTART_RETRY_MS);
+  assert.equal(decision.nextRunAt, new Date(T0 + CONTROLLER_RESTART_RETRY_MS).toISOString());
+});
+
+test("controller_restarted bounded retry never waits LONGER than the ordinary base interval", () => {
+  // A fast-polling connector (base interval shorter than the bounded retry)
+  // must not be pushed OUT by the carve-out — only ever pulled in sooner.
+  const shortBaseIntervalMs = 10_000;
+  const decision = computeNextRunWithBackoff([controllerRestartedRun()], shortBaseIntervalMs, T0);
+  assert.equal(decision.effectiveIntervalMs, CONTROLLER_RESTART_RETRY_MS);
+  assert.equal(decision.nextRunAt, new Date(T0 + shortBaseIntervalMs).toISOString());
+});
+
+test("controller_restarted does not count toward or extend an unrelated genuine failure streak", () => {
+  // Two real authentication failures, then a restart interruption on top —
+  // the restart must not appear to "complete" a 3-streak of a different
+  // class, and must not itself start a fresh streak either.
+  const history = [
+    failedRun({ terminalReason: "authentication_error" }),
+    failedRun({ terminalReason: "authentication_error" }),
+    controllerRestartedRun(),
+  ];
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0);
+  // The restart record is the NEWEST record, so the bounded-retry branch
+  // fires — a restart interruption always gets its own prompt retry
+  // regardless of what sits underneath it, and never inherits or worsens an
+  // existing streak's delay.
+  assert.equal(decision.effectiveIntervalMs, CONTROLLER_RESTART_RETRY_MS);
+  assert.equal(decision.backoffApplied, false);
+});
+
+test("a genuine failure streak underneath a restart is read correctly once the restart is no longer newest", () => {
+  const history = [
+    failedRun({ terminalReason: "authentication_error" }),
+    controllerRestartedRun(),
+    failedRun({ terminalReason: "authentication_error" }),
+    failedRun({ terminalReason: "authentication_error" }),
+  ];
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0);
+  // The restart in the middle is skipped entirely (neither resets nor
+  // extends), so the trailing authentication_error streak reads as 3 — over
+  // threshold — exactly as if the restart record were never in history.
+  assert.equal(decision.consecutiveFailures, 3);
+  assert.equal(decision.backoffApplied, true);
+  assert.equal(decision.reasonClass, "terminal:authentication_error");
+});
+
+test("a success after a controller_restarted failure resets normally (no lingering bounded-retry state)", () => {
+  const history = [controllerRestartedRun(), successRun()];
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0);
+  assert.equal(decision.backoffApplied, false);
+  assert.equal(decision.consecutiveFailures, 0);
+  assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS);
+});
+
+test("reasonClassOf never classes a controller_restarted record (it is not a same-class failure with itself)", () => {
+  const r = controllerRestartedRun();
+  // reasonClassOf itself is reason-agnostic (it would return
+  // failure:controller_restarted); the carve-out lives in the streak walk
+  // and the bounded-retry branch, not in the classifier. Pin the classifier's
+  // literal output so a future change to either layer is caught by the right
+  // test.
+  assert.equal(reasonClassOf(r), "failure:controller_restarted");
 });
 
 // ─── Threshold tunable ────────────────────────────────────────────────────

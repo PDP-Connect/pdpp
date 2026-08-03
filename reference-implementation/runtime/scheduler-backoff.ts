@@ -57,6 +57,33 @@ export const DEFAULT_MAX_BACKOFF_EXP = 8;
  */
 export const DEFAULT_MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * The runtime's own restart-reconciliation reason (`controller.ts`'s
+ * `ABANDONED_CONTROLLER_RUN_REASON`) for a run abandoned mid-flight by a
+ * server restart. This is infrastructural noise, not connector or source
+ * evidence — the run never actually executed the connector to completion or
+ * failure, so it must not count toward (or extend) a same-class failure
+ * streak, and the owner should see the bounded retry the display copy
+ * ("We restarted in the middle — we'll try again") already promises rather
+ * than waiting out the full scheduled interval.
+ */
+const CONTROLLER_RESTART_FAILURE_REASON = "controller_restarted";
+
+/**
+ * Bounded next-attempt delay for a restart-interrupted run, applied only when
+ * the single newest run is the restart record and it does not already sit
+ * inside a same-class failure streak of a DIFFERENT genuine reason (a real
+ * chronic failure is never softened by an unrelated restart landing on top of
+ * it). Short enough to read as "we'll try again" rather than a full schedule
+ * cycle, long enough to not create a retry storm against a source that is
+ * itself unavailable for unrelated reasons.
+ */
+export const CONTROLLER_RESTART_RETRY_MS = 60_000;
+
+function isControllerRestartRecord(record: RunRecord): boolean {
+  return record.status === "failed" && record.failureReason === CONTROLLER_RESTART_FAILURE_REASON;
+}
+
 export interface ComputeBackoffOptions {
   /** Threshold N: consecutive failures before back-off engages. */
   readonly backoffThreshold?: number;
@@ -203,6 +230,20 @@ export function computeNextRunWithBackoff(
     };
   }
 
+  // A restart-interrupted run at the tail of history is not evidence the
+  // connector or source is broken — it never ran to completion or genuine
+  // failure. Give it the short bounded retry the runtime's own display copy
+  // ("We restarted in the middle — we'll try again") already promises, rather
+  // than falling through to the full base interval or an inflated exponential
+  // window. Checked directly against the newest record rather than via
+  // `countConsecutiveSameClassFailures` (which intentionally skips past
+  // restart records without classifying them) so this fires exactly when the
+  // most recent thing that happened was the restart itself.
+  const restartRetryDecision = controllerRestartRetryDecision(history, normalizedBaseIntervalMs, normalizedLastRunAtMs);
+  if (restartRetryDecision) {
+    return restartRetryDecision;
+  }
+
   const { consecutiveFailures, reasonClass, newestFailureAtMs } = countConsecutiveSameClassFailures(history);
 
   // Cross-path success recovery: a genuine success recorded on a path the
@@ -262,6 +303,46 @@ export function computeNextRunWithBackoff(
   };
 }
 
+/** The newest non-nullish record in `history` (ordered oldest to newest), or `null` when empty. */
+function latestRecord(history: readonly RunRecord[]): RunRecord | null {
+  // biome-ignore lint/style/noIncrementDecrement: The explicit counter update preserves this loop’s evaluation order.
+  for (let i = history.length - 1; i >= 0; i--) {
+    const record = history[i];
+    if (record) {
+      return record;
+    }
+  }
+  return null;
+}
+
+/**
+ * The bounded-retry decision for a restart-interrupted run, or `null` when
+ * the newest history record is not a restart record (the ordinary streak
+ * logic applies instead). Never retries LATER than the ordinary base-interval
+ * dispatch would — only sooner — so a base interval shorter than the bounded
+ * retry (e.g. a fast-polling connector) is never pushed out by this carve-out.
+ */
+function controllerRestartRetryDecision(
+  history: readonly RunRecord[],
+  normalizedBaseIntervalMs: number,
+  normalizedLastRunAtMs: number
+): BackoffDecision | null {
+  const newestRecord = latestRecord(history);
+  if (!(newestRecord && isControllerRestartRecord(newestRecord))) {
+    return null;
+  }
+  const boundedNextMs = normalizedLastRunAtMs + CONTROLLER_RESTART_RETRY_MS;
+  const baseNextMs = normalizedLastRunAtMs + normalizedBaseIntervalMs;
+  return {
+    backoffApplied: false,
+    consecutiveFailures: 0,
+    effectiveIntervalMs: CONTROLLER_RESTART_RETRY_MS,
+    nextRunAt: toIsoTimestamp(Math.min(boundedNextMs, baseNextMs)),
+    reasonClass: null,
+    recommendedHealthState: null,
+  };
+}
+
 function normalizeFiniteNonNegativeMs(value: number, fallback: number): number {
   if (!Number.isFinite(value) || value < 0) {
     return fallback;
@@ -317,6 +398,14 @@ function countConsecutiveSameClassFailures(history: readonly RunRecord[]): {
     if (record.status !== "failed") {
       // Skipped records are not failures and not successes — they neither
       // reset nor extend the streak. Skip past them.
+      continue;
+    }
+    if (isControllerRestartRecord(record)) {
+      // A restart-interrupted run is infrastructural noise, not connector
+      // evidence — it is not a same-class failure with anything (real or
+      // itself), so it neither resets nor extends a streak. Skip past it
+      // exactly like a non-failure record, so an unrelated genuine failure
+      // streak underneath it is read correctly on both sides.
       continue;
     }
     const candidate = reasonClassOf(record);

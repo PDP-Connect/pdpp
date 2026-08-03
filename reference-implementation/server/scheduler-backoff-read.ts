@@ -72,3 +72,24 @@ export function succeededRunSupersedesSchedulerBackoff(
   const failureAnchor = schedulerFailureAnchorMillis(schedule);
   return runMillis !== null && (failureAnchor === null || runMillis >= failureAnchor);
 }
+
+/**
+ * True while a run is CURRENTLY active — the scheduler's persisted backoff
+ * record only reflects the PRIOR completed run (it is written once at that
+ * run's terminal event and does not know a new run has since started), so it
+ * must not be read as describing the live run in progress. Without this, a
+ * single prior failure/gap (one is enough — `hasRetryBackoffEvidence` in
+ * `ref-control.ts` fires on `consecutiveFailures > 0`, not the backoff-engage
+ * threshold) leaks through `schedulerFailureStatus`/`lastErrorCode` for the
+ * whole duration of the next, unrelated, actively-succeeding run: the pill
+ * reads amber/"System or connector issue" while `badges.syncing` correctly
+ * reads true, and only clears once that new run itself reaches `succeeded`
+ * and `succeededRunSupersedesSchedulerBackoff` finally fires. Mirrors the
+ * existing active-run fallback `coverageClassifyingRun` already applies for
+ * coverage/freshness (`ref-control.ts`'s `isActiveRunSummaryStatus` branch) —
+ * this extends the same "an active run supersedes stale terminal evidence"
+ * principle to the scheduler-backoff read.
+ */
+export function activeRunSupersedesSchedulerBackoff(activeRunId: string | null): boolean {
+  return activeRunId !== null;
+}

@@ -148,6 +148,7 @@ import {
   readRuntimeCollectionFact,
 } from "./runtime-collection-facts.ts";
 import {
+  activeRunSupersedesSchedulerBackoff,
   asBackoffRecord,
   asScheduleRecord,
   readNumber,
@@ -4116,16 +4117,25 @@ function projectConnectionHealthScheduleEvidence(
   activeRunId: string | null
 ): ConnectionHealthScheduleEvidence {
   const schedulerBackoff = asBackoffRecord(schedule);
-  const staleSchedulerBackoff = succeededRunSupersedesSchedulerBackoff(lastRun, schedule);
-  const effectiveSchedulerBackoff = staleSchedulerBackoff ? null : schedulerBackoff;
   const scheduleActiveRunId =
     typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
+  const resolvedActiveRunId = activeRunId ?? scheduleActiveRunId;
+  // The persisted backoff record describes the PRIOR completed run only — it
+  // is written once at that run's terminal event and has no way to know a new
+  // run has since started. A currently-active run supersedes it exactly like
+  // a fresh success does (see `activeRunSupersedesSchedulerBackoff`), so
+  // neither a genuinely-stale record NOR one that is merely mid-refresh gets
+  // read as describing "now".
+  const staleSchedulerBackoff =
+    succeededRunSupersedesSchedulerBackoff(lastRun, schedule) ||
+    activeRunSupersedesSchedulerBackoff(resolvedActiveRunId);
+  const effectiveSchedulerBackoff = staleSchedulerBackoff ? null : schedulerBackoff;
   const nextDueAt = !staleSchedulerBackoff && typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
   const lastErrorCode =
     !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
   const lastSuccessfulAt = typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
   return {
-    activeRunId: activeRunId ?? scheduleActiveRunId,
+    activeRunId: resolvedActiveRunId,
     backoffEvidence: projectSchedulerBackoffEvidence({
       effectiveSchedulerBackoff,
       lastErrorCode,

@@ -41,6 +41,7 @@ import type {
 } from "../runtime/connection-health.ts";
 import { BLOCKED_PROMOTION_THRESHOLD } from "../runtime/connection-health-policy.ts";
 import type { SchedulerBackoffApi } from "../runtime/controller.ts";
+import { synthesizeRenderedVerdict } from "../runtime/rendered-verdict.ts";
 import type { CollectionReportEntry, ConnectorRunSummary } from "../server/ref-control.ts";
 import {
   projectConnectorSummaryConnectionHealth,
@@ -852,6 +853,140 @@ test("acceptance 7.2: active scheduled run does not promote a degraded headline 
   });
   assertHeadline(snap, "degraded");
   assert.equal(snap.badges.syncing, true, "syncing badge sits orthogonal to degraded headline");
+});
+
+/**
+ * The live shape of `input.lastRun` while a new run is actively collecting:
+ * `productRunHistoryToConnectorRunSummary` (server/ref-control.ts) projects
+ * the run_history row for a LIVE run as `status: "in_progress"` with no
+ * `finished_at`/`collection_facts` yet (it hasn't terminalized). This is
+ * DISTINCT from the `schedule.active_run_id`-only shape the pre-existing 7.2
+ * tests above use (where `lastRun` stays the last TERMINAL run) — both are
+ * real call shapes the projection must handle, but only this one exercises
+ * `latestRunForHealth`/`coverageClassifyingRun`'s active-run branch.
+ */
+function activeInProgressRun(runId: string): ConnectorRunSummary {
+  return {
+    collection_facts: null,
+    event_count: 0,
+    failure_reason: null,
+    finished_at: null,
+    first_at: "2026-05-19T11:59:00.000Z",
+    known_gaps: [],
+    last_at: "2026-05-19T11:59:00.000Z",
+    recovery_only: false,
+    run_id: runId,
+    started_at: "2026-05-19T11:59:00.000Z",
+    status: "in_progress",
+    terminal_reason: null,
+  };
+}
+
+test("acceptance 7.2: a fresh+complete connection with an active run does not read as degraded/System-issue from a stale scheduler-backoff record left by the PRIOR (already-superseded) run", () => {
+  // Live regression (Gmail cin_12407c1afb78d56848fe0b20 / YNAB
+  // cin_aa46edbff5df4be1acc4bb06, 2026-08-03): a prior run's failure leaves a
+  // `scheduler_backoff` record on the schedule row. That record is written
+  // once, at the PRIOR run's terminal event, and has no way to know a NEW run
+  // has since started — but it was being read as if it still described the
+  // run in progress right now. Pre-fix, this reproduces EXACTLY: `state:
+  // "degraded"`, pill `{label: "Degraded", tone: "amber"}` — the console's
+  // "System or connector issue" group — for the entire duration of an
+  // otherwise-healthy active run, clearing only once that new run itself
+  // terminates successfully.
+  //
+  // `lastRun` IS the currently-active run row (see `activeInProgressRun`) —
+  // this is what makes `coverageClassifyingRun` fall back to
+  // `lastSuccessfulRun` for proven coverage/freshness, the same active-run
+  // pattern this fix extends to the scheduler-backoff read. The schedule's
+  // `scheduler_backoff` record reflects the failure from the run BEFORE this
+  // one — real evidence, just stale by the time this request observes it.
+  //
+  // Post-fix the connection lands in `state: "unknown"` (badges.syncing still
+  // true) rather than `"healthy"`: `collectionSucceededCondition` reads
+  // `latestStatus: null` for an in-progress run (honest — no verdict for a
+  // run still running), which is a DIFFERENT, narrower, pre-existing gap
+  // (`CollectionSucceeded` has no active-run fallback the way coverage does)
+  // than the one this fix closes. What this fix guarantees is the downstream
+  // rendered pill: `grey` + `badges.syncing` renders "Checking" — "PDPP is
+  // working" — never "Degraded"/"System or connector issue". See the
+  // companion `rendered-verdict` regression for that exact proof.
+  const priorSuccess = succeededRun({ last_at: "2026-05-19T11:00:00.000Z", run_id: "run_prior_success" });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: activeInProgressRun("run_current_in_flight"),
+    lastSuccessfulRun: priorSuccess,
+    outbox: { axis: "idle" },
+    schedule: {
+      ...backoffSchedule({ backoffApplied: false, failures: 1, reasonClass: "failure:transient_500" }),
+      active_run_id: "run_current_in_flight",
+      last_finished_at: "2026-05-19T11:30:00.000Z",
+      last_started_at: "2026-05-19T11:29:00.000Z",
+    },
+  });
+  assert.notEqual(
+    snap.state,
+    "degraded",
+    "a live active run must never read as degraded from a superseded backoff record"
+  );
+  assert.equal(snap.badges.syncing, true, "the currently active run must still light up the syncing badge");
+  assert.equal(snap.next_attempt_at, null, "a superseded backoff record must not leak a stale next-attempt time");
+  assert.equal(snap.reason_code, null, "a superseded backoff record must not leak a stale reason code");
+  assertAxesPresent(snap);
+});
+
+test("acceptance 7.2: the fresh+complete active-run snapshot renders Checking, not Degraded/System-issue, through the full verdict pipeline", () => {
+  // The precise end-to-end proof for the live symptom: feed the SAME snapshot
+  // shape as the test above through `synthesizeRenderedVerdict` (the function
+  // every owner surface renders verbatim) and assert the pill/tone/channel
+  // the console actually groups by.
+  const priorSuccess = succeededRun({ last_at: "2026-05-19T11:00:00.000Z", run_id: "run_prior_success" });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: activeInProgressRun("run_current_in_flight"),
+    lastSuccessfulRun: priorSuccess,
+    outbox: { axis: "idle" },
+    schedule: {
+      ...backoffSchedule({ backoffApplied: false, failures: 1, reasonClass: "failure:transient_500" }),
+      active_run_id: "run_current_in_flight",
+      last_finished_at: "2026-05-19T11:30:00.000Z",
+      last_started_at: "2026-05-19T11:29:00.000Z",
+    },
+  });
+  const verdict = synthesizeRenderedVerdict(snap, [], null, true, null, null, null);
+  assert.equal(verdict.pill.tone, "grey", `tone was ${verdict.pill.tone}, expected grey (not amber/Degraded)`);
+  assert.equal(verdict.pill.label, "Checking", `label was ${verdict.pill.label}, expected Checking`);
+  assert.equal(verdict.channel, "calm");
+});
+
+test("acceptance 7.2: a single prior failure's backoff evidence does not degrade an active-run connection, even below the back-off engage threshold", () => {
+  // `hasRetryBackoffEvidence` (ref-control.ts) fires on ANY consecutiveFailures
+  // > 0 — NOT gated by DEFAULT_BACKOFF_THRESHOLD — so even a single prior
+  // failure (never enough to engage back-off itself) was enough to leak a
+  // synthesized "failed" latestStatus while a new run runs. Pin the
+  // single-failure case specifically, since that is what a transient blip
+  // (not a chronic streak) looks like.
+  const priorSuccess = succeededRun({ last_at: "2026-05-19T11:00:00.000Z", run_id: "run_prior_success" });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: activeInProgressRun("run_current_in_flight"),
+    lastSuccessfulRun: priorSuccess,
+    outbox: { axis: "idle" },
+    schedule: {
+      active_run_id: "run_current_in_flight",
+      enabled: true,
+      last_finished_at: "2026-05-19T11:30:00.000Z",
+      last_started_at: "2026-05-19T11:29:00.000Z",
+      scheduler_backoff: {
+        backoff_applied: false,
+        consecutive_failures: 1,
+        next_run_at: "2026-05-19T13:00:00.000Z",
+        reason_class: "failure:transient_500",
+        recommended_health_state: null,
+      },
+    },
+  });
+  assert.notEqual(snap.state, "degraded");
+  assert.equal(snap.badges.syncing, true);
 });
 
 test("acceptance 7.2: stale freshness surfaces as axis+badge, not a stale headline pill", () => {
