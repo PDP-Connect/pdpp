@@ -1065,6 +1065,50 @@ test("acceptance 7.2: active outbox lets healthy stand while the axis carries th
   assert.equal(snap.axes.outbox, "active");
 });
 
+test("acceptance 7.2: optional remote-surface and outbox unknowns do not demote settled evidence", () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    ephemeralBrowserRuntime: {
+      active_lease: null,
+      allocator_observation: null,
+      connection_kind: "non-browser",
+      credential_continuity: "not_applicable",
+      current_compatible_idle_surfaces: 0,
+      current_replacement_receipt: null,
+      demand: "none",
+      health_eligible: false,
+      last_successful_runtime_receipt: null,
+      surface_mode: "none",
+    },
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: "unknown" },
+    remoteSurface: {
+      axis: "unknown",
+      leaseId: null,
+      leaseStatus: null,
+      profileKey: null,
+      surfaceHealth: null,
+      surfaceId: null,
+      waitReason: null,
+    },
+    schedule: { enabled: true },
+  });
+
+  assert.equal(snap.axes.coverage, "complete");
+  assert.equal(snap.axes.freshness, "fresh");
+  assert.equal(snap.axes.attention, "none");
+  assert.equal(snap.axes.outbox, "unknown");
+  assert.equal(snap.axes.remote_surface, "unknown");
+  assert.equal(snap.forward_disposition, "complete");
+  assert.equal(snap.state, "healthy");
+
+  const verdict = synthesizeRenderedVerdict(snap, [], null, true);
+  assert.equal(verdict.pill.label, "Healthy");
+  assert.equal(verdict.forward_statement, "Current and collecting normally.");
+});
+
 test("acceptance 7.2: every axis remains populated even when the headline is needs_attention", () => {
   // Axes must not be collapsed into the headline pill: the dashboard
   // wants to render coverage / freshness / outbox / attention precision

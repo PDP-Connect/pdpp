@@ -1409,7 +1409,12 @@ function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): Retu
 }
 
 function classifyCurrentManagedRemoteSurfaceUnknown(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  if (ctx.remoteSurface?.axis !== "unknown") {
+  // An explicit non-managed runtime proves that a remote surface is not
+  // required. Legacy/optional evidence can still leave the axis unknown, but
+  // that absence must not outrank settled coverage/freshness evidence. Keep
+  // the conservative path for managed runtimes and legacy callers that do not
+  // provide the capability declaration.
+  if (ctx.remoteSurface?.axis !== "unknown" || ctx.input.ephemeralBrowserRuntime?.surface_mode === "none") {
     return null;
   }
   return {
