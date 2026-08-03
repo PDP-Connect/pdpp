@@ -30,7 +30,7 @@ Optional Chrome sanity check on macOS: `ls "/Applications/Google Chrome.app"`. U
 ## Repo setup
 
 ```bash
-git clone git@github.com:vana-com/pdpp.git
+git clone git@github.com:PDP-Connect/pdpp.git
 cd pdpp
 pnpm install
 ```

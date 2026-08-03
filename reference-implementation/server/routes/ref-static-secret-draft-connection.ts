@@ -19,6 +19,7 @@
 import { randomBytes } from "node:crypto";
 
 import { credentialValidationMode } from "../../../packages/polyfill-connectors/src/credential-probe.ts";
+import { browserSurfaceConfigured, requiredBindingEnabled } from "../../runtime/scheduler-readiness.ts";
 import {
   type ConnectorManifestLike,
   displayNameForConnector,
@@ -163,6 +164,17 @@ function projectField(field: StaticSecretSetupField): Record<string, unknown> {
   };
 }
 
+// A connector needing a browser surface this deployment does not have cannot
+// complete a first sync. Only a REQUIRED binding counts — an optional one is
+// placement flexibility. Reuses the scheduler's own predicates so setup and the
+// scheduled run cannot disagree about what a connector needs.
+function browserRequiredButUnavailable(manifest: ConnectorManifestLike): boolean {
+  return (
+    requiredBindingEnabled(manifest as Parameters<typeof requiredBindingEnabled>[0], "browser") &&
+    !browserSurfaceConfigured()
+  );
+}
+
 function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Record<string, unknown> | null {
   const capture = staticSecretCredentialCaptureFromManifest(manifest);
   const credentialKind = expectedStaticSecretCredentialKind(connectorId, manifest);
@@ -180,6 +192,16 @@ function projectSetup(connectorId: string, manifest: ConnectorManifestLike): Rec
       submit_label: capture.submitLabel,
     },
     credential_kind: credentialKind,
+    // A static-secret connector can still declare a required browser binding
+    // (ChatGPT captures a username/password but drives a real browser session).
+    // Capture would succeed and the first sync would then fail at browser
+    // launch on a browser-free deployment, so the owner needs this fact before
+    // typing a provider password — not after. Same predicate the scheduler uses
+    // to refuse the run.
+    browser_runtime: {
+      configured: browserSurfaceConfigured(),
+      required: requiredBindingEnabled(manifest as Parameters<typeof requiredBindingEnabled>[0], "browser"),
+    },
     deployment_readiness: staticSecretDeploymentReadiness(),
     display_name: displayName,
     object: "static_secret_setup",
@@ -387,6 +409,27 @@ export function mountRefStaticSecretDraftConnection(
             409,
             "static_secret_setup_missing",
             `Connector '${connectorId}' is missing manifest setup.credential_capture metadata.`
+          );
+          return;
+        }
+        // Refuse before any credential is captured. The dashboard already hides
+        // this form, but the route is the actual gate: storing a provider
+        // password that can only ever fail at browser launch is worse than
+        // refusing it, and the owner gets a diagnosable reason instead of a
+        // first-sync failure.
+        if (browserRequiredButUnavailable(manifest)) {
+          await emitDraftAudit(ctx, req, res, {
+            connectorId,
+            credentialKind,
+            error: errWithCode("browser_runtime_unavailable"),
+            outcome: "failed",
+            ownerSubjectId,
+          });
+          ctx.pdppError(
+            res,
+            503,
+            "browser_runtime_unavailable",
+            `Connector '${connectorId}' requires a browser runtime and this deployment has none configured. Run the browser-enabled reference-browser image, or set PDPP_BROWSER_SURFACE_REMOTE_CDP_URL / PDPP_NEKO_CDP_HTTP_URL, before adding this source.`
           );
           return;
         }

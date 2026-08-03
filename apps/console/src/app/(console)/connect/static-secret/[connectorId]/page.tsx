@@ -62,6 +62,12 @@ export default async function StaticSecretConnectPage({
   // replacing the credential on an existing connection, not creating a new one.
   const isReplaceMode = Boolean(pageParams.connectionId);
   const readinessBlocked = setup.deployment_readiness.state !== "ready";
+  // A connector can require a browser surface even though its credential is a
+  // plain username/password (ChatGPT). On a browser-free image the capture
+  // would succeed and the first sync would fail at browser launch, so refuse
+  // the credential up front rather than storing a provider password this
+  // deployment can never use.
+  const browserRuntimeBlocked = Boolean(setup.browser_runtime?.required && !setup.browser_runtime.configured);
 
   // After a validation failure the action redirects back here with the owner's
   // non-secret field values as `field_<name>` query params so the form context
@@ -104,7 +110,25 @@ export default async function StaticSecretConnectPage({
         }
         title={setup.credential_capture.label}
       >
-        {readinessBlocked ? (
+        {browserRuntimeBlocked ? (
+          <Callout
+            description={`${setup.display_name} signs in through a real browser session, and this deployment has no browser runtime. Entering your ${setup.display_name} password here would be stored but the first sync would fail at browser startup, so this form stays closed.`}
+            title="This deployment cannot sign in to this source"
+            tone="warning"
+          >
+            <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
+              <li>
+                Run the browser-enabled image <code>ghcr.io/pdp-connect/pdpp/reference-browser</code> instead of the
+                browser-free <code>reference</code> image, or
+              </li>
+              <li>
+                attach a browser surface by setting <code>PDPP_BROWSER_SURFACE_REMOTE_CDP_URL</code> or the managed{" "}
+                <code>PDPP_NEKO_CDP_HTTP_URL</code>.
+              </li>
+              <li>Sources that need only a network connection work on this deployment as-is.</li>
+            </ul>
+          </Callout>
+        ) : readinessBlocked ? (
           <Callout
             description={
               setup.deployment_readiness.guidance ??

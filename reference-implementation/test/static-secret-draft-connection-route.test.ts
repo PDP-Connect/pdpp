@@ -785,3 +785,104 @@ test("success promotion: first successful ingest flips owner_state from setup_in
     });
   });
 });
+
+// Browser-required static-secret connectors (ChatGPT captures a username and
+// password but drives a real browser session) must not take a provider
+// credential on a deployment that has no browser surface. Capture would
+// succeed and the first sync would fail at browser launch, leaving the owner
+// with a stored password and no diagnosis. The route refuses before any row or
+// credential is written, using the same predicate the scheduler uses to refuse
+// the run.
+function withBrowserSurfaceEnv<T>(configured: boolean, fn: () => Promise<T>): Promise<T> {
+  const keys = [
+    "PDPP_BROWSER_SURFACE_REMOTE_CDP_URL",
+    "PDPP_NEKO_CDP_HTTP_URL",
+    "PDPP_NEKO_MANAGED_CONNECTORS",
+    "PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES",
+  ];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) {
+    delete process.env[key];
+  }
+  if (configured) {
+    process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL = "http://127.0.0.1:9222";
+  }
+  const restore = () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+  return fn().then(
+    (value) => {
+      restore();
+      return value;
+    },
+    (err) => {
+      restore();
+      throw err;
+    }
+  );
+}
+
+test("setup descriptor reports an unmet browser runtime requirement", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withBrowserSurfaceEnv(false, async () => {
+      await withServer(async ({ asUrl }) => {
+        await registerConnector(asUrl, "chatgpt");
+        const cookie = await login(asUrl);
+        const { status, body, text } = await getSetup(asUrl, cookie, "chatgpt");
+        assert.equal(status, 200, text);
+        const browserRuntime = body.browser_runtime as { configured: boolean; required: boolean } | undefined;
+        assert.ok(browserRuntime, "setup descriptor must report browser runtime state");
+        assert.equal(browserRuntime.required, true, "chatgpt manifest requires the browser binding");
+        assert.equal(browserRuntime.configured, false, "no browser surface is configured in this deployment");
+      });
+    });
+  });
+});
+
+test("draft create is refused for a browser-required connector with no browser surface", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withBrowserSurfaceEnv(false, async () => {
+      await withServer(async ({ asUrl }) => {
+        await registerConnector(asUrl, "chatgpt");
+        const cookie = await login(asUrl);
+        const { status, body, text, resp } = await createDraft(asUrl, cookie, "chatgpt");
+        assert.equal(status, 503, text);
+        assert.equal(errorOf(body).code, "browser_runtime_unavailable");
+        const audit = findDraftAudit(resp, "failed");
+        assert.equal(errorOf(dataOf(audit)).code, "browser_runtime_unavailable");
+
+        const list = await listConnections(asUrl, cookie);
+        assert.equal(list.status, 200);
+        assert.equal(dataArrayOf(list.body).length, 0, "refused setup must not create a connection");
+        const rowCountRow = getDb().prepare("SELECT COUNT(*) AS count FROM connector_instances").get() as
+          | { count: number }
+          | undefined;
+        assert.ok(rowCountRow, "expected a row count");
+        assert.equal(rowCountRow.count, 0, "refused setup must not write a connector_instances row");
+      });
+    });
+  });
+});
+
+test("a network-only connector stays addable on a browser-free deployment", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withBrowserSurfaceEnv(false, async () => {
+      await withServer(async ({ asUrl }) => {
+        await registerConnector(asUrl, "gmail");
+        const cookie = await login(asUrl);
+        const { body } = await getSetup(asUrl, cookie, "gmail");
+        const browserRuntime = body.browser_runtime as { configured: boolean; required: boolean } | undefined;
+        assert.equal(browserRuntime?.required, false, "gmail must not require a browser binding");
+
+        const created = await createDraft(asUrl, cookie, "gmail", { account_email: "owner@example.com" });
+        assert.equal(created.status, 201, created.text);
+      });
+    });
+  });
+});

@@ -6,6 +6,7 @@ import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
+import { isHostedMcpReachableOrigin } from "./hosted-mcp-origin.ts";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { DeploymentReadinessPanel } from "../components/deployment-readiness-panel.tsx";
 import { extractReadinessInputs, type ServerInputs } from "../components/deployment-readiness-rows.ts";
@@ -335,12 +336,15 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
     }
   }
   const targets = buildConnectTargets(origin);
+  const hostedMcpReachable = isHostedMcpReachableOrigin(origin);
   const selected =
     identities.find((identity) => identity.document_id === params.client_identity) ?? identities[0] ?? null;
   const notice = noticeText(params.notice);
   const primaryEntries: SetupEntry[] = [
     {
-      body: "Use this for ChatGPT, Claude.ai, and remote MCP clients. Browser clients use PKCE; sandboxed clients can use the advertised device-code flow.",
+      body: hostedMcpReachable
+        ? "Use this for ChatGPT, Claude.ai, and remote MCP clients. Browser clients use PKCE; sandboxed clients can use the advertised device-code flow."
+        : "Local agents on this machine can use this URL now. ChatGPT and Claude.ai are hosted services that fetch this URL from their own servers, so they cannot reach this origin until it is a public HTTPS address.",
       label: "MCP server URL",
       title: "MCP URL",
       value: targets.mcpUrl,

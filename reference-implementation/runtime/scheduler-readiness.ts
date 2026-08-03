@@ -75,11 +75,19 @@ function formatMissingToolReason(tool: NonNullable<RuntimeRequirements["external
   return `required external tool ${name} is not available.${hint}`;
 }
 
-function requiredBindingEnabled(manifest: SchedulerManifest, binding: string): boolean {
+// Exported alongside browserSurfaceConfigured so owner-facing setup asks the
+// same required-binding question the scheduler asks.
+export function requiredBindingEnabled(manifest: SchedulerManifest, binding: string): boolean {
   return getRuntimeRequirements(manifest).bindings?.[binding]?.required === true;
 }
 
-function browserSurfaceConfigured(): boolean {
+// Exported so owner-facing setup can refuse a credential BEFORE capture using
+// the same predicate that refuses the scheduled run. A connector whose manifest
+// requires the browser binding cannot complete a first sync on a deployment
+// with no browser surface (the browser-free `reference`/`railway-core` images),
+// so accepting the owner's provider password would only produce a
+// capture-succeeds-then-sync-fails trap.
+export function browserSurfaceConfigured(): boolean {
   // Direct CDP URL — connector receives the URL in env and talks to it directly.
   if (process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?.trim()) {
     return true;

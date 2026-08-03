@@ -277,6 +277,38 @@ test("polyfill manifest reconciliation defaults on for Postgres deployments", ()
   );
 });
 
+// The shipped container writes SQLite to /var/lib/pdpp/pdpp.sqlite (Dockerfile
+// PDPP_DB_PATH). Before this path counted as a real deployment, a fresh
+// single-container `docker run` booted with reconciliation off, registered zero
+// connectors, and every source-setup route answered 404 — the owner could not
+// add any source at all.
+test("polyfill manifest reconciliation defaults on for the shipped container data volume", () => {
+  assert.equal(
+    shouldAutoReconcilePolyfillManifests({
+      dbPath: "/var/lib/pdpp/pdpp.sqlite",
+      storageBackendKind: "sqlite",
+    }),
+    true,
+    "the container data volume is a real deployment and must self-register shipped connectors"
+  );
+  assert.equal(
+    shouldAutoReconcilePolyfillManifests({
+      dbPath: "/tmp/scratch/pdpp.sqlite",
+      storageBackendKind: "sqlite",
+    }),
+    false,
+    "ad-hoc SQLite databases outside a known deployment path stay opt-in"
+  );
+  assert.equal(
+    shouldAutoReconcilePolyfillManifests({
+      dbPath: "/var/lib/pdpp/custom.sqlite",
+      storageBackendKind: "sqlite",
+    }),
+    false,
+    "only the canonical pdpp.sqlite filename in the volume is treated as the deployment DB"
+  );
+});
+
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
 if (POSTGRES_URL) {

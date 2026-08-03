@@ -901,9 +901,17 @@ export async function runStartupSummaryEvidenceSweepToCompletion({
 
 // Heuristic: is this DB path a canonical polyfill-connectors deployment DB?
 // Used to decide whether to auto-reconcile persisted manifests on startup.
-// The dev script's default
-// (`../packages/polyfill-connectors/.pdpp-data/pdpp.sqlite`) is the
-// authoritative sentinel; overrides use the explicit opts/env knob.
+// Two sentinels are authoritative:
+//   - the dev script's default
+//     (`../packages/polyfill-connectors/.pdpp-data/pdpp.sqlite`), and
+//   - the shipped container's data volume (`/var/lib/pdpp/pdpp.sqlite`, set by
+//     `PDPP_DB_PATH` in the Dockerfile).
+// The container path matters because a single-container SQLite node is the
+// one-command self-host path: without it, a fresh `docker run` boots with zero
+// registered connectors and every source setup route answers 404, so the owner
+// cannot add any source at all. Postgres deployments reconcile unconditionally
+// (see `shouldAutoReconcilePolyfillManifests`); ad-hoc/test databases stay
+// disabled so they are not clobbered. Overrides use the explicit opts/env knob.
 export function looksLikePolyfillDeploymentDbPath(dbPath: string | null | undefined) {
   if (!dbPath || typeof dbPath !== "string") {
     return false;
@@ -911,7 +919,10 @@ export function looksLikePolyfillDeploymentDbPath(dbPath: string | null | undefi
   if (dbPath === ":memory:") {
     return false;
   }
-  return dbPath.includes("/polyfill-connectors/") && dbPath.endsWith("pdpp.sqlite");
+  if (!dbPath.endsWith("pdpp.sqlite")) {
+    return false;
+  }
+  return dbPath.includes("/polyfill-connectors/") || dbPath.startsWith("/var/lib/pdpp/");
 }
 
 export function shouldAutoReconcilePolyfillManifests({

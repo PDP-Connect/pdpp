@@ -2102,6 +2102,14 @@ export interface StaticSecretSetupField {
 }
 
 export interface StaticSecretSetup {
+  // Whether this connector needs a browser surface, and whether this
+  // deployment has one. A connector that requires a browser on a browser-free
+  // deployment cannot complete a first sync, so the form blocks capture
+  // instead of taking a provider password it cannot use.
+  browser_runtime?: {
+    configured: boolean;
+    required: boolean;
+  };
   connector_id: string;
   credential_capture: {
     description: string | null;

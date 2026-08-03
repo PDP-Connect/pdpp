@@ -143,3 +143,19 @@ test("legacy static-secret setup-status URL redirects to the generic setup-statu
   assert.match(src, LEGACY_REDIRECT);
   assert.doesNotMatch(src, STATUS_FETCH);
 });
+
+// A static-secret connector can still require a browser surface (ChatGPT).
+// On a browser-free deployment the form must refuse capture up front rather
+// than accepting a provider password whose first sync can only fail at browser
+// launch. The server route is the real gate; this guards the owner-facing half.
+const BROWSER_RUNTIME_BLOCKED = /const browserRuntimeBlocked = Boolean\(\s*setup\.browser_runtime\?\.required && !setup\.browser_runtime\.configured\s*\)/;
+const BROWSER_RUNTIME_GATES_FORM = /\{browserRuntimeBlocked \? \(/;
+const BROWSER_RUNTIME_REMEDIATION = /reference-browser|PDPP_BROWSER_SURFACE_REMOTE_CDP_URL/;
+
+test("setup form refuses capture when the connector needs a browser this deployment lacks", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, BROWSER_RUNTIME_BLOCKED);
+  // The gate must precede the form branch, not merely render an advisory note.
+  assert.match(src, BROWSER_RUNTIME_GATES_FORM);
+  assert.match(src, BROWSER_RUNTIME_REMEDIATION);
+});
