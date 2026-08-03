@@ -1569,6 +1569,52 @@ test("live semantic probe still rejects Explore pages missing core rendered cont
   assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
 });
 
+test("live semantic probe rejects an Explore page missing ONLY record filters, with title/query controls and sort toggle present", async () => {
+  // Narrow mutation guard the closure-gate review specifically asked for:
+  // the prior "missing core content" test dropped BOTH query controls and
+  // filters, so a future regression that silently moved "record filters"
+  // into the optional array (alongside the sort toggle) would not have been
+  // caught — the failure would still come from query controls alone. This
+  // fixture isolates filters as the ONLY missing required item (title,
+  // query controls, and even the optional sort toggle are all present) to
+  // prove filters specifically stays in `required`, not demoted.
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ object: "list", data: [], has_more: false }));
+    }
+    if (href.endsWith("/explore")) {
+      return response(
+        200,
+        "<main><h1>Explore</h1><label>Search names, fields, and values — or type an operator</label><button>newest</button><button>oldest</button></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.findings.some((f) => f.ruleId === "explore-content-rendered"));
+  assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
+  assert.ok(
+    result.findings.some((f) => f.ruleId === "explore-content-rendered" && f.excerpt.includes("record filters"))
+  );
+});
+
 test("live semantic probe rejects owner actions that are absent from the exact source route", async () => {
   const response = (
     status: number,

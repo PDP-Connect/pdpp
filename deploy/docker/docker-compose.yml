@@ -109,12 +109,6 @@ services:
       PDPP_RS_URL: http://reference:7663
       PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:?generate into .env — see deploy/docker/README.md}
       PDPP_ENABLE_DASHBOARD: "1"
-      # Ascending ("oldest first") Explore timeline paging is a real, fully
-      # tested server keyset walk (reference-implementation/test/
-      # rs-explore-timeline-oldest-ascending.test.ts) — this flag only gates
-      # the frontend sort-direction control, not backend readiness. Default
-      # on in every real deployment; see uat-owner-journey-closure-0803.md.
-      PDPP_EXPLORE_TIMELINE_DIRECTION: "1"
     ports:
       - "${PDPP_WEB_PORT:-3000}:3000"
     depends_on:

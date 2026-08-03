@@ -675,12 +675,12 @@ async function runLiveSemanticChecks({
       // capability gate (commit 93daaace6, "feat(explore): gate frontend sort
       // direction") — NOT a rendering defect. The sandbox/demo data source
       // hardcodes it on, but a live deployment only renders it when
-      // PDPP_EXPLORE_TIMELINE_DIRECTION=1 is set (now the reference compose
-      // default; see deploy/docker/docker-compose.yml). Demanding it
-      // unconditionally would fail any deployment running an older compose
-      // or a deliberately-disabled variant, even though the core Explore
-      // surface — title, query, filters — is fully usable. Report it, don't
-      // gate the core content check on it.
+      // PDPP_EXPLORE_TIMELINE_DIRECTION=1 is set — NOT set by default in the
+      // reference compose (Postgres ascending-direction paging has no direct
+      // test coverage; see uat-owner-journey-closure-0803.md). Demanding the
+      // toggle unconditionally would fail any deployment that hasn't opted
+      // in, even though the core Explore surface — title, query, filters —
+      // is fully usable. Report it, don't gate the core content check on it.
       optional: [{ label: "record sort controls", pattern: BNEWEST_BOLDEST_PATTERN }],
     },
   ];
