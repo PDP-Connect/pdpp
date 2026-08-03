@@ -65,9 +65,11 @@ const PROJECTION_SQL_COPY_RE = /projection|rebuild|bulk write|unknown connection
 const RAW_ORPHANED_RUN_RE = /orphaned_started_run/;
 const RAW_REASON_CODE_RE = /new_internal_reason_code/;
 const REFRESH_PAGE_RE = /Refresh this page/;
+const RUNTIME_READ_SOURCE_RE = /(?:ynab|Gmail) read/;
 const SQL_FAILED_RE = /SQL failed/;
 const STALE_TOTALS_RE = /last completed update/;
 const TOKEN_OVERCOUNT_RE = /2 tokens can act as you/;
+const UNKNOWN_ACTOR_SOURCE_RE = /ynab|collecting from/;
 const WILL_NOT_CLAIM_ALL_CLEAR_RE = /will not claim all-clear from partial data/;
 
 function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
@@ -1517,6 +1519,180 @@ test("lately uses trace client metadata instead of raw client ids", () => {
   assert.notEqual(data.lately[0]?.text.who, "cli_named");
 });
 
+test("lately presents runtime actors as PDPP collecting from the source", () => {
+  const traces: TraceSummary[] = [
+    {
+      object: "trace_summary",
+      trace_id: "trc_ynab_runtime",
+      status: "succeeded",
+      actor_id: "ynab",
+      actor_type: "runtime",
+      client_id: "cli_finance",
+      client: {
+        client_id: "cli_finance",
+        client_name: "Finance app",
+        registration_mode: "dynamic",
+      },
+      source: { id: "ynab", kind: "connector" },
+      grant_id: null,
+      run_id: null,
+      request_id: null,
+      first_at: "2026-06-13T00:00:00Z",
+      last_at: "2026-06-13T00:00:00Z",
+      event_count: 4,
+      kinds: ["query.received"],
+      failure: null,
+    },
+    {
+      object: "trace_summary",
+      trace_id: "trc_gmail_runtime",
+      status: "succeeded",
+      actor_id: "gmail",
+      actor_type: "runtime",
+      client_id: "cli_mail",
+      client: {
+        client_id: "cli_mail",
+        client_name: "Mail app",
+        registration_mode: "dynamic",
+      },
+      grant_id: null,
+      run_id: null,
+      request_id: null,
+      first_at: "2026-06-13T00:00:00Z",
+      last_at: "2026-06-13T00:00:00Z",
+      event_count: 2,
+      kinds: ["query.received"],
+      failure: null,
+    },
+  ];
+
+  const data = buildStandingData(baseInputs({ traces }));
+
+  assert.deepEqual(
+    data.lately.map((item) => item.text),
+    [
+      { who: "PDPP", rest: "collecting from ynab · read 4 records." },
+      { who: "PDPP", rest: "collecting from Gmail · read 2 records." },
+    ]
+  );
+  assert.doesNotMatch(
+    data.lately.map((item) => `${item.text.who} ${item.text.rest}`).join("\n"),
+    RUNTIME_READ_SOURCE_RE
+  );
+});
+
+test("lately keeps runtime source attribution on denied rows", () => {
+  const trace: TraceSummary = {
+    object: "trace_summary",
+    trace_id: "trc_gmail_runtime_denied",
+    status: "denied",
+    actor_id: "gmail",
+    actor_type: "runtime",
+    client_id: null,
+    source: { id: "gmail", kind: "connector" },
+    grant_id: null,
+    run_id: null,
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 1,
+    kinds: ["query.rejected"],
+    failure: { event_type: "query.rejected", reason: "permission_error" },
+  };
+
+  const data = buildStandingData(baseInputs({ traces: [trace] }));
+  const [row] = data.lately;
+  assert.ok(row);
+  assert.deepEqual(row.text, {
+    who: "PDPP",
+    rest: "collecting from Gmail · tried to read — turned away, the app was not allowed to do that.",
+  });
+});
+
+test("lately does not infer a reader from an unknown actor type or its source", () => {
+  const trace: TraceSummary = {
+    object: "trace_summary",
+    trace_id: "trc_unknown_runtime_like",
+    status: "succeeded",
+    actor_id: "ynab",
+    actor_type: "future_actor_type",
+    client_id: null,
+    source: { id: "ynab", kind: "connector" },
+    grant_id: null,
+    run_id: null,
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 1,
+    kinds: ["query.received"],
+    failure: null,
+  };
+
+  const data = buildStandingData(baseInputs({ traces: [trace] }));
+  const [row] = data.lately;
+  assert.ok(row);
+
+  assert.equal(row.text.who, "Unknown actor");
+  assert.equal(row.text.rest, "read 1 record.");
+  assert.doesNotMatch(row.text.rest, UNKNOWN_ACTOR_SOURCE_RE);
+});
+
+test("lately keeps authoritative subject, authorization-server, and client identities distinct", () => {
+  const makeTrace = (over: Partial<TraceSummary>): TraceSummary => ({
+    object: "trace_summary",
+    trace_id: "trc_actor_identity",
+    status: "succeeded",
+    actor_id: null,
+    actor_type: null,
+    client_id: null,
+    grant_id: null,
+    run_id: null,
+    request_id: null,
+    first_at: "2026-06-13T00:00:00Z",
+    last_at: "2026-06-13T00:00:00Z",
+    event_count: 1,
+    kinds: ["query.received"],
+    failure: null,
+    ...over,
+  });
+
+  const subject = buildStandingData(
+    baseInputs({ traces: [makeTrace({ trace_id: "trc_subject", actor_id: "owner_local", actor_type: "subject" })] })
+  );
+  const missingSubjectId = buildStandingData(
+    baseInputs({ traces: [makeTrace({ trace_id: "trc_subject_unknown", actor_type: "subject" })] })
+  );
+  const authorizationServer = buildStandingData(
+    baseInputs({ traces: [makeTrace({ trace_id: "trc_as", actor_id: "pdpp_as", actor_type: "authorization_server" })] })
+  );
+  const client = buildStandingData(
+    baseInputs({
+      traces: [
+        makeTrace({
+          trace_id: "trc_client",
+          actor_id: "cli_named",
+          actor_type: "client",
+          client_id: "cli_named",
+          client: { client_id: "cli_named", client_name: "Claude", registration_mode: "dynamic" },
+        }),
+      ],
+    })
+  );
+  const [subjectRow] = subject.lately;
+  const [missingSubjectIdRow] = missingSubjectId.lately;
+  const [authorizationServerRow] = authorizationServer.lately;
+  const [clientRow] = client.lately;
+  assert.ok(subjectRow);
+  assert.ok(missingSubjectIdRow);
+  assert.ok(authorizationServerRow);
+  assert.ok(clientRow);
+
+  assert.equal(subjectRow.text.who, "You");
+  assert.equal(missingSubjectIdRow.text.who, "Unknown actor");
+  assert.equal(authorizationServerRow.text.who, "PDPP authorization server");
+  assert.equal(clientRow.text.who, "Claude");
+});
+
 test("lately humanizes live denial reason codes instead of rendering raw diagnostics", () => {
   const trace: TraceSummary = {
     object: "trace_summary",
@@ -1670,7 +1846,7 @@ test("lately does not render bare opaque client ids as names", () => {
   const data = buildStandingData(baseInputs({ traces: [trace] }));
 
   assert.equal(data.lately.length, 1);
-  assert.equal(data.lately[0]?.text.who, "Someone");
+  assert.equal(data.lately[0]?.text.who, "Unknown actor");
   assert.notEqual(data.lately[0]?.text.who, opaqueClientId);
 });
 
@@ -1716,8 +1892,8 @@ test("lately summarizes identical recent reads instead of repeating the same row
   assert.equal(data.lately.length, 2);
   assert.equal(data.lately[0]?.text.who, "Longview CLI");
   assert.equal(data.lately[0]?.text.rest, "read 3 records 5 times.");
-  assert.equal(data.lately[1]?.text.who, "controller");
-  assert.equal(data.lately[1]?.text.rest, "read 1 record.");
+  assert.equal(data.lately[1]?.text.who, "PDPP");
+  assert.equal(data.lately[1]?.text.rest, "collecting from controller · read 1 record.");
 });
 
 test("relationships summarize grants by client instead of repeating one row per grant", () => {

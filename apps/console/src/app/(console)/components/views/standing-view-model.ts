@@ -15,6 +15,7 @@
  * The design used fictional fixtures; here every field binds to a real shape.
  */
 
+import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type {
   DatasetSummary,
   GrantSummary,
@@ -181,7 +182,7 @@ export type GrantEndorseStatus = "active" | "continuous" | "expiring" | "revoked
 export interface LatelyView {
   deny: boolean;
   id: string;
-  /** "Claude Desktop read 412 transactions" or deny copy. */
+  /** "Claude Desktop read 412 records" or "PDPP collecting from Gmail · ...". */
   text: { who: string; rest: string };
   when: string;
 }
@@ -703,34 +704,56 @@ function looksLikeTechnicalId(value: string | null | undefined): boolean {
   return LONG_MACHINE_TOKEN_RE.test(v);
 }
 
-function traceActorFallback(trace: TraceSummary): string {
-  const actorType = trace.actor_type?.trim().toLowerCase() ?? "";
-  if (actorType === "subject" || actorType === "owner") {
-    return "You";
-  }
-  if (actorType === "client") {
-    return "An app";
-  }
-  const actorId = trace.actor_id?.trim() ?? "";
-  if (actorId && !looksLikeTechnicalId(actorId) && actorId !== "owner_local") {
-    return actorId;
-  }
-  if (actorType === "runtime" || actorType === "system") {
-    return "The server";
-  }
-  return "Someone";
+interface LatelyActor {
+  /** Optional action context that must follow the bold actor lead. */
+  prefix?: string;
+  /** Bold lead in the compact homepage sentence. */
+  who: string;
 }
 
-function traceWho(trace: TraceSummary): string {
-  const traceClientName = trace.client?.client_name?.trim() || null;
-  if (traceClientName) {
-    return traceClientName;
+function runtimeSourceLabel(trace: TraceSummary): string {
+  const sourceLabel = formatSourceForDisplay(trace.source);
+  if (sourceLabel !== "source -") {
+    return sourceLabel;
   }
-  const clientId = trace.client_id?.trim() ?? "";
-  if (clientId && !looksLikeTechnicalId(clientId)) {
-    return clientId;
+  const actorId = trace.actor_id?.trim();
+  if (actorId) {
+    return formatSourceForDisplay({ id: actorId, kind: "connector" });
   }
-  return traceActorFallback(trace);
+  return "an unknown source";
+}
+
+function traceActorPresentation(trace: TraceSummary): LatelyActor {
+  const actorType = trace.actor_type?.trim().toLowerCase() ?? "";
+  if (actorType === "runtime") {
+    return {
+      prefix: `collecting from ${runtimeSourceLabel(trace)} · `,
+      who: "PDPP",
+    };
+  }
+  if (actorType === "authorization_server") {
+    return { who: "PDPP authorization server" };
+  }
+  if (actorType === "subject" || actorType === "owner") {
+    // The explicit actor type is authoritative, but a missing actor id is not
+    // enough evidence to turn the row into a claim about the owner.
+    return trace.actor_id?.trim() ? { who: "You" } : { who: "Unknown actor" };
+  }
+  if (actorType === "client") {
+    const traceClientName = trace.client?.client_name?.trim() || null;
+    if (traceClientName) {
+      return { who: traceClientName };
+    }
+    const clientId = trace.client_id?.trim() ?? "";
+    if (clientId && !looksLikeTechnicalId(clientId)) {
+      return { who: clientId };
+    }
+    return { who: "An app" };
+  }
+  if (actorType === "system") {
+    return { who: "PDPP system" };
+  }
+  return { who: "Unknown actor" };
 }
 
 function repeatedLatelyRest(rest: string, count: number): string {
@@ -741,14 +764,17 @@ function repeatedLatelyRest(rest: string, count: number): string {
 function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
   const groups: Array<LatelyView & { count: number; key: string; originalRest: string }> = [];
   for (const tr of traces.slice(0, 6)) {
-    const who = traceWho(tr);
+    const actor = traceActorPresentation(tr);
     const isDeny = tr.status.toLowerCase() === "denied" || tr.failure !== null;
     let row: LatelyView;
     if (isDeny) {
       row = {
         deny: true,
         id: tr.trace_id,
-        text: { rest: `tried to read — turned away, ${denyReason(tr.failure?.reason ?? null)}.`, who },
+        text: {
+          rest: `${actor.prefix ?? ""}tried to read — turned away, ${denyReason(tr.failure?.reason ?? null)}.`,
+          who: actor.who,
+        },
         when: relDay(tr.last_at, now),
       };
     } else {
@@ -756,7 +782,7 @@ function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
       row = {
         deny: false,
         id: tr.trace_id,
-        text: { rest: `read ${fmtInt(tr.event_count)} ${noun}.`, who },
+        text: { rest: `${actor.prefix ?? ""}read ${fmtInt(tr.event_count)} ${noun}.`, who: actor.who },
         when: relDay(tr.last_at, now),
       };
     }
