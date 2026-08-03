@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import {
   parseGmailAttachmentTooLargePolicyDisposition,
   requireValidatedTerminalPolicyDisposition,
+  validatedTerminalPolicyDisposition,
 } from "../../runtime/terminal-policy-disposition.ts";
 
 // Type definitions for store interface
@@ -190,11 +191,43 @@ export interface PendingGapRepairResult {
   terminalized: number;
 }
 
+/** Exact, bounded remeasurement scope for terminal rows missing validated proof. */
+export interface TerminalGapRemeasurementScopeInput {
+  connectorId: string;
+  connectorInstanceId: string;
+  errorClass: string;
+  limit?: number;
+  mutationDiscriminator: string;
+  now?: string;
+  stream: string;
+}
+
+export interface TerminalGapRemeasurementResult {
+  gapIds: string[];
+  matched: number;
+  requeued: number;
+}
+
 interface NormalizedPendingGapRepairScope {
   connectorId: string;
   connectorInstanceId: string;
   errorClass: string;
   limit: number;
+  now: string;
+  stream: string;
+}
+
+interface TerminalGapRemeasurementCandidate {
+  gap: DetailGap;
+  policyDispositionJson: string | null;
+}
+
+interface NormalizedTerminalGapRemeasurementScope {
+  connectorId: string;
+  connectorInstanceId: string;
+  errorClass: string;
+  limit: number;
+  mutationDiscriminator: typeof GMAIL_PRECONTRACT_REMEASUREMENT_DISCRIMINATOR;
   now: string;
   stream: string;
 }
@@ -239,6 +272,7 @@ const PENDING_GAP_MAX_AGE_BUCKETS = 8;
 const PENDING_GAP_ATTEMPT_RANK_CLAMP = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
 const SAFE_ROUTE_TEMPLATE_KEY_PATTERN = /^(endpoint_route|route_template)$/i;
 const SAFE_ROUTE_TEMPLATE_PATTERN = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[A-Za-z0-9._~!$&'()*+,;=:@/%{}-]+$/;
+export const GMAIL_PRECONTRACT_REMEASUREMENT_DISCRIMINATOR = "pre_contract_gmail_attachment_too_large_remeasurement_v1";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -833,6 +867,48 @@ function normalizePendingGapRepairScope(input: PendingGapRepairScopeInput): Norm
   };
 }
 
+function normalizeTerminalGapRemeasurementScope(
+  input: TerminalGapRemeasurementScopeInput
+): NormalizedTerminalGapRemeasurementScope {
+  const connectorId = nonEmptyString(input.connectorId);
+  const connectorInstanceId = nonEmptyString(input.connectorInstanceId);
+  const errorClass = nonEmptyString(input.errorClass);
+  const mutationDiscriminator = nonEmptyString(input.mutationDiscriminator);
+  const stream = nonEmptyString(input.stream);
+  if (!(connectorId && connectorInstanceId && errorClass && mutationDiscriminator && stream)) {
+    throw new Error(
+      "terminal detail-gap remeasurement requires connectorId, connectorInstanceId, stream, errorClass, and mutationDiscriminator"
+    );
+  }
+  if (connectorId !== "gmail" || stream !== "attachments" || errorClass !== "too_large") {
+    throw new Error("terminal detail-gap remeasurement only permits canonical Gmail attachment too_large rows");
+  }
+  if (mutationDiscriminator !== GMAIL_PRECONTRACT_REMEASUREMENT_DISCRIMINATOR) {
+    throw new Error("terminal detail-gap remeasurement requires the pre-contract Gmail mutation discriminator");
+  }
+  return {
+    connectorId,
+    connectorInstanceId,
+    errorClass,
+    limit: normalizeGapMutationLimit(input.limit),
+    mutationDiscriminator,
+    now: nonEmptyString(input.now) || nowIso(),
+    stream,
+  };
+}
+
+function hasValidatedTerminalPolicyDispositionForGap(gap: DetailGap): boolean {
+  return Boolean(
+    validatedTerminalPolicyDisposition(gap.policy_disposition, {
+      connectorId: gap.connector_id,
+      detailLocator: gap.detail_locator,
+      lastError: gap.last_error,
+      reason: gap.reason,
+      stream: gap.stream,
+    })
+  );
+}
+
 function sqlitePendingGapRepairRows(scope: NormalizedPendingGapRepairScope): DetailGap[] {
   return [
     ...iterateDynamicSqlAcknowledged<DetailGapRow>(
@@ -870,6 +946,151 @@ async function postgresPendingGapRepairRows(scope: NormalizedPendingGapRepairSco
     [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass, scope.limit]
   );
   return result.rows.map((row) => rowToGap(row) as DetailGap);
+}
+
+function sqliteTerminalGapRemeasurementCandidates(
+  scope: NormalizedTerminalGapRemeasurementScope
+): TerminalGapRemeasurementCandidate[] {
+  const rows = [
+    ...iterateDynamicSqlAcknowledged<DetailGapRow>(
+      `
+      SELECT * FROM connector_detail_gaps
+      WHERE connector_id = ?
+        AND connector_instance_id = ?
+        AND stream = ?
+        AND status = 'terminal'
+        AND reason = 'too_large'
+        AND json_extract(last_error_json, '$.class') = ?
+        AND json_extract(detail_locator_json, '$.kind') = 'gmail.attachment_detail'
+        AND lease_run_id IS NULL
+        AND lease_id IS NULL
+      ORDER BY updated_at, created_at, gap_id
+      LIMIT ?
+    `,
+      [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass, scope.limit]
+    ),
+  ];
+  return rows
+    .map((row) => ({ gap: rowToGap(row) as DetailGap, policyDispositionJson: row.policy_disposition_json }))
+    .filter((candidate) => !hasValidatedTerminalPolicyDispositionForGap(candidate.gap));
+}
+
+async function postgresTerminalGapRemeasurementCandidates(
+  scope: NormalizedTerminalGapRemeasurementScope
+): Promise<TerminalGapRemeasurementCandidate[]> {
+  const result = await postgresQuery<DetailGapRow>(
+    `
+      SELECT * FROM connector_detail_gaps
+      WHERE connector_id = $1
+        AND connector_instance_id = $2
+        AND stream = $3
+        AND status = 'terminal'
+        AND reason = 'too_large'
+        AND last_error_json->>'class' = $4
+        AND detail_locator_json->>'kind' = 'gmail.attachment_detail'
+        AND lease_run_id IS NULL
+        AND lease_id IS NULL
+      ORDER BY updated_at, created_at, gap_id
+      LIMIT $5
+    `,
+    [scope.connectorId, scope.connectorInstanceId, scope.stream, scope.errorClass, scope.limit]
+  );
+  return result.rows
+    .map((row) => ({ gap: rowToGap(row) as DetailGap, policyDispositionJson: row.policy_disposition_json }))
+    .filter((candidate) => !hasValidatedTerminalPolicyDispositionForGap(candidate.gap));
+}
+
+function requeueSqliteTerminalGapRemeasurementCandidates(
+  candidates: TerminalGapRemeasurementCandidate[],
+  scope: NormalizedTerminalGapRemeasurementScope
+): TerminalGapRemeasurementResult {
+  const gapIds: string[] = [];
+  for (const { gap, policyDispositionJson } of candidates) {
+    const result = execDynamicSqlAcknowledged(
+      `
+      UPDATE connector_detail_gaps
+      SET status = 'pending',
+          next_attempt_after = NULL,
+          lease_run_id = NULL,
+          lease_id = NULL,
+          lease_attempted = 0,
+          lease_expires_at = NULL,
+          policy_disposition_json = NULL,
+          updated_at = ?
+      WHERE gap_id = ?
+        AND connector_id = ?
+        AND connector_instance_id = ?
+        AND stream = ?
+        AND status = 'terminal'
+        AND reason = 'too_large'
+        AND json_extract(last_error_json, '$.class') = ?
+        AND json_extract(detail_locator_json, '$.kind') = 'gmail.attachment_detail'
+        AND lease_run_id IS NULL
+        AND lease_id IS NULL
+        AND policy_disposition_json IS ?
+    `,
+      [
+        scope.now,
+        gap.gap_id,
+        scope.connectorId,
+        scope.connectorInstanceId,
+        scope.stream,
+        scope.errorClass,
+        policyDispositionJson,
+      ]
+    );
+    if (Number(result.changes || 0) === 1) {
+      gapIds.push(gap.gap_id);
+    }
+  }
+  return { gapIds, matched: candidates.length, requeued: gapIds.length };
+}
+
+async function requeuePostgresTerminalGapRemeasurementCandidates(
+  candidates: TerminalGapRemeasurementCandidate[],
+  scope: NormalizedTerminalGapRemeasurementScope
+): Promise<TerminalGapRemeasurementResult> {
+  const gapIds: string[] = [];
+  for (const { gap, policyDispositionJson } of candidates) {
+    // biome-ignore lint/performance/noAwaitInLoops: Sequential CAS updates preserve the bounded receipt order across backends.
+    const result = await postgresQuery(
+      `
+      UPDATE connector_detail_gaps
+      SET status = 'pending',
+          next_attempt_after = NULL,
+          lease_run_id = NULL,
+          lease_id = NULL,
+          lease_attempted = 0,
+          lease_expires_at = NULL,
+          policy_disposition_json = NULL,
+          updated_at = $1
+      WHERE gap_id = $2
+        AND connector_id = $3
+        AND connector_instance_id = $4
+        AND stream = $5
+        AND status = 'terminal'
+        AND reason = 'too_large'
+        AND last_error_json->>'class' = $6
+        AND detail_locator_json->>'kind' = 'gmail.attachment_detail'
+        AND lease_run_id IS NULL
+        AND lease_id IS NULL
+        AND policy_disposition_json IS NOT DISTINCT FROM $7::jsonb
+    `,
+      [
+        scope.now,
+        gap.gap_id,
+        scope.connectorId,
+        scope.connectorInstanceId,
+        scope.stream,
+        scope.errorClass,
+        policyDispositionJson,
+      ]
+    );
+    if (Number(result.rowCount || 0) === 1) {
+      gapIds.push(gap.gap_id);
+    }
+  }
+  return { gapIds, matched: candidates.length, requeued: gapIds.length };
 }
 
 function sqliteQuarantinedRequeueRows(scope: QuarantinedRequeueScope): DetailGap[] {
@@ -1378,6 +1599,18 @@ export function createSqliteConnectorDetailGapStore() {
       return sqlitePendingGapRepairRows(normalizePendingGapRepairScope(input));
     },
 
+    // This operator transition returns only legacy terminal rows to ordinary
+    // recovery. It neither creates a provider outcome nor rewrites record or
+    // terminal evidence; the next scheduled lease is the sole new-measurement
+    // authority. The disposition preimage is part of the CAS so an observed
+    // unproven row cannot overwrite a concurrently changed policy row.
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async listTerminalGapsForRemeasurement(input: TerminalGapRemeasurementScopeInput): Promise<DetailGap[]> {
+      return sqliteTerminalGapRemeasurementCandidates(normalizeTerminalGapRemeasurementScope(input)).map(
+        (candidate) => candidate.gap
+      );
+    },
+
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
     async markGapStatus(gapId: string, status: string, options: MarkGapStatusOptions = {}): Promise<DetailGap | null> {
       const mutation = normalizeGapStatusMutation(gapId, status, options);
@@ -1556,6 +1789,14 @@ export function createSqliteConnectorDetailGapStore() {
     ): Promise<RequeueResult> {
       const scope = normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, options);
       return requeueSqliteQuarantinedRows(sqliteQuarantinedRequeueRows(scope), scope);
+    },
+
+    // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
+    async requeueTerminalGapsForRemeasurement(
+      input: TerminalGapRemeasurementScopeInput
+    ): Promise<TerminalGapRemeasurementResult> {
+      const scope = normalizeTerminalGapRemeasurementScope(input);
+      return requeueSqliteTerminalGapRemeasurementCandidates(sqliteTerminalGapRemeasurementCandidates(scope), scope);
     },
 
     // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
@@ -2217,6 +2458,12 @@ export function createPostgresConnectorDetailGapStore() {
       return postgresPendingGapRepairRows(normalizePendingGapRepairScope(input));
     },
 
+    async listTerminalGapsForRemeasurement(input: TerminalGapRemeasurementScopeInput): Promise<DetailGap[]> {
+      return (await postgresTerminalGapRemeasurementCandidates(normalizeTerminalGapRemeasurementScope(input))).map(
+        (candidate) => candidate.gap
+      );
+    },
+
     async markGapStatus(gapId: string, status: string, options: MarkGapStatusOptions = {}): Promise<DetailGap | null> {
       const mutation = normalizeGapStatusMutation(gapId, status, options);
       // `reason` is COALESCE-updated (see the SQLite path): only overwritten
@@ -2360,6 +2607,16 @@ export function createPostgresConnectorDetailGapStore() {
     ): Promise<RequeueResult> {
       const scope = normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, options);
       return requeuePostgresQuarantinedRows(await postgresQuarantinedRequeueRows(scope), scope);
+    },
+
+    async requeueTerminalGapsForRemeasurement(
+      input: TerminalGapRemeasurementScopeInput
+    ): Promise<TerminalGapRemeasurementResult> {
+      const scope = normalizeTerminalGapRemeasurementScope(input);
+      return requeuePostgresTerminalGapRemeasurementCandidates(
+        await postgresTerminalGapRemeasurementCandidates(scope),
+        scope
+      );
     },
 
     async settleLeasedGapPending(

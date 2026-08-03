@@ -47,3 +47,15 @@ disposition SHALL remain repair-blocking.
 - **THEN** its terminal evidence SHALL remain visible and repair-blocking
 - **AND** the implementation SHALL NOT infer policy evidence from free text,
   reason, or error class.
+
+#### Scenario: Historical Gmail evidence may be remeasured but not backfilled
+
+- **WHEN** an operator uses the explicit dry-run-by-default remeasurement
+  bridge for one Gmail connection instance's canonical `attachments` terminal
+  `too_large` rows that lack a validated policy disposition
+- **THEN** the bridge SHALL only return the selected current gap rows to
+  ordinary pending recovery with a status/disposition compare-and-set
+- **AND** it SHALL preserve record data and immutable terminal audit/spine
+  history without inferring a policy disposition or emitting a new outcome
+- **AND** a later normal scheduled recovery lease SHALL be the sole authority
+  for any new policy proof, `not_found`, or recovered outcome.

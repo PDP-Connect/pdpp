@@ -19,3 +19,14 @@
   validation, and diff checks.
 - [x] 2.3 Add SQLite/PostgreSQL valid-policy-to-`not_found`, malformed-proof,
   fresh-schema, and upgrade-schema regressions.
+
+## 3. Historical remeasurement bridge
+
+- [x] 3.1 Add the bounded, dry-run-by-default Gmail terminal remeasurement
+  command with an exact connection-instance scope and required mutation
+  discriminator.
+- [x] 3.2 Reuse the detail-gap store with status/disposition CAS so valid
+  policy rows, active leases, other terminal classes, and sibling instances
+  cannot be requeued.
+- [x] 3.3 Add SQLite and disposable-real-PostgreSQL dry-run/apply/idempotence,
+  race, isolation, proven-row exclusion, and no-fabricated-outcome tests.

@@ -21,6 +21,10 @@ row while excluding only a validated terminal-settlement policy fact.
   additive upgrade path; do not add it to unrelated device tables.
 - Keep terminal resource/connector defects repair-blocking.
 - Fail closed when either aggregate is malformed, duplicated, or inconsistent.
+- Add a dry-run-by-default, exact-instance migration bridge for legacy Gmail
+  attachment `too_large` terminal rows with no validated disposition. The
+  bridge only returns the bounded rows to normal scheduled recovery; it does
+  not infer history, alter records or spine events, or emit a new outcome.
 - Add SQLite/PostgreSQL parity and mutation regressions for policy versus
   defect terminal rows.
 
@@ -37,3 +41,4 @@ row while excluding only a validated terminal-settlement policy fact.
 - `reference-implementation/server/stores/connector-detail-gap-store.ts`
 - `reference-implementation/runtime/terminal-policy-disposition.ts`
 - `reference-implementation/server/owner-detail-gap-projection.ts`
+- `reference-implementation/scripts/repair/requeue-gmail-precontract-too-large-detail-gaps.ts`

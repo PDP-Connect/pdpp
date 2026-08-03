@@ -23,6 +23,25 @@ neither deleted nor relabelled. Any malformed row, duplicate stream, failed
 aggregate, or policy stream absent from the total, or a policy count greater
 than the total leaves the repair count unmeasured.
 
+Legacy rows without the disposition remain historically unproven. The upgrade
+bridge is deliberately not a policy-disposition writer: it is a bounded,
+dry-run-by-default operator command requiring one connector instance, the
+fixed Gmail/attachments/`too_large` scope, and the
+`pre_contract_gmail_attachment_too_large_remeasurement_v1` mutation
+discriminator. The store rechecks the canonical Gmail locator, terminal
+reason/error class, no active lease, and the exact policy-disposition preimage
+as part of each status compare-and-set. It excludes every row the closed
+validator accepts, including when a raw JSON kind alone looks plausible.
+
+Apply changes only an eligible current gap row from `terminal` to `pending`,
+clearing its terminal-only disposition and lease fields. It preserves the
+gap/record identity, locator, source, error, run links, attempt counters, and
+all immutable spine/audit history. It creates no provider, record, run, or
+spine fact. A later normal scheduled lease is therefore the sole authority for
+any fresh policy proof, `not_found`, or recovery outcome. Repeating the apply
+or racing it against another apply can change each row at most once; a valid
+policy row and all other instances/classes remain untouched.
+
 ## Alternatives
 
 - Reclassify `too_large` as recovered: rejected because blob bytes were not
@@ -30,6 +49,8 @@ than the total leaves the repair count unmeasured.
 - Remove policy rows: rejected because it erases durable evidence.
 - Make all terminal rows non-blocking: rejected because actual provider or
   connector defects still require diagnosis.
+- Backfill policy proof from the terminal message or current configuration:
+  rejected because it would fabricate historical settlement evidence.
 
 ## Acceptance checks
 
@@ -43,3 +64,6 @@ than the total leaves the repair count unmeasured.
   coverage and diagnostics.
 - Both storage backends apply the same disposition filter and historical rows
   with no disposition remain blocking.
+- The explicit remeasurement bridge is dry-run by default, only requeues an
+  exact Gmail connection-instance scope lacking validated proof, and leaves
+  new outcome production to scheduled recovery.
