@@ -55,6 +55,7 @@ const packedFileSet = new Set(packedFiles);
 
 assertPublishedEntrypoints(packageJson, packedFileSet);
 await assertLiteralRelativeImportsResolve(packedFiles, packedFileSet);
+await assertNoUnresolvableWorkspaceImports(packedFiles);
 
 for (const file of requiredFiles) {
   assert.equal(packedFiles.includes(file), true, `missing required package file: ${file}`);
@@ -189,6 +190,40 @@ async function assertLiteralRelativeImportsResolve(packedFiles: string[], packed
       );
       // biome-ignore lint/performance/noAwaitInLoops: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
       await stat(targetPath);
+    }
+  }
+}
+
+/**
+ * Check that no compiled artifact imports a bare `@pdpp/*` package specifier.
+ *
+ * `package.json`'s own dependency sections are already asserted free of
+ * `@pdpp/*` names above, so any such specifier reaching the compiled output
+ * (e.g. via a workspace-only source import that tsc happened to pull in
+ * transitively, not just the files this package's build config explicitly
+ * lists) can never resolve for a real npm consumer: no declared dependency
+ * can satisfy it, and the private/unpublished package it names is not on the
+ * published boundary. This is a static text scan, not a resolver — sufficient
+ * because a bare `@pdpp/*` specifier is a workspace-only import by construction
+ * in this repo (see pnpm-workspace.yaml), never a legitimate published one.
+ */
+async function assertNoUnresolvableWorkspaceImports(packedFiles: string[]): Promise<void> {
+  const bareWorkspaceImport = /\b(?:from\s+|import\s*\(|require\s*\()\s*["'](@pdpp\/[^"']+)["']/g;
+  const fileChecks = await Promise.all(
+    packedFiles
+      .filter((f) => f.endsWith(".js") || f.endsWith(".d.ts"))
+      .map(async (packedFile) => ({
+        packedFile,
+        source: await readFile(path.join(packageRoot, packedFile), "utf8"),
+      }))
+  );
+  for (const { packedFile, source } of fileChecks) {
+    for (const match of source.matchAll(bareWorkspaceImport)) {
+      assert.fail(
+        `${packedFile} imports unresolvable workspace-only package specifier ${match[1]} — ` +
+          "this package must not depend on unpublished @pdpp/* packages; vendor the needed " +
+          "symbol behind a relative import instead"
+      );
     }
   }
 }

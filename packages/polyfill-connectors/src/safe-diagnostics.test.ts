@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RECOVERY_ACTIONS } from "@pdpp/reference-contract/common";
 import { USAA_SAFE_DIAGNOSTICS_POLICY } from "../connectors/usaa/index.ts";
 import type { EmittedMessage } from "./connector-runtime-protocol.ts";
+import { RECOVERY_ACTIONS } from "./recovery-actions.ts";
 import {
   DEFAULT_SAFE_DIAGNOSTICS_POLICY,
   safeErrorCategory,

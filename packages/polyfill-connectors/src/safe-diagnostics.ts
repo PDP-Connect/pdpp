@@ -9,7 +9,6 @@
  * snapshot builders.
  */
 
-import { RECOVERY_ACTIONS } from "@pdpp/reference-contract/common";
 import {
   type BodyResponseDiagnostics,
   type SafeArtifactCaptureRecord,
@@ -22,6 +21,7 @@ import {
   buildBrowserSurfaceDiagnostic,
 } from "./browser-surface-diagnostic.ts";
 import type { EmittedMessage } from "./connector-runtime-protocol.ts";
+import { RECOVERY_ACTIONS } from "./recovery-actions.ts";
 
 const MAX_SAFE_DIAGNOSTIC_COUNT = 1_000_000;
 const MAX_SAFE_DIAGNOSTIC_CANDIDATES = 20;
