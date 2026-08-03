@@ -559,6 +559,22 @@ function encodeSummaryCursor(summary: Summary | null | undefined): string | null
   return summary ? `${summary.last_at}::${summary.id}` : null;
 }
 
+/**
+ * Inverse of `encodeSummaryCursor`. The wire form is `"<last_at>::<id>"`;
+ * `last_at` is an ISO-8601 timestamp that itself contains no "::", so the
+ * FIRST separator splits the pair unambiguously. A malformed or empty cursor
+ * degrades to `{null, null}`, which callers treat as "no cursor" — matching
+ * parseCursor() in lib/spine.ts rather than failing the request.
+ */
+function parseSummaryCursor(raw: unknown): { lastAt: string | null; id: string | null } {
+  if (!raw || typeof raw !== "string") return { lastAt: null, id: null };
+  const sep = raw.indexOf("::");
+  if (sep <= 0) return { lastAt: null, id: null };
+  const lastAt = raw.slice(0, sep);
+  const id = raw.slice(sep + 2);
+  return id ? { lastAt, id } : { lastAt: null, id: null };
+}
+
 // Run-terminal event types — kept aligned with lib/spine.ts
 // RUN_TERMINAL_EVENT_TYPES. Reference: docs/run-reconciliation-design-brief.md §3.7.
 const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled", "run.abandoned"]);
@@ -979,12 +995,18 @@ function hasOnlyFirstPageRecentFilters(filters: SpineCorrelationFilters): boolea
   );
 }
 
+// Page-1 fast-path ordering. MUST match the aggregate query's
+// `ORDER BY last_at DESC, id DESC` and the keyset cursor's `id <`
+// comparison: page 1 comes from this sort while page 2 comes from the SQL,
+// so a tiebreak disagreement between them drops or repeats rows that share
+// an identical last_at (common in practice — real deployments show up to 5
+// correlations on one timestamp).
 function compareSummaryRows(a: SummaryAggregate, b: SummaryAggregate): number {
   const lastAt = String(b.last_at || "").localeCompare(String(a.last_at || ""));
   if (lastAt !== 0) {
     return lastAt;
   }
-  return String(a.id || "").localeCompare(String(b.id || ""));
+  return String(b.id || "").localeCompare(String(a.id || ""));
 }
 
 interface RecentCorrelationScanState {
@@ -1321,6 +1343,25 @@ function buildCorrelationAggregateQuery(
     params.push(filters.until);
     havingParts.push(`MIN(occurred_at) <= $${params.length}`);
   }
+  // Keyset pagination. `hasOnlyFirstPageRecentFilters()` already treats a
+  // cursor as a reason to skip the recent-scan fast path, but the fallback
+  // query below previously never applied it: the caller's `cursor` was
+  // accepted, a `next_cursor` was emitted, and every "next page" request
+  // silently re-served page 1. Mirrors buildCorrelationAggregateSql() in
+  // lib/spine.ts, which is the behavioural reference for this operation.
+  //
+  // The comparison direction MUST match the ORDER BY tiebreak below: rows
+  // sharing an identical MAX(occurred_at) are common in practice, and a
+  // `id <` cursor read against an `id ASC` sort skips tied rows outright.
+  const { lastAt: cursorLastAt, id: cursorId } = parseSummaryCursor(filters.cursor);
+  if (cursorLastAt && cursorId) {
+    params.push(cursorLastAt, cursorId);
+    const atParam = `$${params.length - 1}`;
+    const idParam = `$${params.length}`;
+    havingParts.push(
+      `(MAX(occurred_at) < ${atParam} OR (MAX(occurred_at) = ${atParam} AND ${column} < ${idParam}))`
+    );
+  }
   const havingSql = havingParts.length > 0 ? ` HAVING ${havingParts.join(" AND ")}` : "";
   params.push(limit + 1);
   const limitPlaceholder = `$${params.length}`;
@@ -1330,7 +1371,7 @@ function buildCorrelationAggregateQuery(
        FROM spine_events
        WHERE ${whereParts.join(" AND ")}
        GROUP BY ${column}${havingSql}
-       ORDER BY last_at DESC, id ASC
+       ORDER BY last_at DESC, id DESC
        LIMIT ${limitPlaceholder}`,
   };
 }
