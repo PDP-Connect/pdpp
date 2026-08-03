@@ -3835,7 +3835,11 @@ async function resolveLocalDeviceMigrationIdentity(
   oldConnectorId: string,
   sourceBinding: Record<string, string>,
   sourceBindingKey: string
-): Promise<{ existingBindingInstanceId: string | null; legacyInstanceId: string | null } | null> {
+): Promise<{
+  existingBindingInstanceId: string | null;
+  existingLifecycle: { revokedAt: string | null; status: string } | null;
+  legacyInstanceId: string | null;
+} | null> {
   const legacyIds = await client.query<{ connector_instance_id: string }>(
     `SELECT DISTINCT connector_instance_id
        FROM (
@@ -3854,14 +3858,26 @@ async function resolveLocalDeviceMigrationIdentity(
   if (legacyIds.rows.length > 1 && !row.connector_instance_id) {
     throw new Error(`Ambiguous local-device connector instance migration for ${oldConnectorId}`);
   }
-  const existingBinding = await client.query<{ connector_instance_id: string }>(
-    `SELECT connector_instance_id FROM connector_instances
+  const existingBinding = await client.query<{
+    connector_instance_id: string;
+    revoked_at: string | null;
+    status: string;
+  }>(
+    `SELECT connector_instance_id, status, revoked_at FROM connector_instances
       WHERE owner_subject_id = $1 AND connector_id = $2 AND source_kind = 'local_device'
         AND source_binding_key = $3 LIMIT 1`,
     [row.owner_subject_id, connectorKey, sourceBindingKey]
   );
   const legacyInstanceId = legacyIds.rows[0]?.connector_instance_id || null;
   const existingBindingInstanceId = existingBinding.rows[0]?.connector_instance_id || null;
+  // Owner revoke (owner-connection-revoke.ts) is deliberately zero-cascade: it
+  // flips ONLY connector_instances, never device_source_instances. Without this,
+  // every subsequent boot would re-derive `status` purely from
+  // device_source_instances (which legitimately stays "active") and silently
+  // clobber the owner's revoke/pause via the unconditional upsert below.
+  const existingLifecycle = existingBinding.rows[0]
+    ? { revokedAt: existingBinding.rows[0].revoked_at, status: existingBinding.rows[0].status }
+    : null;
   const legacyBinding = await client.query<{ connector_instance_id: string }>(
     `SELECT connector_instance_id FROM connector_instances
       WHERE owner_subject_id = $1 AND connector_id = $2 AND source_kind = 'local_device'
@@ -3907,7 +3923,7 @@ async function resolveLocalDeviceMigrationIdentity(
   ) {
     return null;
   }
-  return { existingBindingInstanceId, legacyInstanceId };
+  return { existingBindingInstanceId, existingLifecycle, legacyInstanceId };
 }
 
 async function localDeviceMigrationIsTombstoned(
@@ -3928,6 +3944,24 @@ async function localDeviceMigrationIsTombstoned(
     [row.owner_subject_id, connectorKey, sourceBindingKey]
   );
   return tombstone.rows.length > 0;
+}
+
+// An existing connector_instances row already carries its own authoritative
+// lifecycle (e.g. owner-revoked, paused) that the deterministic local_device
+// backfill must never overwrite -- see the SQLite sibling migration's
+// identical helper for the full rationale.
+function resolveLocalDeviceBackfillLifecycle(
+  existingLifecycle: { revokedAt: string | null; status: string } | null,
+  sourceStatus: string,
+  fallbackRevokedAt: string
+): { revokedAt: string | null; status: string } {
+  if (existingLifecycle) {
+    return existingLifecycle;
+  }
+  if (sourceStatus === "revoked") {
+    return { revokedAt: fallbackRevokedAt, status: "revoked" };
+  }
+  return { revokedAt: null, status: "active" };
 }
 
 async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient): Promise<void> {
@@ -3990,7 +4024,7 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
       if (!identity) {
         return;
       }
-      const { existingBindingInstanceId, legacyInstanceId } = identity;
+      const { existingBindingInstanceId, existingLifecycle, legacyInstanceId } = identity;
 
       const connectorInstanceId =
         row.connector_instance_id ||
@@ -4003,6 +4037,11 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
         display_name: row.display_name || connectorKey,
         streams: [],
       };
+      const { status, revokedAt } = resolveLocalDeviceBackfillLifecycle(
+        existingLifecycle,
+        row.status,
+        row.revoked_at || row.updated_at || now
+      );
 
       await client.query(
         `INSERT INTO connectors(connector_id, manifest, created_at)
@@ -4032,12 +4071,12 @@ async function migratePostgresLocalDeviceConnectorInstances(client: PoolClient):
           row.owner_subject_id,
           connectorKey,
           row.display_name,
-          row.status === "revoked" ? "revoked" : "active",
+          status,
           sourceBindingKey,
           JSON.stringify(sourceBinding),
           row.created_at,
           row.updated_at || now,
-          row.status === "revoked" ? row.revoked_at || row.updated_at || now : null,
+          revokedAt,
         ]
       );
 

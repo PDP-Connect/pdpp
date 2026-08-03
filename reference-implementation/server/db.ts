@@ -141,6 +141,12 @@ interface ConnectorInstanceIdRow {
   connector_instance_id: string;
 }
 
+interface ConnectorInstanceLifecycleRow {
+  connector_instance_id: string;
+  revoked_at: string | null;
+  status: string;
+}
+
 interface ConnectorIdRow {
   connector_id: string;
   gap_id?: number;
@@ -2736,6 +2742,7 @@ interface LocalDeviceMigrationIdentity {
   connectorKey: string;
   currentInstanceId: string | null;
   existingBindingInstanceId: string | null;
+  existingLifecycle: { revokedAt: string | null; status: string } | null;
   legacyInstanceId: string | null;
   oldConnectorId: string;
 }
@@ -2773,12 +2780,20 @@ function resolveLocalDeviceMigrationIdentity(
 
   const currentInstanceId = row.connector_instance_id?.trim() || null;
   const legacyInstanceId: string | null = legacyInstanceIds[0] ?? null;
-  const existingBinding = context.getExistingInstanceByBinding.get<ConnectorInstanceIdRow>(
+  const existingBinding = context.getExistingInstanceByBinding.get<ConnectorInstanceLifecycleRow>(
     row.owner_subject_id,
     connectorKey,
     bindingKey
   );
   const existingBindingInstanceId: string | null = existingBinding?.connector_instance_id ?? null;
+  // Owner revoke (owner-connection-revoke.ts) is deliberately zero-cascade: it
+  // flips ONLY connector_instances, never device_source_instances. Without this,
+  // every subsequent boot would re-derive `status` purely from
+  // device_source_instances (which legitimately stays "active") and silently
+  // clobber the owner's revoke/pause via the unconditional upsert below.
+  const existingLifecycle: LocalDeviceMigrationIdentity["existingLifecycle"] = existingBinding
+    ? { revokedAt: existingBinding.revoked_at, status: existingBinding.status }
+    : null;
   if (currentInstanceId && existingBindingInstanceId && existingBindingInstanceId !== currentInstanceId) {
     throw new Error(
       `Cannot migrate local-device source_instance_id '${row.source_instance_id}': existing binding uses connector_instance_id '${existingBindingInstanceId}' but source row uses '${currentInstanceId}'.`
@@ -2807,7 +2822,36 @@ function resolveLocalDeviceMigrationIdentity(
     }
   }
 
-  return { bindingKey, connectorKey, currentInstanceId, existingBindingInstanceId, legacyInstanceId, oldConnectorId };
+  return {
+    bindingKey,
+    connectorKey,
+    currentInstanceId,
+    existingBindingInstanceId,
+    existingLifecycle,
+    legacyInstanceId,
+    oldConnectorId,
+  };
+}
+
+// An existing connector_instances row already carries its own authoritative
+// lifecycle (e.g. owner-revoked, paused) that the deterministic local_device
+// backfill must never overwrite -- device_source_instances.status is not the
+// source of truth once the row exists, because owner-revoke
+// (owner-connection-revoke.ts) is deliberately zero-cascade and never
+// updates it. Only materialize a fresh status derivation when there is no
+// existing row to preserve.
+function resolveLocalDeviceBackfillLifecycle(
+  existingLifecycle: { revokedAt: string | null; status: string } | null,
+  sourceStatus: string,
+  fallbackRevokedAt: string
+): { revokedAt: string | null; status: string } {
+  if (existingLifecycle) {
+    return existingLifecycle;
+  }
+  if (sourceStatus === "revoked") {
+    return { revokedAt: fallbackRevokedAt, status: "revoked" };
+  }
+  return { revokedAt: null, status: "active" };
 }
 
 function migrateLocalDeviceConnectorRow(context: LocalDeviceMigrationContext, row: LocalDeviceSourceRow): number {
@@ -2830,7 +2874,11 @@ function migrateLocalDeviceConnectorRow(context: LocalDeviceMigrationContext, ro
   const createdAt = row.created_at || context.now;
   const updatedAt = row.updated_at || context.now;
   const displayName = row.display_name || row.local_binding_id || row.connector_id;
-  const status = row.status === "revoked" ? "revoked" : "active";
+  const { status, revokedAt } = resolveLocalDeviceBackfillLifecycle(
+    identity.existingLifecycle,
+    row.status,
+    row.revoked_at ?? updatedAt
+  );
   const manifest = stableJson({
     connector_id: identity.connectorKey,
     display_name: displayName,
@@ -2848,7 +2896,7 @@ function migrateLocalDeviceConnectorRow(context: LocalDeviceMigrationContext, ro
     stableJson(sourceBinding),
     createdAt,
     updatedAt,
-    status === "revoked" ? (row.revoked_at ?? updatedAt) : null
+    revokedAt
   );
   let backfilledRows = 0;
   if (identity.currentInstanceId !== resolvedInstanceId || row.connector_id !== identity.connectorKey) {
@@ -2971,7 +3019,7 @@ function migrateLocalDeviceConnectorInstances(raw: SqliteDatabase, opts: Migrati
        ON CONFLICT(connector_id) DO NOTHING`
     );
     const getExistingInstanceByBinding = raw.prepare(
-      `SELECT connector_instance_id
+      `SELECT connector_instance_id, status, revoked_at
          FROM connector_instances
         WHERE owner_subject_id = ?
           AND connector_id = ?
