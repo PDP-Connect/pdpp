@@ -684,9 +684,9 @@ export interface Controller {
   /**
    * Await a run's real terminal outcome by run_id.
    *
-   * Waits for the in-flight `activeRunPromises` entry for this run to settle
-   * (meaning the controller's `.finally()` cleanup chain has completed), then
-   * reads the authoritative terminal status from the spine.
+   * Waits for the published lifecycle promise for this run to settle (meaning
+   * terminal cleanup has completed), then reads the authoritative terminal
+   * status from the spine.
    *
    * Returns `"succeeded"` when the run completed successfully, `"failed"` for
    * any other terminal state (failed, cancelled, abandoned) or when the run
@@ -962,22 +962,26 @@ export class ControllerError extends Error {
 // ─── Module-scoped state ────────────────────────────────────────────────────
 
 const activeRuns = new Map<string, ActiveRun>();
-// In-flight connector-run Promises, keyed by run_id. Settled (success or
-// failure) when the connector child process has exited and the controller's
-// per-run cleanup (`activeRuns.delete`, spine emit, etc.) has finished.
-//
-// Populated alongside `activeRuns.set` and cleared in the same `finally`
-// chain. Used exclusively by `drainActiveRuns` (graceful-shutdown path)
-// to await in-flight cleanup before the parent process exits. See
-// docs/run-reconciliation-design-brief.md for the broader controller-
-// shutdown discipline this complements.
+// Per-run lifecycle promises, keyed by run_id. Each is published before its
+// active row becomes observable and resolves only after terminal cleanup has
+// attempted every controller-owned effect. `awaitRun` and `drainActiveRuns`
+// share this one authority; it deliberately does not wait for a hung connector
+// execution promise after the watchdog has completed cleanup.
 const activeRunPromises = new Map<string, Promise<unknown>>();
 // Run IDs whose terminal cleanup has begun. Used by the 409 guard to
 // distinguish a stale in-memory entry from a genuinely live run, so a hung
 // run that was force-finalized by the watchdog never permanently blocks future
-// run-nows. `activeRunPromises` is deliberately not lifecycle authority: a
-// run is active before browser-surface acquisition installs its promise.
+// run-nows. Promise presence is lifecycle authority, so its publication
+// precedes browser-surface acquisition and its removal follows cleanup.
 const settledRunIds = new Set<string>();
+
+function createRunCleanupPromise(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 // Per-run watchdog timer handles, keyed by run_id. Armed after
 // activeRunPromises.set; cleared in finalizeRunCleanup so a normal
 // completion never fires the watchdog. All timers are .unref()'d so they
@@ -3099,6 +3103,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return mintStreamingRegistrationNonce(input.runId);
   }
 
+  async function beginActiveRunLifecycle(input: {
+    readonly connectorId: string;
+    readonly connectorInstanceId: string;
+    readonly key: string;
+    readonly runId: string;
+    readonly startedAt: string;
+    readonly traceContext: SpineTraceContext;
+  }): Promise<{ readonly resolveCleanup: () => void; readonly streamingNonce: string | null }> {
+    const cleanupPromise = createRunCleanupPromise();
+    activeRunPromises.set(input.runId, cleanupPromise.promise);
+    try {
+      const streamingNonce = await registerActiveRunBookkeeping(input);
+      return { resolveCleanup: cleanupPromise.resolve, streamingNonce };
+    } catch (err) {
+      cleanupPromise.resolve();
+      activeRunPromises.delete(input.runId);
+      throw err;
+    }
+  }
+
   function clearStreamingNonceForRun(runId: string): void {
     // Clear the per-run streaming nonce. Idempotent at the registry level,
     // so the conditional here is just to avoid a needless call when
@@ -3130,6 +3154,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     readonly connectorId: string;
     readonly connectorInstanceId: string;
     readonly key: string;
+    readonly resolveCleanup: () => void;
     readonly runId: string;
     readonly traceContext: SpineTraceContext;
   }): Promise<void> {
@@ -3143,41 +3168,50 @@ export function createController(opts: ControllerOptions = {}): Controller {
       settledRunIds.add(input.runId);
       return;
     }
-    // Clear the watchdog timer for this run so a normal completion that beats
-    // the deadline never fires the watchdog afterwards.
-    const watchdogTimer = activeRunWatchdogTimers.get(input.runId);
-    if (watchdogTimer !== undefined) {
-      clearTimeout(watchdogTimer);
-      activeRunWatchdogTimers.delete(input.runId);
-    }
-    // Mark settled BEFORE deleting from activeRuns so the 409 guard's
-    // reconciliation window is as short as possible.
-    settledRunIds.add(input.runId);
-    activeRuns.delete(input.key);
-    activeRunPromises.delete(input.runId);
-    activeRunTraceContexts.delete(input.runId);
-    activeRunCancellations.delete(input.runId);
     try {
-      // Preserve the connector-instance + run-id fence, and make its durable
-      // completion part of the terminal cleanup promise before a caller can
-      // observe the run as fully cleaned up.
-      await clearPersistedActiveRun(input.connectorInstanceId, input.runId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn?.(`[controller] failed to clear active run ${input.runId} for ${input.connectorId}: ${message}`);
+      // Clear the watchdog timer for this run so a normal completion that beats
+      // the deadline never fires the watchdog afterwards.
+      const watchdogTimer = activeRunWatchdogTimers.get(input.runId);
+      if (watchdogTimer !== undefined) {
+        clearTimeout(watchdogTimer);
+        activeRunWatchdogTimers.delete(input.runId);
+      }
+      // Mark settled BEFORE deleting from activeRuns so the 409 guard's
+      // reconciliation window is as short as possible.
+      settledRunIds.add(input.runId);
+      activeRuns.delete(input.key);
+      activeRunTraceContexts.delete(input.runId);
+      activeRunCancellations.delete(input.runId);
+      try {
+        // Preserve the connector-instance + run-id fence, and make its durable
+        // completion part of the terminal cleanup promise before a caller can
+        // observe the run as fully cleaned up.
+        await clearPersistedActiveRun(input.connectorInstanceId, input.runId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[controller] failed to clear active run ${input.runId} for ${input.connectorId}: ${message}`);
+      }
+      clearStreamingNonceForRun(input.runId);
+      if (input.browserSurfaceLease) {
+        await opts.beforeBrowserSurfaceLeaseRelease?.({ runId: input.runId });
+        await browserSurface.releaseLease(
+          input.browserSurfaceLease,
+          input.connectorId,
+          input.runId,
+          input.traceContext
+        );
+      }
+      // Backstop for a phase-scoped connector's mid-run browser surface
+      // (surfaceScope: "phase" — see browser-surface-policy.ts). Idempotent
+      // no-op when no phase lease was ever acquired for this run, so it is
+      // safe to call unconditionally on every cleanup path: normal
+      // completion, cancellation, crash, and the watchdog force-finalize.
+      await browserSurface.releaseManagedBrowserSurfaceForPhase(input.runId);
+      resolveCancelledInteraction(input.runId);
+    } finally {
+      input.resolveCleanup();
+      activeRunPromises.delete(input.runId);
     }
-    clearStreamingNonceForRun(input.runId);
-    if (input.browserSurfaceLease) {
-      await opts.beforeBrowserSurfaceLeaseRelease?.({ runId: input.runId });
-      await browserSurface.releaseLease(input.browserSurfaceLease, input.connectorId, input.runId, input.traceContext);
-    }
-    // Backstop for a phase-scoped connector's mid-run browser surface
-    // (surfaceScope: "phase" — see browser-surface-policy.ts). Idempotent
-    // no-op when no phase lease was ever acquired for this run, so it is
-    // safe to call unconditionally on every cleanup path: normal
-    // completion, cancellation, crash, and the watchdog force-finalize.
-    await browserSurface.releaseManagedBrowserSurfaceForPhase(input.runId);
-    resolveCancelledInteraction(input.runId);
   }
 
   /**
@@ -3187,9 +3221,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
    * `activeRuns` map still contains the entry (race between the watchdog's async
    * emitAndFinalize and the next run-now call). The entry is stale only when
    * its run_id appears in `settledRunIds` (marked by finalizeRunCleanup).
-   * Promise installation follows browser-surface acquisition, so absence from
-   * `activeRunPromises` is a normal queued/starting lifecycle state, not
-   * evidence that the active row is stale.
+   * The lifecycle promise is published before admission, but settled status —
+   * not promise presence — remains the sole stale-entry authority.
    *
    * - If stale: clears the orphaned map entries and returns (allows new run).
    * - If live: throws 409 run_already_active.
@@ -3206,7 +3239,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
         `[controller] reclaiming stale activeRuns entry for ${existing.connector_id} (run_id=${existing.run_id}); allowing new run`
       );
       activeRuns.delete(key);
-      activeRunPromises.delete(existing.run_id);
       settledRunIds.delete(existing.run_id);
     } else {
       throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
@@ -3550,13 +3582,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
     readonly connectorId: string;
     readonly connectorInstanceId: string;
     readonly key: string;
+    readonly resolveCleanup: () => void;
     readonly runId: string;
     readonly traceContext: SpineTraceContext;
   }): void {
     if (!Number.isFinite(maxRunWallClockMs) || maxRunWallClockMs <= 0) {
       return;
     }
-    const { browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext } = input;
+    const { browserSurfaceLease, connectorId, connectorInstanceId, key, resolveCleanup, runId, traceContext } = input;
     const watchdogTimer = setTimeout(() => {
       activeRunWatchdogTimers.delete(runId);
       if (!activeRuns.has(key)) {
@@ -3600,7 +3633,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
           const emitMessage = emitErr instanceof Error ? emitErr.message : String(emitErr);
           log.warn?.(`[controller] watchdog: failed to emit run_timed_out terminal for ${runId}: ${emitMessage}`);
         }
-        await finalizeRunCleanup({ browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext });
+        await finalizeRunCleanup({
+          browserSurfaceLease,
+          connectorId,
+          connectorInstanceId,
+          key,
+          resolveCleanup,
+          runId,
+          traceContext,
+        });
       };
       emitAndFinalize().catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
@@ -3731,7 +3772,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       needsHumanAttention.delete(key);
     }
 
-    const streamingNonce = await registerActiveRunBookkeeping({
+    const { resolveCleanup, streamingNonce } = await beginActiveRunLifecycle({
       connectorId,
       connectorInstanceId,
       key,
@@ -3759,6 +3800,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           connectorId,
           connectorInstanceId,
           key,
+          resolveCleanup,
           runId,
           traceContext,
         });
@@ -3772,6 +3814,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         connectorId,
         connectorInstanceId,
         key,
+        resolveCleanup,
         runId,
         traceContext,
       });
@@ -3824,11 +3867,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // execution resolves later and clears activeRuns in the finally.
     // Callers poll the projection via getActiveRun / listSchedules.
     //
-    // The Promise itself is tracked in `activeRunPromises` so the
-    // graceful-shutdown path (`drainActiveRuns`) can await in-flight
-    // children before the parent process exits — critical for Chromium
-    // release() to complete and prevent stale singleton-lock files (see
-    // polyfill-connectors/src/profile-lock.ts).
+    // `activeRunPromises` already holds this run's lifecycle completion
+    // promise. The connector execution promise remains local so watchdog
+    // cleanup can finish even if the child never settles.
     let runResult: Awaited<ReturnType<RunConnectorFn>> | undefined;
     const runPromise = Promise.resolve()
       .then(() =>
@@ -4000,6 +4041,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           connectorId,
           connectorInstanceId,
           key,
+          resolveCleanup,
           runId,
           traceContext,
         });
@@ -4024,13 +4066,21 @@ export function createController(opts: ControllerOptions = {}): Controller {
         };
         await maybeContinueRecoveryAfterProgress(continuationInput);
       });
-    activeRunPromises.set(runId, runPromise);
+    runPromise.catch(() => undefined);
     // Arm the wall-clock watchdog. If runConnectorImpl hangs (never resolves
     // or rejects), the .finally() above never fires, leaving a phantom entry
     // in activeRuns that blocks all future run-nows with 409 until restart.
     // armRunWatchdog bounds this: it force-finalizes the run after the budget
     // expires and is a no-op when maxRunWallClockMs is Infinity or zero.
-    armRunWatchdog({ browserSurfaceLease, connectorId, connectorInstanceId, key, runId, traceContext });
+    armRunWatchdog({
+      browserSurfaceLease,
+      connectorId,
+      connectorInstanceId,
+      key,
+      resolveCleanup,
+      runId,
+      traceContext,
+    });
 
     return { run_id: runId, status: "started", trace_id: traceContext.trace_id, ...automationMetadata };
   }
@@ -4047,15 +4097,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   // Await a managed-connector run's real terminal outcome.
   //
-  // Waits for `activeRunPromises.get(runId)` to settle (the promise resolves
-  // after `finalizeRunCleanup` completes, which fires in the `.finally()` of
-  // the connector run — so by the time we get here, the spine terminal event
-  // is guaranteed to have been emitted). Then reads that terminal status from
-  // the spine and maps it to "succeeded" | "failed".
+  // Waits for `activeRunPromises.get(runId)` to settle. This lifecycle promise
+  // is published before admission and resolves after `finalizeRunCleanup`
+  // completes, including watchdog cleanup that can outlive a hung connector
+  // execution. Then reads the terminal status from the spine.
   //
-  // If the run is not in `activeRunPromises` (already completed before we look,
-  // or unknown), we skip the await and go straight to the spine read — this is
-  // safe because the terminal event is already there.
+  // If the run is not in `activeRunPromises`, all controller-owned cleanup has
+  // already completed or the run is unknown, so it is safe to read the spine.
   async function awaitRun(runId: string): Promise<"succeeded" | "failed"> {
     const runPromise = activeRunPromises.get(runId);
     if (runPromise) {

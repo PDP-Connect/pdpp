@@ -128,7 +128,7 @@ function createSchedulerStore(calls: SchedulerStoreCalls): SchedulerStore {
   return store;
 }
 
-function createFencedActiveRunStore() {
+function createFencedActiveRunStore({ deleteError }: { deleteError?: Error } = {}) {
   const activeRuns = new Map<string, ActiveRunRecord>();
   const deleteCalls: Array<{ connectorInstanceId: string; runId: string }> = [];
   let allowDelete: () => void = () => undefined;
@@ -147,6 +147,9 @@ function createFencedActiveRunStore() {
     deleteActiveRun: async (connectorInstanceId, runId) => {
       deleteCalls.push({ connectorInstanceId, runId });
       signalDeleteStarted();
+      if (deleteError) {
+        throw deleteError;
+      }
       await deleteAllowed;
       if (activeRuns.get(connectorInstanceId)?.run_id === runId) {
         activeRuns.delete(connectorInstanceId);
@@ -459,6 +462,7 @@ interface SetupOptions {
     opts: RuntimeRunConnectorOptions
   ) => RuntimeRunConnectorResult | Promise<RuntimeRunConnectorResult>;
   schedulerStore?: SchedulerStore;
+  warnings?: string[];
 }
 
 interface RunCalls {
@@ -484,6 +488,7 @@ function setup(
     maxRunWallClockMs,
     runConnectorImpl,
     schedulerStore: suppliedSchedulerStore,
+    warnings,
     connectorPathResolver = () => "/tmp/connector.js",
   }: SetupOptions = {}
 ) {
@@ -522,7 +527,7 @@ function setup(
     ...(browserSurfaceReclaimRetryAttempts === undefined ? {} : { browserSurfaceReclaimRetryAttempts }),
     browserSurfaceReclaimRetryDelayMs,
     connectorPathResolver,
-    logger: { error: () => undefined, warn: () => undefined },
+    logger: { error: () => undefined, warn: (message) => warnings?.push(message) },
     ...(maxRunWallClockMs === undefined ? {} : { maxRunWallClockMs }),
     runConnectorImpl: async (opts) => {
       calls.runConnector += 1;
@@ -1709,7 +1714,7 @@ test("pre-promise managed run remains live through duplicate admission and await
       (err as { code?: string; runId?: string }).runId === "run_pre_promise"
   );
 
-  // Browser-surface acquisition precedes activeRunPromises installation. The
+  // Browser-surface acquisition follows lifecycle-promise publication. The
   // duplicate must not reclaim A in that interval or advance its generation.
   assert.equal(controller.getActiveRun("managed")?.run_id, "run_pre_promise");
   assert.equal(controller.getActiveRun("managed")?.run_generation, 1);
@@ -1721,11 +1726,6 @@ test("pre-promise managed run remains live through duplicate admission and await
   await firstAdmission;
   await connectorStarted;
 
-  let cleanupCompleted = false;
-  const terminalOutcome = controller.awaitRun("run_pre_promise").then((terminalStatus) => {
-    cleanupCompleted = true;
-    return terminalStatus;
-  });
   await emitSpineEvent({
     event_type: "run.completed",
     object_id: "run_pre_promise",
@@ -1736,14 +1736,31 @@ test("pre-promise managed run remains live through duplicate admission and await
   resolveConnectorRun({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
   await activeRunStore.deleteStarted;
 
-  assert.equal(cleanupCompleted, false, "awaitRun must include the fenced durable active-row delete");
+  let lateAwaitRunCompleted = false;
+  const lateTerminalOutcome = controller.awaitRun("run_pre_promise").then((terminalStatus) => {
+    lateAwaitRunCompleted = true;
+    return terminalStatus;
+  });
+  let lateDrainCompleted = false;
+  const lateDrain = controller.drainActiveRuns(1000).then((summary) => {
+    lateDrainCompleted = true;
+    return summary;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(lateAwaitRunCompleted, false, "late awaitRun must include the fenced durable active-row delete");
+  assert.equal(lateDrainCompleted, false, "late drainActiveRuns must include the fenced durable active-row delete");
   assert.equal(controller.getActiveRun("managed"), null, "memory cleanup starts before durable deletion completes");
   assert.equal(activeRunStore.activeRuns.get("managed")?.run_id, "run_pre_promise");
   assert.equal(manager.getLease("lease_1")?.status, "leased", "lease release follows durable active-row cleanup");
 
   activeRunStore.allowDelete();
-  const outcome = await terminalOutcome;
+  const outcome = await lateTerminalOutcome;
   assert.equal(outcome, "succeeded");
+  const drainSummary = await lateDrain;
+  assert.equal(drainSummary.drained, 1);
+  assert.equal(drainSummary.timedOut, 0);
 
   assert.equal(controller.getActiveRun("managed"), null);
   assert.equal(activeRunStore.activeRuns.get("managed"), undefined);
@@ -1753,6 +1770,88 @@ test("pre-promise managed run remains live through duplicate admission and await
   assert.deepEqual(activeRunStore.upsertedRuns, ["run_pre_promise"], "no successor is admitted");
   assert.equal(calls.runConnector, 1, "only the original run reaches the connector");
   assert.equal(manager.listLeases().length, 1, "no successor lease is admitted");
+});
+
+test("fenced active-run delete failure releases the exact lease and warns", async (t) => {
+  const deleteError = new Error("delete rejected");
+  const activeRunStore = createFencedActiveRunStore({ deleteError });
+  const manager = createDynamicManager({ surfaceCap: 1 });
+  const warnings: string[] = [];
+  let resolveConnectorRun: (result: RuntimeRunConnectorResult) => void = () => undefined;
+  let signalConnectorStarted: () => void = () => undefined;
+  const connectorStarted = new Promise<void>((resolve) => {
+    signalConnectorStarted = resolve;
+  });
+  const connectorResult = new Promise<RuntimeRunConnectorResult>((resolve) => {
+    resolveConnectorRun = resolve;
+  });
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: createReadyAllocator(),
+    manager,
+    maxRunWallClockMs: Number.POSITIVE_INFINITY,
+    runConnectorImpl: () => {
+      signalConnectorStarted();
+      return connectorResult;
+    },
+    schedulerStore: activeRunStore.store,
+    warnings,
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_delete_rejected",
+  });
+  await connectorStarted;
+  const terminalOutcome = controller.awaitRun("run_delete_rejected");
+  await emitSpineEvent({
+    event_type: "run.completed",
+    object_id: "run_delete_rejected",
+    object_type: "run",
+    run_id: "run_delete_rejected",
+    status: "completed",
+  });
+  resolveConnectorRun({ checkpoint_summary: null, records_emitted: 0, state: null, status: "succeeded" });
+
+  assert.equal(await terminalOutcome, "succeeded");
+  assert.deepEqual(activeRunStore.deleteCalls, [{ connectorInstanceId: "managed", runId: "run_delete_rejected" }]);
+  assert.equal(activeRunStore.activeRuns.get("managed")?.run_id, "run_delete_rejected");
+  assert.equal(manager.getLease("lease_1")?.status, "released");
+  assert.ok(warnings.some((message) => message.includes("failed to clear active run run_delete_rejected for managed")));
+});
+
+test("watchdog cleanup drains without waiting for its hung connector execution", async (t) => {
+  const activeRunStore = createFencedActiveRunStore();
+  const manager = createDynamicManager({ surfaceCap: 1 });
+  const { controller } = setup(t, {
+    browserSurfaceAllocator: createReadyAllocator(),
+    manager,
+    maxRunWallClockMs: 20,
+    runConnectorImpl: () => new Promise(() => undefined),
+    schedulerStore: activeRunStore.store,
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_watchdog_cleanup",
+  });
+  await activeRunStore.deleteStarted;
+
+  let drainCompleted = false;
+  const drain = controller.drainActiveRuns(1000).then((drainSummary) => {
+    drainCompleted = true;
+    return drainSummary;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(drainCompleted, false, "watchdog cleanup must remain visible through its durable delete");
+
+  activeRunStore.allowDelete();
+  const summary = await drain;
+  assert.equal(summary.drained, 1);
+  assert.equal(summary.timedOut, 0);
+  assert.equal(manager.getLease("lease_1")?.status, "released");
 });
 
 test("duplicate queued managed connector request reports existing pending run", async (t) => {
