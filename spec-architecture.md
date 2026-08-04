@@ -123,7 +123,7 @@ Event-driven ingestion (a platform pushes events to the personal server) is defe
 | Webhook ingestion | **No** | Deferred; see spec-deferred |
 | MCP agent surface | **No** | Reference implementation feature (grant packages) |
 | Consent screen visual design | **No** | Surface-specific; semantic rendering obligations remain in scope |
-| Trust registry / connector certification | **No** | Deferred (Core Section 11) |
+| Trust registry / connector certification | **No** | Deferred (Core Section 12) |
 
 For the Collection Profile, the standardized `START` message carries a portable collection `scope`: explicit stream targets plus optional `resources`, `time_range`, and `fields`. It does not carry the raw grant or access token. For grant-driven runs, the runtime derives this scope from the grant as a normalized, non-broadening projection and may narrow it further according to local fulfillment policy; for owner-initiated runs, it derives the scope from owner configuration or local policy.
 
