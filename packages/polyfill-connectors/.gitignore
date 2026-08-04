@@ -1,7 +1,17 @@
 # Fixture capture: raw/ contains unscrubbed PII from live runs. Never commit.
-# `fixtures/*/scrubbed/` is intentionally not ignored; scrubbed fixtures may
-# be committed after scrubber output and human review.
 fixtures/*/raw/
+
+# Scrubbed fixture output is timestamped-run-directory by default
+# (fixtures/<connector>/scrubbed/<runId>/, e.g. 2026-04-23T00-13-01-167Z/).
+# Those are local scrubber output, not reviewed-and-curated fixtures, and
+# must not be stageable by accident (see incident notes in
+# docs/connector-authoring-guide.md — deterministic scrubbing alone can miss
+# PII, and human review of a run directory happens locally, not via commit).
+# Only the hand-curated, reviewed `pilot-real-shape/` fixture per connector
+# is committable; re-allow it and its contents explicitly.
+fixtures/*/scrubbed/*/
+!fixtures/*/scrubbed/pilot-real-shape/
+!fixtures/*/scrubbed/pilot-real-shape/**
 
 # Local data + cache
 .pdpp-data/
