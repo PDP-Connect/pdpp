@@ -1,0 +1,836 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * PDPP public-site document register — ported from the design concept
+ * (see /home/tnunamak/.tmp/pdpp-site-concept/DESIGN-SPEC.md). These tokens are
+ * DELIBERATELY separate from @pdpp/brand's oklch product-UI tokens: the
+ * concept is an editorial/document register (paper, ink, teal, Literata,
+ * oversized numerals) for the public marketing + docs site, not the dense
+ * operator-console design system @pdpp/brand also serves. Bolting this
+ * vocabulary onto the shared package would corrupt it for apps/console.
+ *
+ * Namespaced --pdpp-concept-* so nothing here can collide with @pdpp/brand.
+ */
+
+:root {
+  --pdpp-concept-paper: #faf7f2;
+  --pdpp-concept-paper-deep: #f2eee6;
+  --pdpp-concept-ink: #1a1a17;
+  --pdpp-concept-ink-soft: #57544c;
+  --pdpp-concept-ink-faint: #8a867c;
+  --pdpp-concept-teal: #0e5a54;
+  --pdpp-concept-teal-deep: #0a3f3b;
+  --pdpp-concept-teal-wash: #e7efed;
+  /* Text set ON TOP of a teal-wash fill (schematic "GRANT"/"PDPP · CONSENT &
+     AUTHORIZATION" labels). Needs its own token because it must stay dark
+     on the light wash but flip to light on the dark variant's near-black
+     wash — the wash itself inverts, so the same token used elsewhere
+     (teal-deep) would go invisible-on-dark otherwise. */
+  --pdpp-concept-teal-on-wash: #0a3f3b;
+
+  --pdpp-concept-rule: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  --pdpp-concept-rule-faint: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 10%, var(--pdpp-concept-paper));
+
+  --pdpp-concept-serif: var(--font-pdpp-serif), Georgia, "Times New Roman", serif;
+  --pdpp-concept-sans: var(--font-pdpp-doc-sans), system-ui, -apple-system, sans-serif;
+  --pdpp-concept-mono: var(--font-pdpp-doc-mono), "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --pdpp-concept-max: 1200px;
+  --pdpp-concept-rail: clamp(200px, 6.3462rem + 9.6154vw, 240px);
+  --pdpp-concept-gutter: clamp(40px, 1.2692rem + 1.9231vw, 48px);
+  --pdpp-concept-measure: 68ch;
+  --pdpp-concept-section-gap: 96px;
+  --pdpp-concept-pad: clamp(20px, -0.5263rem + 3.9474vw, 32px);
+}
+
+/* ─── Dark variant ────────────────────────────────────────────────────────
+   The concept is light-only by design (a paper document). apps/site has a
+   working dark mode (ThemeProvider + three theme blocks in
+   packages/pdpp-brand/base.css) that must not regress. Rather than gate the
+   concept surface to light-only (which would make /docs, /reference, /,
+   /participate go blank or unstyled for dark-mode users), a dark variant is
+   derived here using the SAME token names, following @pdpp/brand's own
+   three-block dark-mode mechanism, so `.dark`/`[data-theme="dark"]` and the
+   OS-driven `[data-theme="system"]` path both work. Paper becomes a warm-near-
+   black ground instead of black, teal is lightened for contrast on dark, and
+   the teal-wash aside/terminal fill inverts to a low-alpha tint — the concept's
+   ink/paper/teal relationship is preserved, not merely dimmed. */
+:is(html.dark, html[data-theme="dark"]) {
+  --pdpp-concept-paper: #17181a;
+  --pdpp-concept-paper-deep: #1e2022;
+  --pdpp-concept-ink: #f0efe9;
+  --pdpp-concept-ink-soft: #b9b6ac;
+  --pdpp-concept-ink-faint: #82806f;
+  --pdpp-concept-teal: #4bb3a6;
+  --pdpp-concept-teal-deep: #0a3f3b;
+  --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
+  --pdpp-concept-teal-on-wash: #a8e0d6;
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] {
+    --pdpp-concept-paper: #17181a;
+    --pdpp-concept-paper-deep: #1e2022;
+    --pdpp-concept-ink: #f0efe9;
+    --pdpp-concept-ink-soft: #b9b6ac;
+    --pdpp-concept-ink-faint: #82806f;
+    --pdpp-concept-teal: #4bb3a6;
+    --pdpp-concept-teal-deep: #0a3f3b;
+    --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
+    --pdpp-concept-teal-on-wash: #a8e0d6;
+  }
+}
+
+/* ─── Document surface ──────────────────────────────────────────────────── */
+.pdpp-concept {
+  background: var(--pdpp-concept-paper);
+  color: var(--pdpp-concept-ink);
+  font-family: var(--pdpp-concept-serif);
+  font-size: 17px;
+  line-height: 1.65;
+  font-variant-numeric: oldstyle-nums;
+}
+
+.pdpp-concept ::selection {
+  background: var(--pdpp-concept-teal-wash);
+}
+
+.pdpp-concept a {
+  color: var(--pdpp-concept-teal);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--pdpp-concept-teal) 30%, transparent);
+  transition:
+    color 120ms ease,
+    border-color 120ms ease;
+}
+.pdpp-concept a:hover,
+.pdpp-concept a:focus-visible {
+  color: var(--pdpp-concept-teal-deep);
+  border-bottom-color: var(--pdpp-concept-teal);
+}
+.pdpp-concept a:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: 3px;
+  border-radius: 1px;
+}
+
+/* ─── Masthead ──────────────────────────────────────────────────────────── */
+.pdpp-masthead {
+  border-bottom: var(--pdpp-concept-rule);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--pdpp-concept-paper);
+}
+.pdpp-masthead__inner {
+  max-width: var(--pdpp-concept-max);
+  margin-inline: auto;
+  padding-block: 20px;
+  padding-inline: var(--pdpp-concept-pad);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+.pdpp-wordmark {
+  font-family: var(--pdpp-concept-serif);
+  font-weight: 600;
+  font-size: 21px;
+  letter-spacing: -0.01em;
+  color: var(--pdpp-concept-ink);
+  border-bottom: none;
+}
+.pdpp-wordmark:hover {
+  color: var(--pdpp-concept-ink);
+}
+.pdpp-masthead__label {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pdpp-concept-ink-soft);
+  white-space: nowrap;
+}
+.pdpp-masthead__wordmark-line {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: nowrap;
+  min-inline-size: 0;
+}
+@media (max-width: 900px) {
+  .pdpp-masthead__label {
+    display: none;
+  }
+}
+.pdpp-nav {
+  display: flex;
+  gap: 24px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+  flex-wrap: wrap;
+}
+.pdpp-nav a {
+  color: var(--pdpp-concept-ink-soft);
+  border-bottom: 1px solid transparent;
+  padding-bottom: 2px;
+}
+.pdpp-nav a:hover,
+.pdpp-nav a:focus-visible {
+  color: var(--pdpp-concept-teal);
+}
+.pdpp-nav a[aria-current="page"] {
+  color: var(--pdpp-concept-teal);
+  border-bottom-color: var(--pdpp-concept-teal);
+}
+
+/* ─── Hero (homepage only) ──────────────────────────────────────────────── */
+.pdpp-hero {
+  border-bottom: var(--pdpp-concept-rule);
+}
+.pdpp-hero__inner {
+  max-width: var(--pdpp-concept-max);
+  margin-inline: auto;
+  padding-inline: var(--pdpp-concept-pad);
+  padding-block: clamp(40px, 2rem + 3vw, 72px) clamp(36px, 1.75rem + 2.6vw, 64px);
+}
+.pdpp-hero__inner h1 {
+  max-width: 22ch;
+  margin-bottom: 24px;
+}
+.pdpp-hero__lede {
+  font-size: 20px;
+  line-height: 1.5;
+  color: var(--pdpp-concept-ink-soft);
+  max-width: 58ch;
+  margin-bottom: 32px;
+}
+.pdpp-hero__lede--placement {
+  font-size: 17px;
+  color: var(--pdpp-concept-ink-faint);
+  max-width: 58ch;
+}
+.pdpp-hero__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  margin: 0;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+}
+
+/* ─── Layout: rail + document ────────────────────────────────────────────
+   One primitive for every page; home is the same grid with a zeroed rail
+   track (matches the concept's construction, see RESPONSIVE-AUDIT.md). */
+.pdpp-page {
+  max-width: var(--pdpp-concept-max);
+  margin-inline: auto;
+  padding-inline: var(--pdpp-concept-pad);
+  display: grid;
+  grid-template-columns: var(--pdpp-concept-rail) var(--pdpp-concept-gutter) minmax(0, 1fr);
+  align-items: start;
+}
+.pdpp-page--home {
+  grid-template-columns: minmax(0, 1fr);
+}
+.pdpp-page--home .pdpp-doc {
+  grid-column: 1;
+}
+
+.pdpp-rail {
+  grid-column: 1;
+  padding-top: 64px;
+  position: sticky;
+  top: 72px;
+  align-self: start;
+  font-family: var(--pdpp-concept-sans);
+}
+.pdpp-doc {
+  grid-column: 3;
+  padding-top: 64px;
+  padding-bottom: 120px;
+  min-width: 0;
+  max-inline-size: var(--pdpp-concept-measure);
+}
+
+@media (max-width: 720px) {
+  .pdpp-page {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pdpp-rail,
+  .pdpp-doc {
+    grid-column: 1;
+  }
+  .pdpp-rail {
+    position: static;
+    padding-top: 32px;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: var(--pdpp-concept-rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px 32px;
+    align-items: flex-start;
+  }
+  .pdpp-doc {
+    padding-top: 32px;
+    padding-bottom: 72px;
+    max-width: 100%;
+  }
+  .pdpp-concept h1 {
+    font-size: 34px;
+  }
+  .pdpp-concept h2 {
+    font-size: 24px;
+  }
+  .pdpp-lede {
+    font-size: 18px;
+  }
+  .pdpp-hero__inner h1 {
+    max-width: none;
+    margin-bottom: 18px;
+  }
+  .pdpp-hero__lede {
+    font-size: 18px;
+    margin-bottom: 24px;
+  }
+  .pdpp-hero__lede--placement {
+    font-size: 16px;
+  }
+  .pdpp-section {
+    --pdpp-concept-section-gap: 64px;
+  }
+  .pdpp-section__head {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .pdpp-section__num {
+    font-size: 56px;
+  }
+  .pdpp-ruled-list__item {
+    grid-template-columns: 2em 1fr;
+  }
+  .pdpp-ruled-list__arrow {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .pdpp-footer__inner {
+    flex-direction: column;
+    gap: 24px;
+    padding-block: 32px;
+  }
+}
+
+/* ─── Rail apparatus ─────────────────────────────────────────────────────── */
+.pdpp-rail__block {
+  margin-bottom: 40px;
+  font-size: 13px;
+  color: var(--pdpp-concept-ink-soft);
+  line-height: 1.5;
+}
+.pdpp-rail__meta dt {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pdpp-concept-ink-faint);
+  margin-top: 16px;
+}
+.pdpp-rail__meta dd {
+  margin: 2px 0 0;
+  color: var(--pdpp-concept-ink);
+  font-variant-numeric: tabular-nums;
+}
+.pdpp-rail__note {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--pdpp-concept-ink-soft);
+  border-left: 2px solid var(--pdpp-concept-teal);
+  padding-left: 12px;
+  margin-bottom: 40px;
+}
+.pdpp-stamp {
+  display: inline-block;
+  border: 1px solid var(--pdpp-concept-teal);
+  color: var(--pdpp-concept-teal);
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+.pdpp-toc {
+  font-size: 13px;
+}
+.pdpp-toc__title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pdpp-concept-ink-faint);
+  margin-bottom: 12px;
+}
+.pdpp-toc ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pdpp-toc li {
+  margin-bottom: 9px;
+  line-height: 1.35;
+}
+.pdpp-toc a {
+  color: var(--pdpp-concept-ink-soft);
+  border-bottom: none;
+  display: block;
+}
+.pdpp-toc a:hover {
+  color: var(--pdpp-concept-teal);
+}
+
+/* ─── Document type ──────────────────────────────────────────────────────── */
+.pdpp-concept h1 {
+  font-family: var(--pdpp-concept-serif);
+  font-weight: 600;
+  font-size: 44px;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+.pdpp-concept h2 {
+  font-family: var(--pdpp-concept-serif);
+  font-weight: 600;
+  font-size: 28px;
+  line-height: 1.3;
+  margin: 0 0 16px;
+}
+.pdpp-concept h3 {
+  font-family: var(--pdpp-concept-serif);
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1.45;
+  margin: 0 0 8px;
+}
+.pdpp-concept p {
+  margin: 0 0 16px;
+}
+.pdpp-doc p,
+.pdpp-doc li {
+  max-width: var(--pdpp-concept-measure);
+}
+.pdpp-lede {
+  font-size: 20px;
+  line-height: 1.5;
+  color: var(--pdpp-concept-ink);
+}
+.pdpp-caption {
+  font-family: var(--pdpp-concept-serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--pdpp-concept-ink-soft);
+  margin-top: 16px;
+}
+.pdpp-small {
+  font-size: 15px;
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-eyebrow {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pdpp-concept-ink-faint);
+  margin-bottom: 8px;
+}
+
+/* ─── Enumerated sections ────────────────────────────────────────────────── */
+.pdpp-section {
+  padding-top: calc(var(--pdpp-concept-section-gap) / 2);
+  margin-top: calc(var(--pdpp-concept-section-gap) / 2);
+  border-top: var(--pdpp-concept-rule);
+  position: relative;
+}
+.pdpp-section:first-of-type {
+  border-top: none;
+  margin-top: 40px;
+  padding-top: 0;
+}
+.pdpp-section__head {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 24px;
+}
+.pdpp-section__num {
+  font-family: var(--pdpp-concept-serif);
+  font-weight: 300;
+  font-size: clamp(56px, 3rem + 2.6vw, 96px);
+  line-height: 0.85;
+  color: color-mix(in srgb, var(--pdpp-concept-teal) 85%, transparent);
+  font-variant-numeric: tabular-nums lining-nums;
+  margin-top: -0.08em;
+  user-select: none;
+}
+.pdpp-section__title {
+  padding-top: 8px;
+}
+.pdpp-section__title h2 {
+  margin-bottom: 0;
+}
+.pdpp-section__title .pdpp-eyebrow {
+  margin-bottom: 6px;
+}
+
+/* ─── Ruled list ─────────────────────────────────────────────────────────── */
+.pdpp-ruled-list {
+  border-top: var(--pdpp-concept-rule);
+  margin: 24px 0 0;
+}
+.pdpp-ruled-list__item {
+  display: grid;
+  grid-template-columns: 3.2em 1fr auto;
+  gap: 20px;
+  align-items: baseline;
+  padding: 20px 0;
+  border-bottom: var(--pdpp-concept-rule);
+}
+.pdpp-ruled-list__num {
+  font-family: var(--pdpp-concept-sans);
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  line-height: 1.45;
+  color: var(--pdpp-concept-ink-faint);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.pdpp-ruled-list__body h3 {
+  margin-bottom: 4px;
+}
+.pdpp-ruled-list__body p {
+  margin: 0;
+  color: var(--pdpp-concept-ink-soft);
+  font-size: 16px;
+}
+.pdpp-ruled-list__arrow {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+  white-space: nowrap;
+  border-bottom: none;
+  align-self: center;
+}
+.pdpp-ruled-list__arrow:hover {
+  border-bottom: none;
+}
+
+/* ─── Terminal block ─────────────────────────────────────────────────────── */
+.pdpp-terminal {
+  background: var(--pdpp-concept-teal-deep);
+  color: var(--pdpp-concept-paper);
+  font-family: var(--pdpp-concept-mono);
+  font-size: 14px;
+  line-height: 1.7;
+  padding: 24px 28px;
+  margin: 28px 0;
+  overflow-x: auto;
+  border: 1px solid var(--pdpp-concept-teal-deep);
+  box-shadow: 1px 1px 0 color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+}
+.pdpp-terminal__label {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 70%, white);
+  margin-bottom: 12px;
+  display: block;
+}
+.pdpp-terminal pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.pdpp-terminal .pdpp-prompt {
+  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 65%, white);
+  user-select: none;
+}
+.pdpp-terminal .pdpp-comment {
+  color: color-mix(in srgb, var(--pdpp-concept-paper) 45%, var(--pdpp-concept-teal-deep));
+}
+
+/* ─── Handoff ────────────────────────────────────────────────────────────── */
+.pdpp-handoff {
+  border: 1px solid var(--pdpp-concept-teal);
+  padding: 18px 22px;
+  margin: 28px 0 20px;
+}
+.pdpp-handoff a {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 16px;
+  letter-spacing: 0.01em;
+  border-bottom: none;
+}
+
+/* ─── Code ───────────────────────────────────────────────────────────────── */
+.pdpp-concept code {
+  font-family: var(--pdpp-concept-mono);
+  font-size: 0.86em;
+  background: var(--pdpp-concept-paper-deep);
+  padding: 1px 5px;
+  border-radius: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* ─── Schematic ──────────────────────────────────────────────────────────── */
+.pdpp-schematic {
+  margin: 32px 0 0;
+}
+.pdpp-schematic svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 640px;
+}
+.pdpp-schematic svg text {
+  font-family: var(--pdpp-concept-sans);
+}
+.pdpp-schematic--loop svg {
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+/* ─── Note ───────────────────────────────────────────────────────────────── */
+.pdpp-note {
+  background: var(--pdpp-concept-teal-wash);
+  border-left: 2px solid var(--pdpp-concept-teal);
+  padding: 16px 20px;
+  margin: 24px 0;
+  font-size: 16px;
+}
+.pdpp-note p:last-child {
+  margin-bottom: 0;
+}
+
+/* ─── Tables ─────────────────────────────────────────────────────────────── */
+.pdpp-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.pdpp-doc th,
+.pdpp-doc td {
+  text-align: left;
+  padding: 10px 14px 10px 0;
+  border-bottom: var(--pdpp-concept-rule);
+  vertical-align: top;
+  line-height: 1.45;
+}
+.pdpp-doc thead th {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pdpp-concept-ink-soft);
+  border-bottom: 1px solid var(--pdpp-concept-ink-faint);
+}
+
+.pdpp-impl-table {
+  table-layout: fixed;
+}
+.pdpp-impl-table th:nth-child(1),
+.pdpp-impl-table td:nth-child(1) {
+  width: 26%;
+}
+.pdpp-impl-table th:nth-child(2),
+.pdpp-impl-table td:nth-child(2) {
+  width: 34%;
+}
+.pdpp-impl-table th:nth-child(3),
+.pdpp-impl-table td:nth-child(3) {
+  width: 25%;
+}
+.pdpp-impl-table th:nth-child(4),
+.pdpp-impl-table td:nth-child(4) {
+  width: 15%;
+  padding-right: 0;
+}
+.pdpp-impl-table td:first-child {
+  font-family: var(--pdpp-concept-serif);
+  font-weight: 600;
+}
+.pdpp-impl-table .pdpp-status {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-impl-table td:nth-child(4) a {
+  white-space: nowrap;
+}
+.pdpp-impl-table .pdpp-pending td,
+.pdpp-impl-table .pdpp-pending td:first-child,
+.pdpp-impl-table .pdpp-pending .pdpp-status {
+  color: var(--pdpp-concept-ink-faint);
+}
+.pdpp-impl-table .pdpp-pending td:first-child {
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* ─── Dated updates list ─────────────────────────────────────────────────── */
+.pdpp-updates {
+  list-style: none;
+  padding: 0;
+  margin: 20px 0 0;
+}
+.pdpp-updates li {
+  display: grid;
+  grid-template-columns: min(8.5em, 34%) minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: var(--pdpp-concept-rule-faint);
+  font-size: 16px;
+}
+.pdpp-updates li:first-child {
+  border-top: var(--pdpp-concept-rule-faint);
+}
+.pdpp-updates time {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--pdpp-concept-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Footer ─────────────────────────────────────────────────────────────── */
+.pdpp-footer {
+  background: var(--pdpp-concept-teal-deep);
+  color: color-mix(in srgb, var(--pdpp-concept-paper) 82%, var(--pdpp-concept-teal-deep));
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  line-height: 1.7;
+  margin-top: 96px;
+}
+.pdpp-footer__inner {
+  max-width: var(--pdpp-concept-max);
+  margin-inline: auto;
+  padding-block: 40px;
+  padding-inline: var(--pdpp-concept-pad);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 32px 64px;
+  justify-content: space-between;
+}
+.pdpp-footer a {
+  color: var(--pdpp-concept-paper);
+  border-bottom-color: color-mix(in srgb, var(--pdpp-concept-paper) 30%, transparent);
+}
+.pdpp-footer a:hover {
+  color: #fff;
+  border-bottom-color: var(--pdpp-concept-paper);
+}
+.pdpp-footer__licenses {
+  font-variant-numeric: tabular-nums;
+  max-width: 40ch;
+}
+.pdpp-footer__col {
+  max-width: 34ch;
+}
+.pdpp-footer__label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 55%, var(--pdpp-concept-teal-deep));
+  margin-bottom: 6px;
+}
+.pdpp-footer__source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdpp-icon-github {
+  width: 1em;
+  height: 1em;
+  flex: none;
+  color: currentColor;
+}
+.pdpp-footer__license-list {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.pdpp-footer__license-list .pdpp-license-row {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+.pdpp-footer__license-list .pdpp-license-row + .pdpp-license-row {
+  margin-top: 2px;
+}
+.pdpp-footer__license-list dt {
+  margin: 0;
+  color: inherit;
+  opacity: 0.75;
+}
+.pdpp-footer__license-list dt::after {
+  content: ":";
+}
+.pdpp-footer__license-list dd {
+  margin: 0;
+  color: inherit;
+}
+
+/* ─── Docs (fumadocs) — asymmetric rail applied to generated DOM ─────────
+   Following the pattern @pdpp/brand/docs.css already established: target
+   fumadocs' generated IDs directly rather than swapping DocsLayout props.
+   Scoped under [data-pdpp-doc-theme] so it only applies where the app opts
+   in, leaving other consumers of the same fumadocs DOM (if any existed)
+   unaffected. */
+[data-pdpp-doc-theme] {
+  background: var(--pdpp-concept-paper);
+  color: var(--pdpp-concept-ink);
+}
+[data-pdpp-doc-theme] #nd-docs-layout {
+  background: var(--pdpp-concept-paper);
+}
+[data-pdpp-doc-theme] #nd-sidebar {
+  background: var(--pdpp-concept-paper);
+  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  font-family: var(--pdpp-concept-sans);
+}
+[data-pdpp-doc-theme] #nd-sidebar a {
+  color: var(--pdpp-concept-ink-soft);
+}
+[data-pdpp-doc-theme] #nd-sidebar [data-active="true"] {
+  color: var(--pdpp-concept-teal);
+}
+[data-pdpp-doc-theme] #nd-toc {
+  font-family: var(--pdpp-concept-sans);
+  color: var(--pdpp-concept-ink-soft);
+}
+[data-pdpp-doc-theme] #nd-toc a.data-\[active\=true\],
+[data-pdpp-doc-theme] #nd-toc [data-active="true"] {
+  color: var(--pdpp-concept-teal);
+}
+[data-pdpp-doc-theme] #nd-page {
+  font-family: var(--pdpp-concept-serif);
+}
+[data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
+[data-pdpp-doc-theme] #nd-page h1 {
+  font-family: var(--pdpp-concept-serif);
+}

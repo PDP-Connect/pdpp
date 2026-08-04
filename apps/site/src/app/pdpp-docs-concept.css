@@ -1,0 +1,174 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Applies the PDPP concept document register (paper/ink/teal, Literata/Public
+ * Sans/IBM Plex Mono — see pdpp-concept.css) to fumadocs' generated DOM for
+ * /docs, following the same restyle-by-selector pattern @pdpp/brand/docs.css
+ * already uses for the operator-console register (targeting #nd-* IDs rather
+ * than swapping DocsLayout/DocsPage props). Scoped under
+ * [data-pdpp-doc-theme] so it only applies where the app opts in and layers
+ * ON TOP of docs.css (imported after it in globals.css) rather than editing
+ * the shared package.
+ */
+
+[data-pdpp-doc-theme] #nd-docs-layout {
+  background: var(--pdpp-concept-paper);
+  font-family: var(--pdpp-concept-sans);
+}
+
+[data-pdpp-doc-theme] #nd-subnav {
+  background: var(--pdpp-concept-paper);
+  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+}
+
+[data-pdpp-doc-theme] #nd-sidebar {
+  background: var(--pdpp-concept-paper-deep);
+  border-right-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar a,
+[data-pdpp-doc-theme] #nd-sidebar button,
+[data-pdpp-doc-theme] #nd-sidebar summary {
+  color: var(--pdpp-concept-ink-soft);
+}
+
+[data-pdpp-doc-theme] #nd-sidebar a[data-active="true"],
+[data-pdpp-doc-theme] #nd-sidebar button[data-active="true"] {
+  color: var(--pdpp-concept-teal);
+  background: var(--pdpp-concept-teal-wash);
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [data-active="true"]::before {
+  background: var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [class*="mb-1 px-2 mt-6"] {
+  font-family: var(--pdpp-concept-sans);
+  color: var(--pdpp-concept-ink-faint);
+  letter-spacing: 0.08em;
+}
+
+[data-pdpp-doc-theme] #nd-page {
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-hero {
+  background: var(--pdpp-concept-teal-wash);
+  border-bottom-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-left-color: var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-title {
+  font-family: var(--pdpp-concept-serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-description {
+  font-family: var(--pdpp-concept-serif);
+  color: var(--pdpp-concept-ink-soft);
+}
+
+[data-pdpp-doc-theme] .pdpp-eyebrow {
+  font-family: var(--pdpp-concept-sans);
+  color: var(--pdpp-concept-ink-faint);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body {
+  font-family: var(--pdpp-concept-serif);
+  max-width: var(--pdpp-concept-measure);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose {
+  color: var(--pdpp-concept-ink);
+  font-size: 17px;
+  line-height: 1.65;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body :where(h2, h3, h4) {
+  font-family: var(--pdpp-concept-serif);
+  color: var(--pdpp-concept-ink);
+  letter-spacing: normal;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body h2 {
+  border-top-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body p,
+[data-pdpp-doc-theme] .pdpp-docs-body li {
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body a {
+  color: var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body blockquote {
+  background: var(--pdpp-concept-teal-wash);
+  border-left-color: var(--pdpp-concept-teal);
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body :not(pre) > code {
+  font-family: var(--pdpp-concept-mono);
+  background: var(--pdpp-concept-paper-deep);
+  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-radius: 2px;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki {
+  background: var(--pdpp-concept-teal-deep) !important;
+  border-color: var(--pdpp-concept-teal-deep) !important;
+  border-radius: 0 !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki pre,
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki code {
+  font-family: var(--pdpp-concept-mono) !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body table {
+  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-radius: 0;
+  font-family: var(--pdpp-concept-sans);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body thead {
+  background: var(--pdpp-concept-paper-deep);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body tbody,
+[data-pdpp-doc-theme] .pdpp-docs-body tr,
+[data-pdpp-doc-theme] .pdpp-docs-body td {
+  background: var(--pdpp-concept-paper);
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body th {
+  font-family: var(--pdpp-concept-sans);
+  color: var(--pdpp-concept-ink-soft);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body th,
+[data-pdpp-doc-theme] .pdpp-docs-body td {
+  border-bottom-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+}
+
+[data-pdpp-doc-theme] #nd-toc {
+  font-family: var(--pdpp-concept-sans);
+  color: var(--pdpp-concept-ink-soft);
+}
+
+[data-pdpp-doc-theme] #nd-toc h3 {
+  font-family: var(--pdpp-concept-sans);
+  color: var(--pdpp-concept-ink-faint);
+}
+
+[data-pdpp-doc-theme] #nd-toc a[data-active="true"] {
+  color: var(--pdpp-concept-teal);
+}
