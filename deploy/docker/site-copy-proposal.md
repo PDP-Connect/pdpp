@@ -17,20 +17,21 @@ check.
 
 > #### Deploy with Docker Compose
 >
-> Use the registry-proven `reference` and `web` images at `sha-cc07e3a`. The
-> web service is published on port `3000`; reference services and Postgres
-> remain private.
+> Download the one stable release URL — `reference`, `web`, and `neko` are
+> already pinned by digest, not a tag or commit SHA. The web service is
+> published on port `3000`; reference services and Postgres remain private.
 >
 > ```sh
 > mkdir pdpp && cd pdpp
-> curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
-> printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \\
+> curl -fsSLO https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
+> printf 'PDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
 >   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 > docker compose up -d
 > ```
 >
-> Open `http://localhost:3000/owner/login`, add Gmail with a Google app
-> password, and wait for healthy data with `records > 0`.
+> Do not add `PDPP_REFERENCE_IMAGE`/`PDPP_WEB_IMAGE` — the downloaded bundle
+> already pins both. Open `http://localhost:3000/owner/login`, add Gmail with
+> a Google app password, and wait for healthy data with `records > 0`.
 
 ### Tier 2 — collapsed beneath the card
 
@@ -46,8 +47,10 @@ Full copy belongs in
 
 ## Copy rules baked into the above
 
-- The blessed path uses the same `sha-cc07e3a` tag for both `reference` and
-  `web`; do not substitute mutable tags or an unverified single-image lane.
+- The blessed path uses the one stable release URL, which already pins
+  `reference`, `web`, and `neko` by digest; do not substitute a raw
+  main-branch or commit-SHA fetch, a mutable tag, or a hand-copied image
+  override.
 - Port `3000` is explicit in the copied Compose environment so local setup and
   the public page tell the same story.
 - The client handoff names deployed `/connect` and `/mcp`; the public docs site

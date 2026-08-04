@@ -25,8 +25,10 @@ When you finish either lane, jump to [Wire an MCP client](#wire-an-mcp-client).
 
 You need:
 
-- the registry-proven images (`ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a`,
-  `ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a`) — both public, no login required;
+- the one stable release URL,
+  [`.../releases/latest/download/docker-compose.yml`](https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml)
+  — its `reference`, `web`, and `neko` images are already pinned by digest,
+  public, no login required;
 - a place for the dashboard to be reachable over HTTPS when remote (local
   loopback HTTP is supported; the Compose web port is `3000`);
 - two deployment secrets: an **owner password** and
@@ -44,39 +46,41 @@ You do not need:
 
 ## Lane A — Docker host
 
-### 1. Fetch the blessed compose stack
+### 1. Fetch the released compose bundle
 
-Lane A uses the same pinned, registry-proven Compose stack as
-[`self-service-gmail-mcp.md`](self-service-gmail-mcp.md) — the
-`reference:sha-cc07e3a` and `web:sha-cc07e3a` images, published on port `3000`.
-No repository clone is required:
+Lane A uses the same one stable release URL as
+[`self-service-gmail-mcp.md`](self-service-gmail-mcp.md):
+`.../releases/latest/download/docker-compose.yml` always resolves to the
+current release's Compose bundle, with `reference`, `web`, and `neko` already
+pinned by digest, published on port `3000`. No repository clone is required:
 
 ```sh
 mkdir pdpp && cd pdpp
-curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
+curl -fsSLO https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
 ```
 
 That block is macOS/Linux (bash or zsh). On **Windows PowerShell**, bare
 `curl` is an alias for `Invoke-WebRequest` and does not accept these flags —
-use `curl.exe` instead, with the same pinned URL:
+use `curl.exe` instead, with the same stable URL:
 
 ```powershell
 mkdir pdpp; cd pdpp
-curl.exe -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
+curl.exe -fsSLO https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
 ```
 
-This is [`deploy/docker/docker-compose.yml`](../../deploy/docker/docker-compose.yml)
-— the small, pinned self-service stack. It is a different file from the
-repository-root `docker-compose.yml`, which is the development/owner stack
-(connector credentials, fixtures, browser services) and is not the blessed
-self-host entry point.
+This bundle is generated from
+[`deploy/docker/docker-compose.yml`](../../deploy/docker/docker-compose.yml)
+— the small, pinned self-service stack — at release time. It is a different
+file from the repository-root `docker-compose.yml`, which is the
+development/owner stack (connector credentials, fixtures, browser services)
+and is not the blessed self-host entry point.
 
 ### 2. Generate secrets and set the required variables
 
 macOS and Linux (bash or zsh):
 
 ```sh
-printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+printf 'PDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 ```
 
@@ -92,8 +96,6 @@ $rng.GetBytes($ownerBytes); $rng.GetBytes($keyBytes)
 $owner = [Convert]::ToBase64String($ownerBytes)
 $key = ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
 @(
-  'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a'
-  'PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a'
   'PDPP_REFERENCE_ORIGIN=http://localhost:3000'
   'PDPP_WEB_PORT=3000'
   "PDPP_OWNER_PASSWORD=$owner"
@@ -108,6 +110,11 @@ The compose file refuses to boot until `PDPP_OWNER_PASSWORD` and
 `PDPP_CREDENTIAL_ENCRYPTION_KEY` exist in `.env` — the password gates the
 dashboard, and the encryption key seals any connector credentials you store.
 Keep `.env` with your backups.
+
+**Do not add `PDPP_REFERENCE_IMAGE` or `PDPP_WEB_IMAGE` to `.env`.** The
+downloaded bundle already pins both to this release's exact digest; setting
+either overrides that pin back to a value you typed. Only set
+origin/port/password/encryption-key and other real operator settings.
 
 Set `PDPP_REFERENCE_ORIGIN` to the external URL your dashboard will be reached
 at (e.g. `https://pdpp.example.com`, or leave the `http://localhost:3000`
@@ -181,9 +188,11 @@ docker compose up -d
 
 The named volumes (`pdpp-transformers`, `pdpp-postgres-data`) persist across
 `up -d` runs. Do not auto-update on a schedule; database migrations land
-between releases and require an operator-driven re-pull. Update the
-`reference` and `web` image tags together, and run the registry manifest check
-before moving to another published Compose release.
+between releases and require an operator-driven re-pull. To move to a later
+release, re-download the bundle from
+`.../releases/latest/download/docker-compose.yml` before pulling — the new
+bundle already carries the new release's digests for `reference`, `web`, and
+`neko` together, so there is no separate tag to update by hand.
 
 ### 6. Backup
 
@@ -244,10 +253,12 @@ Web Terminal) and:
 
 ```sh
 mkdir -p /workspace/pdpp && cd /workspace/pdpp
-curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
+curl -fsSLO https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
 
-# Generate required secrets and set the origin to the proxy URL RunPod gave you:
-printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_WEB_PORT=3000\nPDPP_REFERENCE_ORIGIN=https://<podid>-3000.proxy.runpod.net\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+# Generate required secrets and set the origin to the proxy URL RunPod gave you.
+# Do not add PDPP_REFERENCE_IMAGE/PDPP_WEB_IMAGE — the downloaded bundle already
+# pins both to this release's digest.
+printf 'PDPP_WEB_PORT=3000\nPDPP_REFERENCE_ORIGIN=https://<podid>-3000.proxy.runpod.net\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 
 docker compose pull

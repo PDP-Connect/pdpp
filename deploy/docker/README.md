@@ -1,23 +1,28 @@
 # Deploy a PDPP Core node with Docker
 
-The blessed self-service path is one pinned Docker Compose stack. It uses the
-registry-proven `reference:sha-cc07e3a` and `web:sha-cc07e3a` images, publishes
-the operator surface on port `3000`, and keeps the protocol listeners and
+The blessed self-service path is one stable URL:
+[`https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml`](https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml).
+It always resolves to the current release's Compose bundle, with the
+`reference`, `web`, and `neko` images already pinned by immutable digest —
+not a tag, not a commit SHA you copy by hand. The bundle publishes the
+operator surface on port `3000` and keeps the protocol listeners and
 Postgres private.
 
 For the one plain self-service journey — including Gmail setup, the health/data
 gate, and Claude Code OAuth — use
 [`docs/operator/self-service-gmail-mcp.md`](../../docs/operator/self-service-gmail-mcp.md).
 
-## Pinned self-service Compose
+## The one stable self-service URL
 
-[`docker-compose.yml`](./docker-compose.yml) runs the reference and console as
-separate services on Postgres with pgvector. No repository clone required:
+Every release publishes a version-coherent Compose bundle as a GitHub Release
+asset. `.../releases/latest/download/docker-compose.yml` always points at the
+current release; no doc, and no friend, ever hand-copies a tag or commit SHA.
+No repository clone required:
 
 ```sh
 mkdir pdpp && cd pdpp
-curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
-printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+curl -fsSLO https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
+printf 'PDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 docker compose up -d
 ```
@@ -30,7 +35,7 @@ instead — it generates the same two secrets with .NET and writes ASCII:
 
 ```powershell
 mkdir pdpp; cd pdpp
-curl.exe -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
+curl.exe -fsSLO https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
 $ownerBytes = [byte[]]::new(24)
 $keyBytes = [byte[]]::new(32)
 $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -38,8 +43,6 @@ $rng.GetBytes($ownerBytes); $rng.GetBytes($keyBytes)
 $owner = [Convert]::ToBase64String($ownerBytes)
 $key = ($keyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
 @(
-  'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a'
-  'PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a'
   'PDPP_REFERENCE_ORIGIN=http://localhost:3000'
   'PDPP_WEB_PORT=3000'
   "PDPP_OWNER_PASSWORD=$owner"
@@ -54,6 +57,14 @@ Use `curl.exe`, not `curl` — bare `curl` in PowerShell is an alias for
 The compose file refuses to boot until both secrets exist in `.env` — the
 owner password gates the dashboard, and the credential encryption key seals
 any connector credentials you store. Keep `.env` with your backups.
+
+**Do not add `PDPP_REFERENCE_IMAGE` or `PDPP_WEB_IMAGE` to `.env`.** The
+downloaded bundle already pins both to this release's exact digest; setting
+either in `.env` overrides that pin back to whatever value you type, which
+defeats the entire point of the stable URL — a stale or mistyped override is
+indistinguishable from a real regression until something breaks. Only set
+origin/port/password/encryption-key and the other real operator settings
+below.
 
 Configuration knobs (all optional, set in `.env`):
 
@@ -135,31 +146,27 @@ The `reference`, `web`, and `postgres` services start as before; the `neko`
 service joins the compose network. Once `reference` is healthy (5-30 seconds),
 browser-backed sources are available in the dashboard.
 
-**Release status:** `neko` and `core-browser` publish from the same release
-pipeline as `reference`/`web`/`reference-browser` (`.github/workflows/semantic-release.yml`,
-`publish-images` job) — there is no separate step to remember. Verify a given
-version actually published before you pin it:
+**Release status:** the bundle you downloaded from
+`.../releases/latest/download/docker-compose.yml` already pins `neko` to this
+release's exact digest, the same way it pins `reference` and `web` — there is
+nothing to verify, clone, or build. The release pipeline's
+`publish-selfhost-bundle` job is gated on every image in the release matrix
+(`reference`, `web`, `neko`, `core-browser`, `railway-core`) actually
+publishing; if any of them failed to publish, the bundle itself is not
+published either, so a friend can never end up with a bundle that references
+an image the release didn't ship. You do not need `pnpm`, a repository clone,
+or a local `docker build` on this path.
 
-```sh
-pnpm docker:release-matrix:verify-published --tag <version>   # e.g. 1.3.0, or "latest"
-```
-
-This queries GHCR directly (no login required) for every image the pipeline is
-supposed to publish and fails if any is missing at that tag — the same check
-that caught this gap in the first place
-(`scripts/verify-published-docker-images.ts`). If it reports `neko` or
-`core-browser` missing at the tag you want, no release has published them yet;
-use the network-only path above until one has, or build locally as a stopgap:
-
-```sh
-PDPP_NEKO_IMAGE=pdpp-neko:local
-```
-
-added to `.env`, with the image built from this repository via
-`docker build -f docker/neko/Dockerfile -t pdpp-neko:local .`. This is the one
-step that needs a clone, and it exists only as a stopgap for a tag that has not
-published yet — it is not the steady-state route once `verify-published`
-reports the tag present.
+> **Developer fallback, not the normal path.** If you are working from a
+> repository checkout — contributing, testing an unreleased change, or
+> debugging a specific release — you can still verify a given version's
+> images directly with `pnpm docker:release-matrix:verify-published --tag
+> <version>` (`scripts/verify-published-docker-images.ts`, queries GHCR
+> anonymously) or build `neko` locally with `docker build -f
+> docker/neko/Dockerfile -t pdpp-neko:local .` and override
+> `PDPP_NEKO_IMAGE=pdpp-neko:local` in `.env`. Neither step belongs in the
+> friend-facing self-service path above; both require a clone this path is
+> designed to avoid.
 
 Until you set `PDPP_NEKO_IMAGE`, the compose file resolves the n.eko service to
 the placeholder `pdpp-neko-image-not-set`, which fails loudly rather than
@@ -394,8 +401,8 @@ runtime diagnostics surface (`GET /_ref/deployment`).
 
 For the release-owner proof from clean Compose state, use
 [`docs/operator/release-selfservice-smoke.md`](../../docs/operator/release-selfservice-smoke.md).
-It requires exact npm versions and digest-pinned images; the ordinary quickstart
-and this operator runbook may continue to use a moving tag for exploratory work.
+It requires exact npm versions; both it and this operator runbook now use the
+same digest-pinned self-service bundle.
 
 ## Storage and upgrades
 
@@ -420,8 +427,11 @@ followed by `docker compose up -d` with no `--volumes` flag. Only
 `docker compose down --volumes` (below) deletes profile/auth state, along
 with Postgres data.
 
-Update the reference and web image tags together, and run the registry manifest
-check before moving to another published Compose release.
+To move to a later release, re-download the bundle from
+`.../releases/latest/download/docker-compose.yml` and run
+`docker compose pull && docker compose up -d` again — the new bundle already
+carries the new release's digests for `reference`, `web`, and `neko`
+together, so there is no separate tag to update by hand.
 
 ## Teardown
 

@@ -150,15 +150,15 @@ async function documentedPowershellSecretBlock(): Promise<string> {
 // nothing else in this file forces a PowerShell mate to exist there. Pin it
 // explicitly: a Windows reader following step 1 of the quickstart must not
 // be left with only the sh block and a prose pointer.
-const PINNED_COMPOSE_REF = "cc07e3a896c2c0df7841da4ec6b2c660ffe1e792";
+const RELEASED_BUNDLE_URL = "https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml";
 const STEP1_SH_FETCH_RE = new RegExp(
-  `\`\`\`sh\\nmkdir pdpp && cd pdpp\\ncurl -fsSLO https://raw\\.githubusercontent\\.com/PDP-Connect/pdpp/${PINNED_COMPOSE_REF}/deploy/docker/docker-compose\\.yml\\n\`\`\``
+  `\`\`\`sh\\nmkdir pdpp && cd pdpp\\ncurl -fsSLO ${RELEASED_BUNDLE_URL.replace(/[/.]/g, "\\$&")}\\n\`\`\``
 );
 const STEP1_POWERSHELL_FETCH_RE = new RegExp(
-  `\`\`\`powershell\\nmkdir pdpp; cd pdpp\\ncurl\\.exe -fsSLO https://raw\\.githubusercontent\\.com/PDP-Connect/pdpp/${PINNED_COMPOSE_REF}/deploy/docker/docker-compose\\.yml\\n\`\`\``
+  `\`\`\`powershell\\nmkdir pdpp; cd pdpp\\ncurl\\.exe -fsSLO ${RELEASED_BUNDLE_URL.replace(/[/.]/g, "\\$&")}\\n\`\`\``
 );
 
-test("quickstart step 1 ships an executable PowerShell fetch block with the same pinned URL as the sh block", async () => {
+test("quickstart step 1 ships an executable PowerShell fetch block with the same stable release URL as the sh block", async () => {
   const source = await read(QUICKSTART);
   assert.match(
     source,

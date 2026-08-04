@@ -5,19 +5,24 @@ published Docker Compose stack, one owner session, a Gmail app password, and a
 scoped MCP grant. The public site is only the guide; `/mcp` belongs to the
 deployment you start.
 
-## 1. Deploy a pinned Compose stack
+## 1. Deploy the released Compose bundle
 
-Use the same registry-proven image tag for the reference and web services. The
-current public tag proven by an actual registry manifest is `sha-cc07e3a`; update
-both image lines together only after the replacement pair passes that check.
+Download the one stable URL — it always resolves to the current release's
+Compose bundle, with `reference`, `web`, and `neko` already pinned by
+immutable digest:
 
 ```sh
 mkdir pdpp && cd pdpp
-curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml
-printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:sha-cc07e3a\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+curl -fsSLO https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
+printf 'PDPP_REFERENCE_ORIGIN=http://localhost:3000\nPDPP_WEB_PORT=3000\nPDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 docker compose up -d
 ```
+
+Do not add `PDPP_REFERENCE_IMAGE` or `PDPP_WEB_IMAGE` to `.env` — the
+downloaded bundle already pins both to this release's digest; setting either
+overrides that pin. Only set origin/port/password/encryption-key and other
+real operator settings.
 
 The web service publishes the operator surface on port `3000`; the reference
 and Postgres services stay on the private Compose network. For a remote node,

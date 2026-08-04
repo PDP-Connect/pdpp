@@ -14,8 +14,11 @@ const WHITESPACE_RE = /\s+/g;
 const SOURCE_ROUTE_RE = /<your-deployment-origin>\/sources\/add/;
 const CONNECT_PAGE_TITLE_RE = /title="Connect AI apps"/;
 const ADD_SOURCE_PAGE_TITLE_RE = /title="Add source"/;
+const RELEASED_BUNDLE_URL = "https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml";
+const RAW_MAIN_OR_COMMIT_FETCH_RE =
+  /raw\.githubusercontent\.com\/PDP-Connect\/pdpp\/(?:main|[0-9a-f]{40})\/deploy\/docker\/docker-compose\.yml/;
 const PAGE_MARKERS = [
-  "pinned Docker/Compose",
+  "Deploy the released Compose bundle",
   "/owner/login",
   "<your-deployment-origin>/sources/add",
   "Gmail",
@@ -26,7 +29,7 @@ const PAGE_MARKERS = [
   "claude mcp add --transport http pdpp <your-deployment-origin>/mcp",
 ];
 const RUNBOOK_MARKERS = [
-  "## 1. Deploy a pinned Compose stack",
+  "## 1. Deploy the released Compose bundle",
   "## 2. Sign in as owner",
   "## 3. Add Gmail with a Google app password",
   "<your-deployment-origin>/sources/add",
@@ -60,6 +63,31 @@ test("blessed self-service journey keeps the health and data gate before MCP", a
       previousIndex = index;
     }
   }
+});
+
+test("the self-service journey deploys via the one stable release URL, never a raw main/commit fetch", async () => {
+  const page = await readFile(fileURLToPath(PAGE_PATH), "utf8");
+  const runbook = await readFile(fileURLToPath(RUNBOOK_PATH), "utf8");
+
+  assert.doesNotMatch(
+    page,
+    RAW_MAIN_OR_COMMIT_FETCH_RE,
+    "public reference page must not fetch deploy/docker/docker-compose.yml from a raw main-branch or commit-SHA URL"
+  );
+  // The .tsx source references the URL through a named constant, not the
+  // literal string, so check for the constant's declared value.
+  assert.match(
+    page,
+    /RELEASED_COMPOSE_BUNDLE_URL = `\$\{GITHUB_REPO\}\/releases\/latest\/download\/docker-compose\.yml`/,
+    "public reference page must derive its deploy URL from the one stable release path"
+  );
+
+  assert.doesNotMatch(
+    runbook,
+    RAW_MAIN_OR_COMMIT_FETCH_RE,
+    "self-service runbook must not fetch deploy/docker/docker-compose.yml from a raw main-branch or commit-SHA URL"
+  );
+  assert.ok(runbook.includes(RELEASED_BUNDLE_URL), "self-service runbook must document the one stable release URL");
 });
 
 test("self-service source setup names the authoritative owner route", async () => {

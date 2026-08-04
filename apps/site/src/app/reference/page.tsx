@@ -13,8 +13,7 @@ const GITHUB_ROOT_README = `${GITHUB_REPO}/blob/main/README.md`;
 const GITHUB_DOCKER_README = `${GITHUB_REPO}/blob/main/deploy/docker/README.md`;
 const GITHUB_SELF_SERVICE_README = `${GITHUB_REPO}/blob/main/docs/operator/self-service-gmail-mcp.md`;
 const GITHUB_HOSTED_MCP_SETUP = `${GITHUB_REPO}/blob/main/docs/operator/hosted-mcp-setup.md`;
-const PINNED_COMPOSE_REF = "cc07e3a896c2c0df7841da4ec6b2c660ffe1e792";
-const PINNED_IMAGE_TAG = "sha-cc07e3a";
+const RELEASED_COMPOSE_BUNDLE_URL = `${GITHUB_REPO}/releases/latest/download/docker-compose.yml`;
 
 export const metadata: Metadata = {
   description:
@@ -51,9 +50,9 @@ const architectureLayers = [
 
 const selfServiceSteps = [
   {
-    body: `Use the pinned Docker Compose stack with ghcr.io/pdp-connect/pdpp/reference:${PINNED_IMAGE_TAG} and ghcr.io/pdp-connect/pdpp/web:${PINNED_IMAGE_TAG}. Publish the web service on port 3000.`,
+    body: "Download the one stable release bundle URL — reference, web, and neko are already pinned by digest. Publish the web service on port 3000.",
     label: "1",
-    title: "Deploy a pinned Docker/Compose stack",
+    title: "Deploy the released Compose bundle",
   },
   {
     body: "Open <your-deployment-origin>/owner/login and sign in with the owner password from your deployment.",
@@ -182,14 +181,14 @@ export default function ReferencePage() {
                   Docker runbook
                 </a>
               }
-              body="Use the same pinned reference and web images for a repeatable node. The Compose stack publishes the operator surface on port 3000 and keeps Postgres and protocol services private."
+              body="Download the one stable release bundle URL: reference, web, and neko are already pinned by digest, so there is no tag or commit SHA to copy by hand. The Compose stack publishes the operator surface on port 3000 and keeps Postgres and protocol services private."
               code={`mkdir pdpp && cd pdpp
-curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/${PINNED_COMPOSE_REF}/deploy/docker/docker-compose.yml
-printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:${PINNED_IMAGE_TAG}\\nPDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:${PINNED_IMAGE_TAG}\\nPDPP_REFERENCE_ORIGIN=http://localhost:3000\\nPDPP_WEB_PORT=3000\\nPDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\
+curl -fsSLO ${RELEASED_COMPOSE_BUNDLE_URL}
+printf 'PDPP_REFERENCE_ORIGIN=http://localhost:3000\\nPDPP_WEB_PORT=3000\\nPDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\
   "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
 docker compose up -d`}
-              eyebrow="Your machine, pinned Compose"
-              footer="Open http://localhost:3000/owner/login. This block is macOS/Linux shell; on Windows PowerShell use the equivalent in the Docker runbook, because the backslash continuations and openssl call do not work there. Use local HTTP only on the host; put a remote deployment behind HTTPS and set its real origin."
+              eyebrow="Your machine, one stable release URL"
+              footer="Open http://localhost:3000/owner/login. This block is macOS/Linux shell; on Windows PowerShell use the equivalent in the Docker runbook, because the backslash continuations and openssl call do not work there. Do not add PDPP_REFERENCE_IMAGE/PDPP_WEB_IMAGE to .env — the bundle already pins them. Use local HTTP only on the host; put a remote deployment behind HTTPS and set its real origin."
               title="Deploy with Docker Compose"
             />
           </div>

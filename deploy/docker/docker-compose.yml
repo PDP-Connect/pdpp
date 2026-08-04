@@ -4,12 +4,15 @@
 #   web        - the operator console (dashboard + proxy in front of the AS/RS)
 #   postgres   - durable storage with pgvector (semantic search index)
 #
-# Setup (see ./README.md for the full runbook):
-#
-#   curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/main/deploy/docker/docker-compose.yml
-#   printf 'PDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
-#     "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
-#   docker compose up -d
+# This is the TEMPLATE a release's publish-selfhost-bundle job reads to
+# produce the friend-facing bundle at
+# https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
+# — that release URL, not a raw fetch of this file from `main`, is the one
+# blessed self-service path (see ./README.md). Its reference/web/neko image
+# defaults below are digest-pinned by the release pipeline at publish time;
+# the `sha-cc07e3a` fallback here only applies if this template file itself
+# is fetched directly from the repository, which is a developer/contributor
+# path, not the friend-facing one.
 #
 # This file is intentionally small. The repository-root docker-compose.yml is
 # the development/owner stack (connector credentials, fixture mounts, browser

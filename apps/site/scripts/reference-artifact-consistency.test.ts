@@ -33,23 +33,20 @@ const TOUCHED_SURFACE_PATHS = [
   ["local browser E2E guide", new URL("../../../docs/reference/local-testing-e2e.md", import.meta.url)],
 ] as const;
 
-const VERIFIED_TAGS: Readonly<Record<string, ReadonlySet<string>>> = {
-  reference: new Set(["sha-cc07e3a"]),
-  web: new Set(["sha-cc07e3a"]),
-};
-
-const IMAGE_REFERENCE_RE = /ghcr\.io\/pdp-connect\/pdpp\/([a-z-]+):([A-Za-z0-9._-]+)/g;
+// The friend path no longer quotes any PDPP image tag or commit SHA at all —
+// the released bundle at .../releases/latest/download/docker-compose.yml
+// already pins reference/web/neko by digest. This oracle now forbids the
+// three ways that contract could regress: (1) a raw main-branch or
+// commit-SHA fetch URL standing in for the stable release URL, which
+// reintroduces exactly the pin-churn the bundle exists to close; (2) a
+// friend-facing PDPP_REFERENCE_IMAGE/PDPP_WEB_IMAGE/PDPP_NEKO_IMAGE override
+// in a secret-generation block, which would let a stale .env silently
+// override the bundle's digest pins; (3) a mutable main/latest image tag,
+// which was never safe to advertise.
+const RELEASED_BUNDLE_URL = "https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml";
+const RAW_MAIN_OR_COMMIT_FETCH_RE =
+  /raw\.githubusercontent\.com\/PDP-Connect\/pdpp\/(?:main|[0-9a-f]{40})\/deploy\/docker\/docker-compose\.yml/;
 const MUTABLE_IMAGE_TAG_RE = /ghcr\.io\/pdp-connect\/pdpp\/[a-z-]+:(?:main|latest)\b/;
-const NONEXISTENT_TAG = "sha-6581820";
-const UNVERIFIED_ALTERNATE_TAG = ["sha", "2fbdb4"].join("-");
-const PAGE_PINNED_TAG_RE = /const PINNED_IMAGE_TAG = "sha-cc07e3a";/;
-const PAGE_REFERENCE_IMAGE_RE = /ghcr\.io\/pdp-connect\/pdpp\/reference:\$\{PINNED_IMAGE_TAG\}/;
-const PAGE_WEB_IMAGE_RE = /ghcr\.io\/pdp-connect\/pdpp\/web:\$\{PINNED_IMAGE_TAG\}/;
-const ORACLE_REJECTION_RE = /not a registry-proven artifact/;
-const REJECTED_NONEXISTENT_TAG_RE = /rejected nonexistent tag class/;
-const MUTABLE_MAIN_LATEST_TAG_RE = /must not use mutable main\/latest image tags/;
-const UNVERIFIED_ALTERNATE_TAG_RE = /an unverified alternate image tag/;
-const UNKNOWN_REPOSITORY_RE = /unknown PDPP image repository/;
 const RETIRED_OWNER_PATH_RE = /contains the retired owner path/;
 const LEGACY_OWNER_PATH = ["/", "dashboard"].join("");
 const MATRIX_IMAGE_RE = /^\s*- image:\s*(\S+)\s*$/;
@@ -58,44 +55,43 @@ const MATRIX_PROPERTY_RE = /^\s{2,}\w/;
 const MATRIX_TARGET_RE = /^\s*target:\s*(\S+)\s*$/;
 const MATRIX_TITLE_RE = /^\s*title:\s*(.+?)\s*$/;
 
+// A friend-facing secret-generation block is one that also sets
+// PDPP_OWNER_PASSWORD/PDPP_CREDENTIAL_ENCRYPTION_KEY — the actual
+// steady-state .env this path tells a friend to write. This scoping matters:
+// deploy/docker/docker-compose.yml's OWN `image: ${PDPP_REFERENCE_IMAGE:-...}`
+// default lines are legitimate (the release generator rewrites exactly
+// those), and the developer-fallback PDPP_NEKO_IMAGE=pdpp-neko:local
+// override is explicitly documented as non-friend-path — neither should trip
+// this check. What must never reappear is a friend-facing secret block that
+// ALSO sets an image override, since that silently defeats the bundle's pin.
+const SECRET_BLOCK_RE = /```(?:sh|powershell)\n([\s\S]*?)```/g;
+const OWNER_SECRET_MARKER_RE = /PDPP_OWNER_PASSWORD|PDPP_CREDENTIAL_ENCRYPTION_KEY/;
+const IMAGE_OVERRIDE_IN_BLOCK_RE = /PDPP_(?:REFERENCE|WEB)_IMAGE\s*=/;
+
 function readSources(paths: readonly (readonly [string, URL])[]) {
   return Promise.all(
     paths.map(async ([sourceName, path]) => [sourceName, await readFile(fileURLToPath(path), "utf8")] as const)
   );
 }
 
-function assertRegistryProven(repository: string, tag: string, sourceName: string) {
-  const allowedTags = VERIFIED_TAGS[repository];
-  assert.ok(allowedTags, `${sourceName} uses an unknown PDPP image repository: ${repository}`);
-  assert.ok(
-    allowedTags.has(tag),
-    `${sourceName} uses ${repository}:${tag}, which is not a registry-proven artifact for this path`
-  );
-}
-
 function assertSourceArtifactsConsistent(sourceName: string, source: string) {
-  assert.equal(source.includes(NONEXISTENT_TAG), false, `${sourceName} contains the rejected nonexistent tag class`);
-  assert.equal(
-    source.includes(UNVERIFIED_ALTERNATE_TAG),
-    false,
-    `${sourceName} contains an unverified alternate image tag`
+  assert.doesNotMatch(
+    source,
+    RAW_MAIN_OR_COMMIT_FETCH_RE,
+    `${sourceName} must not fetch deploy/docker/docker-compose.yml from a raw main-branch or commit-SHA URL — use the stable release URL (${RELEASED_BUNDLE_URL}) instead`
   );
   assert.doesNotMatch(source, MUTABLE_IMAGE_TAG_RE, `${sourceName} must not use mutable main/latest image tags`);
 
-  for (const match of source.matchAll(IMAGE_REFERENCE_RE)) {
-    const [, repository, tag] = match;
-    assert.ok(repository);
-    assert.ok(tag);
-    assertRegistryProven(repository, tag, sourceName);
-  }
-
-  const referenceTags = [...source.matchAll(/ghcr\.io\/pdp-connect\/pdpp\/reference:([A-Za-z0-9._-]+)/g)].map(
-    ([, tag]) => tag
-  );
-  const webTags = [...source.matchAll(/ghcr\.io\/pdp-connect\/pdpp\/web:([A-Za-z0-9._-]+)/g)].map(([, tag]) => tag);
-  if (referenceTags.length > 0 || webTags.length > 0) {
-    assert.deepEqual(referenceTags, webTags, `${sourceName} must pin reference and web to the same release`);
-    assert.equal(referenceTags[0], "sha-cc07e3a", `${sourceName} must use the verified Compose release`);
+  for (const block of source.matchAll(SECRET_BLOCK_RE)) {
+    const body = block[1] ?? "";
+    if (!OWNER_SECRET_MARKER_RE.test(body)) {
+      continue;
+    }
+    assert.doesNotMatch(
+      body,
+      IMAGE_OVERRIDE_IN_BLOCK_RE,
+      `${sourceName} ships a friend-facing secret-generation block that also sets PDPP_REFERENCE_IMAGE/PDPP_WEB_IMAGE — the released bundle already pins both by digest, and a stale override in this block would silently defeat that pin`
+    );
   }
 }
 
@@ -103,74 +99,80 @@ function assertNoLegacyOwnerPath(sourceName: string, source: string) {
   assert.equal(source.includes(LEGACY_OWNER_PATH), false, `${sourceName} contains the retired owner path`);
 }
 
-test("blessed deployment sources use only registry-proven reference and web artifacts", async () => {
+test("blessed friend-facing paths use the one stable release URL, never a raw main/commit fetch or a stale image override", async () => {
   const sources = await readSources(BLESSED_ARTIFACT_PATHS);
 
   for (const [sourceName, source] of sources) {
     assertSourceArtifactsConsistent(sourceName, source);
   }
 
-  const pageSource = sources.find(([sourceName]) => sourceName === "public reference page");
-  assert.ok(pageSource);
-  const [, page] = pageSource;
-  assert.match(page, PAGE_PINNED_TAG_RE);
-  assert.match(page, PAGE_REFERENCE_IMAGE_RE);
-  assert.match(page, PAGE_WEB_IMAGE_RE);
+  const readmeSource = sources.find(([sourceName]) => sourceName === "Docker deployment runbook");
+  assert.ok(readmeSource);
+  const [, readme] = readmeSource;
+  assert.ok(
+    readme.includes(RELEASED_BUNDLE_URL),
+    "deploy/docker/README.md must document the one stable release URL"
+  );
 });
 
-test("artifact oracle rejects the previously advertised nonexistent tag class", () => {
-  assert.throws(() => assertRegistryProven("reference", NONEXISTENT_TAG, "synthetic regression input"), {
-    message: ORACLE_REJECTION_RE,
-  });
-});
-
-test("artifact oracle mutation-proof: nonexistent tag in source text", () => {
+test("artifact oracle mutation-proof: raw main-branch fetch URL in source text", () => {
   assert.throws(
     () =>
       assertSourceArtifactsConsistent(
         "synthetic regression input",
-        `image: ghcr.io/pdp-connect/pdpp/reference:${NONEXISTENT_TAG}`
+        "curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/main/deploy/docker/docker-compose.yml"
       ),
-    { message: REJECTED_NONEXISTENT_TAG_RE }
+    { message: /raw main-branch or commit-SHA URL/ }
+  );
+});
+
+test("artifact oracle mutation-proof: raw commit-SHA fetch URL in source text", () => {
+  assert.throws(
+    () =>
+      assertSourceArtifactsConsistent(
+        "synthetic regression input",
+        "curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/cc07e3a896c2c0df7841da4ec6b2c660ffe1e792/deploy/docker/docker-compose.yml"
+      ),
+    { message: /raw main-branch or commit-SHA URL/ }
   );
 });
 
 test("artifact oracle mutation-proof: mutable main tag in source text", () => {
-  const composePlaceholder = ["image: $", "{PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}"].join("");
-  assert.throws(() => assertSourceArtifactsConsistent("synthetic regression input", composePlaceholder), {
-    message: MUTABLE_MAIN_LATEST_TAG_RE,
-  });
+  assert.throws(
+    () =>
+      assertSourceArtifactsConsistent(
+        "synthetic regression input",
+        "image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}"
+      ),
+    { message: /must not use mutable main\/latest image tags/ }
+  );
 });
 
 test("artifact oracle mutation-proof: mutable latest tag in source text", () => {
   assert.throws(
     () => assertSourceArtifactsConsistent("synthetic regression input", "ghcr.io/pdp-connect/pdpp/web:latest"),
-    { message: MUTABLE_MAIN_LATEST_TAG_RE }
+    { message: /must not use mutable main\/latest image tags/ }
   );
 });
 
-test("artifact oracle mutation-proof: cross-lineage tag mismatch between reference and web", () => {
-  assert.throws(
-    () =>
-      assertSourceArtifactsConsistent(
-        "synthetic regression input",
-        [
-          "ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a",
-          `ghcr.io/pdp-connect/pdpp/web:${UNVERIFIED_ALTERNATE_TAG}`,
-        ].join("\n")
-      ),
-    { message: UNVERIFIED_ALTERNATE_TAG_RE }
-  );
+test("artifact oracle mutation-proof: friend-facing secret block with a stale image override", () => {
+  const mutated = [
+    "```sh",
+    "printf 'PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:sha-cc07e3a\\nPDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\",
+    '  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env',
+    "```",
+  ].join("\n");
+  assert.throws(() => assertSourceArtifactsConsistent("synthetic regression input", mutated), {
+    message: /silently defeat that pin/,
+  });
 });
 
-test("artifact oracle mutation-proof: unknown repository under the same org is rejected", () => {
-  assert.throws(
-    () =>
-      assertSourceArtifactsConsistent(
-        "synthetic regression input",
-        "ghcr.io/pdp-connect/pdpp/railway-core:sha-cc07e3a"
-      ),
-    { message: UNKNOWN_REPOSITORY_RE }
+test("artifact oracle allows a developer-fallback image override outside a friend-facing secret block", () => {
+  // PDPP_NEKO_IMAGE=pdpp-neko:local is explicitly documented as a
+  // developer-only fallback, never bundled with owner-password/encryption
+  // secret generation — it must NOT trip the friend-path guard above.
+  assert.doesNotThrow(() =>
+    assertSourceArtifactsConsistent("synthetic regression input", "PDPP_NEKO_IMAGE=pdpp-neko:local")
   );
 });
 
