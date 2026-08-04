@@ -7,12 +7,20 @@
 //
 // The workflow proves the quickstart by running the SAME commands the docs
 // tell an operator to run. That guarantee only holds if the workflow keeps
-// pointing at the real doc anchors/pinned commit and keeps running on all
-// three OSes this repo claims to support — a silent edit to any of those
-// (a renamed anchor, a dropped matrix entry, an unbumped pinned SHA) would
-// make the workflow either fail opaquely or, worse, keep passing while
-// testing something other than what the docs say. This check fails fast and
-// specifically instead.
+// pointing at the real doc anchors and keeps running on all three OSes this
+// repo claims to support — a silent edit to any of those (a renamed anchor,
+// a dropped matrix entry) would make the workflow either fail opaquely or,
+// worse, keep passing while testing something other than what the docs say.
+// This check fails fast and specifically instead.
+//
+// The doc converged on ONE stable release-asset URL
+// (https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml,
+// see docs/operator/selfhost-quickstart.md history) instead of a
+// hand-copied commit-SHA-pinned raw URL — there is no longer a
+// PDPP_QUICKSTART_COMMIT pin to bind here; the binding this check enforces
+// instead is that both platform fetch blocks target that exact same stable
+// URL, so a future edit that lets one block drift onto a different URL
+// (a stale raw-fetch, a mistyped release path) fails loudly.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -31,7 +39,7 @@ const REQUIRED_MATRIX_OSES = ["ubuntu-latest", "macos-latest", "windows-latest"]
 const MATRIX_OS_LIST_PATTERNS = new Map(
   REQUIRED_MATRIX_OSES.map((os) => [os, new RegExp(`^\\s*os:\\s*\\[[^\\]]*\\b${os}\\b`, "m")])
 );
-const QUICKSTART_COMMIT_PATTERN = /PDPP_QUICKSTART_COMMIT:\s*(\S+)/;
+const STABLE_RELEASE_BUNDLE_URL = "https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml";
 const SH_FETCH_URL_PATTERN = /```sh\nmkdir pdpp && cd pdpp\ncurl -fsSLO (\S+)\n```/;
 const POWERSHELL_FETCH_URL_PATTERN = /```powershell\nmkdir pdpp; cd pdpp\ncurl\.exe -fsSLO (\S+)\n```/;
 
@@ -45,22 +53,10 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
     }
   }
 
-  const commitMatch = workflowSource.match(QUICKSTART_COMMIT_PATTERN);
-  if (commitMatch) {
-    const [, pinnedCommit] = commitMatch;
-    if (!quickstartDocSource.includes(String(pinnedCommit))) {
-      findings.push({
-        detail: `friend-os-matrix.yml pins commit ${pinnedCommit}, which no longer appears in docs/operator/selfhost-quickstart.md — the workflow's pin has drifted from the doc's pin`,
-      });
-    }
-  } else {
-    findings.push({ detail: "friend-os-matrix.yml is missing the PDPP_QUICKSTART_COMMIT pin" });
-  }
-
   const requiredAnchors = [
     "macOS and Linux (bash or zsh):",
     "Windows PowerShell (the block above cannot work there",
-    "### 1. Fetch the blessed compose stack",
+    "### 1. Fetch the released compose bundle",
     "On **Windows PowerShell**, bare",
   ];
   for (const anchor of requiredAnchors) {
@@ -85,15 +81,18 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
   const powershellFetchMatch = quickstartDocSource.match(POWERSHELL_FETCH_URL_PATTERN);
   if (!shFetchMatch) {
     findings.push({ detail: "docs/operator/selfhost-quickstart.md is missing the sh Compose-fetch URL under step 1" });
+  } else if (shFetchMatch[1] !== STABLE_RELEASE_BUNDLE_URL) {
+    findings.push({
+      detail: `docs/operator/selfhost-quickstart.md sh fetch URL (${shFetchMatch[1]}) is not the one stable release-asset URL (${STABLE_RELEASE_BUNDLE_URL}) — every friend-facing fetch block must target that exact same stable asset, not a commit/tag-pinned raw URL`,
+    });
   }
   if (!powershellFetchMatch) {
     findings.push({
       detail: "docs/operator/selfhost-quickstart.md is missing the powershell Compose-fetch URL under step 1",
     });
-  }
-  if (shFetchMatch && powershellFetchMatch && shFetchMatch[1] !== powershellFetchMatch[1]) {
+  } else if (powershellFetchMatch[1] !== STABLE_RELEASE_BUNDLE_URL) {
     findings.push({
-      detail: `docs/operator/selfhost-quickstart.md sh fetch URL (${shFetchMatch[1]}) and powershell fetch URL (${powershellFetchMatch[1]}) point to different sources — the two platform blocks must fetch the exact same pinned ref and target file`,
+      detail: `docs/operator/selfhost-quickstart.md powershell fetch URL (${powershellFetchMatch[1]}) is not the one stable release-asset URL (${STABLE_RELEASE_BUNDLE_URL}) — every friend-facing fetch block must target that exact same stable asset, not a commit/tag-pinned raw URL`,
     });
   }
 

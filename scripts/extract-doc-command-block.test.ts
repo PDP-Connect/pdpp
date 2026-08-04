@@ -21,8 +21,10 @@ const OPENSSL_HEX_PATTERN = /openssl rand -hex 32/;
 const ENV_REDIRECT_PATTERN = /> \.env/;
 const RANDOM_NUMBER_GENERATOR_PATTERN = /RandomNumberGenerator/;
 const SET_CONTENT_ASCII_PATTERN = /Set-Content -Path \.env -Encoding ascii/;
-const COMPOSE_FETCH_URL_PATTERN = /curl -fsSLO https:\/\/raw\.githubusercontent\.com\/PDP-Connect\/pdpp\//;
-const COMPOSE_FILE_PATH_PATTERN = /deploy\/docker\/docker-compose\.yml/;
+const COMPOSE_FETCH_URL_PATTERN = /curl -fsSLO https:\/\/github\.com\/PDP-Connect\/pdpp\/releases\/latest\/download\//;
+const POWERSHELL_COMPOSE_FETCH_URL_PATTERN =
+  /curl\.exe -fsSLO https:\/\/github\.com\/PDP-Connect\/pdpp\/releases\/latest\/download\//;
+const COMPOSE_FILE_PATH_PATTERN = /docker-compose\.yml/;
 
 test("extractFencedBlockAfterAnchor returns the fenced body after the anchor line", () => {
   const source = ["intro text", "### Heading", "some prose", "```sh", "echo one", "echo two", "```", "trailing"].join(
@@ -62,12 +64,22 @@ test("live docs: Windows PowerShell secret-generation block is present under its
   assert.match(block, SET_CONTENT_ASCII_PATTERN);
 });
 
-test("live docs: Compose-fetch block is present under the Lane A fetch heading", () => {
+test("live docs: sh Compose-fetch block is present under the Lane A fetch heading", () => {
   const block = extractDocCommandBlock(
     "docs/operator/selfhost-quickstart.md",
-    "### 1. Fetch the blessed compose stack",
+    "### 1. Fetch the released compose bundle",
     "sh"
   );
   assert.match(block, COMPOSE_FETCH_URL_PATTERN);
+  assert.match(block, COMPOSE_FILE_PATH_PATTERN);
+});
+
+test("live docs: powershell Compose-fetch block is present under its anchor", () => {
+  const block = extractDocCommandBlock(
+    "docs/operator/selfhost-quickstart.md",
+    "On **Windows PowerShell**, bare",
+    "powershell"
+  );
+  assert.match(block, POWERSHELL_COMPOSE_FETCH_URL_PATTERN);
   assert.match(block, COMPOSE_FILE_PATH_PATTERN);
 });

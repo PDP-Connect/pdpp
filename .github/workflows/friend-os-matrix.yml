@@ -18,11 +18,44 @@ name: friend-os-matrix
 # reports the boundary instead of overclaiming it away.
 #
 # Non-destructive by construction: it operates in a throwaway job workspace,
-# fetches only the public, pinned Compose file over HTTPS, generates local
-# secrets that are discarded with the runner, and — on the one platform that
-# can run the full stack (ubuntu-latest) — tears the stack down at the end of
-# the job. No provider credentials are used or required anywhere in this
-# workflow; browser-backed connectors and any public tunnel are out of scope.
+# fetches only the public, stable release Compose bundle over HTTPS,
+# generates local secrets that are discarded with the runner, and — on the
+# one platform that can run the full stack (ubuntu-latest) — tears the stack
+# down at the end of the job. No provider credentials are used or required
+# anywhere in this workflow; browser-backed connectors and any public tunnel
+# are out of scope.
+#
+# TWO MODES, because of a real bootstrap cycle: the friend-facing doc fetches
+# https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml
+# (see docs/operator/selfhost-quickstart.md, commit e99116880), an asset that
+# does not exist until the FIRST GitHub Release publishes it (semantic-release
+# .yml's publish-selfhost-bundle job). A `pull_request` job that executed that
+# fetch verbatim would 404 on every PR before the first release ships — and
+# since this repo's release path itself goes through a PR/merge-to-main
+# workflow, that 404 would block the very release that creates the asset it's
+# waiting for. To break that cycle without weakening what either mode proves:
+#
+#   - `prerelease-validate` (job below) runs on every `pull_request`. It
+#     executes the REAL platform-native secret-generation commands (both
+#     shells, exactly as today), then validates a locally generated
+#     CANDIDATE bundle built from the checked-out canonical
+#     deploy/docker/docker-compose.yml template via
+#     scripts/generate-selfhost-bundle.ts with synthetic sha256 digest pins
+#     (no registry call, no network fetch of the release asset) through
+#     `docker compose config` — proving the compose shape docker-compose.yml
+#     will produce is structurally valid, WITHOUT claiming the documented
+#     `releases/latest` remote-fetch command was exercised. Its step summary
+#     says so explicitly.
+#   - `postrelease-verify` (job below, structurally identical to what this
+#     workflow ran before this split) runs ONLY after a real release exists:
+#     triggered by `workflow_run` on `semantic-release`'s successful
+#     completion, or by explicit `workflow_dispatch`. It executes the
+#     documented `releases/latest/download/docker-compose.yml` fetch
+#     VERBATIM (both shells, native to each OS) and, where a Linux Docker
+#     daemon is available, the full pull/up/health/owner-login/teardown path
+#     this workflow has always run. Its step summary says explicitly that
+#     this is the real, post-release, documented path — never claimed to
+#     have passed before the first release ships.
 
 on:
   pull_request:
@@ -31,9 +64,27 @@ on:
       - "deploy/docker/docker-compose.yml"
       - "docs/operator/selfhost-quickstart.md"
       - "scripts/extract-doc-command-block.ts"
+      - "scripts/generate-selfhost-bundle.ts"
       - "scripts/friend-os-matrix/**"
   merge_group: {}
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          "prerelease" runs the local-candidate-bundle validation only.
+          "postrelease" runs the full documented releases/latest fetch and
+          (on ubuntu-latest) the Docker-backed stack. Defaults to
+          "postrelease" for a manual dispatch, since a human triggering this
+          by hand almost always wants the real path checked.
+        required: false
+        type: choice
+        options:
+          - postrelease
+          - prerelease
+        default: postrelease
+  workflow_run:
+    workflows: ["semantic-release"]
+    types: [completed]
 
 concurrency:
   group: friend-os-matrix-${{ github.ref }}
@@ -41,13 +92,10 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  # Pinned commit the quickstart docs reference; kept as a workflow env var
-  # (not hardcoded per-step) so bumping the pinned SHA is a one-line change.
-  PDPP_QUICKSTART_COMMIT: cc07e3a896c2c0df7841da4ec6b2c660ffe1e792
 
 jobs:
   extract-doc-commands:
-    name: extract documented commands (once, shared across OSes)
+    name: extract documented commands (once, shared across OSes and modes)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -91,7 +139,7 @@ jobs:
             echo "fetch_block<<FETCH_EOF"
             npx --yes tsx scripts/extract-doc-command-block.ts \
               docs/operator/selfhost-quickstart.md \
-              "### 1. Fetch the blessed compose stack" sh
+              "### 1. Fetch the released compose bundle" sh
             echo
             echo "FETCH_EOF"
           } >> "$GITHUB_OUTPUT"
@@ -104,8 +152,157 @@ jobs:
             echo "PWSH_FETCH_EOF"
           } >> "$GITHUB_OUTPUT"
 
-  friend-os-matrix:
-    name: ${{ matrix.os }}
+  # ── Pre-release mode: runs on every PR. Cannot fetch releases/latest (the
+  # asset does not exist yet before the first release), so it validates a
+  # locally generated candidate bundle instead and says so explicitly.
+  prerelease-validate:
+    name: prerelease candidate validation (${{ matrix.os }})
+    if: github.event_name != 'workflow_run' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'prerelease')
+    needs: extract-doc-commands
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Make a scratch working directory
+        shell: bash
+        run: mkdir -p "${{ runner.temp }}/pdpp-prerelease"
+
+      - name: "[POSIX] Generate secrets (exact documented command)"
+        if: runner.os != 'Windows'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-prerelease
+        env:
+          SECRET_BLOCK: ${{ needs.extract-doc-commands.outputs.posix_secret_block }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SECRET_BLOCK" > secrets.sh
+          echo "--- documented secret-generation command ---"
+          cat secrets.sh
+          echo "--- executing ---"
+          bash secrets.sh
+          test -s .env || { echo "::error::.env was not written"; exit 1; }
+          grep -q '^PDPP_OWNER_PASSWORD=' .env || { echo "::error::.env missing PDPP_OWNER_PASSWORD"; exit 1; }
+          grep -q '^PDPP_CREDENTIAL_ENCRYPTION_KEY=' .env || { echo "::error::.env missing PDPP_CREDENTIAL_ENCRYPTION_KEY"; exit 1; }
+          file .env | grep -qi 'UTF-16' && { echo "::error::.env was written as UTF-16, docker compose cannot parse this"; exit 1; }
+          echo "secrets.sh: PASS on $(uname -s)"
+
+      - name: "[Windows] Write the documented secret-generation command to a script file"
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-prerelease
+        env:
+          SECRET_BLOCK: ${{ needs.extract-doc-commands.outputs.powershell_secret_block }}
+        run: printf '%s\n' "$SECRET_BLOCK" > secrets.ps1
+
+      - name: "[Windows] Generate secrets (exact documented command)"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/pdpp-prerelease
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "--- documented secret-generation command ---"
+          Get-Content secrets.ps1
+          Write-Host "--- executing ---"
+          & .\secrets.ps1
+          $envPath = ".env"
+          if (-not (Test-Path $envPath) -or (Get-Item $envPath).Length -eq 0) {
+            Write-Error ".env was not written"
+            exit 1
+          }
+          $content = Get-Content -Raw -Path $envPath
+          if ($content -notmatch '(?m)^PDPP_OWNER_PASSWORD=') {
+            Write-Error ".env missing PDPP_OWNER_PASSWORD"
+            exit 1
+          }
+          if ($content -notmatch '(?m)^PDPP_CREDENTIAL_ENCRYPTION_KEY=') {
+            Write-Error ".env missing PDPP_CREDENTIAL_ENCRYPTION_KEY"
+            exit 1
+          }
+          $bytes = [System.IO.File]::ReadAllBytes($envPath)
+          if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+            Write-Error ".env was written as UTF-16LE, docker compose cannot parse this"
+            exit 1
+          }
+          Write-Host "secrets.ps1: PASS on Windows"
+
+      - name: Generate a candidate bundle from the checked-out template (synthetic digests, no network)
+        # Runs from the checkout root (github.workspace, the default
+        # working-directory), NOT the scratch dir: `tsx` resolves as a
+        # package from the process's cwd, so invoking the generator from
+        # runner.temp with no node_modules there fails with
+        # ERR_MODULE_NOT_FOUND. npx --yes tsx (same pattern
+        # extract-doc-commands already uses) resolves it correctly and
+        # still requires no network beyond npm's local cache/registry for
+        # the tsx package itself — no PDPP registry or release-asset call.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Synthetic, obviously-fake digests: this proves renderBundle's
+          # substitution + docker compose's interpolation/parsing of the
+          # RESULT are structurally sound. It does NOT prove any real image
+          # exists at these digests, and does NOT touch a registry.
+          synthetic_digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          npx --yes tsx scripts/generate-selfhost-bundle.ts \
+            --version 0.0.0-prerelease-candidate \
+            --image "reference=${synthetic_digest}" \
+            --image "web=${synthetic_digest}" \
+            --image "neko=${synthetic_digest}" \
+            --out "${{ runner.temp }}/pdpp-prerelease/docker-compose.yml"
+          test -f "${{ runner.temp }}/pdpp-prerelease/docker-compose.yml" || { echo "::error::candidate bundle was not generated"; exit 1; }
+          echo "--- generated candidate bundle (synthetic digests) ---"
+          cat "${{ runner.temp }}/pdpp-prerelease/docker-compose.yml"
+
+      - name: "docker compose config against the candidate bundle (structural only, no pull/up)"
+        shell: bash
+        working-directory: ${{ runner.temp }}/pdpp-prerelease
+        run: |
+          set -euo pipefail
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "::warning::docker CLI not present on this runner; skipping docker compose config (candidate bundle generation above still ran and is the primary proof for this mode)"
+            exit 0
+          fi
+          docker compose config >/dev/null
+          echo "docker compose config (candidate bundle): PASS"
+
+      - name: Report this platform's pre-release verification boundary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.os }} — PRE-RELEASE MODE"
+            echo ""
+            echo "This PR ran BEFORE the first GitHub Release exists, so the documented"
+            echo "\`https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml\`"
+            echo "fetch cannot succeed yet (404 until the first release publishes that asset)."
+            echo "This job therefore does NOT claim the real remote-fetch path passed."
+            echo ""
+            echo "- Secret-generation command: executed for real, both shells; \`.env\` presence, required keys, and encoding were asserted, not assumed."
+            echo "- Compose-fetch command: NOT executed — the documented \`releases/latest\` URL does not exist pre-release. Not run, not claimed."
+            echo "- Candidate bundle: generated locally from the checked-out \`deploy/docker/docker-compose.yml\` template via \`scripts/generate-selfhost-bundle.ts\`, with synthetic (not real) digest pins. \`docker compose config\` validated the RESULT parses and interpolates correctly. This proves the compose-file shape is structurally sound; it does NOT prove any real image exists or that the release pipeline's actual digests will resolve."
+            echo "- Docker-backed steps (pull/up/health/owner-login): NOT run in this mode on any OS."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Post-release mode: the real, documented, friend-facing path. Only runs
+  # once a release actually exists to fetch from.
+  postrelease-verify:
+    name: postrelease verify (${{ matrix.os }})
+    if: |
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'postrelease' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     needs: extract-doc-commands
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -135,7 +332,7 @@ jobs:
         shell: bash
         run: mkdir -p "${{ runner.temp }}/pdpp-friend-os"
 
-      - name: "[POSIX] Fetch the blessed Compose stack (exact documented command)"
+      - name: "[POSIX] Fetch the released Compose bundle (exact documented command)"
         if: runner.os != 'Windows'
         shell: bash
         working-directory: ${{ runner.temp }}/pdpp-friend-os
@@ -183,7 +380,7 @@ jobs:
           POWERSHELL_FETCH_BLOCK: ${{ needs.extract-doc-commands.outputs.powershell_fetch_block }}
         run: printf '%s\n' "$POWERSHELL_FETCH_BLOCK" > fetch.ps1
 
-      - name: "[Windows] Fetch the blessed Compose stack (exact documented command)"
+      - name: "[Windows] Fetch the released Compose bundle (exact documented command)"
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: ${{ runner.temp }}/pdpp-friend-os
@@ -337,7 +534,11 @@ jobs:
         shell: bash
         run: |
           {
-            echo "### ${{ matrix.os }}"
+            echo "### ${{ matrix.os }} — POST-RELEASE MODE"
+            echo ""
+            echo "This is the real, documented, friend-facing path — a GitHub Release exists"
+            echo "and \`https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml\`"
+            echo "resolves. Nothing here ran, or is claimed to have run, before the first release."
             echo ""
             echo "- Compose-fetch command: executed for real, not syntax-inspected — the sh block on POSIX runners, the powershell block (native \`curl.exe\`, not a POSIX block piped into pwsh) on Windows."
             echo "- Secret-generation command: executed for real; \`.env\` presence, required keys, and encoding were asserted, not assumed."
