@@ -35,6 +35,41 @@ test("default scrub rules redact deterministic PII patterns", () => {
   assert.doesNotMatch(scrubbed, /123 Private Oak Street/);
 });
 
+test("default scrub rules redact street addresses regardless of case", () => {
+  // Regression test: retail sites (e.g. Amazon order/shipping pages) commonly
+  // render addresses in ALL CAPS. The street-address rule previously listed
+  // suffixes in title case only and had no `i` flag, so an uppercase address
+  // like this one passed through scrubbing untouched.
+  const raw = [
+    "Title case: 7710 Jackson Graham Dr, Austin, TX 78701-1234",
+    "Upper case: 7710 JACKSON GRAHAM DR, AUSTIN, TX 78701-1234",
+    "Mixed case: 7710 jackson Graham dR, Austin, TX 78701",
+  ].join("\n");
+
+  const scrubbed = applyScrubRules(raw, defaultScrubRules, "all");
+
+  const redactedCount = scrubbed.match(/\[REDACTED_ADDRESS\]/g)?.length ?? 0;
+  assert.equal(redactedCount, 3);
+
+  assert.doesNotMatch(scrubbed, /7710 Jackson Graham Dr/);
+  assert.doesNotMatch(scrubbed, /7710 JACKSON GRAHAM DR/);
+  assert.doesNotMatch(scrubbed, /7710 jackson Graham dR/);
+});
+
+test("default scrub rules redact an uppercase address inside an HTML text node", () => {
+  // Mirrors the DOM-capture shape that leaked in production: an address
+  // rendered upper-case inside a labelled shipping-address element, with no
+  // "Address:" prefix for the deterministic rule to key off of.
+  const raw =
+    '<div data-component="shippingAddress"><span class="a-list-item"> 7710 JACKSON GRAHAM DR, AUSTIN, TX 78701-1234 </span></div>';
+
+  const scrubbed = applyScrubRules(raw, defaultScrubRules, "html");
+
+  assert.match(scrubbed, /\[REDACTED_ADDRESS\]/);
+  assert.doesNotMatch(scrubbed, /7710 JACKSON GRAHAM DR/);
+  assert.match(scrubbed, /data-component="shippingAddress"/);
+});
+
 test("default scrub rules preserve JSON shape", () => {
   const raw = JSON.stringify({
     id: "order-1",

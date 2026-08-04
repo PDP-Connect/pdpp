@@ -63,15 +63,28 @@ export const defaultScrubRules: readonly ScrubRule[] = [
   },
   // US street addresses. Preserve surrounding markup/JSON but replace the
   // street line itself; city/state/ZIP often leak enough to identify a person.
+  // Case-insensitive: retail sites (e.g. Amazon order pages) commonly render
+  // shipping addresses in ALL CAPS, and a case-sensitive title-case-only
+  // suffix list let those addresses pass through unredacted (see incident
+  // notes in fixture-scrubber docs).
   {
     pattern:
-      /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s+(?:Apartment|Avenue|Boulevard|Circle|Court|Drive|Lane|Parkway|Place|Road|Street|Suite|Unit|Apt|Ave|Blvd|Cir|Ct|Dr|Ln|Pkwy|Pl|Rd|St|Way)\.?(?:\s+(?:Apartment|Suite|Unit|Apt|#)\s*[A-Za-z0-9-]+)?(?:,\s*[A-Za-z .'-]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)?/g,
+      /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s+(?:Apartment|Avenue|Boulevard|Circle|Court|Drive|Lane|Parkway|Place|Road|Street|Suite|Unit|Apt|Ave|Blvd|Cir|Ct|Dr|Ln|Pkwy|Pl|Rd|St|Way)\.?(?:\s+(?:Apartment|Suite|Unit|Apt|#)\s*[A-Za-z0-9-]+)?(?:,\s*[A-Za-z .'-]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)?/gi,
     replacement: "[REDACTED_ADDRESS]",
     scope: "all",
   },
   // Names only when keyed/labeled as names. Broad free-text name detection is
   // intentionally left to future semantic review because false positives can
   // erase parser-relevant content.
+  //
+  // WARNING: this means a bare name inside an HTML text node (no "name:" or
+  // "ship to:" label, no JSON key) is NOT redacted by this rule and will
+  // survive scrubbing verbatim. This is the common case for DOM-capture
+  // connectors (e.g. a name rendered in a <span> or <h5> with no adjacent
+  // label). Deterministic scrubbing alone is NOT sufficient for HTML/DOM
+  // fixtures; the human review pass (or a structured LLM-assisted redaction
+  // plan, see connector-authoring-guide.md) is mandatory before committing
+  // any DOM-sourced scrubbed fixture, not merely recommended.
   {
     pattern:
       /(\b(?:full\s*name|customer\s*name|cardholder\s*name|recipient\s*name|ship\s*to|bill\s*to|name)\s*[:=]\s*)(["']?)([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3})(["']?)/gi,
