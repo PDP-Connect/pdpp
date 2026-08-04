@@ -37,9 +37,7 @@ export interface Finding {
 }
 
 const REQUIRED_MATRIX_OSES = ["ubuntu-latest", "macos-latest", "windows-latest"];
-const MATRIX_OS_LIST_PATTERNS = new Map(
-  REQUIRED_MATRIX_OSES.map((os) => [os, new RegExp(`^\\s*os:\\s*\\[[^\\]]*\\b${os}\\b`, "m")])
-);
+const MATRIX_OS_LIST_LINE_PATTERN = /^\s*os:\s*\[([^\]]*)\]/gm;
 const STABLE_RELEASE_BUNDLE_URL = "https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml";
 const SH_FETCH_URL_PATTERN = /```sh\nmkdir pdpp && cd pdpp\ncurl -fsSLO (\S+)\n```/;
 const POWERSHELL_FETCH_URL_PATTERN = /```powershell\nmkdir pdpp; cd pdpp\ncurl\.exe -fsSLO (\S+)\n```/;
@@ -87,15 +85,19 @@ const REQUIRED_TEST_COMMANDS = [
   "pnpm friend-journey:acceptance:test",
 ];
 
-// Extract pull_request.paths block from YAML
+// Extract pull_request.paths block from YAML. Only uncommented `- "..."`
+// list entries count as authoritative; a path moved into a `#` comment
+// (even inside the block) is not bound to the workflow trigger anymore.
 function extractPullRequestPaths(workflowSource: string): string[] {
   const match = workflowSource.match(/pull_request:\s*paths:\s*([\s\S]*?)(?=\n  \w|$)/);
   if (!match || !match[1]) return [];
   const pathsBlock = match[1];
   const paths: string[] = [];
-  const pathMatches = pathsBlock.matchAll(/- "([^"]+)"/g);
-  for (const m of pathMatches) {
-    if (m[1]) paths.push(m[1]);
+  for (const line of pathsBlock.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("#")) continue;
+    const entryMatch = trimmed.match(/^- "([^"]+)"$/);
+    if (entryMatch?.[1]) paths.push(entryMatch[1]);
   }
   return paths;
 }
@@ -135,8 +137,15 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
   const permissionsBlock = extractPermissionsBlock(workflowSource);
   if (!permissionsBlock) {
     findings.push({ detail: "missing workflow-level permissions: block" });
-  } else if (!permissionsBlock.includes("contents: read")) {
-    findings.push({ detail: "permissions block is missing 'contents: read'" });
+  } else {
+    // Check for uncommented "contents: read"
+    const hasUncommented = permissionsBlock.split("\n").some((line) => {
+      const trimmed = line.trim();
+      return trimmed === "contents: read" && !line.startsWith("#");
+    });
+    if (!hasUncommented) {
+      findings.push({ detail: "permissions block is missing 'contents: read'" });
+    }
   }
 
   // Check workflow_run scoping (block-level)
@@ -162,9 +171,18 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
   if (!testRunStep) {
     findings.push({ detail: "extract-doc-commands job is missing the 'Run friend-readiness tests' step" });
   } else {
-    // Check all required test commands within test step
+    // Check all required test commands within test step. A command counts
+    // only if some uncommented line matches it exactly (after trimming) —
+    // a `#`-commented line, or a different-but-overlapping command
+    // (e.g. "check" as a substring of "check:test"), must not count.
+    const activeLines = new Set(
+      testRunStep
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((trimmed) => trimmed.length > 0 && !trimmed.startsWith("#"))
+    );
     for (const testCommand of REQUIRED_TEST_COMMANDS) {
-      if (!testRunStep.includes(testCommand)) {
+      if (!activeLines.has(testCommand)) {
         findings.push({
           detail: `test step is not running: "${testCommand}"`,
         });
@@ -177,10 +195,23 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
     findings.push({ detail: "extract-doc-commands job is not installing frozen dependencies" });
   }
 
-  for (const os of REQUIRED_MATRIX_OSES) {
-    const matrixListPattern = MATRIX_OS_LIST_PATTERNS.get(os);
-    if (!(matrixListPattern?.test(workflowSource) || workflowSource.includes(os))) {
+  // Every `os: [...]` matrix list in the workflow (one per matrix job) must
+  // itself carry all three required OSes — checking "somewhere in the file"
+  // would miss a job whose matrix silently dropped one, as long as another
+  // job's matrix still mentions it.
+  const matrixOsLists = [...workflowSource.matchAll(MATRIX_OS_LIST_LINE_PATTERN)].map((m) => m[1] ?? "");
+  if (matrixOsLists.length === 0) {
+    for (const os of REQUIRED_MATRIX_OSES) {
       findings.push({ detail: `workflow no longer runs on "${os}"` });
+    }
+  } else {
+    for (const [index, osList] of matrixOsLists.entries()) {
+      const entries = osList.split(",").map((entry) => entry.trim());
+      for (const os of REQUIRED_MATRIX_OSES) {
+        if (!entries.includes(os)) {
+          findings.push({ detail: `workflow no longer runs on "${os}" (matrix os: list #${index + 1})` });
+        }
+      }
     }
   }
 
