@@ -1,7 +1,9 @@
 /**
  * Verify shared sanitizer module is correctly exported via package.json.
+ * This test MUST fail if the export entry is removed from package.json,
+ * ensuring the export is actually load-bearing.
  */
-import { applySanitizationRegexes, redactLegacyInteractionString } from "../lib/legacy-interaction-sanitizer.ts";
+import { applySanitizationRegexes, redactLegacyInteractionString } from "pdpp-reference-implementation/lib/legacy-interaction-sanitizer";
 
 export default async function testLibExports() {
   // Test applySanitizationRegexes
