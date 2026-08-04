@@ -235,7 +235,7 @@ const Colophon = () => (
     <div style={{ textAlign: "right" }}>
       <div className="gutter">COLOPHON</div>
       <div className="t-mono" style={{ marginTop: 8, color: "var(--ink)" }}>
-        vana-com/pdpp
+        PDP-Connect/pdpp
       </div>
       <div
         className="t-mono"

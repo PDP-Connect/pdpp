@@ -165,7 +165,7 @@ Before adding or unprivatizing a public package:
 - Bootstrap the npm package under owner control if npm requires first-package
   creation before trusted publisher setup.
 - Configure npm trusted publishing for
-  `vana-com/pdpp/.github/workflows/semantic-release.yml` for that exact package.
+  `PDP-Connect/pdpp/.github/workflows/semantic-release.yml` for that exact package.
 - Run `pnpm release:local` (the digest-pinned CLI/read-core candidate matrix),
   the package's `verify` script, and
   `openspec validate <change> --strict`.

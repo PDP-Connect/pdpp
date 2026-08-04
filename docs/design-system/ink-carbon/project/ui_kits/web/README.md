@@ -1,6 +1,6 @@
 # PDPP Web UI Kit
 
-The PDPP marketing + reference site kit. Every surface here is a high-fidelity cosmetic recreation of a component shipped in `apps/web` of the `vana-com/pdpp` monorepo.
+The PDPP marketing + reference site kit. Every surface here is a high-fidelity cosmetic recreation of a component shipped in `apps/web` of the `PDP-Connect/pdpp` monorepo.
 
 ## Components
 
