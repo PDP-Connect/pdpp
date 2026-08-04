@@ -8,6 +8,7 @@
     "pdpp": "./cli/index.ts"
   },
   "exports": {
+    "./lib/legacy-interaction-sanitizer": "./lib/legacy-interaction-sanitizer.ts",
     "./reference-local-defaults": "./server/reference-local-defaults.ts",
     "./reference-topology": "./server/reference-topology.ts",
     "./connection-setup-plan": "./server/connection-setup-plan.ts",
