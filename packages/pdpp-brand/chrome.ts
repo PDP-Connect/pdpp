@@ -6,12 +6,15 @@ export interface SiteNavLink {
   readonly text: string;
 }
 
-// Public-site nav, in narrative order: what it is → the spec → the server you
-// can run → the live walkthrough. The owner console lives on its own deployed
-// origin and uses clean top-level routes; public-site navigation does not carry
-// an operator-console prefix.
+// Public-site nav: the spec, the implementations that realize it, and how the
+// standard changes. Matches the PDPP document register (DESIGN-SPEC.md):
+// Specification / Implementations / Participate. Sandbox remains reachable
+// from the homepage's doors list and from /reference, but is not a top-level
+// nav item — the concept's masthead carries exactly three links. The owner
+// console lives on its own deployed origin and uses clean top-level routes;
+// public-site navigation does not carry an operator-console prefix.
 export const siteNav: readonly SiteNavLink[] = [
-  { text: "Docs", link: "/docs" },
-  { text: "Host your own", link: "/reference" },
-  { text: "Sandbox", link: "/sandbox" },
+  { text: "Specification", link: "/docs" },
+  { text: "Implementations", link: "/reference" },
+  { text: "Participate", link: "/participate" },
 ];
