@@ -88,8 +88,8 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0
       '@xterm/xterm':
-        specifier: ^5.5.0
-        version: 5.5.0
+        specifier: ^6.0.0
+        version: 6.0.0
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -131,7 +131,7 @@ importers:
         version: 10.1.0(@types/react@19.2.17)(react@19.2.8)
       react-xtermjs:
         specifier: ^1.0.12
-        version: 1.0.12(@xterm/xterm@5.5.0)
+        version: 1.0.12(@xterm/xterm@6.0.0)
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
@@ -194,8 +194,8 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0
       '@xterm/xterm':
-        specifier: ^5.5.0
-        version: 5.5.0
+        specifier: ^6.0.0
+        version: 6.0.0
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -234,7 +234,7 @@ importers:
         version: 10.1.0(@types/react@19.2.17)(react@19.2.8)
       react-xtermjs:
         specifier: ^1.0.12
-        version: 1.0.12(@xterm/xterm@5.5.0)
+        version: 1.0.12(@xterm/xterm@6.0.0)
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
@@ -2764,8 +2764,8 @@ packages:
   '@xterm/addon-web-links@0.12.0':
     resolution: {integrity: sha512-4Smom3RPyVp7ZMYOYDoC/9eGJJJqYhnPLGGqJ6wOBfB8VxPViJNSKdgRYb8NpaM6YSelEKbA2SStD7lGyqaobw==}
 
-  '@xterm/xterm@5.5.0':
-    resolution: {integrity: sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A==}
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   '@zone-eu/mailsplit@5.4.14':
     resolution: {integrity: sha512-rz0FQOhN3Vq1XrSeSSa9+dPcaFbBxmQPjiZm6zS9oxdVHV7rOWIAYX3yP2YAUf0qBncY8CI+NogzPCmMVrMXcw==}
@@ -3692,8 +3692,8 @@ packages:
   flatbuffers@25.9.23:
     resolution: {integrity: sha512-MI1qs7Lo4Syw0EOzUl0xjs2lsoeqFku44KpngfIduHBYvzm8h2+7K8YMQh1JtVVVrUvhLpNwqVi4DERegUJhPQ==}
 
-  flatted@3.4.3:
-    resolution: {integrity: sha512-/zipXxyO6rGvuNGDiULY9MvEGSkb2gaG4GGH4ygMi0ZZzyMHdUZBmntJmx5x1G2VuPytCwGN4xsJP6cw+sK+vQ==}
+  flatted@3.4.4:
+    resolution: {integrity: sha512-5+ybhBZANEJxaH3X5evAFatUxLfEHSr7n6kYJ+1Qd0mUqr4eu9gIf6GDbWHf8RJijHrjjO8G+la14SlL2SeS1Q==}
 
   follow-redirects@1.16.0:
     resolution: {integrity: sha512-y5rN/uOsadFT/JfYwhxRS5R7Qce+g3zG97+JrtFZlC9klX/W5hD7iiLzScI4nZqUS7DNUdhPgw4xI8W2LuXlUw==}
@@ -8425,7 +8425,7 @@ snapshots:
 
   '@xterm/addon-web-links@0.12.0': {}
 
-  '@xterm/xterm@5.5.0': {}
+  '@xterm/xterm@6.0.0': {}
 
   '@zone-eu/mailsplit@5.4.14':
     dependencies:
@@ -9457,12 +9457,12 @@ snapshots:
 
   flat-cache@4.0.1:
     dependencies:
-      flatted: 3.4.3
+      flatted: 3.4.4
       keyv: 4.5.4
 
   flatbuffers@25.9.23: {}
 
-  flatted@3.4.3: {}
+  flatted@3.4.4: {}
 
   follow-redirects@1.16.0: {}
 
@@ -11416,9 +11416,9 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  react-xtermjs@1.0.12(@xterm/xterm@5.5.0):
+  react-xtermjs@1.0.12(@xterm/xterm@6.0.0):
     dependencies:
-      '@xterm/xterm': 5.5.0
+      '@xterm/xterm': 6.0.0
 
   react@19.2.8: {}
 
