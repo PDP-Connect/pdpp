@@ -9,7 +9,7 @@
 3. **Spent color.** Hue marks authorship and state, never decoration. Protocol ink on protocol-authored emphasis; human warmth only where the owner acts; state colors only inside endorsements.
 4. **Paper geometry.** Sheets, rows, and bands are square. Controls get a 2px ease (`--radius-control`) — the only rounding in the system.
 
-This system targets the surfaces shipped by `vana-com/pdpp`: the operator console (`apps/console`, dark), the hosted consent / device / owner pages (`reference-implementation/server/hosted-ui.js`, light), and the public site & docs.
+This system targets the surfaces shipped by `PDP-Connect/pdpp`: the operator console (`apps/console`, dark), the hosted consent / device / owner pages (`reference-implementation/server/hosted-ui.js`, light), and the public site & docs.
 
 ---
 
@@ -116,7 +116,7 @@ Folders:
 - `ui_kits/web/` — component kit (`kit.css`) + reference site components *(JSX components pending Ink Carbon restyle)*
 - `explorer/`, `labs/` — app-layer surfaces *(pending Ink Carbon restyle)*
 - `reinvention/` — the exploration history that led here (Rounds 1–3)
-- `reference/` — upstream source snapshots from `vana-com/pdpp` (`.txt`, not compiled)
+- `reference/` — upstream source snapshots from `PDP-Connect/pdpp` (`.txt`, not compiled)
 
 ## Caveats for iteration
 
