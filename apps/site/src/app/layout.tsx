@@ -4,11 +4,31 @@
 import { LAUNCH_COLORS, launchFoucGuardCss } from "@pdpp/brand/launch-colors";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
+import { IBM_Plex_Mono, Literata, Public_Sans } from "next/font/google";
 import { cookies } from "next/headers";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
 import { normalizeThemeChoice, THEME_KEY } from "@/components/theme/theme-state.ts";
 import { TooltipProvider } from "@/components/ui/tooltip.tsx";
 import "./globals.css";
+
+// PDPP concept document register fonts (home, docs, reference, participate).
+// See pdpp-concept.css — these CSS variables back --pdpp-concept-serif/sans/mono.
+const pdppSerif = Literata({
+  style: ["normal", "italic"],
+  subsets: ["latin"],
+  variable: "--font-pdpp-serif",
+  weight: ["300", "400", "600"],
+});
+const pdppDocSans = Public_Sans({
+  subsets: ["latin"],
+  variable: "--font-pdpp-doc-sans",
+  weight: ["400", "500", "600"],
+});
+const pdppDocMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  variable: "--font-pdpp-doc-mono",
+  weight: ["400", "500"],
+});
 
 export const metadata: Metadata = {
   description:
@@ -63,7 +83,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const htmlClassName = choice === "dark" ? "dark" : undefined;
 
   return (
-    <html className={htmlClassName} data-theme={choice} lang="en">
+    <html
+      className={`${htmlClassName ?? ""} ${pdppSerif.variable} ${pdppDocSans.variable} ${pdppDocMono.variable}`.trim()}
+      data-theme={choice}
+      lang="en"
+    >
       <head>
         {/* Anti-FOUC first-paint guard. This blocking inline <style> sets the
             html background to the right color BEFORE the external brand CSS

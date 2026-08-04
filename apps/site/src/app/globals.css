@@ -25,6 +25,9 @@
 @import "@demodesk/neko/dist/neko.css";
 /* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
 @import "@pdpp/brand/docs.css";
+/* PDPP concept document register (home, docs, reference, participate) — see pdpp-concept.css header. */
+@import "./pdpp-concept.css";
+@import "./pdpp-docs-concept.css";
 
 @custom-variant dark (
   &:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *)
