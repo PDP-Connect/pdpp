@@ -7,11 +7,12 @@
 //
 // The workflow proves the quickstart by running the SAME commands the docs
 // tell an operator to run. That guarantee only holds if the workflow keeps
-// pointing at the real doc anchors and keeps running on all three OSes this
-// repo claims to support — a silent edit to any of those (a renamed anchor,
-// a dropped matrix entry) would make the workflow either fail opaquely or,
-// worse, keep passing while testing something other than what the docs say.
-// This check fails fast and specifically instead.
+// pointing at the real doc anchors, keeps running on all three OSes this
+// repo claims to support, and keeps executing the friend-readiness tests
+// that guard the binding — a silent edit to any of those (a renamed anchor,
+// a dropped matrix entry, a removed test step) would make the workflow
+// either fail opaquely or, worse, keep passing while testing something
+// other than what the docs say. This check fails fast and specifically instead.
 //
 // The doc converged on ONE stable release-asset URL
 // (https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml,
@@ -43,8 +44,93 @@ const STABLE_RELEASE_BUNDLE_URL = "https://github.com/PDP-Connect/pdpp/releases/
 const SH_FETCH_URL_PATTERN = /```sh\nmkdir pdpp && cd pdpp\ncurl -fsSLO (\S+)\n```/;
 const POWERSHELL_FETCH_URL_PATTERN = /```powershell\nmkdir pdpp; cd pdpp\ncurl\.exe -fsSLO (\S+)\n```/;
 
+const REQUIRED_PULL_REQUEST_PATHS = [
+  ".github/workflows/friend-os-matrix.yml",
+  ".github/workflows/semantic-release.yml",
+  "package.json",
+  "pnpm-lock.yaml",
+  "apps/site/**",
+  "deploy/docker/**",
+  "docs/operator/selfhost-quickstart.md",
+  "docs/operator/friend-journey-acceptance.md",
+  "scripts/extract-doc-command-block.ts",
+  "scripts/extract-doc-command-block.test.ts",
+  "scripts/generate-selfhost-bundle.ts",
+  "scripts/check-friend-os-matrix-workflow.ts",
+  "scripts/check-friend-os-matrix-workflow.test.ts",
+  "scripts/friend-os-matrix/**",
+  "scripts/friend-journey-acceptance/**",
+];
+
+const REQUIRED_TEST_STEPS = [
+  "Run friend-readiness tests",
+  "Install frozen dependencies",
+];
+
+const REQUIRED_TEST_COMMANDS = [
+  "pnpm docker:release-matrix:check",
+  "pnpm docker:release-matrix:check:test",
+  "scripts/check-friend-os-matrix-workflow.test.ts",
+  "scripts/extract-doc-command-block.test.ts",
+  "pnpm docker:release-bundle:test",
+  "pnpm docker:release-bundle:verify-published:test",
+  "pnpm docker:release-bundle:publish-asset:test",
+  "pnpm --filter @pdpp/mcp-server build",
+  "pnpm --filter pdpp-site test",
+  "pnpm friend-journey:acceptance:test",
+];
+
 export function findWorkflowDocBindingIssues(workflowSource: string, quickstartDocSource: string): Finding[] {
   const findings: Finding[] = [];
+
+  // Check required pull_request paths
+  for (const path of REQUIRED_PULL_REQUEST_PATHS) {
+    if (!workflowSource.includes(path)) {
+      findings.push({ detail: `friend-os-matrix.yml pull_request.paths is missing required path: "${path}"` });
+    }
+  }
+
+  // Check workflow-level permissions
+  if (!workflowSource.includes("permissions:")) {
+    findings.push({ detail: "friend-os-matrix.yml is missing workflow-level permissions: block" });
+  } else if (!workflowSource.includes("contents: read")) {
+    findings.push({ detail: "friend-os-matrix.yml permissions block is missing 'contents: read'" });
+  }
+
+  // Check workflow_run main scoping
+  if (!workflowSource.includes("workflows: [\"semantic-release\"]")) {
+    findings.push({ detail: "friend-os-matrix.yml workflow_run is missing workflows: [\"semantic-release\"]" });
+  }
+  if (!workflowSource.includes("types: [completed]")) {
+    findings.push({ detail: "friend-os-matrix.yml workflow_run is missing types: [completed]" });
+  }
+  if (!workflowSource.includes("branches: [main]")) {
+    findings.push({
+      detail:
+        "friend-os-matrix.yml workflow_run is not scoped to branches: [main]; post-release verification should only run on main",
+    });
+  }
+
+  // Check required test steps
+  for (const testStep of REQUIRED_TEST_STEPS) {
+    if (!workflowSource.includes(testStep)) {
+      findings.push({ detail: `friend-os-matrix.yml extract-doc-commands job is missing the test step: "${testStep}"` });
+    }
+  }
+
+  // Check all required test commands are run
+  for (const testCommand of REQUIRED_TEST_COMMANDS) {
+    if (!workflowSource.includes(testCommand)) {
+      findings.push({
+        detail: `friend-os-matrix.yml test step is not running: "node --test ${testCommand}"`,
+      });
+    }
+  }
+
+  // Check frozen lockfile install
+  if (!workflowSource.includes("pnpm install --frozen-lockfile")) {
+    findings.push({ detail: "friend-os-matrix.yml is not installing frozen dependencies before running tests" });
+  }
 
   for (const os of REQUIRED_MATRIX_OSES) {
     const matrixListPattern = MATRIX_OS_LIST_PATTERNS.get(os);
