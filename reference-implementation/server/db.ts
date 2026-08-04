@@ -284,9 +284,10 @@ export function getSqliteStoreCacheIdentity(): string {
 }
 
 /**
- * Close the module-scoped database, if any. `initDb()` calls this before
- * opening a new one so tests that stop and restart the server on the same
- * dbPath release file locks cleanly.
+ * Close the module-scoped database, if any. Shutdown paths and test teardown
+ * call this explicitly so the process releases its WAL file locks cleanly.
+ *
+ * NOTE: `initDb()` deliberately does NOT call this. See `detachDb()` below.
  */
 export function closeDb(): void {
   if (db) {
@@ -297,6 +298,31 @@ export function closeDb(): void {
     }
     db = null;
   }
+  sqliteStoreCacheGeneration += 1;
+  sqliteStoreCacheIdentity = `sqlite:closed:${sqliteStoreCacheGeneration}`;
+}
+
+/**
+ * Drop the module-scoped reference to the current handle WITHOUT closing it,
+ * and advance the store-cache generation.
+ *
+ * `initDb()` used to call `closeDb()` here. That made booting a second server
+ * instance in one process silently close the FIRST instance's database: the
+ * first instance still held the handle `initDb` had returned to it, but the
+ * underlying connection was now closed, so every subsequent query on it threw
+ * `The database connection is not open`. On a personal-data server that is a
+ * cross-instance state-bleed defect, not merely a stability one.
+ *
+ * Detaching instead means instances cannot interfere: whoever holds a handle
+ * keeps a working handle, and each is responsible for closing its own. Two
+ * `better-sqlite3` connections to the same WAL file within one process
+ * coexist fine, so this does not reintroduce the startup lock contention that
+ * the original `closeDb()` call was guarding against — the sibling-process
+ * case that motivated it is handled by the busy-timeout/retry path, and real
+ * shutdown still calls `closeDb()` explicitly.
+ */
+function detachDb(): void {
+  db = null;
   sqliteStoreCacheGeneration += 1;
   sqliteStoreCacheIdentity = `sqlite:closed:${sqliteStoreCacheGeneration}`;
 }
@@ -4944,7 +4970,10 @@ function loadVectorExtension(raw: SqliteDatabase): VectorIndexKind {
 }
 
 export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHandle {
-  closeDb();
+  // Detach, don't close: a previously-returned handle belongs to whoever
+  // holds it. See `detachDb()` for why closing here was a cross-instance
+  // interference defect.
+  detachDb();
   const busyTimeoutMs = resolveSqliteBusyTimeoutMs(opts.busyTimeoutMs);
   const raw = new Database(path, { timeout: busyTimeoutMs }) as unknown as SqliteDatabase;
   sqliteStoreCacheGeneration += 1;
