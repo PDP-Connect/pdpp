@@ -80,10 +80,20 @@ const REQUIRED_TEST_COMMANDS = [
   "pnpm docker:release-bundle:test",
   "pnpm docker:release-bundle:verify-published:test",
   "pnpm docker:release-bundle:publish-asset:test",
+  "pnpm --filter @pdpp/read-core build",
   "pnpm --filter @pdpp/mcp-server build",
   "pnpm --filter pdpp-site test",
   "pnpm friend-journey:acceptance:test",
 ];
+
+// @pdpp/mcp-server imports @pdpp/read-core's built dist/index.js at runtime
+// (see packages/mcp-server/src/tools.ts), and friend-journey-acceptance
+// spawns the built MCP server — so read-core's build must run, and must run
+// before both consumers, or a clean install reproduces
+// ERR_MODULE_NOT_FOUND on packages/read-core/dist/index.js.
+const READ_CORE_BUILD_COMMAND = "pnpm --filter @pdpp/read-core build";
+const MCP_SERVER_BUILD_COMMAND = "pnpm --filter @pdpp/mcp-server build";
+const FRIEND_JOURNEY_TEST_COMMAND = "pnpm friend-journey:acceptance:test";
 
 // Extract pull_request.paths block from YAML. Only uncommented `- "..."`
 // list entries count as authoritative; a path moved into a `#` comment
@@ -175,18 +185,36 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
     // only if some uncommented line matches it exactly (after trimming) —
     // a `#`-commented line, or a different-but-overlapping command
     // (e.g. "check" as a substring of "check:test"), must not count.
-    const activeLines = new Set(
-      testRunStep
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((trimmed) => trimmed.length > 0 && !trimmed.startsWith("#"))
-    );
+    const activeLineList = testRunStep
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((trimmed) => trimmed.length > 0 && !trimmed.startsWith("#"));
+    const activeLines = new Set(activeLineList);
     for (const testCommand of REQUIRED_TEST_COMMANDS) {
       if (!activeLines.has(testCommand)) {
         findings.push({
           detail: `test step is not running: "${testCommand}"`,
         });
       }
+    }
+
+    // @pdpp/read-core's build must run before its two runtime consumers, or
+    // a clean install reproduces ERR_MODULE_NOT_FOUND on
+    // packages/read-core/dist/index.js (see comment on
+    // READ_CORE_BUILD_COMMAND above). Only check ordering when all three
+    // commands are present — a missing command is already reported above.
+    const readCoreIndex = activeLineList.indexOf(READ_CORE_BUILD_COMMAND);
+    const mcpServerIndex = activeLineList.indexOf(MCP_SERVER_BUILD_COMMAND);
+    const friendJourneyIndex = activeLineList.indexOf(FRIEND_JOURNEY_TEST_COMMAND);
+    if (readCoreIndex !== -1 && mcpServerIndex !== -1 && readCoreIndex > mcpServerIndex) {
+      findings.push({
+        detail: `"${READ_CORE_BUILD_COMMAND}" must run before "${MCP_SERVER_BUILD_COMMAND}" (mcp-server imports read-core's built dist at runtime)`,
+      });
+    }
+    if (readCoreIndex !== -1 && friendJourneyIndex !== -1 && readCoreIndex > friendJourneyIndex) {
+      findings.push({
+        detail: `"${READ_CORE_BUILD_COMMAND}" must run before "${FRIEND_JOURNEY_TEST_COMMAND}" (friend-journey spawns the built MCP server, which requires read-core's built dist)`,
+      });
     }
   }
 

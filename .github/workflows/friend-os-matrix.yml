@@ -153,6 +153,7 @@ jobs:
           pnpm docker:release-bundle:test
           pnpm docker:release-bundle:verify-published:test
           pnpm docker:release-bundle:publish-asset:test
+          pnpm --filter @pdpp/read-core build
           pnpm --filter @pdpp/mcp-server build
           pnpm --filter pdpp-site test
           pnpm friend-journey:acceptance:test

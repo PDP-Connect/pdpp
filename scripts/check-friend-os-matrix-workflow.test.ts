@@ -147,3 +147,47 @@ test("discriminating: permissions in comment but not in permissions block is cau
   assert.ok(hasMissing, "should detect permission removed from permissions block");
 });
 
+test("discriminating: missing @pdpp/read-core build command is caught", () => {
+  const workflow = REAL_WORKFLOW.replace(
+    "pnpm --filter @pdpp/read-core build",
+    "# pnpm --filter @pdpp/read-core build (was removed)"
+  );
+  const findings = findWorkflowDocBindingIssues(workflow, REAL_DOC);
+  const hasMissing = findings.some((f) => MISSING_TEST_COMMAND.test(f.detail) && f.detail.includes("read-core"));
+  assert.ok(hasMissing, "should detect read-core build command removed from test step");
+});
+
+test("discriminating: @pdpp/read-core build reordered after @pdpp/mcp-server build is caught", () => {
+  const workflow = REAL_WORKFLOW.replace(
+    "          pnpm docker:release-bundle:publish-asset:test\n" +
+      "          pnpm --filter @pdpp/read-core build\n" +
+      "          pnpm --filter @pdpp/mcp-server build\n",
+    "          pnpm docker:release-bundle:publish-asset:test\n" +
+      "          pnpm --filter @pdpp/mcp-server build\n" +
+      "          pnpm --filter @pdpp/read-core build\n"
+  );
+  const findings = findWorkflowDocBindingIssues(workflow, REAL_DOC);
+  const hasOrderingIssue = findings.some(
+    (f) => f.detail.includes("read-core") && f.detail.includes("must run before") && f.detail.includes("mcp-server")
+  );
+  assert.ok(hasOrderingIssue, "should detect read-core build running after mcp-server build");
+});
+
+test("discriminating: @pdpp/read-core build reordered after friend-journey acceptance test is caught", () => {
+  const workflow = REAL_WORKFLOW.replace(
+    "          pnpm --filter @pdpp/read-core build\n" +
+      "          pnpm --filter @pdpp/mcp-server build\n" +
+      "          pnpm --filter pdpp-site test\n" +
+      "          pnpm friend-journey:acceptance:test",
+    "          pnpm --filter @pdpp/mcp-server build\n" +
+      "          pnpm --filter pdpp-site test\n" +
+      "          pnpm friend-journey:acceptance:test\n" +
+      "          pnpm --filter @pdpp/read-core build"
+  );
+  const findings = findWorkflowDocBindingIssues(workflow, REAL_DOC);
+  const hasOrderingIssue = findings.some(
+    (f) => f.detail.includes("read-core") && f.detail.includes("must run before") && f.detail.includes("friend-journey")
+  );
+  assert.ok(hasOrderingIssue, "should detect read-core build running after friend-journey acceptance test");
+});
+
