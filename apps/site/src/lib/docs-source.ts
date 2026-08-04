@@ -6,22 +6,12 @@ import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
 import { docs } from "../../.source/server.ts";
 
 export const docsRoute = "/docs";
-export const docsImageRoute = "/og/docs";
 
 export const source = loader({
   baseUrl: docsRoute,
   plugins: [lucideIconsPlugin()],
   source: docs.toFumadocsSource(),
 });
-
-export function getPageImage(page: InferPageType<typeof source>) {
-  const segments = [...page.slugs, "image.png"];
-
-  return {
-    segments,
-    url: `${docsImageRoute}/${segments.join("/")}`,
-  };
-}
 
 export function getPageMarkdownUrl(page: InferPageType<typeof source>) {
   return {

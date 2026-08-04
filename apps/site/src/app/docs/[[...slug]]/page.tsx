@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
 import { getMDXComponents } from "@/components/mdx.tsx";
-import { getPageImage, getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
+import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 
 interface DocsPageProps {
   params: Promise<{
@@ -70,11 +70,11 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
     notFound();
   }
 
+  // No openGraph.images here on purpose: docs pages inherit the site-wide card
+  // from src/app/opengraph-image.tsx by route-segment inheritance. Advertising a
+  // per-page /og/docs/... URL previously overrode that inherited card with a 404.
   return {
     description: page.data.description,
-    openGraph: {
-      images: getPageImage(page).url,
-    },
     title: page.data.title,
   };
 }
