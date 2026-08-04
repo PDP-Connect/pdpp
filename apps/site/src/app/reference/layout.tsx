@@ -2,21 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ReactNode } from "react";
-import { SiteHeader } from "@/components/site-header.tsx";
+import { PdppConceptMasthead } from "@/components/pdpp-concept/masthead.tsx";
 
 export default function ReferenceLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col">
-      <header
-        className="sticky top-0 z-40 flex h-12 items-center px-5 md:px-6"
-        style={{
-          backdropFilter: "blur(8px)",
-          backgroundColor: "var(--background)",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
-        <SiteHeader currentLabel="Host your own" />
-      </header>
+    <div className="pdpp-concept flex min-h-screen flex-col">
+      <PdppConceptMasthead />
       {children}
     </div>
   );
