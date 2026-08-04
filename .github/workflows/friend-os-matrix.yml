@@ -87,6 +87,13 @@ on:
       - "scripts/check-friend-os-matrix-workflow.test.ts"
       - "scripts/friend-os-matrix/**"
       - "scripts/friend-journey-acceptance/**"
+      - "apps/console/**"
+      - "reference-implementation/**"
+      - "packages/cli/**"
+      - "packages/mcp-server/**"
+      - "packages/read-core/**"
+      - "packages/polyfill-connectors/**"
+      - "packages/reference-contract/**"
   merge_group: {}
   workflow_dispatch:
     inputs:

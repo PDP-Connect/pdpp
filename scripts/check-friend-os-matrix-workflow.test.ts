@@ -127,6 +127,36 @@ test("discriminating: required path in comment but not in pull_request.paths blo
   assert.ok(hasMissing, "should detect path removed from pull_request.paths block");
 });
 
+// The friend-facing journey depends on code in each of these directories
+// (the console UI, the reference implementation, the CLI/MCP-server/
+// read-core packages the MCP journey spawns, the connectors under test,
+// and the shared reference contract). Each one must independently trip the
+// pull_request.paths block-level check if commented out of the trigger —
+// not just be present anywhere in the file.
+const DEPENDENCY_BOUNDARY_TRIGGER_PATHS = [
+  "apps/console/**",
+  "reference-implementation/**",
+  "packages/cli/**",
+  "packages/mcp-server/**",
+  "packages/read-core/**",
+  "packages/polyfill-connectors/**",
+  "packages/reference-contract/**",
+];
+
+for (const triggerPath of DEPENDENCY_BOUNDARY_TRIGGER_PATHS) {
+  test(`discriminating: dependency-boundary trigger "${triggerPath}" in comment but not in pull_request.paths block is caught`, () => {
+    const workflow = REAL_WORKFLOW.replace(
+      `- "${triggerPath}"`,
+      `# - "${triggerPath}" (was commented out)`
+    );
+    const findings = findWorkflowDocBindingIssues(workflow, REAL_DOC);
+    const hasMissing = findings.some(
+      (f) => MISSING_PULL_REQUEST_PATH.test(f.detail) && f.detail.includes(triggerPath)
+    );
+    assert.ok(hasMissing, `should detect "${triggerPath}" removed from pull_request.paths block`);
+  });
+}
+
 test("discriminating: required test command in comment but not in test step is caught", () => {
   const workflow = REAL_WORKFLOW.replace(
     "pnpm docker:release-matrix:check",

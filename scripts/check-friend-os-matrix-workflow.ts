@@ -70,6 +70,13 @@ const REQUIRED_PULL_REQUEST_PATHS = [
   "scripts/check-friend-os-matrix-workflow.test.ts",
   "scripts/friend-os-matrix/**",
   "scripts/friend-journey-acceptance/**",
+  "apps/console/**",
+  "reference-implementation/**",
+  "packages/cli/**",
+  "packages/mcp-server/**",
+  "packages/read-core/**",
+  "packages/polyfill-connectors/**",
+  "packages/reference-contract/**",
 ];
 
 const REQUIRED_TEST_COMMANDS = [
