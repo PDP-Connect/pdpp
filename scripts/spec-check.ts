@@ -21,11 +21,64 @@ function syncSpecs(): void {
   });
 }
 
+// Optional extension profiles that are authored as site docs and have no root
+// counterpart by design. This list is NOT a local convenience: it mirrors the
+// ratified allowlist in
+//   openspec/specs/reference-implementation-governance/spec.md
+//   -> "Requirement: Public-site-only extension specs SHALL be limited to a named allowlist"
+// Adding an entry here without an OpenSpec change to that requirement is drift.
+// The two lists are compared below so they cannot silently diverge again.
 const SITE_ONLY_EXTENSIONS = new Set([
   "spec-ext-aggregation.md",
   "spec-ext-lexical-search.md",
   "spec-semantic-retrieval-extension.md",
 ]);
+
+const GOVERNANCE_SPEC = join(REPO_ROOT, "openspec/specs/reference-implementation-governance/spec.md");
+
+// Parse the bullet list under the allowlist heading in the governance spec and
+// assert it matches SITE_ONLY_EXTENSIONS. This closes the gap that let the code
+// allowlist carry three entries while the governance spec named two, one of
+// which (`spec-lexical-retrieval-extension`) never existed as a file.
+function governanceAllowlistErrors(): string[] {
+  const text = readFileSync(GOVERNANCE_SPEC, "utf8").replace(CRLF_PATTERN, "\n");
+  const marker = "The current public-site-only extension allowlist:";
+  const start = text.indexOf(marker);
+  if (start === -1) {
+    return [
+      `openspec governance spec: could not find the allowlist marker ${JSON.stringify(marker)}; ` +
+        "spec-check can no longer verify the code allowlist against governance",
+    ];
+  }
+  const declared = new Set<string>();
+  for (const line of text.slice(start + marker.length).split("\n")) {
+    const entry = line.match(/^-\s+`([^`]+)`\s*$/)?.[1];
+    if (entry) {
+      declared.add(entry.endsWith(".md") ? entry : `${entry}.md`);
+      continue;
+    }
+    // Stop at the first non-bullet, non-blank line: the list has ended.
+    if (line.trim() !== "" && !line.startsWith("- ")) {
+      break;
+    }
+  }
+
+  const errors: string[] = [];
+  for (const file of SITE_ONLY_EXTENSIONS) {
+    if (!declared.has(file)) {
+      errors.push(
+        `${file}: allowlisted in scripts/spec-check.ts but NOT in the governance spec allowlist ` +
+          "(openspec/specs/reference-implementation-governance/spec.md)"
+      );
+    }
+  }
+  for (const file of declared) {
+    if (!SITE_ONLY_EXTENSIONS.has(file)) {
+      errors.push(`${file}: named in the governance spec allowlist but NOT allowlisted in scripts/spec-check.ts`);
+    }
+  }
+  return errors;
+}
 
 const REFERENCE_ONLY_ROOT_SPECS = new Set(["spec-reference-implementation-examples.md"]);
 
@@ -266,6 +319,18 @@ function main(): void {
       errors.push(`${file}: site-only spec is not allowlisted`);
     }
   }
+
+  // An allowlist entry with no file behind it is stale: it silently exempts a
+  // name that nothing checks, which is how the governance list came to carry
+  // `spec-lexical-retrieval-extension` long after the file was named
+  // `spec-ext-lexical-search`.
+  for (const file of SITE_ONLY_EXTENSIONS) {
+    if (!siteSet.has(file)) {
+      errors.push(`${file}: allowlisted as a site-only extension but no such file exists at apps/site/content/docs/${file}`);
+    }
+  }
+
+  errors.push(...governanceAllowlistErrors());
 
   if (errors.length > 0) {
     console.error(`spec:check failed (${errors.length} issue${errors.length === 1 ? "" : "s"})`);
