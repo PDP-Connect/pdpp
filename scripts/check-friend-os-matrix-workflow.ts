@@ -53,25 +53,32 @@ const REQUIRED_PULL_REQUEST_PATHS = [
   "deploy/docker/**",
   "docs/operator/selfhost-quickstart.md",
   "docs/operator/friend-journey-acceptance.md",
+  "docs/operator/hosted-mcp-setup.md",
+  "docs/operator/self-service-gmail-mcp.md",
+  "reference-implementation/README.md",
   "scripts/extract-doc-command-block.ts",
   "scripts/extract-doc-command-block.test.ts",
   "scripts/generate-selfhost-bundle.ts",
+  "scripts/generate-selfhost-bundle.test.ts",
+  "scripts/check-docker-release-matrix.ts",
+  "scripts/check-docker-release-matrix.test.ts",
+  "scripts/verify-published-docker-images.ts",
+  "scripts/verify-selfhost-bundle-published.ts",
+  "scripts/verify-selfhost-bundle-published.test.ts",
+  "scripts/publish-selfhost-bundle-asset.ts",
+  "scripts/publish-selfhost-bundle-asset.test.ts",
+  "scripts/check-friend-journey-acceptance.ts",
   "scripts/check-friend-os-matrix-workflow.ts",
   "scripts/check-friend-os-matrix-workflow.test.ts",
   "scripts/friend-os-matrix/**",
   "scripts/friend-journey-acceptance/**",
 ];
 
-const REQUIRED_TEST_STEPS = [
-  "Run friend-readiness tests",
-  "Install frozen dependencies",
-];
-
 const REQUIRED_TEST_COMMANDS = [
   "pnpm docker:release-matrix:check",
   "pnpm docker:release-matrix:check:test",
-  "scripts/check-friend-os-matrix-workflow.test.ts",
-  "scripts/extract-doc-command-block.test.ts",
+  "node --test --import tsx scripts/check-friend-os-matrix-workflow.test.ts",
+  "node --test --import tsx scripts/extract-doc-command-block.test.ts",
   "pnpm docker:release-bundle:test",
   "pnpm docker:release-bundle:verify-published:test",
   "pnpm docker:release-bundle:publish-asset:test",
@@ -80,62 +87,100 @@ const REQUIRED_TEST_COMMANDS = [
   "pnpm friend-journey:acceptance:test",
 ];
 
+// Extract pull_request.paths block from YAML
+function extractPullRequestPaths(workflowSource: string): string[] {
+  const match = workflowSource.match(/pull_request:\s*paths:\s*([\s\S]*?)(?=\n  \w|$)/);
+  if (!match || !match[1]) return [];
+  const pathsBlock = match[1];
+  const paths: string[] = [];
+  const pathMatches = pathsBlock.matchAll(/- "([^"]+)"/g);
+  for (const m of pathMatches) {
+    if (m[1]) paths.push(m[1]);
+  }
+  return paths;
+}
+
+// Extract the run step from extract-doc-commands job
+function extractTestRunStep(workflowSource: string): string {
+  const match = workflowSource.match(
+    /- name: Run friend-readiness tests\s+run:\s+\|\s*([\s\S]*?)(?=\n\s{2,6}- name:|\n\n\s{2}[\w]|$)/
+  );
+  return match?.[1] ?? "";
+}
+
+// Extract permissions block
+function extractPermissionsBlock(workflowSource: string): string {
+  const match = workflowSource.match(/^permissions:\s*([\s\S]*?)(?=\n\w|$)/m);
+  return match?.[1] ?? "";
+}
+
+// Extract workflow_run block
+function extractWorkflowRunBlock(workflowSource: string): string {
+  const match = workflowSource.match(/workflow_run:\s*([\s\S]*?)(?=\npermissions:|$)/);
+  return match?.[1] ?? "";
+}
+
 export function findWorkflowDocBindingIssues(workflowSource: string, quickstartDocSource: string): Finding[] {
   const findings: Finding[] = [];
 
-  // Check required pull_request paths
+  // Check required pull_request paths (block-level)
+  const prPaths = extractPullRequestPaths(workflowSource);
   for (const path of REQUIRED_PULL_REQUEST_PATHS) {
-    if (!workflowSource.includes(path)) {
-      findings.push({ detail: `friend-os-matrix.yml pull_request.paths is missing required path: "${path}"` });
+    if (!prPaths.includes(path)) {
+      findings.push({ detail: `pull_request.paths is missing required path: "${path}"` });
     }
   }
 
-  // Check workflow-level permissions
-  if (!workflowSource.includes("permissions:")) {
-    findings.push({ detail: "friend-os-matrix.yml is missing workflow-level permissions: block" });
-  } else if (!workflowSource.includes("contents: read")) {
-    findings.push({ detail: "friend-os-matrix.yml permissions block is missing 'contents: read'" });
+  // Check workflow-level permissions (block-level)
+  const permissionsBlock = extractPermissionsBlock(workflowSource);
+  if (!permissionsBlock) {
+    findings.push({ detail: "missing workflow-level permissions: block" });
+  } else if (!permissionsBlock.includes("contents: read")) {
+    findings.push({ detail: "permissions block is missing 'contents: read'" });
   }
 
-  // Check workflow_run main scoping
-  if (!workflowSource.includes("workflows: [\"semantic-release\"]")) {
-    findings.push({ detail: "friend-os-matrix.yml workflow_run is missing workflows: [\"semantic-release\"]" });
-  }
-  if (!workflowSource.includes("types: [completed]")) {
-    findings.push({ detail: "friend-os-matrix.yml workflow_run is missing types: [completed]" });
-  }
-  if (!workflowSource.includes("branches: [main]")) {
-    findings.push({
-      detail:
-        "friend-os-matrix.yml workflow_run is not scoped to branches: [main]; post-release verification should only run on main",
-    });
-  }
-
-  // Check required test steps
-  for (const testStep of REQUIRED_TEST_STEPS) {
-    if (!workflowSource.includes(testStep)) {
-      findings.push({ detail: `friend-os-matrix.yml extract-doc-commands job is missing the test step: "${testStep}"` });
+  // Check workflow_run scoping (block-level)
+  const workflowRunBlock = extractWorkflowRunBlock(workflowSource);
+  if (!workflowRunBlock) {
+    findings.push({ detail: "missing workflow_run block" });
+  } else {
+    if (!workflowRunBlock.includes("workflows: [\"semantic-release\"]")) {
+      findings.push({ detail: "workflow_run block is missing workflows: [\"semantic-release\"]" });
     }
-  }
-
-  // Check all required test commands are run
-  for (const testCommand of REQUIRED_TEST_COMMANDS) {
-    if (!workflowSource.includes(testCommand)) {
+    if (!workflowRunBlock.includes("types: [completed]")) {
+      findings.push({ detail: "workflow_run block is missing types: [completed]" });
+    }
+    if (!workflowRunBlock.includes("branches: [main]")) {
       findings.push({
-        detail: `friend-os-matrix.yml test step is not running: "node --test ${testCommand}"`,
+        detail: "workflow_run block is not scoped to branches: [main]; post-release verification should only run on main",
       });
     }
   }
 
-  // Check frozen lockfile install
+  // Check required test step exists
+  const testRunStep = extractTestRunStep(workflowSource);
+  if (!testRunStep) {
+    findings.push({ detail: "extract-doc-commands job is missing the 'Run friend-readiness tests' step" });
+  } else {
+    // Check all required test commands within test step
+    for (const testCommand of REQUIRED_TEST_COMMANDS) {
+      if (!testRunStep.includes(testCommand)) {
+        findings.push({
+          detail: `test step is not running: "${testCommand}"`,
+        });
+      }
+    }
+  }
+
+  // Check frozen lockfile install exists before test step (separate check)
   if (!workflowSource.includes("pnpm install --frozen-lockfile")) {
-    findings.push({ detail: "friend-os-matrix.yml is not installing frozen dependencies before running tests" });
+    findings.push({ detail: "extract-doc-commands job is not installing frozen dependencies" });
   }
 
   for (const os of REQUIRED_MATRIX_OSES) {
     const matrixListPattern = MATRIX_OS_LIST_PATTERNS.get(os);
     if (!(matrixListPattern?.test(workflowSource) || workflowSource.includes(os))) {
-      findings.push({ detail: `friend-os-matrix.yml no longer runs on "${os}"` });
+      findings.push({ detail: `workflow no longer runs on "${os}"` });
     }
   }
 
@@ -147,11 +192,11 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
   ];
   for (const anchor of requiredAnchors) {
     if (!workflowSource.includes(anchor)) {
-      findings.push({ detail: `friend-os-matrix.yml no longer references doc anchor ${JSON.stringify(anchor)}` });
+      findings.push({ detail: `workflow no longer references doc anchor ${JSON.stringify(anchor)}` });
     }
     if (!quickstartDocSource.includes(anchor)) {
       findings.push({
-        detail: `doc anchor ${JSON.stringify(anchor)} that friend-os-matrix.yml depends on is missing from docs/operator/selfhost-quickstart.md`,
+        detail: `doc anchor ${JSON.stringify(anchor)} is missing from docs/operator/selfhost-quickstart.md`,
       });
     }
   }
@@ -159,7 +204,7 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
   if (!workflowSource.includes("docker info --format")) {
     findings.push({
       detail:
-        "friend-os-matrix.yml no longer probes for a real Linux container daemon before claiming a Docker-backed pass",
+        "workflow no longer probes for a real Linux container daemon before claiming a Docker-backed pass",
     });
   }
 
@@ -169,7 +214,7 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
     findings.push({ detail: "docs/operator/selfhost-quickstart.md is missing the sh Compose-fetch URL under step 1" });
   } else if (shFetchMatch[1] !== STABLE_RELEASE_BUNDLE_URL) {
     findings.push({
-      detail: `docs/operator/selfhost-quickstart.md sh fetch URL (${shFetchMatch[1]}) is not the one stable release-asset URL (${STABLE_RELEASE_BUNDLE_URL}) — every friend-facing fetch block must target that exact same stable asset, not a commit/tag-pinned raw URL`,
+      detail: `docs/operator/selfhost-quickstart.md sh fetch URL (${shFetchMatch[1]}) is not the one stable release-asset URL (${STABLE_RELEASE_BUNDLE_URL})`,
     });
   }
   if (!powershellFetchMatch) {
@@ -178,7 +223,7 @@ export function findWorkflowDocBindingIssues(workflowSource: string, quickstartD
     });
   } else if (powershellFetchMatch[1] !== STABLE_RELEASE_BUNDLE_URL) {
     findings.push({
-      detail: `docs/operator/selfhost-quickstart.md powershell fetch URL (${powershellFetchMatch[1]}) is not the one stable release-asset URL (${STABLE_RELEASE_BUNDLE_URL}) — every friend-facing fetch block must target that exact same stable asset, not a commit/tag-pinned raw URL`,
+      detail: `docs/operator/selfhost-quickstart.md powershell fetch URL (${powershellFetchMatch[1]}) is not the one stable release-asset URL (${STABLE_RELEASE_BUNDLE_URL})`,
     });
   }
 

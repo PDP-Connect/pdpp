@@ -20,47 +20,85 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const STABLE_RELEASE_BUNDLE_URL = "https://github.com/PDP-Connect/pdpp/releases/latest/download/docker-compose.yml";
 
-const VALID_WORKFLOW = [
-  "workflows: [\"semantic-release\"]",
-  "types: [completed]",
-  "branches: [main]",
-  "permissions:",
-  "contents: read",
-  ".github/workflows/friend-os-matrix.yml",
-  ".github/workflows/semantic-release.yml",
-  "package.json",
-  "pnpm-lock.yaml",
-  "apps/site/**",
-  "deploy/docker/**",
-  "docs/operator/selfhost-quickstart.md",
-  "docs/operator/friend-journey-acceptance.md",
-  "scripts/extract-doc-command-block.ts",
-  "scripts/extract-doc-command-block.test.ts",
-  "scripts/generate-selfhost-bundle.ts",
-  "scripts/check-friend-os-matrix-workflow.ts",
-  "scripts/check-friend-os-matrix-workflow.test.ts",
-  "scripts/friend-os-matrix/**",
-  "scripts/friend-journey-acceptance/**",
-  "os: [ubuntu-latest, macos-latest, windows-latest]",
-  "macOS and Linux (bash or zsh):",
-  "Windows PowerShell (the block above cannot work there",
-  "### 1. Fetch the released compose bundle",
-  "On **Windows PowerShell**, bare",
-  "docker info --format",
-  "Install frozen dependencies",
-  "Run friend-readiness tests",
-  "pnpm install --frozen-lockfile",
-  "pnpm docker:release-matrix:check",
-  "pnpm docker:release-matrix:check:test",
-  "scripts/check-friend-os-matrix-workflow.test.ts",
-  "scripts/extract-doc-command-block.test.ts",
-  "pnpm docker:release-bundle:test",
-  "pnpm docker:release-bundle:verify-published:test",
-  "pnpm docker:release-bundle:publish-asset:test",
-  "pnpm --filter @pdpp/mcp-server build",
-  "pnpm --filter pdpp-site test",
-  "pnpm friend-journey:acceptance:test",
-].join("\n");
+const VALID_WORKFLOW = `on:
+  pull_request:
+    paths:
+      - ".github/workflows/friend-os-matrix.yml"
+      - ".github/workflows/semantic-release.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "apps/site/**"
+      - "deploy/docker/**"
+      - "docs/operator/selfhost-quickstart.md"
+      - "docs/operator/friend-journey-acceptance.md"
+      - "docs/operator/hosted-mcp-setup.md"
+      - "docs/operator/self-service-gmail-mcp.md"
+      - "reference-implementation/README.md"
+      - "scripts/extract-doc-command-block.ts"
+      - "scripts/extract-doc-command-block.test.ts"
+      - "scripts/generate-selfhost-bundle.ts"
+      - "scripts/generate-selfhost-bundle.test.ts"
+      - "scripts/check-docker-release-matrix.ts"
+      - "scripts/check-docker-release-matrix.test.ts"
+      - "scripts/verify-published-docker-images.ts"
+      - "scripts/verify-selfhost-bundle-published.ts"
+      - "scripts/verify-selfhost-bundle-published.test.ts"
+      - "scripts/publish-selfhost-bundle-asset.ts"
+      - "scripts/publish-selfhost-bundle-asset.test.ts"
+      - "scripts/check-friend-journey-acceptance.ts"
+      - "scripts/check-friend-os-matrix-workflow.ts"
+      - "scripts/check-friend-os-matrix-workflow.test.ts"
+      - "scripts/friend-os-matrix/**"
+      - "scripts/friend-journey-acceptance/**"
+
+permissions:
+  contents: read
+
+workflow_run:
+  workflows: ["semantic-release"]
+  types: [completed]
+  branches: [main]
+
+jobs:
+  extract-doc-commands:
+    name: extract documented commands (once, shared across OSes and modes)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run friend-readiness tests
+        run: |
+          set -euo pipefail
+          pnpm docker:release-matrix:check
+          pnpm docker:release-matrix:check:test
+          node --test --import tsx scripts/check-friend-os-matrix-workflow.test.ts
+          node --test --import tsx scripts/extract-doc-command-block.test.ts
+          pnpm docker:release-bundle:test
+          pnpm docker:release-bundle:verify-published:test
+          pnpm docker:release-bundle:publish-asset:test
+          pnpm --filter @pdpp/mcp-server build
+          pnpm --filter pdpp-site test
+          pnpm friend-journey:acceptance:test
+
+      - name: Extract the exact documented command blocks
+        id: extract
+        run: |
+          echo "posix_secret_block<<POSIX_EOF"
+          echo "POSIX_EOF"
+
+  prerelease-validate:
+    name: prerelease candidate validation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Probe for a usable Linux container daemon
+        id: docker_probe
+        shell: bash
+        run: docker info --format 'OSType'
+`;
 
 const SH_FETCH_BLOCK = ["```sh", "mkdir pdpp && cd pdpp", `curl -fsSLO ${STABLE_RELEASE_BUNDLE_URL}`, "```"].join("\n");
 const POWERSHELL_FETCH_BLOCK = [
@@ -70,14 +108,26 @@ const POWERSHELL_FETCH_BLOCK = [
   "```",
 ].join("\n");
 
-const VALID_DOC = [
-  "macOS and Linux (bash or zsh):",
-  "Windows PowerShell (the block above cannot work there",
-  "### 1. Fetch the released compose bundle",
-  SH_FETCH_BLOCK,
-  "On **Windows PowerShell**, bare",
-  POWERSHELL_FETCH_BLOCK,
-].join("\n");
+const VALID_DOC = `# Friend Self-Host Quickstart
+
+### Prerequisites
+
+#### macOS and Linux (bash or zsh):
+
+${SH_FETCH_BLOCK}
+
+#### Windows PowerShell (the block above cannot work there
+
+${POWERSHELL_FETCH_BLOCK}
+
+### 1. Fetch the released compose bundle
+
+${SH_FETCH_BLOCK}
+
+On **Windows PowerShell**, bare
+
+${POWERSHELL_FETCH_BLOCK}
+`;
 
 const DROPPED_OS_PATTERN = /no longer runs on "windows-latest"/;
 const MISSING_DOC_ANCHOR_PATTERN = /missing from docs\/operator\/selfhost-quickstart\.md/;
@@ -86,6 +136,8 @@ const MISSING_SH_FETCH_URL_PATTERN = /missing the sh Compose-fetch URL/;
 const MISSING_POWERSHELL_FETCH_URL_PATTERN = /missing the powershell Compose-fetch URL/;
 const SH_NOT_STABLE_URL_PATTERN = /sh fetch URL .* is not the one stable release-asset URL/;
 const POWERSHELL_NOT_STABLE_URL_PATTERN = /powershell fetch URL .* is not the one stable release-asset URL/;
+const MISSING_TEST_STEP_PATTERN = /missing the 'Run friend-readiness-tests' step/;
+const MISSING_TEST_COMMAND_PATTERN = /test step is not running/;
 
 test("findWorkflowDocBindingIssues is silent when workflow and doc agree", () => {
   assert.deepEqual(findWorkflowDocBindingIssues(VALID_WORKFLOW, VALID_DOC), []);
@@ -164,6 +216,39 @@ test("findWorkflowDocBindingIssues reports both fetch URLs drifting to the SAME 
   const shDrifted = findings.some((f) => SH_NOT_STABLE_URL_PATTERN.test(f.detail));
   const pwshDrifted = findings.some((f) => POWERSHELL_NOT_STABLE_URL_PATTERN.test(f.detail));
   assert.ok(shDrifted && pwshDrifted, "should report both URLs drifting");
+});
+
+test("block-level discrimination: required path in comment but not in pull_request.paths block is caught", () => {
+  // A required path moved into a comment or different block should be detected
+  const workflow = VALID_WORKFLOW.replace(
+    '- "docs/operator/selfhost-quickstart.md"',
+    '# - "docs/operator/selfhost-quickstart.md" (commented out)'
+  );
+  const findings = findWorkflowDocBindingIssues(workflow, VALID_DOC);
+  const hasMissingPath = findings.some((f) => f.detail.includes('pull_request.paths is missing required path'));
+  assert.ok(hasMissingPath, "should detect path removed from pull_request.paths block");
+});
+
+test("block-level discrimination: required test command in comment but not in test step is caught", () => {
+  // A required command moved into a comment or different job should be detected
+  const workflow = VALID_WORKFLOW.replace(
+    "pnpm docker:release-matrix:check",
+    "# pnpm docker:release-matrix:check (commented out)"
+  );
+  const findings = findWorkflowDocBindingIssues(workflow, VALID_DOC);
+  const hasMissingCommand = findings.some((f) => MISSING_TEST_COMMAND_PATTERN.test(f.detail));
+  assert.ok(hasMissingCommand, "should detect test command removed from test step");
+});
+
+test("block-level discrimination: permissions in comment but not in permissions block is caught", () => {
+  // Permissions moved elsewhere should be detected
+  const workflow = VALID_WORKFLOW.replace(
+    "contents: read",
+    "# contents: read (documented elsewhere)"
+  );
+  const findings = findWorkflowDocBindingIssues(workflow, VALID_DOC);
+  const hasMissingPermission = findings.some((f) => f.detail.includes("permissions block is missing"));
+  assert.ok(hasMissingPermission, "should detect permission removed from permissions block");
 });
 
 test("live repo: friend-os-matrix.yml agrees with docs/operator/selfhost-quickstart.md", () => {
