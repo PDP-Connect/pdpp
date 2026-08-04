@@ -435,8 +435,12 @@ A `spec-*.md` file MAY exist only under `apps/site/content/docs/` (with no root 
 
 The current public-site-only extension allowlist:
 
-- `spec-lexical-retrieval-extension`
+- `spec-ext-lexical-search`
+- `spec-ext-aggregation`
 - `spec-semantic-retrieval-extension`
+
+The allowlist in this requirement is normative. `scripts/spec-check.ts` SHALL enforce
+exactly these entries and no others; a mismatch between the two lists is itself drift.
 
 #### Scenario: A new extension is proposed as public-site-only
 

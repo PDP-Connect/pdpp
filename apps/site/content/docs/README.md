@@ -34,4 +34,12 @@ The only web-only spec pages currently allowed are:
 - `spec-ext-aggregation.md`
 - `spec-semantic-retrieval-extension.md`
 
-Any additional web-only spec needs an OpenSpec change before the file is added.
+These are optional extension profiles, not canonical-root specs. They are authored
+here rather than at the repo root because Core does not depend on them and a server
+that omits them is still Core-conformant; the root `spec-*.md` set is reserved for
+the specs Core conformance is defined against.
+
+Any additional web-only spec needs an OpenSpec change before the file is added. The
+allowlist is ratified in
+`openspec/specs/reference-implementation-governance/spec.md` and enforced against
+`scripts/spec-check.ts` by `pnpm spec:check` — update all three together.
