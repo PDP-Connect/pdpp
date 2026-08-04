@@ -436,7 +436,7 @@ function labelForPill(
   disposition: ForwardDisposition,
   toneInputs: readonly { axis: string; tone: VerdictTone }[]
 ): VerdictLabel {
-  if (tone === "grey" && snapshot.badges.syncing) {
+  if (tone === "grey" && (snapshot.badges.syncing || snapshot.axes.outbox === "active")) {
     return "Checking";
   }
   if (tone === "green" && snapshot.axes.outbox === "active") {
@@ -1552,6 +1552,12 @@ function buildForwardStatement(
     return primary.remediation.summary;
   }
 
+  // Active local collector work takes precedence: it describes what's happening now,
+  // more immediate than forward-looking disposition (what the next run will do).
+  if (snapshot.axes.outbox === "active") {
+    return "The local collector is uploading saved records.";
+  }
+
   switch (disposition) {
     case "checking":
     case "unmeasured":
@@ -1565,9 +1571,6 @@ function buildForwardStatement(
     case "awaiting_owner":
       return "Waiting on you before the next run can make progress.";
     default:
-      if (snapshot.axes.outbox === "active") {
-        return "The local collector is uploading saved records.";
-      }
       if (snapshot.axes.freshness === "unknown") {
         return "Freshness has not been measured yet.";
       }

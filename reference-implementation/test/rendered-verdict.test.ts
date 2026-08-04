@@ -673,6 +673,22 @@ test("tone: active local-device outbox renders Syncing without owner action", ()
   assert.equal(v.forward_statement, "The local collector is uploading saved records.");
 });
 
+test("tone: unknown coverage with active local-device outbox renders Checking and uploading", () => {
+  const snap = snapshot({
+    axes: { coverage: "unknown", freshness: "unknown", outbox: "active" },
+    forward_disposition: "checking",
+    state: "idle",
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream({ coverage: "unknown" })], null, true, {
+    mode: "local_device",
+    observed_at: "2026-07-07T10:00:00.000Z",
+    retained_records: null,
+  });
+  assert.equal(v.pill.tone, "grey");
+  assert.equal(v.pill.label, "Checking");
+  assert.equal(v.forward_statement, "The local collector is uploading saved records.");
+});
+
 test("tone: degraded evidence wins over active local-device outbox label", () => {
   const snap = snapshot({
     axes: { coverage: "retryable_gap", freshness: "fresh", outbox: "active" },
