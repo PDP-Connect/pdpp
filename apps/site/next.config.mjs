@@ -81,10 +81,21 @@ const nextConfig = {
         permanent: true,
         source: "/docs/:path*",
       },
+      // The goal design has no separate docs-index landing page: /specification
+      // itself serves the core protocol document (see
+      // src/app/specification/[[...slug]]/page.tsx). /specification/spec-core
+      // still resolves (fumadocs' own routing is untouched), so it redirects to
+      // the canonical URL rather than serving a duplicate of the same content
+      // at two addresses.
       {
-        destination: "/specification/spec-core",
+        destination: "/specification",
         permanent: true,
         source: "/spec-core",
+      },
+      {
+        destination: "/specification",
+        permanent: true,
+        source: "/specification/spec-core",
       },
       {
         destination: "/specification/spec-collection-profile",

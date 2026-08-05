@@ -5,6 +5,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { DiscordIcon, GithubIcon } from "@/components/pdpp-concept/icons.tsx";
+import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
 import {
   DISCORD_INVITE_URL,
   GITHUB_MAINTAINERS_URL,
@@ -12,6 +13,12 @@ import {
   GITHUB_REPO_URL,
 } from "@/components/pdpp-concept/site-facts.ts";
 import { SPEC_STATUS } from "@/components/pdpp-concept/spec-status.ts";
+
+const PARTICIPATE_TOC = [
+  { href: "#get-involved", label: "Get involved" },
+  { href: "#how-it-changes", label: "How the specification changes" },
+  { href: "#status", label: "Where PDPP is today" },
+] as const;
 
 export const metadata: Metadata = {
   alternates: { canonical: "/participate" },
@@ -58,6 +65,7 @@ export default function ParticipatePage() {
   return (
     <>
       <main className="pdpp-page">
+        <PdppRail governance="PDP-Connect, an LF Decentralized Trust Lab" toc={PARTICIPATE_TOC} />
         <article className="pdpp-doc">
           <h1>Participate</h1>
           <p className="pdpp-lede">Ask a question about the draft, or propose a change to the protocol.</p>
@@ -144,7 +152,7 @@ export default function ParticipatePage() {
             <p>
               Interfaces may still change: {SPEC_STATUS.version} has not been through public consultation, which opens
               before v1.0 is pinned. Governance and the license split are recorded in{" "}
-              <Link href="/specification/spec-core#specification-governance">specification governance</Link>.
+              <Link href="/specification#specification-governance">specification governance</Link>.
             </p>
           </section>
 

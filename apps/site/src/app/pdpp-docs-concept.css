@@ -26,6 +26,17 @@
   );
 }
 
+/* This row's own search trigger duplicates the one now inside the mobile nav
+   disclosure (masthead.tsx's <NavSearchTrigger />) — hidden here rather than
+   disabling search on the layout (`enabled: false` in docs-shared.tsx would
+   also remove desktop search). The sidebar-open trigger stays: it's the ONLY
+   way to reach #nd-sidebar below the width it unmounts at, so removing this
+   whole row (passing `nav: { component: null }`) would silently cut off
+   mobile TOC/sidebar access, not just restyle chrome the goal doesn't have. */
+[data-pdpp-doc-theme] #nd-subnav [data-search] {
+  display: none;
+}
+
 [data-pdpp-doc-theme] #nd-page {
   color: var(--pdpp-concept-ink);
 }
@@ -93,8 +104,58 @@
   color: var(--pdpp-concept-ink);
 }
 
+/* Tailwind Typography's own default (`.prose strong { font-weight: 500 }`,
+   packages/../tailwindcss/typography) reads as barely-emphasized against the
+   concept's Newsreader body text. The concept relies on the browser's UA
+   default (`strong { font-weight: bolder }`, i.e. 700 against the 400 body
+   weight) and never overrides it. Scoped to p/li specifically (not a bare
+   `strong` selector) so this doesn't also need to out-rank Tailwind's own
+   `h1 strong`/`h2 strong`/`h3 strong`/`h4 strong` overrides (900/800/700),
+   which must keep winning inside headings. */
+[data-pdpp-doc-theme] .pdpp-docs-body p strong,
+[data-pdpp-doc-theme] .pdpp-docs-body li strong,
+[data-pdpp-doc-theme] .pdpp-docs-body td strong,
+[data-pdpp-doc-theme] .pdpp-docs-body th strong,
+[data-pdpp-doc-theme] .pdpp-docs-body blockquote strong {
+  font-weight: 700;
+}
+
+/* Tailwind Typography's own default (.prose li { margin: .5em 0 }, i.e. 8.5px
+   at this body's 17px) is looser than the concept's list rhythm. */
+[data-pdpp-doc-theme] .pdpp-docs-body li {
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+/* "Design axiom:"/"Note...:" lead-bold paragraphs, promoted to a highlighted
+   `<aside class="pdpp-note">` by remark-note-asides.ts at MDX-compile time
+   (the root spec-*.md source stays plain Markdown; see that file for why).
+   Values match the concept's .note exactly (styles.css: background #E7EFED /
+   border-left 2px #0E5A54 / padding 12px 16px / margin 20px 0), using the
+   existing teal-wash/teal tokens rather than the literal hex. */
+[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
+  padding: 12px 16px;
+  margin: 20px 0;
+  font-size: 15.5px;
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-teal-wash);
+  border-left: 2px solid var(--pdpp-concept-teal);
+}
+[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note strong {
+  font-weight: 700;
+}
+
 [data-pdpp-doc-theme] .pdpp-docs-body a {
   color: var(--pdpp-concept-teal);
+}
+/* The base .pdpp-concept a:hover rule (pdpp-concept.css) is a lower-specificity
+   (0,2,1) selector than this file's [data-pdpp-doc-theme] .pdpp-docs-body a
+   (0,3,0) — its darken-on-hover never won the cascade here, so prose links sat
+   at the same teal on hover as at rest while nav links (which don't have a
+   competing higher-specificity rule) correctly darkened. */
+[data-pdpp-doc-theme] .pdpp-docs-body a:hover,
+[data-pdpp-doc-theme] .pdpp-docs-body a:focus-visible {
+  color: var(--pdpp-concept-teal-deep);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body blockquote {
@@ -209,6 +270,21 @@
 }
 [data-pdpp-doc-theme] .pdpp-docs-body + div a:hover {
   background: var(--pdpp-concept-teal-wash);
+}
+/* Description paragraph inside the same card: fumadocs' own rule is
+   Tailwind's single-line `truncate` (overflow:hidden + text-overflow:ellipsis
+   + nowrap), which cuts wherever the last visible character lands — mid-word
+   as often as not, since `text-overflow: ellipsis` has no concept of word
+   boundaries. A 2-line clamp gives roughly triple the character budget before
+   any cut, which is enough for every current page description to fit whole;
+   where one doesn't, it now breaks at the wrap point a line-height already
+   provides rather than balancing on a single truncated line. */
+[data-pdpp-doc-theme] .pdpp-docs-body + div a p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  white-space: normal;
 }
 
 [data-pdpp-doc-theme] #nd-toc {

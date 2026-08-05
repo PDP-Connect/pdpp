@@ -67,7 +67,13 @@
   --pdpp-concept-mono:
     var(--font-pdpp-doc-mono), "SFMono-Regular", Menlo, Consolas, monospace;
 
-  --pdpp-concept-max: 1200px;
+  /* 1240 rather than 1200: the concept bumped this 2026-08-04 (its own
+     comment: "the extra 40px goes entirely to the rail, whose longest TOC
+     labels wrapped to two lines at 240px while the page had unused width
+     beside it") and this port hadn't caught up — at 1440px that stale 1200
+     value landed content 18px further right and the nav cluster 242px
+     further right than the concept's own --max: 1240px does. */
+  --pdpp-concept-max: 1240px;
   /* 276px rather than 240px: the extra space goes entirely to the rail, whose
      longest TOC labels wrapped to two lines at 240px while the page had
      unused width beside it. Concept ships this token TWICE (styles.css:51 as a
@@ -134,7 +140,19 @@
   background: var(--pdpp-concept-paper);
 }
 
+/* Bold default: concept measures this at >6:1 contrast against every light
+   ground (paper, paper-panel, paper-deep), because a solid teal fill is dark
+   enough to read as a highlight rather than disappear into them the way the
+   wash does. The wash variant is kept, but only for grounds that are
+   themselves teal-deep (.pdpp-footer, .pdpp-terminal), where it holds ~15:1
+   against ink text and the bold variant would fight the ground's own color. */
 .pdpp-concept ::selection {
+  color: var(--pdpp-concept-paper);
+  background: var(--pdpp-concept-teal);
+}
+.pdpp-concept .pdpp-footer ::selection,
+.pdpp-concept .pdpp-terminal ::selection {
+  color: var(--pdpp-concept-ink);
   background: var(--pdpp-concept-teal-wash);
 }
 
@@ -156,6 +174,24 @@
   outline: 2px solid var(--pdpp-concept-teal);
   outline-offset: 3px;
   border-radius: 1px;
+}
+
+/* ─── Skip link ──────────────────────────────────────────────────────────── */
+.pdpp-skip-link {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  z-index: 100;
+  padding: 10px 16px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+  color: var(--pdpp-concept-teal);
+  background: var(--pdpp-concept-paper);
+  border: 1px solid var(--pdpp-concept-teal);
+}
+.pdpp-skip-link:focus {
+  top: 8px;
+  left: 8px;
 }
 
 /* ─── Masthead ──────────────────────────────────────────────────────────── */
@@ -204,6 +240,27 @@
   gap: 14px;
   align-items: baseline;
   min-inline-size: 0;
+}
+/* The site's full name, next to the wordmark mark. `white-space: nowrap` plus
+   the parent's `flex-wrap: nowrap` mean this is one line or hidden outright
+   (see the container query below) — a wrapped label would grow the sticky
+   masthead's height and shift the whole page under it. */
+.pdpp-masthead__label {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.pdpp-masthead__inner {
+  container: pdpp-masthead / inline-size;
+}
+@container pdpp-masthead (max-width: 700px) {
+  .pdpp-masthead__label {
+    display: none;
+  }
 }
 .pdpp-nav {
   display: flex;
@@ -268,6 +325,62 @@
   border-bottom-color: var(--pdpp-concept-teal);
 }
 
+/* The toggle that stands in for the full nav below 720px (see the media query
+   below) — hidden above it, matching the concept's .nav-toggle. A viewport
+   media query, not the masthead's own container query: the nav's rendered
+   width changes with collapse state, and sizing that collapse off the
+   container it's also mutating would be circular. */
+.pdpp-nav-toggle {
+  display: none;
+}
+@media (max-width: 720px) {
+  .pdpp-masthead__inner {
+    position: relative;
+    flex-wrap: wrap;
+  }
+  .pdpp-nav-toggle {
+    position: absolute;
+    top: 0;
+    right: var(--pdpp-concept-pad);
+    box-sizing: border-box;
+    display: block;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 6px 10px;
+    font-family: var(--pdpp-concept-sans);
+    font-size: 12px;
+    color: var(--pdpp-concept-ink-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    background: none;
+    border: var(--pdpp-concept-rule);
+  }
+  .pdpp-nav-toggle:hover,
+  .pdpp-nav-toggle:focus-visible {
+    color: var(--pdpp-concept-teal);
+  }
+  .pdpp-nav-toggle:focus-visible {
+    outline: 2px solid var(--pdpp-concept-teal);
+    outline-offset: 2px;
+  }
+  /* Collapsed by default; the toggle's onClick flips `data-open`, matching
+     the concept's `.nav.is-open` class toggle. */
+  .pdpp-nav {
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+    width: 100%;
+  }
+  .pdpp-nav[data-open="true"] {
+    display: flex;
+  }
+  .pdpp-nav a {
+    height: auto;
+  }
+}
+
 /* ─── Hero (homepage only) ──────────────────────────────────────────────── */
 .pdpp-hero {
   border-bottom: var(--pdpp-concept-rule);
@@ -307,8 +420,8 @@
 
 /* ─── Layout: rail + document ────────────────────────────────────────────
    One primitive for every page. The 3-column rail template only applies
-   when a .pdpp-rail is actually rendered inside — self-host/participate/home
-   render .pdpp-doc alone, and reserving the rail+gutter tracks unconditionally
+   when a .pdpp-rail is actually rendered inside — the home article still
+   renders .pdpp-doc alone, and reserving the rail+gutter tracks unconditionally
    left 250-300px of dead space beside the article and pushed .pdpp-doc off
    center (measured: docLeft 450-780px against a 1050-1068px page at
    1280-1920px). Rail-less is the default; :has() opts a page INTO the split
@@ -339,6 +452,32 @@
   align-self: start;
   padding-top: 64px;
   font-family: var(--pdpp-concept-sans);
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.2s ease;
+}
+/* @pdpp/brand's base.css gives the operator console an always-visible page
+   scrollbar thumb, which is correct for a dense app shell but not for this
+   document register — the concept scopes its OWN custom scrollbar to the
+   rail only (styles.css's .rail::-webkit-scrollbar block) and leaves the
+   page-level scrollbar as the plain browser default everywhere else.
+   Scoping this reset to `html::-webkit-scrollbar-thumb` (not the unscoped
+   `::-webkit-scrollbar-thumb` base.css uses) touches only the page-level
+   bar, not the terminal/table's own overflow-x scrollbars, which were never
+   part of this finding and keep base.css's thumb unchanged. */
+html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.pdpp-rail:hover,
+.pdpp-rail:focus-within {
+  scrollbar-color: color-mix(in srgb, var(--pdpp-concept-ink) 28%, transparent)
+    transparent;
+}
+.pdpp-rail:hover::-webkit-scrollbar-thumb,
+.pdpp-rail:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--pdpp-concept-ink) 28%, transparent);
+}
+.pdpp-rail::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--pdpp-concept-ink) 45%, transparent);
 }
 .pdpp-doc {
   grid-column: 1;
@@ -486,6 +625,25 @@
 }
 .pdpp-toc a:hover {
   color: var(--pdpp-concept-teal);
+}
+.pdpp-toc a[aria-current="location"] {
+  font-weight: 500;
+  color: var(--pdpp-concept-teal);
+}
+/* "Contents" reads as a rail block heading, same 12px/uppercase/ink-soft
+   treatment as .pdpp-rail__meta dt, so the disclosure summary matches the
+   label voice used everywhere else in the apparatus. */
+.pdpp-toc-details {
+  padding-top: 16px;
+}
+.pdpp-toc-details summary {
+  padding-bottom: 10px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
 }
 
 /* ─── Document type ──────────────────────────────────────────────────────── */
@@ -841,6 +999,17 @@
      (see the --pdpp-concept-onteal-deep* definitions above). */
   color: var(--pdpp-concept-onteal-deep-soft);
   background: var(--pdpp-concept-teal-deep);
+  /* Against the light paper this hairline is nearly invisible (teal-deep
+     already reads as a deliberate change of surface next to a bright page),
+     but against the dark paper — itself near-black — the footer's fixed
+     teal-deep ground was landing as an unstyled seam: no signal that the
+     abrupt color jump was intentional rather than a missing dark-mode rule.
+     --pdpp-concept-teal (not -rule, which is calibrated for ink-on-paper
+     contexts, not a ground that's already teal) is the token that's ALSO
+     re-derived per color scheme, so the hairline stays visible against
+     teal-deep in both: 0e5a54 on light, the lighter 4bb3a6 on dark. */
+  border-top: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-teal) 55%, transparent);
 }
 .pdpp-footer__inner {
   display: flex;
@@ -1037,10 +1206,54 @@
     pointer-events: none;
   }
 }
+/* Server-rendered first frame: same three columns, same records, same fade,
+   as plain HTML that exists in the initial response. Removed the instant the
+   canvas in hero-water.tsx has painted its own first frame, so a reader on a
+   slow connection sees this instead of an empty box. Column math mirrors the
+   canvas's own (ROW_GAP=34, COL_PAD=18, FONT_SIZE=12 in hero-water.tsx) so
+   the swap is not visually detectable. */
+.pdpp-frontdoor__water-still {
+  display: flex;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: hidden;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 34px;
+  color: var(--pdpp-concept-ink);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black 90px,
+    black calc(100% - 90px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black 90px,
+    black calc(100% - 90px),
+    transparent
+  );
+}
+.pdpp-frontdoor__water-still-col {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline-start: 18px;
+  white-space: nowrap;
+}
+.pdpp-frontdoor__water-still-key {
+  color: rgba(14, 90, 84, 0.78);
+}
+.pdpp-frontdoor__water-still-value {
+  color: rgba(26, 26, 23, 0.92);
+}
 .pdpp-frontdoor__identity {
   margin-top: 20px;
   font-size: clamp(21px, 1.15rem + 0.7vw, 25px);
-  line-height: 1.45;
+  font-weight: 600;
+  line-height: 1.3;
   color: var(--pdpp-concept-ink);
 }
 .pdpp-frontdoor__definition {
@@ -1092,7 +1305,7 @@
   line-height: 1;
   text-decoration: none;
   border: 1px solid var(--pdpp-concept-teal);
-  border-radius: 3px;
+  border-radius: 2px;
   transition:
     background-color 120ms ease,
     color 120ms ease;
@@ -1297,14 +1510,19 @@
   margin-top: 48px;
   border-top: none;
 }
+/* Mono, not sans: the numeral is the same "code" register as the terminal
+   block and the impl-table's status labels, tying the inline "01/02" to the
+   spec's own numbered-section convention rather than reading as prose. 0.52em
+   of the 28px h2 matches the concept's own derivation (14.56px). */
 .pdpp-section__numeral {
-  margin-right: 12px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 12px;
+  margin-inline-end: 0.75em;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 0.52em;
+  font-weight: 400;
   font-variant-numeric: tabular-nums lining-nums;
   vertical-align: 0.35em;
   color: var(--pdpp-concept-teal);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
 }
 
 /* ─── Terminal head (copy button) ────────────────────────────────────────── */
