@@ -1,13 +1,13 @@
 ## 1. Separated-RS Authorization Context (Introspection)
 
 - [ ] 1.1 Update `spec-core.md` Section 8 `### Token introspection` (current extension-
-      fields table) to replace the five-row extension-fields table with the complete
+      fields table) to replace the six-row extension-fields table with the complete
       authenticated context: `iss`, `aud`, `authorization_details` (RFC 9396 §9.2/§14.3),
       and the `pdpp` supplementary member (`grant_id`, `grant_digest`, `status`,
       `consumed_at`, `superseded_by`, consent-evidence reference, security/binding
       profile, cache bound).
 - [ ] 1.2 Update `spec-core.md` Section 8 `### Grant enforcement` to reference the
-      complete context object instead of the current five fields, and add the
+      complete context object instead of the current six fields, and add the
       fail-closed rule for missing/unrecognized mandatory context fields.
 - [ ] 1.3 Update `spec-core.md` Section 9 AS conformance and RS conformance items that
       reference introspection/`pdpp_token_kind` to point at the complete-context
