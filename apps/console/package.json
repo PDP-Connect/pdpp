@@ -42,7 +42,6 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
-    "react-xtermjs": "^1.0.12",
     "remark-gfm": "^4.0.1",
     "server-only": "^0.0.1",
     "shadcn": "^4.16.1",
