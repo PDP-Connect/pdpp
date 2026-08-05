@@ -179,6 +179,9 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
 
       {/* ROW 3. Two binary controls with the same shape, so "off" is always a
           named alternative rather than an absence.
+          SHOWN ON DOCKER AND COMPOSE, the two methods that emit a real shell
+          command a reader runs directly, so both can thread Access/Search
+          straight into flags (`docker run -e ...`) or `.env` lines.
           HIDDEN ON RAILWAY AND FLY, deliberately: neither path can carry these
           values into the single command shown. Railway's template link cannot
           carry variable values at all; Fly's command always advertises its own
@@ -186,10 +189,18 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
           app exists) and has no per-run search-mode flag, so leaving the
           controls live would let a reader set them and silently get something
           else. The panel above says where those settings are actually made. */}
-      {built.segments === null || method !== "compose" ? null : (
+      {built.segments === null || (method !== "compose" && method !== "docker") ? null : (
         <div className="pdpp-cmd__config">
+          {/* OUTCOMES, NOT SETTINGS. "Access: this machine only / web apps and
+              other devices" made the reader decode the question before they
+              could answer it (owner, 2026-08-05: "Access and Search are sort of
+              esoteric; you are making the user really think about what the
+              question is"). The question a reader actually has is which of
+              their assistants will be able to reach this node, so the label
+              asks that and the options name the assistants rather than a
+              network topology. */}
           <fieldset className="pdpp-cmd__choice">
-            <legend className="pdpp-cmd__choice-label">Access</legend>
+            <legend className="pdpp-cmd__choice-label">Who can reach it</legend>
             <div className="pdpp-cmd__seg">
               <button
                 aria-pressed={choices.access === "local"}
@@ -197,7 +208,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, access: "local" }))}
                 type="button"
               >
-                This machine only
+                Claude Code and Codex
               </button>
               <button
                 aria-pressed={choices.access === "public"}
@@ -205,7 +216,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, access: "public" }))}
                 type="button"
               >
-                Web apps and other devices
+                Also Claude.ai and ChatGPT
               </button>
             </div>
           </fieldset>
@@ -231,8 +242,12 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
             </p>
           </div>
 
+          {/* "Search: by meaning / keywords only" named the retrieval technique
+              and left the reader to work out which one they wanted. The real
+              trade is a capability against a download, so the options say what
+              you get and what it costs. */}
           <fieldset className="pdpp-cmd__choice">
-            <legend className="pdpp-cmd__choice-label">Search</legend>
+            <legend className="pdpp-cmd__choice-label">Finding things</legend>
             <div className="pdpp-cmd__seg">
               <button
                 aria-pressed={choices.semanticSearch}
@@ -240,7 +255,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, semanticSearch: true }))}
                 type="button"
               >
-                By meaning
+                Search what you meant
               </button>
               <button
                 aria-pressed={!choices.semanticSearch}
@@ -248,7 +263,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, semanticSearch: false }))}
                 type="button"
               >
-                Keywords only
+                Exact words, no model download
               </button>
             </div>
           </fieldset>

@@ -18,7 +18,7 @@ import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
  * var, which port, and which browser backend deliver those outcomes are
  * implementation details and never appear in the UI.
  *
- * BROWSER SUPPORT IS NOT A CHOICE. Every command selects the browser-capable
+ * BROWSER SUPPORT IS NOT A CHOICE. Every command selects a browser-capable
  * image. 14 of 33 connectors (Amazon, Anthropic, Chase, ChatGPT, DoorDash,
  * HEB, LinkedIn, Loom, Meta, Reddit, Shopify, Uber, USAA, Whole Foods) cannot
  * sign in without one, and a reader will not supply their own browser
@@ -27,7 +27,24 @@ import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
  * the owner can watch and take over — that is the default path, not an
  * upgrade.
  *
- * EVERY COMMAND HERE WAS RUN, 2026-08-05. Full transcripts in BUILDER2.md:
+ * ONE PUBLIC ARTIFACT, GATED ON PUBLICATION. PR #79
+ * (github.com/PDP-Connect/pdpp/pull/79) makes Core the complete self-host
+ * default: SQLite on a persistent volume, Patchright/Chromium, and direct-CDP
+ * streaming in one image, published as `core`/`core-browser`. The RI owner's
+ * built-image friend gate already passed on that code (16 passes, 2 manual
+ * UAT, 0 blockers, Core head 5e158736a) — capability is proven. Publication is
+ * not: PR #79 is open, not merged, and its own body says the image is
+ * published only "after approval and merge." Verified by execution
+ * 2026-08-05: `docker manifest inspect ghcr.io/pdp-connect/pdpp/core:main`
+ * and `.../core-browser:main` both fail anonymous token exchange with
+ * DENIED/403 — for comparison, the same anonymous flow against
+ * `reference-browser:main` (published today) returns 200. So `CORE_PUBLISHED`
+ * below is the one edit that flips the site's primary local default from
+ * Compose to the single `docker run` once the tag resolves; nothing else on
+ * this page should need to change at that point.
+ *
+ * EVERY COMPOSE COMMAND HERE WAS RUN, 2026-08-05. Full transcripts in
+ * BUILDER2.md:
  *   - the compose URL returns 200; `docker compose config` validates
  *   - the stack booted: postgres healthy, reference healthy, web serving,
  *     `/` 307 -> /owner/login, /.well-known/oauth-authorization-server 200,
@@ -35,16 +52,6 @@ import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
  *     reference container
  *   - the public-origin variant advertises issuer https://pdpp.example.com
  *   - the keyword-only variant boots healthy with the download disabled
- *
- * AND WHAT FAILED, which is why there is no single-container tab:
- *   - reference-browser:main has Chromium but NO console — it listens only on
- *     7662/7663 and never serves port 3000. It also refuses to boot without
- *     PDPP_OWNER_PASSWORD and PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1.
- *   - railway-core:main has the console and first-boot password generation but
- *     no /opt/patchright-browsers at all.
- *   - core:main and core-browser:main DO NOT EXIST (manifest inspect 404s).
- *   No published single image is both console-bearing and browser-capable, so
- *   a one-container command would have to lie about one of them.
  */
 
 /** Segments of a rendered command. `emphasis` marks the token the eye lands on. */
@@ -72,14 +79,39 @@ export const defaultChoices: SelfHostChoices = {
   semanticSearch: true,
 };
 
-export type MethodId = "compose" | "fly" | "railway";
+export type MethodId = "docker" | "compose" | "fly" | "railway";
 
 /**
- * The browser-capable image. `core-browser` is the intended public artifact
- * name but is NOT published — `docker manifest inspect` 404s for both `core`
- * and `core-browser` — so commands name the artifact that exists today.
+ * THE GATE. PR #79 (github.com/PDP-Connect/pdpp/pull/79) makes `core` the
+ * complete self-host default — one image, SQLite on a persistent volume,
+ * bundled Patchright/Chromium — and the built-image friend gate already
+ * passed on that code. This flag is the ONLY thing standing between the page
+ * and showing it: flip it to `true` once the PR is merged and
+ * `ghcr.io/pdp-connect/pdpp/core-browser:main` resolves (re-run the
+ * `docker manifest inspect` check in this file's test to confirm before
+ * flipping). Leaving it `false` keeps `docker` out of `METHODS`, so Compose
+ * stays the primary default and no command names a tag that does not exist.
+ */
+const CORE_PUBLISHED = false;
+
+/**
+ * The browser-capable image Compose and Fly still name today.
+ * `core`/`core-browser` are the intended public artifact names once #79
+ * publishes (see `CORE_PUBLISHED`); until then commands must name an
+ * artifact that actually exists, so this stays `reference-browser`.
  */
 const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/reference-browser:main";
+
+/**
+ * The neutral versioned public artifact name PR #79 publishes. Not
+ * `railway-core` (a deployment-provider-specific internal build target,
+ * banned from reader-facing copy — see
+ * self-host-browser-capability.test.ts, "no command or copy exposes a
+ * platform-specific artifact name") and not a platform name. `core-browser`
+ * is the browser-capable variant of `core`, same pairing as
+ * `reference`/`reference-browser` today.
+ */
+const CORE_IMAGE = "ghcr.io/pdp-connect/pdpp/core-browser:main";
 
 /**
  * Raw URL rather than a release asset. `releases/latest/download/...` 404s:
@@ -99,7 +131,36 @@ function originFor(choices: SelfHostChoices): string {
 }
 
 /**
- * THE FIX FOR THE DEFECT THAT MADE THIS REBUILD NECESSARY. The old command was
+ * THE PRIMARY LOCAL DEFAULT once #79 publishes: one container, one line.
+ * SQLite and the semantic-model cache persist on the `pdpp_data` volume
+ * mounted at `/var/lib/pdpp` (the runtime's default `PDPP_DB_PATH`), same
+ * volume target the Quickstart in deploy/docker/README.md already documents
+ * for the console-only image today. Access and search are still real choices
+ * for this method — a public origin still needs `-e PDPP_REFERENCE_ORIGIN=`,
+ * and opting out of semantic search still needs
+ * `-e PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` — so both are threaded through the
+ * same way `composeCommand` threads them into `.env`.
+ */
+function dockerCommand(choices: SelfHostChoices): CommandSegment[] {
+  const segments: CommandSegment[] = [
+    { text: "docker run -d --name pdpp -p 3000:3000 \\\n  -v pdpp_data:/var/lib/pdpp \\\n" },
+  ];
+  if (choices.access === "public") {
+    segments.push(
+      { text: "  -e PDPP_REFERENCE_ORIGIN=" },
+      { emphasis: true, text: originFor(choices) },
+      { text: " \\\n" }
+    );
+  }
+  if (!choices.semanticSearch) {
+    segments.push({ text: "  -e PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \\\n" });
+  }
+  segments.push({ emphasis: true, text: CORE_IMAGE });
+  return segments;
+}
+
+/**
+ * THE DURABLE/OPERATOR ALTERNATIVE. The old command was
  * `docker compose -f deploy/docker/docker-compose.yml up -d`, a repo-relative
  * path the reader does not have in their clipboard or their cwd; pasted into a
  * fresh terminal it errors immediately. This command FETCHES the compose file
@@ -207,6 +268,9 @@ export function buildCommand(method: MethodId, choices: SelfHostChoices): BuiltC
   if (method === "fly") {
     return flyCommand();
   }
+  if (method === "docker") {
+    return { segments: dockerCommand(choices) };
+  }
   return { segments: composeCommand(choices) };
 }
 
@@ -221,13 +285,19 @@ export interface MethodDefinition {
 }
 
 /**
- * Compose first: it is the only path that carries every choice above into the
- * command shown. Fly and Railway both go after it, in that order, because
- * both skip the Access/Search row (see the "HIDDEN ON RAILWAY AND FLY"
- * comment in command-tabs.tsx) — Fly ahead of Railway because it is one real
- * shell command a reader runs directly, where Railway is a link to a form.
+ * Docker (the single `docker run`) is the primary local default, and comes
+ * first, but ONLY once `CORE_PUBLISHED` is true — see that constant's
+ * comment. Before publication it is left out of this list entirely, so
+ * nothing on the page can render a command naming a tag that does not exist
+ * yet. Compose is the durable/operator alternative and carries every choice
+ * above into the command shown either way. Fly and Railway both go after it,
+ * in that order, because both skip the Access/Search row (see the "HIDDEN ON
+ * RAILWAY AND FLY" comment in command-tabs.tsx) — Fly ahead of Railway
+ * because it is one real shell command a reader runs directly, where Railway
+ * is a link to a form.
  */
 export const METHODS: readonly MethodDefinition[] = [
+  ...(CORE_PUBLISHED ? [{ id: "docker", label: "Docker" } as const] : []),
   { id: "compose", label: "Docker Compose" },
   { id: "fly", label: "Fly.io" },
   { id: "railway", label: "Railway" },

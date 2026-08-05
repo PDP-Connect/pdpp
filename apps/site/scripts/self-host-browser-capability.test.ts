@@ -33,12 +33,25 @@ import {
 //     and present again inside the RUNNING container of a stack booted from
 //     the emitted command
 //   reference:main         -> no /opt/patchright-browsers directory at all
-//   core:main, core-browser:main -> do not exist; manifest inspect 404s
 //   railway-core:main      -> console + first-boot password, but no browser
 //   raw.githubusercontent.com/.../deploy/docker/docker-compose.yml -> 200
 //   github.com/.../releases/latest/download/docker-compose.yml     -> 404
+//
+// core:main / core-browser:main ARE NOT A "cannot exist" CASE ANYMORE. PR #79
+// (github.com/PDP-Connect/pdpp/pull/79) makes Core the complete, browser-
+// capable, console-bearing self-host default, and its built-image friend gate
+// already passed (Core head 5e158736a). What is still true today, verified by
+// the same anonymous-manifest-inspect method: `core:main` and
+// `core-browser:main` fail token exchange with DENIED/403, where
+// `reference-browser:main` (published) returns 200 the same way. So the
+// assertions below split into two groups: what every command must do WHILE
+// `CORE_PUBLISHED` is false (never name the unpublished tag, keep `docker`
+// out of `METHODS`), and what the `docker` method's OWN command must look
+// like once it is reachable (tested directly via `buildCommand("docker", …)`,
+// which does not itself gate on the flag — only `METHODS` does).
 
 const BROWSER_IMAGE = "reference-browser";
+const CORE_BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core-browser:main";
 // Hoisted: these are compiled once rather than per assertion.
 const IMAGE_OVERRIDE_RE = /PDPP_REFERENCE_IMAGE=\S*?pdpp\/(reference|reference-browser)(:|\s|$)/;
 const REPO_RELATIVE_COMPOSE_RE = /-f\s+deploy\/docker/;
@@ -136,13 +149,53 @@ test("no command fetches a release asset, because no release has ever had one", 
   }
 });
 
-test("no command names an artifact that does not exist", () => {
+test("no command reachable from METHODS names an artifact that is not published yet", () => {
   for (const { method, text } of shellCommands()) {
     assert.ok(
       !UNPUBLISHED_ARTIFACT_RE.test(text),
-      `"${method}" names pdpp/core or pdpp/core-browser, neither of which is published`
+      `"${method}" names pdpp/core or pdpp/core-browser, which is not published while CORE_PUBLISHED is false`
     );
   }
+});
+
+// THE GATE ITSELF. `docker` must stay out of the reader-reachable method list
+// until CORE_PUBLISHED flips — that is the mechanism the whole page's honesty
+// depends on, so it gets its own direct assertion rather than only being
+// implied by the artifact-name check above.
+test("the docker method is absent from METHODS while CORE_PUBLISHED is false", () => {
+  assert.ok(
+    !METHODS.some((entry) => entry.id === "docker"),
+    "docker must not be reachable through the tab list until #79 publishes core-browser:main"
+  );
+});
+
+// THE COMMAND THAT WILL SHIP THE DAY THE GATE FLIPS. Exercised directly
+// through buildCommand("docker", …), which does not itself consult
+// CORE_PUBLISHED — only METHODS does — so this proves the command is correct
+// and ready without needing to flip the flag to test it.
+test("the docker method emits the neutral versioned core-browser image with a persistent volume", () => {
+  for (const choices of allChoices()) {
+    const built = buildCommand("docker", choices);
+    assert.ok(built.segments, "the docker method must emit a real command, not an explanation");
+    const text = commandText(built.segments);
+    assert.ok(text.includes(CORE_BROWSER_IMAGE), `docker command does not name ${CORE_BROWSER_IMAGE}: ${text}`);
+    assert.ok(!text.includes("railway-core"), "docker command must not name the internal railway-core target");
+    assert.ok(text.includes("-v pdpp_data:/var/lib/pdpp"), "docker command does not mount a persistent volume");
+    assert.ok(text.includes("docker run"), "docker command is not a single docker run line");
+    assert.ok(!text.includes("docker compose"), "docker command should be one container, not Compose");
+  }
+});
+
+test("the docker command carries Access and Search choices the same as compose does", () => {
+  const local = buildCommand("docker", { ...defaultChoices, access: "local" });
+  const publicDefault = buildCommand("docker", { ...defaultChoices, access: "public" });
+  assert.ok(local.segments && publicDefault.segments);
+  assert.ok(!commandText(local.segments).includes("PDPP_REFERENCE_ORIGIN"));
+  assert.ok(commandText(publicDefault.segments).includes(PUBLIC_URL_PLACEHOLDER));
+
+  const keywordOnly = buildCommand("docker", { ...defaultChoices, semanticSearch: false });
+  assert.ok(keywordOnly.segments);
+  assert.ok(commandText(keywordOnly.segments).includes("PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0"));
 });
 
 test("the public-access choice puts the reader's address into the command", () => {

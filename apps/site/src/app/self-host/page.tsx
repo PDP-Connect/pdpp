@@ -6,7 +6,15 @@ import Link from "next/link";
 import { PdppCommandBuilder } from "@/components/pdpp-concept/command-tabs.tsx";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
+import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
 import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
+
+const SELF_HOST_TOC = [
+  { href: "#run", label: "Run it" },
+  { href: "#features", label: "What you get" },
+  { href: "#configuration", label: "Advanced configuration" },
+  { href: "#implementations", label: "Other implementations" },
+] as const;
 
 export const metadata: Metadata = {
   alternates: { canonical: "/self-host" },
@@ -116,6 +124,7 @@ export default function ReferencePage() {
   return (
     <>
       <main className="pdpp-page">
+        <PdppRail toc={SELF_HOST_TOC} />
         <article className="pdpp-doc">
           {/* The five-second promise. One line, then the command. */}
           <h1>Self-Host</h1>
@@ -123,21 +132,31 @@ export default function ReferencePage() {
             Your own personal data server. Ask Claude, ChatGPT, or Codex about your Gmail, GitHub, Notion, and 30 more.
           </p>
 
-          <PdppCommandBuilder />
-
-          {/* WAS A WHOLE SECTION, now one sentence. The distinction is real —
-              Codex and Claude Code reach loopback, Claude.ai and ChatGPT call
-              from their own infrastructure and cannot — but the Access choice
-              in the builder above is where a reader acts on it, so restating it
-              as a two-column section was furniture. */}
-          <p className="pdpp-note pdpp-note--access">
-            Codex and Claude Code reach a local node directly; Claude.ai and ChatGPT call from their own servers, so
-            they need the public address above.
-          </p>
-
-          <section className="pdpp-section pdpp-section--lead" id="features">
+          {/* The concept numbers this "01 Run it" as its own section, same as
+              every other h2 on the page — the command builder is not a lede
+              decoration, it is the first thing a reader does. Leaving it
+              unwrapped and unnumbered broke the 01/02/03/04 sequence below it
+              (the concept's own "02 What you get" rendered here as "01"). */}
+          <section className="pdpp-section pdpp-section--lead" id="run">
             <h2>
-              <span className="pdpp-section__numeral">01</span>What you get
+              <span className="pdpp-section__numeral">01</span>Run it
+            </h2>
+            <PdppCommandBuilder />
+
+            {/* WAS A WHOLE SECTION, now one sentence. The distinction is real —
+                Codex and Claude Code reach loopback, Claude.ai and ChatGPT call
+                from their own infrastructure and cannot — but the Access choice
+                in the builder above is where a reader acts on it, so restating it
+                as a two-column section was furniture. */}
+            <p className="pdpp-note pdpp-note--access">
+              Codex and Claude Code reach a local node directly; Claude.ai and ChatGPT call from their own servers, so
+              they need the public address above.
+            </p>
+          </section>
+
+          <section className="pdpp-section" id="features">
+            <h2>
+              <span className="pdpp-section__numeral">02</span>What you get
             </h2>
             <ul className="pdpp-features">
               {features.map((feature) => (
@@ -151,55 +170,6 @@ export default function ReferencePage() {
               <a href={GITHUB_LOCAL_COLLECTOR} rel="noopener noreferrer" target="_blank">
                 local collector →
               </a>
-            </p>
-          </section>
-
-          {/* A reader who can start a node needs to know how to leave it. Short:
-              the compose subcommands that already exist, not new tooling. */}
-          <section className="pdpp-section" id="lifecycle">
-            <h2>
-              <span className="pdpp-section__numeral">02</span>Stop, update, remove
-            </h2>
-            <p>
-              Run these from the directory the command above created (the one with your <code>.env</code> file).
-            </p>
-            <table className="pdpp-impl-table pdpp-config-table">
-              <thead>
-                <tr>
-                  <th scope="col">To</th>
-                  <th scope="col">Run</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>Stop it (data stays)</td>
-                  <td>
-                    <code>docker compose down</code>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Start it again</td>
-                  <td>
-                    <code>docker compose up -d</code>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Update to the latest image</td>
-                  <td>
-                    <code>docker compose pull && docker compose up -d</code>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Remove it and delete your data</td>
-                  <td>
-                    <code>docker compose down -v</code>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <p className="pdpp-note">
-              Your records live in a Docker volume, not the directory above — plain <code>docker compose down</code>{" "}
-              never touches them. <code>-v</code> deletes the volume along with the container.
             </p>
           </section>
 
