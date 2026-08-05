@@ -39,6 +39,14 @@ const nextConfig = {
   // /self-host/coverage, the well-known agent-skill catalog, and /llms-full.txt
   // 500 on Vercel because the markdown they read is absent.
   outputFileTracingIncludes: {
+    // The front door, Participate and every specification page render the spec's
+    // own status line and editors by reading the source of truth. The tracer
+    // cannot see a path built at runtime, so without these three the pages 500
+    // on Vercel while passing every local check — the server that serves them
+    // locally is the repo itself, which always has the files.
+    "/": ["../../spec-core.md", "../../MAINTAINERS.md", "../../pnpm-workspace.yaml"],
+    "/participate": ["../../spec-core.md", "../../MAINTAINERS.md", "../../pnpm-workspace.yaml"],
+    "/specification/**": ["../../spec-core.md", "../../MAINTAINERS.md", "../../pnpm-workspace.yaml"],
     "/llms-full.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
     "/llms.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
     // resolveRepoRoot() looks for a directory containing both
