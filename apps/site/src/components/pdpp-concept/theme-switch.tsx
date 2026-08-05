@@ -5,51 +5,53 @@
 
 import { useEffect, useState } from "react";
 import { useTheme } from "@/components/theme/theme-provider.tsx";
-import type { ResolvedTheme, ThemeChoice } from "@/components/theme/theme-state.ts";
+import type { ResolvedTheme } from "@/components/theme/theme-state.ts";
 
 // Concept-native theme control. Drives the SAME ThemeProvider/cookie as the
 // operator-console ThemeToggle (@pdpp/operator-ui) — one source of truth for
 // theme state, two renderings for two registers.
 //
-// A prior version exposed all three choices as visible text segments
-// (Light | Dark | System). Owner feedback: against a masthead whose only
-// other content is a wordmark, three quiet nav links, and a compact search
-// field, three labelled segments were the loudest thing on the bar — visual
-// weight disproportionate to how often the control is used.
+// Two states, not three. Owner instruction, verbatim: "dark/light/system
+// should be dark/light with the default based on system." "system" is not a
+// state a reader picks; it is what happens before they pick anything —
+// ThemeProvider already resolves an absent cookie via prefers-color-scheme
+// (see theme-provider.tsx's readStoredChoice/readSystemPreference), so no UI
+// is needed for it. A prior version cycled dark -> system -> light, which on
+// an OS set to dark made "system" visually indistinguishable from "dark":
+// pressing once appeared to do nothing.
 //
-// Checked real precedent before rebuilding (Mobbin's MCP tools were
-// unreachable from this session — scoped to a different project directory —
-// so this used direct inspection of the live sites instead): Vercel's and
-// GitHub's marketing headers carry no visible theme control at all. Linear's
-// docs header (linear.app/docs, structurally the closest analog: wordmark,
-// search, nav, theme control, CTA) uses a single small icon button that
-// cycles directly on click — confirmed by clicking it and reading
-// `document.documentElement.dataset.theme`, which flipped light -> dark with
-// no menu, dropdown, or popover involved. That is the pattern this now
-// follows: one icon button, same three-state cycle the operator console
-// button already uses (dark -> system -> light -> dark), rendered as inline
-// SVG at currentColor — the same treatment already given the GitHub/Discord
-// marks in icons.tsx — instead of the console's Lucide-derived button shell.
-const NEXT: Record<ThemeChoice, ThemeChoice> = {
-  dark: "system",
+// The cycle now flips the RESOLVED theme (what is actually painted), not the
+// stored choice: dark-however-it-got-there -> light, light -> dark. The
+// first press always writes an explicit cookie value (never "system" again),
+// which then wins over the OS permanently, per the owner's instruction.
+//
+// One icon button rather than exposed segments — checked real precedent
+// before building this (Mobbin's MCP tools were unreachable from this
+// session, scoped to a different project directory, so this used direct
+// inspection of the live sites instead): Linear's docs header (linear.app/
+// docs, structurally the closest analog: wordmark, search, nav, theme
+// control, CTA) uses a single small icon button that cycles directly on
+// click, confirmed by clicking it and reading
+// `document.documentElement.dataset.theme` flip with no menu involved.
+// Rendered as inline SVG at currentColor, the same treatment already given
+// the GitHub/Discord marks in icons.tsx.
+const NEXT: Record<ResolvedTheme, ResolvedTheme> = {
+  dark: "light",
   light: "dark",
-  system: "light",
 };
 
-const NEXT_LABEL: Record<ThemeChoice, string> = {
-  dark: "Switch to system theme",
+const NEXT_LABEL: Record<ResolvedTheme, string> = {
+  dark: "Switch to light theme",
   light: "Switch to dark theme",
-  system: "Switch to light theme",
 };
 
-const CURRENT_LABEL: Record<ThemeChoice, string> = {
+const CURRENT_LABEL: Record<ResolvedTheme, string> = {
   dark: "Theme: dark",
   light: "Theme: light",
-  system: "Theme: system",
 };
 
 export function PdppThemeSwitch() {
-  const { theme, resolvedTheme, setTheme } = useTheme();
+  const { resolvedTheme, setTheme } = useTheme();
 
   // The DOM paints from the server/CSS-resolved theme on first frame; the
   // icon must not render from React state until after mount; otherwise an
@@ -63,26 +65,21 @@ export function PdppThemeSwitch() {
 
   return (
     <button
-      aria-label={mounted ? `${CURRENT_LABEL[theme]}. ${NEXT_LABEL[theme]}.` : "Theme"}
+      aria-label={mounted ? `${CURRENT_LABEL[resolvedTheme]}. ${NEXT_LABEL[resolvedTheme]}.` : "Theme"}
       className="pdpp-theme-switch"
       data-testid="theme-toggle"
-      onClick={() => setTheme(NEXT[theme])}
-      title={mounted ? `${CURRENT_LABEL[theme]} — click to ${NEXT_LABEL[theme].toLowerCase()}` : "Theme"}
+      onClick={() => setTheme(NEXT[resolvedTheme])}
+      title={
+        mounted ? `${CURRENT_LABEL[resolvedTheme]} — click to ${NEXT_LABEL[resolvedTheme].toLowerCase()}` : "Theme"
+      }
       type="button"
     >
-      {mounted ? (
-        <ThemeIcon resolved={resolvedTheme} theme={theme} />
-      ) : (
-        <span aria-hidden className="pdpp-theme-switch__icon" />
-      )}
+      {mounted ? <ThemeIcon resolved={resolvedTheme} /> : <span aria-hidden className="pdpp-theme-switch__icon" />}
     </button>
   );
 }
 
-function ThemeIcon({ theme, resolved }: { theme: ThemeChoice; resolved: ResolvedTheme }) {
-  if (theme === "system") {
-    return <SystemIcon />;
-  }
+function ThemeIcon({ resolved }: { resolved: ResolvedTheme }) {
   return resolved === "dark" ? <MoonIcon /> : <SunIcon />;
 }
 
@@ -110,15 +107,6 @@ function MoonIcon() {
         strokeLinejoin="round"
         strokeWidth="1.2"
       />
-    </svg>
-  );
-}
-
-function SystemIcon() {
-  return (
-    <svg aria-hidden="true" className="pdpp-theme-switch__icon" focusable="false" viewBox="0 0 16 16">
-      <rect fill="none" height="9" rx="1.25" stroke="currentColor" strokeWidth="1.2" width="12" x="2" y="3" />
-      <path d="M6 14h4M8 12v2" stroke="currentColor" strokeLinecap="round" strokeWidth="1.2" />
     </svg>
   );
 }

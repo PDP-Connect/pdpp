@@ -236,7 +236,17 @@
   display: inline-flex;
   align-items: center;
   height: 20px;
+  /* Clipping the box to 20px isn't enough on its own: the masthead row is
+     align-items: baseline, and baseline computation for a flex item uses its
+     OWN internal line-box, not its clipped visible box — the inherited
+     24.75px line-height (from .pdpp-nav's 15px font-size, browser-default
+     leading) was still the value the row measured against, landing at
+     66.875px instead of 66px. line-height: 1 collapses the link's internal
+     line-box to the font's em-square, matching what height: 20px already
+     visually clips it to, so the two agree. Confirmed by direct measurement:
+     without this the masthead sits at 66.875px; with it, exactly 66px. */
   padding-bottom: 2px;
+  line-height: 1;
   color: var(--pdpp-concept-ink-soft);
   border-bottom: 1px solid transparent;
 }
