@@ -5,6 +5,8 @@
 
 import { useEffect, useRef } from "react";
 import { createField } from "./hero-field.ts";
+import { HERO_WATER_STREAMS } from "./hero-water-data.ts";
+import { PdppHeroWaterStill } from "./hero-water-still.tsx";
 
 // Records floating on water.
 //
@@ -36,40 +38,6 @@ const LINE_ALPHA_EDGE = 90; // px fade at top and bottom
 const DRIFT_SCALE = 0.11;
 const DRIFT_DRAG = 3.2;
 const DRIFT_CLAMP = 7; // px, keeps the monospace column grid intact
-
-/** Real fields from the specification's worked examples. Never lorem. */
-const STREAMS: readonly (readonly (readonly [string, string])[])[] = [
-  [
-    ["sleep_score", "82"],
-    ["day", "2026-03-14"],
-    ["total_sleep", "7h21m"],
-    ["sleep_score", "77"],
-    ["day", "2026-03-13"],
-    ["total_sleep", "6h48m"],
-    ["sleep_score", "91"],
-    ["day", "2026-03-12"],
-  ],
-  [
-    ["artist", "Grouper"],
-    ["play_count", "141"],
-    ["rank", "1"],
-    ["artist", "Loscil"],
-    ["play_count", "98"],
-    ["rank", "2"],
-    ["artist", "Stars of the Lid"],
-    ["play_count", "64"],
-  ],
-  [
-    ["title", "Weather"],
-    ["role", "user"],
-    ["messages", "12"],
-    ["title", "Trip planning"],
-    ["role", "agent"],
-    ["messages", "31"],
-    ["title", "Groceries"],
-    ["role", "user"],
-  ],
-];
 
 interface Line {
   col: number;
@@ -109,7 +77,14 @@ export function PdppHeroWater() {
     host.appendChild(canvas);
     const ctx = canvas.getContext("2d");
     if (!ctx) {
+      // No 2d context: leave the server-rendered still frame as the
+      // permanent figure rather than showing nothing.
+      canvas.remove();
       return;
+    }
+
+    function removeStillFrame() {
+      host?.querySelector("[data-hero-water-still]")?.remove();
     }
 
     const field = createField();
@@ -123,8 +98,8 @@ export function PdppHeroWater() {
     function build() {
       lines = [];
       const perCol = Math.ceil(h / ROW_GAP) + 2;
-      for (let c = 0; c < STREAMS.length; c++) {
-        const rows = STREAMS[c] as readonly (readonly [string, string])[];
+      for (let c = 0; c < HERO_WATER_STREAMS.length; c++) {
+        const rows = HERO_WATER_STREAMS[c] as readonly (readonly [string, string])[];
         for (let i = 0; i < perCol; i++) {
           const row = rows[i % rows.length] as readonly [string, string];
           lines.push({
@@ -169,7 +144,7 @@ export function PdppHeroWater() {
       ctx.clearRect(0, 0, w, h);
       ctx.font = `300 ${FONT_SIZE}px "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace`;
       ctx.textBaseline = "alphabetic";
-      const colW = w / STREAMS.length;
+      const colW = w / HERO_WATER_STREAMS.length;
 
       for (const line of lines) {
         const edge = Math.min(line.y, h - line.y);
@@ -196,7 +171,7 @@ export function PdppHeroWater() {
       const dt = Math.min(0.05, (now - last) / 1000 || 0.016);
       last = now;
       field.step(dt);
-      const colW = w / STREAMS.length;
+      const colW = w / HERO_WATER_STREAMS.length;
 
       for (const line of lines) {
         line.y += line.speed * dt;
@@ -240,12 +215,16 @@ export function PdppHeroWater() {
     }
 
     resize();
+    // Paint synchronously, before the first rAF, so the canvas already has
+    // pixels the instant it replaces the server-rendered still frame below —
+    // otherwise there is a one-frame gap where neither is visible.
+    paint();
+    removeStillFrame();
     const observer = new ResizeObserver(resize);
     observer.observe(host);
 
     if (reduced) {
       // One still frame, no loop, no listeners.
-      paint();
       return () => {
         observer.disconnect();
         canvas.remove();
@@ -280,5 +259,9 @@ export function PdppHeroWater() {
     };
   }, []);
 
-  return <div aria-hidden="true" className="pdpp-frontdoor__water" ref={hostRef} />;
+  return (
+    <div aria-hidden="true" className="pdpp-frontdoor__water" ref={hostRef}>
+      <PdppHeroWaterStill />
+    </div>
+  );
 }
