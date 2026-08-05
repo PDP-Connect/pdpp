@@ -14,7 +14,9 @@ import {
 import { SPEC_STATUS } from "@/components/pdpp-concept/spec-status.ts";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/participate" },
   description: "Ask a question about the PDPP draft, or propose a change to the protocol.",
+  openGraph: { url: "/participate" },
   title: "Participate - PDPP",
 };
 
