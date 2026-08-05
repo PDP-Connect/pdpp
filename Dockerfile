@@ -225,3 +225,37 @@ CMD ["node", "--import", "tsx", "/app/deploy/railway/core-supervisor.ts"]
 # Generic managed-platform Core alias. It uses the same one-public-service
 # supervisor as the Railway target: console on $PORT, AS/RS on loopback.
 FROM railway-core AS platform-core
+
+# Public platform-neutral self-host artifact. Keep railway-core above as an
+# internal/backward-compatible target; public registries and docs use `core`.
+FROM railway-core AS core
+
+# Browser-capable self-host artifact. This intentionally mirrors the Core
+# supervisor payload on top of the browser layer so browser connectors work in
+# the standard single-container Railway deployment.
+FROM browsers AS core-browser
+
+ARG PDPP_REFERENCE_REVISION=unknown
+
+ENV NODE_ENV=production \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000 \
+    AS_PORT=7662 \
+    RS_PORT=7663 \
+    PDPP_AS_URL=http://127.0.0.1:7662 \
+    PDPP_RS_URL=http://127.0.0.1:7663 \
+    PDPP_REFERENCE_ORIGIN=http://localhost:3000 \
+    PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite \
+    PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \
+    PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
+    PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1 \
+    PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
+
+COPY --from=source /app /app
+COPY --from=console-builder /app/apps/console/.next/standalone /console
+COPY --from=console-builder /app/apps/console/.next/static /console/apps/console/.next/static
+COPY --from=console-builder /app/apps/console/public /console/apps/console/public
+
+EXPOSE 3000
+
+CMD ["node", "--import", "tsx", "/app/deploy/railway/core-supervisor.ts"]

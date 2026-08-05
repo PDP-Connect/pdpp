@@ -19,7 +19,8 @@ const PATCHRIGHT_INSTALL_PATTERN = /patchright install/;
 const FROM_ANY_AS_CONSOLE_PATTERN = /FROM .* AS console/;
 const PNPM_FILTER_CONSOLE_BUILD_PATTERN = /pnpm --filter pdpp-console build/;
 const ENV_PORT_PATTERN = /ENV[\s\S]*?\n\s+PORT=/;
-const FROM_BASE_AS_RAILWAY_CORE_PATTERN = /FROM base AS railway-core/;
+const FROM_BASE_AS_INTERNAL_COMPATIBILITY_TARGET_PATTERN = /FROM base AS railway-core/;
+const CORE_BROWSER_STAGE_PATTERN = /FROM browsers AS core-browser/;
 const CMD_CORE_SUPERVISOR_PATTERN = /CMD \["node", "--import", "tsx", "\/app\/deploy\/railway\/core-supervisor\.ts"\]/;
 const EXPOSE_3000_PATTERN = /\nEXPOSE 3000\n/;
 const LOOPBACK_7662_PATTERN = /127\.0\.0\.1:7662/;
@@ -33,7 +34,7 @@ const PREPARE_FIRST_BOOT_CALL_PATTERN = /prepareFirstBoot\(\)/;
 const FIRST_BOOT_ENV_SPREAD_PATTERN = /\.\.\.firstBoot\.env/g;
 const FIRST_BOOT_BANNER_LINES_PATTERN = /firstBoot\.bannerLines/;
 const RAILWAY_TEMPLATE_URL_PATTERN = /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/;
-const GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN = /ghcr\.io\/pdp-connect\/pdpp\/railway-core/;
+const GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN = /ghcr\.io\/pdp-connect\/pdpp\/core-browser/;
 const ONE_PUBLIC_CORE_APP_SERVICE_PATTERN = /one public Core app service/i;
 const SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN = /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i;
 const RAILWAY_BUTTON_SVG_PATTERN = /https:\/\/railway\.com\/button\.svg/;
@@ -104,7 +105,8 @@ test("Railway core image runs console plus loopback reference AS/RS", () => {
   const dockerfile = read("Dockerfile");
   const supervisor = read("deploy/railway/core-supervisor.ts");
 
-  assert.match(dockerfile, FROM_BASE_AS_RAILWAY_CORE_PATTERN);
+  assert.match(dockerfile, FROM_BASE_AS_INTERNAL_COMPATIBILITY_TARGET_PATTERN);
+  assert.match(dockerfile, CORE_BROWSER_STAGE_PATTERN);
   assert.match(dockerfile, CMD_CORE_SUPERVISOR_PATTERN);
   assert.match(dockerfile, EXPOSE_3000_PATTERN);
   assert.match(supervisor, LOOPBACK_7662_PATTERN);
@@ -140,7 +142,7 @@ test("Railway runbook and template handoff use the one-service core button shape
   const handoff = read("deploy/railway/template.md");
 
   assert.match(readme, RAILWAY_TEMPLATE_URL_PATTERN);
-  assert.match(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
+  assert.match(readme, GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN);
   assert.match(readme, ONE_PUBLIC_CORE_APP_SERVICE_PATTERN);
   assert.doesNotMatch(readme, SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN);
 
@@ -159,10 +161,10 @@ test("Railway runbook and template handoff use the one-service core button shape
   assert.doesNotMatch(handoff, SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN);
 });
 
-test("Railway handoff documents the public railway-core image-source template shape", () => {
+test("Railway handoff documents the public core-browser image-source template shape", () => {
   const handoff = read("deploy/railway/template.md");
 
-  assert.match(handoff, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
+  assert.match(handoff, GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN);
   assert.match(handoff, ONE_APPLICATION_SERVICE_POSTGRES_PLUGIN_PATTERN);
 
   // A concrete version tag must be pinned; latest/moving tags are disallowed.
@@ -170,13 +172,32 @@ test("Railway handoff documents the public railway-core image-source template sh
   assert.match(handoff, VERSION_TAG_PLACEHOLDER_PATTERN);
 });
 
-test("Railway runbook documents the public railway-core image-source mapping", () => {
+test("Railway runbook documents the public core-browser image-source mapping", () => {
   const readme = read("deploy/railway/README.md");
 
-  assert.match(readme, GHCR_PDP_CONNECT_RAILWAY_CORE_PATTERN);
+  assert.match(readme, GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN);
   assert.match(readme, CONSOLE_RAILWAY_PORT_PATTERN);
   assert.match(readme, LOOPBACK_7662_PATTERN);
   assert.match(readme, LOOPBACK_7663_PATTERN);
+});
+
+test("release matrices publish both public Core artifacts and do not expose railway-core", () => {
+  const dockerWorkflow = read(".github/workflows/docker-images.yml");
+  const releaseWorkflow = read(".github/workflows/semantic-release.yml");
+  for (const workflow of [dockerWorkflow, releaseWorkflow]) {
+    assert.match(workflow, /image: core\n\s+target: core/);
+    assert.match(workflow, /image: core-browser\n\s+target: core-browser/);
+    assert.doesNotMatch(workflow, /image: railway-core/);
+  }
+  const template = read("deploy/railway/template.md");
+  const historicalMarker = "## 2026-06-06 scratch proof (legacy historical record)";
+  const [currentInstructions, historicalRecord] = template.split(historicalMarker);
+  assert.ok(historicalRecord, "template must retain the explicitly labeled legacy record");
+  assert.doesNotMatch(currentInstructions, /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
+  assert.match(historicalRecord, /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
+  for (const publicPath of ["deploy/railway/README.md", "deploy/docker/README.md"]) {
+    assert.doesNotMatch(read(publicPath), /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
+  }
 });
 
 test("Railway handoff wires the runnable GHCR public-image probe into the publish gate", () => {

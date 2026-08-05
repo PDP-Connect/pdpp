@@ -15,7 +15,7 @@ Authorization Server and Resource Server on loopback inside the container.
 
 ```sh
 docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
-  ghcr.io/pdp-connect/pdpp/railway-core:main
+  ghcr.io/pdp-connect/pdpp/core:main
 docker logs -f pdpp
 ```
 
@@ -23,17 +23,17 @@ No flags to fill in. On first boot the container generates an owner password,
 saves it to the `pdpp_data` volume, and prints a one-time banner:
 
 ```
-[railway-core] ────────────────────────────────────────────────────────────────
-[railway-core] First boot — generated an owner password for this instance.
-[railway-core]
-[railway-core]   Dashboard:      http://localhost:3000/dashboard
-[railway-core]   Owner password: hCJ3hQ0X8evNNCH9R9KqL5Ai
-[railway-core]
-[railway-core] Saved to /var/lib/pdpp/owner-password (on the data volume), so restarts keep
-[railway-core] this password. To change it, set the PDPP_OWNER_PASSWORD environment
-[railway-core] variable and restart; the environment variable always wins.
-[railway-core] This password is printed only on first boot.
-[railway-core] ────────────────────────────────────────────────────────────────
+[core] ────────────────────────────────────────────────────────────────
+[core] First boot — generated an owner password for this instance.
+[core]
+[core]   Dashboard:      http://localhost:3000/dashboard
+[core]   Owner password: hCJ3hQ0X8evNNCH9R9KqL5Ai
+[core]
+[core] Saved to /var/lib/pdpp/owner-password (on the data volume), so restarts keep
+[core] this password. To change it, set the PDPP_OWNER_PASSWORD environment
+[core] variable and restart; the environment variable always wins.
+[core] This password is printed only on first boot.
+[core] ────────────────────────────────────────────────────────────────
 ```
 
 Open the dashboard URL, sign in with the printed password, and connect your
@@ -125,7 +125,7 @@ runtime diagnostics surface (`GET /_ref/deployment`).
 Upgrade by pulling and recreating; volumes persist:
 
 ```sh
-docker pull ghcr.io/pdp-connect/pdpp/railway-core:main && docker rm -f pdpp && <your docker run>
+docker pull ghcr.io/pdp-connect/pdpp/core:main && docker rm -f pdpp && <your docker run>
 # or, compose:
 docker compose pull && docker compose up -d
 ```

@@ -30,7 +30,7 @@ function start(name: string, command: string, args: string[], options: SpawnOpti
     }
     shuttingDown = true;
     for (const [otherName, other] of children.entries()) {
-      console.error(`[railway-core] ${name} exited; stopping ${otherName}`);
+      console.error(`[core] ${name} exited; stopping ${otherName}`);
       other.kill("SIGTERM");
     }
     if (children.size === 0) {

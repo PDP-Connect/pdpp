@@ -34,8 +34,8 @@ test("TEMPLATE_IMAGES maps the app service to the documented GHCR path", () => {
   const byService: Record<string, (typeof TEMPLATE_IMAGES)[number]> = Object.fromEntries(
     TEMPLATE_IMAGES.map((i) => [i.service, i])
   );
-  assert.equal(byService.core?.image, "pdp-connect/pdpp/railway-core");
-  assert.equal(byService.core?.stage, "railway-core");
+  assert.equal(byService.core?.image, "pdp-connect/pdpp/core-browser");
+  assert.equal(byService.core?.stage, "core-browser");
 });
 
 test("classifyTokenStatus: 200 public, 401 private, 403 absent, else unknown", () => {

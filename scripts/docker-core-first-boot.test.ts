@@ -209,5 +209,5 @@ test("buildFirstBootBanner prefixes every line for the supervisor log stream", (
     passwordFile: "/var/lib/pdpp/owner-password",
     persisted: true,
   });
-  assert.ok(lines.every((line) => line.startsWith("[railway-core]")));
+  assert.ok(lines.every((line) => line.startsWith("[core]")));
 });
