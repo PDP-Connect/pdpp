@@ -232,7 +232,7 @@ function SandboxFooter() {
       </p>
       <ul className="pdpp-caption mt-3 flex flex-col gap-1 text-muted-foreground">
         <li>
-          <Link className="hover:text-foreground hover:underline" href="/reference">
+          <Link className="hover:text-foreground hover:underline" href="/self-host">
             Reference overview →
           </Link>
         </li>

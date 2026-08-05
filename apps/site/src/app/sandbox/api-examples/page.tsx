@@ -154,7 +154,7 @@ export default function SandboxApiExamplesPage() {
         </p>
         <p className="pdpp-caption mt-2 text-muted-foreground">
           The full surface map lives at{" "}
-          <Link className="underline underline-offset-2" href="/reference">
+          <Link className="underline underline-offset-2" href="/self-host">
             /reference
           </Link>
           .

@@ -1911,7 +1911,7 @@ Content-Type: application/json
                 STATE from single_use runs. See{" "}
                 <a
                   className="underline"
-                  href="/docs/reference-implementation-examples#example-6-single-use-grant-consumption"
+                  href="/specification/reference-implementation-examples#example-6-single-use-grant-consumption"
                 >
                   Example 6
                 </a>{" "}
@@ -1976,7 +1976,7 @@ PDPP-Version: 0.1.0
                 see{" "}
                 <a
                   className="underline"
-                  href="/docs/reference-implementation-examples#example-4-token-introspection-verify-an-issued-token-and-read-its-grant"
+                  href="/specification/reference-implementation-examples#example-4-token-introspection-verify-an-issued-token-and-read-its-grant"
                 >
                   Example 4
                 </a>{" "}

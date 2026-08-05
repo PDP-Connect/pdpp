@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const PAGE_PATH = new URL("../src/app/reference/page.tsx", import.meta.url);
+const PAGE_PATH = new URL("../src/app/self-host/page.tsx", import.meta.url);
 
 // Match JSX attribute patterns like value="http://localhost:..." or
 // href="http://localhost:..." but not string-fallback defaults in code like
@@ -30,6 +30,6 @@ test("reference page has no hardcoded localhost URL as a JSX attribute value", a
 
   assert.ok(
     !JSX_HARDCODED_LOCALHOST_RE.test(src),
-    "reference/page.tsx must not contain a hardcoded localhost URL as a JSX attribute value (use providerUrl from getRequestOrigin() instead)"
+    "self-host/page.tsx must not contain a hardcoded localhost URL as a JSX attribute value (use providerUrl from getRequestOrigin() instead)"
   );
 });

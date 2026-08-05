@@ -32,7 +32,7 @@ export default function WalkthroughPage() {
               <Link className={buttonVariants({ size: "lg", variant: "outline" })} href="/sandbox">
                 Open sandbox dashboard
               </Link>
-              <Link className={buttonVariants({ size: "lg", variant: "outline" })} href="/docs">
+              <Link className={buttonVariants({ size: "lg", variant: "outline" })} href="/specification">
                 Protocol docs
               </Link>
             </div>

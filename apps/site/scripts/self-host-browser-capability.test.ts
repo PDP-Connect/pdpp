@@ -22,7 +22,7 @@ import { test } from "node:test";
 //   ghcr.io/pdp-connect/pdpp/reference:main
 //     -> no /opt/patchright-browsers directory at all
 
-const PAGE = readFileSync(join(import.meta.dirname, "../src/app/reference/page.tsx"), "utf8");
+const PAGE = readFileSync(join(import.meta.dirname, "../src/app/self-host/page.tsx"), "utf8");
 
 const BROWSER_IMAGE = "reference-browser";
 
