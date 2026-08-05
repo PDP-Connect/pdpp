@@ -11,7 +11,6 @@ import {
   METHODS,
   type MethodId,
   PUBLIC_URL_PLACEHOLDER,
-  RAILWAY_TEMPLATE_URL,
   type SelfHostChoices,
 } from "@/lib/self-host-command.ts";
 
@@ -169,20 +168,25 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
         <div className="pdpp-cmd__panel" id="pdpp-cmd-panel">
           <p className="pdpp-cmd__blocked">
             {built.unavailable}{" "}
-            <a href={RAILWAY_TEMPLATE_URL} rel="noopener noreferrer" target="_blank">
-              Open the template →
-            </a>
+            {built.unavailableHref ? (
+              <a href={built.unavailableHref} rel="noopener noreferrer" target="_blank">
+                {built.unavailableLinkLabel ?? "Learn more"} →
+              </a>
+            ) : null}
           </p>
         </div>
       )}
 
       {/* ROW 3. Two binary controls with the same shape, so "off" is always a
           named alternative rather than an absence.
-          HIDDEN ON RAILWAY, deliberately: a template link cannot carry these
-          values, so leaving the controls live would let a reader set them,
-          click through, and silently get something else. The panel above says
-          where those settings are actually made. */}
-      {built.segments === null ? null : (
+          HIDDEN ON RAILWAY AND FLY, deliberately: neither path can carry these
+          values into the single command shown. Railway's template link cannot
+          carry variable values at all; Fly's command always advertises its own
+          `https://<app>.fly.dev` origin (Fly assigns that hostname before the
+          app exists) and has no per-run search-mode flag, so leaving the
+          controls live would let a reader set them and silently get something
+          else. The panel above says where those settings are actually made. */}
+      {built.segments === null || method !== "compose" ? null : (
         <div className="pdpp-cmd__config">
           <fieldset className="pdpp-cmd__choice">
             <legend className="pdpp-cmd__choice-label">Access</legend>

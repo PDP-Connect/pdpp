@@ -69,11 +69,25 @@ const features = [
     body: <>Amazon, ChatGPT and USAA sign in through a browser you can watch and take over.</>,
     title: "Browser sources included",
   },
-  { body: <>Your records stay on the machine you run it on.</>, title: "Yours" },
+  {
+    // The default is durable SQLite on a volume, which is the whole point of
+    // running a data SERVER rather than a cache — but the page never said so
+    // in those terms until now. One line, same discipline as every other row
+    // here: state the fact, not the mechanism.
+    body: <>Your records stay on the machine you run it on, and survive a restart.</>,
+    title: "Yours",
+  },
 ] as const;
 
 const configuration = [
-  { default: "http://localhost:3000", name: "PDPP_REFERENCE_ORIGIN", sets: "Public origin in OAuth metadata" },
+  // NEVER a concrete localhost value here. This column's job is "the default
+  // an unmodified deployment actually has," and PDPP_REFERENCE_ORIGIN's only
+  // job is to be a real public HTTPS origin — `http://localhost:3000` reads
+  // as a plausible copy-pasteable default but can never satisfy that job, so
+  // showing it risks a reader shipping a broken OAuth metadata origin. Shown
+  // as a placeholder shape instead, same idiom as PUBLIC_URL_PLACEHOLDER in
+  // the command builder above.
+  { default: "https://your-host", name: "PDPP_REFERENCE_ORIGIN", sets: "Public origin in OAuth metadata" },
   { default: "generated", name: "PDPP_OWNER_PASSWORD", sets: "Dashboard sign-in" },
   { default: "—", name: "PDPP_DATABASE_URL", sets: "Postgres instead of SQLite" },
   { default: "/var/lib/pdpp/pdpp.sqlite", name: "PDPP_DB_PATH", sets: "SQLite location" },
@@ -132,10 +146,59 @@ export default function ReferencePage() {
             </p>
           </section>
 
+          {/* A reader who can start a node needs to know how to leave it. Short:
+              the compose subcommands that already exist, not new tooling. */}
+          <section className="pdpp-section" id="lifecycle">
+            <h2>
+              <span className="pdpp-section__numeral">02</span>Stop, update, remove
+            </h2>
+            <p>
+              Run these from the directory the command above created (the one with your <code>.env</code> file).
+            </p>
+            <table className="pdpp-impl-table pdpp-config-table">
+              <thead>
+                <tr>
+                  <th scope="col">To</th>
+                  <th scope="col">Run</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Stop it (data stays)</td>
+                  <td>
+                    <code>docker compose down</code>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Start it again</td>
+                  <td>
+                    <code>docker compose up -d</code>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Update to the latest image</td>
+                  <td>
+                    <code>docker compose pull && docker compose up -d</code>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Remove it and delete your data</td>
+                  <td>
+                    <code>docker compose down -v</code>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="pdpp-note">
+              Your records live in a Docker volume, not the directory above — plain <code>docker compose down</code>{" "}
+              never touches them. <code>-v</code> deletes the volume along with the container.
+            </p>
+          </section>
+
           {/* BELOW, and collapsed. Everything the landing surface must not carry. */}
           <section className="pdpp-section" id="configuration">
             <h2>
-              <span className="pdpp-section__numeral">02</span>Advanced configuration
+              <span className="pdpp-section__numeral">03</span>Advanced configuration
             </h2>
             <details className="pdpp-details">
               <summary>Settings you can override</summary>
@@ -170,7 +233,7 @@ export default function ReferencePage() {
 
           <section className="pdpp-section" id="implementations">
             <h2>
-              <span className="pdpp-section__numeral">03</span>Other implementations
+              <span className="pdpp-section__numeral">04</span>Other implementations
             </h2>
             <table className="pdpp-impl-table">
               <thead>

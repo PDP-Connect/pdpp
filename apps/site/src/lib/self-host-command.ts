@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
+
 /**
  * The self-host command model.
  *
@@ -70,7 +72,7 @@ export const defaultChoices: SelfHostChoices = {
   semanticSearch: true,
 };
 
-export type MethodId = "compose" | "railway";
+export type MethodId = "compose" | "fly" | "railway";
 
 /**
  * The browser-capable image. `core-browser` is the intended public artifact
@@ -136,6 +138,10 @@ export interface BuiltCommand {
   readonly segments: readonly CommandSegment[] | null;
   /** Shown in place of a command when `segments` is null. Never both. */
   readonly unavailable?: string;
+  /** Where "Open the template ->" (or equivalent) points when `unavailable` is set. */
+  readonly unavailableHref?: string;
+  /** The link's own label, since "Open the template" is wrong for a runbook. */
+  readonly unavailableLinkLabel?: string;
 }
 
 /**
@@ -150,11 +156,57 @@ function railwayCommand(): BuiltCommand {
   return {
     segments: null,
     unavailable: "Railway asks for these settings on its own deploy form, and gives the node a public address.",
+    unavailableHref: RAILWAY_TEMPLATE_URL,
+    unavailableLinkLabel: "Open the template",
+  };
+}
+
+/**
+ * Fly CAN run one real `fly launch` command (unlike Railway's template-only
+ * flow), but not one that keeps the same guarantee every other tab on this
+ * page keeps: every published image it could name fails the browser-capable
+ * requirement, or is not a public product name.
+ *
+ * Verified 2026-08-05: `docker manifest inspect` resolves only two tags for
+ * this repository's Fly-runnable image, `railway-core:main` and
+ * `railway-core:sha-2fbdb4a`. Neither is browser-capable — `docker run
+ * --entrypoint sh ... -c "ls /opt/patchright-browsers"` returns "No such file
+ * or directory" on both, and on a from-source build of the Dockerfile's
+ * `platform-core` target too, because `platform-core` is `FROM railway-core`
+ * with no browser-install layer added (see the Dockerfile). No neutrally
+ * named published repo exists as an alternative: `platform-core`,
+ * `core-platform`, and `pdpp-core` all 404 on ghcr.io. `platform-core` is a
+ * build-target alias, not a published tag.
+ *
+ * So a Fly command today would have to either name `railway-core` (a
+ * deployment-provider-specific internal target name, banned from reader-
+ * facing copy on this page for exactly this reason: see
+ * self-host-browser-capability.test.ts, "no command or copy exposes a
+ * platform-specific artifact name") or silently drop browser support that
+ * this page's own "Browser sources included" feature promises. Both are
+ * worse than telling the reader the shape and pointing them at the runbook
+ * that carries the same caveat: deploy/flyio/README.md states this scope
+ * line explicitly ("Out of scope: browser-backed connector collection inside
+ * the deployed app").
+ */
+function flyCommand(): BuiltCommand {
+  return {
+    segments: null,
+    unavailable:
+      "Fly.io needs a few more flags than fit in one line here, and its published image does not yet carry browser-based sign-in.",
+    unavailableHref: repoBlobUrl("deploy/flyio/README.md"),
+    unavailableLinkLabel: "Read the runbook",
   };
 }
 
 export function buildCommand(method: MethodId, choices: SelfHostChoices): BuiltCommand {
-  return method === "railway" ? railwayCommand() : { segments: composeCommand(choices) };
+  if (method === "railway") {
+    return railwayCommand();
+  }
+  if (method === "fly") {
+    return flyCommand();
+  }
+  return { segments: composeCommand(choices) };
 }
 
 /** Flatten a built command to the exact text the clipboard receives. */
@@ -168,11 +220,14 @@ export interface MethodDefinition {
 }
 
 /**
- * Railway last. It cannot carry the reader's choices (above), and the survey of
- * comparable self-hosted products found provider deploy buttons absent from
- * eight of nine primary install docs. Docker Compose is the path that works.
+ * Compose first: it is the only path that carries every choice above into the
+ * command shown. Fly and Railway both go after it, in that order, because
+ * both skip the Access/Search row (see the "HIDDEN ON RAILWAY AND FLY"
+ * comment in command-tabs.tsx) — Fly ahead of Railway because it is one real
+ * shell command a reader runs directly, where Railway is a link to a form.
  */
 export const METHODS: readonly MethodDefinition[] = [
   { id: "compose", label: "Docker Compose" },
+  { id: "fly", label: "Fly.io" },
   { id: "railway", label: "Railway" },
 ];
