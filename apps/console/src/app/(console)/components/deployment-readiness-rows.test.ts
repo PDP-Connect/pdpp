@@ -174,14 +174,15 @@ test("embeddingCacheRow is info when backend not configured", () => {
   assert.equal(row.status, "info");
 });
 
-test("embeddingCacheRow is error when uncached and download disabled", () => {
+test("embeddingCacheRow is warn when uncached and download disabled because lexical retrieval remains available", () => {
   const row = embeddingCacheRow({
     ...baseInputs,
     embeddingBackendAvailable: false,
     embeddingDownloadAllowed: false,
     embeddingModelCachePresent: false,
   });
-  assert.equal(row.status, "error");
+  assert.equal(row.status, "warn");
+  assert.match(row.detail, /lexical retrieval still works/);
 });
 
 test("embeddingCacheRow is warn while cache is warming", () => {

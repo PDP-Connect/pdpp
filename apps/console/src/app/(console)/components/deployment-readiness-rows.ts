@@ -282,9 +282,10 @@ export function embeddingCacheRow(inputs: ServerInputs): ReadinessRow {
   if (inputs.embeddingModelCachePresent === false && inputs.embeddingDownloadAllowed === false) {
     return {
       check: "Embedding cache",
-      detail: "Embedding model is not cached and download is disabled.",
-      hint: "Embedding cache is still downloading or missing. Wait for first-boot download to finish, or set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you do not need semantic search yet.",
-      status: "error",
+      detail:
+        "Embedding model is not cached and download is disabled. Semantic retrieval is unavailable; lexical retrieval still works.",
+      hint: "Enable embedding downloads or provide a cached model if you need semantic search; this does not block basic self-hosted sharing.",
+      status: "warn",
     };
   }
   return {
