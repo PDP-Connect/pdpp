@@ -430,6 +430,12 @@ export interface ControllerOptions {
     readonly reason: "interaction_timeout";
     readonly runId: string;
   }) => Promise<void> | void;
+  /**
+   * Awaited at every run-final barrier, including runs without a managed
+   * browser-surface lease. Streaming presentation state must be retired before
+   * the run nonce and all connector-owned targets are purged.
+   */
+  beforeRunCleanup?: (args: { readonly runId: string }) => Promise<void> | void;
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   /** Stable non-secret identity of the dynamic allocator scope for cache coalescing. */
   browserSurfaceAllocatorScopeId?: string;
@@ -3037,6 +3043,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to clear active run ${input.runId} for ${input.connectorId}: ${message}`);
     });
+    try {
+      await opts.beforeRunCleanup?.({ runId: input.runId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] run cleanup barrier failed for ${input.runId}: ${message}`);
+    }
     clearStreamingNonceForRun(input.runId);
     if (input.browserSurfaceLease) {
       await opts.beforeBrowserSurfaceLeaseRelease?.({ runId: input.runId });

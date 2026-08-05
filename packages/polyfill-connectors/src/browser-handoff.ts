@@ -29,12 +29,10 @@
  * closed mid-resolution, the connector still emits the interaction; the
  * streaming companion just won't have a target for it. Records still flow.
  *
- * NOTE on the launcher-time registration code path: this is the parallel
- * NEW code that replaces it. The launcher still pre-registers under a
- * `_launcher_bootstrap` interactionId — that path is scheduled for removal
- * once the connectors and binding paths route through this helper. Until
- * then, the two paths co-exist; the per-interaction registration here
- * overrides the launcher-time placeholder for any real `manual_action`.
+ * The launcher only publishes the browser's loopback CDP endpoint. This
+ * module is the single registration seam: a connector interaction (or
+ * browser-surface assistance request) supplies the exact interaction id and
+ * page, and this module binds that page to the run-scoped registry record.
  */
 
 import { randomBytes } from "node:crypto";
@@ -397,7 +395,15 @@ export async function prepareBrowserInteractionTarget(
   const resolveWsUrl = args.resolveWsUrl ?? resolveWsUrlForExactPage;
   const interactionId = args.interactionId ?? generateInteractionId();
 
-  const registration = await resolveStreamingRegistration(env);
+  let registration: StreamingTargetRegistrationHooks | undefined;
+  try {
+    registration = await resolveStreamingRegistration(env);
+  } catch {
+    process.stderr.write(
+      `[browser-handoff] streaming registration resolver failed for interaction ${interactionId}; continuing without streaming.\n`
+    );
+    return { interactionId, registered: false };
+  }
   if (!registration) {
     // No PDPP_RUN_ID + base URL + token combo in env. Streaming is not
     // configured for this run — return the interactionId so the connector
@@ -457,6 +463,44 @@ export async function prepareBrowserInteractionTarget(
 
 export function prepareManualAction(args: PrepareManualActionArgs): Promise<PrepareManualActionResult> {
   return prepareBrowserInteractionTarget(args);
+}
+
+/**
+ * Remove the interaction-scoped target after its owner interaction reaches a
+ * terminal state. The helper deliberately resolves the same run-scoped
+ * registration client as preparation; callers never handle a registry URL,
+ * CDP endpoint, or bearer token directly.
+ *
+ * Cleanup is best-effort. The reference server also removes every target for
+ * a terminal run, so a connector killed between registration and this call
+ * cannot leave an indefinitely controllable page behind.
+ */
+export async function unregisterBrowserInteractionTarget(args: {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly interactionId: string;
+  readonly resolveStreamingRegistration?: (
+    env?: NodeJS.ProcessEnv
+  ) => Promise<StreamingTargetRegistrationHooks | undefined>;
+}): Promise<boolean> {
+  if (!args.interactionId) {
+    return false;
+  }
+  const env = args.env ?? process.env;
+  const resolveStreamingRegistration = args.resolveStreamingRegistration ?? resolveStreamingRegistrationFromEnv;
+  let registration: StreamingTargetRegistrationHooks | undefined;
+  try {
+    registration = await resolveStreamingRegistration(env);
+  } catch {
+    return false;
+  }
+  if (!registration) {
+    return false;
+  }
+  try {
+    return await registration.unregister({ interactionId: args.interactionId, runId: registration.runId });
+  } catch {
+    return false;
+  }
 }
 
 // ─── manualAction: connector-author convenience layer ──────────────────────
@@ -536,13 +580,21 @@ export async function manualAction(
     ...(args.reason ? { reason: args.reason } : {}),
   });
 
-  return await sendInteraction({
-    kind: "manual_action",
-    request_id: interactionId,
-    message: args.message,
-    ...(args.schema ? { schema: args.schema } : {}),
-    ...(args.timeoutSeconds === undefined ? {} : { timeout_seconds: args.timeoutSeconds }),
-  });
+  try {
+    return await sendInteraction({
+      kind: "manual_action",
+      request_id: interactionId,
+      message: args.message,
+      ...(args.schema ? { schema: args.schema } : {}),
+      ...(args.timeoutSeconds === undefined ? {} : { timeout_seconds: args.timeoutSeconds }),
+    });
+  } finally {
+    await unregisterBrowserInteractionTarget({
+      interactionId,
+      ...(args.env ? { env: args.env } : {}),
+      ...(args.resolveStreamingRegistration ? { resolveStreamingRegistration: args.resolveStreamingRegistration } : {}),
+    });
+  }
 }
 
 // ─── Exports for tests ─────────────────────────────────────────────────────

@@ -122,7 +122,10 @@ export interface PlaygroundSession {
 
 export interface PlaygroundLike {
   getOrCreatePlaygroundSession: (opts: {
+    assistance?: boolean | undefined;
     backend?: string | undefined;
+    fresh?: boolean | undefined;
+    registerTarget?: boolean | undefined;
     streamDebug?: string | undefined;
   }) => Promise<PlaygroundSession> | PlaygroundSession;
 }
@@ -150,13 +153,38 @@ export function mountRefDevPlaygroundSession(app: AppLike, ctx: MountRefDevPlayg
         // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
         backend = body.backend;
       }
+      const assistance =
+        req.query?.assistance === "1" ||
+        req.query?.assistance === "true" ||
+        body?.assistance === true ||
+        body?.assistance === "1" ||
+        body?.assistance === "true";
+      const fresh =
+        req.query?.fresh === "1" ||
+        req.query?.fresh === "true" ||
+        body?.fresh === true ||
+        body?.fresh === "1" ||
+        body?.fresh === "true";
+      const registerTarget = !(
+        req.query?.register === "0" ||
+        req.query?.register === "false" ||
+        body?.register_target === false ||
+        body?.register_target === "0" ||
+        body?.register_target === "false"
+      );
       let streamDebug: string | undefined;
       if (typeof req.query?.stream_debug === "string") {
         streamDebug = req.query.stream_debug;
       } else if (body && typeof body.stream_debug === "string") {
         streamDebug = body.stream_debug;
       }
-      const session = await ctx.playground.getOrCreatePlaygroundSession({ backend, streamDebug });
+      const session = await ctx.playground.getOrCreatePlaygroundSession({
+        assistance,
+        backend,
+        fresh,
+        registerTarget,
+        streamDebug,
+      });
       return res.status(200).json({
         backend: session.backend,
         interaction_id: session.interactionId,

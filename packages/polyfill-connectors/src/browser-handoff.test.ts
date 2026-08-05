@@ -594,6 +594,43 @@ test("manualAction calls sendInteraction with kind=manual_action and the generat
   assert.equal(response.request_id, sent.request_id);
 });
 
+test("manualAction unregisters its exact target after response or send failure", async () => {
+  const env = envWithFullStreaming();
+  const page = makeMockPage();
+  const unregistered: string[] = [];
+  const resolveStreamingRegistration = () =>
+    Promise.resolve({
+      runId: "run_test_123",
+      register: () => Promise.resolve(true),
+      unregister: ({ interactionId }: { interactionId: string }) => {
+        unregistered.push(interactionId);
+        return Promise.resolve(true);
+      },
+    });
+
+  const success = await manualAction(
+    { env, message: "Continue after the response.", page, resolveStreamingRegistration },
+    (req) =>
+      Promise.resolve({
+        request_id: req.request_id ?? "",
+        status: "success",
+        type: "INTERACTION_RESPONSE",
+      })
+  );
+  assert.equal(success.status, "success");
+  assert.equal(unregistered.length, 1);
+  assert.match(unregistered[0] ?? "", /^int_\d+_[0-9a-f]{8}$/);
+
+  await assert.rejects(
+    manualAction({ env, message: "Continue after the failure.", page, resolveStreamingRegistration }, () =>
+      Promise.reject(new Error("interaction transport failed"))
+    ),
+    /interaction transport failed/
+  );
+  assert.equal(unregistered.length, 2, "failed interaction must still unregister its exact target");
+  assert.notEqual(unregistered[0], unregistered[1]);
+});
+
 test("manualAction passes optional schema through to sendInteraction", async () => {
   const page = makeMockPage();
   const schema = { type: "object", properties: { ok: { type: "string" } } } as const;

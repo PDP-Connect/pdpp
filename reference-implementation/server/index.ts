@@ -4465,6 +4465,14 @@ export function buildAsApp(opts: ServerOpts = {}) {
     clearTimeoutImpl: opts.streamingClearTimeout,
     companionFactory: streamingCompanionFactory,
     controller,
+    ...(opts.streamingCompanionFactory === undefined
+      ? {
+          hasDirectStreamingTargetForInteraction: (runId: string, interactionId: string) =>
+            typeof runTargetRegistry.get({ interactionId, runId }) === "string",
+        }
+      : {}),
+    forceUnregisterStreamingTarget: (runId: string, interactionId: string) =>
+      runTargetRegistry.forceUnregister({ interactionId, runId }),
     isNekoProxyTargetApproved: (
       target: unknown,
       { session }: { session?: { interaction_id?: string | null; run_id?: string | null } }
@@ -4590,11 +4598,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
     };
     if (originalCancelRun) {
       controller.cancelRun = async (runId, requestingOwnerSubjectId) => {
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-        const pending = controller.getPendingInteraction?.(runId);
-        if (pending?.interaction_id) {
-          await restorePresentationBeforeTerminal(runId, pending.interaction_id, "run_cancelled");
-        }
+        // Cancellation is a run-final barrier even when the connector is
+        // blocked in structured browser assistance rather than a legacy
+        // pending INTERACTION. Retire every presentation lifecycle here;
+        // finalizeRunCleanup also purges every registry target and nonce.
+        await streamingRoutes.restoreOrRetirePresentationForRun({ reason: "run_cancelled", run_id: runId });
         return await originalCancelRun(runId, requestingOwnerSubjectId);
       };
     }
@@ -4637,7 +4645,23 @@ export function buildAsApp(opts: ServerOpts = {}) {
   if (streamPlaygroundEnabled && controller) {
     const playground = (createPlayground as (...args: unknown[]) => ReturnType<typeof createPlayground>)({
       controller,
+      emitTimelineEvent: emitSpineEvent,
       logger: opts.streamingLogger,
+      onSessionTerminal: async ({
+        interactionId,
+        reason,
+        runId,
+      }: {
+        interactionId: string;
+        reason: string;
+        runId: string;
+      }) => {
+        await streamingRoutes.invalidateForInteractionResolved({
+          interaction_id: interactionId,
+          reason,
+          run_id: runId,
+        });
+      },
       runTargetRegistry,
     });
     mountRefDevPlaygroundSession(app, {
@@ -6612,14 +6636,14 @@ export async function startServer(opts: ServerOpts = {}) {
           connectorPathResolver: opts.connectorPathResolver as import("../runtime/controller.ts").ConnectorPathResolver,
         }),
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
-    beforeBrowserSurfaceLeaseRelease: async (args) => {
-      if (typeof presentationTerminalBarrier.releaseLease === "function") {
-        await presentationTerminalBarrier.releaseLease(args);
-      }
-    },
     beforeInteractionTerminal: async (args) => {
       if (typeof presentationTerminalBarrier.invoke === "function") {
         await presentationTerminalBarrier.invoke(args);
+      }
+    },
+    beforeRunCleanup: async (args) => {
+      if (typeof presentationTerminalBarrier.releaseLease === "function") {
+        await presentationTerminalBarrier.releaseLease(args);
       }
     },
     markStaticSecretCredentialRejected:

@@ -46,7 +46,13 @@ import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
-import { DEADLINE_TIMEOUT, manualAction, prepareBrowserInteractionTarget, withDeadline } from "./browser-handoff.ts";
+import {
+  DEADLINE_TIMEOUT,
+  manualAction,
+  prepareBrowserInteractionTarget,
+  unregisterBrowserInteractionTarget,
+  withDeadline,
+} from "./browser-handoff.ts";
 import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import type {
   AssistanceCompletionStatus,
@@ -884,6 +890,7 @@ export function runConnector(config: RunConnectorConfig): void {
         sendInteraction,
         assist,
         completeAssistance,
+        nextAssistanceRequestId: nextAssistanceId,
         progress,
         ensureSession,
         probeSession,
@@ -1017,6 +1024,7 @@ async function runInBrowser(args: {
   sendInteraction: BaseCollectContext["sendInteraction"];
   assist: BaseCollectContext["assist"];
   completeAssistance: BaseCollectContext["completeAssistance"];
+  nextAssistanceRequestId: () => string;
   progress: BaseCollectContext["progress"];
   ensureSession: BrowserConnectorConfig["ensureSession"];
   probeSession: BrowserConnectorConfig["probeSession"];
@@ -1030,6 +1038,7 @@ async function runInBrowser(args: {
     sendInteraction,
     assist,
     completeAssistance,
+    nextAssistanceRequestId,
     progress,
     ensureSession,
     probeSession,
@@ -1066,8 +1075,37 @@ async function runInBrowser(args: {
   baseCtx.capture?.setTraceCheckpointHook?.((label) => tracer.checkpoint(label));
   let page: Page | null = null;
   let runSucceeded = false;
+  const openBrowserSurfaceAssistanceIds = new Set<string>();
   try {
     page = await selectBrowserPageForRun(ctx, browser);
+    const browserAssist: BaseCollectContext["assist"] = async (req) => {
+      const assistanceRequestId = req.assistance_request_id ?? nextAssistanceRequestId();
+      if (req.attachments?.some((attachment) => attachment.kind === "browser_surface")) {
+        openBrowserSurfaceAssistanceIds.add(assistanceRequestId);
+        // Registration must happen before ASSISTANCE reaches the reference
+        // server. The server's owner-authenticated mint route can then fail
+        // closed unless this exact (run, assistance) target is ready.
+        await prepareBrowserInteractionTarget({
+          interactionId: assistanceRequestId,
+          page: page as Page,
+          reason: "manual_action",
+        });
+      }
+      return assist({ ...req, assistance_request_id: assistanceRequestId });
+    };
+    const browserCompleteAssistance: BaseCollectContext["completeAssistance"] = async (
+      assistanceRequestId,
+      status,
+      extra = {}
+    ) => {
+      try {
+        await completeAssistance(assistanceRequestId, status, extra);
+      } finally {
+        if (openBrowserSurfaceAssistanceIds.delete(assistanceRequestId)) {
+          await unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId });
+        }
+      }
+    };
     const browserSendInteraction = makeBrowserInteractionKeepalive({
       context: ctx,
       diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
@@ -1101,10 +1139,10 @@ async function runInBrowser(args: {
       establishSession(
         { ensureSession, probeSession },
         {
-          assist: watchdog.wrapAssist(assist),
+          assist: watchdog.wrapAssist(browserAssist),
           capture: baseCtx.capture,
           checkpoint: watchdog.checkpoint,
-          completeAssistance: watchdog.wrapCompleteAssistance(completeAssistance),
+          completeAssistance: watchdog.wrapCompleteAssistance(browserCompleteAssistance),
           context: ctx,
           page: page as Page,
           name,
@@ -1132,6 +1170,12 @@ async function runInBrowser(args: {
     throw err;
   } finally {
     await finalizeDiagnostics();
+    if (page) {
+      for (const assistanceRequestId of openBrowserSurfaceAssistanceIds) {
+        await unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId });
+      }
+      openBrowserSurfaceAssistanceIds.clear();
+    }
     if (shouldCloseBrowserPageAfterRun(browser, runSucceeded)) {
       await closeBrowserPage(page);
     }
@@ -1636,12 +1680,10 @@ export function decorateBrowserManualAction(
  * If a streaming-target registration credential is available in env
  * (PDPP_RUN_ID + PDPP_REFERENCE_BASE_URL + either
  * PDPP_STREAMING_REGISTRATION_TOKEN (Mode A, in-process runtime) or
- * PDPP_LOCAL_DEVICE_TOKEN (Mode B, collector-runner) — all three
- * required), the launcher additionally registers the page-target CDP
- * wsUrl with the reference server's run-target registry so the
- * streaming companion can resolve it by `runId` at viewer-attach time.
- * Registration is best-effort and never affects the run's outcome —
- * see `acquireIsolatedBrowser` for the failure semantics.
+ * PDPP_LOCAL_DEVICE_TOKEN (Mode B, collector-runner — all three required),
+ * the launcher exposes a loopback CDP endpoint. The browser handoff seam
+ * registers the exact page target when a browser interaction is emitted;
+ * launch alone never creates a run-wide or placeholder target.
  */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
   const { acquireBrowserForConnector, CdpAttachSessionRaceExhaustedError, HeadedBrowserUnavailableError } =

@@ -249,6 +249,17 @@ interface RegisterStreamingRoutesOptions {
   companionFactory: CompanionFactory | null;
   controller: StreamingController | null;
   emitTimelineEvent?: TimelineEmitter;
+  /** Force-delete one exact connector-owned target at an interaction barrier. */
+  forceUnregisterStreamingTarget?: ((runId: string, interactionId: string) => boolean | Promise<boolean>) | null;
+  /**
+   * Readiness-only hook for a non-n.eko target already registered by the
+   * connector runtime. The route intentionally receives a boolean rather
+   * than the CDP URL: raw page-target authority stays inside the companion
+   * factory and registry.
+   */
+  hasDirectStreamingTargetForInteraction?:
+    | ((runId: string, interactionId: string) => boolean | Promise<boolean>)
+    | null;
   isNekoProxyTargetApproved?:
     | ((target: NekoProxyTarget, context: { origin: URL; session: StreamingSession }) => boolean)
     | null;
@@ -800,6 +811,8 @@ function resolveCompanionBackend(companion: StreamingCompanion): Promise<string>
  * @param {Function} deps.now                  optional clock for tests
  * @param {Function} deps.emitTimelineEvent    optional override for tests; defaults to emitSpineEvent
  * @param {Function} deps.listRunEventsPage    optional bounded run timeline reader for no-response assistance minting
+ * @param {Function} deps.hasDirectStreamingTargetForInteraction readiness-only
+ *                                                lookup for a registered Core CDP target
  * @param {object} deps.browserSurfaceLeaseManager optional active browser-surface lease manager
  * @param {string} deps.nekoProxyPath          same-origin n.eko proxy path
  * @param {string|string[]} deps.nekoProxyAllowedHosts non-loopback n.eko hosts allowed for proxying
@@ -818,10 +831,12 @@ export function registerStreamingRoutes({
   streamingSessions,
   companionFactory,
   makeBrowserSessionId,
+  hasDirectStreamingTargetForInteraction = null,
   now = () => Date.now(),
   emitTimelineEvent = emitSpineEvent,
   listRunEventsPage = null,
   browserSurfaceLeaseManager = null,
+  forceUnregisterStreamingTarget = null,
   nekoProxyPath = DEFAULT_NEKO_PROXY_PATH,
   nekoProxyAllowedHosts = [],
   isNekoProxyTargetApproved = null,
@@ -837,7 +852,11 @@ export function registerStreamingRoutes({
 }: RegisterStreamingRoutesOptions): {
   _internal: {
     companions: Map<string, StreamingCompanion>;
-    getCompanion: (browserSessionId: string) => StreamingCompanion | null;
+    getCompanion: (input: {
+      browserSessionId: string;
+      interactionId: string;
+      runId: string;
+    }) => StreamingCompanion | null;
     handleNekoUpgrade: (rawReq: http.IncomingMessage, socket: import("node:net").Socket, head: Buffer) => boolean;
   };
   handleUpgrade: (rawReq: http.IncomingMessage, socket: import("node:net").Socket, head: Buffer) => boolean;
@@ -854,6 +873,15 @@ export function registerStreamingRoutes({
   if (!isNullish(companionFactory) && typeof companionFactory !== "function") {
     throw new Error("registerStreamingRoutes: companionFactory must be a function or null");
   }
+  if (
+    !isNullish(hasDirectStreamingTargetForInteraction) &&
+    typeof hasDirectStreamingTargetForInteraction !== "function"
+  ) {
+    throw new Error("registerStreamingRoutes: hasDirectStreamingTargetForInteraction must be a function or null");
+  }
+  if (!isNullish(forceUnregisterStreamingTarget) && typeof forceUnregisterStreamingTarget !== "function") {
+    throw new Error("registerStreamingRoutes: forceUnregisterStreamingTarget must be a function or null");
+  }
   if (typeof makePresentationAttachmentId !== "function") {
     throw new Error("registerStreamingRoutes: makePresentationAttachmentId must be a function");
   }
@@ -861,9 +889,10 @@ export function registerStreamingRoutes({
     throw new Error("registerStreamingRoutes: nekoWindowSettleProbe must be a function or null");
   }
 
-  // Companion instances by browser_session_id. One companion per pending
-  // interaction; reused for the SSE attach + input POSTs while the session is
-  // alive.
+  // Companion instances are fenced by the complete streaming identity. A
+  // browser_session_id is an opaque viewer label and may be reused by a test,
+  // reconnect, or a later run; it is never sufficient authority to select a
+  // page-target companion.
   const companions = new Map<string, StreamingCompanion>();
   // The browser-session token is deliberately reconnect-safe, so it is not
   // enough to identify the controlling presentation. The first SSE attach
@@ -889,31 +918,60 @@ export function registerStreamingRoutes({
   // remote-cdp factory) wires Patchright `exposeBinding` to forward in-page
   // `__pdppRemoteTelemetry(payload)` calls here. The forwarding path is
   // best-effort and never throws back into the page.
-  const remoteTelemetrySinks = new Map<string, () => void>(); // browser_session_id → unsubscribe fn
+  const remoteTelemetrySinks = new Map<string, () => void>(); // run/interaction/browser session → unsubscribe fn
   const allowedNekoHosts = parseAllowedHosts(nekoProxyAllowedHosts);
   const observedTransportKeys = new Map<string, Set<string>>();
 
-  function pushInputTelemetry(browserSessionId: string, record: RecordFields): void {
+  function streamingIdentityKey({
+    browserSessionId,
+    interactionId,
+    runId,
+  }: {
+    browserSessionId: string;
+    interactionId: string;
+    runId: string;
+  }): string {
+    return `${runId}\0${interactionId}\0${browserSessionId}`;
+  }
+
+  function sessionIdentityKey(session: StreamingSession): string {
+    return streamingIdentityKey({
+      browserSessionId: session.browser_session_id,
+      interactionId: session.interaction_id,
+      runId: session.run_id,
+    });
+  }
+
+  function pushInputTelemetry(sessionKey: string, record: RecordFields): void {
     try {
-      inputTelemetry.push(browserSessionId, record);
+      inputTelemetry.push(sessionKey, record);
     } catch {
       /* telemetry must never affect streaming */
     }
   }
 
-  function clearBrowserSessionDiagnostics(browser_session_id: string): void {
-    observedTransportKeys.delete(browser_session_id);
-    controllingAttachments.delete(browser_session_id);
-    presentationViewportDispatches.delete(browser_session_id);
-    const unsubscribe = remoteTelemetrySinks.get(browser_session_id);
-    remoteTelemetrySinks.delete(browser_session_id);
+  function clearBrowserSessionDiagnostics(session: {
+    browser_session_id: string;
+    interaction_id: string;
+    run_id: string;
+  }): void {
+    const sessionKey = streamingIdentityKey({
+      browserSessionId: session.browser_session_id,
+      interactionId: session.interaction_id,
+      runId: session.run_id,
+    });
+    observedTransportKeys.delete(sessionKey);
+    controllingAttachments.delete(sessionKey);
+    presentationViewportDispatches.delete(sessionKey);
+    const unsubscribe = remoteTelemetrySinks.get(sessionKey);
+    remoteTelemetrySinks.delete(sessionKey);
     try {
       unsubscribe?.();
     } catch {
       /* best-effort */
     }
     try {
-      inputTelemetry.drop(browser_session_id);
+      inputTelemetry.drop(sessionKey);
     } catch {
       /* best-effort */
     }
@@ -932,7 +990,7 @@ export function registerStreamingRoutes({
     const key = `${event}\0${normalized.stage}\0${normalized.transport}\0${normalized.errorCode}`;
     if (
       shouldDeduplicateTransportEvent(event) &&
-      !reserveTransportObservationKey(observedTransportKeys, session.browser_session_id, key)
+      !reserveTransportObservationKey(observedTransportKeys, sessionIdentityKey(session), key)
     ) {
       return;
     }
@@ -953,24 +1011,33 @@ export function registerStreamingRoutes({
         }
       : null;
 
-  function getCompanion(browser_session_id: string): StreamingCompanion | null {
-    return companions.get(browser_session_id) || null;
+  function getCompanion({
+    browserSessionId,
+    interactionId,
+    runId,
+  }: {
+    browserSessionId: string;
+    interactionId: string;
+    runId: string;
+  }): StreamingCompanion | null {
+    return companions.get(streamingIdentityKey({ browserSessionId, interactionId, runId })) || null;
   }
 
-  function registerRemoteInputTelemetry(browserSessionId: string, runId: string): void {
+  function registerRemoteInputTelemetry(browserSessionId: string, interactionId: string, runId: string): void {
+    const sessionKey = streamingIdentityKey({ browserSessionId, interactionId, runId });
     try {
       const unsubscribe = registerRemoteTelemetrySink(runId, (payload) => {
         const remotePayload = recordOrEmpty(payload);
         if (Object.keys(remotePayload).length === 0) {
           return;
         }
-        pushInputTelemetry(browserSessionId, {
+        pushInputTelemetry(sessionKey, {
           kind: typeof remotePayload.type === "string" ? `remote.page.${remotePayload.type}` : "remote.page.unknown",
           source: "remote_page",
           ...remotePayload,
         });
       });
-      remoteTelemetrySinks.set(browserSessionId, unsubscribe);
+      remoteTelemetrySinks.set(sessionKey, unsubscribe);
     } catch {
       /* sink registration is best-effort */
     }
@@ -990,7 +1057,8 @@ export function registerStreamingRoutes({
       target: BrowserSurfaceTarget | null;
     }
   ): StreamingCompanion | null {
-    const existing = companions.get(browserSessionId);
+    const sessionKey = streamingIdentityKey({ browserSessionId, interactionId, runId });
+    const existing = companions.get(sessionKey);
     if (existing) {
       return existing;
     }
@@ -1001,9 +1069,9 @@ export function registerStreamingRoutes({
       target,
     });
     if (companion) {
-      companions.set(browserSessionId, companion);
+      companions.set(sessionKey, companion);
     }
-    registerRemoteInputTelemetry(browserSessionId, runId);
+    registerRemoteInputTelemetry(browserSessionId, interactionId, runId);
     return companion;
   }
 
@@ -1101,7 +1169,11 @@ export function registerStreamingRoutes({
       pdppError(res, status, errorCode(err, "invalid_token"), errorMessage(err, "invalid token"));
       return null;
     }
-    const companion = getCompanion(session.browser_session_id);
+    const companion = getCompanion({
+      browserSessionId: session.browser_session_id,
+      interactionId: session.interaction_id,
+      runId: session.run_id,
+    });
     if (!companion) {
       pdppError(res, 410, "companion_unavailable", "Streaming companion is no longer attached");
       return null;
@@ -1140,7 +1212,11 @@ export function registerStreamingRoutes({
       );
       return null;
     }
-    const companion = getCompanion(session.browser_session_id);
+    const companion = getCompanion({
+      browserSessionId: session.browser_session_id,
+      interactionId: session.interaction_id,
+      runId: session.run_id,
+    });
     if (!companion) {
       pdppError(res, 410, "companion_unavailable", "Streaming companion is no longer attached");
       return null;
@@ -1200,35 +1276,45 @@ export function registerStreamingRoutes({
   }
 
   async function dispatchPresentationViewport(
-    browser_session_id: string,
+    session: StreamingSession,
     companion: StreamingCompanion,
     viewport: ReferenceWireViewportPayload
   ): Promise<void> {
-    const prior = presentationViewportDispatches.get(browser_session_id) || Promise.resolve();
+    const sessionKey = sessionIdentityKey(session);
+    const prior = presentationViewportDispatches.get(sessionKey) || Promise.resolve();
     const dispatched = prior.catch(() => undefined).then(() => companion.dispatch({ type: "viewport", ...viewport }));
-    presentationViewportDispatches.set(browser_session_id, dispatched);
+    presentationViewportDispatches.set(sessionKey, dispatched);
     try {
       await dispatched;
     } finally {
-      if (presentationViewportDispatches.get(browser_session_id) === dispatched) {
-        presentationViewportDispatches.delete(browser_session_id);
+      if (presentationViewportDispatches.get(sessionKey) === dispatched) {
+        presentationViewportDispatches.delete(sessionKey);
       }
     }
   }
 
   async function destroyCompanion(
-    browser_session_id: string,
+    session: {
+      browser_session_id: string;
+      interaction_id: string;
+      run_id: string;
+    },
     {
       fallbackCompanion = null,
       propagateStopFailure = false,
     }: { fallbackCompanion?: StreamingCompanion | null; propagateStopFailure?: boolean } = {}
   ): Promise<void> {
-    const companion = companions.get(browser_session_id) || fallbackCompanion;
-    clearBrowserSessionDiagnostics(browser_session_id);
+    const sessionKey = streamingIdentityKey({
+      browserSessionId: session.browser_session_id,
+      interactionId: session.interaction_id,
+      runId: session.run_id,
+    });
+    const companion = companions.get(sessionKey) || fallbackCompanion;
+    clearBrowserSessionDiagnostics(session);
     if (!companion) {
       return;
     }
-    companions.delete(browser_session_id);
+    companions.delete(sessionKey);
     try {
       await companion.stop();
     } catch (err) {
@@ -1254,7 +1340,8 @@ export function registerStreamingRoutes({
     req: StreamingRequest,
     res: StreamingReply
   ): boolean {
-    const existing = controllingAttachments.get(session.browser_session_id);
+    const sessionKey = sessionIdentityKey(session);
+    const existing = controllingAttachments.get(sessionKey);
     const presented = attachmentIdFrom(req, session);
     if (existing) {
       return existing === presented;
@@ -1263,7 +1350,7 @@ export function registerStreamingRoutes({
     if (typeof attachmentId !== "string" || attachmentId.length === 0) {
       throw new Error("presentation attachment id minter returned an invalid id");
     }
-    controllingAttachments.set(session.browser_session_id, attachmentId);
+    controllingAttachments.set(sessionKey, attachmentId);
     setPresentationAttachmentCookie(
       res,
       attachmentId,
@@ -1274,7 +1361,7 @@ export function registerStreamingRoutes({
   }
 
   function isControllingPresentationAttachment(session: StreamingSession, req: StreamingRequest): boolean {
-    const controllerAttachment = controllingAttachments.get(session.browser_session_id);
+    const controllerAttachment = controllingAttachments.get(sessionIdentityKey(session));
     return Boolean(controllerAttachment && controllerAttachment === attachmentIdFrom(req, session));
   }
 
@@ -1298,7 +1385,7 @@ export function registerStreamingRoutes({
     const presentationTarget = lifecycle.companion.getNekoProxyTarget?.() || null;
     const terminalization = (async () => {
       try {
-        await destroyCompanion(lifecycle.browser_session_id, {
+        await destroyCompanion(lifecycle, {
           fallbackCompanion: lifecycle.companion,
           propagateStopFailure: true,
         });
@@ -1339,6 +1426,8 @@ export function registerStreamingRoutes({
         restoreError.code = "presentation_restore_failed";
         restoreError.cause = err;
         throw restoreError;
+      } finally {
+        await forceUnregisterStreamingTargetForInteraction(lifecycle.run_id, lifecycle.interaction_id);
       }
     })();
     lifecycle.terminalization = terminalization;
@@ -1369,8 +1458,9 @@ export function registerStreamingRoutes({
         run_id,
       });
       if (invalidated?.browser_session_id) {
-        clearBrowserSessionDiagnostics(invalidated.browser_session_id);
+        clearBrowserSessionDiagnostics(invalidated);
       }
+      await forceUnregisterStreamingTargetForInteraction(run_id, interaction_id);
       return;
     }
     await terminalizePresentation(lifecycle, { invalidateBearer: true, reason });
@@ -1383,11 +1473,12 @@ export function registerStreamingRoutes({
     reason: string;
     run_id: string;
   }): Promise<void> {
-    const lifecycle = [...presentationLifecycles.values()].find((candidate) => candidate.run_id === run_id);
-    if (!lifecycle) {
-      return;
-    }
-    await terminalizePresentation(lifecycle, { invalidateBearer: true, reason: reason || "run_cleanup" });
+    const lifecycles = [...presentationLifecycles.values()].filter((candidate) => candidate.run_id === run_id);
+    await Promise.all(
+      lifecycles.map((lifecycle) =>
+        terminalizePresentation(lifecycle, { invalidateBearer: true, reason: reason || "run_cleanup" })
+      )
+    );
   }
 
   async function emit(
@@ -1616,6 +1707,75 @@ export function registerStreamingRoutes({
     };
   }
 
+  async function directStreamingTargetReady(runId: string, interactionId: string): Promise<boolean> {
+    if (typeof hasDirectStreamingTargetForInteraction !== "function") {
+      return false;
+    }
+    return await hasDirectStreamingTargetForInteraction(runId, interactionId);
+  }
+
+  async function forceUnregisterStreamingTargetForInteraction(runId: string, interactionId: string): Promise<void> {
+    if (typeof forceUnregisterStreamingTarget !== "function") {
+      return;
+    }
+    try {
+      await forceUnregisterStreamingTarget(runId, interactionId);
+    } catch {
+      // Run-final registry purge remains authoritative if this best-effort
+      // interaction barrier races a controller shutdown.
+    }
+  }
+
+  async function resolvePendingMintScope(
+    runId: string,
+    interactionId: string,
+    pending: PendingInteraction
+  ): Promise<{ kind: string; target: BrowserSurfaceTarget | null }> {
+    if (pending.interaction_id !== interactionId) {
+      throw mintError(
+        409,
+        "interaction_id_mismatch",
+        `Pending interaction is ${pending.interaction_id}, not ${interactionId}`,
+        "interaction_id"
+      );
+    }
+    const pendingKind = pending.kind;
+    if (pendingKind !== "manual_action" && pendingKind !== "otp") {
+      throw mintError(
+        409,
+        "stream_not_supported_for_kind",
+        `Streaming is not supported for interaction kind ${pendingKind ?? "unknown"}`
+      );
+    }
+    const target = await buildBrowserSurfaceAssistanceTarget(runId, interactionId);
+    if (!target && typeof hasDirectStreamingTargetForInteraction === "function") {
+      const ready = await directStreamingTargetReady(runId, interactionId);
+      if (!ready) {
+        throw mintError(
+          503,
+          "streaming_companion_unavailable",
+          "A browser-control interaction is current, but no ready browser surface is registered for this run."
+        );
+      }
+    }
+    return { kind: pendingKind, target };
+  }
+
+  async function resolveNoResponseMintScope(
+    runId: string,
+    interactionId: string
+  ): Promise<{ kind: string; target: BrowserSurfaceTarget | null }> {
+    const target = await buildBrowserSurfaceAssistanceTarget(runId, interactionId);
+    if (target || (await directStreamingTargetReady(runId, interactionId))) {
+      return { kind: "manual_action", target };
+    }
+    throw mintError(
+      503,
+      "streaming_companion_unavailable",
+      "A browser-surface assistance request is current, but no ready browser surface is registered for this run."
+    );
+  }
+
   async function resolveMintScope(
     runId: string,
     interactionId: string
@@ -1625,40 +1785,11 @@ export function registerStreamingRoutes({
     }
     const pending = controller.getPendingInteraction(runId);
     if (pending) {
-      if (pending.interaction_id !== interactionId) {
-        throw mintError(
-          409,
-          "interaction_id_mismatch",
-          `Pending interaction is ${pending.interaction_id}, not ${interactionId}`,
-          "interaction_id"
-        );
-      }
-      const pendingKind = pending.kind;
-      if (pendingKind !== "manual_action" && pendingKind !== "otp") {
-        throw mintError(
-          409,
-          "stream_not_supported_for_kind",
-          `Streaming is not supported for interaction kind ${pendingKind ?? "unknown"}`
-        );
-      }
-      return {
-        kind: pendingKind,
-        target: await buildBrowserSurfaceAssistanceTarget(runId, pending.interaction_id),
-      };
+      return await resolvePendingMintScope(runId, interactionId, pending);
     }
-
     if (await isCurrentNoResponseBrowserAssistance(runId, interactionId)) {
-      const target = await buildBrowserSurfaceAssistanceTarget(runId, interactionId);
-      if (!target) {
-        throw mintError(
-          503,
-          "streaming_companion_unavailable",
-          "A browser-surface assistance request is current, but no ready browser surface is available for this run."
-        );
-      }
-      return { kind: "manual_action", target };
+      return await resolveNoResponseMintScope(runId, interactionId);
     }
-
     throw mintError(409, "no_pending_interaction", "No pending interaction for this run");
   }
 
@@ -1667,7 +1798,11 @@ export function registerStreamingRoutes({
     stage = "neko_proxy"
   ): { companion: StreamingCompanion; origin: URL; session: StreamingSession } {
     const session = streamingSessions.authorize({ token });
-    const companion = getCompanion(session.browser_session_id);
+    const companion = getCompanion({
+      browserSessionId: session.browser_session_id,
+      interactionId: session.interaction_id,
+      runId: session.run_id,
+    });
     if (!companion || typeof companion.getNekoProxyTarget !== "function") {
       observeStreamTransport("stream_neko_proxy_target_unavailable", session, {
         error_code: "companion_unavailable",
@@ -2207,7 +2342,8 @@ body>p{display:none!important}
     const correlationId = typeof body.correlationId === "string" ? body.correlationId : null;
     const wireSeq = typeof body.wireSeq === "number" ? body.wireSeq : null;
     const receivedAtMs = Date.now();
-    pushInputTelemetry(session.browser_session_id, {
+    const sessionKey = sessionIdentityKey(session);
+    pushInputTelemetry(sessionKey, {
       action: body.action || null,
       correlationId,
       eventType: body.type || null,
@@ -2219,7 +2355,7 @@ body>p{display:none!important}
     });
     try {
       await companion.dispatch(body);
-      pushInputTelemetry(session.browser_session_id, {
+      pushInputTelemetry(sessionKey, {
         action: body.action || null,
         correlationId,
         dispatchLatencyMs: Date.now() - receivedAtMs,
@@ -2229,7 +2365,7 @@ body>p{display:none!important}
         wireSeq,
       });
     } catch (err) {
-      pushInputTelemetry(session.browser_session_id, {
+      pushInputTelemetry(sessionKey, {
         action: body.action || null,
         correlationId,
         errorCode: errorCode(err, "invalid_input"),
@@ -2257,7 +2393,7 @@ body>p{display:none!important}
       return pdppError(res, status, errorCode(err, "invalid_token"), errorMessage(err, "invalid token"));
     }
     const { since } = parseReferenceWireInputTelemetryCursor(req.query.since);
-    const { seq, records } = inputTelemetry.readSince(session.browser_session_id, since);
+    const { seq, records } = inputTelemetry.readSince(sessionIdentityKey(session), since);
     return res.status(200).json({
       object: "run_interaction_stream_input_telemetry",
       records,
@@ -2286,7 +2422,11 @@ body>p{display:none!important}
         "Only the controlling stream attachment may change the presentation viewport"
       );
     }
-    const companion = getCompanion(session.browser_session_id);
+    const companion = getCompanion({
+      browserSessionId: session.browser_session_id,
+      interactionId: session.interaction_id,
+      runId: session.run_id,
+    });
     if (!companion) {
       return pdppError(res, 410, "companion_unavailable", "Streaming companion is no longer attached");
     }
@@ -2296,7 +2436,7 @@ body>p{display:none!important}
       if (!companionViewport) {
         throw new Error("viewport is required");
       }
-      await dispatchPresentationViewport(session.browser_session_id, companion, companionViewport);
+      await dispatchPresentationViewport(session, companion, companionViewport);
     } catch (err) {
       return pdppError(res, 400, errorCode(err, "invalid_input"), errorMessage(err, "invalid input"));
     }

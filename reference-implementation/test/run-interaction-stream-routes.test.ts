@@ -3407,8 +3407,15 @@ test("only the controlling SSE attachment may rotate the presentation viewport",
 test("two stream sessions in one cookie jar retain session-scoped controller authority", async () => {
   const dispatched: InputEvent[] = [];
   await withHarness(
-    { makeCompanion: makeMockNekoCompanion("http://127.0.0.1:9", { dispatchedEvents: dispatched }) },
-    async ({ asUrl, server, spotifyManifest }) => {
+    {
+      makeCompanion: makeMockNekoCompanion("http://127.0.0.1:9", { dispatchedEvents: dispatched }),
+      // A browser_session_id is intentionally not globally unique. Reusing it
+      // across two live run/interaction pairs must still create two isolated
+      // companions; the complete (run, interaction, browser-session) identity
+      // is the cache key.
+      makeStreamingBrowserSessionId: () => "bs_same_across_runs",
+    },
+    async ({ asUrl, companions, server, spotifyManifest }) => {
       // Same canonicalization requirement as the direct-`runNow` test above,
       // plus: each run below claims an explicit, literal `connectorInstanceId`
       // that must actually exist in the store for the controller's real-store
@@ -3470,6 +3477,8 @@ test("two stream sessions in one cookie jar retain session-scoped controller aut
       );
       assert.ok(mintA, "expected a mint result for run A");
       assert.ok(mintB, "expected a mint result for run B");
+      assert.equal(companions.length, 2, "same browser_session_id must not reuse a cross-run companion");
+      assert.notEqual(companions[0]?.companion, companions[1]?.companion, "companion objects must remain isolated");
 
       const controllerAbortA = new AbortController();
       const controllerAbortB = new AbortController();
@@ -3488,7 +3497,7 @@ test("two stream sessions in one cookie jar retain session-scoped controller aut
         assert.equal(observerA.headers.get("set-cookie"), null, "observer must not receive controller authority");
         const cookieA = presentationAttachmentCookie(streamA);
         const cookieB = presentationAttachmentCookie(streamB);
-        assert.notEqual(cookieA.split("=", 1)[0], cookieB.split("=", 1)[0]);
+        assert.notEqual(cookieA, cookieB, "same browser_session_id still needs distinct attachment values");
 
         for (const [path, body] of [
           [mintA.viewport_path, { height: 390, width: 844 }],
