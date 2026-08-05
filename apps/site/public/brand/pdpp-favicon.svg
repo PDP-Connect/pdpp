@@ -10,5 +10,9 @@
      4.32 very dark. -->
 <!-- biome-ignore lint/a11y/noSvgWithoutTitle: decorative favicon; the accessible name lives on the link that renders the mark. -->
 <svg viewBox="0 30 80 130" xmlns="http://www.w3.org/2000/svg">
-  <path d="M60 30C65.3043 30 70.3919 32.1067 74.1426 35.8574C77.8933 39.6081 80 44.6957 80 50V110C80 115.304 77.8933 120.392 74.1426 124.143C70.3919 127.893 65.3043 130 60 130H20V160H0V30H60ZM20 50V110H60V50H20Z" fill="#1c9488" fill-rule="evenodd" />
+  <path
+    d="M60 30C65.3043 30 70.3919 32.1067 74.1426 35.8574C77.8933 39.6081 80 44.6957 80 50V110C80 115.304 77.8933 120.392 74.1426 124.143C70.3919 127.893 65.3043 130 60 130H20V160H0V30H60ZM20 50V110H60V50H20Z"
+    fill="#1c9488"
+    fill-rule="evenodd"
+  />
 </svg>
