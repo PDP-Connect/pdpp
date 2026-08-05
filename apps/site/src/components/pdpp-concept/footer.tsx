@@ -1,60 +1,76 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-const GITHUB_ICON_PATH =
-  "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z";
+import { DiscordIcon, GithubIcon } from "./icons.tsx";
+import { DISCORD_INVITE_URL, GITHUB_REPO_URL, SITE_LICENSES } from "./site-facts.ts";
 
-function GithubIcon() {
-  return (
-    <svg aria-hidden="true" className="pdpp-icon-github" focusable="false" viewBox="0 0 16 16">
-      <path d={GITHUB_ICON_PATH} fill="currentColor" />
-    </svg>
-  );
-}
-
-export function PdppConceptFooter({
-  sourceHref = "https://github.com/PDP-Connect/pdpp",
-  sourceLabel = "github.com/PDP-Connect/pdpp",
-  licenses = (
-    <dl className="pdpp-footer__license-list">
-      <div className="pdpp-license-row">
-        <dt>Reference implementation</dt>
-        <dd>Apache-2.0</dd>
-      </div>
-      <div className="pdpp-license-row">
-        <dt>Specification text</dt>
-        <dd>CSL-1.0</dd>
-      </div>
-      <div className="pdpp-license-row">
-        <dt>Documentation</dt>
-        <dd>CC-BY-4.0</dd>
-      </div>
-    </dl>
-  ),
-}: {
-  sourceHref?: string;
-  sourceLabel?: string;
-  licenses?: React.ReactNode;
-}) {
+// ONE footer, identical on every page. The owner's finding was that the footer
+// differed on all four pages; the fix is a single component that takes no
+// per-page props, so there is no seam where they can diverge again.
+//
+// Column order and content are load-bearing:
+//   LICENSE     — all three licenses LINKED and LABELLED by the artifact they
+//                 cover, specification text FIRST (explicit owner instruction).
+//   SOURCE      — the repository, with the GitHub mark.
+//   COMMUNITY   — Discord. Named for the category, not the product: LICENSE /
+//                 SOURCE / GOVERNANCE all name a kind of information, and the
+//                 link text underneath already says "Discord". COMMUNITY is
+//                 also the dominant convention (Docusaurus's default footer
+//                 scaffold, reused by vercel.com) and absorbs a forum or a
+//                 mailing list later without a rename.
+//   GOVERNANCE  — the LFDT lab line.
+//
+// Four columns exactly, on all four pages. A fifth was tried during the concept
+// pass and reverted: it wrapped to a second row at 1280px.
+export function PdppConceptFooter() {
   return (
     <footer className="pdpp-footer">
       <div className="pdpp-footer__inner">
         <div className="pdpp-footer__col pdpp-footer__licenses">
           <p className="pdpp-footer__label">License</p>
-          {licenses}
+          <dl className="pdpp-footer__license-list">
+            {SITE_LICENSES.map((row) => (
+              <div className="pdpp-license-row" key={row.artifact}>
+                <dt>{row.artifact}</dt>
+                <dd>
+                  <a href={row.href} rel="noopener noreferrer" target="_blank">
+                    {row.spdx}
+                  </a>
+                </dd>
+              </div>
+            ))}
+          </dl>
         </div>
+
         <div className="pdpp-footer__col">
           <p className="pdpp-footer__label">Source</p>
           <p>
-            <a className="pdpp-footer__source-link" href={sourceHref} rel="noopener noreferrer" target="_blank">
+            <a className="pdpp-footer__source-link" href={GITHUB_REPO_URL} rel="noopener noreferrer" target="_blank">
               <GithubIcon />
-              {sourceLabel}
+              github.com/PDP-Connect/pdpp
             </a>
           </p>
         </div>
+
+        <div className="pdpp-footer__col">
+          <p className="pdpp-footer__label">Community</p>
+          <p>
+            <a className="pdpp-footer__source-link" href={DISCORD_INVITE_URL} rel="noopener noreferrer" target="_blank">
+              <DiscordIcon />
+              #pdp-connect on LFDT Discord
+            </a>
+          </p>
+        </div>
+
         <div className="pdpp-footer__col">
           <p className="pdpp-footer__label">Governance</p>
-          <p>PDP-Connect is an LF Decentralized Trust Lab.</p>
+          <p>
+            PDP-Connect is an{" "}
+            <a href="https://www.lfdecentralizedtrust.org/" rel="noopener noreferrer" target="_blank">
+              LF Decentralized Trust
+            </a>{" "}
+            Lab.
+          </p>
         </div>
       </div>
     </footer>
