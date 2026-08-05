@@ -1182,3 +1182,156 @@
   width: 1em;
   height: 1em;
 }
+
+/* ─── Command tabs ───────────────────────────────────────────────────────────
+   Adapted from the opencode.ai install block: one bordered panel, plain-text
+   tabs above a thin rule, one command below, nothing else. Translated to paper
+   and teal rather than their dark ground — the pattern is the restraint and the
+   hierarchy, not the colour. */
+.pdpp-cmd {
+  margin: 32px 0 8px;
+  background: var(--pdpp-concept-paper);
+  border: var(--pdpp-concept-rule);
+  border-radius: 4px;
+}
+/* The command panel is not prose and should not sit at the 68ch prose measure —
+   a shell line is as long as it is. It breaks out to the full column so the
+   command can breathe, while the text around it keeps its measure.
+   Declared AFTER the base rule it overrides: a (0,2,0) selector before a
+   (0,1,0) one is descending specificity. */
+.pdpp-doc > .pdpp-cmd {
+  max-inline-size: none;
+  width: 100%;
+}
+.pdpp-cmd__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px 0;
+  border-bottom: var(--pdpp-concept-rule-faint);
+}
+/* Plain text, not buttons: no fill, no border, no pill. The active one is ink
+   with an underline inset to the label width; the rest recede. */
+.pdpp-cmd__tab {
+  padding: 10px 12px 9px;
+  margin-bottom: -1px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 14px;
+  color: var(--pdpp-concept-ink-faint);
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+}
+.pdpp-cmd__tab:hover {
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-cmd__tab[aria-selected="true"] {
+  color: var(--pdpp-concept-ink);
+  border-bottom-color: var(--pdpp-concept-teal);
+}
+.pdpp-cmd__tab:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: -2px;
+  border-radius: 2px;
+}
+.pdpp-cmd__panel {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px;
+}
+.pdpp-cmd__line {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 13.5px;
+  line-height: 1.75;
+  /* Boilerplate recedes so the emphasised token can land. */
+  color: var(--pdpp-concept-ink-faint);
+  /* `pre`, NOT `pre-wrap`: a shell line broken mid-token reads as a different
+     command, and the wrapped `printf` looked like three commands rather than
+     one. Long lines scroll horizontally inside the panel instead — what every
+     terminal does, and the copy button makes the scroll cheap. */
+  white-space: pre;
+}
+.pdpp-cmd__line code {
+  padding: 0;
+  font-size: 1em;
+  color: inherit;
+  background: none;
+  border-radius: 0;
+}
+/* The one token that says WHAT you are running. */
+.pdpp-cmd__em {
+  font-weight: 600;
+  color: var(--pdpp-concept-ink);
+}
+.pdpp-cmd__copy {
+  flex: none;
+  padding: 5px 12px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 11px;
+  color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  background: none;
+  border: var(--pdpp-concept-rule);
+  border-radius: 2px;
+}
+.pdpp-cmd__copy:hover,
+.pdpp-cmd__copy:focus-visible {
+  color: var(--pdpp-concept-teal);
+  border-color: var(--pdpp-concept-teal);
+}
+/* One line, outside the panel so the panel itself stays bare. */
+.pdpp-cmd__note {
+  margin: 12px 2px 0;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 14px;
+  color: var(--pdpp-concept-ink-soft);
+}
+@media (max-width: 560px) {
+  .pdpp-cmd__panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pdpp-cmd__copy {
+    align-self: flex-start;
+  }
+}
+
+/* ─── Two-up split (local vs hosted access) ─────────────────────────────── */
+.pdpp-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 32px;
+  margin-top: 24px;
+}
+.pdpp-split__half h3 {
+  margin-bottom: 8px;
+}
+.pdpp-split__half p {
+  color: var(--pdpp-concept-ink-soft);
+}
+
+/* ─── Collapsed advanced block ──────────────────────────────────────────── */
+.pdpp-details {
+  margin-top: 20px;
+}
+.pdpp-details > summary {
+  padding: 8px 0;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+  color: var(--pdpp-concept-teal);
+  cursor: pointer;
+}
+.pdpp-details > summary:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
