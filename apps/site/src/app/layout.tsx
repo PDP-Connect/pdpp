@@ -3,7 +3,7 @@
 
 import { LAUNCH_COLORS, launchFoucGuardCss } from "@pdpp/brand/launch-colors";
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Literata, Public_Sans } from "next/font/google";
+import { IBM_Plex_Mono, Newsreader, Public_Sans } from "next/font/google";
 import { cookies } from "next/headers";
 import { PdppRootProvider } from "@/components/pdpp-concept/search-hotkeys.tsx";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
@@ -13,7 +13,7 @@ import "./globals.css";
 
 // PDPP concept document register fonts (home, docs, reference, participate).
 // See pdpp-concept.css — these CSS variables back --pdpp-concept-serif/sans/mono.
-const pdppSerif = Literata({
+const pdppSerif = Newsreader({
   style: ["normal", "italic"],
   subsets: ["latin"],
   variable: "--font-pdpp-serif",

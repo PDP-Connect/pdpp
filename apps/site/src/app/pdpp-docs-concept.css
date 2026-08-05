@@ -26,51 +26,24 @@
   );
 }
 
-[data-pdpp-doc-theme] #nd-sidebar {
-  font-family: var(--pdpp-concept-sans);
-  font-size: 13px;
-  background: var(--pdpp-concept-paper-deep);
-  border-right-color: color-mix(
-    in srgb,
-    var(--pdpp-concept-ink) 18%,
-    var(--pdpp-concept-paper)
-  );
-}
-
-[data-pdpp-doc-theme] #nd-sidebar a,
-[data-pdpp-doc-theme] #nd-sidebar button,
-[data-pdpp-doc-theme] #nd-sidebar summary {
-  color: var(--pdpp-concept-ink-soft);
-}
-
-[data-pdpp-doc-theme] #nd-sidebar a[data-active="true"],
-[data-pdpp-doc-theme] #nd-sidebar button[data-active="true"] {
-  color: var(--pdpp-concept-teal);
-  background: var(--pdpp-concept-teal-wash);
-}
-
-[data-pdpp-doc-theme] #nd-sidebar [data-active="true"]::before {
-  background: var(--pdpp-concept-teal);
-}
-
-[data-pdpp-doc-theme] #nd-sidebar [class*="mb-1 px-2 mt-6"] {
-  font-family: var(--pdpp-concept-sans);
-  color: var(--pdpp-concept-ink-faint);
-  letter-spacing: 0.08em;
-}
-
 [data-pdpp-doc-theme] #nd-page {
   color: var(--pdpp-concept-ink);
 }
 
+/* Base .pdpp-docs-hero (packages/pdpp-brand/docs.css) is the operator-console
+   register's boxed treatment: a gradient wash, a left accent rule, a bottom
+   border. The concept's front matter (styles.css .frontmatter) is plain text
+   with no box at all — no fill, no border, just padding — so this neutralizes
+   the shared component's box model rather than recoloring it, keeping
+   fumadocs itself unforked. */
 [data-pdpp-doc-theme] .pdpp-docs-hero {
-  background: var(--pdpp-concept-teal-wash);
-  border-bottom-color: color-mix(
-    in srgb,
-    var(--pdpp-concept-ink) 18%,
-    var(--pdpp-concept-paper)
-  );
-  border-left-color: var(--pdpp-concept-teal);
+  margin-inline: 0;
+  background: none;
+  border-bottom: none;
+  border-left: none;
+}
+[data-pdpp-doc-theme] .pdpp-docs-hero__content {
+  padding: 0;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-title {
@@ -187,6 +160,57 @@
   );
 }
 
+/* fumadocs' <Cards>/<Card> MDX component renders a rounded, bordered tile
+   grid (packages/fumadocs-ui Card.tsx: `rounded-xl border bg-fd-card`). The
+   concept has no card/tile idiom anywhere — every list on spec.html and
+   reference.html is a flat ruled row (.ruled-list, .features). Flattened here
+   by selector to match: square corners, a hairline top/bottom rule instead of
+   an all-around border, no hover fill. Card is still fumadocs' own component
+   (not forked) — this only removes its box-model, the same treatment already
+   applied to .pdpp-docs-hero above. */
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] {
+  background: none;
+  border: none;
+  border-top: var(--pdpp-concept-rule-faint);
+  border-radius: 0;
+  transition: background-color 120ms ease;
+}
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:last-child {
+  border-bottom: var(--pdpp-concept-rule-faint);
+}
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:hover {
+  background: var(--pdpp-concept-teal-wash);
+}
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] h3 {
+  font-family: var(--pdpp-concept-sans);
+  font-weight: 600;
+  color: var(--pdpp-concept-ink);
+}
+
+/* The "Copy Markdown"/"Open" actions render as fumadocs' pill buttons
+   (border-radius: 999px in packages/pdpp-brand/docs.css .pdpp-docs-actions
+   a/button). The concept's only button idiom (.copy-btn) is a flat 0-2px
+   rectangle with a hairline border. Squared here without touching the shared
+   rule, which the operator-console register still uses pill-shaped. */
+[data-pdpp-doc-theme] .pdpp-docs-actions a,
+[data-pdpp-doc-theme] .pdpp-docs-actions button {
+  border-radius: 2px;
+}
+
+/* fumadocs' built-in prev/next page footer (rendered after .pdpp-docs-body,
+   no stable class/id — a `rounded-lg border` card, same idiom as <Cards>).
+   Selected structurally rather than by its Tailwind utility classes, which
+   are more likely to shift across a fumadocs upgrade than the DOM position.
+   Flattened the same way as the Card grid above. */
+[data-pdpp-doc-theme] .pdpp-docs-body + div a {
+  border: none;
+  border-top: var(--pdpp-concept-rule-faint);
+  border-radius: 0;
+}
+[data-pdpp-doc-theme] .pdpp-docs-body + div a:hover {
+  background: var(--pdpp-concept-teal-wash);
+}
+
 [data-pdpp-doc-theme] #nd-toc {
   font-family: var(--pdpp-concept-sans);
   color: var(--pdpp-concept-ink-soft);
@@ -199,4 +223,38 @@
 
 [data-pdpp-doc-theme] #nd-toc a[data-active="true"] {
   color: var(--pdpp-concept-teal);
+}
+
+/* The concept's rail (.rail) is transparent — no fill, no border, just
+   padding — so it reads as part of the page rather than a boxed panel.
+   Flattened to match; fumadocs' own sidebar structure (its independent
+   scroll region, the mobile drawer) is left alone, since removing that would
+   mean forking the component rather than restyling it. */
+[data-pdpp-doc-theme] #nd-sidebar {
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  background: none;
+  border-right: none;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar a,
+[data-pdpp-doc-theme] #nd-sidebar button,
+[data-pdpp-doc-theme] #nd-sidebar summary {
+  color: var(--pdpp-concept-ink-soft);
+}
+
+[data-pdpp-doc-theme] #nd-sidebar a[data-active="true"],
+[data-pdpp-doc-theme] #nd-sidebar button[data-active="true"] {
+  color: var(--pdpp-concept-teal);
+  background: var(--pdpp-concept-teal-wash);
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [data-active="true"]::before {
+  background: var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [class*="mb-1 px-2 mt-6"] {
+  font-family: var(--pdpp-concept-sans);
+  color: var(--pdpp-concept-ink-faint);
+  letter-spacing: 0.08em;
 }

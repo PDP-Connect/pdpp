@@ -14,11 +14,15 @@
  */
 
 :root {
-  --pdpp-concept-paper: #faf7f2;
-  --pdpp-concept-paper-deep: #f2eee6;
+  --pdpp-concept-paper: #f5f6f6;
+  --pdpp-concept-paper-deep: #ebeded;
+  --pdpp-concept-paper-panel: #dce8e4;
   --pdpp-concept-ink: #1a1a17;
   --pdpp-concept-ink-soft: #57544c;
-  --pdpp-concept-ink-faint: #8a867c;
+  /* Was #8A867C, which computes to 3.35:1 on paper and fails WCAG AA for
+     normal text (it carries the smallest type on the site — 11-12px mono
+     labels). #6E6B62 is the same hue at 4.92:1, which clears AA. */
+  --pdpp-concept-ink-faint: #6e6b62;
   --pdpp-concept-teal: #0e5a54;
   --pdpp-concept-teal-deep: #0a3f3b;
   --pdpp-concept-teal-wash: #e7efed;
@@ -28,6 +32,28 @@
      wash — the wash itself inverts, so the same token used elsewhere
      (teal-deep) would go invisible-on-dark otherwise. */
   --pdpp-concept-teal-on-wash: #0a3f3b;
+
+  /* Text/icons set on a FIXED teal-deep ground (.pdpp-footer, .pdpp-terminal,
+     .pdpp-cta--primary:hover) — the footer and terminal keep the same dark
+     teal background in both color schemes (it is deliberately not "the page
+     ground", the same way a code block or a footer band is its own surface
+     elsewhere on this site), so text on it must NOT use --pdpp-concept-paper/
+     -ink-soft/-teal-wash, which flip to their dark-mode values chosen for the
+     DARK PAPER ground and land dark-on-dark-teal. These are pinned to the
+     light-mode values across every scheme, same pattern as
+     --pdpp-concept-teal-on-wash above. Measured against --pdpp-concept-teal-
+     deep #0a3f3b: onteal-deep 10.85:1, onteal-deep-soft 7.84:1, onteal-deep-
+     label 4.70:1, onteal-deep-wash (color-mix'd at point of use) 10.55:1.
+     -label was #84a09d (4.19:1) at first pass — .pdpp-footer__label is 11px/
+     400, which takes the 4.5 body-text bar (WCAG large-text needs 18.66px
+     bold or 24px regular; 11px/400 clears neither), so 4.19 failed. Lightened
+     the color-mix ratio (55%->60% of --teal-wash) rather than the type size
+     or weight, which would have changed the design to satisfy the checker
+     instead of fixing the token. */
+  --pdpp-concept-onteal-deep: #f5f6f6;
+  --pdpp-concept-onteal-deep-soft: #cbd5d4;
+  --pdpp-concept-onteal-deep-label: #8fa9a6;
+  --pdpp-concept-onteal-deep-wash: #e7efed;
 
   --pdpp-concept-rule: 1px solid
     color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
@@ -42,7 +68,13 @@
     var(--font-pdpp-doc-mono), "SFMono-Regular", Menlo, Consolas, monospace;
 
   --pdpp-concept-max: 1200px;
-  --pdpp-concept-rail: clamp(200px, 6.3462rem + 9.6154vw, 240px);
+  /* 276px rather than 240px: the extra space goes entirely to the rail, whose
+     longest TOC labels wrapped to two lines at 240px while the page had
+     unused width beside it. Concept ships this token TWICE (styles.css:51 as a
+     flat 276px, then styles.css:1981 as this clamp) — the second :root wins
+     the cascade, so this clamp (not the flat value) is the one actually
+     rendered. Coefficient is the concept's own value, not derived. */
+  --pdpp-concept-rail: clamp(200px, 6.3462rem + 12.5vw, 276px);
   --pdpp-concept-gutter: clamp(40px, 1.2692rem + 1.9231vw, 48px);
   --pdpp-concept-measure: 68ch;
   --pdpp-concept-section-gap: 96px;
@@ -57,16 +89,20 @@
    /participate go blank or unstyled for dark-mode users), a dark variant is
    derived here using the SAME token names, following @pdpp/brand's own
    three-block dark-mode mechanism, so `.dark`/`[data-theme="dark"]` and the
-   OS-driven `[data-theme="system"]` path both work. Paper becomes a warm-near-
-   black ground instead of black, teal is lightened for contrast on dark, and
-   the teal-wash aside/terminal fill inverts to a low-alpha tint — the concept's
-   ink/paper/teal relationship is preserved, not merely dimmed. */
+   OS-driven `[data-theme="system"]` path both work. The light paper moved from
+   a warm cream (#faf7f2) to a cool near-white (#f5f6f6) per the concept, so the
+   dark ground is re-derived to match that family — a cool-neutral near-black
+   rather than the old warm-near-black — while keeping the same relationships:
+   teal lightened for contrast, the teal-wash fill inverted to a low-alpha
+   tint. The concept's ink/paper/teal relationship is preserved, not merely
+   dimmed. */
 :is(html.dark, html[data-theme="dark"]) {
   --pdpp-concept-paper: #17181a;
   --pdpp-concept-paper-deep: #1e2022;
-  --pdpp-concept-ink: #f0efe9;
-  --pdpp-concept-ink-soft: #b9b6ac;
-  --pdpp-concept-ink-faint: #82806f;
+  --pdpp-concept-paper-panel: #12211e;
+  --pdpp-concept-ink: #eceeed;
+  --pdpp-concept-ink-soft: #b3b6b3;
+  --pdpp-concept-ink-faint: #85887f;
   --pdpp-concept-teal: #4bb3a6;
   --pdpp-concept-teal-deep: #0a3f3b;
   --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
@@ -77,9 +113,10 @@
   html[data-theme="system"] {
     --pdpp-concept-paper: #17181a;
     --pdpp-concept-paper-deep: #1e2022;
-    --pdpp-concept-ink: #f0efe9;
-    --pdpp-concept-ink-soft: #b9b6ac;
-    --pdpp-concept-ink-faint: #82806f;
+    --pdpp-concept-paper-panel: #12211e;
+    --pdpp-concept-ink: #eceeed;
+    --pdpp-concept-ink-soft: #b3b6b3;
+    --pdpp-concept-ink-faint: #85887f;
     --pdpp-concept-teal: #4bb3a6;
     --pdpp-concept-teal-deep: #0a3f3b;
     --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
@@ -140,25 +177,26 @@
   padding-inline: var(--pdpp-concept-pad);
   margin-inline: auto;
 }
-.pdpp-wordmark {
-  font-family: var(--pdpp-concept-serif);
-  font-size: 21px;
-  font-weight: 600;
+/* The wordmark is Callum's vector mark, inheriting currentColor so it picks up
+   --pdpp-concept-ink here and --pdpp-concept-paper in the footer. Height is
+   locked to the concept's own value so the masthead's sticky height matches.
+   Scoped `.pdpp-concept a.pdpp-wordmark` to match the specificity of the
+   `.pdpp-concept a` base rule (0,1,1): unscoped, that base rule's teal color
+   won and the mark rendered teal instead of ink, the same trap already fixed
+   below for `.pdpp-concept a.pdpp-cta`. */
+.pdpp-concept a.pdpp-wordmark {
+  display: inline-flex;
+  align-items: center;
   color: var(--pdpp-concept-ink);
-  letter-spacing: -0.01em;
   border-bottom: none;
 }
-.pdpp-wordmark:hover {
-  color: var(--pdpp-concept-ink);
+.pdpp-concept a.pdpp-wordmark:hover {
+  color: var(--pdpp-concept-teal);
 }
-.pdpp-masthead__label {
-  font-family: var(--pdpp-concept-sans);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--pdpp-concept-ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  white-space: nowrap;
+.pdpp-wordmark__mark {
+  display: block;
+  width: auto;
+  height: 19px;
 }
 .pdpp-masthead__wordmark-line {
   display: flex;
@@ -166,11 +204,6 @@
   gap: 14px;
   align-items: baseline;
   min-inline-size: 0;
-}
-@media (max-width: 900px) {
-  .pdpp-masthead__label {
-    display: none;
-  }
 }
 .pdpp-nav {
   display: flex;
@@ -245,6 +278,8 @@
   margin-inline: auto;
 }
 .pdpp-page--home {
+  /* Containing block for the absolutely positioned water figure. */
+  position: relative;
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -552,7 +587,9 @@
   font-family: var(--pdpp-concept-mono);
   font-size: 14px;
   line-height: 1.7;
-  color: var(--pdpp-concept-paper);
+  /* --pdpp-concept-onteal-deep, not -paper: the terminal keeps its teal-deep
+     ground in both color schemes (see --pdpp-concept-onteal-deep* above). */
+  color: var(--pdpp-concept-onteal-deep);
   background: var(--pdpp-concept-teal-deep);
   border: 1px solid var(--pdpp-concept-teal-deep);
   box-shadow: 1px 1px 0
@@ -563,7 +600,7 @@
   margin-bottom: 12px;
   font-family: var(--pdpp-concept-sans);
   font-size: 11px;
-  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 70%, white);
+  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -573,13 +610,13 @@
   white-space: pre-wrap;
 }
 .pdpp-terminal .pdpp-prompt {
-  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 65%, white);
+  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 65%, white);
   user-select: none;
 }
 .pdpp-terminal .pdpp-comment {
   color: color-mix(
     in srgb,
-    var(--pdpp-concept-paper) 45%,
+    var(--pdpp-concept-onteal-deep) 45%,
     var(--pdpp-concept-teal-deep)
   );
 }
@@ -752,11 +789,11 @@
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
   line-height: 1.7;
-  color: color-mix(
-    in srgb,
-    var(--pdpp-concept-paper) 82%,
-    var(--pdpp-concept-teal-deep)
-  );
+  /* --pdpp-concept-onteal-deep-soft, not -paper/-ink-soft: the footer keeps
+     its teal-deep ground in both color schemes, so its text tokens must be
+     pinned to that ground rather than following the page's light/dark flip
+     (see the --pdpp-concept-onteal-deep* definitions above). */
+  color: var(--pdpp-concept-onteal-deep-soft);
   background: var(--pdpp-concept-teal-deep);
 }
 .pdpp-footer__inner {
@@ -770,16 +807,16 @@
   margin-inline: auto;
 }
 .pdpp-footer a {
-  color: var(--pdpp-concept-paper);
+  color: var(--pdpp-concept-onteal-deep);
   border-bottom-color: color-mix(
     in srgb,
-    var(--pdpp-concept-paper) 30%,
+    var(--pdpp-concept-onteal-deep) 30%,
     transparent
   );
 }
 .pdpp-footer a:hover {
   color: #fff;
-  border-bottom-color: var(--pdpp-concept-paper);
+  border-bottom-color: var(--pdpp-concept-onteal-deep);
 }
 .pdpp-footer__licenses {
   max-width: 40ch;
@@ -791,11 +828,7 @@
 .pdpp-footer__label {
   margin-bottom: 6px;
   font-size: 11px;
-  color: color-mix(
-    in srgb,
-    var(--pdpp-concept-teal-wash) 55%,
-    var(--pdpp-concept-teal-deep)
-  );
+  color: var(--pdpp-concept-onteal-deep-label);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -910,6 +943,53 @@
   padding-top: 96px;
   padding-bottom: 40px;
 }
+/* The water sits to the RIGHT of the copy and behind nothing. Absolute rather
+   than a grid column so it can occupy the space the measure leaves over
+   without the copy's own layout depending on it: if the figure never mounts
+   (no JS, reduced motion on a narrow viewport, under 900px) the page is
+   unchanged rather than holding an empty column.
+   aria-hidden and pointer-events on the host only, so it never intercepts a
+   click meant for a link underneath. */
+.pdpp-frontdoor__water {
+  position: absolute;
+  top: 96px;
+  /* The page container is centred and narrow (~744px), so there is no leftover
+     space INSIDE it. The figure therefore starts at the container's right edge
+     and extends into the viewport margin beside it, clipped by the viewport.
+     Measured, not assumed: at 1600px the container ends at x=1138, leaving
+     ~460px of true margin. */
+  /* Anchored to the VIEWPORT's right edge, not offset from the container's.
+     Offsetting from the container put the figure at x=1478 on a 1280 viewport,
+     because the container is not where its own `left: 100%` implied once the
+     grid and padding were applied. Pinning `right` makes overflow impossible
+     by construction rather than by arithmetic that has to be kept true. */
+  /* Anchored to the VIEWPORT's right edge, not offset from the container's.
+     Offsetting from the container put the figure at x=1478 on a 1280 viewport.
+     Pinning `right` makes overflow impossible by construction.
+     Width is bounded by the real gap between the article and the edge, which
+     I measured rather than derived: 302px at 1280, 382px at 1440, 462px at
+     1600. `50vw - 340px` tracks that (300 / 380 / 460) and caps at 420. */
+  left: auto;
+  right: 24px;
+  width: min(420px, calc(50vw - 340px));
+  height: 460px;
+  pointer-events: auto;
+}
+/* Under this width the leftover space cannot hold three legible columns, so
+   the figure is dropped rather than squeezed. The component checks the same
+   breakpoint before it builds anything, so a phone pays nothing. */
+@media (max-width: 1200px) {
+  .pdpp-frontdoor__water {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The component draws one still frame and binds no listeners; nothing here
+     needs to change, but the cursor should not suggest interactivity. */
+  .pdpp-frontdoor__water {
+    pointer-events: none;
+  }
+}
 .pdpp-frontdoor__identity {
   margin-top: 20px;
   font-size: clamp(21px, 1.15rem + 0.7vw, 25px);
@@ -959,7 +1039,10 @@
 }
 .pdpp-concept a.pdpp-cta--primary:hover,
 .pdpp-concept a.pdpp-cta--primary:focus-visible {
-  color: var(--pdpp-concept-paper);
+  /* --pdpp-concept-onteal-deep, not -paper: this state's background is
+     fixed teal-deep in both schemes (see --pdpp-concept-onteal-deep* above),
+     unlike the resting state's --teal background, which flips with it. */
+  color: var(--pdpp-concept-onteal-deep);
   background: var(--pdpp-concept-teal-deep);
   border-color: var(--pdpp-concept-teal-deep);
 }
@@ -1110,18 +1193,20 @@
 .pdpp-terminal__head .pdpp-terminal__label {
   margin-bottom: 0;
 }
+/* Sits inside .pdpp-terminal, whose teal-deep ground is fixed in both color
+   schemes — same --onteal-deep-wash pinning as .pdpp-terminal__label above. */
 .pdpp-copy-btn {
   flex: none;
   padding: 3px 10px;
   font-family: var(--pdpp-concept-sans);
   font-size: 11px;
-  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 70%, white);
+  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   cursor: pointer;
   background: transparent;
   border: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-teal-wash) 35%, transparent);
+    color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 35%, transparent);
   border-radius: 2px;
 }
 .pdpp-copy-btn:hover,
@@ -1129,7 +1214,7 @@
   color: white;
   border-color: color-mix(
     in srgb,
-    var(--pdpp-concept-teal-wash) 70%,
+    var(--pdpp-concept-onteal-deep-wash) 70%,
     transparent
   );
 }

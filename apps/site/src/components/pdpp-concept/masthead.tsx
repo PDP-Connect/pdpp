@@ -7,7 +7,7 @@ import { siteNav } from "@pdpp/brand/chrome";
 import { useSearchContext } from "fumadocs-ui/contexts/search";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { SearchIcon } from "./icons.tsx";
+import { SearchIcon, WordmarkIcon } from "./icons.tsx";
 
 // Search lives in the global nav, not on any page. The owner's finding was that
 // a page-level search box is furniture on a front door and mis-sized on the spec
@@ -50,10 +50,9 @@ export function PdppConceptMasthead() {
     <header className="pdpp-masthead">
       <div className="pdpp-masthead__inner">
         <div className="pdpp-masthead__wordmark-line">
-          <Link className="pdpp-wordmark" href="/">
-            PDPP
+          <Link aria-label="PDPP, home" className="pdpp-wordmark" href="/">
+            <WordmarkIcon />
           </Link>
-          <span className="pdpp-masthead__label">Personal Data Portability Protocol</span>
         </div>
         <nav aria-label="Primary" className="pdpp-nav">
           {siteNav.map((item) => {
