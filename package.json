@@ -75,6 +75,7 @@
     "release:dist-tag-check:test": "node --test --import tsx scripts/check-dist-tag-posture.test.ts",
     "owner-journey:acceptance": "node --import tsx scripts/check-owner-journey-acceptance.ts",
     "owner-journey:acceptance:test": "node --test --import tsx scripts/check-owner-journey-acceptance.test.ts",
+    "friend-journey:acceptance": "node --import tsx scripts/friend-journey-acceptance.ts",
     "console:health-surface-gate": "node --import tsx scripts/check-console-health-surfaces.ts",
     "console:health-surface-gate:test": "node --test --import tsx scripts/check-console-health-surfaces.test.ts",
     "stream-evidence:inventory": "node --import tsx scripts/stream-evidence-inventory.ts",

@@ -28,7 +28,7 @@ saves it to the `pdpp_data` volume, and prints a one-time banner:
 [core] ────────────────────────────────────────────────────────────────
 [core] First boot — generated an owner password for this instance.
 [core]
-[core]   Dashboard:      http://localhost:3000/dashboard
+[core]   Dashboard:      http://localhost:3000/
 [core]   Owner password: hCJ3hQ0X8evNNCH9R9KqL5Ai
 [core]
 [core] Saved to /var/lib/pdpp/owner-password (on the data volume), so restarts keep
@@ -107,10 +107,10 @@ owner-session cookies and OAuth metadata are correct.
 
 ```sh
 curl -fsS "$ORIGIN/.well-known/oauth-authorization-server" | head -c 200; echo
-curl -s -o /dev/null -w '%{http_code}\n' "$ORIGIN/dashboard"   # 307 -> /owner/login (gated)
+curl -s -o /dev/null -w '%{http_code}\n' "$ORIGIN/"   # 307 -> /owner/login (gated)
 ```
 
-Sign in at `$ORIGIN/dashboard`, then check Deployment in the console for the
+Sign in at `$ORIGIN/`, then check Deployment in the console for the
 runtime diagnostics surface (`GET /_ref/deployment`).
 
 ## Storage and upgrades

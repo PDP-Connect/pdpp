@@ -27,7 +27,7 @@ You need:
   or local development URL; Lane B: the `*.proxy.runpod.net` URL RunPod gives
   you);
 - one piece of secret you choose: an **owner password**. This gates `/owner`,
-  `/device`, `/consent`, and `/dashboard`.
+  `/device`, `/consent`, and the clean owner routes.
 
 You do not need:
 
@@ -169,9 +169,9 @@ If you do not need semantic search yet, set
 Open the dashboard at `PDPP_REFERENCE_ORIGIN` (default
 `http://localhost:3002`), then `/owner/login`. Enter your owner password
 (printed by the script in step 2, or find it in `.env.docker` as
-`PDPP_OWNER_PASSWORD`). You should land on `/dashboard`.
+`PDPP_OWNER_PASSWORD`). You should land on `/`.
 
-Visit `/dashboard/deployment` and confirm:
+Visit `/deployment` and confirm:
 
 - the authorization server, resource server, and storage backend all report
   healthy;
@@ -280,7 +280,7 @@ Pod's `/workspace` mount.
 
 In a browser, open `https://<podid>-3002.proxy.runpod.net/owner/login`, sign
 in with your owner password (printed by `generate-secrets.sh --write` in step
-2), and walk through `/dashboard/deployment` as in Lane A step 4.
+2), and walk through `/deployment` as in Lane A step 4.
 
 ### 4. Updating
 
@@ -302,7 +302,7 @@ Once your deployment is reachable and you have collected at least one stream,
 follow the existing runbook to wire Claude or ChatGPT:
 
 - [`docs/operator/hosted-mcp-setup.md`](hosted-mcp-setup.md) — covers the
-  device-flow OAuth, the `/dashboard/deployment/tokens` token issuer, and the
+  device-flow OAuth, the `/deployment/tokens` token issuer, and the
   MCP server URL shape.
 
 Your MCP server URL is `<PDPP_REFERENCE_ORIGIN>/mcp`. For Lane B that is
@@ -311,7 +311,7 @@ Your MCP server URL is `<PDPP_REFERENCE_ORIGIN>/mcp`. For Lane B that is
 The hosted MCP surface uses the scoped grant selected during consent. It supports
 the normal grant-scoped read tools only; event-subscription management stays in
 the operator console and REST/control-plane docs. It does not expose owner-mode
-administration. Revoking the grant from `/dashboard/deployment/tokens`
+administration. Revoking the grant from `/deployment/tokens`
 invalidates both the access and refresh tokens.
 
 ### Verify event delivery (optional)
@@ -330,7 +330,7 @@ Then follow [`docs/operator/event-subscriptions.md`](event-subscriptions.md)
 to create a subscription against the receiver and watch the verification
 handshake complete. The receiver verifies the signature, echoes the
 verify challenge, and pretty-prints every envelope. Subscriptions are
-visible at `/dashboard/event-subscriptions`.
+visible at `/event-subscriptions`.
 
 ---
 
@@ -341,7 +341,7 @@ environment variables. See
 [`docs/operator/add-connection.md`](add-connection.md) for the full flow; in
 short:
 
-- **Console.** Open `/dashboard`, sign in as owner, and use **Add a data source**
+- **Console.** Open `/`, sign in as owner, and use **Add a data source**
   on the Connect page. Local sources (Claude Code, Codex), browser-backed
   sources, static-secret sources, deployment-blocked sources, and unsupported
   sources each show one status and one next step.

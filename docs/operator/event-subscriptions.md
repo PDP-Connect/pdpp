@@ -54,7 +54,7 @@ authority.
 The console mounts the subscription list at:
 
 ```
-/dashboard/event-subscriptions
+/event-subscriptions
 ```
 
 The list shows every subscription on the deployment with `subscription_id`,
@@ -115,7 +115,7 @@ curl -sS -X POST \
 
 # 3. The receiver prints the verification handshake event
 #    (`pdpp.subscription.verify`) and the subscription should transition
-#    from `pending_verification` to `active` in `/dashboard/event-subscriptions`.
+#    from `pending_verification` to `active` in `/event-subscriptions`.
 
 # 4. Trigger a test event:
 curl -sS -X POST \
