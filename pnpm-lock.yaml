@@ -129,9 +129,6 @@ importers:
       react-markdown:
         specifier: ^10.1.0
         version: 10.1.0(@types/react@19.2.18)(react@19.2.8)
-      react-xtermjs:
-        specifier: ^1.0.12
-        version: 1.0.12(@xterm/xterm@6.0.0)
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
@@ -232,9 +229,6 @@ importers:
       react-markdown:
         specifier: ^10.1.0
         version: 10.1.0(@types/react@19.2.18)(react@19.2.8)
-      react-xtermjs:
-        specifier: ^1.0.12
-        version: 1.0.12(@xterm/xterm@6.0.0)
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
@@ -5581,11 +5575,6 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
-
-  react-xtermjs@1.0.12:
-    resolution: {integrity: sha512-8uXBzVF4vP6r2NABxt/9heH1Y5Vx2v2hFrAk1kre+HyY3CjM6Prbc8ViqBRia6EBzI57IFBWOicYV1/k05JBtw==}
-    peerDependencies:
-      '@xterm/xterm': ^5.5.0
 
   react@19.2.8:
     resolution: {integrity: sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==}
@@ -11616,10 +11605,6 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.2.18
-
-  react-xtermjs@1.0.12(@xterm/xterm@6.0.0):
-    dependencies:
-      '@xterm/xterm': 6.0.0
 
   react@19.2.8: {}
 
