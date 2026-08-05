@@ -54,12 +54,17 @@ const startServer = startServerUntyped as unknown as (opts: StartServerOptions) 
 interface IngestRecordInput {
   data: Record<string, unknown>;
   emitted_at: string;
-  id: string;
+  key: string;
   stream: string;
 }
 
+interface IngestStorageTarget {
+  connector_id: string;
+  connector_instance_id: string;
+}
+
 const ingestRecord = ingestRecordUntyped as unknown as (
-  storageTarget: string,
+  storageTarget: string | IngestStorageTarget,
   record: IngestRecordInput
 ) => Promise<unknown>;
 
@@ -75,6 +80,15 @@ const SPOTIFY_CONNECTOR_ID = "https://registry.pdpp.org/connectors/spotify";
 const spotifyConnectorKeyLookup = canonicalConnectorKey(SPOTIFY_CONNECTOR_ID);
 assert.ok(spotifyConnectorKeyLookup, `expected a canonical connector key for ${SPOTIFY_CONNECTOR_ID}`);
 const SPOTIFY_CONNECTOR_KEY = spotifyConnectorKeyLookup;
+const SPOTIFY_DEFAULT_CONNECTION_ID = makeDefaultAccountConnectorInstanceId(
+  OWNER_AUTH_DEFAULT_SUBJECT_ID,
+  SPOTIFY_CONNECTOR_KEY
+);
+const SPOTIFY_WORK_CONNECTION_ID = "cin_composed_origin_spotify_work";
+const COMPOSED_EXPLORE_RECORD_ID = "artist_owner/top#1";
+const HREF_ATTRIBUTE_PATTERN = /href="([^"]+)"/g;
+const WORK_RECORD_NAME_RE = /Nils Frahm \(work\)/;
+const PERSONAL_RECORD_NAME_RE = /Nils Frahm \(personal\)/;
 const CLAUDE_CODE_CONNECTOR_ID = "https://registry.pdpp.org/connectors/claude-code";
 
 let consoleBuildPromise: Promise<void> | null = null;
@@ -172,7 +186,7 @@ async function materializeDefaultSpotifyConnection() {
   const now = "2026-04-23T10:00:00.000Z";
   await createSqliteConnectorInstanceStore().upsert({
     connectorId: SPOTIFY_CONNECTOR_KEY,
-    connectorInstanceId: makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, SPOTIFY_CONNECTOR_KEY),
+    connectorInstanceId: SPOTIFY_DEFAULT_CONNECTION_ID,
     createdAt: now,
     displayName: "Spotify",
     ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
@@ -182,6 +196,34 @@ async function materializeDefaultSpotifyConnection() {
     status: "active",
     updatedAt: now,
   });
+}
+
+async function materializeSpotifyWorkConnection() {
+  const now = "2026-04-23T10:00:01.000Z";
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId: SPOTIFY_CONNECTOR_KEY,
+    connectorInstanceId: SPOTIFY_WORK_CONNECTION_ID,
+    createdAt: now,
+    displayName: "Spotify - work",
+    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    sourceBinding: { kind: "test_account", label: "composed-origin-spotify-work" },
+    sourceBindingKey: "composed-origin-spotify-work",
+    sourceKind: "account",
+    status: "active",
+    updatedAt: now,
+  });
+}
+
+function emittedHrefsForPath(html: string, origin: string, expectedPath: string): string[] {
+  return [...html.matchAll(HREF_ATTRIBUTE_PATTERN)]
+    .map((match) => match[1] ?? "")
+    .filter((href) => {
+      try {
+        return new URL(href, origin).pathname === expectedPath;
+      } catch {
+        return false;
+      }
+    });
 }
 
 async function waitForExistingConsoleBuild(timeoutMs = 120_000) {
@@ -673,16 +715,78 @@ test("composed browser origin carries metadata, owner session, console, device f
     assert.equal(registerConnector.status, 201);
 
     await materializeDefaultSpotifyConnection();
-    await ingestRecord(SPOTIFY_CONNECTOR_ID, {
-      data: {
-        id: "artist_owner_top_1",
-        name: "Nils Frahm",
-        popularity: 96,
-      },
-      emitted_at: "2026-04-23T10:00:00Z",
-      id: "artist_owner_top_1",
-      stream: "top_artists",
+    await materializeSpotifyWorkConnection();
+    await ingestRecord(
+      { connector_id: SPOTIFY_CONNECTOR_KEY, connector_instance_id: SPOTIFY_DEFAULT_CONNECTION_ID },
+      {
+        data: {
+          id: COMPOSED_EXPLORE_RECORD_ID,
+          name: "Nils Frahm (personal)",
+          popularity: 96,
+        },
+        emitted_at: "2026-04-23T10:00:00Z",
+        key: COMPOSED_EXPLORE_RECORD_ID,
+        stream: "top_artists",
+      }
+    );
+    await ingestRecord(
+      { connector_id: SPOTIFY_CONNECTOR_KEY, connector_instance_id: SPOTIFY_WORK_CONNECTION_ID },
+      {
+        data: {
+          id: COMPOSED_EXPLORE_RECORD_ID,
+          name: "Nils Frahm (work)",
+          popularity: 96,
+        },
+        emitted_at: "2026-04-23T10:00:01Z",
+        key: COMPOSED_EXPLORE_RECORD_ID,
+        stream: "top_artists",
+      }
+    );
+    const exploreResp = await fetch(`${webOrigin}/explore`, {
+      headers: { Accept: "text/html", Cookie: ownerCookie },
     });
+    assert.equal(exploreResp.status, 200);
+    const exploreHtml = await exploreResp.text();
+    const encodedRecordId = encodeURIComponent(COMPOSED_EXPLORE_RECORD_ID);
+    const connectionPaths = [SPOTIFY_DEFAULT_CONNECTION_ID, SPOTIFY_WORK_CONNECTION_ID].map((connectionId) => ({
+      connectionId,
+      detailPath: `/sources/${encodeURIComponent(connectionId)}/top_artists/${encodedRecordId}`,
+    }));
+    for (const { detailPath } of connectionPaths) {
+      assert.ok(
+        emittedHrefsForPath(exploreHtml, webOrigin, detailPath).length > 0,
+        `Explore must emit a record-detail href for ${detailPath}`
+      );
+    }
+
+    const workDetailPath = connectionPaths[1]?.detailPath;
+    assert.ok(workDetailPath, "work connection route should be present");
+    const [workDetailHref] = emittedHrefsForPath(exploreHtml, webOrigin, workDetailPath);
+    assert.ok(workDetailHref, "Explore should emit the work record href that the journey follows");
+    const detailResp = await fetch(new URL(workDetailHref, webOrigin), {
+      headers: { Accept: "text/html", Cookie: ownerCookie },
+    });
+    assert.equal(detailResp.status, 200);
+    const detailHtml = await detailResp.text();
+    assert.match(detailHtml, WORK_RECORD_NAME_RE, "the composed detail route must render the addressed work record");
+    assert.doesNotMatch(
+      detailHtml,
+      PERSONAL_RECORD_NAME_RE,
+      "the record-detail route must not resolve the sibling same-connector account"
+    );
+
+    const legacyPath = `/records/${encodeURIComponent(SPOTIFY_WORK_CONNECTION_ID)}/top_artists/${encodedRecordId}`;
+    const legacyMutation = await fetch(`${webOrigin}${legacyPath}`, {
+      body: "{}",
+      headers: { Accept: "text/html", "Content-Type": "application/json", Cookie: ownerCookie },
+      method: "POST",
+      redirect: "manual",
+    });
+    assert.ok(
+      legacyMutation.status === 404 || legacyMutation.status === 405,
+      `legacy ${legacyPath} mutation should fail without a redirect band-aid (got ${legacyMutation.status})`
+    );
+    assert.equal(legacyMutation.headers.get("location"), null, "legacy /records must not redirect to the new route");
 
     const deviceStart = await fetchJson(`${webOrigin}/oauth/device_authorization`, {
       body: new URLSearchParams({ client_id: "pdpp-web-dashboard" }).toString(),

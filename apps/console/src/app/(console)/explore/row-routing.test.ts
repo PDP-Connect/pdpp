@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { dashboardRoutes, sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 
 // Hoisted per useTopLevelRegex: the LIVE FeedRow row-action source invariants.
 // The LIVE Explore component is explore-canvas.tsx (records-explorer-view.tsx is
@@ -58,6 +58,24 @@ test("row link routes two same-connector connections to distinct paths", () => {
   assert.notEqual(personal, work);
   assert.equal(personal, "/sources/conn-personal/messages/rec-1");
   assert.equal(work, "/sources/conn-work/messages/rec-1");
+});
+
+test("route-map binding keeps live sources and legacy sandbox records distinct", () => {
+  const subject = {
+    connectionId: "conn-work/account",
+    connectorId: "gmail",
+    recordId: "rec/1#two",
+    stream: "messages/threads",
+  };
+
+  assert.equal(
+    dashboardRoutes.record(subject.connectionId, subject.stream, subject.recordId),
+    "/sources/conn-work%2Faccount/messages%2Fthreads/rec%2F1%23two"
+  );
+  assert.equal(
+    sandboxRoutes.record(subject.connectionId, subject.stream, subject.recordId),
+    "/sandbox/records/conn-work%2Faccount/messages%2Fthreads/rec%2F1%23two"
+  );
 });
 
 // Row-action contract (design.md §6, feedback #12), pinned on the LIVE FeedRow:
