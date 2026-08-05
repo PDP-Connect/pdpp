@@ -55,12 +55,13 @@ function BrowserRuntimeBlocked({ displayName }: { displayName: string }) {
     >
       <ul className="pdpp-caption mt-3 grid gap-1 text-muted-foreground">
         <li>
-          Run a browser-enabled image such as <code>ghcr.io/pdp-connect/pdpp/core-browser</code> instead of the
-          browser-free image, or
+          Run a browser-enabled image such as <code>ghcr.io/pdp-connect/pdpp/core-browser</code>, then use its local
+          browser connector, or
         </li>
         <li>
-          attach a browser surface by setting <code>PDPP_BROWSER_SURFACE_REMOTE_CDP_URL</code> or the managed{" "}
-          <code>PDPP_NEKO_CDP_HTTP_URL</code>.
+          attach a local or managed browser surface by setting <code>PDPP_BROWSER_SURFACE_REMOTE_CDP_URL</code> or
+          <code>PDPP_NEKO_CDP_HTTP_URL</code>; a browser-backed source cannot use this form until that connector is
+          reachable.
         </li>
         <li>Sources that need only a network connection work on this deployment as-is.</li>
       </ul>

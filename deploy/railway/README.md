@@ -4,6 +4,13 @@ This runbook describes the selected Railway pushbutton shape for the PDPP
 reference implementation: one public Core app service, one durable Postgres
 backend, and no browser-backed connector runtime inside the deployed app.
 
+The published image name for that service is
+`ghcr.io/pdp-connect/pdpp/railway-core`. “Core” is the product role, not a
+second public service or port: the container serves the console on Railway's
+injected `$PORT` and keeps AS/RS on loopback ports `7662` and `7663`. Do not
+enter `7662` or `7663` as Railway's public port, and do not substitute the
+`reference` image for `railway-core` in this single-service template.
+
 This is retained as an alternate platform handoff, not as the blessed
 self-service path. The previously documented single-image shortcut is withdrawn:
 the current registry manifest has not been proven, so this document does not
