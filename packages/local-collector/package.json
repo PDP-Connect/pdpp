@@ -38,7 +38,7 @@
     "verify": "pnpm test && pnpm validate:package"
   },
   "dependencies": {
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "conventional-changelog-conventionalcommits": "^10.2.1"
