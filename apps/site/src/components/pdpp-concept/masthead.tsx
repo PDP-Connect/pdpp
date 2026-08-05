@@ -8,6 +8,7 @@ import { useSearchContext } from "fumadocs-ui/contexts/search";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SearchIcon, WordmarkIcon } from "./icons.tsx";
+import { PdppThemeSwitch } from "./theme-switch.tsx";
 
 // Search lives in the global nav, not on any page. The owner's finding was that
 // a page-level search box is furniture on a front door and mis-sized on the spec
@@ -64,6 +65,7 @@ export function PdppConceptMasthead() {
             );
           })}
           <NavSearchTrigger />
+          <PdppThemeSwitch />
         </nav>
       </div>
     </header>
