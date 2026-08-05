@@ -1,4 +1,5 @@
 // source.config.ts
+import { remarkMdxMermaid } from "fumadocs-core/mdx-plugins";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
 import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 
@@ -57,7 +58,7 @@ var docs = defineDocs({
 });
 var source_config_default = defineConfig({
   mdxOptions: {
-    remarkPlugins: (plugins) => [remarkLegacyHeadingIds, ...plugins]
+    remarkPlugins: (plugins) => [remarkLegacyHeadingIds, remarkMdxMermaid, ...plugins]
   }
 });
 export {
