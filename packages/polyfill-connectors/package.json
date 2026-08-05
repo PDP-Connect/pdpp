@@ -1,16 +1,16 @@
 {
   "dependencies": {
     "@streamparser/json": "^0.0.22",
-    "better-sqlite3": "^13.0.1",
+    "better-sqlite3": "^13.0.2",
     "dotenv": "^17.4.2",
-    "imapflow": "^1.6.3",
+    "imapflow": "^1.6.5",
     "linkedom": "^0.18.13",
     "ofx-js": "^1.1.1",
     "p-queue": "^9.3.3",
     "p-retry": "^8.0.0",
     "patchright": "^1.61.1",
     "pdf-parse": "^2.4.5",
-    "playwright": "^1.62.0",
+    "playwright": "^1.62.1",
     "ws": "^8.21.1",
     "zod": "^4.3.6"
   },

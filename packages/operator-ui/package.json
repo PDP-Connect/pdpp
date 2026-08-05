@@ -80,7 +80,7 @@
     "@pdpp/list-envelope": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.27.0",
+    "lucide-react": "^1.28.0",
     "tailwind-merge": "^3.6.0"
   },
   "peerDependencies": {
@@ -91,8 +91,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tsx": "^4.23.1",
