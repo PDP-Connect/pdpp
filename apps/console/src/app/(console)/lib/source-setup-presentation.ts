@@ -147,7 +147,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
 /** One short owner-facing guidance line for first-account setup. */
 export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
   if (browserBoundWithStoredCredentials(entry)) {
-    return "Use a secure browser session if you do not want to save sign-in details. Save sign-in details so this source can repair the session automatically later.";
+    return "Connect in a secure browser session. You can optionally remember sign-in details for automatic reconnection; they may help with initial sign-in or repair, but CAPTCHA, OTP, passkeys, and other human steps stay in the secure browser and unattended reconnection is not guaranteed.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
@@ -182,8 +182,8 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
 /** The primary next action for first-account setup, or null when none exists. */
 export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
   // Browser-bound connectors that also declare credential capture still start
-  // from the browser-session path; the saved-sign-in-details path is rendered
-  // as an alternate action below.
+  // from the one browser-session path. The optional saved-sign-in-details
+  // fields live inside that page rather than becoming a second picker choice.
   if (browserBoundWithStoredCredentials(entry)) {
     return {
       href: `/connect/browser-session/${encodeURIComponent(entry.connectorKey)}`,
@@ -218,14 +218,11 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
   }
 }
 
-export function sourceSetupSecondaryAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
-  if (!browserBoundWithStoredCredentials(entry)) {
-    return null;
-  }
-  return {
-    href: `/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
-    label: "Save sign-in details",
-  };
+export function sourceSetupSecondaryAction(_entry: ConnectorCatalogEntry): SourceSetupAction | null {
+  // Stored credentials are an optional part of the browser-session page. Keep
+  // the Add Source catalog to one primary account-connect action so the legacy
+  // static-secret route cannot look like an equal setup modality.
+  return null;
 }
 
 export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSetupAvailability {

@@ -157,6 +157,17 @@ function makeVisibleFieldFillFailurePage(): {
 }
 
 async function withAmazonCredentials(run: () => Promise<void>): Promise<void> {
+  await withAmazonCredentialValues({ password: "test-password", username: "test-user@example.com" }, run);
+}
+
+async function withoutAmazonCredentials(run: () => Promise<void>): Promise<void> {
+  await withAmazonCredentialValues({}, run);
+}
+
+async function withAmazonCredentialValues(
+  credentials: { password?: string; username?: string },
+  run: () => Promise<void>
+): Promise<void> {
   const priorUsername = process.env.AMAZON_USERNAME;
   const priorPassword = process.env.AMAZON_PASSWORD;
   const priorStreamingEnv = new Map<(typeof STREAMING_ENV_KEYS)[number], string | undefined>();
@@ -164,8 +175,12 @@ async function withAmazonCredentials(run: () => Promise<void>): Promise<void> {
     priorStreamingEnv.set(key, process.env[key]);
     delete process.env[key];
   }
-  process.env.AMAZON_USERNAME = "test-user@example.com";
-  process.env.AMAZON_PASSWORD = "test-password";
+  if (credentials.username) {
+    process.env.AMAZON_USERNAME = credentials.username;
+  }
+  if (credentials.password) {
+    process.env.AMAZON_PASSWORD = credentials.password;
+  }
   try {
     await run();
   } finally {
@@ -189,6 +204,27 @@ async function withAmazonCredentials(run: () => Promise<void>): Promise<void> {
     }
   }
 }
+
+test("ensureAmazonSession hands off to the secure browser when optional credentials are absent", async () => {
+  await withoutAmazonCredentials(async () => {
+    const { gotoCalls, page } = makeChallengePage({ becomeLoggedInAfterGoto: 2 });
+    const interactions = makeInteractionHarness();
+
+    const ok = await ensureAmazonSession({
+      context: makeContext(),
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(interactions.requests.length, 1);
+    assert.equal(interactions.requests[0]?.kind, "manual_action");
+    assert.match(interactions.requests[0]?.message ?? "", /No optional Amazon sign-in details/);
+    assert.match(interactions.requests[0]?.message ?? "", /secure browser/);
+    assert.doesNotMatch(interactions.requests[0]?.message ?? "", /password|test-user|example\.com/u);
+    assert.ok(gotoCalls.includes(ORDERS_URL));
+  });
+});
 
 test("ensureAmazonSession emits manual_action when the sign-in form is replaced by a challenge", async () => {
   await withAmazonCredentials(async () => {

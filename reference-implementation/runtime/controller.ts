@@ -253,6 +253,11 @@ export interface RunNowOptions {
   recoveryOnly?: boolean;
   resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
+  /**
+   * Narrow owner-session admission for the first run of a browser enrollment
+   * shell. Omitted means the ordinary active-connection collection path.
+   */
+  runAdmission?: "browser_enrollment";
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
@@ -410,6 +415,7 @@ export interface ControllerOptions {
     connectorId: string;
     connectorInstanceId: string | null;
     ownerSubjectId: string;
+    runAdmission: "collection" | "browser_enrollment";
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
@@ -538,19 +544,25 @@ function resolveAdmittedRunConnection(
   controllerOptions: ControllerOptions,
   connectorId: string,
   connectorInstanceId: string | undefined,
-  ownerSubjectId: string
+  ownerSubjectId: string,
+  runAdmission: "collection" | "browser_enrollment"
 ): Promise<{ connectorId: string; connectorInstanceId: string }> {
   if (controllerOptions.admitRunConnection) {
     return controllerOptions.admitRunConnection({
       connectorId,
       connectorInstanceId: connectorInstanceId ?? null,
       ownerSubjectId,
+      runAdmission,
     });
   }
   throw new ControllerError(
     "run-connection authority resolver is required before a run can be created.",
     "connector_instance_store_required"
   );
+}
+
+function runAdmissionFor(options: RunNowOptions): "collection" | "browser_enrollment" {
+  return options.runAdmission ?? "collection";
 }
 
 function createInteractionTimeoutTerminalHandler(
@@ -3471,7 +3483,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       opts,
       connectorId,
       options.connectorInstanceId,
-      runOwnerSubjectId
+      runOwnerSubjectId,
+      runAdmissionFor(options)
     );
     const { connectorId: admittedConnectorId, connectorInstanceId } = admittedConnection;
     const key = runtimeKey(admittedConnectorId, connectorInstanceId);

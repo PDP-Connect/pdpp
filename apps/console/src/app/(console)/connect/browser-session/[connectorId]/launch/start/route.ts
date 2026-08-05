@@ -48,6 +48,12 @@ function readBooleanField(formData: FormData, name: string): boolean {
   return value === "1" || value === "true";
 }
 
+async function startBrowserSessionRun(connectionId: string, draft: boolean): Promise<BrowserSessionRunStartResult> {
+  return (await (draft
+    ? runConnectionNow(connectionId, { runAdmission: "browser_enrollment" })
+    : runConnectionNow(connectionId))) as BrowserSessionRunStartResult;
+}
+
 export async function POST(request: Request, { params }: { params: Promise<RouteParams> }): Promise<NextResponse> {
   const { connectorId: rawConnectorId } = await params;
   const connectorId = decodeURIComponent(rawConnectorId);
@@ -79,7 +85,7 @@ export async function POST(request: Request, { params }: { params: Promise<Route
   const draft = readBooleanField(formData, "draft");
 
   try {
-    const runStart = (await runConnectionNow(connectionId)) as BrowserSessionRunStartResult;
+    const runStart = await startBrowserSessionRun(connectionId, draft);
     const result = classifyBrowserSessionLaunchResult(runStart);
     if (!result.ok) {
       if (draft) {

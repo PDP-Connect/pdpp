@@ -438,6 +438,7 @@ import {
   createSqliteConnectorInstanceCredentialStore,
 } from "./stores/connector-instance-credential-store.ts";
 import {
+  admitOwnerBrowserEnrollmentRunConnection,
   admitOwnerRunConnection,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -6572,13 +6573,21 @@ export async function startServer(opts: ServerOpts = {}) {
   } = { invoke: null, releaseLease: null };
   const controller = createController({
     ...(configuredAsPublicUrl === null ? {} : { asPublicUrl: configuredAsPublicUrl }),
-    admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
-      const namespace = await admitOwnerRunConnection({
-        connectorId,
-        connectorInstanceId,
-        connectorInstanceStore: createRequestConnectorInstanceStore(),
-        ownerSubjectId,
-      });
+    admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId, runAdmission }) => {
+      const namespace =
+        runAdmission === "browser_enrollment"
+          ? await admitOwnerBrowserEnrollmentRunConnection({
+              connectorId,
+              connectorInstanceId,
+              connectorInstanceStore: createRequestConnectorInstanceStore(),
+              ownerSubjectId,
+            })
+          : await admitOwnerRunConnection({
+              connectorId,
+              connectorInstanceId,
+              connectorInstanceStore: createRequestConnectorInstanceStore(),
+              ownerSubjectId,
+            });
       return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId };
     },
     ownerSubjectId: ownerAuthSubjectId,
