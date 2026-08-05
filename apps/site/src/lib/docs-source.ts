@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { type InferPageType, loader } from "fumadocs-core/source";
-import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
+import { lucideIconsPlugin } from "fumadocs-core/source/plugins/lucide-icons";
 import { docs } from "../../.source/server.ts";
 
 // The nav label is "Specification", so the route is /specification. A label and

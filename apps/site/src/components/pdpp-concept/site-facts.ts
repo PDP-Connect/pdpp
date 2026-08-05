@@ -5,6 +5,12 @@
 // The owner's rule for this pass: anything that can go stale must be wired so
 // it cannot. These are the values that appear on more than one surface.
 
+// The one production origin. Matches metadataBase in layout.tsx — this is the
+// value every page-level `alternates.canonical` is built from, so the intended
+// canonical host cannot drift between pages (SEO/GEO standard MUST #1.2: one
+// intended absolute canonical URL, used consistently).
+export const SITE_ORIGIN = "https://pdpp.dev";
+
 export const GITHUB_REPO_URL = "https://github.com/PDP-Connect/pdpp";
 export const GITHUB_ISSUES_URL = `${GITHUB_REPO_URL}/issues`;
 export const GITHUB_NEW_ISSUE_URL = `${GITHUB_REPO_URL}/issues/new`;

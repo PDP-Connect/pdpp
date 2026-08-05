@@ -71,8 +71,26 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // No openGraph.images here on purpose: docs pages inherit the site-wide card
   // from src/app/opengraph-image.tsx by route-segment inheritance. Advertising a
   // per-page /og/docs/... URL previously overrode that inherited card with a 404.
+  //
+  // alternates.canonical / openGraph.url use page.url (fumadocs' own resolved
+  // path, already under /specification) rather than a hand-built string, so a
+  // route rename can't leave this pointed at the old path (SEO/GEO standard
+  // MUST #1.2).
+  //
+  // content/docs/README.md is contributor-facing authoring notes (see
+  // sync-spec-docs.mjs's comment: it and index.mdx are deliberately untouched
+  // by generation), not protocol content, but fumadocs still routes it live at
+  // /specification/README. noindex keeps it out of the sitemap/search results
+  // without changing the docs source tree that other in-flight work depends
+  // on (SEO/GEO standard MUST #1.5: robots directives must match the approved
+  // access policy; this page was never meant to be a public spec page).
+  const isInternalNotesPage = page.path === "README.md";
+
   return {
+    alternates: { canonical: page.url },
     description: page.data.description,
+    openGraph: { url: page.url },
+    robots: isInternalNotesPage ? { follow: false, index: false } : undefined,
     title: page.data.title,
   };
 }

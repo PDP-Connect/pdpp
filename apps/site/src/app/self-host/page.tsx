@@ -9,8 +9,10 @@ import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
 import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/self-host" },
   description:
     "Run your own personal data server. Query Gmail, GitHub, Notion, and more from Claude, ChatGPT, or Codex.",
+  openGraph: { url: "/self-host" },
   title: "Self-Host - PDPP",
 };
 
@@ -24,19 +26,25 @@ export const metadata: Metadata = {
 // this file's JSX.
 //
 // WHAT WAS VERIFIED BY EXECUTION 2026-08-05, and what that ruled out:
-//   KEPT   the Compose path. Fetched by URL into an empty directory and booted
-//          end to end: postgres healthy, reference healthy, web serving, `/`
-//          307 -> /owner/login, AS metadata 200, and chromium-1217 present
-//          inside the RUNNING reference container. The public-origin and
-//          keyword-only variants were booted too.
-//   DROPPED the single-container `docker run` tab. No published image is both
-//          console-bearing and browser-capable: reference-browser has Chromium
-//          but serves no console (only 7662/7663), and railway-core has the
-//          console but no /opt/patchright-browsers. A one-container command
-//          would have to lie about one of them.
+//   KEPT   the Compose path as the durable/operator alternative. Fetched by
+//          URL into an empty directory and booted end to end: postgres
+//          healthy, reference healthy, web serving, `/` 307 -> /owner/login,
+//          AS metadata 200, and chromium-1217 present inside the RUNNING
+//          reference container. The public-origin and keyword-only variants
+//          were booted too.
+//   GATED  the single-container `docker run` tab on PR #79's publication (see
+//          `CORE_PUBLISHED` in self-host-command.ts). Core is proven
+//          browser-capable — the built-image friend gate passed at head
+//          5e158736a with native Patchright/Chromium, ChatGPT setup, MCP
+//          read, semantic search, and restart persistence — but #79 is open,
+//          not merged, and `ghcr.io/pdp-connect/pdpp/core:main` /
+//          `core-browser:main` both fail anonymous manifest inspect today
+//          (DENIED/403, vs. 200 for the already-published reference-browser).
+//          Showing that command now would tell a reader it works when the
+//          image does not exist; the gate flips it on with one edit once the
+//          tag resolves.
 //   DROPPED releases/latest/download/docker-compose.yml. 404s — every release
 //          v1.0.0 to v1.0.4 shipped zero assets.
-//   DROPPED core:main and core-browser:main. Neither exists; manifest 404s.
 //
 // RAILWAY IS LAST because a template link cannot carry variable values (its
 // documented deploy-URL params are attribution only), so it cannot honour the

@@ -6,6 +6,7 @@ import type { Metadata } from "next";
 import { IBM_Plex_Mono, Newsreader, Public_Sans } from "next/font/google";
 import { cookies } from "next/headers";
 import { PdppRootProvider } from "@/components/pdpp-concept/search-hotkeys.tsx";
+import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
 import { normalizeThemeChoice, THEME_KEY } from "@/components/theme/theme-state.ts";
 import { TooltipProvider } from "@/components/ui/tooltip.tsx";
@@ -35,6 +36,10 @@ const SITE_DESCRIPTION =
   "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.";
 
 export const metadata: Metadata = {
+  // The home route's own canonical. Every other route sets its own
+  // `alternates.canonical` and inherits nothing from here (SEO/GEO standard
+  // MUST #1.2: one intended absolute canonical URL per page).
+  alternates: { canonical: "/" },
   description: SITE_DESCRIPTION,
   // A filled teal tile with the mark's first glyph knocked out in paper.
   // The wordmark is 365x160, so the whole thing renders as an unreadable
@@ -45,11 +50,12 @@ export const metadata: Metadata = {
   icons: {
     icon: [{ type: "image/svg+xml", url: "/brand/pdpp-favicon.svg" }],
   },
-  metadataBase: new URL("https://pdpp.dev"),
+  metadataBase: new URL(SITE_ORIGIN),
   openGraph: {
     description: SITE_DESCRIPTION,
     title: SITE_TITLE,
     type: "website",
+    url: "/",
   },
   title: SITE_TITLE,
   twitter: {
