@@ -18,9 +18,11 @@
 //     --container pdpp-friend-semantic-c663e6383 \
 //     --semantic-query "durable local database"
 //
-// The command exits 1 for any blocker. A container is optional for partial
-// HTTP evidence, but omitting it creates explicit browser-CDP and restart
-// blockers instead of silently downgrading the acceptance contract.
+// The command exits 1 for actual product/evidence blockers. External-account
+// collection remains visible as manual_uat: it is neither a machine pass nor a
+// machine failure. A container is optional for partial HTTP evidence, but
+// omitting it creates explicit browser-CDP and restart blockers instead of
+// silently downgrading the acceptance contract.
 
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -33,6 +35,8 @@ import { mintOwnerToken, runLiveSmoke } from "./railway-mcp-query-smoke.ts";
 
 const execFileAsync = promisify(execFile);
 const TRAILING_SLASH_PATTERN = /\/$/;
+const HTML_DOCUMENT_PATTERN = /<html\b/i;
+const TRAILING_PATH_SLASH_PATTERN = /\/$/;
 const DEFAULT_SEMANTIC_QUERY = "durable local database";
 const FRIEND_SEED_SUBJECT = "friend-readiness-gate";
 const SEMANTIC_FIXTURE_CONNECTOR_ID = "friend-semantic-full";
@@ -40,20 +44,31 @@ const SEMANTIC_FIXTURE_MANIFEST_URI = "https://registry.pdpp.org/connectors/frie
 const SEMANTIC_FIXTURE_STREAM = "playlists";
 const FORM_PATTERN = /<form\b/i;
 const SITE_ASSERTIONS: ReadonlyArray<readonly [string, RegExp]> = [
-  ["durable SQLite", /sqlite/i],
-  ["semantic search", /semantic\s+search/i],
-  ["bundled browser/direct CDP", /\bcdp\b/i],
+  ["personal data server", /personal\s+data\s+server/i],
+  ["SQLite deployment guidance", /SQLite\s+location|durable\s+SQLite/i],
+  ["semantic search", /Full\s+text\s+and\s+semantic|semantic\s+search/i],
+  ["browser source guidance", /Browser\s+sources\s+included|bundled\s+browser|\bcdp\b/i],
   ["Gmail", /gmail/i],
-  ["public hosted HTTPS boundary", /publicly reachable HTTPS|hosted[^.]{0,80}HTTPS/i],
+  [
+    "public hosted HTTPS boundary",
+    /Serving\s+a\s+domain\?.{0,80}HTTPS|publicly reachable HTTPS|hosted[^.]{0,80}HTTPS/i,
+  ],
 ];
 
-type CheckStatus = "pass" | "blocker";
+export type CheckStatus = "pass" | "manual_uat" | "blocker";
 
-interface Check {
+export interface Check {
   evidence: string;
   id: string;
   label: string;
   status: CheckStatus;
+}
+
+export interface CheckSummary {
+  readonly blockerCount: number;
+  readonly manualUatCount: number;
+  readonly ok: boolean;
+  readonly passCount: number;
 }
 
 interface ParsedArgs {
@@ -78,7 +93,78 @@ interface GateContext {
   ownerToken: string;
 }
 
-class GateBlocker extends Error {}
+export class GateBlocker extends Error {}
+
+export interface SameOriginRedirectResult {
+  readonly finalUrl: URL;
+  readonly redirectChain: readonly string[];
+  readonly response: Response;
+}
+
+type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
+const REDIRECT_STATUS_MIN = 300;
+const REDIRECT_STATUS_MAX = 399;
+const DEFAULT_MAX_SAME_ORIGIN_REDIRECTS = 5;
+
+/**
+ * Fetch a page while retaining the redirect boundary as an acceptance fact.
+ * A browser would follow a cross-origin redirect too, but this gate must not
+ * silently transfer proof to another origin or accept a redirect loop.
+ */
+export async function followSameOriginRedirects(
+  initialUrl: string | URL,
+  options: {
+    fetchImpl?: FetchLike;
+    maxRedirects?: number;
+  } = {}
+): Promise<SameOriginRedirectResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_SAME_ORIGIN_REDIRECTS;
+  if (!Number.isInteger(maxRedirects) || maxRedirects < 0) {
+    throw new GateBlocker(`same-origin redirect limit must be a non-negative integer; got ${String(maxRedirects)}`);
+  }
+
+  const initial = new URL(initialUrl);
+  const { origin } = initial;
+  let current = initial;
+  const visited = new Set([current.href]);
+  const redirectChain: string[] = [];
+
+  for (;;) {
+    // Redirects are intentionally followed one at a time so each hop can be
+    // checked for origin changes and loops before the next request is made.
+    // biome-ignore lint/performance/noAwaitInLoops: bounded redirect traversal must preserve hop order.
+    const response = await fetchImpl(current, {
+      redirect: "manual",
+      headers: { Accept: "text/html, application/xhtml+xml" },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (response.status < REDIRECT_STATUS_MIN || response.status > REDIRECT_STATUS_MAX) {
+      return { finalUrl: current, redirectChain, response };
+    }
+
+    const location = response.headers.get("location");
+    if (!location) {
+      throw new GateBlocker(`redirect from ${current.href} returned HTTP ${response.status} without a Location header`);
+    }
+    if (redirectChain.length >= maxRedirects) {
+      throw new GateBlocker(`same-origin redirect limit of ${maxRedirects} exceeded at ${current.href}`);
+    }
+
+    const next = new URL(location, current);
+    next.hash = "";
+    if (next.origin !== origin) {
+      throw new GateBlocker(`refused cross-origin redirect from ${current.origin} to ${next.origin}`);
+    }
+    if (visited.has(next.href)) {
+      throw new GateBlocker(`refused redirect loop at ${next.href}`);
+    }
+    redirectChain.push(`${current.href} -> ${next.href}`);
+    visited.add(next.href);
+    current = next;
+  }
+}
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: exhaustive CLI parser keeps every gate input visible at the command boundary.
 function parseArgs(argv: string[]): ParsedArgs {
@@ -225,6 +311,20 @@ async function runCheck(
     const evidence = error instanceof Error ? error.message : String(error);
     checks.push({ id, label, status: "blocker", evidence });
   }
+}
+
+function addManualUat(checks: Check[], id: string, label: string, evidence: string): void {
+  checks.push({ id, label, status: "manual_uat", evidence });
+}
+
+export function summarizeChecks(checks: readonly Check[]): CheckSummary {
+  const blockerCount = checks.filter((check) => check.status === "blocker").length;
+  return {
+    blockerCount,
+    manualUatCount: checks.filter((check) => check.status === "manual_uat").length,
+    ok: blockerCount === 0,
+    passCount: checks.filter((check) => check.status === "pass").length,
+  };
 }
 
 async function waitForCore(origin: string, attempt = 0): Promise<void> {
@@ -602,7 +702,7 @@ async function main(argv: string[]): Promise<void> {
         `browser setup page was HTTP 200 (${page.text.includes("add-new") ? "repair-only copy" : "rendered"}), but POST /connect/browser-session/chatgpt/start returned ${start.status} ${decoded || summarizeBody(startBody)}`
       );
     }
-    return `browser setup returned launch redirect ${location}`;
+    return `browser setup returned launch redirect ${location}; deeper run.assistance_requested/stream proof is owned by the combined browser/stream acceptance`;
   });
 
   await runCheck(checks, "source.gmail.setup", "Gmail setup form", async () => {
@@ -613,11 +713,12 @@ async function main(argv: string[]): Promise<void> {
     return "Gmail static-secret setup form rendered; provider collection still requires a real account credential";
   });
 
-  await runCheck(checks, "source.gmail.collection", "Gmail collection", () => {
-    throw new GateBlocker(
-      "not proven: this machine run supplied no Gmail account credential and therefore did not claim collected Gmail data"
-    );
-  });
+  addManualUat(
+    checks,
+    "source.gmail.collection",
+    "Gmail collection",
+    "manual UAT required: this machine run supplied no Gmail account credential and therefore did not claim collected Gmail data"
+  );
 
   await runCheck(checks, "source.arbitrary.setup", "Arbitrary supported-source setup form", async () => {
     const body = await requireStatus(context, "/connect/static-secret/notion", 200);
@@ -627,11 +728,12 @@ async function main(argv: string[]): Promise<void> {
     return "Notion setup form rendered as the arbitrary supported-source surface";
   });
 
-  await runCheck(checks, "source.arbitrary.collection", "Arbitrary-source collection", () => {
-    throw new GateBlocker(
-      "not proven: this machine run supplied no arbitrary-source account credential and therefore did not claim collected data"
-    );
-  });
+  addManualUat(
+    checks,
+    "source.arbitrary.collection",
+    "Arbitrary-source collection",
+    "manual UAT required: this machine run supplied no arbitrary-source account credential and therefore did not claim collected data"
+  );
 
   await runCheck(checks, "mcp.local-instructions", "Claude Code/Codex localhost MCP instructions", async () => {
     const body = await requireStatus(context, "/connect", 200);
@@ -652,10 +754,17 @@ async function main(argv: string[]): Promise<void> {
         "--site-origin or PDPP_FRIEND_SITE_ORIGIN is required to execute the /reference assertion; localhost MCP is for local Claude Code/Codex and hosted Claude.ai/ChatGPT require a publicly reachable HTTPS Core origin"
       );
     }
-    const reference = await request(siteOrigin, "/reference", { redirect: "manual" }, "");
-    const referenceBody = await readBody(reference);
-    if (reference.status !== 200) {
-      throw new GateBlocker(`GET ${siteOrigin}/reference returned HTTP ${reference.status}; expected 200`);
+    const referenceUrl = new URL("/reference", `${siteOrigin}/`);
+    const followed = await followSameOriginRedirects(referenceUrl);
+    const referenceBody = await readBody(followed.response);
+    const canonicalPath = followed.finalUrl.pathname.replace(TRAILING_PATH_SLASH_PATTERN, "") || "/";
+    if (followed.response.status !== 200 || canonicalPath !== "/self-host") {
+      throw new GateBlocker(
+        `GET ${referenceUrl.href} rendered HTTP ${followed.response.status} at ${followed.finalUrl.href}; expected the canonical /self-host page`
+      );
+    }
+    if (!HTML_DOCUMENT_PATTERN.test(referenceBody.text)) {
+      throw new GateBlocker(`canonical ${followed.finalUrl.href} did not render an HTML document`);
     }
     const mcp = await request(siteOrigin, "/mcp", { redirect: "manual" }, "");
     const ownerLogin = await request(siteOrigin, "/owner/login", { redirect: "manual" }, "");
@@ -663,10 +772,10 @@ async function main(argv: string[]): Promise<void> {
     const renderedLocalMcp = referenceBody.text.includes(`${siteOrigin}/mcp`);
     if (missing.length > 0 || (renderedLocalMcp && mcp.status !== 200)) {
       throw new GateBlocker(
-        `/reference=200 but required assertion(s) are missing: ${missing.join(", ") || "none"}; site-origin /mcp=${mcp.status}, /owner/login=${ownerLogin.status}; rendered MCP URL points at ${siteOrigin}/mcp=${renderedLocalMcp}`
+        `canonical ${followed.finalUrl.pathname}=200 but required self-host assertion(s) are missing: ${missing.join(", ") || "none"}; site-origin /mcp=${mcp.status}, /owner/login=${ownerLogin.status}; rendered MCP URL points at ${siteOrigin}/mcp=${renderedLocalMcp}`
       );
     }
-    return `/reference=200; promise/storage/browser/HTTPS assertions present; site /mcp=${mcp.status}, /owner/login=${ownerLogin.status}`;
+    return `/reference followed ${followed.redirectChain.length} same-origin redirect(s) to rendered /self-host=200; self-host content assertions present; site /mcp=${mcp.status}, /owner/login=${ownerLogin.status}`;
   });
 
   await runCheck(checks, "restart.persistence", "Container restart preserves SQLite data and auth", async () => {
@@ -687,11 +796,14 @@ async function main(argv: string[]): Promise<void> {
     return `container ${container} restarted; owner auth re-established; existing records returned without re-seeding (${steps.join("; ")})`;
   });
 
-  const ok = checks.every((check) => check.status === "pass");
+  const summary = summarizeChecks(checks);
+  const { blockerCount, manualUatCount, ok, passCount } = summary;
   if (args.json) {
-    process.stdout.write(`${JSON.stringify({ ok, origin, checks }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ok, origin, checks, summary }, null, 2)}\n`);
   } else {
-    process.stdout.write(`friend journey acceptance: ${ok ? "PASS" : "BLOCKED"}\n`);
+    process.stdout.write(
+      `friend journey acceptance: ${ok ? "READY" : "BLOCKED"} (${passCount} pass, ${manualUatCount} manual_uat, ${blockerCount} blocker)\n`
+    );
     for (const check of checks) {
       process.stdout.write(`  [${check.status.toUpperCase()}] ${check.id}: ${check.label} — ${check.evidence}\n`);
     }
