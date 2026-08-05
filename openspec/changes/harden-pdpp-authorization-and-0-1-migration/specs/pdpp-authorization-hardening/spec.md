@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: Authenticated introspection SHALL return a complete PDPPAuthorizationContext via RFC 9396 authorization_details plus a minimal pdpp member
+### Requirement: Authenticated introspection SHALL return a complete authorization context via RFC 9396 authorization_details plus a minimal pdpp member
 
 For separated AS/RS deployments, the RS-facing introspection/context-resolution response defined in spec-core.md Section 8 (`### Token introspection`) SHALL be authenticated at the caller level and SHALL return a complete authorization context sufficient to run the grant-enforcement algorithm in Section 8 (`### Grant enforcement`), not the five extension fields (`active`, `pdpp_token_kind`, `subject_id`, `grant_id`, `client_id`, `exp`) currently listed as the complete PDPP extension-fields table. That table omits every constraint the RS's own enforcement steps 3-4 (stream membership, `time_range`, `fields`, `resources`) already require it to have, and omits issuer, audience, and proof/binding context entirely.
 
@@ -45,7 +45,7 @@ Unauthenticated introspection callers SHALL be refused. Bearer-only (unauthentic
 
 ### Requirement: DPoP proof validation duty SHALL be split between the RS and the introspection response, with private_key_jwt correctly attributed
 
-Where a deployment uses DPoP (RFC 9449) as a sender-constrained token presentation mode, the resource server alone SHALL validate the DPoP proof against the actual protected-resource request. Per RFC 9449 Sections 4-7, the RS's per-request validation SHALL include: `htm` (HTTP method), `htu` (HTTP target URI), `iat` (proof freshness), `ath` (access-token hash binding the proof to the specific presented token), and replay/freshness controls via `nonce` and `jti`. The introspection/context-resolution response defined above SHALL NOT perform this request-specific validation; it SHALL supply only the token's `status` (via `active`) and key-confirmation (`cnf`) information, from which the RS derives the expected proof key. `ath` SHALL be named explicitly as a validated proof claim; it SHALL NOT be left as an implicit consequence of an unelaborated RFC 9449 citation.
+Where a deployment uses DPoP (RFC 9449) as a sender-constrained token presentation mode, the resource server alone SHALL validate the DPoP proof against the actual protected-resource request. Per RFC 9449 Sections 4 and 7, the RS's per-request validation SHALL include: `htm` (HTTP method), `htu` (HTTP target URI), `iat` (proof freshness), `ath` (access-token hash binding the proof to the specific presented token), and, where the resource server supplies a nonce, the `nonce` value. RFC 9449 leaves single-use `jti` tracking to server policy rather than mandating it; this specification additionally SHALL require the resource server to maintain a bounded replay cache keyed on `jti` for the accepted proof-freshness window, so that a captured proof cannot be replayed within that window. The introspection/context-resolution response defined above SHALL NOT perform this request-specific validation; it SHALL supply only the token's `status` (via `active`) and key-confirmation (`cnf`) information, from which the RS derives the expected proof key. `ath` SHALL be named explicitly as a validated proof claim; it SHALL NOT be left as an implicit consequence of an unelaborated RFC 9449 citation.
 
 A resolver contract signature that includes a `presentation_proof` parameter alongside the presented credential is misleading under this duty split, because the resolver does not validate the request-specific proof; the request-specific proof exists only at the RS, bound to the concrete HTTP request. Any such resolver/introspection interface described in companion documents SHALL either drop `presentation_proof` from the signature or, if retained, SHALL be accompanied by an explicit statement that the resolver forwards it only for logging/diagnostic purposes and performs no request-proof validation with it.
 
@@ -208,6 +208,8 @@ When a source declares a minimum credential-security profile, the resource serve
 
 This rejection SHALL be independent of, and in addition to, the authorization server's issuance-time refusal in the preceding requirement: an authorization server refusing to issue below the floor does not relieve the resource server of its own obligation to check the resolved context at request time, per the existing Trust boundary responsibilities division of labor (Section 10) under which the resource server never re-validates beyond introspection but does enforce what introspection reports.
 
+A declared floor SHALL take precedence over legacy acceptance. Where a source declares a minimum credential-security profile and a presented credential resolves to a legacy context whose presentation mode is unknown or unattested, the resource server SHALL treat that context as below the floor and reject it, even while the deployment's legacy-acceptance signal is otherwise active. Legacy acceptance SHALL widen enforcement only for sources that have declared no floor; it SHALL NOT be read as a blanket exemption from a floor a source has declared.
+
 **Change class:** repairs an existing interoperability/security hole
 
 #### Scenario: The resource server rejects a request presented below the declared floor
@@ -220,6 +222,12 @@ This rejection SHALL be independent of, and in addition to, the authorization se
 
 - **WHEN** a resource server resolves an authorization context whose presentation mode meets or exceeds its source's declared minimum credential-security profile
 - **THEN** the resource server SHALL proceed with ordinary grant enforcement (stream membership, field projection, time_range, resources) as already specified in Section 8
+
+#### Scenario: A declared floor overrides active legacy acceptance
+
+- **WHEN** a deployment has legacy acceptance active and a resource server resolves a legacy context whose presentation mode is unknown or unattested, for a source that declares a minimum credential-security profile
+- **THEN** the resource server SHALL reject the request as below the floor
+- **AND** SHALL NOT treat the active legacy-acceptance signal as an exemption from the declared floor
 
 ### Requirement: Consent disclosure of a reduced-theft-resistance presentation mode SHALL be mandatory
 
