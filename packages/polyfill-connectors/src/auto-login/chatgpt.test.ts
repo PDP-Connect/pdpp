@@ -702,6 +702,56 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
   );
 });
 
+test("ChatGPT stored-credential repair does not tolerate intermediate-login selector errors", async () => {
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: "stored password",
+      CHATGPT_USERNAME: "owner@example.test",
+      PDPP_RUN_TRIGGER_KIND: "manual",
+    },
+    async () => {
+      let assistanceRequested = false;
+      const page = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            return Promise.resolve(null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        getByRole: () => {
+          throw new Error("intermediate login selector unavailable");
+        },
+        goto: () => Promise.resolve(null),
+        url: () => "https://chatgpt.com/auth/login",
+        waitForTimeout: async () => undefined,
+      };
+
+      await assert.rejects(
+        ensureChatGptSession({
+          assist: () => {
+            assistanceRequested = true;
+            return Promise.resolve("assist_1");
+          },
+          context: {} as never,
+          page: page as never,
+          sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+        }),
+        /intermediate login selector unavailable/u
+      );
+      assert.equal(assistanceRequested, false);
+    }
+  );
+});
+
 test("ChatGPT fallback keeps owner copy concise while preserving diagnostic evidence separately", async () => {
   await withEnvValues(
     {

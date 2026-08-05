@@ -523,15 +523,22 @@ async function openChatGptLogin(page: Page): Promise<void> {
   await page.waitForTimeout(2500);
 }
 
-async function clickIntermediateLogin(page: Page): Promise<void> {
-  try {
+async function clickIntermediateLogin(page: Page, tolerateMissing = false): Promise<void> {
+  if (tolerateMissing) {
+    try {
+      await clickFirstVisible([
+        page.getByRole("button", { name: LOG_IN_NAME }),
+        page.getByRole("link", { name: LOG_IN_NAME }),
+      ]);
+    } catch {
+      // The credentialless manual flow may already expose provider controls;
+      // continue with provider detection or owner assistance.
+    }
+  } else {
     await clickFirstVisible([
       page.getByRole("button", { name: LOG_IN_NAME }),
       page.getByRole("link", { name: LOG_IN_NAME }),
     ]);
-  } catch {
-    // The login page may already expose provider controls or may have changed;
-    // the caller will continue with provider detection or owner assistance.
   }
   await page.waitForTimeout(3000);
 }
@@ -1039,7 +1046,7 @@ async function repairWithManualBrowserLogin({
   "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
 >): Promise<boolean> {
   await openChatGptLogin(page);
-  await clickIntermediateLogin(page);
+  await clickIntermediateLogin(page, true);
   if (await clickGoogleSsoIfSafe(page)) {
     // Give a surviving Google cookie a chance to complete the normal provider
     // redirect. A Google-hosted page after the initial probe means the flow
