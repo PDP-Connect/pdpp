@@ -232,7 +232,7 @@ private channel described in [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 Maintainers and their scopes are listed in [`MAINTAINERS.md`](MAINTAINERS.md).
 For root protocol specifications, active maintainers act as editors for the
 current draft. Maintainer changes are proposed through pull request. This
-project is proposed to LFDT Labs as the lab **PDP-Connect**; see the
+project is an LFDT Labs lab, **PDP-Connect**; see the
 "Governance & stewardship" section of the [README](README.md) for the stewardship
 model.
 

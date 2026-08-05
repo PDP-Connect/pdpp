@@ -110,8 +110,8 @@ or compete with the normative specs.
 
 ## Governance & stewardship
 
-PDPP is developed in the open and is **proposed to LFDT Labs (Linux Foundation
-Decentralized Trust) as the lab _PDP-Connect_**. The goal is a neutral,
+PDPP is developed in the open and is **an LFDT Labs (Linux Foundation
+Decentralized Trust) lab, _PDP-Connect_**. The goal is a neutral,
 vendor-independent home for the protocol specification and its reference
 implementation.
 
