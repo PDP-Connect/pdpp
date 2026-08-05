@@ -18,10 +18,8 @@
 #
 # but extract with the system `unzip` instead of patchright's bundled extractor.
 #
-# The Chromium revision (1217) and browserVersion (147.0.7727.15) are read from
-# the patchright-core package that npm just installed, so this stays pinned to
-# whatever `patchright@<version>` the Dockerfile selected — no magic numbers
-# duplicated here, and a patchright bump updates the download automatically.
+# The Chromium revision and browserVersion are read from the patchright-core
+# package that npm just installed; no browser revision is duplicated here.
 #
 # start-chromium.sh resolves the binary at runtime by globbing
 # /opt/patchright-browsers/chromium-*/chrome-linux64/chrome, so the only hard

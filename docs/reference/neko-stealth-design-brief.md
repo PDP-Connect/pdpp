@@ -55,7 +55,7 @@ out as the top fingerprint leak.
 ```
    ┌─────────────────────────────────────────────────────┐
    │ Layer 1 — BINARY                                    │
-   │   Patchright's bundled Chromium 147.0.7727.15 with  │
+   │   Patchright's bundled Chromium 149.0.7827.55 with  │
    │   C-level patches (navigator.webdriver, permissions │
    │   API quirks, CDP-leak fixes). Baked into the neko  │
    │   image via a multi-stage Dockerfile build.         │
@@ -112,7 +112,7 @@ patches ourselves — the maintenance burden goes to where it belongs.
 
 - **`.env.docker`** — Same two changes overridden at the operator-config layer.
 
-- **`reference-implementation/package.json`** — Added `patchright@^1.59.4` as a dependency so the reference container can `import { chromium } from "patchright"` for canary tests today and the adapter refactor tomorrow.
+- **`reference-implementation/package.json`** — Pins `patchright@1.61.1` so the reference-side driver and the optional n.eko Chromium binary share one exact workspace version.
 
 - **`reference-implementation/scripts/stealth/`** — Three diagnostic scripts (`fingerprint-probe.mjs`, `patchright-canary.mjs`, `turnstile-check.mjs`) + `README.md` documenting the validation procedure.
 

@@ -8,7 +8,7 @@
     "ofx-js": "^1.1.1",
     "p-queue": "^9.3.3",
     "p-retry": "^8.0.0",
-    "patchright": "^1.61.1",
+    "patchright": "1.61.1",
     "pdf-parse": "^2.4.5",
     "playwright": "^1.62.1",
     "ws": "^8.21.1",

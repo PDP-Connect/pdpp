@@ -13,8 +13,9 @@ Scope of this first slice:
 - In scope: one public Core app, Fly Postgres, owner gating, an authenticated MCP
   query against a small hand-imported record set, and restart-survival proof.
 - The public `core` image includes browser-backed collection and semantic
-  retrieval with its model cache persisted under `/var/lib/pdpp`. n.eko remains
-  an optional separate headed/X11/WebRTC backend.
+  retrieval with its model cache under `/var/lib/pdpp`; that cache is durable
+  only when the operator mounts persistent storage there. n.eko remains an
+  optional separate headed/X11/WebRTC backend.
 
 ## Shareable Path
 

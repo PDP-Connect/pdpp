@@ -32,6 +32,8 @@ const DB_PATH_SQLITE_PATTERN = /PDPP_DB_PATH=\/var\/lib\/pdpp\/pdpp\.sqlite/;
 const CORE_INHERITS_BROWSER_PATTERN = /FROM browsers AS core-browser[\s\S]*FROM core-browser AS core/;
 const CORE_SEMANTIC_DOWNLOAD_PATTERN = /PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1/;
 const CORE_SEMANTIC_CACHE_PATTERN = /PDPP_EMBEDDING_CACHE_DIR=\/var\/lib\/pdpp\/transformers/;
+const PATCHRIGHT_MANIFEST_DERIVATION_PATTERN = /PATCHRIGHT_VERSION=.*polyfill-connectors-package\.json/;
+const PATCHRIGHT_EXACT_VERSION_ASSERTION_PATTERN = /Patchright dependency must be exact/;
 const CORE_FIRST_BOOT_IMPORT_PATTERN = /from "\.\/core-first-boot\.ts"/;
 const PREPARE_FIRST_BOOT_CALL_PATTERN = /prepareFirstBoot\(\)/;
 const FIRST_BOOT_ENV_SPREAD_PATTERN = /\.\.\.firstBoot\.env/g;
@@ -145,6 +147,22 @@ test("public Core inherits browser support and persists semantic search download
   assert.match(dockerfile, CORE_INHERITS_BROWSER_PATTERN);
   assert.match(dockerfile, CORE_SEMANTIC_DOWNLOAD_PATTERN);
   assert.match(dockerfile, CORE_SEMANTIC_CACHE_PATTERN);
+  assert.match(dockerfile, PATCHRIGHT_MANIFEST_DERIVATION_PATTERN);
+  assert.match(dockerfile, PATCHRIGHT_EXACT_VERSION_ASSERTION_PATTERN);
+  assert.doesNotMatch(dockerfile, /ARG PATCHRIGHT_VERSION=/);
+});
+
+test("n.eko derives Patchright from the workspace manifest", () => {
+  const dockerfile = read("docker/neko/Dockerfile");
+  const installer = read("docker/neko/install-patchright-chromium.sh");
+  assert.match(dockerfile, /COPY packages\/polyfill-connectors\/package\.json/);
+  assert.match(dockerfile, /PATCHRIGHT_VERSION=.*polyfill-connectors-package\.json/);
+  assert.match(dockerfile, /Patchright dependency must be exact/);
+  assert.doesNotMatch(dockerfile, /patchright@1\.59\.4|Chromium 1217|ARG PATCHRIGHT_VERSION=/);
+  assert.match(installer, /require\.resolve\("patchright-core\/package\.json"\)/);
+  assert.match(installer, /chromium\.revision/);
+  assert.match(installer, /chromium\.browserVersion/);
+  assert.doesNotMatch(installer, /1217|147\.0\.7727\.15/);
 });
 
 test("Railway runbook and template handoff use the one-service core button shape", () => {

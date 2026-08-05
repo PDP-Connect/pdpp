@@ -112,19 +112,19 @@ CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_U
 # reinvalidate the ~300MB browser install. Bumping the pinned version is the
 # only thing that forces a rebuild of this layer.
 #
-# The version is pinned to the same patchright used by docker/neko/Dockerfile
-# (1.59.4 → Chromium 1217). Bump both files together to keep the driver-side
-# (reference container) and binary-side (n.eko container) revisions in
-# lockstep; otherwise the CDP attach against n.eko sees a Chromium revision
-# the driver was not built for.
+# The browser installer reads the exact dependency version from the workspace
+# manifest. Keeping the runtime dependency exact and deriving this install from
+# it makes a Patchright/Chromium revision drift fail at build review time rather
+# than at connector launch.
 FROM base AS browsers
 
 ARG TARGETARCH
-ARG PATCHRIGHT_VERSION=1.59.4
+COPY packages/polyfill-connectors/package.json /tmp/polyfill-connectors-package.json
 
 WORKDIR /tmp/patchright-install
 
-RUN echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
+RUN PATCHRIGHT_VERSION="$(node --input-type=module -e "import { readFileSync } from 'node:fs'; const version = JSON.parse(readFileSync('/tmp/polyfill-connectors-package.json', 'utf8')).dependencies.patchright; if (!/^\\d+\\.\\d+\\.\\d+$/.test(version)) throw new Error('Patchright dependency must be exact, got: ' + version); process.stdout.write(version)")" \
+  && echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
   && npm install --no-save --ignore-scripts "patchright@${PATCHRIGHT_VERSION}" \
   && if [ "$TARGETARCH" = "arm64" ]; then \
        npx patchright install --with-deps chromium; \
