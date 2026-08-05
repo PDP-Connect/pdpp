@@ -66,6 +66,36 @@ const CREDENTIAL_VERIFICATION_COPY = /A sync is running now to verify the update
 const NO_UNPROVEN_FIRST_SYNC_COPY = /The first sync accepted records/;
 const LEGACY_REDIRECT = /\/connect\/status\/\$\{encodeURIComponent/;
 
+// Browser-session (SSO/browser-only login, e.g. ChatGPT) setup-status branch:
+// binding-first classification must reach both the copy and the CTA, never
+// the generic static-secret "Setup material needed" / "Re-enter credential"
+// path (see reference-implementation's setupKindForConnection).
+const BROWSER_SESSION_KIND_CHECK = /setup_kind\s*===\s*"browser_session"/;
+const AWAITING_BROWSER_LOGIN_STATE = /"awaiting_browser_login"/;
+const BROWSER_SIGN_IN_HEADLINE = /Sign-in needed/;
+const BROWSER_LAUNCH_HREF_PATH = /\/connect\/browser-session\/\$\{encoded\}\/launch/;
+const BROWSER_LAUNCH_CONNECTION_ID_PARAM = /connection_id:\s*status\.connection_id/;
+const BROWSER_LAUNCH_DRAFT_PARAM = /draft:\s*status\.status\s*===\s*"draft"\s*\?\s*"1"\s*:\s*"0"/;
+const BROWSER_RETRY_LABEL_COPY = /Start browser setup again/;
+const NO_GENERIC_BROWSER_COPY = /Setup material needed|Re-enter credential and retry|provider credential/i;
+const NO_BROWSER_STATIC_SECRET_ROUTE = /\/connect\/static-secret\//;
+const BROWSER_STATUS_START = "function describeBrowserSessionState";
+const BROWSER_STATUS_END = "function describeState";
+const SETUP_HREF_START = "function setupHref";
+const SETUP_HREF_END = "function sourceDetailHref";
+const BROWSER_HREF_START = 'if (status.setup_kind === "browser_session")';
+const BROWSER_HREF_END = "return `/connect/static-secret/";
+const RETRY_LABEL_START = "function retryLabel";
+const RETRY_LABEL_END = "function displayValue";
+
+function sourceBlock(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.ok(start >= 0, `missing source marker: ${startMarker}`);
+  assert.ok(end > start, `missing source end marker: ${endMarker}`);
+  return source.slice(start, end);
+}
+
 test("static-secret page is an owner-session capture form, not an agent secret prompt", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, GET_SETUP);
@@ -136,6 +166,27 @@ test("durable setup-status page reads the connection-scoped status route and sur
   assert.doesNotMatch(src, NO_PROVIDER_COPY);
   assert.doesNotMatch(src, STATUS_NO_PASSWORD_INPUT);
   assert.doesNotMatch(src, STATUS_NO_SECRET_INPUT);
+});
+
+test("durable setup-status page carries a browser-session branch with secure-browser copy and a launch-path retry CTA", async () => {
+  const src = await readFile(STATUS_PAGE_FILE, "utf8");
+  const browserStatus = sourceBlock(src, BROWSER_STATUS_START, BROWSER_STATUS_END);
+  const setupHref = sourceBlock(src, SETUP_HREF_START, SETUP_HREF_END);
+  const browserHref = sourceBlock(setupHref, BROWSER_HREF_START, BROWSER_HREF_END);
+  const retryLabel = sourceBlock(src, RETRY_LABEL_START, RETRY_LABEL_END);
+  assert.match(src, BROWSER_SESSION_KIND_CHECK);
+  assert.match(src, AWAITING_BROWSER_LOGIN_STATE);
+  assert.match(browserStatus, BROWSER_SIGN_IN_HEADLINE);
+  // The retry CTA returns to the existing browser-session launch route with
+  // connection_id + draft query, not the static-secret credential form.
+  assert.match(browserHref, BROWSER_LAUNCH_HREF_PATH);
+  assert.match(browserHref, BROWSER_LAUNCH_CONNECTION_ID_PARAM);
+  assert.match(browserHref, BROWSER_LAUNCH_DRAFT_PARAM);
+  assert.match(retryLabel, BROWSER_RETRY_LABEL_COPY);
+  // The browser-specific blocks must never fall through to generic
+  // credential-shaped copy or a static-secret route.
+  assert.doesNotMatch(browserStatus, NO_GENERIC_BROWSER_COPY);
+  assert.doesNotMatch(browserHref, NO_BROWSER_STATIC_SECRET_ROUTE);
 });
 
 test("legacy static-secret setup-status URL redirects to the generic setup-status surface", async () => {

@@ -20,6 +20,10 @@ const baseInstance = {
   updatedAt: "2026-06-10T00:00:00.000Z",
 };
 
+const NO_BROWSER_CREDENTIAL_REMEDIATION = /provider credential/i;
+const NO_BROWSER_REENTER_REMEDIATION = /re-enter/i;
+const SECURE_BROWSER_REMEDIATION = /secure browser/i;
+
 test("draft without a credential projects awaiting_credential -> idle", () => {
   const status = projectStaticSecretSetupStatus({
     activeRun: null,
@@ -143,6 +147,95 @@ test("missing identity field name yields a null account_identity, never a throw"
   });
   assert.equal(status.account_identity, null);
   assert.equal(status.setup_state, "awaiting_credential");
+});
+
+const browserInstance = {
+  connectorId: "chatgpt",
+  connectorInstanceId: "cin_browser_test",
+  createdAt: "2026-08-05T00:00:00.000Z",
+  displayName: "ChatGPT",
+  setupFields: null,
+  status: "draft",
+  updatedAt: "2026-08-05T00:00:00.000Z",
+};
+
+test("browser-session draft with no run or credential projects awaiting_browser_login, never awaiting_credential", () => {
+  const status = projectConnectionSetupStatus({
+    activeRun: null,
+    credential: null,
+    identityFieldName: null,
+    instance: browserInstance,
+    lastRun: null,
+    setupKind: "browser_session",
+  });
+  assert.equal(status.setup_kind, "browser_session");
+  assert.equal(status.setup_state, "awaiting_browser_login");
+  assert.notEqual(status.setup_state, "awaiting_credential");
+  assert.equal(status.health_state, "idle");
+  assert.equal(status.pending, true);
+  assert.equal(status.setup_material.kind, "browser_session");
+  assert.equal(status.setup_material.label, "Browser login");
+  assert.equal(status.setup_material.present, false);
+  assert.equal(status.credential.present, false);
+});
+
+test("browser-session draft with an active run projects first_sync_running even without stored credential", () => {
+  const status = projectConnectionSetupStatus({
+    activeRun: { runId: "run_browser_1", startedAt: "2026-08-05T00:01:00.000Z", status: "in_progress" },
+    credential: null,
+    identityFieldName: null,
+    instance: browserInstance,
+    lastRun: null,
+    setupKind: "browser_session",
+  });
+  assert.equal(status.setup_state, "first_sync_running");
+  assert.equal(status.running, true);
+  assert.equal(status.credential.present, false);
+  assert.equal(status.setup_material.present, false);
+});
+
+test("browser-session draft with a completed last run (no active run) projects first_sync_pending, not awaiting_browser_login", () => {
+  const status = projectConnectionSetupStatus({
+    activeRun: null,
+    credential: null,
+    identityFieldName: null,
+    instance: browserInstance,
+    lastRun: { failureReason: null, runId: "run_browser_2", status: "completed" },
+    setupKind: "browser_session",
+  });
+  assert.equal(status.setup_state, "first_sync_pending");
+});
+
+test("browser-session draft with a failed last run projects first_sync_failed with browser-safe remediation", () => {
+  const status = projectConnectionSetupStatus({
+    activeRun: null,
+    credential: null,
+    identityFieldName: null,
+    instance: browserInstance,
+    lastRun: { failureReason: "login_challenge_timeout", runId: "run_browser_3", status: "failed" },
+    setupKind: "browser_session",
+  });
+  assert.equal(status.setup_state, "first_sync_failed");
+  assert.equal(status.health_state, "needs_attention");
+  assert.ok(status.last_error);
+  assert.equal(status.last_error.reason, "login_challenge_timeout");
+  assert.doesNotMatch(status.last_error.remediation, NO_BROWSER_CREDENTIAL_REMEDIATION);
+  assert.doesNotMatch(status.last_error.remediation, NO_BROWSER_REENTER_REMEDIATION);
+  assert.match(status.last_error.remediation, SECURE_BROWSER_REMEDIATION);
+});
+
+test("browser-session active instance projects active -> healthy regardless of stored credential", () => {
+  const status = projectConnectionSetupStatus({
+    activeRun: null,
+    credential: null,
+    identityFieldName: null,
+    instance: { ...browserInstance, status: "active" },
+    lastRun: null,
+    setupKind: "browser_session",
+  });
+  assert.equal(status.setup_state, "active");
+  assert.equal(status.health_state, "healthy");
+  assert.equal(status.pending, false);
 });
 
 test("manual/upload draft projects captured import file without credential semantics", () => {

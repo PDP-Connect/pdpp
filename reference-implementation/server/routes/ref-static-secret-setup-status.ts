@@ -174,13 +174,48 @@ function bindingKind(sourceBinding: unknown): string | null {
   return typeof kind === "string" ? kind : null;
 }
 
+// Connection-binding-first: a connection bound this way authenticates via an
+// owner-mediated browser session, not a stored credential, even when the
+// connector's manifest also declares a static-secret credential-capture block
+// (e.g. ChatGPT, whose runtime login is SSO/browser-only but whose manifest
+// carries an optional username_password fallback). The browser entries are the
+// journey discriminator; keep them aligned with the browser-session binding
+// kinds in the console's `connection-modality.ts`.
+const SETUP_KIND_BY_BINDING_KIND: Partial<Record<string, ConnectionSetupKind>> = {
+  browser_collector: "browser_session",
+  browser_enrollment_shell: "browser_session",
+  manual_upload: "manual_upload",
+  manual_upload_draft: "manual_upload",
+  static_secret_draft: "static_secret",
+};
+
+const UNKNOWN_SETUP_MATERIAL: SetupStatusMaterialMetadata = {
+  capturedAt: null,
+  kind: "unknown",
+  label: "Setup material",
+  present: false,
+};
+const BROWSER_SETUP_MATERIAL: SetupStatusMaterialMetadata = {
+  capturedAt: null,
+  kind: "browser_session",
+  label: "Browser login",
+  present: false,
+};
+
+function nonCredentialSetupMaterial(setupKind: ConnectionSetupKind): SetupStatusMaterialMetadata {
+  if (setupKind === "browser_session") {
+    // Non-secret browser-session material has no captured-at timestamp; login
+    // evidence is read from run state, not stored material.
+    return BROWSER_SETUP_MATERIAL;
+  }
+  return UNKNOWN_SETUP_MATERIAL;
+}
+
 function setupKindForConnection(sourceBinding: unknown, manifest: ConnectorManifestLike): ConnectionSetupKind {
   const kind = bindingKind(sourceBinding);
-  if (kind === "manual_upload" || kind === "manual_upload_draft") {
-    return "manual_upload";
-  }
-  if (kind === "static_secret_draft") {
-    return "static_secret";
+  const bindingSetupKind = SETUP_KIND_BY_BINDING_KIND[kind ?? ""];
+  if (bindingSetupKind) {
+    return bindingSetupKind;
   }
   // Active legacy sources created before the draft-binding setup path do not
   // carry `static_secret_draft`, but their connector manifest still owns the
@@ -218,7 +253,7 @@ function setupMaterialFromBinding(
       present: credentialMeta?.present === true,
     };
   }
-  return { capturedAt: null, kind: "unknown", label: "Setup material", present: false };
+  return nonCredentialSetupMaterial(setupKind);
 }
 
 function asStringOrNull(value: unknown): string | null {
