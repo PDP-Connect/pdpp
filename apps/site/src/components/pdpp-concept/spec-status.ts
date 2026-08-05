@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,7 +25,27 @@ import { fileURLToPath } from "node:url";
 // here, and it is deliberately not worked around — this module propagates
 // whatever the spec header declares, so fixing the header fixes the site.
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
+// Walk up to the workspace markers rather than counting five directories from
+// this module's own URL. The segment count is right in the source tree and
+// wrong in the bundled server output, where this module does not sit at that
+// depth — which is why the pages reading it returned 500 on Vercel while every
+// local check passed. Same markers as openspec/filesystem.ts and
+// spec-front-matter.ts.
+const REPO_ROOT = (() => {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    if (existsSync(join(dir, "pnpm-workspace.yaml")) && existsSync(join(dir, "spec-core.md"))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      // Fall back to the old fixed depth so the failure surfaces as the
+      // readRepoFile error below, which names the path it tried.
+      return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
+    }
+    dir = parent;
+  }
+})();
 
 // Hoisted: these run once at module load, and a regex literal inside a function
 // is recompiled on every call.
