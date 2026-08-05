@@ -70,6 +70,20 @@ test("a tab that offers a browser command names the browser-capable image", () =
   }
 });
 
+test("no command or copy exposes a platform-specific artifact name", () => {
+  // Public artifact names are platform-neutral: `core` and `core-browser`.
+  // `railway-core` is an internal Docker target kept for compatibility, and a
+  // reader who sees it learns a deployment provider's name as if it were the
+  // product's. Comments are exempt; they explain why the target exists.
+  const visible = PAGE.split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  assert.ok(
+    !visible.includes("railway-core"),
+    "railway-core is an internal target name and must not appear in a command or in copy a reader sees"
+  );
+});
+
 test("the browser-free default image is never the image a browser command selects", () => {
   for (const { body, id } of tabBlocks()) {
     if (!body.includes("browserCommand:")) {
