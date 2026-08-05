@@ -114,6 +114,7 @@ const BROWSER_LOGIN_DEFAULT_TIMEOUT_MS = 1_800_000;
 const BROWSER_LOGIN_TIMEOUT_ENV = "PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS";
 const CHATGPT_HOME_URL = "https://chatgpt.com/";
 const CHATGPT_ORIGIN_PROBE_EVERY_ATTEMPTS = 6;
+const GOOGLE_SSO_NAME = /^(?:continue|sign in) with google$/i;
 
 /**
  * Resolve the push-approval observation budget in ms. Honors a positive-integer
@@ -523,11 +524,60 @@ async function openChatGptLogin(page: Page): Promise<void> {
 }
 
 async function clickIntermediateLogin(page: Page): Promise<void> {
-  await clickFirstVisible([
-    page.getByRole("button", { name: LOG_IN_NAME }),
-    page.getByRole("link", { name: LOG_IN_NAME }),
-  ]);
+  try {
+    await clickFirstVisible([
+      page.getByRole("button", { name: LOG_IN_NAME }),
+      page.getByRole("link", { name: LOG_IN_NAME }),
+    ]);
+  } catch {
+    // The login page may already expose provider controls or may have changed;
+    // the caller will continue with provider detection or owner assistance.
+  }
   await page.waitForTimeout(3000);
+}
+
+/**
+ * Click ChatGPT's provider button only when the accessible login UI exposes
+ * exactly one visible Google control. A first-match click would silently pick
+ * an account if the provider renders duplicate or ambiguous controls.
+ */
+export async function clickGoogleSsoIfSafe(page: Page): Promise<boolean> {
+  try {
+    const candidates = [
+      page.getByRole("button", { name: GOOGLE_SSO_NAME }),
+      page.getByRole("link", { name: GOOGLE_SSO_NAME }),
+    ];
+    const visible: Locator[] = [];
+    for (const candidate of candidates) {
+      if ((await candidate.count()) !== 1 || !(await candidate.isVisible())) {
+        continue;
+      }
+      visible.push(candidate);
+    }
+    if (visible.length !== 1) {
+      return false;
+    }
+    const [candidate] = visible;
+    if (!candidate) {
+      return false;
+    }
+    await candidate.click();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isGoogleAuthInteractionPage(page: Page): boolean {
+  const url = currentPageUrl(page);
+  if (!url) {
+    return false;
+  }
+  try {
+    return new URL(url).hostname === "accounts.google.com";
+  } catch {
+    return false;
+  }
 }
 
 async function pollSessionReadiness({
@@ -989,6 +1039,31 @@ async function repairWithManualBrowserLogin({
   "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
 >): Promise<boolean> {
   await openChatGptLogin(page);
+  await clickIntermediateLogin(page);
+  if (await clickGoogleSsoIfSafe(page)) {
+    // Give a surviving Google cookie a chance to complete the normal provider
+    // redirect. A Google-hosted page after the initial probe means the flow
+    // needs account selection, approval, OTP, passkey, or another interaction;
+    // leave that page for the existing owner-assisted browser handoff.
+    await page.waitForTimeout(1500);
+    if (await isChatGptSessionReady(page, { allowOriginProbe: true })) {
+      return true;
+    }
+    if (isGoogleAuthInteractionPage(page)) {
+      return false;
+    }
+    if (
+      await pollSessionReadiness({
+        ...checkpointOption(checkpoint),
+        attempts: browserLoginPollAttempts(),
+        intervalMs: BROWSER_LOGIN_POLL_INTERVAL_MS,
+        page,
+        waitingCheckpointPrefix: "chatgpt-google-sso-poll",
+      })
+    ) {
+      return true;
+    }
+  }
   return await handleBrowserLoginAssistance({
     ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),

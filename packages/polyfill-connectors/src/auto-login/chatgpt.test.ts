@@ -12,6 +12,7 @@ import {
   CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE,
   chatGptAllowsInteractiveAuthRepair,
   chatGptPushApprovalAssistance,
+  clickGoogleSsoIfSafe,
   ensureChatGptSession,
   interactionResponseCode,
   isLikelyChatGptPushApprovalText,
@@ -411,6 +412,122 @@ test("ChatGPT initial auth probe still rejects when the session check fails on e
     );
     assert.equal(sessionProbeCount, 3, "the probe should retry a bounded number of times, not indefinitely");
   });
+});
+
+test("ChatGPT Google SSO selector clicks one visible accessible provider control", async () => {
+  let clicked = false;
+  const locator = (count: number, visible: boolean) => ({
+    click: () => {
+      clicked = true;
+      return Promise.resolve();
+    },
+    count: () => Promise.resolve(count),
+    isVisible: () => Promise.resolve(visible),
+  });
+  const page = {
+    getByRole: (role: string, options: { name: RegExp }) => {
+      if (options.name.test("Continue with Google")) {
+        return locator(role === "button" ? 1 : 0, true);
+      }
+      return locator(0, false);
+    },
+  };
+
+  assert.equal(await clickGoogleSsoIfSafe(page as never), true);
+  assert.equal(clicked, true);
+});
+
+test("ChatGPT Google SSO selector refuses ambiguous provider controls", async () => {
+  let clicked = false;
+  const locator = (count: number, visible: boolean) => ({
+    click: () => {
+      clicked = true;
+      return Promise.resolve();
+    },
+    count: () => Promise.resolve(count),
+    isVisible: () => Promise.resolve(visible),
+  });
+  const page = {
+    getByRole: (_role: string, options: { name: RegExp }) =>
+      options.name.test("Sign in with Google") ? locator(2, true) : locator(0, false),
+  };
+
+  assert.equal(await clickGoogleSsoIfSafe(page as never), false);
+  assert.equal(clicked, false);
+});
+
+test("ChatGPT manual credentialless repair resumes after Google SSO API session becomes active", async () => {
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: undefined,
+      CHATGPT_USERNAME: undefined,
+      PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS: "1",
+      PDPP_RUN_TRIGGER_KIND: "manual",
+    },
+    async () => {
+      let sessionProbeCount = 0;
+      let googleClicked = false;
+      const assistanceMessages: string[] = [];
+      const locator = (count: number, visible: boolean, onClick?: () => void) => ({
+        click: () => {
+          onClick?.();
+          return Promise.resolve();
+        },
+        count: () => Promise.resolve(count),
+        first() {
+          return this;
+        },
+        isVisible: () => Promise.resolve(visible),
+        waitFor: () => (visible ? Promise.resolve() : Promise.reject(new Error("not visible"))),
+      });
+      const page = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            sessionProbeCount += 1;
+            return Promise.resolve(sessionProbeCount >= 4 ? { user: { id: "owner" } } : null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        getByRole: (role: string, options: { name: RegExp }) => {
+          if (options.name.test("Continue with Google")) {
+            return locator(role === "button" ? 1 : 0, true, () => {
+              googleClicked = true;
+            });
+          }
+          return locator(0, false);
+        },
+        goto: () => Promise.resolve(null),
+        url: () => "https://chatgpt.com/auth/login",
+        waitForTimeout: async () => undefined,
+      };
+
+      const result = await ensureChatGptSession({
+        assist: (request) => {
+          assistanceMessages.push(request.message);
+          return Promise.resolve("assist_1");
+        },
+        context: {} as never,
+        page: page as never,
+        sendInteraction: () => {
+          throw new Error("successful Google SSO must not request owner interaction");
+        },
+      });
+
+      assert.equal(result, true);
+      assert.equal(googleClicked, true);
+      assert.deepEqual(assistanceMessages, []);
+      assert.equal(sessionProbeCount, 4);
+    }
+  );
 });
 
 test("ChatGPT auth repair policy only allows owner-started manual runs by default", () => {
