@@ -1,7 +1,6 @@
 # Minimal production Docker Compose for a self-hosted PDPP Core node.
 #
-#   reference  - the PDPP Authorization Server + Resource Server runtime
-#   web        - the operator console (dashboard + proxy in front of the AS/RS)
+#   core       - console + loopback Authorization/Resource Servers
 #   postgres   - durable storage with pgvector (semantic search index)
 #
 # Setup (see ./README.md for the full runbook):
@@ -15,8 +14,8 @@
 # the development/owner stack (connector credentials, fixture mounts, browser
 # services) — do not start here if you only want to run a node.
 services:
-  reference:
-    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}
+  core:
+    image: ${PDPP_CORE_IMAGE:-ghcr.io/pdp-connect/pdpp/core:main}
     restart: unless-stopped
     environment:
       # The single public origin this node advertises in its OAuth metadata.
@@ -35,7 +34,7 @@ services:
       # Semantic search: allow the one-time embedding-model download and cache
       # it on a volume. Set to 0 for a leaner, lexical-only node.
       PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}
-      PDPP_EMBEDDING_CACHE_DIR: /var/cache/pdpp/transformers
+      PDPP_EMBEDDING_CACHE_DIR: /var/lib/pdpp/transformers
       # `restart: unless-stopped` above is the real supervisor this asserts;
       # see docker-compose.yml (repo root) for the full rationale. Never set
       # this to 1 without an equivalent restart policy backing it.
@@ -48,7 +47,9 @@ services:
       GOOGLE_DATAPORTABILITY_REDIRECT_URI: ${GOOGLE_DATAPORTABILITY_REDIRECT_URI:-}
       GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS: ${GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS:-}
     volumes:
-      - pdpp-transformers:/var/cache/pdpp/transformers
+      - pdpp-data:/var/lib/pdpp
+    ports:
+      - "${PDPP_WEB_PORT:-3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,30 +58,12 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS http://localhost:7662/.well-known/oauth-authorization-server >/dev/null && curl -fsS http://localhost:7663/.well-known/oauth-protected-resource >/dev/null",
+          "curl -fsS http://localhost:3000/.well-known/oauth-authorization-server >/dev/null",
         ]
       interval: 5s
       timeout: 3s
       retries: 30
       start_period: 30s
-
-  # Operator console: the only service published to the host. It proxies the
-  # full protocol surface, so one origin (port 3000 by default) fronts the node.
-  web:
-    image: ${PDPP_WEB_IMAGE:-ghcr.io/pdp-connect/pdpp/web:main}
-    restart: unless-stopped
-    environment:
-      PDPP_REFERENCE_MODE: composed
-      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
-      PDPP_AS_URL: http://reference:7662
-      PDPP_RS_URL: http://reference:7663
-      PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:?generate into .env — see deploy/docker/README.md}
-      PDPP_ENABLE_DASHBOARD: "1"
-    ports:
-      - "${PDPP_WEB_PORT:-3000}:3000"
-    depends_on:
-      reference:
-        condition: service_healthy
 
   postgres:
     image: ${PDPP_POSTGRES_IMAGE:-pgvector/pgvector:pg16}
@@ -101,5 +84,5 @@ services:
       start_period: 10s
 
 volumes:
+  pdpp-data:
   pdpp-postgres-data:
-  pdpp-transformers:

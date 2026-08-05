@@ -4,8 +4,8 @@ Two paths, by intent:
 
 - **Quickstart** — one `docker run`, SQLite on a named volume, running on a
   laptop in under a minute. Start here.
-- **Production** — a small Docker Compose stack with Postgres + pgvector for a
-  node you intend to keep.
+- **Production** — the same one-service Core Compose stack with Postgres +
+  pgvector for a node you intend to keep.
 
 Both run the same proven one-service Core runtime as the Railway button and
 the Fly.io launch path: the operator console on the public port, the
@@ -16,7 +16,7 @@ search downloads, and persists its model cache under `/var/lib/pdpp`.
 ## Quickstart
 
 ```sh
-docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
+docker run -d --name pdpp --restart unless-stopped -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
   ghcr.io/pdp-connect/pdpp/core:main
 docker logs -f pdpp
 ```
@@ -52,8 +52,8 @@ metadata matches the real origin — or use the production path below.
 
 ## Production
 
-[`docker-compose.yml`](./docker-compose.yml) runs the reference and console as
-separate services on Postgres with pgvector. No repository clone required:
+[`docker-compose.yml`](./docker-compose.yml) runs one Core application service
+plus Postgres with pgvector. No repository clone required:
 
 ```sh
 mkdir pdpp && cd pdpp
@@ -92,12 +92,15 @@ These are deployment-level OAuth app settings. They are not per-account Google
 credentials, and a Gmail/Google app password cannot authorize the Google Data
 Portability API.
 
-**Browser-backed connectors (ChatGPT, USAA, ...):** the quickstart `core` image
-includes Patchright and bundled Chromium. `reference` and `reference-browser`
-remain split-runtime compatibility images.
+**Browser-backed connectors (ChatGPT, USAA, ...):** the `core` image includes
+Patchright and bundled Chromium for headless-compatible direct-CDP connectors.
+Headed-required cases (currently Chase and default USAA) need the optional n.eko
+headed/X11/WebRTC backend or a local collector runtime. Do not assume every
+connector can run headlessly. `reference` and `reference-browser` remain
+split-runtime compatibility images.
 
 Serve a real domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
-pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so
+pointed at the Core port, and set `PDPP_REFERENCE_ORIGIN` to that domain so
 owner-session cookies and OAuth metadata are correct.
 
 ## Verification
@@ -114,8 +117,9 @@ runtime diagnostics surface (`GET /_ref/deployment`).
 
 - Quickstart: everything (SQLite database, owner password, credential
   encryption key) lives on the `pdpp_data` volume. Back up the volume.
-- Production: records live in the `pdpp-postgres-data` volume; secrets live in
-  `.env`. Back up both together.
+- Production: records live in the `pdpp-postgres-data` volume, semantic model
+  files and first-boot state live in `pdpp-data`, and secrets live in `.env`.
+  Back up all three together.
 
 Upgrade by pulling and recreating; volumes persist:
 

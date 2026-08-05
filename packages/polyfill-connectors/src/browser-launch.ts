@@ -76,7 +76,7 @@ export interface AcquireIsolatedBrowserOptions {
   remoteCdpUrl?: string;
   /**
    * When true, the launcher launches Chromium in CDP-port mode
-   * (`cdpPort: 0` plus `--remote-debugging-address=127.0.0.1`), reads
+   * (`--remote-debugging-port=0` plus `--remote-debugging-address=127.0.0.1`), reads
    * the resolved random port out of `<userDataDir>/DevToolsActivePort`,
    * and publishes `PDPP_BROWSER_CDP_HOST` / `PDPP_BROWSER_CDP_PORT` to
    * `process.env` for the browser-binding-local handoff helper
@@ -214,7 +214,7 @@ export function configuredBrowserChannel(env: Record<string, string | undefined>
  *   Protocol error (Network.setCacheDisabled): Internal server error, session closed.
  *       at ... crNetworkManager.setRequestInterception
  *
- * Root cause (verified against patchright-core 1.59.4 internals):
+ * Root cause (verified against patchright-core 1.61.1 internals):
  * Patchright's `CRPage` constructor eagerly calls
  * `this._networkManager.setRequestInterception(true)` so its stealth
  * Fetch-domain hooks are always active (`server/chromium/crPage.js` line 80).
@@ -690,35 +690,14 @@ export async function acquireIsolatedBrowser({
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
   const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
 
-  // Streaming-registration mode needs Chromium to expose a TCP CDP
-  // endpoint (so the streaming companion can connect by URL later) AND
-  // write `<userDataDir>/DevToolsActivePort` so we can discover the
-  // randomly-assigned port without scraping stderr. We also pin the bind
-  // to loopback as defense in depth — the wsUrl path encodes a bearer
-  // secret, and we never want it reachable from a non-local listener.
-  //
-  // The right way to do this through Patchright/Playwright is the
-  // `cdpPort` launch option: when set, Patchright pushes
-  // `--remote-debugging-port=<port>` AND switches the parent's CDP
-  // transport from pipe to WebSocket (server/browserType.js dispatch on
-  // `options.cdpPort !== undefined`). It also skips its own
-  // `--remote-debugging-pipe` default (server/chromium/chromium.js
-  // `defaultArgs` else branch).
-  //
-  // We CANNOT achieve the same effect by pushing
-  // `--remote-debugging-port=0` into `args[]`: Patchright only checks
-  // `options.cdpPort` (not the args array) when deciding whether to add
-  // `--remote-debugging-pipe`, so Chromium ends up launched with BOTH
-  // `--remote-debugging-port=0` AND `--remote-debugging-pipe`, the
-  // parent connects over the pipe, and the first CDP command after
-  // launch (`Network.setCacheDisabled` from initial page setup) fails
-  // with `Internal server error, session closed`. That manifested as
-  // `companion_start_failed` for any run that needed streaming.
-  //
-  // `cdpPort: 0` lets Chromium pick a random free port; we then read
-  // it back out of `DevToolsActivePort` for the wsUrl. The
-  // `--remote-debugging-address=127.0.0.1` arg is still set explicitly
-  // because Patchright doesn't expose a host-binding option.
+  // Streaming-registration mode needs Chromium to expose a TCP CDP endpoint
+  // (so the streaming companion can connect by URL later) and write
+  // `<userDataDir>/DevToolsActivePort` so we can discover the random port.
+  // Patchright 1.61.1's persistent-context path still owns its parent CDP
+  // transport through `--remote-debugging-pipe`; adding a second
+  // `--remote-debugging-port=0` is supported by Chromium and preserves the
+  // driver's pipe while publishing the companion endpoint. Bind it to
+  // loopback because the wsUrl path carries a bearer secret.
   const baseArgs = [
     // Workaround for microsoft/playwright#40158: headed Chrome's download
     // bubble races Playwright's CDP-based download interception.
@@ -764,6 +743,7 @@ export async function acquireIsolatedBrowser({
   }
   if (streamingEnabled) {
     baseArgs.push("--remote-debugging-address=127.0.0.1");
+    baseArgs.push("--remote-debugging-port=0");
   }
 
   type PatchrightLaunchOptions = NonNullable<Parameters<typeof localChromium.launchPersistentContext>[1]> & {
@@ -773,12 +753,6 @@ export async function acquireIsolatedBrowser({
     headless,
     viewport: null,
     args: baseArgs,
-    // `cdpPort: 0` is honored by Patchright (`server/browserType.js`
-    // dispatches CDP transport on this; `server/chromium/chromium.js`
-    // `defaultArgs` skips `--remote-debugging-pipe` when it is set).
-    // Playwright's public `LaunchOptions` typing doesn't surface `cdpPort`,
-    // but Patchright's protocol validator accepts it and forwards it.
-    ...(streamingEnabled ? { cdpPort: 0 } : {}),
   };
 
   const explicitChannel = configuredBrowserChannel();

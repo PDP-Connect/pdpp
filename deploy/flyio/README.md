@@ -17,6 +17,11 @@ Scope of this first slice:
   only when the operator mounts persistent storage there. n.eko remains an
   optional separate headed/X11/WebRTC backend.
 
+The bundled browser supports headless-compatible direct-CDP connectors. Headed-
+required cases (currently Chase and default USAA) need the optional n.eko
+headed/X11/WebRTC backend or a local collector runtime; the Core image does not
+make every connector headless-capable.
+
 ## Shareable Path
 
 Fly.io does not provide a Railway-style published Template button for arbitrary

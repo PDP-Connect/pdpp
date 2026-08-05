@@ -165,6 +165,29 @@ test("n.eko derives Patchright from the workspace manifest", () => {
   assert.doesNotMatch(installer, /1217|147\.0\.7727\.15/);
 });
 
+test("streaming launcher publishes a real Chromium TCP endpoint", () => {
+  const launcher = read("packages/polyfill-connectors/src/browser-launch.ts");
+  assert.match(launcher, /baseArgs\.push\("--remote-debugging-port=0"\)/);
+  assert.match(launcher, /publishCdpEndpointFromLaunch\(\{ isolatedDir \}\)/);
+  assert.match(launcher, /PDPP_BROWSER_CDP_HOST/);
+  assert.doesNotMatch(launcher, /cdpPort: 0/);
+});
+
+test("deploy Docker Compose uses one Core service plus Postgres and durable data", () => {
+  const compose = read("deploy/docker/docker-compose.yml");
+  assert.match(compose, /^  core:/m);
+  assert.match(compose, /ghcr\.io\/pdp-connect\/pdpp\/core:main/);
+  assert.match(compose, /^  postgres:/m);
+  assert.match(compose, /pdpp-data:\/var\/lib\/pdpp/);
+  assert.match(compose, /PDPP_EMBEDDING_CACHE_DIR: \/var\/lib\/pdpp\/transformers/);
+  assert.doesNotMatch(compose, /^  reference:|^  web:/m);
+});
+
+test("Docker quickstart supplies the restart policy required by the Core image", () => {
+  const readme = read("deploy/docker/README.md");
+  assert.match(readme, /docker run -d --name pdpp --restart unless-stopped/);
+});
+
 test("Railway runbook and template handoff use the one-service core button shape", () => {
   const readme = read("deploy/railway/README.md");
   const handoff = read("deploy/railway/template.md");

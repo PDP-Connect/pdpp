@@ -60,11 +60,11 @@ import {
 //   - it works for popup targets that may not appear in `/json` immediately;
 //   - one fewer HTTP round trip during launch / handoff.
 //
-// Requires the browser to have been launched with `cdpPort: 0` (or
-// `--remote-debugging-port=0`) AND a known port — Patchright's pipe
+// Requires the browser to have been launched with `--remote-debugging-port=0`
+// AND a known port — Patchright's pipe
 // transport carries CDP for Playwright-internal use, but an external CDP
 // client connecting via wsUrl needs an HTTP-exposed listener. Production
-// already sets `cdpPort: 0` in streaming-registration mode (see
+// already sets `--remote-debugging-port=0` in streaming-registration mode (see
 // `browser-launch.ts`).
 
 export interface ResolveWsUrlOptions {
@@ -114,7 +114,7 @@ export async function resolveWsUrlForExactPage(page: Page, opts: ResolveWsUrlOpt
 //
 // Both env vars are required. If either is missing — typical when streaming
 // is not configured for this run, or the launcher chose not to enable
-// `cdpPort: 0` — `prepareManualAction` returns `{ registered: false }` and
+// `--remote-debugging-port=0` — `prepareManualAction` returns `{ registered: false }` and
 // emits a warning, but does not throw.
 
 const BROWSER_CDP_HOST_ENV = "PDPP_BROWSER_CDP_HOST";

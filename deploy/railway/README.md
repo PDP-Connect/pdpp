@@ -134,8 +134,9 @@ the unmounted default path is not durable across redeploys.
   cookies are marked `Secure`.
 - The owner-session signing key derives from `PDPP_OWNER_PASSWORD`, so a stable
   password keeps owner sessions valid across restarts.
-- Browser-backed connector collection is out of scope for the Core button and
-  should run through a separate local collector or explicit browser profile.
+- The bundled Core browser supports headless-compatible direct-CDP connectors.
+  Headed-required cases (currently Chase and default USAA) need the optional
+  n.eko headed/X11/WebRTC backend or a local collector runtime.
 
 ## First-live-test gate
 

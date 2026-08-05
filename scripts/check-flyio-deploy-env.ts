@@ -13,7 +13,7 @@
 //   - public origin not set, or not HTTPS;
 //   - owner data left ungated;
 //   - durable Postgres not attached as PDPP_DATABASE_URL or DATABASE_URL;
-//   - topology variables that should remain owned by the platform-core image.
+//   - topology variables that should remain owned by the Core image.
 //
 // Usage:
 //   node scripts/check-flyio-deploy-env.ts --core core.env
@@ -91,7 +91,7 @@ export function evaluateFlyioCoreEnv(coreEnv: EnvMap): string[] {
 
   for (const key of FORBIDDEN_CORE_KEYS) {
     if (!isPlaceholder(coreEnv[key])) {
-      violations.push(`core ${key} must not be set as a Fly app variable; the platform-core image keeps it internal.`);
+      violations.push(`core ${key} must not be set as a Fly app variable; the Core image keeps it internal.`);
     }
   }
 

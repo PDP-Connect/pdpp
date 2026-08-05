@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // First-boot credential bootstrap for the standalone Core image
-// (Dockerfile targets `railway-core` / `platform-core`).
+// (Dockerfile targets the public `core` image; compatibility aliases remain available.)
 //
 // Managed platforms make owner credentials a deploy-time prompt (Railway) or a
 // launch flag (Fly). A bare `docker run` has neither, and the runtime's
