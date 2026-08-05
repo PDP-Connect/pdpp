@@ -7,7 +7,7 @@
 // The selected first-button shape points the Railway app service at a public,
 // anonymously pullable GHCR image:
 //
-//   core -> ghcr.io/pdp-connect/pdpp/core-browser
+//   core -> ghcr.io/pdp-connect/pdpp/core
 //
 // A reusable Railway Template CANNOT be published while this package is
 // private — Railway pulls the image with no credentials, and the template SHALL
@@ -47,7 +47,7 @@ import { fileURLToPath } from "node:url";
 
 // The app-service image, mapped to its Railway service and Dockerfile stage.
 // Repository path only — no registry host, no tag.
-export const TEMPLATE_IMAGES = [{ image: "pdp-connect/pdpp/core-browser", service: "core", stage: "core-browser" }];
+export const TEMPLATE_IMAGES = [{ image: "pdp-connect/pdpp/core", service: "core", stage: "core" }];
 
 export type Visibility = "absent" | "private" | "public" | "unknown";
 

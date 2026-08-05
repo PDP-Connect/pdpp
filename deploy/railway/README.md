@@ -5,9 +5,8 @@ reference implementation: one public Core app service, one durable Postgres
 backend, with browser-backed connectors available in the deployed app.
 
 This is operator documentation for someone running their own instance. The
-Docker image at `ghcr.io/pdp-connect/pdpp/core-browser` is the browser-capable
-single-container artifact packaged for Railway. The browser-free equivalent is
-`ghcr.io/pdp-connect/pdpp/core`.
+Docker image at `ghcr.io/pdp-connect/pdpp/core` is the browser-capable
+single-container artifact packaged for Railway.
 
 ## Pushbutton Railway template
 
@@ -24,7 +23,7 @@ The published template uses:
 
 | Service | Source | Public? | Purpose |
 |---|---|---:|---|
-| `core` | `ghcr.io/pdp-connect/pdpp/core-browser:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS and browser connectors inside the same container. |
+| `core` | `ghcr.io/pdp-connect/pdpp/core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS and browser connectors inside the same container. |
 | `Postgres` | Railway plugin | no | Durable records, grants, runs, sessions, and tokens. |
 
 Pin a concrete version tag, not `latest`, so the template is reproducible. The
@@ -51,7 +50,7 @@ internet ──HTTPS──▶ core (public Railway app service)
 Why this is the selected button shape: live Railway testing showed that a
 separate private `reference` image service needs an explicit service `PORT` to
 boot reliably, and Railway turns that `PORT` variable into a required deploy-page
-prompt. The `core-browser` image removes that prompt while preserving the
+prompt. The `core` image removes that prompt while preserving the
 protocol shape: the public console still fronts the full protocol surface, and
 the AS/RS listeners remain non-public loopback endpoints.
 
@@ -151,7 +150,7 @@ pnpm docker:smoke
 
 For a live source project or scratch template deploy:
 
-1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/core-browser:<version-tag>` and add
+1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/core:<version-tag>` and add
    Railway Postgres.
 2. Set `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and
    `PDPP_DATABASE_URL` exactly as above.

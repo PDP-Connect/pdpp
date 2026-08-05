@@ -165,10 +165,6 @@ jobs:
             target: core
             title: PDPP Core node
             description: PDPP platform-neutral single-container Core node with console and loopback AS/RS
-          - image: core-browser
-            target: core-browser
-            title: PDPP Core node (browser-capable)
-            description: PDPP platform-neutral single-container Core node with browser-backed connectors
 
     steps:
       - name: Checkout
@@ -296,10 +292,6 @@ jobs:
             target: core
             title: PDPP Core node
             description: PDPP platform-neutral single-container Core node with console and loopback AS/RS
-          - image: core-browser
-            target: core-browser
-            title: PDPP Core node (browser-capable)
-            description: PDPP platform-neutral single-container Core node with browser-backed connectors
 
     steps:
       - name: Checkout

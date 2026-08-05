@@ -10,6 +10,8 @@ Two paths, by intent:
 Both run the same proven one-service Core runtime as the Railway button and
 the Fly.io launch path: the operator console on the public port, the
 Authorization Server and Resource Server on loopback inside the container.
+The public `core` image also bundles Patchright/Chromium, enables semantic
+search downloads, and persists its model cache under `/var/lib/pdpp`.
 
 ## Quickstart
 
@@ -90,16 +92,9 @@ These are deployment-level OAuth app settings. They are not per-account Google
 credentials, and a Gmail/Google app password cannot authorize the Google Data
 Portability API.
 
-**Browser-backed connectors (ChatGPT, USAA, ...):** the default `reference`
-image is browser-free. If you run these connectors inside the reference
-container rather than via the local collector, add this to `.env`:
-
-```sh
-PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference-browser:main
-```
-
-That image includes Patchright and a bundled Chromium so the connector can
-launch a headless browser inside the container.
+**Browser-backed connectors (ChatGPT, USAA, ...):** the quickstart `core` image
+includes Patchright and bundled Chromium. `reference` and `reference-browser`
+remain split-runtime compatibility images.
 
 Serve a real domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
 pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so

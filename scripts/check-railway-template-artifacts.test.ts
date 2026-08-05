@@ -19,7 +19,7 @@ const PATCHRIGHT_INSTALL_PATTERN = /patchright install/;
 const FROM_ANY_AS_CONSOLE_PATTERN = /FROM .* AS console/;
 const PNPM_FILTER_CONSOLE_BUILD_PATTERN = /pnpm --filter pdpp-console build/;
 const ENV_PORT_PATTERN = /ENV[\s\S]*?\n\s+PORT=/;
-const FROM_BASE_AS_INTERNAL_COMPATIBILITY_TARGET_PATTERN = /FROM base AS railway-core/;
+const FROM_BASE_AS_INTERNAL_COMPATIBILITY_TARGET_PATTERN = /FROM core AS railway-core/;
 const CORE_BROWSER_STAGE_PATTERN = /FROM browsers AS core-browser/;
 const CMD_CORE_SUPERVISOR_PATTERN = /CMD \["node", "--import", "tsx", "\/app\/deploy\/railway\/core-supervisor\.ts"\]/;
 const EXPOSE_3000_PATTERN = /\nEXPOSE 3000\n/;
@@ -29,12 +29,15 @@ const APP_REFERENCE_INDEX_PATTERN = /\/app\/reference-implementation\/server\/in
 const CONSOLE_SERVER_JS_PATTERN = /\/console\/apps\/console\/server\.js/;
 const REFERENCE_ORIGIN_LOCALHOST_PATTERN = /PDPP_REFERENCE_ORIGIN=http:\/\/localhost:3000/;
 const DB_PATH_SQLITE_PATTERN = /PDPP_DB_PATH=\/var\/lib\/pdpp\/pdpp\.sqlite/;
+const CORE_INHERITS_BROWSER_PATTERN = /FROM browsers AS core-browser[\s\S]*FROM core-browser AS core/;
+const CORE_SEMANTIC_DOWNLOAD_PATTERN = /PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1/;
+const CORE_SEMANTIC_CACHE_PATTERN = /PDPP_EMBEDDING_CACHE_DIR=\/var\/lib\/pdpp\/transformers/;
 const CORE_FIRST_BOOT_IMPORT_PATTERN = /from "\.\/core-first-boot\.ts"/;
 const PREPARE_FIRST_BOOT_CALL_PATTERN = /prepareFirstBoot\(\)/;
 const FIRST_BOOT_ENV_SPREAD_PATTERN = /\.\.\.firstBoot\.env/g;
 const FIRST_BOOT_BANNER_LINES_PATTERN = /firstBoot\.bannerLines/;
 const RAILWAY_TEMPLATE_URL_PATTERN = /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/;
-const GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN = /ghcr\.io\/pdp-connect\/pdpp\/core-browser/;
+const GHCR_PDP_CONNECT_CORE_PATTERN = /ghcr\.io\/pdp-connect\/pdpp\/core(?::|`)/;
 const ONE_PUBLIC_CORE_APP_SERVICE_PATTERN = /one public Core app service/i;
 const SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN = /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i;
 const RAILWAY_BUTTON_SVG_PATTERN = /https:\/\/railway\.com\/button\.svg/;
@@ -137,12 +140,19 @@ test("Core image carries the Docker quickstart defaults and first-boot bootstrap
   assert.match(supervisor, FIRST_BOOT_BANNER_LINES_PATTERN);
 });
 
+test("public Core inherits browser support and persists semantic search downloads", () => {
+  const dockerfile = read("Dockerfile");
+  assert.match(dockerfile, CORE_INHERITS_BROWSER_PATTERN);
+  assert.match(dockerfile, CORE_SEMANTIC_DOWNLOAD_PATTERN);
+  assert.match(dockerfile, CORE_SEMANTIC_CACHE_PATTERN);
+});
+
 test("Railway runbook and template handoff use the one-service core button shape", () => {
   const readme = read("deploy/railway/README.md");
   const handoff = read("deploy/railway/template.md");
 
   assert.match(readme, RAILWAY_TEMPLATE_URL_PATTERN);
-  assert.match(readme, GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN);
+  assert.match(readme, GHCR_PDP_CONNECT_CORE_PATTERN);
   assert.match(readme, ONE_PUBLIC_CORE_APP_SERVICE_PATTERN);
   assert.doesNotMatch(readme, SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN);
 
@@ -161,10 +171,10 @@ test("Railway runbook and template handoff use the one-service core button shape
   assert.doesNotMatch(handoff, SETTINGS_BUILD_DOCKER_TARGET_STAGE_PATTERN);
 });
 
-test("Railway handoff documents the public core-browser image-source template shape", () => {
+test("Railway handoff documents the public core image-source template shape", () => {
   const handoff = read("deploy/railway/template.md");
 
-  assert.match(handoff, GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN);
+  assert.match(handoff, GHCR_PDP_CONNECT_CORE_PATTERN);
   assert.match(handoff, ONE_APPLICATION_SERVICE_POSTGRES_PLUGIN_PATTERN);
 
   // A concrete version tag must be pinned; latest/moving tags are disallowed.
@@ -172,21 +182,21 @@ test("Railway handoff documents the public core-browser image-source template sh
   assert.match(handoff, VERSION_TAG_PLACEHOLDER_PATTERN);
 });
 
-test("Railway runbook documents the public core-browser image-source mapping", () => {
+test("Railway runbook documents the public core image-source mapping", () => {
   const readme = read("deploy/railway/README.md");
 
-  assert.match(readme, GHCR_PDP_CONNECT_CORE_BROWSER_PATTERN);
+  assert.match(readme, GHCR_PDP_CONNECT_CORE_PATTERN);
   assert.match(readme, CONSOLE_RAILWAY_PORT_PATTERN);
   assert.match(readme, LOOPBACK_7662_PATTERN);
   assert.match(readme, LOOPBACK_7663_PATTERN);
 });
 
-test("release matrices publish both public Core artifacts and do not expose railway-core", () => {
+test("release matrices publish Core and do not expose compatibility aliases", () => {
   const dockerWorkflow = read(".github/workflows/docker-images.yml");
   const releaseWorkflow = read(".github/workflows/semantic-release.yml");
   for (const workflow of [dockerWorkflow, releaseWorkflow]) {
     assert.match(workflow, /image: core\n\s+target: core/);
-    assert.match(workflow, /image: core-browser\n\s+target: core-browser/);
+    assert.doesNotMatch(workflow, /image: core-browser\n\s+target: core-browser/);
     assert.doesNotMatch(workflow, /image: railway-core/);
   }
   const template = read("deploy/railway/template.md");
@@ -197,7 +207,9 @@ test("release matrices publish both public Core artifacts and do not expose rail
   assert.match(historicalRecord, /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
   for (const publicPath of ["deploy/railway/README.md", "deploy/docker/README.md"]) {
     assert.doesNotMatch(read(publicPath), /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
+    assert.doesNotMatch(read(publicPath), /ghcr\.io\/pdp-connect\/pdpp\/core-browser/);
   }
+  assert.doesNotMatch(read("deploy/railway/template.md").split(historicalMarker)[0], /core-browser/);
 });
 
 test("Railway handoff wires the runnable GHCR public-image probe into the publish gate", () => {
