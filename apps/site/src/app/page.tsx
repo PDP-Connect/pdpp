@@ -32,9 +32,13 @@ export default function Home() {
       <PdppConceptMasthead />
 
       <main className="pdpp-page pdpp-page--home">
-        <PdppHeroWater />
-
-        <article className="pdpp-doc pdpp-frontdoor">
+        {/* Two-column grid, the concept's own shape: copy left, figure right,
+            48px apart. The figure is a GRID CHILD, not an absolutely
+            positioned overlay -- as an overlay it rendered on top of the
+            headline and the CTAs, and no amount of offset arithmetic fixed
+            that because the article is a narrow measure. */}
+        <div className="pdpp-frontdoor--hero">
+          <article className="pdpp-doc pdpp-frontdoor pdpp-frontdoor__copy">
           <h1>Personal Data Portability Protocol</h1>
 
           {/* Anchored to spec-core.md: "PDPP is an authorization and disclosure
@@ -115,7 +119,10 @@ export default function Home() {
           <p className="pdpp-frontdoor__status">
             <span className="pdpp-stamp">{SPEC_STATUS_STAMP}</span>
           </p>
-        </article>
+          </article>
+
+          <PdppHeroWater />
+        </div>
       </main>
 
       <PdppConceptFooter />
