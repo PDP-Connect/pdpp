@@ -264,23 +264,30 @@
 }
 
 /* ─── Layout: rail + document ────────────────────────────────────────────
-   One primitive for every page; home is the same grid with a zeroed rail
-   track (matches the concept's construction, see RESPONSIVE-AUDIT.md). */
+   One primitive for every page. The 3-column rail template only applies
+   when a .pdpp-rail is actually rendered inside — self-host/participate/home
+   render .pdpp-doc alone, and reserving the rail+gutter tracks unconditionally
+   left 250-300px of dead space beside the article and pushed .pdpp-doc off
+   center (measured: docLeft 450-780px against a 1050-1068px page at
+   1280-1920px). Rail-less is the default; :has() opts a page INTO the split
+   only where a rail exists, so no page needs its own modifier class. */
 .pdpp-page {
   display: grid;
-  grid-template-columns: var(--pdpp-concept-rail) var(--pdpp-concept-gutter) minmax(
-      0,
-      1fr
-    );
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   max-width: var(--pdpp-concept-max);
   padding-inline: var(--pdpp-concept-pad);
   margin-inline: auto;
 }
+.pdpp-page:has(> .pdpp-rail) {
+  grid-template-columns: var(--pdpp-concept-rail) var(--pdpp-concept-gutter) minmax(
+      0,
+      1fr
+    );
+}
 .pdpp-page--home {
   /* Containing block for the absolutely positioned water figure. */
   position: relative;
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .pdpp-rail {
@@ -292,17 +299,14 @@
   font-family: var(--pdpp-concept-sans);
 }
 .pdpp-doc {
-  grid-column: 3;
+  grid-column: 1;
   max-inline-size: var(--pdpp-concept-measure);
   min-width: 0;
   padding-top: 64px;
   padding-bottom: 120px;
 }
-/* Declared AFTER the base .pdpp-doc rule it overrides: a (0,2,0) selector
-   placed before a (0,1,0) one is descending specificity, which reads as a
-   cascade accident even when it works. */
-.pdpp-page--home .pdpp-doc {
-  grid-column: 1;
+.pdpp-page:has(> .pdpp-rail) .pdpp-doc {
+  grid-column: 3;
 }
 
 @media (max-width: 720px) {
