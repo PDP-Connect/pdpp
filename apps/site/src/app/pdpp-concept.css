@@ -1011,6 +1011,21 @@
 .pdpp-frontdoor__status {
   margin-top: 40px;
 }
+/* Plain mono text, not a bordered chip. The concept renders this as
+   `.definition__status`: mono, 12px, uppercase, ink-soft, no border and no
+   padding. The shared `.pdpp-stamp` is a bordered Public Sans chip built for a
+   different surface, and on the front door it read as a button sitting under
+   the real buttons. Measured both: concept border 0px none / padding 0px,
+   PR was 1px solid / 6px 10px. */
+.pdpp-frontdoor__status .pdpp-stamp {
+  padding: 0;
+  border: 0;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--pdpp-concept-ink-soft);
+}
 
 /* The two doors, plus one quiet third. */
 .pdpp-frontdoor__actions {
@@ -1120,60 +1135,51 @@
 }
 
 /* ─── Theme switch ────────────────────────────────────────────────────────
-   Same box-model discipline as .pdpp-nav-search-trigger directly above: the
-   masthead row aligns to baseline and sizes its cross-axis to its tallest
-   child, so this is pinned to the same 20px line-box (border inside, via
-   box-sizing) rather than left at its intrinsic padded size. Verified this
-   keeps masthead height unchanged (see THEME.md for the before/after
-   measurement). Three explicit options rather than the operator-console's
-   single cycle button: on a document surface, a legible set of choices reads
-   truer to the register than a hidden-state icon toggle. */
+   Single icon button, not the three-segment control this used to be — see
+   theme-switch.tsx for the precedent (Linear's docs header) this now
+   follows. Matches .pdpp-nav-search-trigger's own box exactly (20px,
+   box-sizing: border-box) rather than inventing a new size, per the masthead
+   row's own discipline: it sits in a baseline-aligned flex row, so a new
+   element must fit the existing 20px reference box, not define its own.
+   The 44px touch target is a transparent ::before laid over the button via
+   an absolutely-positioned box centered on it — this expands the HIT AREA
+   without adding to the button's own layout box, so the row's height is
+   unaffected by the touch-target floor. */
 .pdpp-theme-switch {
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: stretch;
-  height: 20px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 12px;
-  background: var(--pdpp-concept-paper-deep);
-  border: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 16%, var(--pdpp-concept-paper));
-  border-radius: 3px;
-}
-.pdpp-theme-switch__option {
+  position: relative;
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  padding-inline: 8px;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   color: var(--pdpp-concept-ink-soft);
   cursor: pointer;
-  background: transparent;
+  background: none;
   border: none;
-  border-inline-start: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 16%, var(--pdpp-concept-paper));
-}
-.pdpp-theme-switch__option:first-child {
-  border-inline-start: none;
-}
-.pdpp-theme-switch__option:hover {
-  color: var(--pdpp-concept-teal);
-}
-.pdpp-theme-switch__option:focus-visible {
-  position: relative;
-  z-index: 1;
-  outline: 2px solid var(--pdpp-concept-teal);
-  outline-offset: -2px;
   border-radius: 2px;
 }
-.pdpp-theme-switch__option[data-checked] {
-  color: var(--pdpp-concept-teal-on-wash);
-  background: var(--pdpp-concept-teal-wash);
+.pdpp-theme-switch::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(44px, 100%);
+  height: max(44px, 100%);
+  content: "";
+  transform: translate(-50%, -50%);
 }
-@media (max-width: 640px) {
-  .pdpp-theme-switch__option {
-    padding-inline: 6px;
-    font-size: 11px;
-  }
+.pdpp-theme-switch:hover {
+  color: var(--pdpp-concept-teal);
+}
+.pdpp-theme-switch:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: 2px;
+}
+.pdpp-theme-switch__icon {
+  display: block;
+  width: 14px;
+  height: 14px;
 }
 
 /* ─── Channels (Participate) ─────────────────────────────────────────────────
