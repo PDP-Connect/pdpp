@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { PRODUCTION_READY_CONNECTORS } from "../../packages/polyfill-connectors/src/connector-conformance-roster.ts";
 import {
   type CredentialValidationMode,
   credentialValidationMode,
@@ -210,10 +211,6 @@ export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex"] as 
 
 export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR_CONNECTORS)[number];
 
-export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = ["amazon", "heb"] as const;
-
-export type SupportedBrowserCollectorConnector = (typeof SUPPORTED_BROWSER_COLLECTOR_CONNECTORS)[number];
-
 export const BROWSER_BOUND_CONNECTORS = [
   "amazon",
   "anthropic",
@@ -232,6 +229,25 @@ export const BROWSER_BOUND_CONNECTORS = [
 ] as const;
 
 export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
+
+/**
+ * Browser enrollment is available when the shipped manifest/runtime pair is
+ * both browser-bound and production-ready. The conformance roster is the
+ * connector package's authority for the latter: it is checked against
+ * `capabilities.public_listing.listed` and each entry names a real collection
+ * oracle. Deriving this intersection keeps a scaffold such as Anthropic out
+ * without maintaining a second browser setup allowlist.
+ */
+export type SupportedBrowserCollectorConnector = Extract<
+  BrowserBoundConnector,
+  keyof typeof PRODUCTION_READY_CONNECTORS
+>;
+
+export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS: readonly SupportedBrowserCollectorConnector[] = Object.freeze(
+  BROWSER_BOUND_CONNECTORS.filter((connector): connector is SupportedBrowserCollectorConnector =>
+    Object.hasOwn(PRODUCTION_READY_CONNECTORS, connector)
+  )
+);
 
 export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 
