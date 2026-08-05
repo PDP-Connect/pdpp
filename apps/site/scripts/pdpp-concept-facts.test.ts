@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { SITE_LICENSES } from "../src/components/pdpp-concept/site-facts.ts";
+import { GITHUB_REPO_URL, repoBlobUrl, SITE_LICENSES } from "../src/components/pdpp-concept/site-facts.ts";
 import { SPEC_EDITORS, SPEC_STATUS } from "../src/components/pdpp-concept/spec-status.ts";
 
 // The owner's standing rule for the site pass: anything that can go stale but is
@@ -78,5 +78,36 @@ test("every footer license links to real license text", () => {
   for (const row of SITE_LICENSES) {
     assert.match(row.href, HTTPS_URL, `${row.spdx} must link to its license text`);
     assert.ok(row.artifact.length > 0);
+  }
+});
+
+test("repoBlobUrl derives from GITHUB_REPO_URL, not a second literal", () => {
+  assert.equal(repoBlobUrl("MAINTAINERS.md"), `${GITHUB_REPO_URL}/blob/main/MAINTAINERS.md`);
+  assert.equal(
+    repoBlobUrl("reference-implementation/test/pdpp.test.js"),
+    `${GITHUB_REPO_URL}/blob/main/reference-implementation/test/pdpp.test.js`
+  );
+});
+
+// GITHUB_REPO_URL previously had 5 independent hand-typed copies across
+// docs-shared.tsx, source-link.tsx, the specification page, and 5 places in
+// self-host/coverage/data.ts (2026-08-05). Every one is now derived from this
+// single export or from repoBlobUrl(); this pins that so a future edit cannot
+// quietly reintroduce a hand-typed "https://github.com/PDP-Connect/pdpp".
+test("no site source file hand-types the GitHub repo URL outside site-facts.ts", () => {
+  const filesThatMustDeriveIt = [
+    "src/lib/docs-shared.tsx",
+    "src/components/docs/source-link.tsx",
+    "src/app/specification/[[...slug]]/page.tsx",
+    "src/app/self-host/coverage/data.ts",
+    "src/components/pdpp-concept/footer.tsx",
+  ];
+
+  for (const relativePath of filesThatMustDeriveIt) {
+    const source = readFileSync(join(REPO_ROOT, "apps/site", relativePath), "utf8");
+    assert.ok(
+      !source.includes("github.com/PDP-Connect/pdpp"),
+      `${relativePath} must derive the repo URL from site-facts.ts, not hand-type it`
+    );
   }
 });

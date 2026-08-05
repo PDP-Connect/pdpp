@@ -1,10 +1,11 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 
-const GITHUB_BLOB_BASE = "https://github.com/PDP-Connect/pdpp/blob/main";
-const GITHUB_TREE_BASE = "https://github.com/PDP-Connect/pdpp/tree/main";
+const GITHUB_BLOB_BASE = `${GITHUB_REPO_URL}/blob/main`;
+const GITHUB_TREE_BASE = `${GITHUB_REPO_URL}/tree/main`;
 const TRAILING_SLASH_RE = /\/+$/;
 
 export function repoGithubUrl(repoRelativePath: string): string {

@@ -7,6 +7,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
 import { getMDXComponents } from "@/components/mdx.tsx";
+import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 
 interface DocsPageProps {
@@ -40,10 +41,7 @@ export default async function Page({ params }: DocsPageProps) {
           )}
           <div className="pdpp-docs-actions">
             <LLMCopyButton markdownUrl={markdownUrl} />
-            <ViewOptions
-              githubUrl={`https://github.com/PDP-Connect/pdpp/blob/main/apps/site/content/docs/${githubPath}`}
-              markdownUrl={markdownUrl}
-            />
+            <ViewOptions githubUrl={repoBlobUrl(`apps/site/content/docs/${githubPath}`)} markdownUrl={markdownUrl} />
           </div>
         </div>
       </div>
