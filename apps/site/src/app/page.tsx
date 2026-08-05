@@ -3,6 +3,7 @@
 
 import Link from "next/link";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
+import { PdppHeroWater } from "@/components/pdpp-concept/hero-water.tsx";
 import { PdppConceptMasthead } from "@/components/pdpp-concept/masthead.tsx";
 import { SPEC_STATUS_STAMP } from "@/components/pdpp-concept/spec-status.ts";
 
@@ -20,15 +21,18 @@ import { SPEC_STATUS_STAMP } from "@/components/pdpp-concept/spec-status.ts";
 // occurrences in spec-core.md, where "records" appears 64 times and "fields"
 // 88 — and those two are what a grant literally names.
 //
-// NO HERO HERE, DELIBERATELY. The koi/columns hero is mid-experiment in another
-// lane and the owner has not decided on it, so this page ships copy-first and
-// the hero slot is left for that decision.
+// THE HERO is records floating on water: three columns of real record fields
+// drifting at a constant speed, on a velocity-and-height field the pointer
+// disturbs. See hero-water.tsx for why it is a field rather than a per-record
+// spring, and hero-field.ts for the fluid itself.
 export default function Home() {
   return (
     <div className="pdpp-concept">
       <PdppConceptMasthead />
 
       <main className="pdpp-page pdpp-page--home">
+        <PdppHeroWater />
+
         <article className="pdpp-doc pdpp-frontdoor">
           <h1>Personal Data Portability Protocol</h1>
 
@@ -84,10 +88,10 @@ export default function Home() {
               not a peer: a visitor decides to read or to run first and joins
               after. */}
           <div className="pdpp-frontdoor__actions">
-            <Link className="pdpp-cta pdpp-cta--primary" href="/docs">
+            <Link className="pdpp-cta pdpp-cta--primary" href="/specification">
               Read the specification
             </Link>
-            <Link className="pdpp-cta pdpp-cta--secondary" href="/reference">
+            <Link className="pdpp-cta pdpp-cta--secondary" href="/self-host">
               Self-host it
             </Link>
             <Link className="pdpp-cta pdpp-cta--quiet" href="/participate">

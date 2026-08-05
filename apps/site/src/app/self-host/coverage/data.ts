@@ -42,13 +42,13 @@ const rootRelative = (sourcePath: string) => resolve(repoRoot, sourcePath);
 
 const docs = (slug: string, label: string): CoverageEvidence => ({
   label,
-  href: `/docs/${slug}`,
+  href: `/specification/${slug}`,
   sourcePath: `apps/site/content/docs/${slug}.md`,
 });
 
 const referenceDocs = (slug: string, label: string): CoverageEvidence => ({
   label,
-  href: `/docs/${slug}`,
+  href: `/specification/${slug}`,
   sourcePath: `apps/site/content/docs/${slug}.md`,
 });
 
@@ -84,7 +84,7 @@ export const coverageRows = [
       docs("spec-core", "Core protocol"),
       referenceTest("pdpp.test.js", "Reference end-to-end tests"),
       webRoute(
-        "/docs/reference-implementation-examples",
+        "/specification/reference-implementation-examples",
         "apps/site/content/docs/reference-implementation-examples.md",
         "Examples"
       ),

@@ -142,7 +142,7 @@ export default function ParticipatePage() {
             <p>
               Interfaces may still change: {SPEC_STATUS.version} has not been through public consultation, which opens
               before v1.0 is pinned. Governance and the license split are recorded in{" "}
-              <Link href="/docs/spec-core#specification-governance">specification governance</Link>.
+              <Link href="/specification/spec-core#specification-governance">specification governance</Link>.
             </p>
           </section>
 

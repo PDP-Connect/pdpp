@@ -36,7 +36,7 @@ const nextConfig = {
   output: "standalone",
   // Runtime file reads outside the bundled output need explicit tracing
   // includes so Next copies them into the standalone deploy. Without these,
-  // /reference/coverage, the well-known agent-skill catalog, and /llms-full.txt
+  // /self-host/coverage, the well-known agent-skill catalog, and /llms-full.txt
   // 500 on Vercel because the markdown they read is absent.
   outputFileTracingIncludes: {
     "/llms-full.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
@@ -55,73 +55,99 @@ const nextConfig = {
   // biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   async redirects() {
     return [
+      // ROUTE RENAME: the nav labels are "Self-Host" and "Specification", so the
+      // routes are /self-host and /specification. A label that disagrees with its
+      // URL reads as two destinations. Both old paths are permanent redirects —
+      // /docs in particular is linked from published spec pages, llms.txt
+      // consumers, and external sites, so it must never 404. The :path* forms
+      // carry deep links (and their hashes) through to the same page.
       {
-        destination: "/docs/spec-core",
+        destination: "/self-host",
+        permanent: true,
+        source: "/reference",
+      },
+      {
+        destination: "/self-host/:path*",
+        permanent: true,
+        source: "/reference/:path*",
+      },
+      {
+        destination: "/specification",
+        permanent: true,
+        source: "/docs",
+      },
+      {
+        destination: "/specification/:path*",
+        permanent: true,
+        source: "/docs/:path*",
+      },
+      {
+        destination: "/specification/spec-core",
         permanent: true,
         source: "/spec-core",
       },
       {
-        destination: "/docs/spec-collection-profile",
+        destination: "/specification/spec-collection-profile",
         permanent: true,
         source: "/spec-collection-profile",
       },
       {
-        destination: "/docs/spec-architecture",
+        destination: "/specification/spec-architecture",
         permanent: true,
         source: "/spec-architecture",
       },
       {
-        destination: "/docs/spec-auth-design",
+        destination: "/specification/spec-auth-design",
         permanent: true,
         source: "/spec-auth-design",
       },
       {
-        destination: "/docs/spec-change-tracking",
+        destination: "/specification/spec-change-tracking",
         permanent: true,
         source: "/spec-change-tracking",
       },
       {
-        destination: "/docs/spec-connector-ecosystem",
+        destination: "/specification/spec-connector-ecosystem",
         permanent: true,
         source: "/spec-connector-ecosystem",
       },
       {
-        destination: "/docs/spec-data-query-api",
+        destination: "/specification/spec-data-query-api",
         permanent: true,
         source: "/spec-data-query-api",
       },
       {
-        destination: "/docs/spec-deferred",
+        destination: "/specification/spec-deferred",
         permanent: true,
         source: "/spec-deferred",
       },
       {
-        destination: "/docs/spec-dti-alignment",
+        destination: "/specification/spec-dti-alignment",
         permanent: true,
         source: "/spec-dti-alignment",
       },
       {
-        destination: "/docs/reference-implementation-examples",
+        destination: "/specification/reference-implementation-examples",
         permanent: true,
         source: "/spec-e2e-examples",
       },
       {
-        destination: "/docs/reference-implementation-examples",
+        destination: "/specification/reference-implementation-examples",
         permanent: true,
         source: "/spec-reference-implementation-examples",
       },
       {
-        destination: "/docs/reference-implementation",
+        destination: "/specification/reference-implementation",
         permanent: true,
         source: "/e2e",
       },
       {
-        destination: "/docs/reference-implementation",
+        destination: "/specification/reference-implementation",
         permanent: true,
         source: "/e2e/:path*",
       },
       {
-        destination: "/docs/reference-implementation",
+        destination: "/specification/reference-implementation",
         permanent: true,
         source: "/reference-implementation",
       },
@@ -140,13 +166,18 @@ const nextConfig = {
   // biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   async rewrites() {
     return [
+      // Markdown-for-agents aliases. These follow the route rename, and the
+      // `/docs/...` forms are NOT kept here: redirects run before rewrites, so
+      // the `/docs/:path*` rename redirect would swallow `/docs/x.mdx` before a
+      // rewrite could ever match it. An agent that requests the old path is
+      // redirected to the new one and then rewritten, which still resolves.
       {
         destination: "/llms.mdx/docs",
-        source: "/docs.mdx",
+        source: "/specification.mdx",
       },
       {
         destination: "/llms.mdx/docs/:path*",
-        source: "/docs/:path*.mdx",
+        source: "/specification/:path*.mdx",
       },
       // Root agent skill discovery. Keep handlers under a filesystem-safe
       // internal path and expose the standards-shaped public .well-known URL.

@@ -459,7 +459,7 @@ function TranscriptPane({ state, transcript }: { state: SandboxState; transcript
       </header>
       <p className="pdpp-caption mt-2 text-muted-foreground">
         Each panel reveals as you advance the walkthrough. Shapes are representative of PDPP, not byte-for-byte from a
-        live reference run. See <CodeLink href="/docs">/docs</CodeLink> for normative semantics.
+        live reference run. See <CodeLink href="/specification">/specification</CodeLink> for normative semantics.
       </p>
 
       <ol className="mt-4 space-y-3">

@@ -4354,13 +4354,13 @@ function StatusSection() {
         <div>
           <SubLabel>Spec citation</SubLabel>
           <div className="flex items-center gap-3 rounded-lg px-5 py-4" style={{ border: "1px solid var(--border)" }}>
-            <a className="font-mono text-xs transition-colors" href="/docs" style={{ color: "var(--edu-fg)" }}>
+            <a className="font-mono text-xs transition-colors" href="/specification" style={{ color: "var(--edu-fg)" }}>
               §4.2 Selection Request
             </a>
             <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
               ·
             </span>
-            <a className="font-mono text-xs transition-colors" href="/docs" style={{ color: "var(--edu-fg)" }}>
+            <a className="font-mono text-xs transition-colors" href="/specification" style={{ color: "var(--edu-fg)" }}>
               §6.1 Stream Metadata
             </a>
             <code className="ml-auto font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>

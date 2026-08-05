@@ -58,13 +58,13 @@ export default function ReferenceCoveragePage() {
               executable reference behavior, tests, demonstration surfaces, and intentionally deferred scope.
             </p>
             <div className="mt-7 flex flex-wrap gap-2.5">
-              <Link className={buttonVariants({ variant: "default", size: "lg" })} href="/reference">
+              <Link className={buttonVariants({ variant: "default", size: "lg" })} href="/self-host">
                 Reference explainer
               </Link>
               <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/sandbox">
                 Open sandbox
               </Link>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
+              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/specification">
                 Protocol docs
               </Link>
             </div>
