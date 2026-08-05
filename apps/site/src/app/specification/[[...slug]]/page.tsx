@@ -58,6 +58,13 @@ export default async function Page({ params }: DocsPageProps) {
       className="pdpp-docs-page"
       footer={rootFooterItems ? { items: rootFooterItems } : undefined}
       full={page.data.full}
+      // The in-page table of contents lives in the LEFT rail, under "Contents",
+      // exactly as the concept states it — so fumadocs' own right-hand TOC
+      // column is turned off rather than left to render a second copy of the
+      // same list. The popover (the narrow-viewport affordance) stays: below
+      // the width the rail unmounts at, it is the only way to reach the
+      // headings. `toc` is still passed because the popover reads it.
+      tableOfContent={{ enabled: false }}
       toc={page.data.toc}
     >
       <div className="pdpp-docs-hero">
