@@ -66,8 +66,7 @@ test("enrollment action only mints packaged local collector enrollment codes", a
 
 const RUNBOOK_CROSS_REF = /docs\/operator\/local-collector-runbook\.md/;
 const PDPP_COLLECTOR_ENROLL_LITERAL = /@pdpp\/local-collector enroll/;
-const RUNBOOK_CANONICAL_OWNER_ROUTE =
-  /(?:In a browser, open|Open) `\/device-exporters`/g;
+const RUNBOOK_CANONICAL_OWNER_ROUTE = /(?:In a browser, open|Open) `\/device-exporters`/g;
 
 test("local-device-exporter runbook cross-references the operator runbook", async () => {
   const legacyDoc = await read("reference-implementation/docs/local-device-exporter.md");
