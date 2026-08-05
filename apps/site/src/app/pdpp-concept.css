@@ -34,9 +34,12 @@
   --pdpp-concept-rule-faint: 1px solid
     color-mix(in srgb, var(--pdpp-concept-ink) 10%, var(--pdpp-concept-paper));
 
-  --pdpp-concept-serif: var(--font-pdpp-serif), Georgia, "Times New Roman", serif;
-  --pdpp-concept-sans: var(--font-pdpp-doc-sans), system-ui, -apple-system, sans-serif;
-  --pdpp-concept-mono: var(--font-pdpp-doc-mono), "SFMono-Regular", Menlo, Consolas, monospace;
+  --pdpp-concept-serif:
+    var(--font-pdpp-serif), Georgia, "Times New Roman", serif;
+  --pdpp-concept-sans:
+    var(--font-pdpp-doc-sans), system-ui, -apple-system, sans-serif;
+  --pdpp-concept-mono:
+    var(--font-pdpp-doc-mono), "SFMono-Regular", Menlo, Consolas, monospace;
 
   --pdpp-concept-max: 1200px;
   --pdpp-concept-rail: clamp(200px, 6.3462rem + 9.6154vw, 240px);
@@ -86,12 +89,12 @@
 
 /* ─── Document surface ──────────────────────────────────────────────────── */
 .pdpp-concept {
-  background: var(--pdpp-concept-paper);
-  color: var(--pdpp-concept-ink);
   font-family: var(--pdpp-concept-serif);
   font-size: 17px;
-  line-height: 1.65;
   font-variant-numeric: oldstyle-nums;
+  line-height: 1.65;
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-paper);
 }
 
 .pdpp-concept ::selection {
@@ -101,7 +104,8 @@
 .pdpp-concept a {
   color: var(--pdpp-concept-teal);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--pdpp-concept-teal) 30%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-teal) 30%, transparent);
   transition:
     color 120ms ease,
     border-color 120ms ease;
@@ -119,29 +123,29 @@
 
 /* ─── Masthead ──────────────────────────────────────────────────────────── */
 .pdpp-masthead {
-  border-bottom: var(--pdpp-concept-rule);
   position: sticky;
   top: 0;
   z-index: 20;
   background: var(--pdpp-concept-paper);
+  border-bottom: var(--pdpp-concept-rule);
 }
 .pdpp-masthead__inner {
-  max-width: var(--pdpp-concept-max);
-  margin-inline: auto;
-  padding-block: 20px;
-  padding-inline: var(--pdpp-concept-pad);
   display: flex;
+  flex-wrap: wrap;
+  gap: 32px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 32px;
-  flex-wrap: wrap;
+  max-width: var(--pdpp-concept-max);
+  padding-block: 20px;
+  padding-inline: var(--pdpp-concept-pad);
+  margin-inline: auto;
 }
 .pdpp-wordmark {
   font-family: var(--pdpp-concept-serif);
-  font-weight: 600;
   font-size: 21px;
-  letter-spacing: -0.01em;
+  font-weight: 600;
   color: var(--pdpp-concept-ink);
+  letter-spacing: -0.01em;
   border-bottom: none;
 }
 .pdpp-wordmark:hover {
@@ -151,16 +155,16 @@
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   white-space: nowrap;
 }
 .pdpp-masthead__wordmark-line {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
   flex-wrap: nowrap;
+  gap: 14px;
+  align-items: baseline;
   min-inline-size: 0;
 }
 @media (max-width: 900px) {
@@ -170,15 +174,15 @@
 }
 .pdpp-nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 24px;
   font-family: var(--pdpp-concept-sans);
   font-size: 15px;
-  flex-wrap: wrap;
 }
 .pdpp-nav a {
+  padding-bottom: 2px;
   color: var(--pdpp-concept-ink-soft);
   border-bottom: 1px solid transparent;
-  padding-bottom: 2px;
 }
 .pdpp-nav a:hover,
 .pdpp-nav a:focus-visible {
@@ -195,31 +199,32 @@
 }
 .pdpp-hero__inner {
   max-width: var(--pdpp-concept-max);
-  margin-inline: auto;
+  padding-block: clamp(40px, 2rem + 3vw, 72px)
+    clamp(36px, 1.75rem + 2.6vw, 64px);
   padding-inline: var(--pdpp-concept-pad);
-  padding-block: clamp(40px, 2rem + 3vw, 72px) clamp(36px, 1.75rem + 2.6vw, 64px);
+  margin-inline: auto;
 }
 .pdpp-hero__inner h1 {
   max-width: 22ch;
   margin-bottom: 24px;
 }
 .pdpp-hero__lede {
+  max-width: 58ch;
+  margin-bottom: 32px;
   font-size: 20px;
   line-height: 1.5;
   color: var(--pdpp-concept-ink-soft);
-  max-width: 58ch;
-  margin-bottom: 32px;
 }
 .pdpp-hero__lede--placement {
+  max-width: 58ch;
   font-size: 17px;
   color: var(--pdpp-concept-ink-faint);
-  max-width: 58ch;
 }
 .pdpp-hero__meta {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 12px 24px;
+  align-items: center;
   margin: 0;
   font-family: var(--pdpp-concept-sans);
   font-size: 15px;
@@ -229,59 +234,66 @@
    One primitive for every page; home is the same grid with a zeroed rail
    track (matches the concept's construction, see RESPONSIVE-AUDIT.md). */
 .pdpp-page {
-  max-width: var(--pdpp-concept-max);
-  margin-inline: auto;
-  padding-inline: var(--pdpp-concept-pad);
   display: grid;
-  grid-template-columns: var(--pdpp-concept-rail) var(--pdpp-concept-gutter) minmax(0, 1fr);
+  grid-template-columns: var(--pdpp-concept-rail) var(--pdpp-concept-gutter) minmax(
+      0,
+      1fr
+    );
   align-items: start;
+  max-width: var(--pdpp-concept-max);
+  padding-inline: var(--pdpp-concept-pad);
+  margin-inline: auto;
 }
 .pdpp-page--home {
   grid-template-columns: minmax(0, 1fr);
 }
-.pdpp-page--home .pdpp-doc {
-  grid-column: 1;
-}
 
 .pdpp-rail {
-  grid-column: 1;
-  padding-top: 64px;
   position: sticky;
   top: 72px;
+  grid-column: 1;
   align-self: start;
+  padding-top: 64px;
   font-family: var(--pdpp-concept-sans);
 }
 .pdpp-doc {
   grid-column: 3;
+  max-inline-size: var(--pdpp-concept-measure);
+  min-width: 0;
   padding-top: 64px;
   padding-bottom: 120px;
-  min-width: 0;
-  max-inline-size: var(--pdpp-concept-measure);
+}
+/* Declared AFTER the base .pdpp-doc rule it overrides: a (0,2,0) selector
+   placed before a (0,1,0) one is descending specificity, which reads as a
+   cascade accident even when it works. */
+.pdpp-page--home .pdpp-doc {
+  grid-column: 1;
 }
 
 @media (max-width: 720px) {
   .pdpp-page {
     grid-template-columns: minmax(0, 1fr);
   }
-  .pdpp-rail,
-  .pdpp-doc {
-    grid-column: 1;
-  }
+  /* grid-column folded into each rule rather than shared by a grouped
+     selector: the group sat before these two and read as descending
+     specificity against them. */
   .pdpp-rail {
     position: static;
+    display: flex;
+    flex-wrap: wrap;
+    grid-column: 1;
+    gap: 20px 32px;
+    align-items: flex-start;
     padding-top: 32px;
     padding-bottom: 8px;
     margin-bottom: 8px;
     border-bottom: var(--pdpp-concept-rule);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 20px 32px;
-    align-items: flex-start;
   }
   .pdpp-doc {
+    grid-column: 1;
+    max-width: 100%;
     padding-top: 32px;
     padding-bottom: 72px;
-    max-width: 100%;
   }
   .pdpp-concept h1 {
     font-size: 34px;
@@ -297,8 +309,8 @@
     margin-bottom: 18px;
   }
   .pdpp-hero__lede {
-    font-size: 18px;
     margin-bottom: 24px;
+    font-size: 18px;
   }
   .pdpp-hero__lede--placement {
     font-size: 16px;
@@ -331,65 +343,65 @@
 .pdpp-rail__block {
   margin-bottom: 40px;
   font-size: 13px;
-  color: var(--pdpp-concept-ink-soft);
   line-height: 1.5;
+  color: var(--pdpp-concept-ink-soft);
 }
 .pdpp-rail__meta dt {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pdpp-concept-ink-faint);
   margin-top: 16px;
+  font-size: 11px;
+  color: var(--pdpp-concept-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .pdpp-rail__meta dd {
   margin: 2px 0 0;
-  color: var(--pdpp-concept-ink);
   font-variant-numeric: tabular-nums;
+  color: var(--pdpp-concept-ink);
 }
 .pdpp-rail__note {
+  padding-left: 12px;
+  margin-bottom: 40px;
   font-size: 12px;
   line-height: 1.55;
   color: var(--pdpp-concept-ink-soft);
   border-left: 2px solid var(--pdpp-concept-teal);
-  padding-left: 12px;
-  margin-bottom: 40px;
 }
 .pdpp-stamp {
   display: inline-block;
-  border: 1px solid var(--pdpp-concept-teal);
-  color: var(--pdpp-concept-teal);
+  padding: 6px 10px;
   font-family: var(--pdpp-concept-sans);
   font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 6px 10px;
-  line-height: 1.3;
   font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  color: var(--pdpp-concept-teal);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--pdpp-concept-teal);
 }
 .pdpp-toc {
   font-size: 13px;
 }
 .pdpp-toc__title {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pdpp-concept-ink-faint);
   margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--pdpp-concept-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .pdpp-toc ol {
-  list-style: none;
-  margin: 0;
   padding: 0;
+  margin: 0;
+  list-style: none;
 }
 .pdpp-toc li {
   margin-bottom: 9px;
   line-height: 1.35;
 }
 .pdpp-toc a {
+  display: block;
   color: var(--pdpp-concept-ink-soft);
   border-bottom: none;
-  display: block;
 }
 .pdpp-toc a:hover {
   color: var(--pdpp-concept-teal);
@@ -397,26 +409,26 @@
 
 /* ─── Document type ──────────────────────────────────────────────────────── */
 .pdpp-concept h1 {
+  margin: 0 0 8px;
   font-family: var(--pdpp-concept-serif);
-  font-weight: 600;
   font-size: 44px;
+  font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.01em;
-  margin: 0 0 8px;
 }
 .pdpp-concept h2 {
-  font-family: var(--pdpp-concept-serif);
-  font-weight: 600;
-  font-size: 28px;
-  line-height: 1.3;
   margin: 0 0 16px;
+  font-family: var(--pdpp-concept-serif);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.3;
 }
 .pdpp-concept h3 {
-  font-family: var(--pdpp-concept-serif);
-  font-weight: 600;
-  font-size: 20px;
-  line-height: 1.45;
   margin: 0 0 8px;
+  font-family: var(--pdpp-concept-serif);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.45;
 }
 .pdpp-concept p {
   margin: 0 0 16px;
@@ -431,38 +443,38 @@
   color: var(--pdpp-concept-ink);
 }
 .pdpp-caption {
+  margin-top: 16px;
   font-family: var(--pdpp-concept-serif);
-  font-style: italic;
   font-size: 15px;
+  font-style: italic;
   line-height: 1.5;
   color: var(--pdpp-concept-ink-soft);
-  margin-top: 16px;
 }
 .pdpp-small {
   font-size: 15px;
   color: var(--pdpp-concept-ink-soft);
 }
 .pdpp-eyebrow {
+  margin-bottom: 8px;
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--pdpp-concept-ink-faint);
-  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 /* ─── Enumerated sections ────────────────────────────────────────────────── */
 .pdpp-section {
+  position: relative;
   padding-top: calc(var(--pdpp-concept-section-gap) / 2);
   margin-top: calc(var(--pdpp-concept-section-gap) / 2);
   border-top: var(--pdpp-concept-rule);
-  position: relative;
 }
 .pdpp-section:first-of-type {
-  border-top: none;
-  margin-top: 40px;
   padding-top: 0;
+  margin-top: 40px;
+  border-top: none;
 }
 .pdpp-section__head {
   display: grid;
@@ -472,13 +484,13 @@
   margin-bottom: 24px;
 }
 .pdpp-section__num {
+  margin-top: -0.08em;
   font-family: var(--pdpp-concept-serif);
-  font-weight: 300;
   font-size: clamp(56px, 3rem + 2.6vw, 96px);
+  font-weight: 300;
+  font-variant-numeric: tabular-nums lining-nums;
   line-height: 0.85;
   color: color-mix(in srgb, var(--pdpp-concept-teal) 85%, transparent);
-  font-variant-numeric: tabular-nums lining-nums;
-  margin-top: -0.08em;
   user-select: none;
 }
 .pdpp-section__title {
@@ -493,8 +505,8 @@
 
 /* ─── Ruled list ─────────────────────────────────────────────────────────── */
 .pdpp-ruled-list {
-  border-top: var(--pdpp-concept-rule);
   margin: 24px 0 0;
+  border-top: var(--pdpp-concept-rule);
 }
 .pdpp-ruled-list__item {
   display: grid;
@@ -506,27 +518,27 @@
 }
 .pdpp-ruled-list__num {
   font-family: var(--pdpp-concept-sans);
-  font-weight: 500;
   font-size: 13px;
-  letter-spacing: 0.08em;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums lining-nums;
   line-height: 1.45;
   color: var(--pdpp-concept-ink-faint);
-  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: 0.08em;
 }
 .pdpp-ruled-list__body h3 {
   margin-bottom: 4px;
 }
 .pdpp-ruled-list__body p {
   margin: 0;
-  color: var(--pdpp-concept-ink-soft);
   font-size: 16px;
+  color: var(--pdpp-concept-ink-soft);
 }
 .pdpp-ruled-list__arrow {
+  align-self: center;
   font-family: var(--pdpp-concept-sans);
   font-size: 15px;
   white-space: nowrap;
   border-bottom: none;
-  align-self: center;
 }
 .pdpp-ruled-list__arrow:hover {
   border-bottom: none;
@@ -534,44 +546,49 @@
 
 /* ─── Terminal block ─────────────────────────────────────────────────────── */
 .pdpp-terminal {
-  background: var(--pdpp-concept-teal-deep);
-  color: var(--pdpp-concept-paper);
-  font-family: var(--pdpp-concept-mono);
-  font-size: 14px;
-  line-height: 1.7;
   padding: 24px 28px;
   margin: 28px 0;
   overflow-x: auto;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--pdpp-concept-paper);
+  background: var(--pdpp-concept-teal-deep);
   border: 1px solid var(--pdpp-concept-teal-deep);
-  box-shadow: 1px 1px 0 color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+  box-shadow: 1px 1px 0
+    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
 }
 .pdpp-terminal__label {
+  display: block;
+  margin-bottom: 12px;
   font-family: var(--pdpp-concept-sans);
   font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 70%, white);
-  margin-bottom: 12px;
-  display: block;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .pdpp-terminal pre {
   margin: 0;
-  white-space: pre-wrap;
   overflow-wrap: break-word;
+  white-space: pre-wrap;
 }
 .pdpp-terminal .pdpp-prompt {
   color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 65%, white);
   user-select: none;
 }
 .pdpp-terminal .pdpp-comment {
-  color: color-mix(in srgb, var(--pdpp-concept-paper) 45%, var(--pdpp-concept-teal-deep));
+  color: color-mix(
+    in srgb,
+    var(--pdpp-concept-paper) 45%,
+    var(--pdpp-concept-teal-deep)
+  );
 }
 
 /* ─── Handoff ────────────────────────────────────────────────────────────── */
 .pdpp-handoff {
-  border: 1px solid var(--pdpp-concept-teal);
   padding: 18px 22px;
   margin: 28px 0 20px;
+  border: 1px solid var(--pdpp-concept-teal);
 }
 .pdpp-handoff a {
   font-family: var(--pdpp-concept-sans);
@@ -582,12 +599,23 @@
 
 /* ─── Code ───────────────────────────────────────────────────────────────── */
 .pdpp-concept code {
+  padding: 1px 5px;
   font-family: var(--pdpp-concept-mono);
   font-size: 0.86em;
-  background: var(--pdpp-concept-paper-deep);
-  padding: 1px 5px;
-  border-radius: 2px;
   overflow-wrap: anywhere;
+  background: var(--pdpp-concept-paper-deep);
+  border-radius: 2px;
+}
+/* The rule above styles INLINE code in prose (a light chip on paper). Inside the
+   dark terminal block that chip is paper-on-paper — the command rendered as
+   invisible white bars on the teal ground. A code element in a pre is a code
+   BLOCK: it inherits the terminal's own colour and carries no chip. */
+.pdpp-concept .pdpp-terminal pre code {
+  padding: 0;
+  font-size: 1em;
+  color: inherit;
+  background: none;
+  border-radius: 0;
 }
 
 /* ─── Schematic ──────────────────────────────────────────────────────────── */
@@ -597,8 +625,8 @@
 .pdpp-schematic svg {
   display: block;
   width: 100%;
-  height: auto;
   max-width: 640px;
+  height: auto;
 }
 .pdpp-schematic svg text {
   font-family: var(--pdpp-concept-sans);
@@ -610,11 +638,11 @@
 
 /* ─── Note ───────────────────────────────────────────────────────────────── */
 .pdpp-note {
-  background: var(--pdpp-concept-teal-wash);
-  border-left: 2px solid var(--pdpp-concept-teal);
   padding: 16px 20px;
   margin: 24px 0;
   font-size: 16px;
+  background: var(--pdpp-concept-teal-wash);
+  border-left: 2px solid var(--pdpp-concept-teal);
 }
 .pdpp-note p:last-child {
   margin-bottom: 0;
@@ -622,30 +650,30 @@
 
 /* ─── Tables ─────────────────────────────────────────────────────────────── */
 .pdpp-doc table {
+  display: block;
   width: 100%;
-  border-collapse: collapse;
+  max-width: 100%;
   margin: 24px 0;
+  overflow-x: auto;
   font-size: 15px;
   font-variant-numeric: tabular-nums;
-  display: block;
-  overflow-x: auto;
-  max-width: 100%;
+  border-collapse: collapse;
 }
 .pdpp-doc th,
 .pdpp-doc td {
-  text-align: left;
   padding: 10px 14px 10px 0;
-  border-bottom: var(--pdpp-concept-rule);
-  vertical-align: top;
   line-height: 1.45;
+  vertical-align: top;
+  text-align: left;
+  border-bottom: var(--pdpp-concept-rule);
 }
 .pdpp-doc thead th {
   font-family: var(--pdpp-concept-sans);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   border-bottom: 1px solid var(--pdpp-concept-ink-faint);
 }
 
@@ -676,9 +704,9 @@
 .pdpp-impl-table .pdpp-status {
   font-family: var(--pdpp-concept-sans);
   font-size: 12px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .pdpp-impl-table td:nth-child(4) a {
   white-space: nowrap;
@@ -695,17 +723,17 @@
 
 /* ─── Dated updates list ─────────────────────────────────────────────────── */
 .pdpp-updates {
-  list-style: none;
   padding: 0;
   margin: 20px 0 0;
+  list-style: none;
 }
 .pdpp-updates li {
   display: grid;
   grid-template-columns: min(8.5em, 34%) minmax(0, 1fr);
   gap: 16px;
   padding: 10px 0;
-  border-bottom: var(--pdpp-concept-rule-faint);
   font-size: 16px;
+  border-bottom: var(--pdpp-concept-rule-faint);
 }
 .pdpp-updates li:first-child {
   border-top: var(--pdpp-concept-rule-faint);
@@ -713,61 +741,73 @@
 .pdpp-updates time {
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
-  letter-spacing: 0.04em;
-  color: var(--pdpp-concept-ink-faint);
   font-variant-numeric: tabular-nums;
+  color: var(--pdpp-concept-ink-faint);
+  letter-spacing: 0.04em;
 }
 
 /* ─── Footer ─────────────────────────────────────────────────────────────── */
 .pdpp-footer {
-  background: var(--pdpp-concept-teal-deep);
-  color: color-mix(in srgb, var(--pdpp-concept-paper) 82%, var(--pdpp-concept-teal-deep));
+  margin-top: 96px;
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
   line-height: 1.7;
-  margin-top: 96px;
+  color: color-mix(
+    in srgb,
+    var(--pdpp-concept-paper) 82%,
+    var(--pdpp-concept-teal-deep)
+  );
+  background: var(--pdpp-concept-teal-deep);
 }
 .pdpp-footer__inner {
-  max-width: var(--pdpp-concept-max);
-  margin-inline: auto;
-  padding-block: 40px;
-  padding-inline: var(--pdpp-concept-pad);
   display: flex;
   flex-wrap: wrap;
   gap: 32px 64px;
   justify-content: space-between;
+  max-width: var(--pdpp-concept-max);
+  padding-block: 40px;
+  padding-inline: var(--pdpp-concept-pad);
+  margin-inline: auto;
 }
 .pdpp-footer a {
   color: var(--pdpp-concept-paper);
-  border-bottom-color: color-mix(in srgb, var(--pdpp-concept-paper) 30%, transparent);
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-paper) 30%,
+    transparent
+  );
 }
 .pdpp-footer a:hover {
   color: #fff;
   border-bottom-color: var(--pdpp-concept-paper);
 }
 .pdpp-footer__licenses {
-  font-variant-numeric: tabular-nums;
   max-width: 40ch;
+  font-variant-numeric: tabular-nums;
 }
 .pdpp-footer__col {
   max-width: 34ch;
 }
 .pdpp-footer__label {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 55%, var(--pdpp-concept-teal-deep));
   margin-bottom: 6px;
+  font-size: 11px;
+  color: color-mix(
+    in srgb,
+    var(--pdpp-concept-teal-wash) 55%,
+    var(--pdpp-concept-teal-deep)
+  );
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .pdpp-footer__source-link {
   display: inline-flex;
-  align-items: center;
   gap: 6px;
+  align-items: center;
 }
 .pdpp-icon-github {
+  flex: none;
   width: 1em;
   height: 1em;
-  flex: none;
   color: currentColor;
 }
 .pdpp-footer__license-list {
@@ -802,16 +842,20 @@
    in, leaving other consumers of the same fumadocs DOM (if any existed)
    unaffected. */
 [data-pdpp-doc-theme] {
-  background: var(--pdpp-concept-paper);
   color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-paper);
 }
 [data-pdpp-doc-theme] #nd-docs-layout {
   background: var(--pdpp-concept-paper);
 }
 [data-pdpp-doc-theme] #nd-sidebar {
-  background: var(--pdpp-concept-paper);
-  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
   font-family: var(--pdpp-concept-sans);
+  background: var(--pdpp-concept-paper);
+  border-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
 }
 [data-pdpp-doc-theme] #nd-sidebar a {
   color: var(--pdpp-concept-ink-soft);
@@ -833,4 +877,308 @@
 [data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
 [data-pdpp-doc-theme] #nd-page h1 {
   font-family: var(--pdpp-concept-serif);
+}
+
+/* ─── Sticky footer ──────────────────────────────────────────────────────────
+   Short pages (the front door especially) otherwise float the footer mid-
+   viewport with dead ground beneath it. The concept surface becomes a flex
+   column at least one viewport tall, and main absorbs the slack so the footer
+   lands on the fold's bottom edge. Pages longer than the viewport are
+   unaffected.
+
+   Scoped to .pdpp-concept rather than body: apps/site also serves the sandbox
+   and console-shaped routes that are NOT this register and must not inherit a
+   100dvh flex column. /docs, /reference and /participate wrap their content in
+   `.pdpp-concept flex min-h-screen flex-col` already; this rule is what makes
+   the front door (which is not inside that Tailwind wrapper) behave the same,
+   and it is harmless where those utilities already apply. */
+.pdpp-concept {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+/* Absorbs the slack above the footer on short pages. */
+.pdpp-concept > .pdpp-page {
+  flex: 1 0 auto;
+}
+
+/* ─── Front door ─────────────────────────────────────────────────────────────
+   Deliberately spare: an h1, four short paragraphs, three routes, one stamp.
+   No section furniture, because the page has no sections. */
+.pdpp-frontdoor {
+  max-width: var(--pdpp-concept-measure);
+  padding-top: 96px;
+  padding-bottom: 40px;
+}
+.pdpp-frontdoor__identity {
+  margin-top: 20px;
+  font-size: clamp(21px, 1.15rem + 0.7vw, 25px);
+  line-height: 1.45;
+  color: var(--pdpp-concept-ink);
+}
+.pdpp-frontdoor__definition {
+  margin-top: 20px;
+}
+.pdpp-frontdoor__amplification {
+  margin-top: 16px;
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-frontdoor__status {
+  margin-top: 40px;
+}
+
+/* The two doors, plus one quiet third. */
+.pdpp-frontdoor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: center;
+  margin-top: 36px;
+}
+/* Scoped `.pdpp-concept a.pdpp-cta` to match the specificity of the
+   `.pdpp-concept a` base rule (0,2,0). Unscoped, that base rule won on both
+   color and border-bottom: the primary CTA rendered teal-on-teal (an
+   invisible label) and the outline CTAs carried a stray link underline. */
+.pdpp-concept a.pdpp-cta {
+  display: inline-flex;
+  align-items: center;
+  padding: 13px 20px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+  line-height: 1;
+  text-decoration: none;
+  border: 1px solid var(--pdpp-concept-teal);
+  border-radius: 3px;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.pdpp-concept a.pdpp-cta--primary {
+  color: var(--pdpp-concept-paper);
+  background: var(--pdpp-concept-teal);
+}
+.pdpp-concept a.pdpp-cta--primary:hover,
+.pdpp-concept a.pdpp-cta--primary:focus-visible {
+  color: var(--pdpp-concept-paper);
+  background: var(--pdpp-concept-teal-deep);
+  border-color: var(--pdpp-concept-teal-deep);
+}
+.pdpp-concept a.pdpp-cta--secondary {
+  color: var(--pdpp-concept-teal);
+  background: transparent;
+}
+.pdpp-concept a.pdpp-cta--secondary:hover,
+.pdpp-concept a.pdpp-cta--secondary:focus-visible {
+  background: var(--pdpp-concept-teal-wash);
+}
+/* Not a peer of the other two: a text link, no border, no fill. */
+.pdpp-concept a.pdpp-cta--quiet {
+  padding-inline: 4px;
+  color: var(--pdpp-concept-ink-soft);
+  border-color: transparent;
+}
+.pdpp-concept a.pdpp-cta--quiet:hover,
+.pdpp-concept a.pdpp-cta--quiet:focus-visible {
+  color: var(--pdpp-concept-teal);
+}
+
+/* ─── Nav search trigger ─────────────────────────────────────────────────────
+   .pdpp-masthead__inner aligns to baseline, and a bordered, padded button has
+   no comparable text baseline — left at its intrinsic size it renders taller
+   than the links and, because the row's cross-size is set by its tallest child,
+   pushes the whole sticky masthead down. Pinning the button to the link's 20px
+   line-box (border inside, via box-sizing) makes it match rather than dominate,
+   so masthead height is unchanged at 66px. */
+.pdpp-nav-search-trigger {
+  box-sizing: border-box;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  color: var(--pdpp-concept-ink-soft);
+  cursor: pointer;
+  background: var(--pdpp-concept-paper-deep);
+  border: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 16%, var(--pdpp-concept-paper));
+  border-radius: 3px;
+}
+.pdpp-nav-search-trigger:hover,
+.pdpp-nav-search-trigger:focus-visible {
+  color: var(--pdpp-concept-teal);
+  border-color: var(--pdpp-concept-teal);
+}
+.pdpp-nav-search-trigger__icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.pdpp-nav-search-trigger__key {
+  padding: 0 4px;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 11px;
+  color: var(--pdpp-concept-ink-faint);
+  background: var(--pdpp-concept-paper);
+  border: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-radius: 2px;
+}
+@media (max-width: 640px) {
+  .pdpp-nav-search-trigger__key {
+    display: none;
+  }
+}
+
+/* ─── Channels (Participate) ─────────────────────────────────────────────────
+   Bordered targets, not prose rows. Whole row is the hit area, 44px minimum. */
+.pdpp-channels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 28px 0 20px;
+}
+.pdpp-channel {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  padding: 12px 16px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+  color: var(--pdpp-concept-ink);
+  text-decoration: none;
+  border: var(--pdpp-concept-rule);
+  border-radius: 3px;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+.pdpp-channel:hover,
+.pdpp-channel:focus-visible {
+  color: var(--pdpp-concept-teal);
+  background: var(--pdpp-concept-teal-wash);
+  border-color: var(--pdpp-concept-teal);
+}
+.pdpp-channel__icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.pdpp-channel__label {
+  flex: 1 1 auto;
+}
+.pdpp-channel__arrow {
+  flex: none;
+  color: var(--pdpp-concept-ink-faint);
+}
+.pdpp-channel:hover .pdpp-channel__arrow,
+.pdpp-channel:focus-visible .pdpp-channel__arrow {
+  color: var(--pdpp-concept-teal);
+}
+.pdpp-channels__note {
+  font-size: 16px;
+  color: var(--pdpp-concept-ink-soft);
+}
+
+/* A section that leads a page carries no top rule (the h1 already separates
+   it) but still needs its numeral. */
+.pdpp-section--lead {
+  padding-top: 0;
+  margin-top: 48px;
+  border-top: none;
+}
+.pdpp-section__numeral {
+  margin-right: 12px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums lining-nums;
+  vertical-align: 0.35em;
+  color: var(--pdpp-concept-teal);
+  letter-spacing: 0.1em;
+}
+
+/* ─── Terminal head (copy button) ────────────────────────────────────────── */
+.pdpp-terminal__head {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.pdpp-terminal__head .pdpp-terminal__label {
+  margin-bottom: 0;
+}
+.pdpp-copy-btn {
+  flex: none;
+  padding: 3px 10px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 11px;
+  color: color-mix(in srgb, var(--pdpp-concept-teal-wash) 70%, white);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-teal-wash) 35%, transparent);
+  border-radius: 2px;
+}
+.pdpp-copy-btn:hover,
+.pdpp-copy-btn:focus-visible {
+  color: white;
+  border-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-teal-wash) 70%,
+    transparent
+  );
+}
+
+/* ─── Feature list (Self-Host) ───────────────────────────────────────────── */
+.pdpp-features {
+  padding: 0;
+  margin: 24px 0 0;
+  list-style: none;
+  border-top: var(--pdpp-concept-rule-faint);
+}
+.pdpp-features li {
+  padding: 14px 0;
+  color: var(--pdpp-concept-ink-soft);
+  border-bottom: var(--pdpp-concept-rule-faint);
+}
+.pdpp-features strong {
+  margin-right: 10px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--pdpp-concept-ink);
+}
+.pdpp-config-table code {
+  font-size: 13px;
+}
+
+/* Plain ruled list: no numerals, no right-hand arrow column. */
+.pdpp-ruled-list--plain .pdpp-ruled-list__item {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pdpp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
+}
+
+/* Both marks get identical treatment so the footer's SOURCE and COMMUNITY
+   columns read as siblings at matching optical size. */
+.pdpp-icon-github,
+.pdpp-icon-discord {
+  flex: none;
+  width: 1em;
+  height: 1em;
 }
