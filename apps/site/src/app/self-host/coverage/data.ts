@@ -5,6 +5,7 @@ import "server-only";
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
 
 export type CoverageCategory =
   | "Protocol flow"
@@ -46,22 +47,22 @@ const docs = (slug: string, label: string): CoverageEvidence => ({
   sourcePath: `apps/site/content/docs/${slug}.md`,
 });
 
-const referenceDocs = (slug: string, label: string): CoverageEvidence => ({
-  label,
-  href: `/specification/${slug}`,
-  sourcePath: `apps/site/content/docs/${slug}.md`,
-});
-
 const referenceTest = (file: string, label: string): CoverageEvidence => ({
   label,
-  href: `https://github.com/PDP-Connect/pdpp/blob/main/reference-implementation/test/${file}`,
+  href: repoBlobUrl(`reference-implementation/test/${file}`),
   sourcePath: `reference-implementation/test/${file}`,
 });
 
 const referenceSource = (file: string, label: string): CoverageEvidence => ({
   label,
-  href: `https://github.com/PDP-Connect/pdpp/blob/main/reference-implementation/${file}`,
+  href: repoBlobUrl(`reference-implementation/${file}`),
   sourcePath: `reference-implementation/${file}`,
+});
+
+const siteSource = (sourcePath: string, label: string): CoverageEvidence => ({
+  label,
+  href: repoBlobUrl(sourcePath),
+  sourcePath,
 });
 
 const webRoute = (routePath: string, sourcePath: string, label: string): CoverageEvidence => ({
@@ -169,7 +170,7 @@ export const coverageRows = [
     evidence: [
       docs("spec-semantic-retrieval-extension", "Semantic retrieval extension"),
       referenceTest("semantic-retrieval.test.ts", "Semantic retrieval tests"),
-      referenceDocs("reference-implementation", "Reference implementation notes"),
+      docs("reference-implementation", "Reference implementation notes"),
     ],
     notes: "The extension is intentionally experimental; coverage is honest about index and connector-field limits.",
   },
@@ -215,7 +216,7 @@ export const coverageRows = [
     demonstrated: "partial",
     status: "reference-only",
     evidence: [
-      referenceDocs("reference-implementation", "Reference implementation docs"),
+      docs("reference-implementation", "Reference implementation docs"),
       referenceTest("event-spine.test.js", "Event spine tests"),
       webRoute("/sandbox/traces", "apps/site/src/app/sandbox/traces/page.tsx", "Trace sandbox"),
     ],
@@ -253,11 +254,7 @@ export const coverageRows = [
         "apps/site/src/app/sandbox/walkthrough/page.tsx",
         "Functional sandbox walkthrough"
       ),
-      {
-        label: "Sandbox state reducer tests",
-        href: "https://github.com/PDP-Connect/pdpp/blob/main/apps/site/src/app/sandbox/walkthrough/state.test.ts",
-        sourcePath: "apps/site/src/app/sandbox/walkthrough/state.test.ts",
-      },
+      siteSource("apps/site/src/app/sandbox/walkthrough/state.test.ts", "Sandbox state reducer tests"),
     ],
     notes:
       "End-to-end mock walkthrough covers request, owner consent, scoped query, revocation, and post-revocation refusal using deterministic fixtures and browser-local state.",
@@ -278,11 +275,7 @@ export const coverageRows = [
       webRoute("/sandbox/runs", "apps/site/src/app/sandbox/runs/page.tsx", "Runs list"),
       webRoute("/sandbox/traces", "apps/site/src/app/sandbox/traces/page.tsx", "Traces list"),
       webRoute("/sandbox/deployment", "apps/site/src/app/sandbox/deployment/page.tsx", "Deployment / capabilities"),
-      {
-        label: "Demo dataset and builder tests",
-        href: "https://github.com/PDP-Connect/pdpp/blob/main/apps/site/src/app/sandbox/_demo",
-        sourcePath: "apps/site/src/app/sandbox/_demo",
-      },
+      siteSource("apps/site/src/app/sandbox/_demo", "Demo dataset and builder tests"),
     ],
     notes:
       "Dashboard-shaped surface backed by deterministic fictional data: connectors, streams, records, grants (issued/revoked/denied), runs (succeeded/failed/needs_input), traces, and deployment metadata. No live AS/RS, no credentials, no owner-token mint.",
@@ -320,11 +313,7 @@ export const coverageRows = [
         "GET /sandbox/.well-known/oauth-authorization-server"
       ),
       webRoute("/sandbox/api-examples", "apps/site/src/app/sandbox/api-examples/page.tsx", "Copyable API examples"),
-      {
-        label: "Route handler and builder tests",
-        href: "https://github.com/PDP-Connect/pdpp/blob/main/apps/site/src/app/sandbox/_demo/routes.test.ts",
-        sourcePath: "apps/site/src/app/sandbox/_demo/routes.test.ts",
-      },
+      siteSource("apps/site/src/app/sandbox/_demo/routes.test.ts", "Route handler and builder tests"),
     ],
     notes:
       "Sandbox-prefixed JSON APIs share builders with the demo UI so the rendered surface and HTTP responses cannot drift. Each response carries an `x-pdpp-demo: 1` header and an `is_demo: true` field.",

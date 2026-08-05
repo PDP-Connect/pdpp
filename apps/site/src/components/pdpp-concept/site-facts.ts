@@ -10,6 +10,11 @@ export const GITHUB_ISSUES_URL = `${GITHUB_REPO_URL}/issues`;
 export const GITHUB_NEW_ISSUE_URL = `${GITHUB_REPO_URL}/issues/new`;
 export const GITHUB_MAINTAINERS_URL = `${GITHUB_REPO_URL}/blob/main/MAINTAINERS.md`;
 
+/** A `blob/main/<path>` link into the repo, e.g. a source file or test. */
+export function repoBlobUrl(repoRelativePath: string): string {
+  return `${GITHUB_REPO_URL}/blob/main/${repoRelativePath}`;
+}
+
 // The LFDT lab channel invite. discord.gg/hyperledger reaches the whole LFDT
 // server; this one drops the visitor directly into #pdp-connect, which is the
 // invite the owner said to prefer.

@@ -4,6 +4,9 @@
 import { DiscordIcon, GithubIcon } from "./icons.tsx";
 import { DISCORD_INVITE_URL, GITHUB_REPO_URL, SITE_LICENSES } from "./site-facts.ts";
 
+const GITHUB_URL_SCHEME_RE = /^https?:\/\//;
+const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");
+
 // ONE footer, identical on every page. The owner's finding was that the footer
 // differed on all four pages; the fix is a single component that takes no
 // per-page props, so there is no seam where they can diverge again.
@@ -47,7 +50,7 @@ export function PdppConceptFooter() {
           <p>
             <a className="pdpp-footer__source-link" href={GITHUB_REPO_URL} rel="noopener noreferrer" target="_blank">
               <GithubIcon />
-              github.com/PDP-Connect/pdpp
+              {githubDisplayText}
             </a>
           </p>
         </div>

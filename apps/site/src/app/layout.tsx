@@ -30,9 +30,12 @@ const pdppDocMono = IBM_Plex_Mono({
   weight: ["400", "500"],
 });
 
+const SITE_TITLE = "PDPP: Personal Data Portability Protocol";
+const SITE_DESCRIPTION =
+  "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.";
+
 export const metadata: Metadata = {
-  description:
-    "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
+  description: SITE_DESCRIPTION,
   // A filled teal tile with the mark's first glyph knocked out in paper.
   // The wordmark is 365x160, so the whole thing renders as an unreadable
   // smudge at 16px; one glyph stays legible. The tile is solid rather than
@@ -44,16 +47,15 @@ export const metadata: Metadata = {
   },
   metadataBase: new URL("https://pdpp.dev"),
   openGraph: {
-    description:
-      "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
-    title: "PDPP: Personal Data Portability Protocol",
+    description: SITE_DESCRIPTION,
+    title: SITE_TITLE,
     type: "website",
   },
-  title: "PDPP: Personal Data Portability Protocol",
+  title: SITE_TITLE,
   twitter: {
     card: "summary_large_image",
     description: "An authorization and disclosure protocol for personal data.",
-    title: "PDPP: Personal Data Portability Protocol",
+    title: SITE_TITLE,
   },
 };
 
