@@ -1119,6 +1119,63 @@
   }
 }
 
+/* ─── Theme switch ────────────────────────────────────────────────────────
+   Same box-model discipline as .pdpp-nav-search-trigger directly above: the
+   masthead row aligns to baseline and sizes its cross-axis to its tallest
+   child, so this is pinned to the same 20px line-box (border inside, via
+   box-sizing) rather than left at its intrinsic padded size. Verified this
+   keeps masthead height unchanged (see THEME.md for the before/after
+   measurement). Three explicit options rather than the operator-console's
+   single cycle button: on a document surface, a legible set of choices reads
+   truer to the register than a hidden-state icon toggle. */
+.pdpp-theme-switch {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: stretch;
+  height: 20px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  background: var(--pdpp-concept-paper-deep);
+  border: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 16%, var(--pdpp-concept-paper));
+  border-radius: 3px;
+}
+.pdpp-theme-switch__option {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  padding-inline: 8px;
+  color: var(--pdpp-concept-ink-soft);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-inline-start: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 16%, var(--pdpp-concept-paper));
+}
+.pdpp-theme-switch__option:first-child {
+  border-inline-start: none;
+}
+.pdpp-theme-switch__option:hover {
+  color: var(--pdpp-concept-teal);
+}
+.pdpp-theme-switch__option:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: -2px;
+  border-radius: 2px;
+}
+.pdpp-theme-switch__option[data-checked] {
+  color: var(--pdpp-concept-teal-on-wash);
+  background: var(--pdpp-concept-teal-wash);
+}
+@media (max-width: 640px) {
+  .pdpp-theme-switch__option {
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+}
+
 /* ─── Channels (Participate) ─────────────────────────────────────────────────
    Bordered targets, not prose rows. Whole row is the hit area, 44px minimum. */
 .pdpp-channels {
