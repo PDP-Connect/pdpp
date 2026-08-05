@@ -144,14 +144,20 @@
    ground (paper, paper-panel, paper-deep), because a solid teal fill is dark
    enough to read as a highlight rather than disappear into them the way the
    wash does. The wash variant is kept, but only for grounds that are
-   themselves teal-deep (.pdpp-footer, .pdpp-terminal), where it holds ~15:1
-   against ink text and the bold variant would fight the ground's own color. */
+   themselves teal-deep (.pdpp-footer, .pdpp-terminal, .pdpp-cmd__panel — the
+   self-host command builder's own teal-deep panel, see .pdpp-cmd__panel
+   above), where it holds ~15:1 against ink text and the bold variant would
+   fight the ground's own color. Owner-reported 2026-08-04: "when I select
+   text [in the Docker code block] that has green behind it, I can't see the
+   highlight" — the bold teal selection was disappearing into the panel's own
+   teal-deep ground. */
 .pdpp-concept ::selection {
   color: var(--pdpp-concept-paper);
   background: var(--pdpp-concept-teal);
 }
 .pdpp-concept .pdpp-footer ::selection,
-.pdpp-concept .pdpp-terminal ::selection {
+.pdpp-concept .pdpp-terminal ::selection,
+.pdpp-concept .pdpp-cmd__panel ::selection {
   color: var(--pdpp-concept-ink);
   background: var(--pdpp-concept-teal-wash);
 }
@@ -481,7 +487,15 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-doc {
   grid-column: 1;
-  max-inline-size: var(--pdpp-concept-measure);
+  /* The measure is a property of the TYPE, not of the container. Capping the
+     CONTAINER here also capped the terminal block, tables and the CTA grid to
+     prose width: it held .pdpp-doc at 680px regardless of viewport, which
+     shrank the whole grid and pushed the rail 92px inboard of the concept's
+     (measured 2026-08-05 at 1280: rail left 144px against the concept's 52px,
+     doc 680px against 869.5px). Prose elements below carry their own
+     --measure cap; wide elements are free to use the rest of the track. Same
+     division the concept makes in its own .doc rule. */
+  max-inline-size: 100%;
   min-width: 0;
   padding-top: 64px;
   padding-bottom: 120px;
@@ -489,9 +503,24 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-page:has(> .pdpp-rail) .pdpp-doc {
   grid-column: 3;
 }
+/* The front door's trailing space, trimmed (concept's own `body.is-home
+   .doc`, styles.css:322): 120px of bottom padding reads as breathing room at
+   the end of a long document and as a dead gap at the end of a short one,
+   where the footer is already in view. The other pages keep the 120px. */
+.pdpp-page--home .pdpp-doc {
+  padding-bottom: 20px;
+}
 
 @media (max-width: 720px) {
-  .pdpp-page {
+  /* Same specificity as .pdpp-page:has(> .pdpp-rail) (line 437) is required,
+     not just a later source position: :has() adds a class's worth of
+     specificity, so a plain .pdpp-page here loses to that unconditional rule
+     at every width, and the 3-column rail grid never collapsed below 720px
+     (measured: pdpp-doc left 260px in a 390px viewport, doc column 105px
+     wide, page overflowing to 476px). Repeating the :has() clause matches
+     that specificity so the media query actually wins here. */
+  .pdpp-page,
+  .pdpp-page:has(> .pdpp-rail) {
     grid-template-columns: minmax(0, 1fr);
   }
   /* grid-column folded into each rule rather than shared by a grouped
@@ -509,7 +538,8 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
     margin-bottom: 8px;
     border-bottom: var(--pdpp-concept-rule);
   }
-  .pdpp-doc {
+  .pdpp-doc,
+  .pdpp-page:has(> .pdpp-rail) .pdpp-doc {
     grid-column: 1;
     max-width: 100%;
     padding-top: 32px;
@@ -672,8 +702,18 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-concept p {
   margin: 0 0 16px;
 }
+/* .pdpp-doc itself no longer caps at --measure (see .pdpp-doc, above), so the
+   cap moves onto the elements that are actually prose. Headings are included
+   because the concept includes them: an uncapped h1/h2 runs the full 870px
+   track and breaks the descending title/lede/body rhythm. */
+.pdpp-doc h1,
+.pdpp-doc h2,
+.pdpp-doc h3,
+.pdpp-doc h4,
 .pdpp-doc p,
-.pdpp-doc li {
+.pdpp-doc li,
+.pdpp-doc blockquote,
+.pdpp-doc .pdpp-note {
   max-width: var(--pdpp-concept-measure);
 }
 .pdpp-lede {
@@ -754,6 +794,10 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   align-items: baseline;
   padding: 20px 0;
   border-bottom: var(--pdpp-concept-rule);
+}
+/* Separator, not a terminator — see .pdpp-features li:last-child. */
+.pdpp-ruled-list__item:last-child {
+  border-bottom: none;
 }
 .pdpp-ruled-list__num {
   font-family: var(--pdpp-concept-sans);
@@ -979,6 +1023,10 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-updates li:first-child {
   border-top: var(--pdpp-concept-rule-faint);
 }
+/* Separator, not a terminator — see .pdpp-features li:last-child. */
+.pdpp-updates li:last-child {
+  border-bottom: none;
+}
 .pdpp-updates time {
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
@@ -1152,28 +1200,49 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 
 /* ─── Front door ─────────────────────────────────────────────────────────────
    Deliberately spare: an h1, four short paragraphs, three routes, one stamp.
-   No section furniture, because the page has no sections. */
-.pdpp-frontdoor {
-  max-width: var(--pdpp-concept-measure);
-  padding-top: 96px;
-  padding-bottom: 40px;
-}
+   No section furniture, because the page has no sections.
+   No .pdpp-frontdoor wrapper rule: the outer article wraps the whole
+   two-column fold (concept's own article.doc, styles.css:510-514, carries no
+   measure cap either), so the 68ch prose measure belongs on the copy COLUMN
+   only, below on .pdpp-frontdoor__copy -- capping the outer article squeezed
+   the figure column into the same 68ch box as the headline. */
 /* The hero is a two-column GRID, ported from the concept, not an absolutely
    positioned figure. Absolute positioning put the records ON TOP of the
    headline and the CTAs: the article is a narrow measure, so "beside it" had
    to be computed, and every arithmetic fix moved the collision rather than
    removing it. A grid cannot overlap by construction.
-   Ratio and gap are the concept's own: 1fr copy, 0.85fr figure, 48px apart. */
+   Ratio and gap are the concept's own: 1fr copy, 0.85fr figure, 48px apart.
+   border-bottom is the concept's own rule too (.hero, styles.css:373): the
+   fold's only full-width edge, carried by no other element on this page. */
 .pdpp-frontdoor--hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr);
   gap: 48px;
   align-items: center;
-  max-width: none;
+  border-bottom: var(--pdpp-concept-rule);
 }
-.pdpp-frontdoor--hero > .pdpp-frontdoor__copy {
+/* padding-top matches the concept's own .frontmatter (styles.css:1005,
+   clamp(32px, 1.5rem + 2.4vw, 56px)) -- the h1 sits inside a second wrapper
+   there, not directly under .hero__copy, and this was the missing 56px (at
+   1440px) between .hero's top edge and the h1's. */
+.pdpp-frontdoor__copy {
   min-width: 0;
   max-width: var(--pdpp-concept-measure);
+  padding-top: clamp(32px, 1.5rem + 2.4vw, 56px);
+}
+/* The generic .pdpp-concept h1 rule gives every h1 an 8px margin-bottom
+   (its own doc-body rhythm). The concept's front door instead wraps its h1
+   in .doc-head, which carries a 20px margin-bottom (styles.css:1034)
+   independent of h1's own; this is the front-door-only equivalent.
+   max-width: 20ch is the concept's own too (.frontmatter h1, styles.css:1008)
+   -- it forces the headline onto two lines regardless of the column's own
+   width, which is what makes it read as a title rather than a full-width
+   banner. Without it the h1 ran one line the moment the column was wide
+   enough (every width once the grid collapses to single-column below
+   1200px). */
+.pdpp-frontdoor__copy h1 {
+  max-width: 20ch;
+  margin-bottom: 20px;
 }
 /* Sized by its column. align-self overrides the grid's centring for this one
    child so the figure spans the row the copy defines and the two share a top
@@ -1189,6 +1258,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   min-width: 0;
   block-size: clamp(320px, 46vh, 480px);
   pointer-events: auto;
+  /* The concept's own edge (.hero__figure, styles.css:2603): records read as
+     leaving one edge and arriving at another, bounded on the two vertical
+     sides only. A full box would read as a card, which this page has none
+     of. */
+  border-inline: var(--pdpp-concept-rule-faint);
 }
 /* Under this width the column cannot hold three legible record columns, so the
    figure is dropped and the grid collapses to one column. The component checks
@@ -1249,22 +1323,48 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-frontdoor__water-still-value {
   color: rgba(26, 26, 23, 0.92);
 }
-.pdpp-frontdoor__identity {
-  margin-top: 20px;
+/* Margins match the concept's own .identity/.definition/.amplification
+   exactly (styles.css:1074-1095): each carries its own margin-BOTTOM only,
+   never a margin-top on the element after it. The PR previously put the gap
+   on margin-top instead, which doubled up with h1's own trailing space
+   (.doc-head's 20px) and drifted the whole column down by a few px per
+   paragraph, compounding by the time it reached the CTAs.
+   `.pdpp-concept p` (0,1,1) outranks a plain `.pdpp-frontdoor__identity`
+   (0,1,0) on the shared `margin` shorthand, so these need the same
+   `.pdpp-concept` prefix already used for `.pdpp-concept a.pdpp-cta` below. */
+/* No max-width here: the concept's own .identity/.definition/.amplification
+   carry `max-width: 54ch` (styles.css:1081, 1093, 1115), but that computes
+   against each element's OWN font -- 680px in the concept's Newsreader
+   rendering, not the ~540px `54ch` resolves to here (a font-metrics/loading
+   difference this repo does not control). Copying the ch VALUE without the
+   concept's actual rendered width wrapped "Ninety days..." onto a second
+   line at 1440px where the concept keeps it on one -- a regression, not a
+   fix. The 68ch cap on .pdpp-frontdoor__copy already bounds these. */
+.pdpp-concept p.pdpp-frontdoor__identity {
+  margin: 0 0 20px;
   font-size: clamp(21px, 1.15rem + 0.7vw, 25px);
   font-weight: 600;
   line-height: 1.3;
   color: var(--pdpp-concept-ink);
 }
-.pdpp-frontdoor__definition {
-  margin-top: 20px;
+.pdpp-concept p.pdpp-frontdoor__definition {
+  margin: 0 0 16px;
+  font-size: 20px;
+  line-height: 1.5;
 }
-.pdpp-frontdoor__amplification {
-  margin-top: 16px;
+.pdpp-concept p.pdpp-frontdoor__amplification {
+  margin: 0 0 12px;
+  font-size: 17px;
+  line-height: 1.6;
   color: var(--pdpp-concept-ink-soft);
 }
-.pdpp-frontdoor__status {
-  margin-top: 40px;
+/* Sibling of .pdpp-frontdoor--hero, not a child: matches the concept's own
+   .frontmatter--after, which sits below .hero's border-bottom rather than
+   above it (styles.css:2663, margin-top 28px).
+   `.pdpp-concept p` (0,1,1) otherwise beats this on the shared `margin`
+   shorthand's margin-top -- same trap as .pdpp-frontdoor__identity above. */
+.pdpp-concept p.pdpp-frontdoor__status {
+  margin-top: 28px;
 }
 /* Plain mono text, not a bordered chip. The concept renders this as
    `.definition__status`: mono, 12px, uppercase, ink-soft, no border and no
@@ -1282,13 +1382,27 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   border: 0;
 }
 
-/* The two doors, plus one quiet third. */
+/* The two doors, plus one quiet third. margin-top matches the concept's own
+   .hero__actions exactly (styles.css:2617, 28px -- this was 36px). */
 .pdpp-frontdoor__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px 16px;
   align-items: center;
-  margin-top: 36px;
+  margin-top: 28px;
+}
+/* Full-width doors, stacked, so neither wraps to two lines at 320 (concept's
+   own breakpoint, styles.css:2687-2691, `text-align: center` there -- this
+   uses `justify-content` instead because .pdpp-cta is inline-flex, not
+   inline-block, and text-align has no effect on a flex child's content). */
+@media (max-width: 460px) {
+  .pdpp-frontdoor__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pdpp-frontdoor__actions .pdpp-cta {
+    justify-content: center;
+  }
 }
 /* Scoped `.pdpp-concept a.pdpp-cta` to match the specificity of the
    `.pdpp-concept a` base rule (0,2,0). Unscoped, that base rule won on both
@@ -1302,6 +1416,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   padding: 13px 20px;
   font-family: var(--pdpp-concept-sans);
   font-size: 15px;
+  font-weight: 500;
   line-height: 1;
   text-decoration: none;
   border: 1px solid var(--pdpp-concept-teal);
@@ -1329,6 +1444,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-concept a.pdpp-cta--secondary:hover,
 .pdpp-concept a.pdpp-cta--secondary:focus-visible {
+  color: var(--pdpp-concept-teal-deep);
   background: var(--pdpp-concept-teal-wash);
 }
 /* Not a peer of the other two: a text link, no border, no fill. */
@@ -1339,7 +1455,9 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-concept a.pdpp-cta--quiet:hover,
 .pdpp-concept a.pdpp-cta--quiet:focus-visible {
-  color: var(--pdpp-concept-teal);
+  color: var(--pdpp-concept-teal-deep);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 /* ─── Nav search trigger ─────────────────────────────────────────────────────
@@ -1454,9 +1572,17 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 
 /* ─── Channels (Participate) ─────────────────────────────────────────────────
    Bordered targets, not prose rows. Whole row is the hit area, 44px minimum. */
+/* FLEX, NOT AUTO-FIT GRID. `repeat(auto-fit, minmax(220px, 1fr))` forces every
+   channel to the same track width, so three pills need 3 x 220px + gaps inside
+   the prose measure; the measure is narrower than that, and the third pill wrapped
+   to a second row at every width the owner looked at (reported 2026-08-05: "the
+   CTAs under Get Involved overflow to a second row"). These are pills whose width
+   is their label, not cells in a table — flex-wrap sizes each to content, so all
+   three fit one row wherever the row is wide enough, and they still wrap
+   gracefully when it is not. Matches the concept's own .channels. */
 .pdpp-channels {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin: 28px 0 20px;
 }
@@ -1502,6 +1628,32 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   font-size: 16px;
   color: var(--pdpp-concept-ink-soft);
 }
+/* Full-size pills need ~685px combined and wrap to a second row anywhere
+   the doc column falls short of that — true in the stacked mobile layout
+   below 720px (doc 655-675px at 700-720px) AND right after the rail
+   collapses to sticky/desktop mode at 721px, which drops the doc column
+   further still, to as little as 436px (owner-reported 2026-08-05: "the
+   CTAs under Get Involved overflow to a second row"; the concept has this
+   same wrap throughout 700-1023px, so it is not a PR-introduced regression,
+   but the owner asked for one row at every width from 700 to 1920
+   regardless). Tightened here, not by shrinking the doc column's own
+   measure: padding, gap and font-size drop and the decorative (aria-hidden)
+   arrow is dropped, freeing enough width for all three to fit one row down
+   to the narrowest point measured (436px at 721px). Reverts to full size at
+   1024px, where the doc column is wide enough on its own. */
+@media (min-width: 700px) and (max-width: 1023px) {
+  .pdpp-channels {
+    gap: 6px;
+  }
+  .pdpp-channel {
+    gap: 5px;
+    padding: 8px 5px;
+    font-size: 11.5px;
+  }
+  .pdpp-channel__arrow {
+    display: none;
+  }
+}
 
 /* A section that leads a page carries no top rule (the h1 already separates
    it) but still needs its numeral. */
@@ -1523,6 +1675,26 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   vertical-align: 0.35em;
   color: var(--pdpp-concept-teal);
   letter-spacing: 0.04em;
+  user-select: none;
+}
+/* THE NUMERAL HANGS. Inline, "01" reads as the first word of the heading and
+   the heading's own left edge moves with each numeral's width. Hung into the
+   gutter it becomes an index mark beside the text column, and every h2 starts
+   on the same vertical line — which is what the concept does, and what the
+   owner asked for twice ("floating outside of the body, not in line as a part
+   of the body"). Same 1000px threshold and same offsets as the concept: below
+   it, the gutter is gone and the numeral falls back inline. */
+@media (min-width: 1000px) {
+  .pdpp-doc h2:has(> .pdpp-section__numeral) {
+    position: relative;
+  }
+  .pdpp-section__numeral {
+    position: absolute;
+    top: 0.34em;
+    right: calc(100% + 0.6em);
+    margin-inline-end: 0;
+    vertical-align: baseline;
+  }
 }
 
 /* ─── Terminal head (copy button) ────────────────────────────────────────── */
@@ -1573,6 +1745,14 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   padding: 14px 0;
   color: var(--pdpp-concept-ink-soft);
   border-bottom: var(--pdpp-concept-rule-faint);
+}
+/* The list opens on its own border-top, so each item's border-bottom is a
+   SEPARATOR between items. On the last item there is nothing below to
+   separate, and the section that follows draws its own rule — two lines a few
+   pixels apart. Owner-reported 2026-08-05: "within them, we should not have a
+   rule at the end of the last item." */
+.pdpp-features li:last-child {
+  border-bottom: none;
 }
 .pdpp-features strong {
   margin-right: 10px;
@@ -1663,15 +1843,24 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   outline-offset: -2px;
   border-radius: 2px;
 }
+/* THE COMMAND SITS ON THE CONCEPT'S TERMINAL GROUND, not on paper. Rendered as
+   a white panel with grey text, the single most important element on the page
+   read as an empty box (owner, 2026-08-05: "very flat; it is just empty and
+   white" against "a nice dark green style on the Docker stuff"). These are the
+   concept's own .terminal values — teal-deep ground, --pdpp-concept-onteal-deep
+   ink, 24px/28px padding, the 1px offset shadow — reused rather than re-picked,
+   so the panel matches the terminal blocks already on this page. The tabs above
+   stay on paper: they are chrome around the command, not the command. */
 .pdpp-cmd__panel {
   display: flex;
   gap: 16px;
   align-items: flex-start;
   justify-content: space-between;
   width: 100%;
-  padding: 18px 20px;
+  padding: 24px 28px;
+  color: var(--pdpp-concept-onteal-deep);
   text-align: left;
-  background: none;
+  background: var(--pdpp-concept-teal-deep);
   border: 0;
 }
 /* The whole panel is the copy target, per opencode: a 16px icon is a poor hit
@@ -1684,11 +1873,12 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-cmd__panel--copyable:hover .pdpp-cmd__copy,
 .pdpp-cmd__panel--copyable:focus-visible .pdpp-cmd__copy {
-  color: var(--pdpp-concept-teal);
-  border-color: var(--pdpp-concept-teal);
+  color: var(--pdpp-concept-onteal-deep);
+  border-color: var(--pdpp-concept-onteal-deep);
 }
+/* The focus ring is on-teal too: a teal ring on a teal-deep ground is invisible. */
 .pdpp-cmd__panel--copyable:focus-visible {
-  outline: 2px solid var(--pdpp-concept-teal);
+  outline: 2px solid var(--pdpp-concept-onteal-deep);
   outline-offset: -2px;
 }
 .pdpp-cmd__line {
@@ -1699,8 +1889,10 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   font-family: var(--pdpp-concept-mono);
   font-size: 13.5px;
   line-height: 1.75;
-  /* Boilerplate recedes so the emphasised token can land. */
-  color: var(--pdpp-concept-ink-faint);
+  /* Boilerplate recedes so the emphasised token can land — but on the teal-deep
+     ground, so the recessive tone is the on-teal soft token (7.84:1), not the
+     paper-ground ink-faint that was illegible there. */
+  color: var(--pdpp-concept-onteal-deep-soft);
   /* No hanging indent. A negative text-indent pulls the FIRST line left (it is
      defined on the first line, not on continuations), which made `mkdir` sit
      outside the block and read as if it were not part of the command. Every
@@ -1722,28 +1914,33 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   background: none;
   border-radius: 0;
 }
-/* The one token that says WHAT you are running. */
+/* The one token that says WHAT you are running: full-strength on-teal ink
+   (10.85:1) against the soft boilerplate around it. */
 .pdpp-cmd__em {
   font-weight: 600;
-  color: var(--pdpp-concept-ink);
+  color: var(--pdpp-concept-onteal-deep);
 }
+/* On the teal-deep ground, so it takes the concept's own .terminal .copy-btn
+   treatment (on-teal ink, a 35%-strength on-teal hairline) rather than the
+   paper-ground ink/rule pair, which was invisible against the dark panel. */
 .pdpp-cmd__copy {
   flex: none;
   padding: 5px 12px;
   font-family: var(--pdpp-concept-sans);
   font-size: 11px;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-concept-onteal-deep-soft);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   cursor: pointer;
   background: none;
-  border: var(--pdpp-concept-rule);
+  border: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-onteal-deep) 35%, transparent);
   border-radius: 2px;
 }
 .pdpp-cmd__copy:hover,
 .pdpp-cmd__copy:focus-visible {
-  color: var(--pdpp-concept-teal);
-  border-color: var(--pdpp-concept-teal);
+  color: var(--pdpp-concept-onteal-deep);
+  border-color: var(--pdpp-concept-onteal-deep);
 }
 /* One line, outside the panel so the panel itself stays bare. */
 .pdpp-cmd__note {

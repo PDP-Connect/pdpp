@@ -301,36 +301,158 @@
   color: var(--pdpp-concept-teal);
 }
 
-/* The concept's rail (.rail) is transparent — no fill, no border, just
-   padding — so it reads as part of the page rather than a boxed panel.
-   Flattened to match; fumadocs' own sidebar structure (its independent
-   scroll region, the mobile drawer) is left alone, since removing that would
-   mean forking the component rather than restyling it. */
+/* ---------------------------------------------------------------- The rail
+ *
+ * The concept's rail (spec.html's `aside.rail`) is transparent — no fill, no
+ * border, no card — so it reads as part of the page rather than a docked
+ * panel. Every number below is measured off the concept's own styles.css
+ * rather than eyeballed, because the owner's finding was specifically that
+ * "the style of the nav is completely wrong compared to the design ... the
+ * padding, margin, whatever". The measured pairs, concept -> what fumadocs
+ * shipped before this block:
+ *
+ *   rail track width      276px (clamp 200-276)   240px fixed
+ *   rail padding-top      64px                    0
+ *   document row height   23.8px                  35.6px
+ *   document font-size    13px                    13px (but 8px padding)
+ *   document row padding  2px 0                   8px
+ *   TOC link font-size    12px                    n/a (right column)
+ *   metadata label        12px mono, 0.08em caps  absent entirely
+ *   metadata value        16px serif              absent entirely
+ *
+ * fumadocs' own sidebar STRUCTURE (sticky column, drawer, scroll container) is
+ * untouched — see spec-rail.tsx, which replaces the contents through the
+ * documented slot rather than fighting the component from here.
+ */
 [data-pdpp-doc-theme] #nd-sidebar {
+  --fd-sidebar-width: clamp(200px, 6.3462rem + 12.5vw, 276px);
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
   background: none;
   border-right: none;
 }
 
-[data-pdpp-doc-theme] #nd-sidebar a,
-[data-pdpp-doc-theme] #nd-sidebar button,
-[data-pdpp-doc-theme] #nd-sidebar summary {
+/* fumadocs pads the sidebar's scroll viewport with p-4 (16px all round) and
+   sets a fade mask. The concept pads the rail 64px from the top of the page
+   and nothing on the left — its rail sits flush in its own grid track. */
+[data-pdpp-doc-theme] #nd-sidebar [data-radix-scroll-area-viewport] > div,
+[data-pdpp-doc-theme] #nd-sidebar > div > div > div {
+  gap: 0 !important;
+  padding: 64px 24px 24px 0;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__block {
+  margin-bottom: 40px;
+}
+
+/* Front matter. The concept states VERSION/STATUS/DATE/EDITORS as a 12px mono
+   uppercase label over a 16px serif value — the same treatment its in-document
+   front-matter table uses, so the two apparatus blocks speak with one voice. */
+[data-pdpp-doc-theme] .pdpp-rail__meta {
+  margin: 0;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__row {
+  display: block;
+  padding: 0;
+  border-bottom: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__meta dt {
+  padding-top: 0;
+  margin-top: 16px;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 12px;
   color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-[data-pdpp-doc-theme] #nd-sidebar a[data-active="true"],
-[data-pdpp-doc-theme] #nd-sidebar button[data-active="true"] {
-  color: var(--pdpp-concept-teal);
-  background: var(--pdpp-concept-teal-wash);
+[data-pdpp-doc-theme] .pdpp-rail__row:first-child dt {
+  margin-top: 0;
 }
 
-[data-pdpp-doc-theme] #nd-sidebar [data-active="true"]::before {
-  background: var(--pdpp-concept-teal);
+[data-pdpp-doc-theme] .pdpp-rail__meta dd {
+  margin: 2px 0 0;
+  font-family: var(--pdpp-concept-serif);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--pdpp-concept-ink);
 }
 
-[data-pdpp-doc-theme] #nd-sidebar [class*="mb-1 px-2 mt-6"] {
+/* Editors are one name per line (the concept uses <br> between them). */
+[data-pdpp-doc-theme] .pdpp-rail__editor {
+  display: block;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__editor + .pdpp-rail__editor {
+  margin-top: 1px;
+}
+
+/* The rail's one label ("Specification"), and the concept's "CONTENTS"
+   summary, share a single treatment — 12px, uppercase, 0.08em, soft ink. */
+[data-pdpp-doc-theme] .pdpp-rail__label {
+  padding-bottom: 10px;
+  margin: 0;
   font-family: var(--pdpp-concept-sans);
-  color: var(--pdpp-concept-ink-faint);
+  font-size: 12px;
+  color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+/* Document links. The concept's TOC rows are 13px over a 1.35 line-height with
+   9px between them and NO horizontal padding — the rail has no buttons in it.
+   fumadocs' default was a 35.6px tall 8px-padded row with a hover fill, which
+   is what made the rail read as another product's chrome. */
+[data-pdpp-doc-theme] .pdpp-rail__doc {
+  display: block;
+  padding: 0;
+  margin-bottom: 9px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--pdpp-concept-ink-soft);
+  text-decoration: none;
+  background: none;
+  border-radius: 0;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__doc:hover {
+  color: var(--pdpp-concept-teal);
+  background: none;
+}
+
+/* The concept marks the active entry with colour, weight and a short teal tick
+   in the margin (box-shadow: -9px 0 0 -6px), not a filled pill. */
+[data-pdpp-doc-theme] .pdpp-rail__doc[data-active="true"] {
+  font-weight: 500;
+  color: var(--pdpp-concept-teal);
+  background: none;
+  box-shadow: -9px 0 0 -6px var(--pdpp-concept-teal);
+}
+
+/* The supporting-document cluster: a hairline, no heading. */
+[data-pdpp-doc-theme] .pdpp-rail__rule {
+  margin: 32px 0 20px;
+  border: 0;
+  border-top: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 14%, transparent);
+}
+
+/* Set one step down from the specification list so the hierarchy is carried by
+   size and weight rather than by colour alone (the muted ink still has to pass
+   4.5:1 in both themes, so it does the smaller half of the work).
+   fumadocs renders each tree node's Item in isolation with no parent node to
+   wrap (see createPageTreeRenderer), so the supporting/primary split is a data
+   attribute on the item itself rather than a block-level class — see
+   spec-rail.tsx's data-supporting. */
+[data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"] {
+  font-size: 12px;
+  color: var(--pdpp-concept-ink-faint);
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"]:hover,
+[data-pdpp-doc-theme]
+  .pdpp-rail__doc[data-supporting="true"][data-active="true"] {
+  color: var(--pdpp-concept-teal);
 }
