@@ -212,10 +212,42 @@
   font-family: var(--pdpp-concept-sans);
   font-size: 15px;
 }
+/* Text-only nav links have a much shorter line box than the 44px touch-target
+   floor. A transparent ::before overlay expands the HIT AREA the same way
+   .pdpp-theme-switch::before does below, without changing the link's own box
+   (font size, underline position) or requiring position:relative to affect
+   layout since the link is already an inline-flex participant in a wrapping
+   row.
+   Height IS a row-height concern, though: the masthead row is
+   align-items: baseline, so its cross-size is set by its tallest child, and
+   the browser default line-height at 15px left this the tallest thing in the
+   row (27.75px) against the 20px box .pdpp-nav-search-trigger and
+   .pdpp-theme-switch both already use. A line-height ratio landed a px off
+   (21px, not 20px — Public Sans' real ascent/descent vs. an assumed ratio),
+   so this takes the same explicit-box approach the search trigger already
+   established instead: box-sizing height rather than a font-metric guess.
+   padding-bottom is kept for the underline's gap from the text. This closes
+   a masthead-height drift that predates this branch's theme work — confirmed
+   by A/B testing with the theme control removed entirely, which left the row
+   unchanged. See THEME.md for the before/after measurement. */
 .pdpp-nav a {
+  position: relative;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
   padding-bottom: 2px;
   color: var(--pdpp-concept-ink-soft);
   border-bottom: 1px solid transparent;
+}
+.pdpp-nav a::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(44px, 100%);
+  height: max(44px, 100%);
+  content: "";
+  transform: translate(-50%, -50%);
 }
 .pdpp-nav a:hover,
 .pdpp-nav a:focus-visible {
@@ -1019,12 +1051,12 @@
    PR was 1px solid / 6px 10px. */
 .pdpp-frontdoor__status .pdpp-stamp {
   padding: 0;
-  border: 0;
   font-family: var(--pdpp-concept-mono);
   font-size: 12px;
   font-weight: 400;
-  letter-spacing: 0.04em;
   color: var(--pdpp-concept-ink-soft);
+  letter-spacing: 0.04em;
+  border: 0;
 }
 
 /* The two doors, plus one quiet third. */
@@ -1040,8 +1072,10 @@
    color and border-bottom: the primary CTA rendered teal-on-teal (an
    invisible label) and the outline CTAs carried a stray link underline. */
 .pdpp-concept a.pdpp-cta {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
+  min-height: 44px;
   padding: 13px 20px;
   font-family: var(--pdpp-concept-sans);
   font-size: 15px;
@@ -1093,6 +1127,7 @@
    line-box (border inside, via box-sizing) makes it match rather than dominate,
    so masthead height is unchanged at 66px. */
 .pdpp-nav-search-trigger {
+  position: relative;
   box-sizing: border-box;
   display: inline-flex;
   gap: 6px;
@@ -1107,6 +1142,18 @@
   border: 1px solid
     color-mix(in srgb, var(--pdpp-concept-ink) 16%, var(--pdpp-concept-paper));
   border-radius: 3px;
+}
+/* Same 44px hit-area overlay as .pdpp-theme-switch::before — the visible
+   pill stays pinned to the link's 20px line-box (see above) so the masthead
+   row height is unaffected, but the tap target still meets the floor. */
+.pdpp-nav-search-trigger::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(44px, 100%);
+  height: max(44px, 100%);
+  content: "";
+  transform: translate(-50%, -50%);
 }
 .pdpp-nav-search-trigger:hover,
 .pdpp-nav-search-trigger:focus-visible {
@@ -1426,6 +1473,12 @@
   line-height: 1.75;
   /* Boilerplate recedes so the emphasised token can land. */
   color: var(--pdpp-concept-ink-faint);
+  /* No hanging indent. A negative text-indent pulls the FIRST line left (it is
+     defined on the first line, not on continuations), which made `mkdir` sit
+     outside the block and read as if it were not part of the command. Every
+     line therefore starts flush, and a wrapped fragment is distinguished by
+     being mid-token rather than by inset. */
+  overflow-wrap: anywhere;
   /* `pre-wrap` with an indent on continuation lines. Plain `pre` clipped the
      compose URL — the emphasised token the eye is supposed to land on — behind
      the panel edge, which defeats the emphasis entirely. Wrapping only ever
@@ -1433,12 +1486,6 @@
      fragment visibly subordinate to the line it belongs to rather than
      reading as a new command. */
   white-space: pre-wrap;
-  /* No hanging indent. A negative text-indent pulls the FIRST line left (it is
-     defined on the first line, not on continuations), which made `mkdir` sit
-     outside the block and read as if it were not part of the command. Every
-     line therefore starts flush, and a wrapped fragment is distinguished by
-     being mid-token rather than by inset. */
-  overflow-wrap: anywhere;
 }
 .pdpp-cmd__line code {
   padding: 0;
@@ -1499,11 +1546,9 @@
   margin-top: 10px;
 }
 .pdpp-cmd__choice-label {
+  float: left;
   flex: none;
   min-width: 54px;
-  /* `float` rather than the default legend rendering: a legend is taken out of
-     flow by the UA and would not sit on the flex line with its buttons. */
-  float: left;
   padding: 0;
   font-family: var(--pdpp-concept-sans);
   font-size: 12px;
@@ -1520,6 +1565,8 @@
   gap: 4px;
 }
 .pdpp-cmd__seg-btn {
+  box-sizing: border-box;
+  min-height: 44px;
   padding: 5px 11px;
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
