@@ -1295,6 +1295,31 @@
   font-size: 14px;
   color: var(--pdpp-concept-ink-soft);
 }
+/* The one outcome choice that changes the command. It sits under the panel
+   rather than beside the tabs because it applies across tabs, and a checkbox
+   reads as a property of the thing above it. */
+.pdpp-cmd__opt {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 12px 2px 0;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 14px;
+  color: var(--pdpp-concept-ink-soft);
+  cursor: pointer;
+}
+.pdpp-cmd__opt input {
+  accent-color: var(--pdpp-concept-teal);
+}
+/* Shown instead of a command when the selected combination has no working
+   artifact. Same box as the command so the absence is deliberate, not a gap. */
+.pdpp-cmd__blocked {
+  margin: 0;
+  padding: 2px 0;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 14px;
+  color: var(--pdpp-concept-ink-soft);
+}
 @media (max-width: 560px) {
   .pdpp-cmd__panel {
     flex-direction: column;
