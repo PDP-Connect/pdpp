@@ -30,6 +30,9 @@ const CONSOLE_SERVER_JS_PATTERN = /\/console\/apps\/console\/server\.js/;
 const REFERENCE_ORIGIN_LOCALHOST_PATTERN = /PDPP_REFERENCE_ORIGIN=http:\/\/localhost:3000/;
 const DB_PATH_SQLITE_PATTERN = /PDPP_DB_PATH=\/var\/lib\/pdpp\/pdpp\.sqlite/;
 const CORE_INHERITS_BROWSER_PATTERN = /FROM browsers AS core-browser[\s\S]*FROM core-browser AS core/;
+const RUNTIME_BROWSER_MARKER_PATTERN = /PDPP_RUNTIME_BROWSER=1/;
+const BROWSER_STAGE_CAPTURE_PATTERN = /FROM base AS browsers\n([\s\S]*?)(?=\nFROM browsers AS reference-browser)/;
+const REFERENCE_STAGE_CAPTURE_PATTERN = /FROM base AS reference\n([\s\S]*?)(?=\nFROM base AS browsers)/;
 const CORE_SEMANTIC_DOWNLOAD_PATTERN = /PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1/;
 const CORE_SEMANTIC_CACHE_PATTERN = /PDPP_EMBEDDING_CACHE_DIR=\/var\/lib\/pdpp\/transformers/;
 const PATCHRIGHT_MANIFEST_DERIVATION_PATTERN = /PATCHRIGHT_VERSION=.*polyfill-connectors-package\.json/;
@@ -150,6 +153,22 @@ test("public Core inherits browser support and persists semantic search download
   assert.match(dockerfile, PATCHRIGHT_MANIFEST_DERIVATION_PATTERN);
   assert.match(dockerfile, PATCHRIGHT_EXACT_VERSION_ASSERTION_PATTERN);
   assert.doesNotMatch(dockerfile, /ARG PATCHRIGHT_VERSION=/);
+});
+
+test("browser capability is declared once on the shared browser stage", () => {
+  const dockerfile = read("Dockerfile");
+  const browserStageMatch = dockerfile.match(BROWSER_STAGE_CAPTURE_PATTERN);
+  const referenceStageMatch = dockerfile.match(REFERENCE_STAGE_CAPTURE_PATTERN);
+  assert.ok(browserStageMatch, "could not isolate the shared browser stage");
+  assert.ok(referenceStageMatch, "could not isolate the non-browser reference stage");
+  assert.match(browserStageMatch[1] ?? "", RUNTIME_BROWSER_MARKER_PATTERN);
+  assert.equal(
+    (dockerfile.match(new RegExp(RUNTIME_BROWSER_MARKER_PATTERN.source, "g")) ?? []).length,
+    1,
+    "the image-owned browser capability must have one packaging declaration"
+  );
+  assert.doesNotMatch(referenceStageMatch[1] ?? "", RUNTIME_BROWSER_MARKER_PATTERN);
+  assert.match(dockerfile, CORE_INHERITS_BROWSER_PATTERN);
 });
 
 test("n.eko derives Patchright from the workspace manifest", () => {

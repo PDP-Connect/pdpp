@@ -502,7 +502,9 @@ async function main(argv: string[]): Promise<void> {
   await runCheck(checks, "core.browser-binding", "Browser binding and collector pairing", () => {
     const capabilities = nestedRecord(context.diagnostics, "runtime_capabilities");
     const bindings = nestedRecord(capabilities, "bindings");
-    if (bindings?.browser !== true || capabilities?.collector_paired !== true) {
+    const browserAvailable = bindings?.browser === true;
+    const collectorPaired = capabilities?.collector_paired === true;
+    if (!(browserAvailable || collectorPaired)) {
       const warnings = Array.isArray(context.diagnostics?.warnings)
         ? context.diagnostics.warnings
             .map((warning) => stringValue(asRecord(warning)?.message))
@@ -513,7 +515,7 @@ async function main(argv: string[]): Promise<void> {
         `runtime_capabilities.bindings.browser=${String(bindings?.browser)}, collector_paired=${String(capabilities?.collector_paired)}; ${warnings}`
       );
     }
-    return "Core advertises a browser binding and a paired collector";
+    return browserAvailable ? "Core advertises a native browser binding" : "Core has a paired browser collector";
   });
 
   await runCheck(checks, "owner.routes", "Owner data and deployment routes", async () => {

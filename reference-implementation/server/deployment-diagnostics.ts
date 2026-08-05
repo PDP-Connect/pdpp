@@ -264,6 +264,17 @@ export interface RuntimeCapabilityPosture {
   readonly in_container: boolean;
 }
 
+export const RUNTIME_BROWSER_CAPABILITY_ENV = "PDPP_RUNTIME_BROWSER";
+
+/**
+ * Read the browser capability stamped into a browser-bearing image. The
+ * packaging marker is the authority; diagnostics must not infer capability
+ * from connector lists or filesystem contents.
+ */
+export function runtimeBrowserCapabilityFromEnv(env: DiagnosticsEnv): boolean {
+  return env[RUNTIME_BROWSER_CAPABILITY_ENV] === "1";
+}
+
 export interface ParticipationTuple {
   readonly connector_id: string;
   readonly field: string;

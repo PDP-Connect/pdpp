@@ -149,7 +149,11 @@ import {
   reconcileDirtyDatasetSummaryRecordTimeBounds,
 } from "./dataset-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "./db.ts";
-import { collectDeploymentDiagnostics, probeDiskHeadroom } from "./deployment-diagnostics.ts";
+import {
+  collectDeploymentDiagnostics,
+  probeDiskHeadroom,
+  runtimeBrowserCapabilityFromEnv,
+} from "./deployment-diagnostics.ts";
 import { composeFleetHealthVerdict } from "./fleet-health.ts";
 import { deriveReferenceFreshness } from "./freshness.ts";
 import {
@@ -4316,7 +4320,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
             return {
               accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
               bindings: {
-                browser: false,
+                browser: runtimeBrowserCapabilityFromEnv(process.env),
                 filesystem: true,
                 local_device: false,
                 network: true,

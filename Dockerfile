@@ -119,6 +119,11 @@ CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_U
 FROM base AS browsers
 
 ARG TARGETARCH
+
+# Image-owned runtime capability. Browser-bearing final stages inherit this
+# marker; non-browser stages start from `base` and therefore remain false.
+ENV PDPP_RUNTIME_BROWSER=1
+
 COPY packages/polyfill-connectors/package.json /tmp/polyfill-connectors-package.json
 
 WORKDIR /tmp/patchright-install

@@ -29,7 +29,9 @@ import {
   DISK_ERROR_BYTES,
   DISK_WARN_BYTES,
   type DiskHeadroom,
+  RUNTIME_BROWSER_CAPABILITY_ENV,
   type RuntimeCapabilityPosture,
+  runtimeBrowserCapabilityFromEnv,
   type SemanticBackfillProgress,
   shouldAttemptSemanticUplift,
 } from "../server/deployment-diagnostics.ts";
@@ -214,6 +216,12 @@ test("runtime_capabilities: absent input renders an empty/host-default report wi
   assert.equal(report.runtime_capabilities.bindings.browser, false);
   const codes = report.warnings.map((w) => w.code);
   assert.ok(!codes.includes("browser_connectors_need_collector"));
+});
+
+test("runtime_capabilities: image-owned browser marker projects true, while non-browser defaults stay false", () => {
+  assert.equal(runtimeBrowserCapabilityFromEnv({ [RUNTIME_BROWSER_CAPABILITY_ENV]: "1" }), true);
+  assert.equal(runtimeBrowserCapabilityFromEnv({ [RUNTIME_BROWSER_CAPABILITY_ENV]: "0" }), false);
+  assert.equal(runtimeBrowserCapabilityFromEnv({}), false);
 });
 
 test("runtime_capabilities: containerized provider without collector warns", () => {
