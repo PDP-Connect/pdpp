@@ -87,7 +87,7 @@ const implementations = [
     type: "Authorization server and resource server",
   },
   { href: "https://dtinit.org", linkLabel: "DTI", name: "Data Connect", type: "Portability and transfer interface" },
-  { href: "https://vana.org/", linkLabel: "Vana", name: "Vana Network", type: "Deployed personal-data network" },
+  { href: "https://vana.org/", linkLabel: "Vana", name: "Vana network", type: "Deployed personal-data network" },
 ] as const;
 
 export default function ReferencePage() {
