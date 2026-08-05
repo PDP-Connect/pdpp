@@ -33,10 +33,12 @@ const pdppDocMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   description:
     "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
-  // Mirror the console's favicon declaration so pdpp.dev serves the
-  // edge-to-edge two-rectangle mark instead of auto-detecting the
-  // rounded-plate icon.svg (whose cream plate reads as white padding
-  // at favicon scale). /brand/pdpp-favicon.svg is the padding-free mark.
+  // A filled teal tile with the mark's first glyph knocked out in paper.
+  // The wordmark is 365x160, so the whole thing renders as an unreadable
+  // smudge at 16px; one glyph stays legible. The tile is solid rather than
+  // transparent because a browser's tab strip may be dark or light and a
+  // transparent mark is invisible on one of them. Verified by rendering at
+  // 16px against both.
   icons: {
     icon: [{ type: "image/svg+xml", url: "/brand/pdpp-favicon.svg" }],
   },
