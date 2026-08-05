@@ -1,112 +1,36 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { SPEC_FRONT_MATTER } from "@/generated/spec-front-matter.ts";
 
-// DERIVED, not hand-synced. Version, status, and date are parsed out of the
-// repo-root spec-core.md header; editors are parsed out of MAINTAINERS.md.
-//
-// This replaces three hand-typed constants. The owner's standing rule for this
-// pass: anything that can go stale but is tracked in the repo must be wired so
-// it cannot. Previously this file carried "update this one constant" in a
-// comment, which is exactly the drift the rule bans — a comment is not a
+// DERIVED, not hand-synced. Version, status, and date come from the repo-root
+// spec-core.md header; editors from MAINTAINERS.md. This replaces three
+// hand-typed constants: anything that can go stale but is tracked in the repo
+// is wired so it cannot, and a comment saying "update this constant" is not a
 // mechanism.
 //
-// Read at module scope, so it runs once per server process during SSR/SSG and
-// never reaches the client bundle. Every parse failure throws rather than
-// falling back to a stale literal: a build that cannot read the source of truth
-// must fail loudly, not silently ship last week's version. That is the same
-// fail-fast posture as scripts/sync-spec-docs.mts.
+// Those two files are parsed ONCE, by scripts/sync-spec-docs.mjs at prebuild,
+// which writes src/generated/spec-front-matter.ts. Nothing here touches the
+// file system, and every parse failure still fails the build loudly rather
+// than shipping last week's version.
+//
+// Reading them when a page rendered is what broke production: Vercel's project
+// root is apps/site, so the repo root is present during the build and gone from
+// the serverless bundle that serves a request. The front door, Participate and
+// the specification pages all returned 500 while every local check passed,
+// because the server that serves the site locally is the repo itself.
 //
 // NOTE ON THE DATE ITSELF: spec-core.md declares Date: 2026-04-06 while git
 // says the file has been modified since. That is a defect in the SOURCE, not
 // here, and it is deliberately not worked around — this module propagates
 // whatever the spec header declares, so fixing the header fixes the site.
 
-// Walk up to the workspace markers rather than counting five directories from
-// this module's own URL. The segment count is right in the source tree and
-// wrong in the bundled server output, where this module does not sit at that
-// depth — which is why the pages reading it returned 500 on Vercel while every
-// local check passed. Same markers as openspec/filesystem.ts and
-// spec-front-matter.ts.
-const REPO_ROOT = (() => {
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (;;) {
-    if (existsSync(join(dir, "pnpm-workspace.yaml")) && existsSync(join(dir, "spec-core.md"))) {
-      return dir;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) {
-      // Fall back to the old fixed depth so the failure surfaces as the
-      // readRepoFile error below, which names the path it tried.
-      return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
-    }
-    dir = parent;
-  }
-})();
-
-// Hoisted: these run once at module load, and a regex literal inside a function
-// is recompiled on every call.
-const SPEC_VERSION_PATTERN = /\bv\d+\.\d+\.\d+\b/;
-const SPEC_STATUS_PATTERN = /^Status:\s*(.+?)\s*$/;
-const SPEC_DATE_PATTERN = /^Date:\s*(\d{4}-\d{2}-\d{2})\s*$/;
-// The "Active maintainers" table row: | Name | `@handle` | Scope | Active | ... |
-const ACTIVE_MAINTAINER_ROW = /^\|\s*([^|]+?)\s*\|\s*`@[^`]+`\s*\|[^|]*\|\s*Active\s*\|/;
-
-function readRepoFile(relativePath: string): string {
-  try {
-    return readFileSync(join(REPO_ROOT, relativePath), "utf8");
-  } catch (cause) {
-    throw new Error(`pdpp-concept: cannot read ${relativePath} (resolved from ${REPO_ROOT})`, { cause });
-  }
-}
-
-function parseSpecHeader(): { date: string; label: string; version: string } {
-  const source = readRepoFile("spec-core.md");
-  const [titleLine = "", , statusLine = "", dateLine = ""] = source.split("\n");
-
-  // "# Personal Data Portability Protocol (PDPP) v0.1.0"
-  const version = titleLine.match(SPEC_VERSION_PATTERN)?.[0];
-  const label = statusLine.match(SPEC_STATUS_PATTERN)?.[1];
-  const date = dateLine.match(SPEC_DATE_PATTERN)?.[1];
-
-  if (!(version && label && date)) {
-    throw new Error(
-      `pdpp-concept: spec-core.md header did not parse (version=${version}, status=${label}, date=${date}). ` +
-        "Expected '# ... vX.Y.Z' on line 1, 'Status: ...' on line 3, 'Date: YYYY-MM-DD' on line 4."
-    );
-  }
-
-  return { date, label, version };
-}
-
-function parseEditors(): readonly string[] {
-  const source = readRepoFile("MAINTAINERS.md");
-
-  // Take the name column of every row whose Status column reads Active, so a
-  // maintainer going emeritus drops off the site without a site edit.
-  const editors = source
-    .split("\n")
-    .map((line) => line.match(ACTIVE_MAINTAINER_ROW)?.[1])
-    .filter((name): name is string => name !== undefined);
-
-  if (editors.length === 0) {
-    throw new Error("pdpp-concept: MAINTAINERS.md yielded no active maintainers; the table shape must have changed.");
-  }
-
-  return editors;
-}
-
-const header = parseSpecHeader();
-
 export const SPEC_STATUS = {
-  date: header.date,
-  label: header.label,
-  version: header.version,
+  date: SPEC_FRONT_MATTER.date,
+  label: SPEC_FRONT_MATTER.status,
+  version: SPEC_FRONT_MATTER.version,
 } as const;
 
 export const SPEC_STATUS_STAMP = `${SPEC_STATUS.label} · ${SPEC_STATUS.version} · ${SPEC_STATUS.date}`;
 
-export const SPEC_EDITORS = parseEditors();
+export const SPEC_EDITORS: readonly string[] = SPEC_FRONT_MATTER.editors;
