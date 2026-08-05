@@ -185,15 +185,16 @@ function railwayCommand(): BuiltCommand {
  * platform-specific artifact name") or silently drop browser support that
  * this page's own "Browser sources included" feature promises. Both are
  * worse than telling the reader the shape and pointing them at the runbook
- * that carries the same caveat: deploy/flyio/README.md states this scope
- * line explicitly ("Out of scope: browser-backed connector collection inside
- * the deployed app").
+ * The reason is DEPLOYMENT COMPLEXITY, not capability. Core is browser-capable
+ * and platform-core inherits it (verified by the built-image friend gate at
+ * Core head 5e158736a). Fly needs an app, a Postgres attachment and secrets
+ * set before the first deploy, which is more than one copyable line.
  */
 function flyCommand(): BuiltCommand {
   return {
     segments: null,
     unavailable:
-      "Fly.io needs a few more flags than fit in one line here, and its published image does not yet carry browser-based sign-in.",
+      "Fly.io takes more setup than fits in one command here: an app, a Postgres attachment, and secrets set before the first deploy.",
     unavailableHref: repoBlobUrl("deploy/flyio/README.md"),
     unavailableLinkLabel: "Read the runbook",
   };
