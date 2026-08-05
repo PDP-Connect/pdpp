@@ -113,39 +113,52 @@ The companion [PDPP Collection Profile](spec-collection-profile) uses the same r
 
 ## 3. System Architecture
 
+Every PDPP deployment shares the same authorization core: a user grants a client consent, and the authorization server issues a grant. The resource server that then serves records under that grant is not shown here — how it is populated and operated is deployment-specific (see below).
+
 ```mermaid
 flowchart TB
     User((User))
     Client[Client]
+    AS[Authorization Server]
 
     User -- consent --> AS
     Client -- selection request --> AS
     AS -- grant --> Client
+```
 
-    subgraph VariantA["Variant A: source-native fulfillment"]
-        direction TB
-        AS[Authorization Server]
-        RS_A[Resource Server]
-        Source_A[Data Source]
-        Source_A -.->|operates| AS
-        Source_A -.->|operates| RS_A
-    end
+What differs between deployments is how the resource server that fulfills the grant is populated and operated. This is not a closed set: a resource server may hold pre-collected data with no collection machinery involved, or receive data via regulatory export, manual import, or platform-native APIs (Section 1). The two examples below illustrate the ends of that spectrum; the [PDPP Collection Profile](spec-collection-profile) is one fulfillment mechanism, not the only one.
 
-    subgraph VariantB["Variant B: personal-server fulfillment"]
-        direction TB
-        AS_B[Authorization Server]
-        RS_B[Resource Server]
-        Runtime[Connector Runtime<br/>Collection Profile]
-        Source_B[Data Source]
-        Runtime -- RECORD / STATE --> RS_B
-        Source_B -.->|collected by| Runtime
-    end
+**Example A: source-native fulfillment.** The data source operates its own authorization and resource servers directly; there is no separate collection step.
 
-    Client -- query under grant --> RS_A
-    RS_A -- enforced records --> Client
+```mermaid
+flowchart TB
+    Client[Client]
+    AS[Authorization Server]
+    RS[Resource Server]
+    Source[Data Source]
 
-    Client -- query under grant --> RS_B
-    RS_B -- enforced records --> Client
+    Client -- query under grant --> RS
+    RS -- enforced records --> Client
+
+    Source -.->|operates| AS
+    Source -.->|operates| RS
+```
+
+**Example B: personal-server fulfillment.** A connector runtime, governed by the Collection Profile, collects data from the source and syncs it into a resource server the user controls.
+
+```mermaid
+flowchart TB
+    Client[Client]
+    AS[Authorization Server]
+    RS[Resource Server]
+    Runtime[Connector Runtime<br/>Collection Profile]
+    Source[Data Source]
+
+    Client -- query under grant --> RS
+    RS -- enforced records --> Client
+
+    Runtime -- RECORD / STATE --> RS
+    Source -.->|collected by| Runtime
 ```
 
 ### Protocol layering
