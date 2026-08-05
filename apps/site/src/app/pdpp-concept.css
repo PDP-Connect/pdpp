@@ -1238,9 +1238,30 @@
 .pdpp-cmd__panel {
   display: flex;
   gap: 16px;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  width: 100%;
   padding: 18px 20px;
+  text-align: left;
+  background: none;
+  border: 0;
+}
+/* The whole panel is the copy target, per opencode: a 16px icon is a poor hit
+   area for the single most important action on the page. The ghost label is
+   affordance only — `aria-hidden`, because the button already has a label. */
+.pdpp-cmd__panel--copyable {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.pdpp-cmd__panel--copyable:hover .pdpp-cmd__copy,
+.pdpp-cmd__panel--copyable:focus-visible .pdpp-cmd__copy {
+  color: var(--pdpp-concept-teal);
+  border-color: var(--pdpp-concept-teal);
+}
+.pdpp-cmd__panel--copyable:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: -2px;
 }
 .pdpp-cmd__line {
   flex: 1 1 auto;
@@ -1252,11 +1273,19 @@
   line-height: 1.75;
   /* Boilerplate recedes so the emphasised token can land. */
   color: var(--pdpp-concept-ink-faint);
-  /* `pre`, NOT `pre-wrap`: a shell line broken mid-token reads as a different
-     command, and the wrapped `printf` looked like three commands rather than
-     one. Long lines scroll horizontally inside the panel instead — what every
-     terminal does, and the copy button makes the scroll cheap. */
-  white-space: pre;
+  /* `pre-wrap` with an indent on continuation lines. Plain `pre` clipped the
+     compose URL — the emphasised token the eye is supposed to land on — behind
+     the panel edge, which defeats the emphasis entirely. Wrapping only ever
+     breaks at existing whitespace, and the hanging indent keeps a wrapped
+     fragment visibly subordinate to the line it belongs to rather than
+     reading as a new command. */
+  white-space: pre-wrap;
+  /* No hanging indent. A negative text-indent pulls the FIRST line left (it is
+     defined on the first line, not on continuations), which made `mkdir` sit
+     outside the block and read as if it were not part of the command. Every
+     line therefore starts flush, and a wrapped fragment is distinguished by
+     being mid-token rather than by inset. */
+  overflow-wrap: anywhere;
 }
 .pdpp-cmd__line code {
   padding: 0;
@@ -1295,27 +1324,129 @@
   font-size: 14px;
   color: var(--pdpp-concept-ink-soft);
 }
-/* The one outcome choice that changes the command. It sits under the panel
-   rather than beside the tabs because it applies across tabs, and a checkbox
-   reads as a property of the thing above it. */
-.pdpp-cmd__opt {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  margin: 12px 2px 0;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 14px;
-  color: var(--pdpp-concept-ink-soft);
-  cursor: pointer;
+/* ROW 3. The outcome choices, inside the panel's frame and above the rule so
+   they read as properties of the command rather than page furniture. */
+.pdpp-cmd__config {
+  padding: 14px 20px 16px;
+  border-top: var(--pdpp-concept-rule-faint);
 }
-.pdpp-cmd__opt input {
-  accent-color: var(--pdpp-concept-teal);
+/* A real <fieldset>/<legend>: the grouping and its name are then carried by
+   the element itself rather than by ARIA bolted onto a div. Both need their
+   UA styling reset — a fieldset ships a border and a legend breaks flow. */
+.pdpp-cmd__choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.pdpp-cmd__choice + .pdpp-cmd__choice {
+  margin-top: 10px;
+}
+.pdpp-cmd__choice-label {
+  flex: none;
+  min-width: 54px;
+  /* `float` rather than the default legend rendering: a legend is taken out of
+     flow by the UA and would not sit on the flex line with its buttons. */
+  float: left;
+  padding: 0;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  line-height: 26px;
+  color: var(--pdpp-concept-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+/* Both choices are binary and share one shape, so "off" is always a named
+   alternative rather than an unchecked box whose meaning the reader infers. */
+.pdpp-cmd__seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pdpp-cmd__seg-btn {
+  padding: 5px 11px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13px;
+  color: var(--pdpp-concept-ink-faint);
+  cursor: pointer;
+  background: none;
+  border: var(--pdpp-concept-rule);
+  border-radius: 2px;
+}
+.pdpp-cmd__seg-btn:hover {
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-cmd__seg-btn[aria-pressed="true"] {
+  color: var(--pdpp-concept-ink);
+  border-color: var(--pdpp-concept-teal);
+  box-shadow: inset 0 0 0 1px var(--pdpp-concept-teal);
+}
+.pdpp-cmd__seg-btn:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: 1px;
+}
+/* RESERVED, NOT REVEALED. The slot always occupies its height; only visibility
+   changes. Animating height (or mounting on demand) would push the command and
+   the rest of the page down at the exact moment the reader is reading it —
+   PyTorch's install matrix freezes its geometry for the same reason. */
+.pdpp-cmd__reveal {
+  visibility: hidden;
+  margin-top: 10px;
+}
+.pdpp-cmd__reveal.is-shown {
+  visibility: visible;
+}
+/* The hint is the only part allowed to change the block's height. The input row
+   above it is what must not move, because it sits between the two segmented
+   controls; a sentence appearing below the last control pushes nothing the
+   reader is currently looking at. */
+.pdpp-cmd__reveal:not(.is-shown) .pdpp-cmd__hint {
+  display: none;
+}
+.pdpp-cmd__url {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+}
+.pdpp-cmd__url > span {
+  flex: none;
+  min-width: 54px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12px;
+  color: var(--pdpp-concept-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.pdpp-cmd__url input {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 5px 9px;
+  font-family: var(--pdpp-concept-mono);
+  font-size: 13px;
+  color: var(--pdpp-concept-ink);
+  background: none;
+  border: var(--pdpp-concept-rule);
+  border-radius: 2px;
+}
+.pdpp-cmd__url input:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: 1px;
+}
+.pdpp-cmd__hint {
+  margin: 6px 0 0 70px;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 12.5px;
+  color: var(--pdpp-concept-ink-faint);
 }
 /* Shown instead of a command when the selected combination has no working
    artifact. Same box as the command so the absence is deliberate, not a gap. */
 .pdpp-cmd__blocked {
-  margin: 0;
   padding: 2px 0;
+  margin: 0;
   font-family: var(--pdpp-concept-sans);
   font-size: 14px;
   color: var(--pdpp-concept-ink-soft);
@@ -1328,6 +1459,31 @@
   .pdpp-cmd__copy {
     align-self: flex-start;
   }
+  /* The label column collapses on narrow screens, so the hint loses the
+     indent that tethered it to the input above. */
+  .pdpp-cmd__hint {
+    margin-left: 0;
+  }
+}
+/* The one sentence that replaced a two-column section. Sits directly under the
+   builder because it explains the Access choice made there. */
+.pdpp-note--access {
+  margin-top: 14px;
+}
+/* The landing-page instance: the same component, the default command, and no
+   configuration. A reader on the front door wants to see that one line exists,
+   not to configure it — the Self-Host page is where the choices live. */
+.pdpp-cmd--compact {
+  margin: 24px 0 0;
+}
+.pdpp-cmd--compact .pdpp-cmd__config {
+  display: none;
+}
+.pdpp-frontdoor__customize {
+  margin: 10px 2px 0;
+  font-family: var(--pdpp-concept-sans);
+  font-size: 13.5px;
+  color: var(--pdpp-concept-ink-soft);
 }
 
 /* ─── Two-up split (local vs hosted access) ─────────────────────────────── */

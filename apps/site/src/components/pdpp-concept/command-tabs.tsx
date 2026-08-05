@@ -3,77 +3,87 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import {
+  buildCommand,
+  commandText,
+  defaultChoices,
+  METHODS,
+  type MethodId,
+  PUBLIC_URL_PLACEHOLDER,
+  RAILWAY_TEMPLATE_URL,
+  type SelfHostChoices,
+} from "@/lib/self-host-command.ts";
 
-// One dominant command with tabs above it. The tabs carry the choice, the
-// command carries the instruction, and nothing else is present — no heading, no
-// lead-in sentence, no button styling on the tabs.
+// THE SELF-HOST COMMAND BUILDER.
 //
-// Adapted from the opencode.ai install block (the owner's reference), NOT
-// copied: theirs is a dark ground, ours is paper with teal, so the pattern
-// translates as restraint and hierarchy rather than colour. Active tab is ink
-// with an underline inset to the label width; inactive tabs recede to ink-faint.
+// THREE ROWS, which is the owner's constraint and the whole layout budget:
+//   1. method tabs
+//   2. one dominant command, the whole panel being the copy target
+//   3. the configuration choices
+// Anything that does not earn a place in those three rows goes under Advanced,
+// which sits OUTSIDE the panel so it reads as a fourth-tier affordance rather
+// than a fourth row.
 //
-// Selective emphasis inside the command: opencode brightens only the domain and
-// dims the surrounding flags. The equivalent here is the image reference — the
-// one token that says WHAT you are running. Applied only where a single token
-// genuinely carries the meaning; the Compose tab's two lines are all signal, so
-// they get no emphasis rather than fake emphasis.
+// A GOAL-BASED BUILDER IS JUSTIFIED because the choices change what the node
+// can do — reachable-from-hosted-clients or not, semantic search or lexical.
+// Only outcomes are exposed. No env var, port, profile, service or image name
+// appears in the UI; those are written by `self-host-command.ts`.
 //
-// Tab choice persists in localStorage, because a reader who picked Compose
-// should not re-pick it on every visit (the docs-site equivalent of `ni`
-// scanning for a lockfile).
-
+// WHAT IS DELIBERATELY NOT A CHOICE:
+//   - Persistent storage. Always on. A data server that forgets is not one.
+//   - Browser-based sources. Always on, and streamed so a human can watch and
+//     take over a sign-in. It costs one image tag; making a reader opt into it
+//     only produces nodes that fail at the first ChatGPT login.
+//
+// PRECEDENT, and what was taken from each:
+//   opencode.ai   plain-text tabs with an underline on the active one, and —
+//                 the highest-value detail — the ENTIRE command panel is the
+//                 copy button, not a small icon with a tiny hit target.
+//   PyTorch       the install matrix never hides or moves anything when a
+//                 choice changes; geometry is frozen and the command sits in a
+//                 permanently reserved slot. That is why the URL input's space
+//                 is always reserved here and only its visibility toggles.
+//   GOV.UK        conditional reveals are fine when kept to a single input,
+//                 but must not be tethered ambiguously between two inline
+//                 options — so the input sits below the whole control.
 const STORAGE_KEY = "pdpp-command-tab";
 
-export interface CommandTab {
-  /** Segments of the command line. `emphasis` marks the token the eye should land on. */
-  readonly command: readonly { readonly emphasis?: boolean; readonly text: string }[];
-  /**
-   * Command to show when the reader asks for browser-backed sources. The
-   * default `reference` image is browser-free, so connectors that sign in
-   * through a real browser (ChatGPT, Amazon, USAA) fail at Patchright launch.
-   * `deploy/docker/README.md` documents the fix as one env var, so the browser
-   * choice rewrites the command rather than adding a footnote nobody reads.
-   * Absent means this tab cannot serve browser sources at all, and the UI says
-   * so instead of emitting a command that predictably blocks sign-in.
-   */
-  readonly browserCommand?: readonly { readonly emphasis?: boolean; readonly text: string }[];
-  /** Shown in place of a command when this tab has no browser-capable path. */
-  readonly browserUnavailable?: React.ReactNode;
-  readonly id: string;
-  readonly label: string;
-  /** One short line under the command. Optional, and kept to one line where present. */
-  readonly note?: React.ReactNode;
+function Segments({ method, choices }: { method: MethodId; choices: SelfHostChoices }) {
+  const built = buildCommand(method, choices);
+  if (!built.segments) {
+    return null;
+  }
+  return (
+    <>
+      {built.segments.map((part, index) =>
+        part.emphasis ? (
+          <b className="pdpp-cmd__em" key={`${index}-${part.text}`}>
+            {part.text}
+          </b>
+        ) : (
+          <span key={`${index}-${part.text}`}>{part.text}</span>
+        )
+      )}
+    </>
+  );
 }
 
-function commandText(tab: CommandTab, browser: boolean): string {
-  return activeCommand(tab, browser)
-    .map((part) => part.text)
-    .join("");
-}
-
-function activeCommand(tab: CommandTab, browser: boolean) {
-  return browser && tab.browserCommand ? tab.browserCommand : tab.command;
-}
-
-export function PdppCommandTabs({ tabs }: { tabs: readonly CommandTab[] }) {
-  const [activeId, setActiveId] = useState(tabs[0]?.id ?? "");
+export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
+  const [method, setMethod] = useState<MethodId>(METHODS[0]?.id ?? "compose");
+  const [choices, setChoices] = useState<SelfHostChoices>(defaultChoices);
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
-  // Off by default: the browser image carries Chromium and its apt deps, which
-  // a network-only owner should not pay for. The choice is explicit either way
-  // so nobody lands on a browser-free command by accident.
-  const [browser, setBrowser] = useState(false);
+  const urlInputId = useId();
 
   // Restore after mount, not during render: the server has no localStorage, and
   // reading it during render would desync the first client paint from the HTML.
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved && tabs.some((tab) => tab.id === saved)) {
-      setActiveId(saved);
+    if (saved && METHODS.some((entry) => entry.id === saved)) {
+      setMethod(saved as MethodId);
     }
-  }, [tabs]);
+  }, []);
 
   useEffect(() => {
     if (!(copied || failed)) {
@@ -86,30 +96,26 @@ export function PdppCommandTabs({ tabs }: { tabs: readonly CommandTab[] }) {
     return () => clearTimeout(timer);
   }, [copied, failed]);
 
-  const active = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
-  if (!active) {
-    return null;
-  }
+  const built = buildCommand(method, choices);
 
-  function select(id: string) {
-    setActiveId(id);
+  function select(id: MethodId) {
+    setMethod(id);
     window.localStorage.setItem(STORAGE_KEY, id);
   }
 
   async function copy() {
+    if (!built.segments) {
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(commandText(active as CommandTab, browser));
+      await navigator.clipboard.writeText(commandText(built.segments));
       setCopied(true);
     } catch {
-      // clipboard is undefined on insecure origins and rejects when denied. Say
-      // so rather than showing a false "Copied".
+      // clipboard is undefined on insecure origins and rejects when denied.
+      // Say so rather than showing a false "Copied".
       setFailed(true);
     }
   }
-
-  // A tab with no browser-capable path says so rather than emitting a command
-  // that would fail at sign-in.
-  const browserBlocked = browser && !active.browserCommand;
 
   let copyLabel = "Copy";
   if (copied) {
@@ -119,65 +125,131 @@ export function PdppCommandTabs({ tabs }: { tabs: readonly CommandTab[] }) {
   }
 
   return (
-    <div className="pdpp-cmd">
-      <div aria-label="Install method" className="pdpp-cmd__tabs" role="tablist">
-        {tabs.map((tab) => (
+    <div className={compact ? "pdpp-cmd pdpp-cmd--compact" : "pdpp-cmd"}>
+      <div aria-label="Deployment method" className="pdpp-cmd__tabs" role="tablist">
+        {METHODS.map((entry) => (
           <button
             aria-controls="pdpp-cmd-panel"
-            aria-selected={tab.id === active.id}
+            aria-selected={entry.id === method}
             className="pdpp-cmd__tab"
-            id={`pdpp-cmd-tab-${tab.id}`}
-            key={tab.id}
-            onClick={() => select(tab.id)}
+            id={`pdpp-cmd-tab-${entry.id}`}
+            key={entry.id}
+            onClick={() => select(entry.id)}
             role="tab"
             type="button"
           >
-            {tab.label}
+            {entry.label}
           </button>
         ))}
       </div>
 
-      <div
-        aria-labelledby={`pdpp-cmd-tab-${active.id}`}
-        className="pdpp-cmd__panel"
-        id="pdpp-cmd-panel"
-        role="tabpanel"
-      >
-        {browserBlocked ? (
-          <p className="pdpp-cmd__blocked">{active.browserUnavailable}</p>
-        ) : (
-          <>
-            <pre className="pdpp-cmd__line">
-              <code>
-                {activeCommand(active, browser).map((part) =>
-                  part.emphasis ? (
-                    <b className="pdpp-cmd__em" key={part.text}>
-                      {part.text}
-                    </b>
-                  ) : (
-                    <span key={part.text}>{part.text}</span>
-                  )
-                )}
-              </code>
-            </pre>
-            <button
-              aria-label="Copy the command to the clipboard"
-              className="pdpp-cmd__copy"
-              onClick={copy}
-              type="button"
-            >
-              {copyLabel}
-            </button>
-          </>
-        )}
-      </div>
+      {/* The whole panel is the copy target (opencode), so the hit area is the
+          command rather than a 16px icon. It is a plain button when there is a
+          command and a plain div when there is not — a button that copies
+          nothing would be a lie about what clicking does. */}
+      {built.segments ? (
+        <button
+          aria-label="Copy the command to the clipboard"
+          aria-labelledby={`pdpp-cmd-tab-${method}`}
+          className="pdpp-cmd__panel pdpp-cmd__panel--copyable"
+          id="pdpp-cmd-panel"
+          onClick={copy}
+          type="button"
+        >
+          <pre className="pdpp-cmd__line">
+            <code>
+              <Segments choices={choices} method={method} />
+            </code>
+          </pre>
+          <span aria-hidden="true" className="pdpp-cmd__copy">
+            {copyLabel}
+          </span>
+        </button>
+      ) : (
+        <div className="pdpp-cmd__panel" id="pdpp-cmd-panel">
+          <p className="pdpp-cmd__blocked">
+            {built.unavailable}{" "}
+            <a href={RAILWAY_TEMPLATE_URL} rel="noopener noreferrer" target="_blank">
+              Open the template →
+            </a>
+          </p>
+        </div>
+      )}
 
-      <label className="pdpp-cmd__opt">
-        <input checked={browser} onChange={(event) => setBrowser(event.target.checked)} type="checkbox" />
-        Sources that sign in through a browser (ChatGPT, Amazon, USAA)
-      </label>
+      {/* ROW 3. Two binary controls with the same shape, so "off" is always a
+          named alternative rather than an absence.
+          HIDDEN ON RAILWAY, deliberately: a template link cannot carry these
+          values, so leaving the controls live would let a reader set them,
+          click through, and silently get something else. The panel above says
+          where those settings are actually made. */}
+      {built.segments === null ? null : (
+        <div className="pdpp-cmd__config">
+          <fieldset className="pdpp-cmd__choice">
+            <legend className="pdpp-cmd__choice-label">Access</legend>
+            <div className="pdpp-cmd__seg">
+              <button
+                aria-pressed={choices.access === "local"}
+                className="pdpp-cmd__seg-btn"
+                onClick={() => setChoices((prev) => ({ ...prev, access: "local" }))}
+                type="button"
+              >
+                This machine only
+              </button>
+              <button
+                aria-pressed={choices.access === "public"}
+                className="pdpp-cmd__seg-btn"
+                onClick={() => setChoices((prev) => ({ ...prev, access: "public" }))}
+                type="button"
+              >
+                Web apps and other devices
+              </button>
+            </div>
+          </fieldset>
 
-      {active.note ? <p className="pdpp-cmd__note">{active.note}</p> : null}
+          {/* The space is ALWAYS reserved and only visibility toggles, so
+            choosing "web apps" cannot make the command below jump. */}
+          <div className={choices.access === "public" ? "pdpp-cmd__reveal is-shown" : "pdpp-cmd__reveal"}>
+            <label className="pdpp-cmd__url" htmlFor={urlInputId}>
+              <span>Public address</span>
+              <input
+                id={urlInputId}
+                inputMode="url"
+                onChange={(event) => setChoices((prev) => ({ ...prev, publicUrl: event.target.value }))}
+                placeholder={PUBLIC_URL_PLACEHOLDER}
+                tabIndex={choices.access === "public" ? undefined : -1}
+                type="text"
+                value={choices.publicUrl}
+              />
+            </label>
+            {/* The one sentence that says what choosing this actually creates. */}
+            <p className="pdpp-cmd__hint">
+              Creates an internet-reachable MCP endpoint that still requires your sign-in.
+            </p>
+          </div>
+
+          <fieldset className="pdpp-cmd__choice">
+            <legend className="pdpp-cmd__choice-label">Search</legend>
+            <div className="pdpp-cmd__seg">
+              <button
+                aria-pressed={choices.semanticSearch}
+                className="pdpp-cmd__seg-btn"
+                onClick={() => setChoices((prev) => ({ ...prev, semanticSearch: true }))}
+                type="button"
+              >
+                By meaning
+              </button>
+              <button
+                aria-pressed={!choices.semanticSearch}
+                className="pdpp-cmd__seg-btn"
+                onClick={() => setChoices((prev) => ({ ...prev, semanticSearch: false }))}
+                type="button"
+              >
+                Keywords only
+              </button>
+            </div>
+          </fieldset>
+        </div>
+      )}
     </div>
   );
 }
