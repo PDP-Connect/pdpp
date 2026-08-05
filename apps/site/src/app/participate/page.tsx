@@ -4,230 +4,171 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
-import { SPEC_EDITORS, SPEC_STATUS_STAMP } from "@/components/pdpp-concept/spec-status.ts";
+import { DiscordIcon, GithubIcon } from "@/components/pdpp-concept/icons.tsx";
+import {
+  DISCORD_INVITE_URL,
+  GITHUB_MAINTAINERS_URL,
+  GITHUB_NEW_ISSUE_URL,
+  GITHUB_REPO_URL,
+} from "@/components/pdpp-concept/site-facts.ts";
+import { SPEC_STATUS } from "@/components/pdpp-concept/spec-status.ts";
 
 export const metadata: Metadata = {
-  description: "How the PDPP standard changes, its implementations, maintainers, and licensing.",
+  description: "Ask a question about the PDPP draft, or propose a change to the protocol.",
   title: "Participate - PDPP",
 };
 
+// This is a PARTICIPATE page: where someone who wants to get involved finds the
+// people, the process, and the places to talk. Not an About page.
+//
+// Went from 6 sections to 3. What was CUT and why:
+//   Maintainers table   — a roster with a Status column of three identical
+//                         "Active" values is About-page furniture. 4 of 6
+//                         comparable projects (MCP, Solid, x402, Kubernetes,
+//                         OpenTelemetry, LFDT) name no individuals on the site
+//                         at all; names live in a version-controlled
+//                         MAINTAINERS.md. Replaced by a pointer to that file,
+//                         which is also the canonical list, so it cannot go
+//                         stale.
+//   License table       — the footer now carries all three licenses, labelled
+//                         and linked. Nothing here was unique to this page.
+//   Implementations     — belongs on /reference, the page about running one.
+//                         It was duplicated across both.
+//
+// The extra horizontal rules between sections are gone (Callum's note: AI has
+// added too many lines).
 const changeSteps = [
   {
-    body: "A non-trivial protocol, contract, or architecture change is written as an OpenSpec change (why, what changes, what it impacts) before any code. Design and code land together and stay in lockstep.",
-    title: "Spec-first",
+    body: "Against the specification files, reviewed in the open. Editorial and non-normative fixes need nothing more than this.",
+    title: "Every change is a public pull request",
   },
   {
-    body: "All changes to protocol text, the reference implementation, and the site go through public PRs. Commits follow Conventional Commits; breaking-change markers are reserved for the intentional 1.0 milestone.",
-    title: "Public pull requests",
+    body: "What breaks and what the change impacts, written before the code.",
+    title: "A normative change states its rationale first",
   },
   {
-    body: "Maintainers act as editors for the current draft. A change must pass the CI merge gate; new behavior comes with tests that exercise the observable contract.",
-    title: "Review",
+    body: "The reference implementation moves in the same release.",
+    title: "New behavior ships with tests",
   },
-  {
-    body: "Open questions move through a public consultation opening after the LFDT Labs review, before the durable contract is pinned.",
-    title: "Consultation period",
-  },
-] as const;
-
-const implementations = [
-  {
-    href: "https://github.com/PDP-Connect/pdpp/tree/main/reference-implementation",
-    linkLabel: "Source",
-    name: "Reference implementation",
-    status: "Draft v0.1.0 · proving",
-    type: "Forkable AS/RS substrate",
-  },
-  {
-    href: "https://dtinit.org/",
-    linkLabel: "DTI",
-    name: "Data Connect",
-    status: "Complementary · composes",
-    type: "Portability & transfer interface",
-  },
-  {
-    href: "https://vana.org/",
-    linkLabel: "Vana",
-    name: "Vana network",
-    status: "Independent adopter",
-    type: "Deployed personal-data network",
-  },
-] as const;
-
-const maintainers = [
-  { name: "Art Abal", scope: "Specification and repository governance" },
-  { name: "Anna Kaz", scope: "Specification and repository governance" },
-  { name: "Tim Nunamaker", scope: "Specification, reference implementation, repository governance" },
-] as const;
-
-const licenses = [
-  { artifact: "Reference implementation (code)", license: "Apache-2.0" },
-  { artifact: "Specification text", license: "Community Specification License 1.0 (CSL-1.0)" },
-  { artifact: "Documentation", license: "CC-BY-4.0" },
 ] as const;
 
 export default function ParticipatePage() {
   return (
     <>
       <main className="pdpp-page">
-        <aside aria-label="Document apparatus" className="pdpp-rail">
-          <div className="pdpp-rail__block">
-            <span className="pdpp-stamp">{SPEC_STATUS_STAMP}</span>
-          </div>
-        </aside>
-
         <article className="pdpp-doc">
-          <p className="pdpp-eyebrow">Participate</p>
           <h1>Participate</h1>
-          <p className="pdpp-lede">PDPP changes through public pull requests, spec-first.</p>
+          <p className="pdpp-lede">Ask a question about the draft, or propose a change to the protocol.</p>
 
-          <section
-            className="pdpp-section"
-            id="how-it-changes"
-            style={{ borderTop: "none", marginTop: 56, paddingTop: 0 }}
-          >
-            <h2>How the standard changes</h2>
-            <p>
-              The repository holds a strict authority order: the root <code>spec-*.md</code> files define normative
-              protocol semantics; code and tests define what the reference actually does; OpenSpec changes under{" "}
-              <code>openspec/</code> record architecture decisions. Web spec pages are downstream copies.
+          {/* Actionable links FIRST, directly under the lede. The owner's note:
+              landing here, you should be able to open an issue or find Discord
+              immediately. These were previously ruled-list rows — an h3, an
+              explanatory sentence, and a right-aligned link floating away from
+              its own label, which is document prose, not an interface.
+
+              Descriptions dropped entirely: "Open an issue" next to a GitHub
+              mark does not need a sentence explaining that it opens an issue.
+
+              /issues/new, not /issues — the owner said "I want to open an
+              issue", which is the compose action, not the index. */}
+          <section className="pdpp-section pdpp-section--lead" id="get-involved">
+            <h2>
+              <span className="pdpp-section__numeral">01</span>Get involved
+            </h2>
+            <div className="pdpp-channels">
+              <a className="pdpp-channel" href={GITHUB_NEW_ISSUE_URL} rel="noopener noreferrer" target="_blank">
+                <GithubIcon className="pdpp-icon-github pdpp-channel__icon" />
+                <span className="pdpp-channel__label">Open an issue</span>
+                <span aria-hidden="true" className="pdpp-channel__arrow">
+                  →
+                </span>
+              </a>
+              <a className="pdpp-channel" href={GITHUB_REPO_URL} rel="noopener noreferrer" target="_blank">
+                <GithubIcon className="pdpp-icon-github pdpp-channel__icon" />
+                <span className="pdpp-channel__label">PDP-Connect/pdpp</span>
+                <span aria-hidden="true" className="pdpp-channel__arrow">
+                  →
+                </span>
+              </a>
+              <a className="pdpp-channel" href={DISCORD_INVITE_URL} rel="noopener noreferrer" target="_blank">
+                <DiscordIcon className="pdpp-icon-discord pdpp-channel__icon" />
+                <span className="pdpp-channel__label">#pdp-connect on Discord</span>
+                <span aria-hidden="true" className="pdpp-channel__arrow">
+                  →
+                </span>
+              </a>
+            </div>
+            <p className="pdpp-channels__note">
+              In an issue, name the part of the specification your question applies to and what the text does not let
+              you decide. A maintainer answers there.
             </p>
-            <div className="pdpp-ruled-list">
-              {changeSteps.map((step, i) => (
+          </section>
+
+          {/* Grounded against the WHATWG Working Mode and the OpenTelemetry OTEP
+              README, which document a change as EVIDENCE REQUIREMENTS rather
+              than a stage pipeline. The previous version invented a four-stage
+              pipeline (proposal / PR / review / consultation) that no comparable
+              project runs and this lab cannot honour. */}
+          <section className="pdpp-section" id="how-it-changes">
+            <h2>
+              <span className="pdpp-section__numeral">02</span>How the specification changes
+            </h2>
+            <p>
+              Normative text lives in the root <code>spec-*.md</code> files. Everything else, including the
+              specification pages on this site, is a downstream copy.
+            </p>
+            <div className="pdpp-ruled-list pdpp-ruled-list--plain">
+              {changeSteps.map((step) => (
                 <div className="pdpp-ruled-list__item" key={step.title}>
-                  <div className="pdpp-ruled-list__num">{String(i + 1).padStart(2, "0")}</div>
                   <div className="pdpp-ruled-list__body">
                     <h3>{step.title}</h3>
                     <p>{step.body}</p>
                   </div>
                 </div>
               ))}
-            </div>
-          </section>
-
-          <section className="pdpp-section" id="raise-a-question">
-            <h2>Raising a question</h2>
-            <p>Open questions about the draft are tracked as issues on GitHub, the only list we keep.</p>
-            <p>
-              Read the open issues before filing. Open a new issue with the part of the specification the question
-              applies to and what a reader cannot currently decide from the text. Questions about governance,
-              adoption, and conformance are in scope alongside protocol questions.
-            </p>
-            <p>
-              Maintainers respond in the issue. Where a question changes normative text, the resolution arrives as a
-              pull request against the <code>spec-*.md</code> files, following the process above. The public
-              consultation after the LFDT Labs review will be conducted in the tracker.
-            </p>
-            <p>
-              <a href="https://github.com/PDP-Connect/pdpp/issues" rel="noopener noreferrer" target="_blank">
-                Open issues on GitHub →
-              </a>
-            </p>
-          </section>
-
-          <section className="pdpp-section" id="implementations">
-            <div className="pdpp-section__head">
-              <div className="pdpp-section__num">◇</div>
-              <div className="pdpp-section__title">
-                <p className="pdpp-eyebrow">Ecosystem</p>
-                <h2>Implementations</h2>
-              </div>
-            </div>
-            <p>Distinct realizations of the protocol, each listed on identical terms. The specification is the authority.</p>
-            <table className="pdpp-impl-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {implementations.map((impl) => (
-                  <tr key={impl.name}>
-                    <td>{impl.name}</td>
-                    <td>{impl.type}</td>
-                    <td className="pdpp-status">{impl.status}</td>
-                    <td>
-                      <a href={impl.href} rel="noopener noreferrer" target="_blank">
-                        {impl.linkLabel} →
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="pdpp-small">Each entry realizes or composes with the protocol at a different point.</p>
-          </section>
-
-          <section className="pdpp-section" id="maintainers">
-            <div className="pdpp-section__head">
-              <div className="pdpp-section__num">§</div>
-              <div className="pdpp-section__title">
-                <p className="pdpp-eyebrow">Governance</p>
-                <h2>Maintainers</h2>
+              <div className="pdpp-ruled-list__item">
+                <div className="pdpp-ruled-list__body">
+                  <h3>Two maintainers approve before merge</h3>
+                  <p>
+                    Maintainers are the editors of the current draft, listed in{" "}
+                    <a href={GITHUB_MAINTAINERS_URL} rel="noopener noreferrer" target="_blank">
+                      MAINTAINERS.md
+                    </a>
+                    .
+                  </p>
+                </div>
               </div>
             </div>
             <p>
-              For the root protocol specifications, active maintainers act as editors for the current draft.
-              Maintainer changes are proposed through pull request.
+              Interfaces may still change: {SPEC_STATUS.version} has not been through public consultation, which opens
+              before v1.0 is pinned. Governance and the license split are recorded in{" "}
+              <Link href="/docs/spec-core#specification-governance">specification governance</Link>.
             </p>
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Scope</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {SPEC_EDITORS.map((name) => {
-                  const entry = maintainers.find((m) => m.name === name);
-                  return (
-                    <tr key={name}>
-                      <td>{name}</td>
-                      <td>{entry?.scope}</td>
-                      <td className="pdpp-status">Active</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
           </section>
 
-          <section className="pdpp-section" id="license">
-            <div className="pdpp-section__head">
-              <div className="pdpp-section__num">©</div>
-              <div className="pdpp-section__title">
-                <p className="pdpp-eyebrow">Terms</p>
-                <h2>License &amp; governance</h2>
-              </div>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Artifact</th>
-                  <th>License</th>
-                </tr>
-              </thead>
-              <tbody>
-                {licenses.map((row) => (
-                  <tr key={row.artifact}>
-                    <td>{row.artifact}</td>
-                    <td>{row.license}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {/* Renamed from "Status of this document". The owner spotted that the
+              content is PDPP-project-wide status, not the status of this page,
+              and the heading was the thing that was wrong. Content kept. */}
+          <section className="pdpp-section" id="status">
+            <h2>
+              <span className="pdpp-section__numeral">03</span>Where PDPP is today
+            </h2>
             <p>
-              PDPP is developed under PDP-Connect, an LF Decentralized Trust Lab, so the specification's governance
-              sits with a neutral, multi-stakeholder foundation. The reference implementation and connectors remain
-              open source and forkable under that umbrella.
+              {SPEC_STATUS.version} is a {SPEC_STATUS.label.toLowerCase()}.
             </p>
-            <p>
-              <Link href="/docs">Read the specification →</Link>
-            </p>
+            <ul className="pdpp-updates">
+              <li>
+                <time dateTime="2026-07">2026 · Jul</time>
+                <span>LFDT Labs proposal accepted; repositories public under the PDP-Connect organization.</span>
+              </li>
+              <li>
+                <time dateTime="2026-04">2026 · Apr</time>
+                <span>
+                  Core protocol {SPEC_STATUS.version} published as a normative draft alongside the forkable reference
+                  implementation.
+                </span>
+              </li>
+            </ul>
           </section>
         </article>
       </main>
