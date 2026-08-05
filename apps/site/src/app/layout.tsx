@@ -46,14 +46,14 @@ export const metadata: Metadata = {
   openGraph: {
     description:
       "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.",
-    title: "PDPP — Personal Data Portability Protocol",
+    title: "PDPP: Personal Data Portability Protocol",
     type: "website",
   },
-  title: "PDPP — Personal Data Portability Protocol",
+  title: "PDPP: Personal Data Portability Protocol",
   twitter: {
     card: "summary_large_image",
     description: "An authorization and disclosure protocol for personal data.",
-    title: "PDPP — Personal Data Portability Protocol",
+    title: "PDPP: Personal Data Portability Protocol",
   },
 };
 
