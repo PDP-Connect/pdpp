@@ -13,20 +13,28 @@
  */
 
 [data-pdpp-doc-theme] #nd-docs-layout {
-  background: var(--pdpp-concept-paper);
   font-family: var(--pdpp-concept-sans);
+  background: var(--pdpp-concept-paper);
 }
 
 [data-pdpp-doc-theme] #nd-subnav {
   background: var(--pdpp-concept-paper);
-  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
 }
 
 [data-pdpp-doc-theme] #nd-sidebar {
-  background: var(--pdpp-concept-paper-deep);
-  border-right-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
   font-family: var(--pdpp-concept-sans);
   font-size: 13px;
+  background: var(--pdpp-concept-paper-deep);
+  border-right-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
 }
 
 [data-pdpp-doc-theme] #nd-sidebar a,
@@ -57,15 +65,19 @@
 
 [data-pdpp-doc-theme] .pdpp-docs-hero {
   background: var(--pdpp-concept-teal-wash);
-  border-bottom-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
   border-left-color: var(--pdpp-concept-teal);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-title {
   font-family: var(--pdpp-concept-serif);
   font-weight: 600;
-  letter-spacing: -0.01em;
   color: var(--pdpp-concept-ink);
+  letter-spacing: -0.01em;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-description {
@@ -79,14 +91,14 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body {
-  font-family: var(--pdpp-concept-serif);
   max-width: var(--pdpp-concept-measure);
+  font-family: var(--pdpp-concept-serif);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
-  color: var(--pdpp-concept-ink);
   font-size: 17px;
   line-height: 1.65;
+  color: var(--pdpp-concept-ink);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :where(h2, h3, h4) {
@@ -96,7 +108,11 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body h2 {
-  border-top-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-top-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body p,
@@ -109,15 +125,19 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body blockquote {
+  color: var(--pdpp-concept-ink);
   background: var(--pdpp-concept-teal-wash);
   border-left-color: var(--pdpp-concept-teal);
-  color: var(--pdpp-concept-ink);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :not(pre) > code {
   font-family: var(--pdpp-concept-mono);
   background: var(--pdpp-concept-paper-deep);
-  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
   border-radius: 2px;
 }
 
@@ -133,9 +153,13 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body table {
-  border-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
-  border-radius: 0;
   font-family: var(--pdpp-concept-sans);
+  border-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
+  border-radius: 0;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body thead {
@@ -145,8 +169,8 @@
 [data-pdpp-doc-theme] .pdpp-docs-body tbody,
 [data-pdpp-doc-theme] .pdpp-docs-body tr,
 [data-pdpp-doc-theme] .pdpp-docs-body td {
-  background: var(--pdpp-concept-paper);
   color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-paper);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body th {
@@ -156,7 +180,11 @@
 
 [data-pdpp-doc-theme] .pdpp-docs-body th,
 [data-pdpp-doc-theme] .pdpp-docs-body td {
-  border-bottom-color: color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
 }
 
 [data-pdpp-doc-theme] #nd-toc {
