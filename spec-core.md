@@ -113,36 +113,40 @@ The companion [PDPP Collection Profile](spec-collection-profile) uses the same r
 
 ## 3. System Architecture
 
-```
-                                    +----------------------------------+
-                                    |        Personal Server           |
-+----------+   selection            |  (may be a single deployment)    |
-|          |-- request -----------> |                                  |
-|  Client  |                        |  +------------------------+      |
-|          |<-- records ----------- |  |  Authorization Server  |      |
-+----------+   (filtered by grant)  |  |  Issues + manages      |      |
-                                    |  |  grants                |      |
-+----------+                        |  +------------------------+      |
-|   User   |-- consent -----------> |  +------------------------+      |
-|          |                        |  |  Resource Server       |      |
-+----------+                        |  |  Stores + serves       |      |
-                                    |  |  records               |      |
-                                    |  +------------------------+      |
-                                    +---------------+------------------+
-                                                    |
-+------------------+                               |
-| Connector Runtime|-- RECORD/STATE --------------->|
-| (Collection      |<-- state --------------------->|
-|  Profile)        |                                |
-+--------+---------+
-         |
-         v
-+------------------+
-|  Data Sources    |
-+------------------+
-```
+```mermaid
+flowchart TB
+    User((User))
+    Client[Client]
 
-This diagram shows one deployment. A source may operate both the Authorization Server and Resource Server interfaces directly, with no connector runtime.
+    User -- consent --> AS
+    Client -- selection request --> AS
+    AS -- grant --> Client
+
+    subgraph VariantA["Variant A: source-native fulfillment"]
+        direction TB
+        AS[Authorization Server]
+        RS_A[Resource Server]
+        Source_A[Data Source]
+        Source_A -.->|operates| AS
+        Source_A -.->|operates| RS_A
+    end
+
+    subgraph VariantB["Variant B: personal-server fulfillment"]
+        direction TB
+        AS_B[Authorization Server]
+        RS_B[Resource Server]
+        Runtime[Connector Runtime<br/>Collection Profile]
+        Source_B[Data Source]
+        Runtime -- RECORD / STATE --> RS_B
+        Source_B -.->|collected by| Runtime
+    end
+
+    Client -- query under grant --> RS_A
+    RS_A -- enforced records --> Client
+
+    Client -- query under grant --> RS_B
+    RS_B -- enforced records --> Client
+```
 
 ### Protocol layering
 
