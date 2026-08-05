@@ -3,7 +3,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { type CommandTab, PdppCommandTabs } from "@/components/pdpp-concept/command-tabs.tsx";
+import { PdppCommandBuilder } from "@/components/pdpp-concept/command-tabs.tsx";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
 import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
@@ -14,131 +14,35 @@ export const metadata: Metadata = {
   title: "Self-Host - PDPP",
 };
 
-// SELF-HOST. Structure per the RI owner: five-second promise, one dominant
-// command, Docker/Compose/Railway tabs, local vs web-app access, semantic search
-// included by default, browser sources optional, Advanced configuration below.
+// SELF-HOST. One dominant command, built from outcome-level choices, then the
+// things a reader needs after it is running. No env var, port, profile, service
+// or image name appears above Advanced.
 //
-// NO IMPLEMENTATION DETAIL ON THE LANDING SURFACE, per instruction: no env vars,
-// no profiles, no ports, no runtime internals above the fold. The env-var table
-// moved into Advanced configuration, which is a collapsed <details>.
+// THE BUILDER ITSELF lives in `command-tabs.tsx` and its commands come from
+// `@/lib/self-host-command.ts`, which is a pure module so the capability test
+// can assert against the exact command a reader copies rather than regexing
+// this file's JSX.
 //
-// EVERY ARTIFACT HERE WAS VERIFIED TODAY, and the ones that failed were dropped:
-//   - `railway-core:main` — DROPPED. Resolves, but was built 2026-07-21 from
-//     revision 2fbdb4a8, which is 46 commits behind pdp/main and 391 behind the
-//     runtime candidate. That is the stale `:main` the owner disqualified.
-//   - releases/latest/download/docker-compose.yml — DROPPED. 404s. Every release
-//     v1.0.0 through v1.0.4 has ZERO assets; that URL has never worked.
-//   - The fresh-clone Compose path — KEPT. Booted end to end: postgres healthy,
-//     reference healthy, web up, `/` 307s to /owner/login, and
-//     /.well-known/oauth-authorization-server returns 200.
-//   - The Railway template — KEPT. Resolves to the published "PDPP Core Template
-//     Source", which builds from repository source rather than a published image,
-//     so it does not carry the staleness that disqualified the image tags.
+// WHAT WAS VERIFIED BY EXECUTION 2026-08-05, and what that ruled out:
+//   KEPT   the Compose path. Fetched by URL into an empty directory and booted
+//          end to end: postgres healthy, reference healthy, web serving, `/`
+//          307 -> /owner/login, AS metadata 200, and chromium-1217 present
+//          inside the RUNNING reference container. The public-origin and
+//          keyword-only variants were booted too.
+//   DROPPED the single-container `docker run` tab. No published image is both
+//          console-bearing and browser-capable: reference-browser has Chromium
+//          but serves no console (only 7662/7663), and railway-core has the
+//          console but no /opt/patchright-browsers. A one-container command
+//          would have to lie about one of them.
+//   DROPPED releases/latest/download/docker-compose.yml. 404s — every release
+//          v1.0.0 to v1.0.4 shipped zero assets.
+//   DROPPED core:main and core-browser:main. Neither exists; manifest 404s.
 //
-// The single-image `docker run` tab is deliberately ABSENT until a fresh image
-// is published. Shipping a one-liner that installs a two-week-old build would be
-// exactly the thing the owner told us not to do.
-//
-// NAMING CONTRACT. Public, user-facing artifact names are platform-neutral:
-// `core` is the browser-free single-container node and `core-browser` is the
-// browser-capable one. `railway-core` is an internal Docker target kept for
-// backward compatibility and must not appear in any command or copy a reader
-// sees. Railway is named as the provider that deploys the artifact, never as
-// part of the artifact's name.
-//
-// PENDING: the Railway tab consumes `core-browser` once the release matrix
-// publishes it. Until that artifact exists publicly the browser path there is
-// UNVERIFIED, so the tab says so rather than emitting a command nobody has run.
+// RAILWAY IS LAST because a template link cannot carry variable values (its
+// documented deploy-URL params are attribution only), so it cannot honour the
+// choices above and says so instead of discarding them silently.
 const GITHUB_DOCKER_README = `${GITHUB_REPO_URL}/blob/main/deploy/docker/README.md`;
 const GITHUB_LOCAL_COLLECTOR = `${GITHUB_REPO_URL}/blob/main/docs/operator/local-collector-runbook.md`;
-const RAILWAY_TEMPLATE_URL = "https://railway.com/new/template/pdpp-core-template-source";
-
-// Each tab's command is the command that tab's label promises, and the eye
-// lands on the token that says WHAT you are running. The Railway tab is a link
-// rather than a command, because pretending a click is a shell line would be
-// worse than showing the one affordance it actually is.
-const COMMAND_TABS: readonly CommandTab[] = [
-  {
-    // Verified end to end from a fresh clone: containers healthy, `/` 307s to
-    // /owner/login. The secret-generation line is NOT optional decoration — the
-    // Compose file guards both values with `:?`, so without it the stack refuses
-    // to start. I ran the version without it and it fails, so it stays.
-    command: [
-      { text: "git clone " },
-      { emphasis: true, text: "https://github.com/PDP-Connect/pdpp.git" },
-      {
-        text: '\ncd pdpp/deploy/docker\nprintf \'PDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n\' \\\n  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env\ndocker compose up -d',
-      },
-    ],
-    // Same clone, one extra line in .env. deploy/docker/README.md documents
-    // PDPP_REFERENCE_IMAGE as the supported override, and the compose file
-    // already reads it, so this is the repo's own answer rather than ours.
-    // The image override is appended on its own short line rather than folded
-    // into the printf. The printf is already the widest line in the panel, and
-    // a reader who cannot SEE the browser image has no evidence the choice
-    // above took effect.
-    browserCommand: [
-      { text: "git clone " },
-      { emphasis: true, text: "https://github.com/PDP-Connect/pdpp.git" },
-      {
-        text: '\ncd pdpp/deploy/docker\nprintf \'PDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n\' \\\n  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env\necho PDPP_REFERENCE_IMAGE=',
-      },
-      { emphasis: true, text: "ghcr.io/pdp-connect/pdpp/reference-browser:main" },
-      { text: " >> .env\ndocker compose up -d" },
-    ],
-    id: "docker",
-    label: "Docker",
-    note: <>Your records stay in a local volume, and the dashboard opens in your browser.</>,
-  },
-  {
-    command: [
-      { text: "docker compose -f " },
-      { emphasis: true, text: "deploy/docker/docker-compose.yml" },
-      { text: " up -d" },
-    ],
-    browserCommand: [
-      { text: "PDPP_REFERENCE_IMAGE=" },
-      { emphasis: true, text: "ghcr.io/pdp-connect/pdpp/reference-browser:main" },
-      { text: " \\\n  docker compose -f deploy/docker/docker-compose.yml up -d" },
-    ],
-    id: "compose",
-    label: "Compose",
-    note: (
-      <>
-        From a checkout you already have, once its <code>.env</code> exists.{" "}
-        <a href={GITHUB_DOCKER_README} rel="noopener noreferrer" target="_blank">
-          Runbook →
-        </a>
-      </>
-    ),
-  },
-  {
-    // PENDING A PUBLISHED ARTIFACT, not a dead end. Railway deploys a prebuilt
-    // image, and the browser-capable Core node (`core-browser`) is not in the
-    // release matrix yet, so there is nothing to point a template at today.
-    // When it publishes, this tab consumes it the same way Compose does and the
-    // notice goes away. Naming stays platform-neutral: the artifact is `core`
-    // and `core-browser`; Railway is the provider that deploys it, not part of
-    // the image name.
-    browserUnavailable: (
-      <>
-        The browser-capable Core node is not published yet, so this path is unverified. Use Docker or Compose for
-        sources that sign in through a browser.
-      </>
-    ),
-    command: [{ text: "Deploy the " }, { emphasis: true, text: "PDPP Core" }, { text: " template" }],
-    id: "railway",
-    label: "Railway",
-    note: (
-      <>
-        One click builds from source and provisions Postgres.{" "}
-        <a href={RAILWAY_TEMPLATE_URL} rel="noopener noreferrer" target="_blank">
-          Open the template →
-        </a>
-      </>
-    ),
-  },
-];
 
 const features = [
   {
@@ -157,8 +61,13 @@ const features = [
   { body: <>Full text and semantic, on by default. Nothing to switch on.</>, title: "Search included" },
   { body: <>Give a client read access to the fields you pick. Revoke it anytime.</>, title: "Scoped grants" },
   {
-    body: <>Sources that need a sign-in browser are optional, and off unless you add them.</>,
-    title: "Browser sources optional",
+    // Browser support is included, not optional: 14 of the 33 connectors
+    // cannot sign in without it. When a sign-in needs a human — a code, a
+    // confirmation — the browser is streamed to your dashboard so you can
+    // take over. Verified in the code: the runtime registers a page-target
+    // CDP stream per run and the controller mints its token on every run.
+    body: <>Amazon, ChatGPT and USAA sign in through a browser you can watch and take over.</>,
+    title: "Browser sources included",
   },
   { body: <>Your records stay on the machine you run it on.</>, title: "Yours" },
 ] as const;
@@ -192,36 +101,21 @@ export default function ReferencePage() {
             Your own personal data server. Ask Claude, ChatGPT, or Codex about your Gmail, GitHub, Notion, and 30 more.
           </p>
 
-          <PdppCommandTabs tabs={COMMAND_TABS} />
+          <PdppCommandBuilder />
 
-          {/* The distinction a reader will otherwise get wrong. Stated plainly,
-              because "connect an AI client" is not one thing: a local client
-              reaches loopback, a hosted one cannot. */}
-          <section className="pdpp-section pdpp-section--lead" id="access">
-            <h2>
-              <span className="pdpp-section__numeral">01</span>Reaching it from an AI client
-            </h2>
-            <div className="pdpp-split">
-              <div className="pdpp-split__half">
-                <h3>On your machine</h3>
-                <p>
-                  Codex and Claude Code run on your computer, so they reach a local instance directly. Nothing to
-                  expose, nothing to sign up for.
-                </p>
-              </div>
-              <div className="pdpp-split__half">
-                <h3>Claude.ai and ChatGPT</h3>
-                <p>
-                  These are hosted services. They call your server from their own infrastructure, so it has to be
-                  reachable over HTTPS — a domain or a tunnel. A local-only instance will not work with them.
-                </p>
-              </div>
-            </div>
-          </section>
+          {/* WAS A WHOLE SECTION, now one sentence. The distinction is real —
+              Codex and Claude Code reach loopback, Claude.ai and ChatGPT call
+              from their own infrastructure and cannot — but the Access choice
+              in the builder above is where a reader acts on it, so restating it
+              as a two-column section was furniture. */}
+          <p className="pdpp-note pdpp-note--access">
+            Codex and Claude Code reach a local node directly; Claude.ai and ChatGPT call from their own servers, so
+            they need the public address above.
+          </p>
 
-          <section className="pdpp-section" id="features">
+          <section className="pdpp-section pdpp-section--lead" id="features">
             <h2>
-              <span className="pdpp-section__numeral">02</span>What you get
+              <span className="pdpp-section__numeral">01</span>What you get
             </h2>
             <ul className="pdpp-features">
               {features.map((feature) => (
@@ -241,7 +135,7 @@ export default function ReferencePage() {
           {/* BELOW, and collapsed. Everything the landing surface must not carry. */}
           <section className="pdpp-section" id="configuration">
             <h2>
-              <span className="pdpp-section__numeral">03</span>Advanced configuration
+              <span className="pdpp-section__numeral">02</span>Advanced configuration
             </h2>
             <details className="pdpp-details">
               <summary>Settings you can override</summary>
@@ -276,7 +170,7 @@ export default function ReferencePage() {
 
           <section className="pdpp-section" id="implementations">
             <h2>
-              <span className="pdpp-section__numeral">04</span>Other implementations
+              <span className="pdpp-section__numeral">03</span>Other implementations
             </h2>
             <table className="pdpp-impl-table">
               <thead>

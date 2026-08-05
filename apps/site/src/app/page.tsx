@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
+import { PdppCommandBuilder } from "@/components/pdpp-concept/command-tabs.tsx";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { PdppHeroWater } from "@/components/pdpp-concept/hero-water.tsx";
 import { PdppConceptMasthead } from "@/components/pdpp-concept/masthead.tsx";
@@ -98,6 +99,18 @@ export default function Home() {
               Participate
             </Link>
           </div>
+
+          {/* THE SAME COMPONENT, not a second implementation: one command model
+              means the front door can never drift from the Self-Host page or
+              advertise a command nobody ran.
+              It renders the DEFAULT command with no configuration — a visitor
+              here is deciding whether this is real, not tuning a deployment.
+              The choices are one click away, which is where a reader who wants
+              them is already headed. */}
+          <PdppCommandBuilder compact />
+          <p className="pdpp-frontdoor__customize">
+            <Link href="/self-host">Customize this command →</Link>
+          </p>
 
           <p className="pdpp-frontdoor__status">
             <span className="pdpp-stamp">{SPEC_STATUS_STAMP}</span>
