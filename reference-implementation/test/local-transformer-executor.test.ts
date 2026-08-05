@@ -3,6 +3,9 @@
 
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
@@ -12,7 +15,13 @@ import {
   type LocalTransformerExecutorOptions,
   type TransformerChild,
 } from "../server/local-transformer-executor.ts";
-import { makeLocalTransformerBackend, resolveSemanticBackendFromEnv } from "../server/search-semantic.ts";
+import {
+  configureSemanticBackend,
+  makeLocalTransformerBackend,
+  makeStubBackend,
+  resolveSemanticBackendFromEnv,
+  scheduleSemanticEmbeddingWarmup,
+} from "../server/search-semantic.ts";
 
 let nextPid = 40_000;
 const SPAWN_PRIVACY_PATTERN = /secret input|do not expose this/;
@@ -302,6 +311,200 @@ test("local backend keeps semantic preflight available across a confirmed deadli
   const close = backend.close;
   assert.ok(close, "local transformer backend exposes a close operation");
   await close();
+});
+
+test("boot warmup triggers the configured backend after yielding without blocking the caller", async () => {
+  let resolvePreparation!: () => void;
+  let preparationCalls = 0;
+  const backend = {
+    ...makeStubBackend(),
+    prepare: () => {
+      preparationCalls += 1;
+      return new Promise<void>((resolve) => {
+        resolvePreparation = resolve;
+      });
+    },
+  };
+  configureSemanticBackend(backend);
+  try {
+    const scheduled = scheduleSemanticEmbeddingWarmup();
+    assert.equal(preparationCalls, 0, "boot scheduling must yield before invoking provider work");
+    await afterIo();
+    assert.equal(preparationCalls, 1, "boot scheduling must trigger the configured embedding authority");
+    resolvePreparation();
+    await scheduled;
+  } finally {
+    configureSemanticBackend(null);
+  }
+});
+
+test("local backend coalesces concurrent warmers into one provider job", async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-warm-single-flight-"));
+  const children: FakeChild[] = [];
+  const backend = makeLocalTransformerBackend(
+    {
+      cacheDir,
+      dimensions: 3,
+      distanceMetric: "cosine",
+      downloadAllowed: true,
+      dtype: "q4",
+      languageBias: { note: "test", primary: "en" },
+      modelId: "test-model",
+      profileId: "test",
+    },
+    {
+      executorOptions: {
+        spawnChild: () => {
+          const child = new FakeChild();
+          children.push(child);
+          return child as unknown as TransformerChild;
+        },
+      },
+    }
+  );
+  try {
+    const first = backend.prepare?.();
+    const second = backend.prepare?.();
+    assert.ok(first);
+    assert.equal(first, second, "concurrent warmers must share one in-flight promise");
+    assert.equal(children.length, 1, "concurrent warmers must spawn one transformer child");
+    const [child] = children;
+    assert.ok(child);
+    child.reply({ ...child.job(), vector: [0.1, 0.2, 0.3] });
+    await Promise.all([first, second]);
+    const status = backend.warmStatus?.();
+    assert.ok(status);
+    assert.equal(status.status, "ready");
+    child.onEnd = () => child.exit();
+  } finally {
+    if (backend.close) {
+      await backend.close();
+    }
+    fs.rmSync(cacheDir, { force: true, recursive: true });
+  }
+});
+
+test("download-disabled local mode is ready lexical-only and does not spawn a warmer", async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-warm-disabled-"));
+  const children: FakeChild[] = [];
+  const backend = makeLocalTransformerBackend(
+    {
+      cacheDir,
+      dimensions: 3,
+      distanceMetric: "cosine",
+      downloadAllowed: false,
+      dtype: "q4",
+      languageBias: { note: "test", primary: "en" },
+      modelId: "test-model",
+      profileId: "test",
+    },
+    {
+      executorOptions: {
+        spawnChild: () => {
+          const child = new FakeChild();
+          children.push(child);
+          return child as unknown as TransformerChild;
+        },
+      },
+    }
+  );
+  try {
+    const status = backend.warmStatus?.();
+    assert.ok(status);
+    assert.equal(status.status, "ready");
+    assert.equal(status.mode, "lexical_only");
+    await backend.prepare?.();
+    assert.equal(children.length, 0, "disabled downloads must not start provider work");
+    assert.equal(backend.available(), false, "semantic availability remains off without a cached model");
+  } finally {
+    await backend.close?.();
+    fs.rmSync(cacheDir, { force: true, recursive: true });
+  }
+});
+
+test("warmup failure is recorded without turning preparation into a boot rejection", async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-warm-failure-"));
+  const children: FakeChild[] = [];
+  const backend = makeLocalTransformerBackend(
+    {
+      cacheDir,
+      dimensions: 3,
+      distanceMetric: "cosine",
+      downloadAllowed: true,
+      dtype: "q4",
+      languageBias: { note: "test", primary: "en" },
+      modelId: "test-model",
+      profileId: "test",
+    },
+    {
+      executorOptions: {
+        spawnChild: () => {
+          const child = new FakeChild();
+          children.push(child);
+          return child as unknown as TransformerChild;
+        },
+      },
+    }
+  );
+  configureSemanticBackend(backend);
+  try {
+    const scheduled = scheduleSemanticEmbeddingWarmup();
+    await afterIo();
+    const [child] = children;
+    assert.ok(child);
+    child.reply({ ...child.job(), error: "provider unavailable" });
+    await scheduled;
+    const status = backend.warmStatus?.();
+    assert.equal(status?.status, "failed");
+    assert.equal(status?.error, "transformer_compute_failed");
+    child.onEnd = () => child.exit();
+  } finally {
+    configureSemanticBackend(null);
+    await backend.close?.();
+    fs.rmSync(cacheDir, { force: true, recursive: true });
+  }
+});
+
+test("a restart with a complete cache reports ready and reuses it without spawning", async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-warm-restart-"));
+  fs.mkdirSync(path.join(cacheDir, "test-model", "onnx"), { recursive: true });
+  fs.writeFileSync(path.join(cacheDir, "test-model", "config.json"), "{}\n");
+  fs.writeFileSync(path.join(cacheDir, "test-model", "onnx", "model_q4.onnx"), "cached-model\n");
+  const children: FakeChild[] = [];
+  const backend = makeLocalTransformerBackend(
+    {
+      cacheDir,
+      dimensions: 3,
+      distanceMetric: "cosine",
+      downloadAllowed: false,
+      dtype: "q4",
+      languageBias: { note: "test", primary: "en" },
+      modelId: "test-model",
+      profileId: "test",
+    },
+    {
+      executorOptions: {
+        spawnChild: () => {
+          const child = new FakeChild();
+          children.push(child);
+          return child as unknown as TransformerChild;
+        },
+      },
+    }
+  );
+  try {
+    const status = backend.warmStatus?.();
+    assert.ok(status);
+    assert.equal(status.status, "ready");
+    assert.equal(status.mode, "semantic");
+    assert.equal(status.cache_files, 2);
+    assert.ok(status.cache_bytes > 0);
+    await backend.prepare?.();
+    assert.equal(children.length, 0, "a complete persistent cache must be reused after restart");
+  } finally {
+    await backend.close?.();
+    fs.rmSync(cacheDir, { force: true, recursive: true });
+  }
 });
 
 test("spawn and stdin failure fence safely without exposing source input", async () => {

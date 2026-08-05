@@ -114,10 +114,13 @@ export function DeploymentDiagnosticsView({
 }
 
 export function isDeploymentIndexing(report: DeploymentDiagnostics): boolean {
+  const warmStatus = report.semantic.backend.warm_status;
   return Boolean(
     report.lexical.index.backfill_progress ||
       report.semantic.index.backfill_progress ||
-      report.semantic.index.state === "building"
+      report.semantic.index.state === "building" ||
+      warmStatus?.status === "downloading" ||
+      warmStatus?.status === "not_started"
   );
 }
 
@@ -223,10 +226,26 @@ function LexicalSection({ report }: { report: DeploymentDiagnostics }) {
 
 function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   const { backend, index } = report.semantic;
+  const warmStatus = backend.warm_status ?? null;
   return (
     <Section title="Semantic backend">
       {renderSemanticBackfillProgress(index)}
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+        <Field label="Model preparation" value={warmStatus ? `${warmStatus.status} (${warmStatus.mode})` : "—"} />
+        <Field
+          label="Observed model cache"
+          value={warmStatus ? `${warmStatus.cache_bytes} bytes across ${warmStatus.cache_files} files` : "—"}
+        />
+        <Field label="Preparation started" value={warmStatus?.started_at ?? "—"} />
+        <Field label="Last cache progress" value={warmStatus?.last_progress_at ?? "—"} />
+        <Field label="Last observed" value={warmStatus ? warmStatus.last_observed_at : "—"} />
+        <Field label="Preparation ready" value={warmStatus?.ready_at ?? "—"} />
+        <Field
+          label="Preparation failure"
+          value={
+            warmStatus?.failed_at ? `${warmStatus.failed_at}${warmStatus.error ? ` · ${warmStatus.error}` : ""}` : "—"
+          }
+        />
         <Field label="Configured" value={yesNo(backend.configured)} />
         <Field label="Available" value={yesNo(backend.available)} />
         <Field label="Profile" value={backend.profile_id ?? "—"} />

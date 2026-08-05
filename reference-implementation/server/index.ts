@@ -416,6 +416,7 @@ import {
   getSemanticIndexBackfillProgress,
   resolveSemanticBackendFromEnv,
   runSemanticSearch,
+  scheduleSemanticEmbeddingWarmup,
   semanticIndexBackfillForManifest,
   supportsDeviceSemanticAttemptDeadline,
 } from "./search-semantic.ts";
@@ -6446,6 +6447,14 @@ export async function startServer(opts: ServerOpts = {}) {
   } else {
     configureSemanticBackend(opts.semanticRetrievalBackend as Parameters<typeof configureSemanticBackend>[0]);
   }
+
+  // Model preparation is an optional acceleration effect, not a boot gate.
+  // The backend owns its single-flight promise and lifecycle status; scheduling
+  // it here ensures a fresh Core with no semantic backfill work still starts
+  // the same provider/cache path after the event loop yields.
+  scheduleSemanticEmbeddingWarmup({
+    log: (message) => logger.warn({ message }, "semantic embedding preparation did not complete"),
+  }).catch(() => undefined);
 
   // Startup retrieval backfill. Existing data should become searchable after
   // restart without requiring re-ingest, but a large local corpus can take
