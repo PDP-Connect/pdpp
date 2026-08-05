@@ -85,16 +85,24 @@ export function createField() {
    * which is why resting the cursor lets the water go flat under it.
    */
   function inject(px: number, py: number, dx: number, dy: number) {
-    if (cols === 0) return;
+    if (cols === 0) {
+      return;
+    }
     const cx = px / CELL;
     const cy = py / CELL;
     const r = Math.ceil(INJECT_R);
     for (let j = Math.floor(cy) - r; j <= Math.floor(cy) + r; j++) {
-      if (j < 0 || j >= rows) continue;
+      if (j < 0 || j >= rows) {
+        continue;
+      }
       for (let i = Math.floor(cx) - r; i <= Math.floor(cx) + r; i++) {
-        if (i < 0 || i >= cols) continue;
+        if (i < 0 || i >= cols) {
+          continue;
+        }
         const d = Math.hypot(i + 0.5 - cx, j + 0.5 - cy);
-        if (d > INJECT_R) continue;
+        if (d > INJECT_R) {
+          continue;
+        }
         // Gaussian-ish falloff: the cell under the pointer takes most of it and
         // the edge of the brush takes almost none, so there is no hard rim.
         const falloff = Math.exp(-(d * d) / (INJECT_R * 0.8));
@@ -116,7 +124,9 @@ export function createField() {
 
   /** Bilinear sample, so a record crossing a cell edge does not step. */
   function sample(px: number, py: number) {
-    if (cols === 0) return { x: 0, y: 0 };
+    if (cols === 0) {
+      return { x: 0, y: 0 };
+    }
     const cx = Math.max(0, Math.min(cols - 1.001, px / CELL));
     const cy = Math.max(0, Math.min(rows - 1.001, py / CELL));
     const i = Math.floor(cx);
@@ -140,7 +150,9 @@ export function createField() {
   }
 
   function step(dt: number) {
-    if (cols === 0) return;
+    if (cols === 0) {
+      return;
+    }
     const decay = DAMP ** (dt * 60);
 
     // Advect: each cell pulls its new value from where its contents came FROM,
@@ -193,9 +205,9 @@ export function createField() {
     for (let j = 0; j < rows; j++) {
       for (let i = 0; i < cols; i++) {
         const k = index(i, j);
-        const l = (hNow[index(Math.max(i - 1, 0), j)] as number);
+        const l = hNow[index(Math.max(i - 1, 0), j)] as number;
         const r = hNow[index(Math.min(i + 1, cols - 1), j)] as number;
-        const u = (hNow[index(i, Math.max(j - 1, 0))] as number);
+        const u = hNow[index(i, Math.max(j - 1, 0))] as number;
         const d = hNow[index(i, Math.min(j + 1, rows - 1))] as number;
         const next = ((l + r + u + d) / 2 - (hPrev[k] as number)) * WAVE_DAMP;
         hPrev[k] = Math.abs(next) < 0.02 ? 0 : next;
@@ -216,10 +228,12 @@ export function createField() {
    * crest is dark. Height alone would just pulse the whole ring together.
    */
   function surface(px: number, py: number) {
-    if (cols === 0) return { lift: 0, shade: 0 };
+    if (cols === 0) {
+      return { lift: 0, shade: 0 };
+    }
     const i = Math.max(1, Math.min(cols - 2, Math.round(px / CELL)));
     const j = Math.max(1, Math.min(rows - 2, Math.round(py / CELL)));
-    const here = (hNow[index(i, j)] as number);
+    const here = hNow[index(i, j)] as number;
     const slope = (hNow[index(i, j - 1)] as number) - (hNow[index(i, j + 1)] as number);
     return {
       lift: Math.max(-LIFT_PX, Math.min(LIFT_PX, here * 0.5)),
