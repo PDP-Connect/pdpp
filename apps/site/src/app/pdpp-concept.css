@@ -943,49 +943,50 @@
   padding-top: 96px;
   padding-bottom: 40px;
 }
-/* The water sits to the RIGHT of the copy and behind nothing. Absolute rather
-   than a grid column so it can occupy the space the measure leaves over
-   without the copy's own layout depending on it: if the figure never mounts
-   (no JS, reduced motion on a narrow viewport, under 900px) the page is
-   unchanged rather than holding an empty column.
-   aria-hidden and pointer-events on the host only, so it never intercepts a
-   click meant for a link underneath. */
+/* The hero is a two-column GRID, ported from the concept, not an absolutely
+   positioned figure. Absolute positioning put the records ON TOP of the
+   headline and the CTAs: the article is a narrow measure, so "beside it" had
+   to be computed, and every arithmetic fix moved the collision rather than
+   removing it. A grid cannot overlap by construction.
+   Ratio and gap are the concept's own: 1fr copy, 0.85fr figure, 48px apart. */
+.pdpp-frontdoor--hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr);
+  gap: 48px;
+  align-items: center;
+  max-width: none;
+}
+.pdpp-frontdoor--hero > .pdpp-frontdoor__copy {
+  min-width: 0;
+  max-width: var(--pdpp-concept-measure);
+}
+/* Sized by its column. align-self overrides the grid's centring for this one
+   child so the figure spans the row the copy defines and the two share a top
+   and bottom edge at every width. */
 .pdpp-frontdoor__water {
-  position: absolute;
-  top: 96px;
-  /* The page container is centred and narrow (~744px), so there is no leftover
-     space INSIDE it. The figure therefore starts at the container's right edge
-     and extends into the viewport margin beside it, clipped by the viewport.
-     Measured, not assumed: at 1600px the container ends at x=1138, leaving
-     ~460px of true margin. */
-  /* Anchored to the VIEWPORT's right edge, not offset from the container's.
-     Offsetting from the container put the figure at x=1478 on a 1280 viewport,
-     because the container is not where its own `left: 100%` implied once the
-     grid and padding were applied. Pinning `right` makes overflow impossible
-     by construction rather than by arithmetic that has to be kept true. */
-  /* Anchored to the VIEWPORT's right edge, not offset from the container's.
-     Offsetting from the container put the figure at x=1478 on a 1280 viewport.
-     Pinning `right` makes overflow impossible by construction.
-     Width is bounded by the real gap between the article and the edge, which
-     I measured rather than derived: 302px at 1280, 382px at 1440, 462px at
-     1600. `50vw - 340px` tracks that (300 / 380 / 460) and caps at 420. */
-  left: auto;
-  right: 24px;
-  width: min(420px, calc(50vw - 340px));
-  height: 460px;
+  /* Centred in its row and BOUNDED, not stretched. `align-self: stretch`
+     matched the copy column, which on this page also carries the command
+     builder, so the figure grew to 1003px against the concept's 469px and
+     rendered twice the rows at the same spacing. That reads as a dense wall of
+     text rather than a quiet background. The band is viewport-relative with a
+     floor and a ceiling so it never collapses to a sliver or dominates. */
+  align-self: center;
+  min-width: 0;
+  block-size: clamp(320px, 46vh, 480px);
   pointer-events: auto;
 }
-/* Under this width the leftover space cannot hold three legible columns, so
-   the figure is dropped rather than squeezed. The component checks the same
-   breakpoint before it builds anything, so a phone pays nothing. */
+/* Under this width the column cannot hold three legible record columns, so the
+   figure is dropped and the grid collapses to one column. The component checks
+   the same breakpoint before building anything, so a phone pays nothing. */
 @media (max-width: 1200px) {
+  .pdpp-frontdoor--hero {
+    display: block;
+  }
   .pdpp-frontdoor__water {
     display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* The component draws one still frame and binds no listeners; nothing here
-     needs to change, but the cursor should not suggest interactivity. */
   .pdpp-frontdoor__water {
     pointer-events: none;
   }
