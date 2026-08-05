@@ -66,6 +66,8 @@ test("enrollment action only mints packaged local collector enrollment codes", a
 
 const RUNBOOK_CROSS_REF = /docs\/operator\/local-collector-runbook\.md/;
 const PDPP_COLLECTOR_ENROLL_LITERAL = /@pdpp\/local-collector enroll/;
+const RUNBOOK_CANONICAL_OWNER_ROUTE =
+  /(?:In a browser, open|Open) `\/device-exporters`/g;
 
 test("local-device-exporter runbook cross-references the operator runbook", async () => {
   const legacyDoc = await read("reference-implementation/docs/local-device-exporter.md");
@@ -78,5 +80,14 @@ test("local-device-exporter runbook cross-references the operator runbook", asyn
     legacyDoc,
     PDPP_COLLECTOR_ENROLL_LITERAL,
     "legacy lane doc must surface the canonical @pdpp/local-collector enroll command"
+  );
+});
+
+test("local collector runbook uses the canonical owner route for direct navigation", async () => {
+  const runbook = await read("docs/operator/local-collector-runbook.md");
+  assert.equal(
+    runbook.match(RUNBOOK_CANONICAL_OWNER_ROUTE)?.length,
+    2,
+    "runbook direct-navigation instructions must use /device-exporters"
   );
 });

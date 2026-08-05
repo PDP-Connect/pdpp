@@ -63,7 +63,7 @@ Both `claude_code` and `codex` require the `filesystem` binding, which the colle
 
 ## Step 2 &mdash; Mint an enrollment code
 
-In a browser, open `/dashboard/device-exporters` on the reference deployment, signed in as owner.
+In a browser, open `/device-exporters` on the reference deployment, signed in as owner.
 
 Use the "Create enrollment code" form:
 
@@ -133,7 +133,7 @@ Run the same command on a schedule (cron, systemd timer, ad-hoc) to keep the lan
 
 ## Step 5 &mdash; Verify on the dashboard
 
-Open `/dashboard/device-exporters`. The device row updates with:
+Open `/device-exporters`. The device row updates with:
 
 - `fresh` heartbeat (or `stale` if the runner has not heartbeated within the threshold).
 - Accepted / rejected ingest counts.
