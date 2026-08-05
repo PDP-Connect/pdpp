@@ -3,7 +3,6 @@
   "root": true,
   "pages": [
     "---Specification---",
-    "index",
     "spec-core",
     "spec-collection-profile",
     "spec-ext-lexical-search",

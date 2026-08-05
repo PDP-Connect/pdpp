@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { findNeighbour } from "fumadocs-core/page-tree";
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/layouts/docs/page";
 import { createRelativeLink } from "fumadocs-ui/mdx";
 import type { Metadata } from "next";
@@ -16,9 +17,23 @@ interface DocsPageProps {
   }>;
 }
 
+// The goal design has no separate docs-index landing page: its /specification
+// equivalent (spec.html) IS the core protocol document. fumadocs' own convention
+// resolves an empty slug to content/docs/index.mdx (a card-grid landing page)
+// because that file's basename is "index" — but spec-core.md is generated at
+// build time from the repo-root spec (see scripts/sync-spec-docs.mjs) and can't
+// be renamed to take over that slot without fighting the generator. Redirecting
+// the empty slug to spec-core's page data instead keeps fumadocs' own routing
+// untouched and serves the document at the bare /specification URL, matching
+// the goal. index.mdx itself is kept as source (still reachable by fumadocs'
+// internals and any direct link) but is no longer the page a visitor lands on.
+const ROOT_SLUG_TARGET = ["spec-core"];
+
 export default async function Page({ params }: DocsPageProps) {
   const resolved = await params;
-  const page = source.getPage(resolved.slug);
+  const isRootSlug = !resolved.slug || resolved.slug.length === 0;
+  const slug = isRootSlug ? ROOT_SLUG_TARGET : resolved.slug;
+  const page = source.getPage(slug);
 
   if (!page) {
     notFound();
@@ -30,8 +45,21 @@ export default async function Page({ params }: DocsPageProps) {
   const firstSlug = page.slugs[0] || "";
   const sectionLabel = firstSlug.startsWith("reference-implementation") ? "Reference Implementation" : "Protocol Spec";
 
+  // fumadocs-ui's own Footer computes previous/next by matching usePathname()
+  // against the flattened tree client-side — at the root slug the browser URL
+  // is "/specification" while spec-core's own tree entry is
+  // "/specification/spec-core", so that lookup misses and silently renders
+  // neither card. findNeighbour (the same primitive the client hook wraps)
+  // computed here from page.url, not the request path, sidesteps the miss.
+  const rootFooterItems = isRootSlug ? findNeighbour(source.getPageTree(), page.url) : undefined;
+
   return (
-    <DocsPage className="pdpp-docs-page" full={page.data.full} toc={page.data.toc}>
+    <DocsPage
+      className="pdpp-docs-page"
+      footer={rootFooterItems ? { items: rootFooterItems } : undefined}
+      full={page.data.full}
+      toc={page.data.toc}
+    >
       <div className="pdpp-docs-hero">
         <div className="pdpp-docs-hero__content">
           <div className="pdpp-eyebrow">{sectionLabel}</div>
@@ -62,7 +90,9 @@ export function generateStaticParams() {
 
 export async function generateMetadata({ params }: DocsPageProps): Promise<Metadata> {
   const resolved = await params;
-  const page = source.getPage(resolved.slug);
+  const isRootSlug = !resolved.slug || resolved.slug.length === 0;
+  const slug = isRootSlug ? ROOT_SLUG_TARGET : resolved.slug;
+  const page = source.getPage(slug);
 
   if (!page) {
     notFound();
@@ -75,7 +105,10 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // alternates.canonical / openGraph.url use page.url (fumadocs' own resolved
   // path, already under /specification) rather than a hand-built string, so a
   // route rename can't leave this pointed at the old path (SEO/GEO standard
-  // MUST #1.2).
+  // MUST #1.2) — EXCEPT at the root slug, where page.url is spec-core's own
+  // file-derived "/specification/spec-core" (that URL 308-redirects to this
+  // one, see next.config.mjs) and would otherwise self-canonicalize away from
+  // the URL actually being served.
   //
   // content/docs/README.md is contributor-facing authoring notes (see
   // sync-spec-docs.mjs's comment: it and index.mdx are deliberately untouched
@@ -85,11 +118,12 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   // on (SEO/GEO standard MUST #1.5: robots directives must match the approved
   // access policy; this page was never meant to be a public spec page).
   const isInternalNotesPage = page.path === "README.md";
+  const canonicalUrl = isRootSlug ? "/specification" : page.url;
 
   return {
-    alternates: { canonical: page.url },
+    alternates: { canonical: canonicalUrl },
     description: page.data.description,
-    openGraph: { url: page.url },
+    openGraph: { url: canonicalUrl },
     robots: isInternalNotesPage ? { follow: false, index: false } : undefined,
     title: page.data.title,
   };
