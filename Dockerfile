@@ -184,6 +184,17 @@ CMD ["node", "apps/console/server.js"]
 # makes the SQLite database (and first-boot credentials, see
 # deploy/railway/core-first-boot.ts) durable. With a database URL present the
 # runtime selects Postgres and the SQLite default is ignored.
+#
+# reference-implementation/server/index.ts's generic
+# shouldAutoReconcilePolyfillManifests() default stays fail-closed for SQLite
+# (it only recognizes the dev script's ../packages/polyfill-connectors/
+# path) so ad-hoc/test SQLite DBs never get unexpected auto-registration.
+# /var/lib/pdpp/pdpp.sqlite is NOT that dev path, so this stage is the only
+# place that knows its own DB is the real polyfill deployment DB: bake
+# PDPP_RECONCILE_POLYFILL_MANIFESTS=1 so first-party manifests (amazon, ...)
+# get registered on boot. An operator can still force it off with
+# `-e PDPP_RECONCILE_POLYFILL_MANIFESTS=0`; the env var always overrides this
+# default (see index.ts's envEnabled handling).
 FROM browsers AS core-browser
 
 ARG PDPP_REFERENCE_REVISION=unknown
@@ -211,6 +222,7 @@ ENV NODE_ENV=production \
     PDPP_EMBEDDING_CACHE_DIR=/var/lib/pdpp/transformers \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1 \
+    PDPP_RECONCILE_POLYFILL_MANIFESTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
 # See the `reference` stage: retain built workspace artifacts from source.
