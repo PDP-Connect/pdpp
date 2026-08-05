@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { LAUNCH_COLORS, launchFoucGuardCss } from "@pdpp/brand/launch-colors";
-import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Literata, Public_Sans } from "next/font/google";
 import { cookies } from "next/headers";
+import { PdppRootProvider } from "@/components/pdpp-concept/search-hotkeys.tsx";
 import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
 import { normalizeThemeChoice, THEME_KEY } from "@/components/theme/theme-state.ts";
 import { TooltipProvider } from "@/components/ui/tooltip.tsx";
@@ -99,9 +99,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body>
         <ThemeProvider>
-          <RootProvider theme={{ enabled: false }}>
+          <PdppRootProvider>
             <TooltipProvider>{children}</TooltipProvider>
-          </RootProvider>
+          </PdppRootProvider>
         </ThemeProvider>
       </body>
     </html>
