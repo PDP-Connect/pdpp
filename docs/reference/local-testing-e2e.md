@@ -8,7 +8,7 @@ It is mechanical — follow the steps in order. Each step either succeeds or ret
 
 You can hand this entire doc to your agent and let it execute the steps. There are **three moments** where the agent will need you personally:
 
-1. **ChatGPT login** — a browser window opens so you can complete Cloudflare's "I'm not a robot" challenge if it appears, and sign in if auto-login doesn't succeed. The connector runs with a visible browser (`PDPP_CHATGPT_HEADLESS=0`) for this reason.
+1. **ChatGPT login** — a browser window opens so you can complete Cloudflare's "I'm not a robot" challenge if it appears, and sign in if auto-login doesn't succeed. Core defaults the local browser session to headed Patchright Chromium under managed Xvfb for this reason.
 2. **Optional 2FA code** — if your ChatGPT account has 2FA, the terminal prints an `INTERACTION` prompt asking for the code. Type it in the same terminal.
 3. **Approve owner-agent onboarding** — `pdpp owner-agent onboard` prints a URL like `http://localhost:7662/device?user_code=XXXXXX`. Open it in a browser and click **Approve**. The agent cannot do this for you. **Important**: the CLI blocks until approval, so the agent won't see the URL unless it runs the command in the background. Tell the agent to background the command, read the output for the URL, then give it to you to approve.
 
@@ -60,10 +60,10 @@ mkdir -p "$(dirname "$PDPP_DB_PATH")"
 In one terminal:
 
 ```bash
-PDPP_CHATGPT_HEADLESS=0 node packages/polyfill-connectors/bin/orchestrate.js run chatgpt
+PDPP_BROWSER_HEADLESS=0 node packages/polyfill-connectors/bin/orchestrate.js run chatgpt
 ```
 
-`PDPP_CHATGPT_HEADLESS=0` opens a visible Patchright browser window. It's recommended for the **first run** because ChatGPT's Cloudflare protection may show a challenge that you need to complete manually once. On subsequent runs the cookies persist and you can omit this flag for a headless run.
+`PDPP_BROWSER_HEADLESS=0` makes the deployment-wide choice explicit and opens a visible Patchright browser window. It's recommended for the **first run** because ChatGPT's Cloudflare protection may show a challenge that you need to complete manually once. Core is already headed when the variable is omitted; set `PDPP_BROWSER_HEADLESS=1` only when intentionally selecting the advanced headless path.
 
 What happens:
 1. An embedded PDPP authorization + resource server starts on two local ports (ephemeral).
@@ -258,7 +258,7 @@ The dashboard reads from the same PDPP server you started earlier (at 7662/7663)
 node packages/polyfill-connectors/connectors/chatgpt/index.js <<< '{"type":"START","request_id":"r1","scope":{"streams":[{"name":"conversations"}]},"state":null}'
 ```
 
-**Connector hangs waiting on `INTERACTION kind=manual_action`** — ChatGPT's Cloudflare protection blocked auto-login and the connector wrote `/tmp/pdpp-interaction-*.json` asking for a manual login. The INTERACTION message file contains the full request; reply by writing a response JSON file as the message describes. Or re-run with `PDPP_CHATGPT_HEADLESS=0` so you can complete the challenge in the visible browser window.
+**Connector hangs waiting on `INTERACTION kind=manual_action`** — ChatGPT's Cloudflare protection blocked auto-login and the connector wrote `/tmp/pdpp-interaction-*.json` asking for a manual login. The INTERACTION message file contains the full request; reply by writing a response JSON file as the message describes. Or re-run with `PDPP_BROWSER_HEADLESS=0` (or unset it) so you can complete the challenge in the visible browser window.
 
 **Ports 7662/7663 already in use** — a previous server is still running. `lsof -i :7662 :7663` to find it, then kill the PID.
 

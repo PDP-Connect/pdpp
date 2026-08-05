@@ -40,6 +40,10 @@ services:
       # this to 1 without an equivalent restart policy backing it.
       PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT: "1"
       PDPP_REFERENCE_OPERATIONAL_DEFAULTS: "1"
+      # Core's normal browser mode is headed full Patchright Chromium under
+      # supervisor-managed Xvfb. Set this single deployment-wide override only
+      # for the advanced headless/minimal path.
+      PDPP_BROWSER_HEADLESS: ${PDPP_BROWSER_HEADLESS:-}
       # Optional Google Data Portability OAuth app material. Required only to
       # let owners add the API-backed Google Maps Data Portability source.
       GOOGLE_DATAPORTABILITY_CLIENT_ID: ${GOOGLE_DATAPORTABILITY_CLIENT_ID:-}

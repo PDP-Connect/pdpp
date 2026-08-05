@@ -39,7 +39,7 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 
 These connectors drive a Playwright session against a persistent browser profile. Session expiry is handled by `src/auto-login/<platform>.js` helpers that drive re-login + 2FA via `INTERACTION`. **None of these are first-run portable without some friction** — the upstream platforms have anti-bot surfaces that treat fresh IPs and cold profiles as higher-risk by design.
 
-All browser-scrape connectors use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at `~/.pdpp/profiles/<name>/`, full patchright stealth). See `docs/reference/connector-authoring-guide.md`. The legacy shared daemon and shared `~/.pdpp/browser-profile/` were retired 2026-04-25.
+All browser-scrape connectors use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at the deployment-owned `PDPP_BROWSER_PROFILE_ROOT`, defaulting to `~/.pdpp/profiles/<name>/`, full Patchright). Core sets that root to `/var/lib/pdpp/browser-profiles/<name>/`. See `docs/reference/connector-authoring-guide.md`. The legacy shared daemon and shared `~/.pdpp/browser-profile/` were retired 2026-04-25.
 
 First-run-portability notes are platform-specific and worth reading before handing the connector to a new user:
 
@@ -47,7 +47,7 @@ First-run-portability notes are platform-specific and worth reading before handi
 |---|---|---|---|---|---|
 | amazon | Amazon login + 2FA | ✅ | ⚠ needs 2FA device | 2,863 (orders+items) | 2FA on the account's registered device. First run may burn trusted-device state; subsequent runs smoother. Full best-practices refactor (Zod, shape-check, tracing, p-retry, structural extraction, isolated browser). |
 | chase | Chase login + SMS 2FA | ✅ | ⚠ needs SMS access, fresh OTP per run | 21 (4 streams verified) | Chase does not persist trusted-device cookie across runs; every run currently requires a fresh OTP. Root cause: `_tmprememberme` cookie is session-only; the opt-in "remember me" checkbox may not be getting ticked. See `src/auto-login/chase.js` — speculative fix landed but un-verified. |
-| chatgpt | ChatGPT login (email+password); optional 2FA | ✅ | ⚠ conditional | 2,302 conv / 9,252 msg | Cloudflare may challenge on new IPs. Run with `PDPP_CHATGPT_HEADLESS=0` so the user can see and clear the challenge. p-retry on 429/5xx from OpenAI API. |
+| chatgpt | ChatGPT login (email+password); optional 2FA | ✅ | ⚠ conditional | 2,302 conv / 9,252 msg | Cloudflare may challenge on new IPs. Core defaults local browser sessions headed; set deployment-wide `PDPP_BROWSER_HEADLESS=1` only for an intentionally headless run. p-retry on 429/5xx from OpenAI API. |
 | usaa | USAA member login + SMS 2FA | ✅ | ⚠ needs SMS access | 887 (5 streams, pre-refactor) | SMS OTP delivered to the account's registered phone. Tier A refactor (Zod, shape-check, tracing, isolated-browser code) complete; end-to-end validation blocked on Akamai rejecting the maintainer's IP — need reverse proxy or fresh IP. |
 | anthropic | Claude.ai login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js` (now on isolated path); selectors TBD. |
 | shopify | Shopify admin login | 🟡 scaffolded | — | — | Uses `browser-scraper-runtime.js`. |

@@ -134,9 +134,11 @@ the unmounted default path is not durable across redeploys.
   cookies are marked `Secure`.
 - The owner-session signing key derives from `PDPP_OWNER_PASSWORD`, so a stable
   password keeps owner sessions valid across restarts.
-- The bundled Core browser supports headless-compatible direct-CDP connectors.
-  Headed-required cases (currently Chase and default USAA) need the optional
-  n.eko headed/X11/WebRTC backend or a local collector runtime.
+- The bundled Core browser is full Patchright Chromium. Core starts a managed
+  Xvfb display and defaults every local browser session to headed mode while
+  preserving direct-CDP streaming and persistent profiles. Set
+  `PDPP_BROWSER_HEADLESS=1` only for the advanced deployment-wide headless
+  path. n.eko remains optional and headed when remote CDP is configured.
 
 ## First-live-test gate
 

@@ -20,10 +20,13 @@
  *     },
  *   });
  *
- * For browser-based connectors, add `browser: { profileName, headless }`
- * and the runtime acquires an isolated Playwright context, passing `page`
- * and `context` into collect(). Optional `ensureSession` and `probeSession`
- * callbacks automate re-auth on session expiry.
+ * For browser-based connectors, add `browser: { profileName }` and the
+ * runtime acquires an isolated Playwright context, passing `page` and
+ * `context` into collect(). Browser mode is deployment-owned: Core defaults
+ * local sessions to headed Patchright Chromium under managed Xvfb, while the
+ * single `PDPP_BROWSER_HEADLESS=1` override selects the advanced headless
+ * path. Optional `ensureSession` and `probeSession` callbacks automate
+ * re-auth on session expiry.
  *
  * What the runtime owns (connector never writes this code again):
  *   - Reading START from stdin, validating shape
@@ -163,7 +166,6 @@ export interface BrowserCollectContext extends BaseCollectContext {
 // ─── Config ─────────────────────────────────────────────────────────────
 
 export interface BrowserConfig {
-  headless?: boolean;
   /**
    * Preserve the run page after failed runs. Use only for sources where closing
    * a failed-but-authenticated page would destroy the best repair surface.
@@ -183,6 +185,8 @@ export interface BrowserRuntimeVisibility {
   readonly headless: boolean;
   readonly profileName: string;
 }
+
+export const BROWSER_HEADLESS_ENV = "PDPP_BROWSER_HEADLESS";
 
 export type BrowserLaunchSource =
   | {
@@ -1598,7 +1602,7 @@ interface AcquiredBrowser {
   release: () => Promise<void>;
 }
 
-const MANUAL_ACTION_RECOVERY_RE = /\bheadless\b|local collector|rerun .*headed|PDPP_[A-Z0-9_]+_HEADLESS/iu;
+const MANUAL_ACTION_RECOVERY_RE = /\bheadless\b|local collector|rerun .*headed|PDPP_BROWSER_HEADLESS/iu;
 
 export function resolveBrowserRuntimeVisibility(
   browser: BrowserConfig,
@@ -1606,10 +1610,9 @@ export function resolveBrowserRuntimeVisibility(
   env: NodeJS.ProcessEnv = process.env
 ): BrowserRuntimeVisibility {
   const profileName = browser.profileName ?? name;
-  const envKey = `PDPP_${profileName.toUpperCase()}_HEADLESS`;
   return {
-    envKey,
-    headless: browser.headless ?? env[envKey] !== "0",
+    envKey: BROWSER_HEADLESS_ENV,
+    headless: env[BROWSER_HEADLESS_ENV]?.trim() === "1",
     profileName,
   };
 }
@@ -1667,7 +1670,7 @@ export function decorateBrowserManualAction(
     message:
       `${req.message}\n\n` +
       "Open the streaming companion to drive the connector's browser from your phone or laptop. " +
-      `Or rerun with ${visibility.envKey}=0 on a host desktop to use a visible local browser instead.`,
+      `Or rerun with ${visibility.envKey}=0 (or unset it) on a browser-capable deployment to use headed Chromium instead.`,
   };
 }
 

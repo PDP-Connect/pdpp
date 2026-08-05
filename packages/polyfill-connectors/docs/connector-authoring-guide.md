@@ -22,7 +22,10 @@ runConnector({
 });
 ```
 
-For browser-driven connectors, add `browser: { profileName, headless }`:
+For browser-driven connectors, add `browser: { profileName }`. Browser mode is
+deployment-owned: Core defaults local sessions to headed Patchright Chromium
+under managed Xvfb, and `PDPP_BROWSER_HEADLESS=1` is the advanced deployment
+override for headless operation:
 
 ```js
 runConnector({
@@ -55,7 +58,7 @@ What the runtime provides to `collect()`:
 
 Use these libraries by default. They are chosen because they are actively maintained and are the community defaults in 2026:
 
-- **`patchright`** — Playwright drop-in with stealth patches (Runtime.Enable, Console.Enable, command-flag leaks, and others). Replaces `rebrowser-playwright` which went stale in mid-2025. The default local connector posture leaves `channel` unset so Patchright launches its pinned bundled Chromium, matching the n.eko image's preferred binary family. Use a persistent context with `viewport: null` and `headless: false`; do **not** set custom `userAgent` or extra browser headers; do **not** re-add the Chromium flags patchright manages (`--disable-blink-features=AutomationControlled` (added by patchright), `--enable-automation`/`--disable-popup-blocking`/`--disable-component-update`/`--disable-default-apps`/`--disable-extensions` (removed by patchright)). `PDPP_BROWSER_CHANNEL=<value>` is a strict compatibility override, for example `PDPP_BROWSER_CHANNEL=chrome` when an operator intentionally wants branded Chrome. Override `args` only for specific workarounds (e.g. the DownloadBubble bug).
+- **`patchright`** — Playwright drop-in with stealth patches (Runtime.Enable, Console.Enable, command-flag leaks, and others). Replaces `rebrowser-playwright` which went stale in mid-2025. The default local connector posture leaves `channel` unset so Patchright launches its pinned bundled Chromium, matching the n.eko image's preferred binary family. Use a persistent context with `viewport: null`; deployment owns headed versus headless mode. Do **not** set custom `userAgent` or extra browser headers; do **not** re-add the Chromium flags patchright manages (`--disable-blink-features=AutomationControlled` (added by patchright), `--enable-automation`/`--disable-popup-blocking`/`--disable-component-update`/`--disable-default-apps`/`--disable-extensions` (removed by patchright)). `PDPP_BROWSER_CHANNEL=<value>` is a strict compatibility override, for example `PDPP_BROWSER_CHANNEL=chrome` when an operator intentionally wants branded Chrome. Override `args` only for specific workarounds (e.g. the DownloadBubble bug).
 - **`zod`** — schema validation. Each connector exports schemas for its streams in `schemas.js`; the connector validates records before emit and sends `SKIP_RESULT` on validation failure. See §3.
 - **`p-retry`** (v8+) — retry with exponential backoff + jitter for transient network/5xx/429 errors. Use `AbortError` to signal non-retryable failures.
 - **Native Playwright tracing** (`context.tracing.start()` / `.stop()`) — gate behind `PDPP_TRACE=1` env, write to `/tmp/<connector>-trace-<ts>.zip`. Replayable in Playwright Inspector.
@@ -70,12 +73,12 @@ Do **not** use:
 
 ## 0. Browser architecture (for scrapers)
 
-Browser-backed connectors declare `browser: { profileName, headless }`; the runtime then calls `acquireBrowserForConnector()` from `src/browser-launch.ts`. This routes through the host browser bridge when explicitly configured for Docker, otherwise it falls back to the native isolated launcher.
+Browser-backed connectors declare only `browser: { profileName }`; the runtime then calls `acquireBrowserForConnector()` from `src/browser-launch.ts`. This routes to the deployment's managed browser surface when explicitly configured (for example, n.eko remote CDP), otherwise it uses the native isolated launcher with the deployment-wide browser mode.
 
 Native isolated launches use `acquireIsolatedBrowser({ profileName: '<connector>' })`. This:
 
 - Launches Patchright's bundled Chromium per connector run by default (full stealth: launch-side AND client-side).
-- Uses a persistent profile directory at `~/.pdpp/profiles/<connector>/`, so cookies, localStorage, and trusted-device state persist across runs of that connector.
+- Uses a persistent profile directory at `PDPP_BROWSER_PROFILE_ROOT/<connector>/` (default `~/.pdpp/profiles/<connector>/`; Core uses `/var/lib/pdpp/browser-profiles/<connector>/`), so cookies, localStorage, and trusted-device state persist across runs of that connector.
 - Is isolated from other connectors (different profile dir = different fingerprint, different cookies, no cross-contamination).
 - Supports concurrent runs across connectors (each connector has its own browser process; no lockfile).
 

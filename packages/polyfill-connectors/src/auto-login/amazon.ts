@@ -131,7 +131,7 @@ async function requestManualLoginForChallenge({
       `Amazon did not render the expected sign-in form (${reason}). ` +
       "This usually means Amazon is showing a CAPTCHA/puzzle or an approve-on-device challenge to the automated browser. " +
       "If this run opened a visible browser, complete Amazon sign-in there and respond success. " +
-      "If it is headless, cancel this interaction and rerun Amazon headed (for example with PDPP_AMAZON_HEADLESS=0 on a desktop or under xvfb-run).",
+      "If it is headless, cancel this interaction and rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.",
     page,
     sendInteraction,
   });

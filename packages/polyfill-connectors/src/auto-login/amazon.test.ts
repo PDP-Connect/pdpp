@@ -246,7 +246,7 @@ test("ensureAmazonSession emits manual_action when the sign-in form is replaced 
     assert.equal(interactions.requests[0]?.kind, "manual_action");
     assert.ok(interactions.requests[0]?.request_id?.startsWith("int_"));
     assert.match(interactions.requests[0]?.message ?? "", /CAPTCHA\/puzzle|approve-on-device/u);
-    assert.match(interactions.requests[0]?.message ?? "", /PDPP_AMAZON_HEADLESS=0/u);
+    assert.match(interactions.requests[0]?.message ?? "", /PDPP_BROWSER_HEADLESS=0/u);
     // The handoff message must never leak the stored credentials.
     assert.doesNotMatch(interactions.requests[0]?.message ?? "", /test-user|test-password|example\.com/u);
     // Re-probe navigated to the orders page after the manual action.

@@ -30,7 +30,7 @@ import type { EmittedMessage } from "./connector-runtime-protocol.ts";
 import type { CaptureSession } from "./fixture-capture.ts";
 
 const HEADLESS: BrowserRuntimeVisibility = {
-  envKey: "PDPP_REDDIT_HEADLESS",
+  envKey: "PDPP_BROWSER_HEADLESS",
   headless: true,
   profileName: "reddit",
 };
@@ -226,24 +226,30 @@ test("shouldCloseBrowserPageAfterRun preserves only opted-in run outcomes", () =
   );
 });
 
-test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {
+test("resolveBrowserRuntimeVisibility defaults every local browser session to headed", () => {
   assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", {}), {
-    envKey: "PDPP_REDDIT_HEADLESS",
+    envKey: "PDPP_BROWSER_HEADLESS",
+    headless: false,
+    profileName: "reddit",
+  });
+
+  assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", { PDPP_BROWSER_HEADLESS: "1" }), {
+    envKey: "PDPP_BROWSER_HEADLESS",
     headless: true,
     profileName: "reddit",
   });
 
-  assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", { PDPP_REDDIT_HEADLESS: "0" }), {
-    envKey: "PDPP_REDDIT_HEADLESS",
+  assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", { PDPP_BROWSER_HEADLESS: "0" }), {
+    envKey: "PDPP_BROWSER_HEADLESS",
     headless: false,
     profileName: "reddit",
   });
 });
 
-test("resolveBrowserRuntimeVisibility honors explicit profile names", () => {
+test("resolveBrowserRuntimeVisibility keeps browser mode deployment-owned across profiles", () => {
   assert.deepEqual(resolveBrowserRuntimeVisibility({ profileName: "chatgpt" }, "ignored", {}), {
-    envKey: "PDPP_CHATGPT_HEADLESS",
-    headless: true,
+    envKey: "PDPP_BROWSER_HEADLESS",
+    headless: false,
     profileName: "chatgpt",
   });
 });
@@ -312,7 +318,7 @@ test("decorateBrowserManualAction appends recovery copy for headless browser run
   // The decoration should point operators at the streaming companion as the
   // primary path, with the headless-rerun env var as the alternative.
   assert.match(decorated.message, /streaming companion/iu);
-  assert.match(decorated.message, /PDPP_REDDIT_HEADLESS=0/u);
+  assert.match(decorated.message, /PDPP_BROWSER_HEADLESS=0/u);
 });
 
 test("decorateBrowserManualAction leaves non-manual interactions unchanged", () => {
@@ -331,7 +337,7 @@ test("decorateBrowserManualAction leaves visible-browser-capable runs unchanged"
 test("decorateBrowserManualAction does not duplicate existing recovery copy", () => {
   const alreadyActionable: InteractionRequest = {
     kind: "manual_action",
-    message: "If it is headless, cancel this interaction and rerun headed with PDPP_USAA_HEADLESS=0.",
+    message: "If it is headless, cancel this interaction and rerun headed with PDPP_BROWSER_HEADLESS=0.",
     timeout_seconds: 1800,
   };
 

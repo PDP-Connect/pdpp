@@ -384,7 +384,7 @@ test("ensureUsaaSession emits manual_action when USAA login navigation trips HTT
     assert.doesNotMatch(interactions.requests[0]?.message ?? "", /url=|inputs=|body-preview=/);
     assert.doesNotMatch(
       interactions.requests[0]?.message ?? "",
-      /PDPP_USAA_HEADLESS|automated browser mode|respond success|cancel this interaction|rerun|xvfb-run|headless/i
+      /PDPP_BROWSER_HEADLESS|automated browser mode|respond success|cancel this interaction|rerun|xvfb-run|headless/i
     );
   });
 });

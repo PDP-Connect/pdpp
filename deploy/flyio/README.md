@@ -17,10 +17,11 @@ Scope of this first slice:
   only when the operator mounts persistent storage there. n.eko remains an
   optional separate headed/X11/WebRTC backend.
 
-The bundled browser supports headless-compatible direct-CDP connectors. Headed-
-required cases (currently Chase and default USAA) need the optional n.eko
-headed/X11/WebRTC backend or a local collector runtime; the Core image does not
-make every connector headless-capable.
+The bundled browser is full Patchright Chromium. Core starts managed Xvfb and
+defaults every local browser session to headed mode while preserving direct-CDP
+streaming and persistent profiles. Set `PDPP_BROWSER_HEADLESS=1` only for the
+advanced deployment-wide headless/minimal path. n.eko remains optional and
+headed when remote CDP is configured.
 
 ## Shareable Path
 

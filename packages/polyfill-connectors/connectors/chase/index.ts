@@ -2456,8 +2456,7 @@ if (isMainModule(import.meta.url)) {
     // Chase fingerprints the shared daemon profile and bounces it to
     // /#/logon/logon/error regardless of cookie state. See
     // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
-    // Headful by default so Chase's login accepts the submission.
-    browser: { profileName: "chase", headless: false },
+    browser: { profileName: "chase" },
     timeRangeField: chaseTimeRangeField,
     async ensureSession({ context, page, sendInteraction }): Promise<void> {
       await ensureChaseSession({

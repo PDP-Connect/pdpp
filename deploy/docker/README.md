@@ -92,12 +92,13 @@ These are deployment-level OAuth app settings. They are not per-account Google
 credentials, and a Gmail/Google app password cannot authorize the Google Data
 Portability API.
 
-**Browser-backed connectors (ChatGPT, USAA, ...):** the `core` image includes
-Patchright and bundled Chromium for headless-compatible direct-CDP connectors.
-Headed-required cases (currently Chase and default USAA) need the optional n.eko
-headed/X11/WebRTC backend or a local collector runtime. Do not assume every
-connector can run headlessly. `reference` and `reference-browser` remain
-split-runtime compatibility images.
+**Browser-backed connectors:** the `core` image includes full Patchright
+Chromium and Xvfb. Core defaults every local browser session to headed mode
+under the managed virtual display while preserving per-connector persistent
+profiles and direct-CDP streaming. Set `PDPP_BROWSER_HEADLESS=1` only for the
+advanced deployment-wide headless/minimal path. n.eko remains optional and
+headed: when configured, the runtime attaches to its remote CDP browser.
+`reference` and `reference-browser` remain split-runtime compatibility images.
 
 Serve a real domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
 pointed at the Core port, and set `PDPP_REFERENCE_ORIGIN` to that domain so

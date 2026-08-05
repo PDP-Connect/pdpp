@@ -579,7 +579,7 @@ test("ChatGPT fallback keeps owner copy concise while preserving diagnostic evid
       assert.match(diagnosticMessages.join("\n"), /Cloudflare challenge confirmed|ChatGPT login inputs were not found/);
       assert.doesNotMatch(
         assistanceMessages[0] ?? "",
-        /PDPP_CHATGPT_HEADLESS|Cloudflare challenge|streaming companion|rerun/i
+        /PDPP_BROWSER_HEADLESS|Cloudflare challenge|streaming companion|rerun/i
       );
     }
   );

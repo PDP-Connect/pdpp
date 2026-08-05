@@ -77,8 +77,8 @@ FROM source AS console-builder
 
 RUN pnpm --filter pdpp-console build
 
-# Core AS/RS reference runtime. Keep this browser-free: managed-platform Core
-# deploys do not run browser-backed collection inside the server container.
+# Split-service AS/RS reference runtime. Keep this stage browser-free; the
+# browser-capable Core payload is assembled by the core-browser stage below.
 FROM base AS reference
 
 # `.git` is excluded from the Docker build context (.dockerignore), so the
@@ -124,6 +124,13 @@ ARG TARGETARCH
 # marker; non-browser stages start from `base` and therefore remain false.
 ENV PDPP_RUNTIME_BROWSER=1
 
+# Core's default browser mode is headed. Keep the virtual display explicit in
+# the image rather than relying on Patchright's transitive OS dependencies.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends xvfb \
+  && rm -rf /var/lib/apt/lists/* \
+  && test -x /usr/bin/Xvfb
+
 COPY packages/polyfill-connectors/package.json /tmp/polyfill-connectors-package.json
 
 WORKDIR /tmp/patchright-install
@@ -136,6 +143,7 @@ RUN PATCHRIGHT_VERSION="$(node --input-type=module -e "import { readFileSync } f
      else \
        npx patchright install --with-deps chrome chromium; \
      fi \
+  && test -n "$(find /opt/patchright-browsers -type f \( -path '*/chrome-linux64/chrome' -o -path '*/chrome-linux/chrome' \) -print -quit)" \
   && rm -rf /tmp/patchright-install
 
 WORKDIR /app
@@ -223,6 +231,7 @@ ENV NODE_ENV=production \
     PDPP_RS_URL=http://127.0.0.1:7663 \
     PDPP_REFERENCE_ORIGIN=http://localhost:3000 \
     PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite \
+    PDPP_BROWSER_PROFILE_ROOT=/var/lib/pdpp/browser-profiles \
     PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1 \
     PDPP_EMBEDDING_CACHE_DIR=/var/lib/pdpp/transformers \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
