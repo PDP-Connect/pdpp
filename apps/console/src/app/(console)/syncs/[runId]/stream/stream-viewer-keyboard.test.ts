@@ -11,7 +11,7 @@ const NEKO_CLIENT_FILE = `${HERE}neko-client.ts`;
 const STREAM_VIEWER_FILE = `${HERE}stream-viewer.tsx`;
 const STREAM_PAGE_FILE = `${HERE}page.tsx`;
 const STREAM_PLAYGROUND_PAGE_FILE = `${HERE}../../../stream-playground/page.tsx`;
-const GLOBAL_CSS_FILE = `${HERE}../../../../globals.css`;
+const STREAM_CSS_FILE = `${HERE}stream.css`;
 const INTERACTIVE_WIDGET_OVERLAY_RE = /interactiveWidget:\s*"overlays-content"/;
 const INTERACTIVE_WIDGET_RESIZES_VISUAL_RE = /interactiveWidget:\s*"resizes-visual"/;
 const STREAM_DIALOG_SVH_RE = /\.pdpp-stream-dialog[\s\S]*100svh/;
@@ -338,23 +338,23 @@ test("n.eko follow-up viewport posts use native one-to-one coordinates", async (
 });
 
 test("stream pages ask the browser to overlay the keyboard instead of resizing the viewport", async () => {
-  const [streamPage, playgroundPage, globalCss] = await Promise.all([
+  const [streamPage, playgroundPage, streamCss] = await Promise.all([
     readFile(STREAM_PAGE_FILE, "utf8"),
     readFile(STREAM_PLAYGROUND_PAGE_FILE, "utf8"),
-    readFile(GLOBAL_CSS_FILE, "utf8"),
+    readFile(STREAM_CSS_FILE, "utf8"),
   ]);
 
   for (const src of [streamPage, playgroundPage]) {
     assert.match(src, INTERACTIVE_WIDGET_OVERLAY_RE);
     assert.doesNotMatch(src, INTERACTIVE_WIDGET_RESIZES_VISUAL_RE);
   }
-  assert.match(globalCss, STREAM_DIALOG_SVH_RE);
-  assert.doesNotMatch(globalCss, STREAM_DIALOG_LVH_RE);
-  assert.doesNotMatch(globalCss, STREAM_DIALOG_DVH_RE);
-  assert.doesNotMatch(globalCss, GLOBAL_DOCUMENT_CLIP_RE);
-  assert.match(globalCss, STREAM_DIALOG_BACKDROP_CLIPS_X_RE);
-  assert.match(globalCss, STREAM_DIALOG_FITS_CONTAINER_WIDTH_RE);
-  assert.doesNotMatch(globalCss, STREAM_DIALOG_LANDSCAPE_SCROLL_RE);
+  assert.match(streamCss, STREAM_DIALOG_SVH_RE);
+  assert.doesNotMatch(streamCss, STREAM_DIALOG_LVH_RE);
+  assert.doesNotMatch(streamCss, STREAM_DIALOG_DVH_RE);
+  assert.doesNotMatch(streamCss, GLOBAL_DOCUMENT_CLIP_RE);
+  assert.match(streamCss, STREAM_DIALOG_BACKDROP_CLIPS_X_RE);
+  assert.match(streamCss, STREAM_DIALOG_FITS_CONTAINER_WIDTH_RE);
+  assert.doesNotMatch(streamCss, STREAM_DIALOG_LANDSCAPE_SCROLL_RE);
 });
 
 test("stream playground disables real-run resolution polling during active n.eko sessions", async () => {
