@@ -1114,8 +1114,12 @@ export interface RefCollectionRateSnapshot {
   current_interval_ms: number;
   /** Current effective rate (requests/min). */
   effective_rate_per_min: number;
-  /** Most recent back-off, or null when none. */
-  last_backoff: { at?: string | null; at_interval_ms: number; reason: string } | null;
+  /** Most recent back-off, or null when none; legacy projections may be partial. */
+  last_backoff?: {
+    at?: string | null;
+    at_interval_ms?: number | null;
+    reason?: string | null;
+  } | null;
 }
 
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";

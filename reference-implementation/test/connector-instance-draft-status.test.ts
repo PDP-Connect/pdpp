@@ -197,6 +197,15 @@ test("browser enrollment admission accepts only an exact owner-owned shell draft
 
     const staticDraft = makeDraft(store, { connectorId: "amazon", sourceBindingKey: "static_secret_draft" });
     assert.ok(staticDraft, "upsert returned the static-secret draft");
+    const admittedStaticDraft = await admitOwnerRunConnection({
+      allowDraft: true,
+      connectorId: "amazon",
+      connectorInstanceId: staticDraft.connectorInstanceId,
+      connectorInstanceStore: store,
+      ownerSubjectId: "owner_1",
+    });
+    assert.equal(admittedStaticDraft.connectorInstanceId, staticDraft.connectorInstanceId);
+    assert.equal(admittedStaticDraft.status, "draft");
     await assert.rejects(
       () =>
         admitOwnerBrowserEnrollmentRunConnection({

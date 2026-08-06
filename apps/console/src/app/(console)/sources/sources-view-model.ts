@@ -44,6 +44,7 @@ import type {
   RefRecordVersionStatsRow,
   RefSchedule,
 } from "../lib/ref-client.ts";
+import { scheduleEnabled, scheduleIntervalSeconds } from "../lib/schedule-evidence.ts";
 import {
   isRevokedConnector,
   isSetupInProgressConnector,
@@ -275,16 +276,21 @@ export function formatSchedule(schedule: RefSchedule | null): string {
   if (!schedule) {
     return "manual — no schedule";
   }
-  if (schedule.effective_mode === "paused" || !schedule.enabled) {
+  const enabled = scheduleEnabled(schedule.enabled);
+  if (schedule.effective_mode === "paused" || enabled === false) {
     return "paused";
   }
+  const interval = scheduleIntervalSeconds(schedule.interval_seconds);
+  if (enabled === null || interval === null) {
+    return "schedule details unavailable";
+  }
   if (schedule.ineligibility_reason) {
-    return `every ${formatInterval(schedule.interval_seconds)} · paused by policy`;
+    return `every ${formatInterval(interval)} · paused by policy`;
   }
   if (schedule.effective_mode === "automatic") {
-    return `every ${formatInterval(schedule.interval_seconds)} · automatic`;
+    return `every ${formatInterval(interval)} · automatic`;
   }
-  return `every ${formatInterval(schedule.interval_seconds)} · manual`;
+  return `every ${formatInterval(interval)} · manual`;
 }
 
 /**

@@ -110,6 +110,12 @@ interface ConnectorNamespace {
   readonly connectorInstanceId: string;
 }
 
+interface RunTerminalEvent {
+  readonly data: Readonly<Record<string, unknown>> | null;
+  readonly occurred_at?: string | null;
+  readonly status: string | null;
+}
+
 export interface MountRefStaticSecretSetupStatusContext {
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
   createRequestAcquisitionBatchStore: () => AcquisitionBatchStore;
@@ -119,9 +125,7 @@ export interface MountRefStaticSecretSetupStatusContext {
   // Bounded lookup of the run.start event timestamp, used to prove whether a
   // terminal verification run belongs to the current credential rotation.
   getRunStartedAt: (runId: string) => Promise<string | null>;
-  // Window-independent terminal status for a run by run_id: "failed" |
-  // "completed" | "cancelled" | "abandoned" | null (still running / unknown).
-  getRunTerminalStatus: (runId: string) => Promise<string | null>;
+  getRunTerminalEvent: (runId: string) => Promise<RunTerminalEvent | null> | RunTerminalEvent | null;
   handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
@@ -362,6 +366,20 @@ function importReceiptFromBatch(batch: AcquisitionBatch | null): SetupStatusImpo
 
 const TERMINAL_FAILURE = new Set(["failed", "cancelled", "abandoned"]);
 
+function hasTerminalStatus(event: RunTerminalEvent | null): event is RunTerminalEvent & { readonly status: string } {
+  return event !== null && typeof event.status === "string";
+}
+
+function runYieldFromTerminalData(data: Readonly<Record<string, unknown>> | null): {
+  readonly recordsEmitted: number | null;
+  readonly reportedRecordsEmitted: number | null;
+} {
+  return {
+    recordsEmitted: asFiniteNumberOrNull(data?.records_emitted),
+    reportedRecordsEmitted: asFiniteNumberOrNull(data?.reported_records_emitted),
+  };
+}
+
 // Resolve the run evidence for the setup-status projection.
 //   - an in-flight run is the active-run row keyed on connector_instance_id;
 //   - otherwise, if a run id is known (in-flight earlier, or supplied by the
@@ -383,19 +401,23 @@ async function resolveRunEvidence(
   if (!requestedRunId) {
     return { activeRun: null, lastRun: null };
   }
-  const terminal = await ctx.getRunTerminalStatus(requestedRunId);
-  if (!terminal) {
+  const terminal = await ctx.getRunTerminalEvent(requestedRunId);
+  if (!hasTerminalStatus(terminal)) {
     return { activeRun: null, lastRun: null };
   }
-  const failed = TERMINAL_FAILURE.has(terminal);
+  const failed = TERMINAL_FAILURE.has(terminal.status);
   const startedAt = await ctx.getRunStartedAt(requestedRunId);
+  const yieldCounts = runYieldFromTerminalData(terminal.data);
   return {
     activeRun: null,
     lastRun: {
-      failureReason: failed ? terminal : null,
+      failureReason: failed ? terminal.status : null,
+      finishedAt: asStringOrNull(terminal.occurred_at),
+      recordsEmitted: yieldCounts.recordsEmitted,
+      reportedRecordsEmitted: yieldCounts.reportedRecordsEmitted,
       runId: requestedRunId,
       startedAt,
-      status: failed ? "failed" : terminal,
+      status: failed ? "failed" : terminal.status,
     },
   };
 }

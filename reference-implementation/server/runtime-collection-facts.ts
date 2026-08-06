@@ -118,14 +118,21 @@ function readCollectionRateNumbers(entry: Record<string, unknown>): CollectionRa
   return Object.fromEntries(values) as CollectionRateNumbers;
 }
 
-function readCollectionRateLastBackoff(entry: Record<string, unknown>): CollectionRateSnapshot["last_backoff"] {
-  if (entry.last_backoff === null) {
+function readCollectionRateBackoff(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  const backoff = entry.last_backoff as Record<string, unknown>;
-  const atIntervalMs = typeof backoff.at_interval_ms === "number" ? backoff.at_interval_ms : null;
+  return value as Record<string, unknown>;
+}
+
+function readCollectionRateLastBackoff(entry: Record<string, unknown>): CollectionRateSnapshot["last_backoff"] {
+  const backoff = readCollectionRateBackoff(entry.last_backoff);
+  if (backoff === null) {
+    return null;
+  }
+  const atIntervalMs = readFiniteNumber(backoff.at_interval_ms, Number.NaN);
   const reason = typeof backoff.reason === "string" ? backoff.reason : null;
-  return atIntervalMs !== null && reason !== null ? { at_interval_ms: atIntervalMs, reason } : null;
+  return Number.isFinite(atIntervalMs) && reason !== null ? { at_interval_ms: atIntervalMs, reason } : null;
 }
 
 /**

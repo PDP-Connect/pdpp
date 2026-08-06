@@ -1923,7 +1923,10 @@ export function formatCollectionRateReadout(
   }
   const backoff = rate.last_backoff;
   const backoffLabel =
-    backoff && Number.isFinite(backoff.at_interval_ms) && typeof backoff.reason === "string"
+    backoff &&
+    typeof backoff.at_interval_ms === "number" &&
+    Number.isFinite(backoff.at_interval_ms) &&
+    typeof backoff.reason === "string"
       ? `last backed off to ${backoff.at_interval_ms.toLocaleString()}ms (${backoff.reason})`
       : null;
   return {

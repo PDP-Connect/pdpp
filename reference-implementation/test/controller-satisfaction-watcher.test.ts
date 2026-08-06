@@ -144,12 +144,16 @@ function detailGapBacklog(overrides: Partial<DetailGapBacklog> = {}): DetailGapB
 // calls below always pass an explicit `connectorInstanceId: INSTANCE_ID`) —
 // the same authority shape `admitOwnerRunConnection` enforces in production,
 // without a real store.
-function fakeAdmitRunConnection(): (input: {
+function fakeAdmitRunConnection(
+  admissions: string[] = []
+): (input: {
   connectorId: string;
   connectorInstanceId: string | null;
   ownerSubjectId: string | null;
+  runAdmission: "browser_enrollment" | "collection" | "setup";
 }) => Promise<{ connectorId: string; connectorInstanceId: string; ownerSubjectId: string }> {
-  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId }) => {
+  return ({ connectorId, connectorInstanceId, ownerSubjectId: requestedOwnerSubjectId, runAdmission }) => {
+    admissions.push(runAdmission);
     const ownerSubjectId = requestedOwnerSubjectId || "owner_local";
     const exactId = connectorInstanceId ?? `cin_${ownerSubjectId}_${connectorId.replace(/[^a-z0-9]+/gi, "_")}`;
     return Promise.resolve({ connectorId, connectorInstanceId: exactId, ownerSubjectId });
@@ -310,8 +314,9 @@ test("satisfaction watcher evaluates every unified contract kind from durable ev
 test("satisfying a reauth action auto-resumes on the existing connection and can flip green", async (t) => {
   freshDb(t);
   const calls: RuntimeRunConnectorOptions[] = [];
+  const admissions: string[] = [];
   const controller = createController({
-    admitRunConnection: fakeAdmitRunConnection(),
+    admitRunConnection: fakeAdmitRunConnection(admissions),
     connectorPathResolver: () => "/tmp/connector.js",
     logger: { error: () => undefined, warn: () => undefined },
     runConnectorImpl: completeRunConnector(calls),
@@ -347,6 +352,7 @@ test("satisfying a reauth action auto-resumes on the existing connection and can
   assert.ok(firstCall);
   assert.equal(firstCall.connectorInstanceId, INSTANCE_ID, "connection_id is preserved");
   assert.equal(firstCall.triggerKind, "manual", "owner repair clears owner-attention state without a second click");
+  assert.deepEqual(admissions, ["setup"], "credential-repair auto-resume uses the setup admission capability");
 
   const after = synthesizeRenderedVerdict(
     snapshot({ last_success_at: "2026-06-15T12:00:00.000Z" }),

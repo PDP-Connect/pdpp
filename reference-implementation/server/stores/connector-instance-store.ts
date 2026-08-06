@@ -1066,6 +1066,7 @@ export async function resolveOwnerConnectorInstanceNamespace({
  * connector type (or another owner's deterministic id) as a capability.
  */
 export function admitOwnerRunConnection({
+  allowDraft = false,
   ownerSubjectId,
   connectorId,
   connectorInstanceId = null,
@@ -1073,6 +1074,8 @@ export function admitOwnerRunConnection({
   displayName = null,
   now,
 }: {
+  /** Setup routes may explicitly admit the exact draft they just created. */
+  allowDraft?: boolean;
   ownerSubjectId: string;
   connectorId: string;
   connectorInstanceId?: string | null;
@@ -1084,6 +1087,7 @@ export function admitOwnerRunConnection({
     // Explicit selectors never materialize or fall through. The broader
     // resolver still supports legacy read compatibility independently.
     allowDefaultAccount: !connectorInstanceId,
+    allowStatuses: allowDraft ? ["active", "draft"] : ["active"],
     connectorId,
     connectorInstanceId,
     connectorInstanceStore,

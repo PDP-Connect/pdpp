@@ -52,6 +52,21 @@ function RunDetailLink({ runId }: { runId: string }) {
   );
 }
 
+function SetupStatusLink({ connectionId, runId }: { connectionId: string | null; runId: string }) {
+  if (!connectionId) {
+    return <RunDetailLink runId={runId} />;
+  }
+  const query = new URLSearchParams({ run_id: runId });
+  return (
+    <a
+      className={buttonVariants({ className: "mt-5", size: "sm", variant: "default" })}
+      href={`/connect/status/${encodeURIComponent(connectionId)}?${query.toString()}`}
+    >
+      View setup status
+    </a>
+  );
+}
+
 function getConnectorIdFromTimeline(events: SpineEvent[]): string | null {
   const fromRuntime = events.find((e) => e.actor_type === "runtime")?.actor_id ?? null;
   if (fromRuntime) {
@@ -112,11 +127,13 @@ function renderNoAssistanceSurface({
   connector,
   currentAssistance,
   envelope,
+  connectorInstanceId,
   runId,
   runStatus,
 }: {
   connector: ConnectorContext | null;
   currentAssistance: ReturnType<typeof getCurrentRunAssistance>;
+  connectorInstanceId: string | null;
   envelope: TimelineEnvelope;
   runId: string;
   runStatus: RunStatusEnvelope | null;
@@ -149,9 +166,9 @@ function renderNoAssistanceSurface({
     );
   }
   if (hasActiveBrowserSurface(envelope.events)) {
-    return <PreparingBrowserSurface runId={runId} />;
+    return <PreparingBrowserSurface connectionId={connectorInstanceId} runId={runId} />;
   }
-  return <RunContinuingSurface runId={runId} />;
+  return <RunContinuingSurface connectionId={connectorInstanceId} runId={runId} />;
 }
 
 export default async function RunInteractionStreamPage({
@@ -217,7 +234,14 @@ export default async function RunInteractionStreamPage({
   const connector = await resolveConnectorContext(connectorId, connectorInstanceId);
 
   if (!streamableAssistance) {
-    return renderNoAssistanceSurface({ connector, currentAssistance, envelope, runId, runStatus });
+    return renderNoAssistanceSurface({
+      connector,
+      connectorInstanceId,
+      currentAssistance,
+      envelope,
+      runId,
+      runStatus,
+    });
   }
 
   return (
@@ -270,7 +294,13 @@ function RunEndedSurface({
   );
 }
 
-function RunContinuingSurface({ runId }: { runId: string }) {
+function RunContinuingSurface({
+  connectionId,
+  runId,
+}: {
+  connectionId: string | null;
+  runId: string;
+}) {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
@@ -280,13 +310,19 @@ function RunContinuingSurface({ runId }: { runId: string }) {
         <p className="mt-3 text-muted-foreground text-sm leading-6">
           The run is still in progress. This page updates automatically when browser input is needed.
         </p>
-        <RunDetailLink runId={runId} />
+        <SetupStatusLink connectionId={connectionId} runId={runId} />
       </section>
     </main>
   );
 }
 
-function PreparingBrowserSurface({ runId }: { runId: string }) {
+function PreparingBrowserSurface({
+  connectionId,
+  runId,
+}: {
+  connectionId: string | null;
+  runId: string;
+}) {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
@@ -296,7 +332,7 @@ function PreparingBrowserSurface({ runId }: { runId: string }) {
         <p className="mt-3 text-muted-foreground text-sm leading-6">
           Keep this page open. Browser controls will appear automatically when the run needs your input.
         </p>
-        <RunDetailLink runId={runId} />
+        <SetupStatusLink connectionId={connectionId} runId={runId} />
       </section>
     </main>
   );
