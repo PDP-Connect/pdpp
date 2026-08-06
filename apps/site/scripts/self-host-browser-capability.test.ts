@@ -37,25 +37,27 @@ import {
 //   raw.githubusercontent.com/.../deploy/docker/docker-compose.yml -> 200
 //   github.com/.../releases/latest/download/docker-compose.yml     -> 404
 //
-// core:main / core-browser:main ARE NOT A "cannot exist" CASE ANYMORE. PR #79
-// (github.com/PDP-Connect/pdpp/pull/79) makes Core the complete, browser-
-// capable, console-bearing self-host default, and its built-image friend gate
-// already passed (Core head 5e158736a). What is still true today, verified by
-// the same anonymous-manifest-inspect method: `core:main` and
-// `core-browser:main` fail token exchange with DENIED/403, where
-// `reference-browser:main` (published) returns 200 the same way. So the
-// assertions below split into two groups: what every command must do WHILE
-// `CORE_PUBLISHED` is false (never name the unpublished tag, keep `docker`
-// out of `METHODS`), and what the `docker` method's OWN command must look
-// like once it is reachable (tested directly via `buildCommand("docker", …)`,
-// which does not itself gate on the flag — only `METHODS` does).
+// SUPERSEDED 2026-08-06 by PR #79, merged as 2f0a62ae5.
+// `ghcr.io/pdp-connect/pdpp/core:main` is published and resolves anonymously
+// (sha256:a13e92e8…, linux/amd64 + linux/arm64), and the pulled image carries
+// /usr/bin/google-chrome — so Core itself is the browser-capable artifact and
+// the `-browser` pairing is gone. The merged compose reads PDPP_CORE_IMAGE
+// (PDPP_REFERENCE_ORIGIN keeps its name; only the image variable moved).
+//
+// The assertions therefore invert: every command must now NAME `core:main`,
+// and the artifacts that must never appear are the ones that do not exist —
+// `core-browser` (never published) and the superseded `reference` pairing.
 
-const BROWSER_IMAGE = "reference-browser";
-const CORE_BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core-browser:main";
+const BROWSER_IMAGE = "core";
+const CORE_BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
 // Hoisted: these are compiled once rather than per assertion.
-const IMAGE_OVERRIDE_RE = /PDPP_REFERENCE_IMAGE=\S*?pdpp\/(reference|reference-browser)(:|\s|$)/;
+const IMAGE_OVERRIDE_RE = /PDPP_CORE_IMAGE=\S*?pdpp\/core(:|\s|$)/;
 const REPO_RELATIVE_COMPOSE_RE = /-f\s+deploy\/docker/;
-const UNPUBLISHED_ARTIFACT_RE = /pdpp\/core(-browser)?:/;
+// The artifacts that do NOT exist. `core:main` was published by #79
+// (2f0a62ae5) and verified anonymously at sha256:a13e92e8…; `core-browser`
+// was never published and never will be, because `core` itself carries
+// /usr/bin/google-chrome. `reference-browser` is the superseded pairing.
+const UNPUBLISHED_ARTIFACT_RE = /pdpp\/(core-browser|reference-browser|reference):/;
 const PAGE = readFileSync(join(import.meta.dirname, "../src/app/self-host/page.tsx"), "utf8");
 
 /** Every combination of choices the builder can produce. */
@@ -95,12 +97,14 @@ test("every generated command selects the browser-capable image", () => {
 
 test("no generated command selects the browser-free image", () => {
   for (const { method, text } of shellCommands()) {
-    const override = IMAGE_OVERRIDE_RE.exec(text);
-    if (override) {
-      assert.equal(
-        override[1],
-        BROWSER_IMAGE,
-        `"${method}" sets the image to the browser-free build; browser connectors would fail at Patchright launch`
+    // Any command that pins an image at all must pin `core`, the only
+    // published artifact that carries a browser. A command that sets
+    // PDPP_CORE_IMAGE to anything else would boot a node whose browser-backed
+    // connectors fail at sign-in.
+    if (text.includes("PDPP_CORE_IMAGE=")) {
+      assert.ok(
+        IMAGE_OVERRIDE_RE.test(text),
+        `"${method}" pins an image that is not pdpp/core; browser connectors would fail at launch`
       );
     }
   }
@@ -162,10 +166,10 @@ test("no command reachable from METHODS names an artifact that is not published 
 // until CORE_PUBLISHED flips — that is the mechanism the whole page's honesty
 // depends on, so it gets its own direct assertion rather than only being
 // implied by the artifact-name check above.
-test("the docker method is absent from METHODS while CORE_PUBLISHED is false", () => {
+test("the docker method is reachable now that core:main is published", () => {
   assert.ok(
-    !METHODS.some((entry) => entry.id === "docker"),
-    "docker must not be reachable through the tab list until #79 publishes core-browser:main"
+    METHODS.some((entry) => entry.id === "docker"),
+    "docker should be in the tab list: core:main is published and browser-capable since #79 (2f0a62ae5)"
   );
 });
 
