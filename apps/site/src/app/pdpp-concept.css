@@ -545,15 +545,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
     padding-top: 32px;
     padding-bottom: 72px;
   }
-  .pdpp-concept h1 {
-    font-size: 34px;
-  }
-  .pdpp-concept h2 {
-    font-size: 24px;
-  }
-  .pdpp-lede {
-    font-size: 18px;
-  }
+  /* The mobile type step for h1, h2, .pdpp-lede and .pdpp-section__num is NOT
+     here. Their base rules are declared further down this file, in the document
+     type block, so a step written here loses to them on source order at every
+     width and renders desktop sizes on a phone. It lives immediately after
+     those base rules instead. */
   .pdpp-hero__inner h1 {
     max-width: none;
     margin-bottom: 18px;
@@ -762,6 +758,25 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   align-items: start;
   margin-bottom: 24px;
 }
+/* The mobile type step, kept here rather than with the other 720px rules
+   further up: these three base sizes are declared above, and a step written
+   before them loses on source order and never applies. It was written up
+   there, so a phone rendered the 44px desktop headline and every element below
+   it inherited the offset — the front door ran 1557px against the concept's
+   1303px. Concept parity at 390px: h1 34px, h2 24px, lede 18px.
+   .pdpp-section__num is not restated: its clamp() already floors at 56px. */
+@media (max-width: 720px) {
+  .pdpp-concept h1 {
+    font-size: 34px;
+  }
+  .pdpp-concept h2 {
+    font-size: 24px;
+  }
+  .pdpp-lede {
+    font-size: 18px;
+  }
+}
+
 .pdpp-section__num {
   margin-top: -0.08em;
   font-family: var(--pdpp-concept-serif);
