@@ -58,6 +58,12 @@ export function cn(...inputs: ClassValue[]) {
 
 shadcn → `"utils": "@/lib/utils"`. Use `cn` for conditional / merged classes. Do not hand-roll `filter(Boolean).join`.
 
+Site `cn` extends `tailwind-merge` via `extend.theme` for custom `--text-*` /
+`--spacing-*` / `--container-*` / `--radius-*` (editorial-tokens + brand).
+Custom `--color-*` names need no listing. Unlisted `text-stamp` is treated as a
+**colour**, so `text-teal` deletes it. Keep `apps/site/src/lib/utils.ts` in step
+with those `@theme` files.
+
 ```tsx
 // good
 className={cn("container max-w-page", home && "[&_[data-slot=pdpp-concept-doc]]:pb-5!", className)}
@@ -164,16 +170,15 @@ Canonical worked example: [`PdppFrontDoor`](../../apps/site/src/components/pdpp-
 | Measure (`max-w-[20ch]`) | `className` on the one element that needs it |
 | Grid, border, hero water, CTA row | Parent JSX — not `Text` |
 
-**Copy rhythm (default):** put `Text` siblings in a `flex flex-col` stack and own spacing with `gap-*`. Nest sub-stacks when the design uses different steps (e.g. `gap-5` for title block, `gap-3` for a body pair, outer `gap-7` before CTAs). Zero `.pdpp-concept p` margin on stack children so gap wins:
+**Copy rhythm (default):** put `Text` siblings in a `flex flex-col` stack and own spacing with `gap-*`. Nest sub-stacks when the design uses different steps (e.g. `gap-5` for title block, `gap-3` for a body pair, outer `gap-7` before CTAs).
+
+`.pdpp-concept` is **surface only** (paper/ink/serif) — it does **not** set `p` margins. Legacy article rhythm is `.pdpp-doc p:not([data-slot=pdpp-concept-text])` (raw `<p>` only). `<Text>` is excluded — composed stacks own spacing with `gap-*` and do not need `mb-0!`.
 
 ```tsx
-className={cn(
-  "flex flex-col gap-7 …",
-  "[&>[data-slot=pdpp-concept-text]]:mb-0!",
-)}
+className={cn("flex flex-col gap-7 …")}
 ```
 
-**Break the rule when the UI needs it** — one-off `mb-*!` / `mt-*!` on `Text`, or a sibling outside the stack (e.g. status stamp below the hero grid), is fine. Default to parent gap; escape hatches stay available while BEM specificity (`.pdpp-concept p`) exists.
+**Break the rule when the UI needs it** — one-off `mb-*!` / `mt-*!` on `Text`, or a sibling outside the stack, is fine. Default to parent gap.
 
 **Front door mapping** (old hero / front-door copy roles → `Text`):
 
@@ -183,17 +188,12 @@ className={cn(
 | Identity line | `intent="deck"` |
 | Definition | `intent="lede"` |
 | Amplification | `intent="body"` `color="soft"` |
-| Status stamp | `intent="stamp"` `mono` `color="soft"` (+ `tracking-[0.04em]` when not the bordered `.pdpp-stamp` chip) |
+| Status stamp | `intent="stamp"` `mono` `color="soft"` (compound: mono stamp → `tracking-[0.04em]`) |
 
 CTAs stay `pdpp-cta*` until a `ConceptCta` owns that specificity.
 
 ```tsx
-<div
-  className={cn(
-    "flex flex-col gap-7 pt-[clamp(32px,1.5rem+2.4vw,56px)]",
-    "[&>[data-slot=pdpp-concept-text]]:mb-0!",
-  )}
->
+<div className={cn("flex flex-col gap-7 pt-[clamp(32px,1.5rem+2.4vw,56px)]")}>
   <div className="flex flex-col gap-5">
     <Text as="h1" className="max-w-[20ch]" intent="display">…</Text>
     <Text intent="deck">…</Text>
@@ -206,7 +206,7 @@ CTAs stay `pdpp-cta*` until a `ConceptCta` owns that specificity.
   <div className="flex flex-wrap gap-x-4 gap-y-3">…CTAs…</div>
 </div>
 {/* sibling — mt-* OK when outside the copy stack */}
-<Text className="mt-7! tracking-[0.04em]" color="soft" intent="stamp" mono weight="normal">
+<Text className="mt-7!" color="soft" intent="stamp" mono weight="normal">
   {SPEC_STATUS_STAMP}
 </Text>
 ```
@@ -220,10 +220,10 @@ Do not add a new `.pdpp-hero__*` block when an intent already covers the type. D
 
 ## Specificity while BEM remains
 
-Unlayered `.pdpp-concept a` / `p` / `.pdpp-doc h1` often beat a single TW utility.
+Unlayered `.pdpp-concept a` / `.pdpp-doc p:not([data-slot])` / leftover heading BEM often beat a single TW utility.
 
-- CTAs: keep `pdpp-cta*` until a local `ConceptCta` owns the same specificity.
-- Migrating margins/colors: measure computed styles; use `!` when the concept selector wins, or finish the BEM delete in the same change.
+- CTAs: keep `pdpp-cta*` / concept `Button` until that specificity is owned in JSX.
+- Migrating margins/colors: measure computed styles; use `!` when the unlayered selector wins, or finish the BEM delete in the same change.
 
 ## Checklist
 
