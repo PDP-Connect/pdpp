@@ -34,6 +34,7 @@ interface CdpCompanion {
   dispatch: (event: Record<string, unknown>) => Promise<void>;
   onEvent: (handler: (event: CdpEvent) => void) => () => void;
   onFrame: (handler: (frame: { sessionId: unknown; data: unknown; metadata: unknown }) => void) => () => void;
+  readRemoteSelection: () => Promise<string>;
   start: (viewport?: {
     width?: number;
     height?: number;
@@ -221,7 +222,40 @@ async function answerInOrder(
   await flush();
 }
 
-test("cdp adapter sends Page.enable, viewport override, and startScreencast on start()", async () => {
+async function stopAndDrain(companion: CdpCompanion, peer?: FakeSocketPeer): Promise<void> {
+  if (!peer) {
+    await companion.stop();
+    return;
+  }
+  const stopPromise = companion.stop();
+  await answerInOrder(peer, "Page.stopScreencast");
+  await answerInOrder(peer, "Target.setDiscoverTargets");
+  await stopPromise;
+}
+
+async function startAndDrainViewport(peer: FakeSocketPeer): Promise<void> {
+  await answerInOrder(peer, "Target.setDiscoverTargets");
+  await answerInOrder(peer, "Emulation.setDeviceMetricsOverride");
+  await answerInOrder(peer, "Emulation.setTouchEmulationEnabled");
+  await answerInOrder(peer, "Page.enable");
+  await answerInOrder(peer, "Page.startScreencast");
+  await answerInOrder(peer, "Runtime.enable");
+  await answerInOrder(peer, "Runtime.addBinding");
+  await answerInOrder(peer, "Page.addScriptToEvaluateOnNewDocument");
+  await answerInOrder(peer, "Runtime.evaluate");
+}
+
+async function startAndDrainNoViewport(peer: FakeSocketPeer): Promise<void> {
+  await answerInOrder(peer, "Target.setDiscoverTargets");
+  await answerInOrder(peer, "Page.enable");
+  await answerInOrder(peer, "Page.startScreencast");
+  await answerInOrder(peer, "Runtime.enable");
+  await answerInOrder(peer, "Runtime.addBinding");
+  await answerInOrder(peer, "Page.addScriptToEvaluateOnNewDocument");
+  await answerInOrder(peer, "Runtime.evaluate");
+}
+
+test("cdp adapter delegates viewport, frames, and focus setup to Remote Surface 1.5.1", async () => {
   const { FakeSocket, sockets } = makeFakeSocketCtor();
   const companion = createCdpCompanion({
     browser_session_id: "bs_test_1",
@@ -233,22 +267,28 @@ test("cdp adapter sends Page.enable, viewport override, and startScreencast on s
   const sock = findSocket(sockets, "ws://fake/page");
   assert.ok(sock, "adapter opened a socket");
 
-  // Drain the start chain in order — each await in the adapter requires a
-  // microtask hop between message availability points. Target.setDiscoverTargets
-  // is sent immediately after Page.enable so the adapter can observe popup
-  // and URL-change events on the same connection.
-  await answerInOrder(sock.peer, "Page.enable");
   await answerInOrder(sock.peer, "Target.setDiscoverTargets");
   await answerInOrder(sock.peer, "Emulation.setDeviceMetricsOverride");
+  await answerInOrder(sock.peer, "Emulation.setTouchEmulationEnabled");
+  await answerInOrder(sock.peer, "Page.enable");
   await answerInOrder(sock.peer, "Page.startScreencast");
+  await answerInOrder(sock.peer, "Runtime.enable");
+  await answerInOrder(sock.peer, "Runtime.addBinding");
+  await answerInOrder(sock.peer, "Page.addScriptToEvaluateOnNewDocument");
+  await answerInOrder(sock.peer, "Runtime.evaluate");
   await startPromise;
 
   const methods = sock.peer.messages.map((m) => m.method);
   assert.deepEqual(methods, [
-    "Page.enable",
     "Target.setDiscoverTargets",
     "Emulation.setDeviceMetricsOverride",
+    "Emulation.setTouchEmulationEnabled",
+    "Page.enable",
     "Page.startScreencast",
+    "Runtime.enable",
+    "Runtime.addBinding",
+    "Page.addScriptToEvaluateOnNewDocument",
+    "Runtime.evaluate",
   ]);
   const discover = sock.peer.messages.find((m) => m.method === "Target.setDiscoverTargets");
   assert.ok(discover, "Target.setDiscoverTargets was sent");
@@ -260,7 +300,43 @@ test("cdp adapter sends Page.enable, viewport override, and startScreencast on s
   assert.equal(screencast.params.maxWidth, 800);
   assert.equal(screencast.params.maxHeight, 600);
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
+});
+
+test("cdp adapter forwards server-side editable focus events through the existing event wire", async () => {
+  const { FakeSocket, sockets } = makeFakeSocketCtor();
+  const companion = createCdpCompanion({
+    browser_session_id: "bs_focus",
+    WebSocketCtor: FakeSocket,
+    wsUrl: "ws://fake/page-focus",
+  });
+  const events: CdpEvent[] = [];
+  companion.onEvent((event) => events.push(event));
+  const startPromise = companion.start();
+  await flush();
+  const sock = findSocket(sockets, "ws://fake/page-focus");
+  assert.ok(sock, "adapter opened a socket");
+  await startAndDrainNoViewport(sock.peer);
+  await startPromise;
+
+  sock.peer.deliver({
+    method: "Runtime.bindingCalled",
+    params: {
+      executionContextId: 7,
+      name: "__remoteSurfaceTextInputFocus",
+      payload: JSON.stringify({ focused: true, inputType: "text", tagName: "input" }),
+    },
+  });
+  await flush();
+  assert.deepEqual(events, [
+    {
+      element: { inputType: "text", tagName: "input" },
+      focused: true,
+      kind: "keyboard_focus",
+    },
+  ]);
+
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter dispatches frames to onFrame subscribers and acks back-pressure", async () => {
@@ -278,16 +354,7 @@ test("cdp adapter dispatches frames to onFrame subscribers and acks back-pressur
   await flush();
   const sock = findSocket(sockets, "ws://fake/page");
   assert.ok(sock, "adapter opened a socket");
-  for (const method of [
-    "Page.enable",
-    "Target.setDiscoverTargets",
-    "Emulation.setDeviceMetricsOverride",
-    "Page.startScreencast",
-  ]) {
-    // eslint-disable-next-line no-await-in-loop
-    // biome-ignore lint/performance/noAwaitInLoops: localized test assertion preserves its explicit contract.
-    await answerInOrder(sock.peer, method);
-  }
+  await startAndDrainViewport(sock.peer);
   await startPromise;
 
   // Push a screencast frame from the "browser".
@@ -299,6 +366,9 @@ test("cdp adapter dispatches frames to onFrame subscribers and acks back-pressur
       sessionId: 42,
     },
   });
+  const frameAck = await waitForMessage(sock.peer, "Page.screencastFrameAck");
+  frameAck.__answered = true;
+  sock.peer.deliver({ id: frameAck.id, result: {} });
   await flush();
   assert.equal(frames.length, 1);
   const [frame] = frames;
@@ -315,12 +385,12 @@ test("cdp adapter dispatches frames to onFrame subscribers and acks back-pressur
   assert.equal(lateFrame.sessionId, 42);
   unsubscribeLate();
 
-  // Adapter ackFrame issues Page.screencastFrameAck.
-  const ackPromise = companion.ackFrame(42);
-  await answerInOrder(sock.peer, "Page.screencastFrameAck");
-  await ackPromise;
+  // Remote Surface's server backend owns the frame acknowledgement. The
+  // compatibility hook must not issue a second ack.
+  await companion.ackFrame(42);
+  assert.equal(sock.peer.messages.filter((m) => m.method === "Page.screencastFrameAck").length, 1);
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter maps wire input events through mapInputEventToCdp", async () => {
@@ -334,9 +404,7 @@ test("cdp adapter maps wire input events through mapInputEventToCdp", async () =
   await flush();
   const sock = findSocket(sockets, "ws://fake/page");
   assert.ok(sock, "adapter opened a socket");
-  await answerInOrder(sock.peer, "Page.enable");
-  await answerInOrder(sock.peer, "Target.setDiscoverTargets");
-  await answerInOrder(sock.peer, "Page.startScreencast");
+  await startAndDrainNoViewport(sock.peer);
   await startPromise;
 
   // Helper: answer a typed Input.dispatchMouseEvent matching `mouseType`.
@@ -383,6 +451,8 @@ test("cdp adapter maps wire input events through mapInputEventToCdp", async () =
   const metrics = await waitForMessage(sock.peer, "Emulation.setDeviceMetricsOverride");
   metrics.__answered = true;
   sock.peer.deliver({ id: metrics.id, result: {} });
+  await answerInOrder(sock.peer, "Emulation.setTouchEmulationEnabled");
+  await answerInOrder(sock.peer, "Emulation.setUserAgentOverride");
   await answerInOrder(sock.peer, "Page.stopScreencast");
   const restart = await waitForMessage(sock.peer, "Page.startScreencast");
   restart.__answered = true;
@@ -392,13 +462,15 @@ test("cdp adapter maps wire input events through mapInputEventToCdp", async () =
     deviceScaleFactor: 3,
     height: 844,
     mobile: true,
+    screenHeight: 844,
+    screenWidth: 390,
     width: 390,
   });
   assert.ok(restart.params, "restarted screencast carries params");
-  assert.equal(restart.params.maxWidth, 390);
-  assert.equal(restart.params.maxHeight, 844);
+  assert.equal(restart.params.maxWidth, undefined);
+  assert.equal(restart.params.maxHeight, undefined);
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter surfaces CDP error responses via dispatch()", async () => {
@@ -412,9 +484,7 @@ test("cdp adapter surfaces CDP error responses via dispatch()", async () => {
   await flush();
   const sock = findSocket(sockets, "ws://fake/page");
   assert.ok(sock, "adapter opened a socket");
-  await answerInOrder(sock.peer, "Page.enable");
-  await answerInOrder(sock.peer, "Target.setDiscoverTargets");
-  await answerInOrder(sock.peer, "Page.startScreencast");
+  await startAndDrainNoViewport(sock.peer);
   await startPromise;
 
   const dispatchP = companion.dispatch({ text: "hello", type: "paste" });
@@ -427,7 +497,7 @@ test("cdp adapter surfaces CDP error responses via dispatch()", async () => {
     (err: Error & { code?: string }) => err.code === "cdp_error" && /cdp boom/.test(err.message)
   );
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter rejects pending commands when the socket closes", async () => {
@@ -438,9 +508,9 @@ test("cdp adapter rejects pending commands when the socket closes", async () => 
     wsUrl: "ws://fake/page",
   });
   const startPromise = companion.start();
-  // Wait until Page.enable has been sent so a pending command exists, then
-  // close the socket without answering. The close handler must reject all
-  // pending commands with `cdp_closed`.
+  // Let discovery complete, wait until the assembled backend has issued its
+  // first command, then close the socket without answering. The close handler
+  // must reject all pending commands with `cdp_closed`.
   const sock = await (async () => {
     // biome-ignore lint/suspicious/noUnnecessaryConditions: localized test assertion preserves its explicit contract.
     while (true) {
@@ -449,11 +519,15 @@ test("cdp adapter rejects pending commands when the socket closes", async () => 
       await flush();
       const found = findSocket(sockets, "ws://fake/page");
       // biome-ignore lint/suspicious/noUnnecessaryConditions: localized test assertion preserves its explicit contract.
-      if (found?.peer.messages.some((m) => m.method === "Page.enable")) {
+      if (found?.peer.messages.some((m) => m.method === "Target.setDiscoverTargets")) {
         return found;
       }
     }
   })();
+  const discover = await waitForMessage(sock.peer, "Target.setDiscoverTargets");
+  discover.__answered = true;
+  sock.peer.deliver({ id: discover.id, result: {} });
+  await waitForMessage(sock.peer, "Page.enable");
   sock.peer.triggerClose();
   await assert.rejects(startPromise, (err: Error & { code?: string }) => err.code === "cdp_closed");
 });
@@ -575,10 +649,7 @@ test("resolver-backed companion: pre-start onFrame unsubscribe revokes registrat
     sock = findSocket(sockets, "ws://fake/page-resolver-unsub");
   }
   assert.ok(sock, "inner CDP socket was opened from the resolved ws URL");
-  await answerInOrder(sock.peer, "Page.enable");
-  await answerInOrder(sock.peer, "Target.setDiscoverTargets");
-  await answerInOrder(sock.peer, "Emulation.setDeviceMetricsOverride");
-  await answerInOrder(sock.peer, "Page.startScreencast");
+  await startAndDrainViewport(sock.peer);
   await startPromise;
 
   // Sanity: a frame delivered now MUST reach the handler — the pre-start
@@ -587,6 +658,9 @@ test("resolver-backed companion: pre-start onFrame unsubscribe revokes registrat
     method: "Page.screencastFrame",
     params: { data: "AA==", metadata: {}, sessionId: 1 },
   });
+  const firstFrameAck = await waitForMessage(sock.peer, "Page.screencastFrameAck");
+  firstFrameAck.__answered = true;
+  sock.peer.deliver({ id: firstFrameAck.id, result: {} });
   await flush();
   assert.equal(received, 1, "pre-start subscriber received a frame after start");
 
@@ -596,26 +670,16 @@ test("resolver-backed companion: pre-start onFrame unsubscribe revokes registrat
     method: "Page.screencastFrame",
     params: { data: "BB==", metadata: {}, sessionId: 2 },
   });
+  const secondFrameAck = await waitForMessage(sock.peer, "Page.screencastFrameAck");
+  secondFrameAck.__answered = true;
+  sock.peer.deliver({ id: secondFrameAck.id, result: {} });
   await flush();
   assert.equal(received, 1, "unsubscribe revoked inner-companion registration too");
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 // ── Out-of-band wire events: URL changes and popups ─────────────────────────
-
-async function startAndDrainViewport(peer: FakeSocketPeer): Promise<void> {
-  await answerInOrder(peer, "Page.enable");
-  await answerInOrder(peer, "Target.setDiscoverTargets");
-  await answerInOrder(peer, "Emulation.setDeviceMetricsOverride");
-  await answerInOrder(peer, "Page.startScreencast");
-}
-
-async function startAndDrainNoViewport(peer: FakeSocketPeer): Promise<void> {
-  await answerInOrder(peer, "Page.enable");
-  await answerInOrder(peer, "Target.setDiscoverTargets");
-  await answerInOrder(peer, "Page.startScreencast");
-}
 
 test("cdp adapter emits url_changed for main-frame Page.frameNavigated and ignores sub-frames", async () => {
   const { FakeSocket, sockets } = makeFakeSocketCtor();
@@ -683,7 +747,7 @@ test("cdp adapter emits url_changed for main-frame Page.frameNavigated and ignor
   assert.equal(secondEvent.url, "https://example.com/home");
   assert.equal(secondEvent.title, "Sign in");
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter emits popup_opened/closed for user-relevant child page targets", async () => {
@@ -754,7 +818,7 @@ test("cdp adapter emits popup_opened/closed for user-relevant child page targets
   await flush();
   assert.equal(events.length, 2);
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter only announces a nonblank child of the registered page target", async () => {
@@ -866,7 +930,7 @@ test("cdp adapter only announces a nonblank child of the registered page target"
     { kind: "popup_closed", targetId: "tg_blank_popup" },
   ]);
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter emits url_changed from Target.targetInfoChanged for SPA navigation", async () => {
@@ -913,7 +977,7 @@ test("cdp adapter emits url_changed from Target.targetInfoChanged for SPA naviga
   assert.equal(spaEvent.url, "https://app.example.com/settings");
   assert.equal(spaEvent.title, "Settings · App");
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter onEvent unsubscribe stops further deliveries", async () => {
@@ -947,7 +1011,7 @@ test("cdp adapter onEvent unsubscribe stops further deliveries", async () => {
   await flush();
   assert.equal(events.length, 1, "unsubscribe stopped delivery");
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("cdp adapter survives Target.setDiscoverTargets failure on start", async () => {
@@ -966,7 +1030,6 @@ test("cdp adapter survives Target.setDiscoverTargets failure on start", async ()
   const sock = findSocket(sockets, "ws://fake/page-discover-fail");
   assert.ok(sock, "adapter opened a socket");
 
-  await answerInOrder(sock.peer, "Page.enable");
   // Reject Target.setDiscoverTargets.
   const discover = await waitForMessage(sock.peer, "Target.setDiscoverTargets");
   discover.__answered = true;
@@ -974,10 +1037,16 @@ test("cdp adapter survives Target.setDiscoverTargets failure on start", async ()
   await flush();
   // start() must continue past the failed discover with no propagated rejection.
   await answerInOrder(sock.peer, "Emulation.setDeviceMetricsOverride");
+  await answerInOrder(sock.peer, "Emulation.setTouchEmulationEnabled");
+  await answerInOrder(sock.peer, "Page.enable");
   await answerInOrder(sock.peer, "Page.startScreencast");
+  await answerInOrder(sock.peer, "Runtime.enable");
+  await answerInOrder(sock.peer, "Runtime.addBinding");
+  await answerInOrder(sock.peer, "Page.addScriptToEvaluateOnNewDocument");
+  await answerInOrder(sock.peer, "Runtime.evaluate");
   await startPromise;
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });
 
 test("resolver-backed companion: pre-start onEvent replays into inner companion after start", async () => {
@@ -1030,5 +1099,5 @@ test("resolver-backed companion: pre-start onEvent replays into inner companion 
   await flush();
   assert.equal(events.length, 1, "pre-start onEvent unsubscribe revoked inner registration");
 
-  await companion.stop();
+  await stopAndDrain(companion, sock.peer);
 });

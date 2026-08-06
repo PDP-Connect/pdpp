@@ -131,6 +131,14 @@ export function buildReferenceWireCompanionEventPayload(event: unknown): { name:
         data: { targetId: typeof record.targetId === "string" ? record.targetId : "" },
         name: "popup_closed",
       };
+    case "keyboard_focus":
+      return {
+        data:
+          record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+            ? record.payload
+            : { focused: record.focused === true },
+        name: "keyboard_focus",
+      };
     default:
       return { data: event, name: record.kind };
   }

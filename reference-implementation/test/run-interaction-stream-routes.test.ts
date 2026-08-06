@@ -772,6 +772,7 @@ interface HarnessContext {
  * as the other `Record<string, unknown>`-based local types in this file.
  */
 interface MintBody {
+  clipboard_path?: string;
   error?: { code?: string; message?: string; [key: string]: unknown };
   input_path?: string;
   interaction_id?: string;
@@ -1779,12 +1780,40 @@ test("viewer handoff preserves the direct-CDP target for a replacement attach", 
       });
       assert.equal(staleInput.status, 401, "the superseded viewer bearer must remain fenced");
 
+      const staleClipboard = await fetchJson(`${asUrl}${firstBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "local_to_remote", text: "stale" }),
+        headers: { "Content-Type": "application/json", Cookie: firstCookie },
+        method: "POST",
+      });
+      assert.equal(staleClipboard.status, 401, "the superseded viewer bearer must fence clipboard writes too");
+
+      const staleClipboardRead = await fetchJson(`${asUrl}${firstBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "remote_to_local", requestId: 1 }),
+        headers: { "Content-Type": "application/json", Cookie: firstCookie },
+        method: "POST",
+      });
+      assert.equal(staleClipboardRead.status, 401, "the superseded viewer bearer must fence clipboard reads too");
+
       const currentInput = await fetchJson(`${asUrl}${secondBody.input_path}`, {
         body: JSON.stringify({ action: "click", type: "mouse", x: 2, y: 2 }),
         headers: { "Content-Type": "application/json", Cookie: secondCookie },
         method: "POST",
       });
       assert.equal(currentInput.status, 202);
+
+      const currentClipboard = await fetchJson(`${asUrl}${secondBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "local_to_remote", text: "current" }),
+        headers: { "Content-Type": "application/json", Cookie: secondCookie },
+        method: "POST",
+      });
+      assert.equal(currentClipboard.status, 202);
+
+      const currentClipboardRead = await fetchJson(`${asUrl}${secondBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "remote_to_local", requestId: 2 }),
+        headers: { "Content-Type": "application/json", Cookie: secondCookie },
+        method: "POST",
+      });
+      assert.equal(currentClipboardRead.status, 200);
 
       secondAbort.abort();
       try {

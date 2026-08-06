@@ -259,6 +259,7 @@ export async function submitRunInteraction(
  */
 export interface StreamingSessionMintResponse {
   browser_session_id: string;
+  clipboard_path: string;
   expires_at_ms: number;
   /**
    * `true` when the server returned the cached session record for an

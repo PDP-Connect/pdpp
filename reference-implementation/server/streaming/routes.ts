@@ -21,6 +21,9 @@ import { createHash, randomBytes } from "node:crypto";
  * Token-only viewport:
  *   POST /_ref/run-interaction-streams/:token/viewport
  *
+ * Token-only clipboard:
+ *   POST /_ref/run-interaction-streams/:token/clipboard
+ *
  * Token-only n.eko viewer entry:
  *   GET  /_ref/run-interaction-streams/:token/neko
  *     sets a short-lived /neko cookie and redirects to the same-origin proxy
@@ -147,6 +150,7 @@ interface StreamingCompanion {
   onEvent?: (handler: (event: unknown) => void) => () => void;
   onFrame: (handler: (frame: StreamFrame) => void) => () => void;
   queryNekoStatus?: () => Promise<unknown>;
+  readRemoteSelection?: () => Promise<string>;
   resolveBackend?: () => Promise<string>;
   start: (viewport: ReferenceWireViewportPayload | null) => Promise<void>;
   stealthMode?: () => unknown;
@@ -1149,6 +1153,7 @@ export function registerStreamingRoutes({
 
     return {
       browser_session_id: effectiveBrowserSessionId,
+      clipboard_path: `/_ref/run-interaction-streams/${encodeURIComponent(token)}/clipboard`,
       expires_at_ms: session.expires_at,
       idempotency_replayed: idempotencyReplayed === true,
       input_path: `/_ref/run-interaction-streams/${encodeURIComponent(token)}/input`,
@@ -2386,6 +2391,53 @@ body>p{display:none!important}
       return pdppError(res, 400, errorCode(err, "invalid_input"), errorMessage(err, "invalid input"));
     }
     return res.status(202).json({ object: "run_interaction_stream_input_ack" });
+  });
+
+  // ── Clipboard (token-only) ───────────────────────────────────────────────
+  // This is the host adaptation for the assembled Remote Surface session's
+  // clipboard channel. It deliberately shares the input route's
+  // controlling-attachment check so a stale bearer cannot read or write the
+  // remote page selection.
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This route is the explicit validation boundary for two clipboard directions and their distinct failure semantics.
+  app.post("/_ref/run-interaction-streams/:token/clipboard", async (req, res) => {
+    const authorized = authorizeControllingCompanion(req, res);
+    if (!authorized) {
+      return;
+    }
+    const { companion } = authorized;
+    const { action, requestId, text } = recordOrEmpty(req.body);
+    if (action === "local_to_remote") {
+      if (typeof text !== "string") {
+        return pdppError(res, 400, "invalid_request", "clipboard text is required", "text");
+      }
+      try {
+        await companion.dispatch({ action, text, type: "clipboard" });
+      } catch (err) {
+        return pdppError(res, 400, errorCode(err, "invalid_input"), errorMessage(err, "clipboard input failed"));
+      }
+      return res.status(202).json({ object: "run_interaction_stream_clipboard_ack" });
+    }
+    if (action === "remote_to_local") {
+      if (typeof companion.readRemoteSelection !== "function") {
+        return pdppError(res, 409, "clipboard_unsupported", "Remote selection is unavailable");
+      }
+      try {
+        const remoteText = await companion.readRemoteSelection();
+        return res.status(200).json({
+          object: "run_interaction_stream_remote_selection",
+          requestId: typeof requestId === "number" ? requestId : null,
+          text: remoteText,
+        });
+      } catch (err) {
+        return pdppError(
+          res,
+          400,
+          errorCode(err, "clipboard_read_failed"),
+          errorMessage(err, "remote selection read failed")
+        );
+      }
+    }
+    return pdppError(res, 400, "invalid_request", "unsupported clipboard action", "action");
   });
 
   // ── Input telemetry drain (debug-only) ───────────────────────────────────

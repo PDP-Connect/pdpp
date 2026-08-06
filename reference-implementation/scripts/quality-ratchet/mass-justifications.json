@@ -15,8 +15,13 @@
     "date": "2026-08-05"
   },
   "server/streaming/cdp-adapter.ts": {
-    "allowed_mass": 8,
-    "reason": "Direct-CDP popup classification closure (2026-08-05): target discovery must bind to the exact registered page, preserve adopted-page URL/title events, require an opener relationship for user-relevant child pages, and defer blank children until navigation proves a real popup. These ordered predicates are the terminal safety boundary that suppresses same-flow target churn without hiding genuine popup visibility; extracting them would obscure the event-state transitions. Proven by the focused fail-before/pass-after adapter regression and SSE forwarding test.",
+    "allowed_mass": 19,
+    "reason": "Direct-CDP Remote Surface 1.5.1 migration (2026-08-05): the adapter must preserve exact-page target discovery, adopted-page URL/title events, opener-gated popup classification, and blank-child deferral while bridging the installed assembled server backend's lifecycle, frame, keyboard-focus, input, viewport, and clipboard events into PDPP's existing wire. Those ordered predicates and the single lifecycle bridge are load-bearing authority/security boundaries; extracting them would either obscure event-state transitions or split the adapter from the one backend owner. Proven by the focused adapter, Remote Surface session, route authorization, and parity regressions.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/protocol-wire.ts": {
+    "allowed_mass": 30,
+    "reason": "Direct-CDP Remote Surface 1.5.1 migration (2026-08-05): the existing PDPP wire must carry the installed backend's keyboard_focus event without changing the SSE protocol's explicit event envelope or weakening its fallback payload handling. The added discriminant and projection are the single compatibility seam for server-side focus detection; removing them would drop the event or duplicate a second focus channel. Proven by the focused adapter, session, route, and parity regressions.",
     "date": "2026-08-05"
   },
   "server/streaming/run-target-registry.ts": {
