@@ -6,7 +6,7 @@
   "//build": "TEMPORARY: --webpack keeps local/CI builds off Turbopack after repeated native SIGSEGV during static page generation on Next 16.2.x.",
   "scripts": {
     "//dev-node-options": "NODE_OPTIONS adds Node.js diagnostic reports on fatal V8 errors and uncaught exceptions. Reports land in tmp/node-reports/ at the repo root (gitignored), excluding env/network sections so reports do not persist secrets.",
-    "//dev-port": "Public site defaults to :3001 (design.md \u00a75). PDPP_SITE_PORT overrides; PDPP_WEB_PORT kept as a fallback for existing contributor env files.",
+    "//dev-port": "Public site defaults to :3001 (design.md §5). PDPP_SITE_PORT overrides; PDPP_WEB_PORT kept as a fallback for existing contributor env files.",
     "//sync-specs": "Generates content/docs/spec-*.md from the normative root spec-*.md (single source). The generated files are gitignored; predev/prebuild regenerate them. See scripts/sync-spec-docs.mjs.",
     "sync:specs": "node scripts/sync-spec-docs.mjs",
     "predev": "node scripts/sync-spec-docs.mjs",
@@ -29,6 +29,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
+    "beautiful-mermaid": "^1.1.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fumadocs-core": "^16.14.0",

@@ -7,21 +7,21 @@ Date: 2026-04-06
 
 ## 1. Introduction {#introduction}
 
-PDPP is an authorization and disclosure protocol for personal data. It defines how a user authorizes an application to access specific data from their personal data store, and how a resource server enforces that authorization.
+PDPP is an authorization and disclosure protocol for personal data. It defines how a user authorizes an application to access specific data from a data source that holds their records, and how a resource server enforces that authorization.
 
 The protocol specifies:
 
 - A **record model** for representing personal data as flat relational streams
-- A **selection request** format for applications to request specific data (RFC 9396 envelope)
+- A **selection request** format, the structured request for consent a client submits during authorization (RFC 9396 envelope)
 - A **grant** object representing user-approved, parameterized consent
 - A **connector manifest** declaring the consent surface a connector exposes
 - A **resource server interface** for serving records under grant enforcement
 
 **Design axiom:** Connector manifests define the consent surface. Grants define actual consent. These are separate concerns and must not be conflated.
 
-Collection of data from source platforms is a separate concern addressed in the companion [PDPP Collection Profile](spec-collection-profile.md). The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved. Data may reach the personal server via connector-driven collection, regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5–8) are agnostic to the collection method.
+Most source platforms do not yet expose a PDPP interface natively. Collection is the bridge for those sources: it brings their data into a resource server so the protocol's consent and enforcement layers can govern access to it. The companion [PDPP Collection Profile](spec-collection-profile) standardizes that bridge. The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved, and data may also reach it via regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5-8) are agnostic to the collection method.
 
-This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. URI identifiers name connectors, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the grant and the manifest metadata pinned into that grant.
+Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. URI identifiers name connectors, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the grant and the manifest metadata pinned into that grant.
 
 ### Interoperable core sections
 
@@ -39,18 +39,22 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 
 | Standard | Relationship |
 |----------|-------------|
-| OAuth 2.0 (RFC 6749) | PDPP uses OAuth 2.0 authorization flows. The grant is issued as the result of an OAuth authorization flow with RFC 9396 authorization_details. |
-| RFC 9396 (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.org/data-access`. |
-| OAuth 2.0 Dynamic Client Registration (RFC 7591) | PDPP reuses the RFC 7591 human-readable client metadata model (`client_name`, `client_uri`, `logo_uri`, `policy_uri`, `tos_uri`) for requester identity display. PDPP does not require a dynamic client registration endpoint: the same metadata model may be carried inline in `client_display`, supplied by local registration, or resolved via trust-registry policy. |
-| Airbyte / Singer | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync (see Collection Profile). |
-| Data Transfer Project (DTI) | PDPP and DTI are complementary. The Data Transfer Project handles transfer mechanics, and DTI's stated position is that there is "no silver bullet" for portability: multiple approaches coexist. DTI's Data Trust Registry (post-pilot, 2026) addresses who is trusted: it vets services seeking access to platforms' portability interfaces so that platforms can rely on shared trust signals. PDPP addresses what was consented and how it is enforced (the grant and the resource server interface); a trust registry and PDPP's consent semantics compose rather than compete. The two protocols can chain. See Appendix B. |
-| GNAP (RFC 9635) | GNAP is an IETF authorization protocol that revisits OAuth-style delegation with a new protocol design. Several design decisions are directly relevant to PDPP: (1) interaction modes beyond browser redirects (relevant to nonstandard authorization interaction patterns); (2) request continuation for multi-step consent negotiation (relevant to optional streams); (3) key-bound grants instead of bearer tokens (stronger security for ongoing personal data access); (4) built-in grant management with revocation and rotation (relevant to `continuous` access mode). PDPP v0.1 uses OAuth 2.0 + RFC 9396. A future version should evaluate whether GNAP is a better foundation. PDPP's entity-scoped `client_display` already follows GNAP's pattern of carrying client display metadata inline in the request. For key-bound tokens specifically, DPoP (RFC 9449) offers an OAuth-native path to GNAP-style sender-constrained tokens and is a candidate optional hardening profile for v0.2. |
-| UMA 2.0 (Kantara) | UMA is an OAuth 2.0-based Kantara Initiative standard for user-managed, party-to-party delegated authorization, the closest prior art to PDPP's authorization half. UMA scopes out the resource data model, the query/read API, and any collection mechanism ("outside the scope of this specification" per the UMA core spec); PDPP's record model (Section 4) and resource server interface (Section 8) define that layer. PDPP does not build on UMA's permission-ticket flow; the two are complementary layers, not alternatives. |
-| SMART on FHIR / UK Open Banking | Both follow the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. Both reached ubiquity through regulatory adoption of SMART-on-FHIR-patterned API requirements (the ONC Cures Act rule) and the CMA's Open Banking mandate for the largest UK banks. |
+| [OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749) (RFC 6749) | PDPP is a profile of OAuth 2.0, carrying selection requests in RFC 9396 authorization_details. The grant is issued as the result of an OAuth authorization flow. |
+| [RFC 9396](https://www.rfc-editor.org/rfc/rfc9396) (RAR) | PDPP uses the `authorization_details` envelope for selection requests. The `type` URI is `https://pdpp.org/data-access`. |
+| [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (Bearer Token) | PDPP transports both owner tokens and client tokens as RFC 6750 Bearer Tokens on the wire. The resource server distinguishes token kind via `pdpp_token_kind` in the introspection response, not by token syntax. |
+| [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (Token Introspection) | PDPP relies on RFC 7662-style token introspection where the authorization server and resource server are separated, so the resource server can resolve grant-bound tokens. Co-located deployments may use a local equivalent. |
+| [OAuth 2.0 Dynamic Client Registration](https://www.rfc-editor.org/rfc/rfc7591) (RFC 7591) | PDPP reuses the RFC 7591 client metadata vocabulary (`client_name`, `logo_uri`, `policy_uri`, and similar fields) for the consent display. A dynamic client registration endpoint is a deployment choice and is required only where deployments need it; Core functions without it. |
+| [SMART on FHIR](https://hl7.org/fhir/smart-app-launch/) | Follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. SMART on FHIR reached ubiquity through regulatory adoption of SMART-on-FHIR-patterned API requirements (the ONC Cures Act rule). |
+| [UK Open Banking](https://www.openbanking.org.uk/standards/) | Also follows the domain-profile-over-OAuth pattern PDPP adopts: OAuth handles authorization, and the profile adds a domain data model, consent semantics, and a conformance regime. UK Open Banking reached ubiquity through the CMA's Open Banking mandate for the largest UK banks. |
+| [UMA 2.0](https://kantarainitiative.org/uma-2-0-2/) (Kantara) | UMA is important prior art for PDPP's user-managed, standing, revocable access model, particularly where an outside party seeks access to user-controlled resources. PDPP's authorization protocol derives directly from OAuth 2.0 and RFC 9396. |
+| [GNAP](https://www.rfc-editor.org/rfc/rfc9635) (RFC 9635) | GNAP is an IETF authorization protocol that revisits OAuth-style delegation with a new protocol design. Several design decisions are directly relevant to PDPP: (1) interaction modes beyond browser redirects (relevant to nonstandard authorization interaction patterns); (2) request continuation for multi-step consent negotiation (relevant to optional streams); (3) key-bound grants instead of bearer tokens (stronger security for ongoing personal data access); (4) built-in grant management with revocation and rotation (relevant to `continuous` access mode). PDPP v0.1 uses OAuth 2.0 + RFC 9396. A future version should evaluate whether GNAP is a better foundation. PDPP's entity-scoped `client_display` already follows GNAP's pattern of carrying client display metadata inline in the request. For key-bound tokens specifically, DPoP (RFC 9449) offers an OAuth-native path to GNAP-style sender-constrained tokens and is a candidate optional hardening profile for v0.2. |
 | Solid | Solid takes the full re-architecture approach: personal data moves into user-controlled pods with RDF/Linked Data semantics, which requires source platforms to adopt the model or users to migrate off-platform. PDPP instead layers on existing OAuth infrastructure and bootstraps data supply through the Collection Profile, without requiring source platforms to adopt anything. |
-| GDPR / DMA | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, with an explicit protocol-level consent rule for `ai_training`. The `continuous` access mode enables ongoing portability aligned with the DMA's requirements. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
+| [Data Transfer Project](https://github.com/dtinit/data-transfer-project) (DTI) | PDPP and DTI are complementary. The Data Transfer Project handles transfer mechanics, and DTI's stated position is that there is "no silver bullet" for portability: multiple approaches coexist. DTI's Data Trust Registry (post-pilot, 2026) addresses who is trusted: it vets services seeking access to platforms' portability interfaces so that platforms can rely on shared trust signals. PDPP addresses what was consented and how it is enforced (the grant and the resource server interface); a trust registry and PDPP's consent semantics compose rather than compete. The two protocols can chain. See Appendix B. |
+| Airbyte / Singer | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync. This record and state-checkpoint lineage informs the Collection Profile companion specification; it appears here for reader orientation and is informative for Core. |
+| [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj) | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, with an explicit protocol-level consent rule for `ai_training`. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
+| [DMA](https://eur-lex.europa.eu/eli/reg/2022/1925/oj) | The `continuous` access mode enables ongoing portability aligned with the DMA's requirements. Article 6(9) requires effective portability with continuous and real-time access to the end user's data; PDPP's continuous grants and incremental sync map to that requirement. This alignment is informative only and is not a required v0.1 capability. |
 
-**Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 11).
+**Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 9).
 
 ---
 
@@ -73,7 +77,7 @@ These roles may be co-located in a single deployment (e.g., a personal server ac
 | **Authorization Server** | Issues and manages grants. Validates selection requests against connector manifests. Tracks grant lifecycle (active, expired, revoked). |
 | **Resource Server** | Stores records as flat relational streams. Serves records to clients filtered by grant parameters. |
 
-The [PDPP Collection Profile](spec-collection-profile.md) defines a third role:
+The [PDPP Collection Profile](spec-collection-profile) defines a third role:
 
 | Role | Responsibility |
 |------|---------------|
@@ -81,7 +85,7 @@ The [PDPP Collection Profile](spec-collection-profile.md) defines a third role:
 
 In many deployments, a single **personal server** fills all three roles. The spec uses "personal server" when referring to a combined deployment, and the specific role name when the distinction matters.
 
-**Note on the Authorization Server interface:** This spec defines the resource server interface normatively because cross-deployment interoperability requires it. The authorization server interface is not normatively specified in v0.1 because user-facing authorization flows are deployment-specific. The reference implementation uses the OAuth authorization code flow with RFC 9396 authorization_details for client grants, and OAuth device authorization for owner tokens.
+**Note on the Authorization Server interface:** This spec defines the resource server interface normatively because cross-deployment interoperability requires it: a client written against the interface works with any conformant resource server regardless of who operates it or where data lives. The authorization server interface is not normatively specified in v0.1 because user-facing authorization flows are deployment-specific. The reference implementation uses the OAuth authorization code flow with RFC 9396 authorization_details for client grants, and OAuth device authorization for owner tokens.
 
 **Token resolution:** User-facing authorization flows are deployment-specific and are not normatively specified in v0.1. However, when the AS and RS are deployed separately, the AS↔RS token-resolution contract is normative: the RS resolves access tokens using RFC 7662-style token introspection. For co-located deployments, a local equivalent (shared database or function call) is acceptable. Self-contained JWTs may be used as an optimization but MUST NOT be the sole revocation mechanism (see Section 10).
 
@@ -92,59 +96,80 @@ In many deployments, a single **personal server** fills all three roles. The spe
 | **Grant** | An immutable consent artifact specifying what data a client may access, under what constraints. |
 | **Stream** | A named collection of records with a schema, primary key, and optional cursor field. Stream names are connector-local (e.g., `messages`). The fully qualified identifier is an ordered pair `(connector_id, stream_name)`, used in cross-connector references and storage. Example: `("https://registry.pdpp.org/connectors/spotify", "top_artists")`. |
 | **Record** | A single data object within a stream. |
-| **Connector** | A program that collects data from a data source. Defined in the Collection Profile. |
-| **Manifest** | A connector's declaration of the streams it can produce and the consent surface it exposes. |
+| **Connector** | A program that collects data from a data source, used when data is collected rather than served natively. One of possibly several producers of a source's streams. Defined in the Collection Profile. |
+| **Manifest** | A data source's declaration of the streams, schemas, and selection capabilities it exposes, including the consent surface. |
 | **Selection Request** | A client's request for specific data, expressed as RFC 9396 `authorization_details`. |
-| **View** | A named field projection, composed from fields declared in the connector manifest schema. Views are the unit of consent for field-level access. Connector manifests MAY suggest views (advisory); the authorization server is authoritative for views used in consent UI and issued grants. |
+| **View** | An optional named field set a manifest may define for a stream, composed from fields declared in the manifest schema. When a client requests by view name, the resulting grant records the resolved field list, which is authoritative. Connector manifests MAY suggest views (advisory); the authorization server is authoritative for views used in consent UI and issued grants. |
 
 ### Requirements Language {#requirements-language}
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 [RFC 2119] [RFC 8174] when, and only when, they appear in all capitals, as shown here.
 
-The companion [PDPP Collection Profile](spec-collection-profile.md) uses the same requirements language.
+This document is normative except where content is explicitly marked as an example, a note, or otherwise non-normative.
+
+The companion [PDPP Collection Profile](spec-collection-profile) uses the same requirements language.
 
 ---
 
 ## 3. System Architecture
 
-```
-                                    +----------------------------------+
-                                    |        Personal Server           |
-+----------+   selection            |  (may be a single deployment)    |
-|          |-- request -----------> |                                  |
-|  Client  |                        |  +------------------------+      |
-|          |<-- records ----------- |  |  Authorization Server  |      |
-+----------+   (filtered by grant)  |  |  Issues + manages      |      |
-                                    |  |  grants                |      |
-+----------+                        |  +------------------------+      |
-|   User   |-- consent -----------> |  +------------------------+      |
-|          |                        |  |  Resource Server       |      |
-+----------+                        |  |  Stores + serves       |      |
-                                    |  |  records               |      |
-                                    |  +------------------------+      |
-                                    +---------------+------------------+
-                                                    |
-+------------------+                               |
-| Connector Runtime|-- RECORD/STATE -------------->|
-| (Collection      |<-- state -------------------->|
-|  Profile)        |                               |
-+--------+---------+
-         |
-         v
-+------------------+
-|  Data Sources    |
-+------------------+
+Every PDPP deployment shares the same authorization core: a user grants a client consent, and the authorization server issues a grant. The resource server that then serves records under that grant is not shown here — how it is populated and operated is deployment-specific (see below).
+
+```mermaid
+flowchart TB
+    User((User))
+    Client[Client]
+    AS[Authorization Server]
+
+    User -- consent --> AS
+    Client -- selection request --> AS
+    AS -- grant --> Client
 ```
 
-### How the protocol layers relate
+What differs between deployments is how the resource server that fulfills the grant is populated and operated. This is not a closed set: a resource server may hold pre-collected data with no collection machinery involved, or receive data via regulatory export, manual import, or platform-native APIs (Section 1). The two examples below illustrate the ends of that spectrum; the [PDPP Collection Profile](spec-collection-profile) is one fulfillment mechanism, not the only one.
+
+**Example A: source-native fulfillment.** The data source operates its own authorization and resource servers directly; there is no separate collection step.
+
+```mermaid
+flowchart TB
+    Client[Client]
+    AS[Authorization Server]
+    RS[Resource Server]
+    Source[Data Source]
+
+    Client -- query under grant --> RS
+    RS -- enforced records --> Client
+
+    Source -.->|operates| AS
+    Source -.->|operates| RS
+```
+
+**Example B: personal-server fulfillment.** A connector runtime, governed by the Collection Profile, collects data from the source and syncs it into a resource server the user controls.
+
+```mermaid
+flowchart TB
+    Client[Client]
+    AS[Authorization Server]
+    RS[Resource Server]
+    Runtime[Connector Runtime<br/>Collection Profile]
+    Source[Data Source]
+
+    Client -- query under grant --> RS
+    RS -- enforced records --> Client
+
+    Runtime -- RECORD / STATE --> RS
+    Source -.->|collected by| Runtime
+```
+
+### Protocol layering
 
 PDPP separates three concerns that other systems conflate:
 
-1. **Authorization**: what has the user consented to disclose, to whom, under what constraints? This is the grant. It is the portable core of PDPP.
+1. **Authorization**: the user's consent about what is disclosed, to whom, and under what constraints. This is the grant. It is the portable core of PDPP.
 
-2. **Disclosure**: given a valid grant, what records does the resource server return? This is the resource server query API.
+2. **Disclosure**: the records the resource server returns given a valid grant. This is the resource server query API.
 
-3. **Collection**: how does data get into the resource server in the first place? This is the Collection Profile. It is one answer to this question; pre-loaded data, manual imports, and other mechanisms are equally valid.
+3. **Collection**: how data gets into the resource server in the first place. This is the Collection Profile. It is one answer to this question; pre-loaded data, manual imports, and other mechanisms are equally valid.
 
 The grant and query API are the normative core. Collection is a companion mechanism.
 
@@ -154,7 +179,7 @@ The grant and query API are the normative core. Collection is a companion mechan
 
 ## 4. Record Model {#record-model}
 
-**Note:** This section defines portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. Source collection, connector execution, and storage-engine choices are out of scope here (see the [PDPP Collection Profile](spec-collection-profile.md)).
+**Note:** This section defines portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. Source collection, connector execution, and storage-engine choices are out of scope for this document (see the [PDPP Collection Profile](spec-collection-profile)).
 
 Personal data is represented as flat relational streams. This enables streaming, pagination, incremental sync, and compatibility with DTI canonical data models.
 
@@ -204,7 +229,7 @@ Tombstones use the same `object: "record"` envelope as regular response records,
 
 `deleted_at` represents the time the record was deleted in the source system, if known; otherwise the time the RS processed the deletion directive. If the source system deletion time is unknown, the RS SHOULD use the `emitted_at` value of the delete directive as `deleted_at`.
 
-**Informative note (GDPR Article 15):** The version history maintained internally by the resource server to support `mutable_state` incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability.
+**Non-normative note (GDPR Article 15):** The version history maintained internally by the resource server to support `mutable_state` incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is non-normative and is not a required v0.1 capability.
 
 ### Split rule
 
@@ -331,7 +356,7 @@ When a record references a record in a different stream on the same resource ser
 
 ## 5. Selection Request {#selection-request}
 
-**Note:** This section defines what a client asks an authorization server to approve, plus the manifest-backed validation and consent rendering needed before a grant is issued. Product-specific consent flows, screen layouts, and hosted authorization-server deployments are out of scope here.
+**Note:** This section defines what a client asks an authorization server to approve, plus the manifest-backed validation and consent rendering needed before a grant is issued. Product-specific consent flows, screen layouts, and hosted authorization-server deployments are out of scope for this document.
 
 A client requests specific personal data by including `authorization_details` in an OAuth 2.0 authorization request, following RFC 9396.
 
@@ -479,7 +504,7 @@ Per-stream, within the `streams` array. All are optional except `name`.
 
 **Note on `streams` vs `profile`:** `streams` and `profile` are mutually exclusive in a request. An authorization server MUST return 400 `invalid_request` if both are present.
 
-**Note on defaults:** Omitting `fields` (and `view`) means all fields in the stream are authorized. Omitting `time_range` means no temporal constraint. Clients SHOULD request only the data they need (see Section 10, Data Minimization).
+**Note on defaults:** Omitting `fields` (and `view`) means all fields in the stream are authorized. Omitting `time_range` means no temporal constraint. Clients SHOULD request only the data they need (see Section 11, Data Minimization).
 
 ### Profiles
 
@@ -501,7 +526,7 @@ Every field in the issued grant is derived from either the selection request, cl
 
 ## 6. Grant {#grant}
 
-**Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope here.
+**Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope for this document.
 
 The grant is an immutable consent artifact. It is the output of the authorization flow.
 
@@ -534,9 +559,9 @@ The authorization server issues an access token bound to the grant. The client u
 }
 ```
 
-### Grant fields (normative)
+### Grant fields
 
-**The following field table is normative.** TypeScript types in Section 12 are illustrative.
+**The following field table is normative.** TypeScript types in Section 13 are non-normative.
 
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
@@ -555,7 +580,7 @@ The authorization server issues an access token bound to the grant. The client u
 | `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
 | `expires_at` | ISO 8601 or null | no | Protocol-enforced | Grant expiry. null means no expiry. |
 
-### StreamGrant fields (normative)
+### StreamGrant fields
 
 | Field | Type | Required | Status | Description |
 |-------|------|----------|--------|-------------|
@@ -567,7 +592,7 @@ The authorization server issues an access token bound to the grant. The client u
 
 **Note:** `view` and `fields` may both appear in a `StreamGrant`: `view` is informational, `fields` are the enforcement list resolved at consent time. In a `StreamRequest`, they are mutually exclusive. The AS resolves the view to its field list at issuance time and stores the result in `fields`. View evolution never silently widens an existing grant; re-consent is required for new fields added to a view after grant issuance.
 
-### Three time-related concepts
+### Time concepts
 
 The grant carries three orthogonal time-related concepts that must not be conflated:
 
@@ -708,7 +733,7 @@ Retention is a structured policy declaration and policy commitment by the data r
 
 ## 7. Manifest Format {#manifest-format}
 
-**Note:** This section defines manifest syntax only. Connector runtime behavior (collection, state management, interaction) is defined in the [PDPP Collection Profile](spec-collection-profile.md).
+**Note:** This section defines manifest syntax only. Connector runtime behavior (collection, state management, interaction) is defined in the [PDPP Collection Profile](spec-collection-profile).
 
 Each connector publishes a manifest declaring its consent surface: what streams it produces, what fields those streams contain, and what selection parameters are applicable. The manifest is the source of truth for what can be consented to. What is actually consented to is determined by the grant. Grants constrain authorization and accessible results, but they do not redefine the source-level stream metadata returned by `GET /v1/streams/{stream}`.
 
@@ -911,7 +936,7 @@ The recommended evolution path: add new fields freely; never remove existing fie
 
 ## 8. Resource Server Interface {#resource-server-interface}
 
-**Note:** This section defines the interoperable record-query and blob-fetch interface under grant enforcement. Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices are out of scope here.
+**Note:** This section defines the interoperable record-query and blob-fetch interface under grant enforcement. Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices are out of scope for this document.
 
 The resource server stores records and serves them to clients filtered by grants. This section is normative: a compliant resource server must implement this interface for cross-deployment interoperability.
 
@@ -920,9 +945,9 @@ The resource server stores records and serves them to clients filtered by grants
 On every request, the resource server:
 
 1. Resolves the access token via token introspection (RFC 7662-style) or a local equivalent for co-located deployments. Positive introspection results MUST NOT be cached longer than `min(token_exp, 60 seconds)`.
-2. Checks: is the grant active (`active: true` in introspection response)?
-3. Checks: is the requested stream in the grant's `streams` list?
-4. Checks: do the request parameters fall within the grant's selection constraints (`time_range`, `fields`, `resources`)?
+2. Verifies that the grant is active (`active: true` in the introspection response).
+3. Verifies that the requested stream appears in the grant's `streams` list.
+4. Verifies that the request parameters fall within the grant's selection constraints (`time_range`, `fields`, `resources`).
 5. If all checks pass, returns records filtered accordingly.
 6. If any check fails, returns a structured error (see Errors below).
 
@@ -1371,7 +1396,7 @@ An implementation claiming PDPP Collection Profile support MUST additionally imp
 
 ### Connector conformance
 
-Connector conformance is defined in the [PDPP Collection Profile](spec-collection-profile.md).
+Connector conformance is defined in the [PDPP Collection Profile](spec-collection-profile).
 
 ### Client conformance
 
@@ -1391,7 +1416,7 @@ A formal conformance test suite is planned but is not defined in v0.1. This is o
 
 ---
 
-## 10. Security and Privacy Considerations {#security}
+## 10. Security Considerations {#security}
 
 ### Token security
 
@@ -1403,7 +1428,7 @@ Positive introspection results MUST NOT be cached longer than `min(token_exp, 60
 
 Implementations SHOULD use short-lived access tokens with refresh tokens for `continuous` grants.
 
-**Sender-constrained tokens (informative):** Bearer tokens (RFC 6750) are the v0.1 baseline. Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it. DPoP (RFC 9449) and mutual-TLS certificate binding (RFC 8705) are both compatible with PDPP's introspection-based design. A formal optional hardening profile is a candidate for a future version.
+**Sender-constrained tokens (non-normative):** Bearer tokens (RFC 6750) are the v0.1 baseline. Deployments handling sensitive standing access SHOULD consider sender-constrained tokens, which bind a token to a client-held key so that possession of the token alone is not sufficient to use it. DPoP (RFC 9449) and mutual-TLS certificate binding (RFC 8705) are both compatible with PDPP's introspection-based design. A formal optional hardening profile is a candidate for a future version.
 
 ### Grant integrity
 
@@ -1413,7 +1438,7 @@ Large `authorization_details` payloads may exceed URL length limits. Production 
 
 ### Credential handling
 
-INTERACTION_RESPONSE messages in the Collection Profile may contain passwords and OTP codes. Runtimes MUST NOT log or persist credential data. See the [PDPP Collection Profile](spec-collection-profile.md) for details.
+INTERACTION_RESPONSE messages in the Collection Profile may contain passwords and OTP codes. Runtimes MUST NOT log or persist credential data. See the [PDPP Collection Profile](spec-collection-profile) for details.
 
 ### Connector trust
 
@@ -1426,6 +1451,20 @@ In the Collection Profile, connectors receive credentials via the INTERACTION ch
 | **Authorization Server** | Validates purpose-code syntax and local policy; authenticates user; preserves semantic distinctions on the consent surface; validates stream/field/view/resource-id shape at grant issuance; resolves views to field lists; issues access tokens; maintains grant lifecycle. |
 | **Resource Server** | Validates token via introspection; enforces stream membership, field projection, time_range, resources on every request; never re-validates beyond introspection; scopes owner access to single subject. |
 | **Client** | Submits well-formed selection requests; uses access tokens; terminates on revocation; honors retention commitments. |
+
+### Revocation {#revocation}
+
+There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds). The AS MUST reflect revocation immediately in introspection responses (`active: false`). A client will receive a 403 `grant_revoked` response no later than 60 seconds after revocation.
+
+If a grant is revoked while a collection run is in progress, the runtime MUST terminate the connector as soon as practical. Specifically: upon receiving any 403 `grant_revoked` response, the client MUST stop further requests against that grant.
+
+Revocation stops future access only. Data already delivered to the client before revocation is governed by the grant's `retention` policy and applicable legal obligations.
+
+Revocation is not deletion. v0.1 does not define an active erasure signal or downstream deletion callback.
+
+---
+
+## 11. Privacy Considerations {#privacy}
 
 ### Data minimization {#data-minimization}
 
@@ -1447,19 +1486,9 @@ If interoperable audit or transparency events are standardized in the future, th
 
 The `retention` field is a structured policy declaration and policy commitment by the data recipient. PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is an intentional design choice, consistent with how OAuth 2.0 treats scope compliance.
 
-### Revocation {#revocation}
-
-There is no push revocation channel in v0.1. Revocation propagation is bounded by the introspection cache TTL (maximum 60 seconds). The AS MUST reflect revocation immediately in introspection responses (`active: false`). A client will receive a 403 `grant_revoked` response no later than 60 seconds after revocation.
-
-If a grant is revoked while a collection run is in progress, the runtime MUST terminate the connector as soon as practical. Specifically: upon receiving any 403 `grant_revoked` response, the client MUST stop further requests against that grant.
-
-Revocation stops future access only. Data already delivered to the client before revocation is governed by the grant's `retention` policy and applicable legal obligations.
-
-Revocation is not deletion. v0.1 does not define an active erasure signal or downstream deletion callback.
-
 ---
 
-## 11. Scope and Boundaries
+## 12. Scope and Boundaries
 
 ### In scope (v0.1)
 
@@ -1501,7 +1530,7 @@ v0.1 grants narrow access only by stream selection, named view or field projecti
 
 **Request-time filters are not grant scope.** The `filter[{field}]` query parameters on `GET /v1/streams/{stream}/records` narrow the result set returned for a particular request but do not narrow the authorization scope of the underlying grant. A client authorized for a stream may request a filtered subset of that stream; the grant remains a grant to the stream as issued.
 
-**Derived subset streams (informative).** A stream MAY represent either a source-native collection or a connector-defined derived subset, provided its semantics are stable, versioned through the manifest, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a connector that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the manifest.
+**Derived subset streams (non-normative).** A stream MAY represent either a source-native collection or a connector-defined derived subset, provided its semantics are stable, versioned through the manifest, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a connector that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the manifest.
 
 The recommended future direction for this capability is manifest-declared parameterized subset templates with typed bound parameters and connector-defined consent display strings. See spec-deferred for the design constraints and open questions that must be resolved before specifying this.
 
@@ -1517,9 +1546,9 @@ Current active editors and maintainers are listed in `MAINTAINERS.md`. This repo
 
 ---
 
-## 12. TypeScript Types
+## 13. TypeScript Types
 
-**Note:** TypeScript types in this section are illustrative. The normative definitions are the prose field tables in Sections 5, 6, and 7.
+**Note:** TypeScript types in this section are non-normative. The normative definitions are the prose field tables in Sections 5, 6, and 7.
 
 ```typescript
 // --- Record model ---

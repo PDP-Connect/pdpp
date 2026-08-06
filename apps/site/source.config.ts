@@ -5,6 +5,8 @@
 // noUnresolvedImports override): fumadocs-core/fumadocs-mdx subpath exports
 // Biome misreports as unresolved; both resolve cleanly under tsc and at build time.
 // biome-ignore lint/correctness/noUnresolvedImports: see comment above.
+import { remarkMdxMermaid } from "fumadocs-core/mdx-plugins";
+// biome-ignore lint/correctness/noUnresolvedImports: see comment above.
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
 // biome-ignore lint/correctness/noUnresolvedImports: see comment above.
 import { defineConfig, defineDocs } from "fumadocs-mdx/config";
@@ -25,6 +27,6 @@ export const docs = defineDocs({
 
 export default defineConfig({
   mdxOptions: {
-    remarkPlugins: (plugins) => [remarkLegacyHeadingIds, ...plugins],
+    remarkPlugins: (plugins) => [remarkLegacyHeadingIds, remarkMdxMermaid, ...plugins],
   },
 });
