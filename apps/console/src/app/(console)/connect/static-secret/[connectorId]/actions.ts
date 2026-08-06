@@ -29,12 +29,24 @@ function pageHref(connectorId: string, params: Record<string, string>): string {
 // secret is deliberately NOT round-tripped — the owner re-enters it, matching
 // Plaid/Zapier credential-retry behavior. Non-secret values ride as `field_*`
 // query params the page re-reads into the inputs.
-function formRetryHref(connectorId: string, error: string, setupFields: Record<string, string>): string {
+function formRetryHref(
+  connectorId: string,
+  error: string,
+  setupFields: Record<string, string>,
+  displayName?: string | null
+): string {
   const params: Record<string, string> = { error };
   for (const [name, value] of Object.entries(setupFields)) {
     params[`field_${name}`] = value;
   }
+  if (displayName) {
+    params.display_name = displayName;
+  }
   return pageHref(connectorId, params);
+}
+
+function formErrorParams(error: string, displayName?: string | null): Record<string, string> {
+  return displayName ? { display_name: displayName, error } : { error };
 }
 
 // Durable per-connection setup-status surface. After a successful submit the
@@ -169,6 +181,7 @@ function formRetryHrefWithConnectionId(
 
 export async function createStaticSecretConnectionAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
+  const displayName = asString(formData.get("display_name")) || null;
   await requireDashboardAccess(`/connect/static-secret/${encodeURIComponent(connectorId)}`);
   const setup = await getStaticSecretSetup(connectorId).catch((err) => {
     redirect(pageHref(connectorId, { error: errorMessage(err) }));
@@ -182,14 +195,14 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
   }
   const payload = buildStaticSecretPayload(setup, formData);
   if (!payload.ok) {
-    redirect(pageHref(connectorId, { error: payload.error }));
+    redirect(pageHref(connectorId, formErrorParams(payload.error, displayName)));
   }
   const setupFields = collectStaticSecretSetupFields(setup, formData);
 
   let draftConnectionId: string | null = null;
   let target: string;
   try {
-    const draft = await createStaticSecretDraftConnection(connectorId, setupFields);
+    const draft = await createStaticSecretDraftConnection(connectorId, setupFields, { displayName });
     draftConnectionId = draft.connection_id;
     const captured = await captureStaticSecretCredential({
       connectionId: draft.connection_id,
@@ -208,14 +221,14 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       // Synchronous validation rejected the credential — nothing was stored, no
       // run started. Keep the owner on the form with the provider-named reason
       // and their non-secret context preserved, so they can fix and resubmit.
-      target = formRetryHref(connectorId, err.message, setupFields);
+      target = formRetryHref(connectorId, err.message, setupFields, displayName);
     } else if (draftConnectionId) {
       // The draft exists but a later step (capture/run) failed for a non-
       // validation reason; the owner can see and repair it on its durable status
       // surface, so the submitted account is never invisible.
       target = statusHref(draftConnectionId, null);
     } else {
-      target = pageHref(connectorId, { error: errorMessage(err) });
+      target = pageHref(connectorId, formErrorParams(errorMessage(err), displayName));
     }
   }
   redirect(target);

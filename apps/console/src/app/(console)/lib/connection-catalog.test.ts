@@ -31,6 +31,7 @@ import {
 } from "./connection-catalog.ts";
 import {
   sourceSetupAction,
+  sourceSetupContext,
   sourceSetupGuidance,
   sourceSetupSecondaryAction,
   sourceSetupStatus,
@@ -40,6 +41,9 @@ const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
 const SECURE_BROWSER_SESSION_RE = /secure browser session/i;
 const SAVE_SIGN_IN_DETAILS_RE = /sign-in details/i;
+const DATA_PORTABILITY_SEPARATE_RE = /separate from Google Maps Timeline Import/;
+const TIMELINE_API_DISTINCTION_RE = /not exposed by Google's documented Data Portability API/i;
+const TIMELINE_NO_SIGN_IN_RE = /no Google account sign-in is used/i;
 
 function canonicalKeyFromManifestId(connectorId: string): string {
   if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
@@ -418,7 +422,18 @@ test("Google Maps Data Portability is the API-backed provider-auth source, not T
     entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
     ["GOOGLE_DATAPORTABILITY_CLIENT_ID", "GOOGLE_DATAPORTABILITY_CLIENT_SECRET", "GOOGLE_DATAPORTABILITY_REDIRECT_URI"]
   );
+  assert.equal(sourceSetupAction(entry), null, "provider settings must not link to diagnostics as a setup CTA");
+  assert.match(sourceSetupContext(entry) ?? "", DATA_PORTABILITY_SEPARATE_RE);
+  assert.ok(entry.externalDocs.length >= 1, "provider-auth manifest documentation should remain available");
   assert.equal(entry.enrollmentKey, undefined);
+});
+
+test("Google Maps Timeline keeps its import/API distinction visible in the catalog", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps");
+  assert.ok(entry, "google-maps must be in the committed catalog");
+  assert.match(sourceSetupContext(entry) ?? "", TIMELINE_API_DISTINCTION_RE);
+  assert.match(sourceSetupContext(entry) ?? "", TIMELINE_NO_SIGN_IN_RE);
 });
 
 test("claude-code manifest slug maps to the claude_code enrollment key", async () => {

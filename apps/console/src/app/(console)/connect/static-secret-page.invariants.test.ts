@@ -20,15 +20,17 @@ const GET_SETUP = /getStaticSecretSetup\(connectorId\)/;
 // Assert both are imported and referenced — the selector pattern is the invariant.
 const FORM_ACTION_CREATE = /createStaticSecretConnectionAction/;
 const FORM_ACTION_REPLACE = /replaceStaticSecretCredentialAction/;
-const FIELDS_MAP = /setup\.credential_capture\.fields\.map/;
+const FIELDS_MAP = /formContract\.credentialFields\.map/;
+const CONNECTION_NAME_FIELD = /name=\{formContract\.connectionName\.name\}/;
+const CONNECTION_NAME_MAX_LENGTH = /maxLength=\{formContract\.connectionName\.maxLength\}/;
 const HELP_URL = /field\.help_url/;
 const NEW_TAB = /target="_blank"/;
 const NOREFERRER = /rel="noreferrer"/;
 const OPEN_HELP_COPY = /Open provider setup page in a new tab/;
-const SECRET_BOUNDARY_COPY = /agents, MCP clients, REST reads, audit payloads, or the dashboard/;
+const SECRET_BOUNDARY_COPY = /formContract\.credentialSectionDescription/;
 const STORAGE_NOT_READY_COPY = /Credential storage is not ready/;
 const RECONNECT_REPAIR_TITLE = /Reconnect \$\{setup\.display_name\}/;
-const RECONNECT_REPAIR_SUBMIT = /Reconnect account and run sync/;
+const RECONNECT_REPAIR_SUBMIT = /formContract\.primaryActionLabel/;
 const STALE_REPAIR_TITLE = /Update \$\{setup\.display_name\} credential/;
 const STALE_REPAIR_SUBMIT = /Update credential and run sync/;
 const NO_CONNECTOR_BRANCH = /connectorId\s*===/;
@@ -39,7 +41,7 @@ const NO_TRANSIENT_NOTICE = /first_sync_started/;
 
 const ACTION_USE_SERVER = /^"use server";/;
 const REQUIRE_ACCESS = /await requireDashboardAccess\(/;
-const CREATE_DRAFT = /createStaticSecretDraftConnection\(connectorId, setupFields\)/;
+const CREATE_DRAFT = /createStaticSecretDraftConnection\(connectorId, setupFields, \{ displayName \}\)/;
 const CAPTURE_SECRET = /captureStaticSecretCredential\(\{/;
 const AUTO_RESUME = /auto_resume/;
 const RUN_ID_AFTER_CAPTURE = /runIdAfterCapture\(/;
@@ -103,6 +105,8 @@ test("static-secret page is an owner-session capture form, not an agent secret p
   assert.match(src, FORM_ACTION_CREATE);
   assert.match(src, FORM_ACTION_REPLACE);
   assert.match(src, FIELDS_MAP);
+  assert.match(src, CONNECTION_NAME_FIELD);
+  assert.match(src, CONNECTION_NAME_MAX_LENGTH);
   assert.match(src, HELP_URL);
   assert.match(src, NEW_TAB);
   assert.match(src, NOREFERRER);

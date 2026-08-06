@@ -2009,6 +2009,7 @@ export interface StaticSecretDraftConnection {
   connector_id: string;
   connector_instance_id: string;
   credential_kind: string;
+  display_name: string;
   next_step: {
     kind: "capture_static_secret_credential";
     method: "POST";
