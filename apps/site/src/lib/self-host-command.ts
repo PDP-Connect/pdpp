@@ -82,19 +82,6 @@ export const defaultChoices: SelfHostChoices = {
 export type MethodId = "docker" | "compose" | "fly" | "railway";
 
 /**
- * THE GATE. PR #79 (github.com/PDP-Connect/pdpp/pull/79) makes `core` the
- * complete self-host default — one image, SQLite on a persistent volume,
- * bundled Chromium — and the built-image friend gate passed on that code.
- *
- * 2026-08-06: PR #79 merged as 2f0a62ae5, and
- * `ghcr.io/pdp-connect/pdpp/core:main` now resolves anonymously
- * (sha256:a13e92e8…, linux/amd64 + linux/arm64). The published image carries
- * `/usr/bin/google-chrome`, so `core` itself is the browser-capable artifact
- * and there is no separate `core-browser`. Flag flipped.
- */
-const CORE_PUBLISHED = true;
-
-/**
  * The browser-capable image every method names. Since #79 this is `core`:
  * one image that serves the console, the MCP endpoint and the browser-backed
  * connectors, so there is no `-browser` variant to choose between.
@@ -285,19 +272,17 @@ export interface MethodDefinition {
 }
 
 /**
- * Docker (the single `docker run`) is the primary local default, and comes
- * first, but ONLY once `CORE_PUBLISHED` is true — see that constant's
- * comment. Before publication it is left out of this list entirely, so
- * nothing on the page can render a command naming a tag that does not exist
- * yet. Compose is the durable/operator alternative and carries every choice
- * above into the command shown either way. Fly and Railway both go after it,
+ * Docker (the single `docker run`) is the primary local default and comes
+ * first now that the Core image is published. Compose is the durable/operator
+ * alternative and carries every choice above into the command shown either
+ * way. Fly and Railway both go after it,
  * in that order, because both skip the Access/Search row (see the "HIDDEN ON
  * RAILWAY AND FLY" comment in command-tabs.tsx) — Fly ahead of Railway
  * because it is one real shell command a reader runs directly, where Railway
  * is a link to a form.
  */
 export const METHODS: readonly MethodDefinition[] = [
-  ...(CORE_PUBLISHED ? [{ id: "docker", label: "Docker" } as const] : []),
+  { id: "docker", label: "Docker" },
   { id: "compose", label: "Docker Compose" },
   { id: "fly", label: "Fly.io" },
   { id: "railway", label: "Railway" },

@@ -180,7 +180,7 @@ export const textVariants = cva(["[&_strong]:font-medium"], {
     color: "ink",
     intent: "body",
     optical: "auto",
-  }
+  },
 });
 
 /** Section index numeral on intent="title" — used by Text, not a cva variant. */

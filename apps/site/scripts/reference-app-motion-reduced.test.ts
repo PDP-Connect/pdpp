@@ -32,7 +32,7 @@ const COMPONENT_PATH = new URL("../src/components/reference-app.tsx", import.met
 const BRAND_MOTION_PATH = new URL("../../../packages/pdpp-brand/tokens/motion.css", import.meta.url);
 
 const MATCH_MEDIA_REDUCED_MOTION_RE = /matchMedia\(\s*["']\(prefers-reduced-motion: reduce\)["']\s*\)/;
-const REDUCED_JUMPS_TO_RESULT_RE = /prefersReduced\.current[\s\S]*?setPhase\(\s*["']result["']\s*\)/;
+const REDUCED_JUMPS_TO_RESULT_RE = /if\s*\(\s*prefersReduced\s*\)[\s\S]*?setPhase\(\s*["']result["']\s*\)/;
 const REDUCED_DURATION_ZEROES_RE = /reduced\s*\?\s*0\s*:\s*PROJECTION_DURATION_MS/;
 const REDUCED_STAGGER_ZEROES_RE = /reduced\s*\?\s*0\s*:\s*PROJECTION_STAGGER_MS/;
 const PROJECTION_DURATION_CONST_RE = /const PROJECTION_DURATION_MS\s*=\s*(\d+)/;

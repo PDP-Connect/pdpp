@@ -18,9 +18,9 @@
 // in both themes rather than using one of the library's bundled theme presets.
 "use client";
 
-import { renderMermaidSVG, type DiagramColors } from "beautiful-mermaid";
+import { useTheme } from "@pdpp/operator-ui/components/theme/theme-provider";
+import { type DiagramColors, renderMermaidSVG } from "beautiful-mermaid";
 import { useEffect, useState } from "react";
-import { useTheme } from "@/components/theme/theme-provider.tsx";
 
 // Hex equivalents of packages/pdpp-brand/base.css design tokens (:root and
 // html.dark), converted from oklch. Keep in sync if those tokens change.
