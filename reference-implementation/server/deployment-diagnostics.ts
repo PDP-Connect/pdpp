@@ -22,6 +22,7 @@
  */
 
 import { statfs } from "node:fs/promises";
+import type { SemanticEmbeddingWarmStatus } from "./search-semantic.ts";
 
 // Shape of a connector manifest as far as diagnostics care. We do not depend
 // on the validator-strict types here — diagnostics must survive partially-
@@ -54,6 +55,7 @@ export interface DiagnosticsBackend {
   modelCachePath?: () => string | null;
   modelCachePresent?: () => boolean;
   profileId?: () => string;
+  warmStatus?: () => SemanticEmbeddingWarmStatus | null;
 }
 
 export type SemanticIndexState = "built" | "building" | "stale";
@@ -264,6 +266,17 @@ export interface RuntimeCapabilityPosture {
   readonly in_container: boolean;
 }
 
+export const RUNTIME_BROWSER_CAPABILITY_ENV = "PDPP_RUNTIME_BROWSER";
+
+/**
+ * Read the browser capability stamped into a browser-bearing image. The
+ * packaging marker is the authority; diagnostics must not infer capability
+ * from connector lists or filesystem contents.
+ */
+export function runtimeBrowserCapabilityFromEnv(env: DiagnosticsEnv): boolean {
+  return env[RUNTIME_BROWSER_CAPABILITY_ENV] === "1";
+}
+
 export interface ParticipationTuple {
   readonly connector_id: string;
   readonly field: string;
@@ -361,6 +374,7 @@ export interface DeploymentDiagnosticsReport {
       readonly model_cache_path: string | null;
       readonly model_cache_present: boolean | null;
       readonly download_allowed: boolean | null;
+      readonly warm_status: SemanticEmbeddingWarmStatus | null;
     };
     readonly index: {
       readonly kind: VectorIndexKind | null;
@@ -504,10 +518,21 @@ export function computeParticipation(manifests: readonly DiagnosticsManifestEntr
 
 // ─── Warnings ──────────────────────────────────────────────────────────────
 
+function embeddingCacheWarningMessage(warmStatus: SemanticEmbeddingWarmStatus | null): string {
+  if (warmStatus?.status === "downloading") {
+    return "Embedding model preparation is downloading. Lexical retrieval remains available while semantic preparation runs.";
+  }
+  if (warmStatus?.status === "failed") {
+    return `Embedding model preparation failed (${warmStatus.error || "unknown error"}). Lexical retrieval remains available; semantic retrieval is unavailable.`;
+  }
+  return "Configured embedding model is not present in the local cache. Semantic preparation has not completed.";
+}
+
 function buildWarnings(
   input: DeploymentDiagnosticsInput,
   participation: ParticipationSummary,
-  backendAvailable: boolean
+  backendAvailable: boolean,
+  warmStatus: SemanticEmbeddingWarmStatus | null
 ): readonly DiagnosticsWarning[] {
   const warnings: DiagnosticsWarning[] = [];
 
@@ -592,7 +617,7 @@ function buildWarnings(
   if (input.backend?.modelCachePresent && input.backend.modelCachePresent() === false) {
     warnings.push({
       code: "missing_model_cache",
-      message: "Configured embedding model is not present in the local cache. First use will require a download.",
+      message: embeddingCacheWarningMessage(warmStatus),
     });
   }
   if (input.backend?.downloadAllowed && input.backend.downloadAllowed() === false) {
@@ -601,7 +626,7 @@ function buildWarnings(
       warnings.push({
         code: "download_disabled",
         message:
-          "Model download is disabled and no cached model is available. Semantic backend will stay unavailable until a model is cached or downloads are re-enabled.",
+          "Model download is disabled and no cached model is available. This deployment is ready for lexical-only retrieval.",
       });
     }
   }
@@ -1064,9 +1089,10 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
   // with "backend reported unavailable"; keep them distinct because the
   // warnings table distinguishes the two.
   const backendAvailable = input.backend === null ? false : input.backend.available();
+  const warmStatus = input.backend?.warmStatus?.() ?? null;
   const lexicalBackend = normalizeLexicalBackendPosture(input.lexicalBackend);
   const participation = computeParticipation(input.manifests);
-  const warnings = buildWarnings(input, participation, backendAvailable);
+  const warnings = buildWarnings(input, participation, backendAvailable, warmStatus);
 
   return {
     database: {
@@ -1097,6 +1123,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
         model_cache_path: input.backend?.modelCachePath ? input.backend.modelCachePath() : null,
         model_cache_present: input.backend?.modelCachePresent ? input.backend.modelCachePresent() : null,
         profile_id: input.backend?.profileId ? input.backend.profileId() : null,
+        warm_status: warmStatus,
       },
       index: {
         backfill_progress: input.backfillProgress ?? null,

@@ -10,7 +10,7 @@
  * we fail the build rather than silently shipping a re-detected variant.
  *
  * Test strategy:
- *   1. Read source of three streaming modules
+ *   1. Read the adapter sources and the installed Remote Surface CDP backend
  *   2. Strip comments (avoid false positives from JSDoc)
  *   3. Extract ALL string literals matching `Domain.method`
  *   4. Assert they are a subset of the allowlist
@@ -35,11 +35,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  *   patchright; we only call `setDiscoverTargets` to receive
  *   `targetCreated/Destroyed/InfoChanged` events, never `attachToTarget` or
  *   anything that injects script into a child target.
- * Runtime, Network, DOM, Console, etc. would re-introduce the detection
- * vector patchright exists to prevent, so they remain forbidden.
+ * Runtime is allowed only for Remote Surface's documented text-focus detector
+ * and read-only remote-selection expression. Network, DOM, Console, etc.
+ * remain forbidden.
  */
 const ALLOWLIST = new Set<string>([
   // Page domain: framebuffer streaming control — explicitly allowed
+  "Page.addScriptToEvaluateOnNewDocument",
   "Page.enable",
   "Page.startScreencast",
   "Page.stopScreencast",
@@ -55,12 +57,18 @@ const ALLOWLIST = new Set<string>([
   "Input.insertText",
   // Emulation domain: device metrics (viewport, scale, mobile mode) — explicitly allowed
   "Emulation.setDeviceMetricsOverride",
+  "Emulation.setTouchEmulationEnabled",
+  "Emulation.setUserAgentOverride",
   // Target domain: popup discovery. `setDiscoverTargets` is the only
   // *method* we send; the others appear as event-name string literals.
   "Target.setDiscoverTargets",
   "Target.targetCreated",
   "Target.targetDestroyed",
   "Target.targetInfoChanged",
+  "Runtime.enable",
+  "Runtime.addBinding",
+  "Runtime.bindingCalled",
+  "Runtime.evaluate",
 ]);
 
 /**
@@ -77,8 +85,9 @@ function stripComments(src: string): string {
 }
 
 /**
- * Extract all Domain.method literals from source.
- * Catches both string literals ('Page.enable') and template strings.
+ * Extract all quoted Domain.method literals from source.
+ * Restricting this to strings avoids mistaking browser APIs such as
+ * `CSS.supports()` inside the Remote Surface implementation for CDP calls.
  */
 function extractCdpMethods(src: string): Set<string> {
   const methods = new Set<string>();
@@ -86,18 +95,18 @@ function extractCdpMethods(src: string): Set<string> {
   // This is broad but intentional: we want to catch anything that LOOKS
   // like a CDP method, then fail if it's not in the allowlist.
   const regex =
-    /\b(Page|Input|Emulation|Runtime|Network|DOM|Console|Debugger|Target|Browser|Security|Tracing|Profiler|HeapProfiler|Storage|Cast|ServiceWorker|Animation|Accessibility|CSS|Database|DeviceOrientation|Fetch|HeadlessExperimental|IndexedDB|LayerTree|Log|Memory|Overlay|Performance|Schema|SystemInfo|WebAuthn|Audits|BackgroundService|Inspector|IO|Media)\.[A-Za-z][A-Za-z0-9_]*\b/g;
+    /["'`](Page|Input|Emulation|Runtime|Network|DOM|Console|Debugger|Target|Browser|Security|Tracing|Profiler|HeapProfiler|Storage|Cast|ServiceWorker|Animation|Accessibility|CSS|Database|DeviceOrientation|Fetch|HeadlessExperimental|IndexedDB|LayerTree|Log|Memory|Overlay|Performance|Schema|SystemInfo|WebAuthn|Audits|BackgroundService|Inspector|IO|Media)\.([A-Za-z][A-Za-z0-9_]*)["'`]/g;
 
   let match: RegExpExecArray | null = regex.exec(src);
   while (match !== null) {
-    methods.add(match[0]);
+    methods.add(`${match[1]}.${match[2]}`);
     match = regex.exec(src);
   }
   return methods;
 }
 
 function inspectStreamingFile(filename: string): Set<string> {
-  const filepath = join(__dirname, filename);
+  const filepath = filename.startsWith("/") ? filename : join(__dirname, filename);
   return extractCdpMethods(stripComments(readFileSync(filepath, "utf8")));
 }
 
@@ -146,7 +155,12 @@ function assertNoViolations(violations: { file: string; method: string }[]): voi
 }
 
 test("streaming code only sends allowlisted CDP methods", () => {
-  const files = ["cdp-adapter.ts", "cdp-companion.ts", "run-target-registry.ts"];
+  const files = [
+    "cdp-adapter.ts",
+    "cdp-companion.ts",
+    "run-target-registry.ts",
+    join(__dirname, "../../node_modules/@opendatalabs/remote-surface/dist/backends/cdp/backend.js"),
+  ];
 
   const { allMethods, violations } = inspectStreamingFiles(files);
 

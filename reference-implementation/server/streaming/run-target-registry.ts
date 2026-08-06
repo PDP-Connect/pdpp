@@ -1030,6 +1030,16 @@ function verifyRegistryNonce(state: RegistryState, { runId, presentedToken }: Pr
 function clearRegistryNonce(state: RegistryState, { runId }: RunInteractionKey): void {
   if (isNonEmptyString(runId)) {
     state.nonceHashes.delete(runId);
+    // A run nonce is the connector's authority to mutate these records. Once
+    // the controller clears that authority at terminalization, no
+    // interaction target from the run may remain controllable. The per-
+    // interaction DELETE remains the normal completion path; this sweep is
+    // the crash/timeout safety net.
+    for (const [key, record] of state.records) {
+      if (record.runId === runId) {
+        state.records.delete(key);
+      }
+    }
   }
 }
 

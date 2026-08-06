@@ -35,6 +35,9 @@ const OWNER_FACING_DEMO_COPY_RE =
   /jump to an id|same call any client makes|window capped|names overlap across connections/i;
 const ACTIVE_RANGE_HELPER_RE = /activeRangeKey\(\{\s*since:\s*data\.since,\s*until:\s*data\.until\s*\}\)/;
 const STREAM_RECORDS_HREF_HELPER_RE = /function buildStreamRecordsHref\(\s*recordsBasePath: string,/;
+const LIVE_PAGE_ROUTE_MAP_RECORDS_BASE_RE = /recordsBasePath=\{dashboardRoutes\.section\.records\}/g;
+const CANVAS_RECORDS_BASE_PROP_RE = /recordsBasePath: string;/;
+const CANVAS_DERIVED_RECORDS_BASE_RE = /explorePath\.replace\([^)]*\)[^;\n]*\/records/;
 // The record-detail href is built by the pure buildRecordDetailHref helper in
 // ./explore-control-state.ts (unit-tested there) from clean path segments — NOT
 // by appending the record key to the stream href (which carries `?order=desc`;
@@ -337,6 +340,23 @@ test("Explore selected-record inspector exposes the complete scoped stream", asy
     "truncated Explore views must tell owners how to reach the complete record set"
   );
   assert.match(src, OPEN_COMPLETE_STREAM_RE, "single-stream Explore views must expose a complete-stream link");
+});
+
+test("live Explore binds all record links to the console route map", async () => {
+  const page = await readFile(LIVE_PAGE_FILE, "utf8");
+  const canvas = await readFile(EXPLORE_CANVAS_FILE, "utf8");
+
+  assert.equal(
+    page.match(LIVE_PAGE_ROUTE_MAP_RECORDS_BASE_RE)?.length,
+    2,
+    "both live and demo Explore renders must receive the route-map-owned records base path"
+  );
+  assert.match(canvas, CANVAS_RECORDS_BASE_PROP_RE, "the client canvas must accept a serialized records base path");
+  assert.doesNotMatch(
+    canvas,
+    CANVAS_DERIVED_RECORDS_BASE_RE,
+    "Explore must not derive the records route by rewriting the Explore path"
+  );
 });
 
 test("Slice 4: undeclared records render the honest generic key/value card, not a bare summary or guessed card", async () => {

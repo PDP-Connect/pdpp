@@ -5,13 +5,15 @@ that support remote Streamable HTTP MCP servers.
 
 If you do not yet have a reachable self-hosted deployment, start with the
 [self-host quickstart](selfhost-quickstart.md). Come back here once
-`/dashboard/deployment` reports healthy.
+`/deployment` reports healthy.
 
-The dashboard setup page is `/dashboard/connect`. Use that page for the normal
+The dashboard setup page is `/connect`. Use that page for the normal
 copy-paste path; this runbook is the expanded reference.
 
 ## Prerequisites
 
+- Hosted Claude.ai and ChatGPT require a publicly reachable HTTPS origin. A
+  `localhost` URL works only for local clients such as Claude Code or Codex.
 - The reference deployment is reachable over HTTPS.
 - Owner login works for the deployment dashboard.
 - Public metadata resolves from the same origin:
@@ -29,7 +31,9 @@ Your MCP server URL is always:
 
 Substitute `<PDPP_REFERENCE_ORIGIN>` with the value you set in `.env.docker`.
 For a RunPod CPU Pod this is `https://<podid>-3002.proxy.runpod.net/mcp`.
-For a local Docker host this is typically `http://localhost:3002/mcp`.
+For the one-command Core Docker quickstart this is typically
+`http://localhost:3000/mcp`. A development Compose stack may use
+`http://localhost:3002/mcp`.
 
 Use this URL in every MCP client setup step below — not some other operator's
 deployment (for example `pdpp.example.com/mcp`), which only serves data
@@ -134,7 +138,7 @@ chat transcript. A trusted local owner agent reads the credential file at call
 time and uses the bearer only against owner-bearer-supported `/v1/*` REST
 routes.
 
-The dashboard token page at `/dashboard/deployment/tokens` may still be useful
+The dashboard token page at `/deployment/tokens` may still be useful
 as a low-level self-export/debug tool for operators who need to inspect the raw
 REST bearer flow. Keep that path secondary: the bearer is broader than a PDPP
 grant, should not be used with `/mcp`, and should not be copied into a
@@ -253,7 +257,7 @@ around it by weakening the compact default.
 
 Event-subscription management is not part of the normal `/mcp` tool surface.
 The operator console surfaces every subscription on the deployment at
-`/dashboard/event-subscriptions` with a read-only list, a peek pane, and one
+`/event-subscriptions` with a read-only list, a peek pane, and one
 safety-valve disable.
 
 See [`docs/operator/event-subscriptions.md`](event-subscriptions.md) for the

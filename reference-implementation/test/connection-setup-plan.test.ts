@@ -156,8 +156,8 @@ test("setup planner keeps browser-bound connectors proof-gated before live proof
     connectorKey: "chase",
     manifest: manifest("chase", { browser: { required: true } }),
   });
-  assert.equal(chase.catalogDisposition, "browser_bound_runbook");
-  assert.equal(chase.enrollmentKey, undefined);
+  assert.equal(chase.catalogDisposition, "browser_collector_manual");
+  assert.equal(chase.enrollmentKey, "chase");
 });
 
 test("setup planner keeps unproven static-secret connectors proof-gated", () => {

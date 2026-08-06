@@ -14,7 +14,7 @@
  */
 
 import type { BrowserContext, Locator, Page } from "playwright";
-import { manualAction } from "../browser-handoff.ts";
+import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 
@@ -40,6 +40,8 @@ const MEMBER_ID_INPUT = 'input[name="memberId"]';
 const MAX_OTP_ATTEMPTS = 3;
 const MANUAL_LOGIN_MESSAGE =
   "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
+const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
+  "No optional USAA sign-in details were provided. Sign in to USAA in the secure browser, then respond success.";
 // `classifyUsaaLoginStepFailure` returning `source_unavailable` proves only
 // that USAA's page copy matches known outage boilerplate — it does NOT prove
 // the provider is actually down. It still reaches manual_action unless this
@@ -245,22 +247,19 @@ async function requestManualLoginRecovery(
   { context, page, sendInteraction }: EnsureUsaaSessionArgs,
   message: string = MANUAL_LOGIN_MESSAGE
 ): Promise<boolean> {
-  await manualAction(
-    {
-      page,
-      reason: "login",
-      message,
-      timeoutSeconds: 1800,
-    },
-    sendInteraction
-  );
   // Re-probe the session after the manual step rather than trusting the
   // interaction's completion status. The operator who completes login in a
   // visible browser may end the interaction as cancelled/error (timeout, or
   // an explicit "I'm already in" cancel) yet still have an active session.
   // Mirrors the chatgpt and reddit fallbacks: completing the manual step is a
   // signal to re-check ground truth, not an instruction to end the run.
-  return verifyLoggedIn(context, page);
+  return await manualBrowserLogin({
+    message,
+    page,
+    probe: () => verifyLoggedIn(context, page),
+    sendInteraction,
+    timeoutSeconds: 1800,
+  });
 }
 
 async function requestOtp(sendInteraction: EnsureUsaaSessionArgs["sendInteraction"], attempt: number): Promise<string> {
@@ -420,7 +419,19 @@ export async function ensureUsaaSession({
   const username = process.env.USAA_USERNAME;
   const password = process.env.USAA_PASSWORD;
   if (!(username && password)) {
-    throw new Error("USAA_USERNAME/PASSWORD not set; cannot auto-login");
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+    if (
+      await manualBrowserLogin({
+        message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
+        page,
+        probe: () => verifyLoggedIn(context, page),
+        sendInteraction,
+        timeoutSeconds: 1800,
+      })
+    ) {
+      return true;
+    }
+    throw new Error("USAA manual login did not establish a session");
   }
 
   try {

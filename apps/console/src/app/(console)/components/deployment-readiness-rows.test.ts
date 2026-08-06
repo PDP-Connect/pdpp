@@ -134,24 +134,86 @@ test("embeddingCacheRow is info when backend not configured", () => {
   assert.equal(row.status, "info");
 });
 
-test("embeddingCacheRow is error when uncached and download disabled", () => {
+test("embeddingCacheRow is ready lexical-only when uncached and download disabled", () => {
   const row = embeddingCacheRow({
     ...baseInputs,
     embeddingBackendAvailable: false,
     embeddingDownloadAllowed: false,
     embeddingModelCachePresent: false,
   });
-  assert.equal(row.status, "error");
+  assert.equal(row.status, "ok");
+  assert.match(row.detail, /lexical-only retrieval is ready/i);
 });
 
-test("embeddingCacheRow is warn while cache is warming", () => {
+test("embeddingCacheRow reports an explicit downloading lifecycle state", () => {
   const row = embeddingCacheRow({
     ...baseInputs,
     embeddingBackendAvailable: false,
     embeddingDownloadAllowed: true,
     embeddingModelCachePresent: false,
+    embeddingWarmStatus: {
+      cache_bytes: 128,
+      cache_files: 2,
+      error: null,
+      failed_at: null,
+      last_observed_at: "2026-08-05T18:00:02.000Z",
+      last_progress_at: "2026-08-05T18:00:02.000Z",
+      mode: "semantic",
+      ready_at: null,
+      started_at: "2026-08-05T18:00:00.000Z",
+      status: "downloading",
+    },
   });
   assert.equal(row.status, "warn");
+  assert.match(row.detail, /downloading/);
+  assert.match(row.detail, /128 bytes across 2 files/);
+  assert.doesNotMatch(`${row.detail} ${row.hint ?? ""}`, /warming/);
+});
+
+test("embeddingCacheRow reports failed preparation without blocking lexical retrieval", () => {
+  const row = embeddingCacheRow({
+    ...baseInputs,
+    embeddingBackendAvailable: false,
+    embeddingDownloadAllowed: true,
+    embeddingModelCachePresent: false,
+    embeddingWarmStatus: {
+      cache_bytes: 0,
+      cache_files: 0,
+      error: "transformer_compute_failed",
+      failed_at: "2026-08-05T18:00:02.000Z",
+      last_observed_at: "2026-08-05T18:00:02.000Z",
+      last_progress_at: "2026-08-05T18:00:00.000Z",
+      mode: "semantic",
+      ready_at: null,
+      started_at: "2026-08-05T18:00:00.000Z",
+      status: "failed",
+    },
+  });
+  assert.equal(row.status, "warn");
+  assert.match(row.detail, /preparation failed/);
+  assert.match(row.detail, /Lexical retrieval remains ready/);
+});
+
+test("embeddingCacheRow reports not_started instead of claiming a generic warm-up", () => {
+  const row = embeddingCacheRow({
+    ...baseInputs,
+    embeddingModelCachePresent: false,
+    embeddingWarmStatus: {
+      cache_bytes: 0,
+      cache_files: 0,
+      error: null,
+      failed_at: null,
+      last_observed_at: "2026-08-05T18:00:00.000Z",
+      last_progress_at: null,
+      mode: "semantic",
+      ready_at: null,
+      started_at: null,
+      status: "not_started",
+    },
+  });
+  assert.equal(row.status, "warn");
+  assert.match(row.detail, /has not started/);
+  assert.doesNotMatch(`${row.detail} ${row.hint ?? ""}`, /warming/);
 });
 
 // ─── MCP refresh-token advertisement ────────────────────────────────────────

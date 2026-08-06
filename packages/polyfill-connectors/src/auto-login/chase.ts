@@ -33,6 +33,7 @@
  */
 
 import type { BrowserContext, Locator, Page } from "playwright";
+import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const DASHBOARD_URL = "https://secure.chase.com/web/auth/dashboard";
@@ -54,6 +55,8 @@ const METHOD_LABELS: Record<string, string> = {
   call: "Call me",
   email: "Email me",
 };
+const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
+  "No optional Chase sign-in details were provided. Sign in to Chase in the secure browser, then respond success.";
 
 interface EnsureChaseSessionArgs {
   context: BrowserContext;
@@ -312,7 +315,17 @@ export async function ensureChaseSession({ context, page, sendInteraction }: Ens
   const username = process.env.CHASE_USERNAME;
   const password = process.env.CHASE_PASSWORD;
   if (!(username && password)) {
-    throw new Error("CHASE_USERNAME/PASSWORD not set");
+    const manualProbe = await manualBrowserLogin({
+      message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
+      page: activePage,
+      probe: () => probeChaseSession(context, activePage),
+      sendInteraction,
+      timeoutSeconds: 1800,
+    });
+    if (manualProbe.loggedIn) {
+      return true;
+    }
+    throw new Error("chase_login_manual_incomplete");
   }
 
   await activePage.goto(LOGON_URL, {

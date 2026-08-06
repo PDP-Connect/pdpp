@@ -6,10 +6,8 @@
  * semantic to fall back to. */
 /** biome-ignore-all lint/a11y/noNoninteractiveTabindex: focusable so the surface receives keystrokes
  * for the streaming companion. */
-/** biome-ignore-all lint/correctness/useImageSize: streaming frames are dynamic data URLs at the
- * active viewport size; the container's aspect-ratio style avoids layout shift. */
-/** biome-ignore-all lint/performance/noImgElement: streaming frames are base64 data URLs that change
- * many times per second — Next.js <Image> would re-run optimization for each frame. */
+/** biome-ignore-all lint/correctness/useImageSize: n.eko/media telemetry still observes dynamic
+ * remote media, while the direct-CDP canvas is sized by Remote Surface's assembled session. */
 "use client";
 
 import {
@@ -21,7 +19,6 @@ import {
   assessClipboardCapabilities,
   assessMobileKeyboardViewportResize,
   type buildViewportPayload,
-  CdpClientSurface,
   type ClipboardCapabilities,
   type ClipboardDirectionPolicy,
   type ClipboardHelperMode,
@@ -41,6 +38,8 @@ import {
   nekoMediaSettleTargetsMatch,
   nextPresentationKeyboardHoldUntilMs,
   nextPresentationOrientationHoldUntilMs,
+  type RemoteSurfaceSession,
+  type RemoteSurfaceViewerHandle,
   reduceStreamViewerControl,
   type StreamViewerCommand,
   type StreamViewportInfo,
@@ -87,8 +86,8 @@ import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  type FormEvent,
   type RefObject,
+  type SyntheticEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -115,6 +114,7 @@ import {
   createPlaygroundSeenRegistry,
   type PlaygroundSeenRegistry,
 } from "./playground-event-dedupe.ts";
+import { classifyReadyBackend, decideCdpMobileControls, type ReadyBackend } from "./stream-cdp-mobile-controls.ts";
 import {
   activateMobileKeyboardAffordance,
   createMobileKeyboardFocusState,
@@ -124,6 +124,7 @@ import {
   readRemoteEditableRect,
   transitionMobileKeyboardFocus,
 } from "./stream-keyboard-focus.ts";
+import { claimPopupNotice, createPopupNoticeSeenRegistry } from "./stream-popup-notice-dedupe.ts";
 import { beginPresentationSession } from "./stream-presentation-session.ts";
 import { classifyStreamReachFailure, type StreamReachProbeResult } from "./stream-reach-diagnostics.ts";
 import { createStreamSurfaceMeasureCoordinator } from "./stream-surface-measure-gate.ts";
@@ -132,7 +133,6 @@ import {
   createActiveViewerPresses,
   trackActiveViewerPress,
 } from "./stream-viewer-active-presses.ts";
-import { createPdppCdpTransport } from "./stream-viewer-cdp-transport.ts";
 import {
   MOBILE_USER_AGENT_RE,
   mapPointerToStreamViewport,
@@ -141,6 +141,10 @@ import {
   viewportLayoutFromInfo,
 } from "./stream-viewer-geometry.ts";
 import { parseAttachedMessage } from "./stream-viewer-protocol.ts";
+import {
+  createPdppRemoteSurfaceTransport,
+  type PdppRemoteSurfaceTransport,
+} from "./stream-viewer-remote-surface-transport.ts";
 import { getMountedNekoViewerSession } from "./stream-viewer-session-readiness.ts";
 import { createViewportWriters } from "./stream-viewport-writer.ts";
 import { sampleVideoSharpnessTelemetry } from "./stream-visual-quality.ts";
@@ -384,6 +388,14 @@ interface NekoViewerRef {
   current: NekoViewerHandle | null;
 }
 
+function getMountedRemoteSurfaceSession(viewer: RemoteSurfaceViewerHandle | null): RemoteSurfaceSession | null {
+  if (viewer?.getLifecycleState() !== "mounted") {
+    return null;
+  }
+  const session = viewer.getSession();
+  return session && !("getViewportState" in session) ? session : null;
+}
+
 interface RemoteKeyboardFocusContext {
   keyboardBlurTimeoutRef: { current: ReturnType<typeof setTimeout> | null };
   keyboardFocusStateRef: { current: MobileKeyboardFocusState };
@@ -406,6 +418,13 @@ interface StreamDebugEventRecord {
   seq: number;
   type: string;
   viewerId: string;
+}
+
+function errorMessageOrUndefined(err: unknown): string | undefined {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return err === undefined ? undefined : String(err);
 }
 
 function classifyMintError(err: unknown): ConnectionStatus {
@@ -463,6 +482,7 @@ function markRemoteKeyboardFocused(
     viewerRef,
   }: RemoteKeyboardFocusContext
 ): void {
+  const hadAwaitingGesture = keyboardFocusStateRef.current.gesture?.phase === "awaiting-confirmation";
   const focusTransition = transitionMobileKeyboardFocus(keyboardFocusStateRef.current, {
     atMs: Date.now(),
     rect: remoteEditableRect,
@@ -493,10 +513,10 @@ function markRemoteKeyboardFocused(
       inputType,
       reason: "remote-focus-event-is-not-a-trusted-local-gesture",
     });
-    if (focusTransition.effect === "show-affordance") {
+    if (focusTransition.state.affordanceVisible) {
       logDebug("neko.keyboard_focus.affordance", {
         inputType,
-        reason: "remote-focus-confirmed-after-trusted-touch",
+        reason: hadAwaitingGesture ? "remote-focus-confirmed-after-trusted-touch" : "remote-focus-before-local-gesture",
         remoteEditableRect,
       });
     } else if (!remoteEditableRect) {
@@ -563,6 +583,26 @@ function updateAdapterRemoteInputFocus(
     return;
   }
   adapter.blurTextInput();
+}
+
+/**
+ * Routes to the n.eko viewer session for `readyBackend === "neko"`, the
+ * mounted CDP surface for `readyBackend === "cdp"`, and fails closed (`null`)
+ * for `"unknown"` — the pre-`backend_ready`/unrecognized-backend window must
+ * not accidentally fall through to either mounted surface.
+ */
+function mountedSurfaceForBackend<Neko, Cdp>(
+  readyBackend: ReadyBackend,
+  nekoSurface: Neko,
+  cdpSurface: Cdp
+): Neko | Cdp | null {
+  if (readyBackend === "neko") {
+    return nekoSurface;
+  }
+  if (readyBackend === "cdp") {
+    return cdpSurface;
+  }
+  return null;
 }
 
 function isNekoKeyboardProxyFocused(container: Element | null): boolean {
@@ -1050,27 +1090,6 @@ function pointerDebugPayload({
       y: Math.round(event.clientY - containerBox.top),
     },
   };
-}
-
-function inputPostDebugPayload(payload: Record<string, unknown>): StreamDebugPayload {
-  const type = typeof payload.type === "string" ? payload.type : "unknown";
-  const result: StreamDebugPayload = { type };
-  for (const key of ["action", "button", "deltaX", "deltaY", "id", "modifiers", "x", "y"] as const) {
-    if (payload[key] !== undefined) {
-      result[key] = payload[key];
-    }
-  }
-  if (typeof payload.key === "string") {
-    result.key = keyDebugName(payload.key);
-  }
-  if (typeof payload.text === "string") {
-    result.textLength = payload.text.length;
-  }
-  return result;
-}
-
-function shouldLogInputPost(payload: Record<string, unknown>): boolean {
-  return !(payload.action === "mousemove" || payload.action === "touchmove");
 }
 
 function useStreamDebugLogger({
@@ -1768,6 +1787,7 @@ interface StreamStageProps {
  * still mints fresh from inside the effect, but only after multiple failures
  * — StrictMode's effect cleanup correctly cancels a single in-flight re-mint.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This existing stage owns the stream/session state machine; the explicit backend gate is part of that same lifecycle boundary.
 function StreamStage({
   connectorName,
   initialSession,
@@ -1780,12 +1800,19 @@ function StreamStage({
   runId,
   status,
 }: StreamStageProps) {
-  const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [nekoSession, setNekoSession] = useState<NekoSessionInfo | null>(null);
+  // Explicit ready-backend classification, driven only by an actual
+  // `backend_ready` SSE event (see the listener below). Starts "unknown" and
+  // MUST fail closed until then — do not derive this from `nekoSession`
+  // presence/absence, which conflates "not yet neko" with "confirmed cdp"
+  // and would transiently expose the CDP mobile controls / CDP clipboard
+  // policy before any backend has actually announced itself.
+  const [readyBackend, setReadyBackend] = useState<ReadyBackend>("unknown");
   const [clipboardSheetOpen, setClipboardSheetOpen] = useState(false);
   const [clipboardNoticeOpen, setClipboardNoticeOpen] = useState(false);
   const [remoteClipboard, setRemoteClipboard] = useState<RemoteClipboardBuffer | null>(null);
   const [remoteInputSensitive, setRemoteInputSensitive] = useState(false);
+  const [mountedCdpViewer, setMountedCdpViewer] = useState<RemoteSurfaceViewerHandle | null>(null);
   const [viewportInfo, setViewportInfo] = useState<StreamViewportInfo | null>(null);
   const [localSurfaceViewportInfo, setLocalSurfaceViewportInfo] = useState<StreamViewportInfo | null>(null);
   const [presentationViewportInfo, setPresentationViewportInfo] = useState<StreamViewportInfo | null>(null);
@@ -1809,6 +1836,10 @@ function StreamStage({
   const [containerNode, setContainerNode] = useState<HTMLDivElement | null>(null);
   const inputUrlRef = useRef<string | null>(null);
   const viewportUrlRef = useRef<string | null>(null);
+  const clipboardUrlRef = useRef<string | null>(null);
+  const cdpRemoteSurfaceTransportRef = useRef<PdppRemoteSurfaceTransport | null>(null);
+  const pendingCdpFrameRef = useRef<Record<string, unknown> | null>(null);
+  const pendingCdpKeyboardFocusRef = useRef<Record<string, unknown> | null>(null);
   // State-changing stream routes require the HttpOnly controller attachment
   // minted by the SSE response. Do not race the initial ResizeObserver ahead
   // of that response: the server intentionally rejects an unattached viewer.
@@ -1829,6 +1860,7 @@ function StreamStage({
   // burst of openings always shows the latest for the full window rather than
   // dismissing mid-read.
   const popupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const popupNoticeSeenRegistryRef = useRef(createPopupNoticeSeenRegistry());
   const keyboardBlurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyboardFocusStateRef = useRef(createMobileKeyboardFocusState());
   const [keyboardAffordanceVisible, setKeyboardAffordanceVisible] = useState(false);
@@ -1837,11 +1869,14 @@ function StreamStage({
   const clipboardPolicy = decideClipboardPolicy({
     capabilities: clipboardCapabilities,
     directionPolicy: DEFAULT_CLIPBOARD_DIRECTION_POLICY,
-    hasStreamSession: Boolean(initialSession.input_url),
+    hasStreamSession: Boolean(initialSession.input_url) && readyBackend !== "unknown",
     helperMode: normalizeClipboardHelperMode(nekoSession?.stealthMode),
-    // Step-5 ruling 1: scope the corner keyboard button to n.eko
-    // (remote-surface) sessions; cdp and other backends keep it hidden.
-    sessionBackend: nekoSession ? "neko" : "unknown",
+    sessionBackend: readyBackend,
+  });
+  const cdpMobileControls = decideCdpMobileControls({
+    backend: readyBackend,
+    clipboardPolicy,
+    pointerCoarse: clipboardCapabilities.pointerCoarse,
   });
   const clipboardCapabilitiesRef = useRef(clipboardCapabilities);
   const clipboardPolicyRef = useRef(clipboardPolicy);
@@ -1894,7 +1929,7 @@ function StreamStage({
   clipboardCapabilitiesRef.current = clipboardCapabilities;
   clipboardPolicyRef.current = clipboardPolicy;
   viewportInfoRef.current = viewportInfo;
-  currentSurfaceKeyRef.current = nekoSession?.browserSessionId ?? "cdp";
+  currentSurfaceKeyRef.current = nekoSession?.browserSessionId ?? browserSessionIdRef.current ?? "cdp";
   localSurfaceViewportInfoRef.current = localSurfaceViewportInfo;
   presentationViewportInfoRef.current = presentationViewportInfo;
 
@@ -1925,6 +1960,13 @@ function StreamStage({
     localSurfaceViewportInfoRef.current = null;
     presentationViewportInfoRef.current = null;
     stablePresentationViewportInfoRef.current = null;
+    cdpRemoteSurfaceTransportRef.current?.setPresentationAttachmentReady(false);
+    cdpRemoteSurfaceTransportRef.current = null;
+    pendingCdpFrameRef.current = null;
+    pendingCdpKeyboardFocusRef.current = null;
+    popupNoticeSeenRegistryRef.current = createPopupNoticeSeenRegistry();
+    keyboardFocusStateRef.current = createMobileKeyboardFocusState();
+    setKeyboardAffordanceVisible(false);
     presentationControlStateRef.current = createStreamViewerControlState();
     presentationKeyboardFocusedRef.current = false;
     presentationKeyboardHoldUntilRef.current = 0;
@@ -1932,7 +1974,8 @@ function StreamStage({
     setLocalSurfaceViewportInfo(null);
     setPresentationViewportInfo(null);
     setNekoSession(null);
-    setImgSrc(null);
+    setMountedCdpViewer(null);
+    setReadyBackend("unknown");
   }, []);
 
   useEffect(() => {
@@ -2102,8 +2145,10 @@ function StreamStage({
           hasViewport: Boolean(payload.viewport),
           viewport: payload.viewport ?? null,
         });
+        cdpRemoteSurfaceTransportRef.current?.setPresentationAttachmentReady(true);
         callbacks.onAttached();
       });
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: backend_ready is the single lifecycle transition point for both n.eko and direct-CDP surfaces.
       source.addEventListener("backend_ready", (ev) => {
         const parsed = parseBackendReadyMessage(streamEventData(ev));
         if (!parsed.ok) {
@@ -2125,6 +2170,7 @@ function StreamStage({
           const browserSessionId = browserSessionIdRef.current;
           if (!browserSessionId) {
             logDebug("neko.session.skip", { reason: "missing-attached-browser-session-id" });
+            setReadyBackend("unknown");
             return;
           }
           const entryPath = payload.iframe_path.replace(TRAILING_SLASH_RE, "");
@@ -2153,7 +2199,7 @@ function StreamStage({
                 : `${entryPath}/session`,
             stealthMode: payload.stealth_mode,
           });
-          setImgSrc(null);
+          setReadyBackend("neko");
           requestNekoSurfaceMeasure(browserSessionId);
           return;
         }
@@ -2166,13 +2212,27 @@ function StreamStage({
         setLocalSurfaceViewportInfo(null);
         setPresentationViewportInfo(null);
         setNekoSession(null);
+        // A `backend: "neko"` event missing its iframe_path falls through to
+        // here too — that is a malformed/incomplete neko-ready signal, not a
+        // confirmed cdp backend, so it must classify as "unknown" rather than
+        // "cdp" (see classifyReadyBackend: only an exact "cdp" or "neko"
+        // string is trusted).
+        setReadyBackend(payload.backend === "neko" ? "unknown" : classifyReadyBackend(payload.backend));
       });
       source.addEventListener("frame", (ev) => {
         const parsed = parseFrameMessage(streamEventData(ev));
         if (!parsed.ok) {
           return;
         }
-        setImgSrc(`data:image/jpeg;base64,${parsed.value.data_base64}`);
+        const frame = parsed.value as unknown as Record<string, unknown>;
+        // SSE can win the race with BrowserSurface's mount effect; the ref is
+        // populated by that effect once the assembled session subscribes.
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: the transport is mounted by a sibling surface effect and may be null during the attach race.
+        if (cdpRemoteSurfaceTransportRef.current) {
+          cdpRemoteSurfaceTransportRef.current.receiveSseMessage("frame", frame);
+        } else {
+          pendingCdpFrameRef.current = frame;
+        }
         onStatus(LIVE);
         logDebug("overlay_cleared", {
           backend: "cdp-frame",
@@ -2200,6 +2260,18 @@ function StreamStage({
           return;
         }
         const payload = parsed.value;
+        const browserSessionId = browserSessionIdRef.current;
+        const popupClaim = claimPopupNotice(popupNoticeSeenRegistryRef.current, {
+          browserSessionId,
+          targetId: payload.targetId,
+        });
+        if (popupClaim === "duplicate") {
+          logDebug("stream.popup_opened.duplicate", {
+            browserSessionId,
+            targetId: payload.targetId,
+          });
+          return;
+        }
         setPopup({
           message: `${connectorName} opened a new tab. The action may continue there.`,
           targetId: payload.targetId,
@@ -2296,6 +2368,14 @@ function StreamStage({
         const parsed = parseKeyboardFocusMessage(eventData);
         if (!parsed.ok) {
           return;
+        }
+        const focusPayload = parsed.value as unknown as Record<string, unknown>;
+        // The focus event uses the same attach-time race as frames.
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: the transport is mounted by a sibling surface effect and may be null during the attach race.
+        if (cdpRemoteSurfaceTransportRef.current) {
+          cdpRemoteSurfaceTransportRef.current.receiveSseMessage("keyboard_focus", focusPayload);
+        } else {
+          pendingCdpKeyboardFocusRef.current = focusPayload;
         }
         applyRemoteKeyboardFocus(parsed.value, {
           keyboardBlurTimeoutRef,
@@ -2396,6 +2476,7 @@ function StreamStage({
     let currentBrowserSessionId = initial.browser_session_id;
     inputUrlRef.current = initial.input_url;
     viewportUrlRef.current = initial.viewport_url;
+    clipboardUrlRef.current = initial.clipboard_url;
     presentationAttachmentReadyRef.current = false;
     viewerUrl = initial.viewer_url;
     logDebug("stream_session_loaded", {
@@ -2457,7 +2538,13 @@ function StreamStage({
       }
       inputUrlRef.current = minted.input_url;
       viewportUrlRef.current = minted.viewport_url;
+      clipboardUrlRef.current = minted.clipboard_url;
       presentationAttachmentReadyRef.current = false;
+      cdpRemoteSurfaceTransportRef.current?.setPresentationAttachmentReady(false);
+      cdpRemoteSurfaceTransportRef.current = null;
+      browserSessionIdRef.current = null;
+      pendingCdpFrameRef.current = null;
+      pendingCdpKeyboardFocusRef.current = null;
       viewerUrl = minted.viewer_url;
       currentBrowserSessionId = minted.browser_session_id;
       logDebug("stream_session_minted", {
@@ -2474,6 +2561,9 @@ function StreamStage({
       setClipboardSheetOpen(false);
       setRemoteClipboard(null);
       setRemoteInputSensitive(false);
+      setMountedCdpViewer(null);
+      setReadyBackend("unknown");
+      setNekoSession(null);
       keyboardResizeStateRef.current = createMobileKeyboardResizeState();
       controlStateRef.current = createStreamViewerControlState();
       localViewportSampleRef.current = readLocalViewportSample();
@@ -2586,10 +2676,6 @@ function StreamStage({
           preAttachFailures = 0;
           totalAttempts = 0;
           presentationAttachmentReadyRef.current = true;
-          // The first ResizeObserver callback may have arrived before the SSE
-          // response set the controller cookie. Re-measure after attachment so
-          // that suppressed viewport update is retried under the same session.
-          queueMicrotask(() => requestViewportMeasureRef.current?.("stream-attached"));
         },
         onTransportError: () => {
           if (cancelled || !mountedRef.current) {
@@ -2654,6 +2740,7 @@ function StreamStage({
       cancelled = true;
       mountedRef.current = false;
       presentationAttachmentReadyRef.current = false;
+      cdpRemoteSurfaceTransportRef.current?.setPresentationAttachmentReady(false);
       clearBackoff();
       closeCurrentSource();
       if (popupTimeoutRef.current) {
@@ -2900,6 +2987,9 @@ function StreamStage({
 
   const measureAndPost = useCallback(
     (source: string) => {
+      if (readyBackend !== "neko") {
+        return;
+      }
       const observedNode = containerRef.current;
       if (!observedNode) {
         return;
@@ -2916,7 +3006,7 @@ function StreamStage({
       recordLocalSurfaceViewport(source);
       postViewport(rect.width, rect.height, { source });
     },
-    [logDebug, postViewport, recordLocalSurfaceViewport]
+    [containerRef, logDebug, postViewport, readyBackend, recordLocalSurfaceViewport]
   );
 
   useEffect(() => {
@@ -3127,7 +3217,13 @@ function StreamStage({
   // the remote browser should follow the user's settled control surface, not
   // every transient browser-chrome animation frame.
   useEffect(() => {
-    if (typeof window === "undefined" || !containerNode) {
+    if (typeof window === "undefined" || !containerNode || readyBackend !== "neko") {
+      if (readyBackend === "cdp") {
+        logDebug("viewport.host.skip-single-authority", {
+          authority: "remote-surface.session",
+          reason: "assembled-canvas-session-owns-viewport-match",
+        });
+      }
       return;
     }
     const scheduleSource = (source: string) => {
@@ -3184,7 +3280,14 @@ function StreamStage({
       visualViewport?.removeEventListener("scroll", visualViewportScrollListener);
       screenOrientation?.removeEventListener?.("change", screenOrientationListener);
     };
-  }, [containerNode, recordLocalSurfaceViewport, schedulePresentationViewport, scheduleTrailingViewportReconcile]);
+  }, [
+    containerNode,
+    logDebug,
+    readyBackend,
+    recordLocalSurfaceViewport,
+    schedulePresentationViewport,
+    scheduleTrailingViewportReconcile,
+  ]);
 
   useEffect(
     () => () => {
@@ -3205,7 +3308,8 @@ function StreamStage({
   );
 
   const handleMobileCopy = useCallback(() => {
-    logDebug("neko.corner.copy", {
+    const streamBackend = readyBackend;
+    logDebug(`${streamBackend}.corner.copy`, {
       phase: "start",
       remoteBuffered: Boolean(remoteClipboard),
       surface: clipboardPolicy.surface,
@@ -3216,7 +3320,7 @@ function StreamStage({
         policy: clipboardPolicy,
         remoteClipboard,
         setCopyState: (state) => {
-          logDebug("neko.corner.copy", {
+          logDebug(`${streamBackend}.corner.copy`, {
             phase: "device-write-result",
             state,
             surface: clipboardPolicy.surface,
@@ -3226,7 +3330,7 @@ function StreamStage({
           }
         },
       }).catch((err) => {
-        logDebug("neko.corner.copy", {
+        logDebug(`${streamBackend}.corner.copy`, {
           error: err instanceof Error ? err.message : String(err),
           phase: "device-write-error",
           surface: clipboardPolicy.surface,
@@ -3238,9 +3342,13 @@ function StreamStage({
     requestBrowserCopyFromSheet({
       logDebug,
       policy: clipboardPolicy,
-      session: getMountedNekoViewerSession(nekoViewerRef.current, nekoSurfaceAdapterRef.current),
+      session: mountedSurfaceForBackend(
+        readyBackend,
+        getMountedNekoViewerSession(nekoViewerRef.current, nekoSurfaceAdapterRef.current),
+        getMountedRemoteSurfaceSession(mountedCdpViewer)
+      ),
       setCopyState: (state) => {
-        logDebug("neko.corner.copy", {
+        logDebug(`${streamBackend}.corner.copy`, {
           phase: "browser-copy-result",
           state,
           surface: clipboardPolicy.surface,
@@ -3250,21 +3358,47 @@ function StreamStage({
         }
       },
     }).catch((err) => {
-      logDebug("neko.corner.copy", {
+      logDebug(`${streamBackend}.corner.copy`, {
         error: err instanceof Error ? err.message : String(err),
         phase: "browser-copy-error",
         surface: clipboardPolicy.surface,
       });
       setClipboardSheetOpen(true);
     });
-  }, [clipboardPolicy, logDebug, remoteClipboard]);
+  }, [clipboardPolicy, logDebug, mountedCdpViewer, nekoSession, readyBackend, remoteClipboard]);
 
   const handleMobilePaste = useCallback(() => {
-    logDebug("neko.corner.paste", { phase: "open-sheet", surface: clipboardPolicy.surface });
+    logDebug(`${readyBackend}.corner.paste`, { phase: "open-sheet", surface: clipboardPolicy.surface });
     setClipboardSheetOpen(true);
-  }, [clipboardPolicy.surface, logDebug]);
+  }, [clipboardPolicy.surface, logDebug, readyBackend]);
 
   const handleKeyboard = useCallback(() => {
+    if (readyBackend === "cdp") {
+      // This remains in the button event's synchronous call stack. Moving it
+      // to an effect or promise continuation loses the mobile browser's
+      // trusted focus activation and leaves the OS keyboard closed.
+      const session = getMountedRemoteSurfaceSession(mountedCdpViewer);
+      let focused = false;
+      try {
+        if (session) {
+          session.focusKeyboard();
+          focused = true;
+        }
+      } catch {
+        focused = false;
+      }
+      logDebug("cdp.corner.keyboard", {
+        sessionMounted: mountedCdpViewer?.getLifecycleState() === "mounted",
+        sessionPresent: !!session,
+        sessionState: mountedCdpViewer?.getLifecycleState() ?? null,
+        focused,
+        source: "corner-control",
+      });
+      return;
+    }
+    if (!nekoSession) {
+      return;
+    }
     const affordanceTap = keyboardFocusStateRef.current.affordanceVisible;
     const viewer = nekoViewerRef.current;
     const adapter = nekoSurfaceAdapterRef.current;
@@ -3305,7 +3439,7 @@ function StreamStage({
       controllerTextareaFocused: isNekoKeyboardProxyFocused(containerRef.current),
       snapshot: readSurfaceDebugSnapshot(containerRef.current),
     });
-  }, [logDebug]);
+  }, [logDebug, mountedCdpViewer, nekoSession, readyBackend]);
 
   // Ending a response-required browser session is destructive — it tears down
   // the live session and abandons whatever login/manual step is mid-flight.
@@ -3338,7 +3472,7 @@ function StreamStage({
 
   return (
     <div className="relative flex h-full w-full flex-col bg-black" data-pdpp-stream-debug={debugEnabled}>
-      {nekoSession ? (
+      {nekoSession && (
         <NekoSurface
           adapterRef={nekoSurfaceAdapterRef}
           applyViewport={applyRemoteSurfaceViewport}
@@ -3356,27 +3490,78 @@ function StreamStage({
           viewerRef={nekoViewerRef}
           viewportInfo={nekoViewportInfo}
         />
-      ) : (
+      )}
+      {!nekoSession && readyBackend === "cdp" && (
         <BrowserSurface
-          clipboardPolicy={clipboardPolicy}
+          canForwardNativePasteEvent={clipboardPolicy.canForwardNativePasteEvent}
+          clipboardUrlRef={clipboardUrlRef}
           containerRef={containerRef}
           debugEnabled={debugEnabled}
-          imgSrc={imgSrc}
+          initialViewport={viewportInfo}
           inputUrlRef={inputUrlRef}
+          key={browserSessionIdRef.current ?? "cdp"}
           logDebug={logDebug}
+          onTransportMounted={(transport) => {
+            cdpRemoteSurfaceTransportRef.current = transport;
+            if (!transport) {
+              return;
+            }
+            const pendingFrame = pendingCdpFrameRef.current;
+            // A frame may arrive before the assembled viewer subscribes.
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: pending SSE state is populated by an event handler outside this render path.
+            if (pendingFrame) {
+              transport.receiveSseMessage("frame", pendingFrame);
+              pendingCdpFrameRef.current = null;
+            }
+            const pendingFocus = pendingCdpKeyboardFocusRef.current;
+            // A focus event may arrive before the assembled viewer subscribes.
+            // biome-ignore lint/suspicious/noUnnecessaryConditions: pending SSE state is populated by an event handler outside this render path.
+            if (pendingFocus) {
+              transport.receiveSseMessage("keyboard_focus", pendingFocus);
+              pendingCdpKeyboardFocusRef.current = null;
+            }
+          }}
+          onViewerMounted={setMountedCdpViewer}
+          presentationAttachmentReadyRef={presentationAttachmentReadyRef}
           status={status}
           surfaceRef={setStreamSurfaceNode}
           viewportInfo={viewportInfo}
+          viewportUrlRef={viewportUrlRef}
         />
+      )}
+      {!nekoSession && readyBackend !== "cdp" && (
+        <div
+          className="pdpp-stream-fit-host flex flex-1 items-center justify-center overflow-hidden"
+          ref={setStreamSurfaceNode}
+        >
+          <div className="pdpp-stream-frame relative flex h-full w-full items-center justify-center">
+            <SurfacePlaceholder display={status.display} />
+          </div>
+        </div>
       )}
       <CornerControls
         connectorName={connectorName}
         keyboardAffordanceVisible={keyboardAffordanceVisible}
         location={location}
         onClose={handleCloseRequest}
-        onCopy={nekoSession && clipboardPolicy.showMobileCopyButton ? handleMobileCopy : undefined}
-        onKeyboard={nekoSession && clipboardPolicy.showKeyboardButton ? handleKeyboard : undefined}
-        onPaste={nekoSession && clipboardPolicy.showMobilePasteButton ? handleMobilePaste : undefined}
+        onCopy={
+          (readyBackend === "neko" && clipboardPolicy.showMobileCopyButton) ||
+          (readyBackend === "cdp" && mountedCdpViewer && cdpMobileControls.showCopy)
+            ? handleMobileCopy
+            : undefined
+        }
+        onKeyboard={
+          (readyBackend === "neko" && clipboardPolicy.showKeyboardButton) ||
+          (readyBackend === "cdp" && mountedCdpViewer && cdpMobileControls.showKeyboard)
+            ? handleKeyboard
+            : undefined
+        }
+        onPaste={
+          (readyBackend === "neko" && clipboardPolicy.showMobilePasteButton) ||
+          (readyBackend === "cdp" && mountedCdpViewer && cdpMobileControls.showPaste)
+            ? handleMobilePaste
+            : undefined
+        }
         status={status}
       />
       {closeConfirmArmed ? (
@@ -3391,19 +3576,32 @@ function StreamStage({
       />
       {status.display === "trouble" ? <TroubleToast message={status.troubleMessage} /> : null}
       {popup ? <PopupToast message={popup.message} /> : null}
-      {nekoSession &&
+      {readyBackend !== "unknown" &&
+      (nekoSession || mountedCdpViewer) &&
       remoteClipboard &&
       clipboardPolicy.showClipboardSheet &&
       !clipboardSheetOpen &&
       clipboardNoticeOpen ? (
         <ClipboardNoticeToast />
       ) : null}
-      {nekoSession && clipboardPolicy.showClipboardSheet ? (
+      {readyBackend !== "unknown" && (nekoSession || mountedCdpViewer) && clipboardPolicy.showClipboardSheet ? (
         <ClipboardSheet
           capabilities={clipboardCapabilities}
           connectorName={connectorName}
-          getSurface={() => nekoSurfaceAdapterRef.current}
-          getViewerSession={() => getMountedNekoViewerSession(nekoViewerRef.current, nekoSurfaceAdapterRef.current)}
+          getPasteText={() => {
+            if (readyBackend === "neko") {
+              const adapter = nekoSurfaceAdapterRef.current;
+              return adapter?.getLifecycleState() === "mounted" ? (text) => adapter.pasteText(text) : null;
+            }
+            return cdpRemoteSurfaceTransportRef.current?.sendClipboardText ?? null;
+          }}
+          getViewerSession={() =>
+            mountedSurfaceForBackend(
+              readyBackend,
+              getMountedNekoViewerSession(nekoViewerRef.current, nekoSurfaceAdapterRef.current),
+              getMountedRemoteSurfaceSession(mountedCdpViewer)
+            )
+          }
           logDebug={logDebug}
           onClearRemoteClipboard={() => setRemoteClipboard(null)}
           onOpenChange={setClipboardSheetOpen}
@@ -4568,132 +4766,132 @@ function NekoSurface({
 }
 
 function BrowserSurface({
-  clipboardPolicy,
+  canForwardNativePasteEvent,
+  clipboardUrlRef,
   containerRef,
   debugEnabled,
-  imgSrc,
+  initialViewport,
   inputUrlRef,
   logDebug,
+  onTransportMounted,
+  onViewerMounted,
+  presentationAttachmentReadyRef,
   surfaceRef,
   status,
   viewportInfo,
+  viewportUrlRef,
 }: {
-  clipboardPolicy: ClipboardPolicyDecision;
+  canForwardNativePasteEvent: boolean;
+  clipboardUrlRef: RefObject<string | null>;
   containerRef: RefObject<HTMLDivElement | null>;
   debugEnabled: boolean;
-  imgSrc: string | null;
+  initialViewport: StreamViewportInfo | null;
   inputUrlRef: RefObject<string | null>;
   logDebug: StreamDebugLogger;
+  onTransportMounted: (transport: PdppRemoteSurfaceTransport | null) => void;
+  onViewerMounted: (viewer: RemoteSurfaceViewerHandle | null) => void;
+  presentationAttachmentReadyRef: RefObject<boolean>;
   surfaceRef: (node: HTMLDivElement | null) => void;
   status: ConnectionStatus;
   viewportInfo: StreamViewportInfo | null;
+  viewportUrlRef: RefObject<string | null>;
 }) {
-  // The aspect of the connector's browser viewport. Letterboxed inside the
-  // overlay's full screen — that's correct: the operator's phone aspect
-  // ratio isn't the connector's.
-  const aspect = viewportInfo ? `${viewportInfo.width} / ${viewportInfo.height}` : "16 / 10";
-  // Numeric width/height ratio for the `min(100cqw, 100cqh * ratio)`
-  // contain-fit sizing below — CSS `aspect-ratio` cannot itself express
-  // "grow to fill, but never exceed either axis" (see the frame's `style`).
-  const aspectRatioValue = viewportInfo && viewportInfo.height > 0 ? viewportInfo.width / viewportInfo.height : 1.6;
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const softKeyboardInputRef = useRef<HTMLInputElement | null>(null);
-  const adapterRef = useRef<CdpClientSurface | null>(null);
-  const viewportInfoRef = useRef(viewportInfo);
-  const clipboardPolicyRef = useRef(clipboardPolicy);
-  viewportInfoRef.current = viewportInfo;
-  clipboardPolicyRef.current = clipboardPolicy;
+  const seedViewport =
+    initialViewport && initialViewport.width > 0 && initialViewport.height > 0
+      ? { height: initialViewport.height, width: initialViewport.width }
+      : { height: 720, width: 1280 };
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const transportRef = useRef<PdppRemoteSurfaceTransport | null>(null);
+  const onTransportMountedRef = useRef(onTransportMounted);
+  const onViewerMountedRef = useRef(onViewerMounted);
+  onTransportMountedRef.current = onTransportMounted;
+  onViewerMountedRef.current = onViewerMounted;
 
   useSurfaceDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "cdp-frame", viewportInfo });
   useVisualQualityDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "cdp-frame", viewportInfo });
-
-  const sendCdpInput = useCallback(
-    async (payload: Record<string, unknown>) => {
-      const url = inputUrlRef.current;
-      if (!url) {
-        logDebug("stream.input.skip", {
-          payload: inputPostDebugPayload(payload),
-          reason: "missing-input-url",
-        });
-        return;
-      }
-      const logInput = shouldLogInputPost(payload);
-      if (logInput) {
-        logDebug("stream.input.post.start", {
-          payload: inputPostDebugPayload(payload),
-        });
-      }
-      try {
-        const response = await fetch(url, {
-          body: JSON.stringify(payload),
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          method: "POST",
-        });
-        if (logInput) {
-          logDebug("stream.input.post.result", {
-            ok: response.ok,
-            payload: inputPostDebugPayload(payload),
-            status: response.status,
-          });
-        }
-      } catch (err) {
-        if (logInput) {
-          logDebug("stream.input.post.error", {
-            error: err instanceof Error ? err.message : String(err),
-            payload: inputPostDebugPayload(payload),
-          });
-        }
-        /* a single dropped input is non-fatal; the user will retry */
-      }
-    },
-    [inputUrlRef, logDebug]
-  );
 
   useEffect(() => {
     const node = containerRef.current;
     if (!node) {
       return;
     }
-    const adapter = new CdpClientSurface({
-      client: {
-        cdp: createPdppCdpTransport(sendCdpInput),
-        mediaSink: {
-          onFrame() {
-            // Frames arrive on the console's existing SSE stream.
-          },
-        },
-        getClipboardPolicy: () => clipboardPolicyRef.current,
-        getViewportInfo: () => viewportInfoRef.current,
-        getFrameElement: () => imgRef.current,
-        getSoftKeyboardElement: () => softKeyboardInputRef.current,
-        onInputDebug: (event, payload) => {
-          logDebug(event, {
-            ...payload,
-            snapshot:
-              event === "surface.cdp-frame.soft_keyboard.focus"
-                ? readSurfaceDebugSnapshot(containerRef.current)
-                : undefined,
-          });
-        },
-      },
-      config: { kind: "cdp" },
-    });
-    adapterRef.current = adapter;
-    adapter.mount(node).catch((err) => {
-      logDebug("surface.cdp-frame.adapter_mount_error", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
-    return () => {
-      adapterRef.current = null;
-      adapter.unmount().catch((err) => {
-        logDebug("surface.cdp-frame.adapter_unmount_error", {
-          error: err instanceof Error ? err.message : String(err),
-        });
+    const gateNativePaste = (event: Event): void => {
+      if (canForwardNativePasteEvent) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      logDebug("stream.remote_surface.paste.skip", {
+        phase: "native-event",
+        reason: "clipboard-policy",
       });
     };
-  }, [containerRef, logDebug, sendCdpInput]);
+    // Remote Surface remains the only input authority. This capture-phase
+    // policy gate merely prevents a disallowed browser paste from reaching
+    // its input controller; explicit sheet paste uses the transport directly.
+    node.addEventListener("paste", gateNativePaste, true);
+    return () => node.removeEventListener("paste", gateNativePaste, true);
+  }, [canForwardNativePasteEvent, containerRef, logDebug]);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    const canvas = canvasRef.current;
+    if (!(node && canvas)) {
+      return;
+    }
+    let disposed = false;
+    const transport = createPdppRemoteSurfaceTransport({
+      clipboardUrlRef,
+      inputUrlRef,
+      logDebug,
+      presentationAttachmentReadyRef,
+      viewportUrlRef,
+    });
+    const viewer = createRemoteSurfaceViewer({
+      canvas,
+      initialViewport: seedViewport,
+      mediaPlane: "canvas-frames",
+      touchMode: "native",
+      transport,
+    });
+    transportRef.current = transport;
+    transport.setPresentationAttachmentReady(presentationAttachmentReadyRef.current);
+    try {
+      const mountPromise = viewer.mount(node);
+      if (!disposed) {
+        onTransportMountedRef.current(transport);
+        onViewerMountedRef.current(viewer);
+      }
+      mountPromise.catch((error) => {
+        logDebug("surface.cdp-frame.viewer_mount_error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    } catch (error) {
+      logDebug("surface.cdp-frame.viewer_mount_error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return () => {
+      disposed = true;
+      transport.setPresentationAttachmentReady(false);
+      if (transportRef.current === transport) {
+        transportRef.current = null;
+        onTransportMountedRef.current(null);
+        onViewerMountedRef.current(null);
+      }
+      viewer.unmount();
+    };
+  }, [
+    clipboardUrlRef,
+    containerRef,
+    inputUrlRef,
+    logDebug,
+    presentationAttachmentReadyRef,
+    seedViewport.height,
+    seedViewport.width,
+    viewportUrlRef,
+  ]);
 
   return (
     <div className="pdpp-stream-fit-host flex flex-1 items-center justify-center overflow-hidden">
@@ -4702,78 +4900,20 @@ function BrowserSurface({
         className="pdpp-stream-frame relative focus-within:ring-2 focus-within:ring-primary/40 focus-within:ring-inset"
         ref={surfaceRef}
         role="application"
-        // `width`/`height: 100%` together with `aspect-ratio` is
-        // over-constrained: the browser resolves width first, then derives
-        // height from the ratio, which can exceed the flex parent's
-        // available height with no cap to shrink back — the box overflows
-        // the dialog and gets silently cropped by its `overflow: hidden`
-        // (reproduced live: a 16/10 frame rendered 1976x1235 inside a
-        // 1976x960 host). CSS width/height/aspect-ratio alone can't express
-        // "contain inside both axes, pick whichever is binding" — that needs
-        // container-query units (see `.pdpp-stream-fit-host` in globals.css,
-        // `container-type: size` on the parent, `cqw`/`cqh` here) so the
-        // frame is sized against the ACTUAL available box on both axes at
-        // once, the same "contain" fit `object-fit: contain` gives a real
-        // replaced element, applied to this plain div.
-        style={{
-          aspectRatio: aspect,
-          maxHeight: "100%",
-          maxWidth: "100%",
-          width: `min(100cqw, calc(100cqh * ${aspectRatioValue}))`,
-        }}
         tabIndex={0}
       >
-        {imgSrc ? (
-          <img
-            alt={`${status.display === "live" ? "Live" : "Buffering"} connector browser frame`}
-            className="h-full w-full select-none object-contain"
-            draggable={false}
-            ref={imgRef}
-            src={imgSrc}
-          />
-        ) : (
-          <SurfacePlaceholder display={status.display} />
-        )}
-        {/* Mobile soft-keyboard sentinel. Visually hidden but focusable: the
-            OS won't open the soft keyboard without a focused text field, so
-            we focus this input on first touch (gated to `(pointer: coarse)`).
-            Keystrokes bubble up to the surface's onKeyDown/onKeyUp — no
-            handlers here, no double-dispatch. Not display:none / not
-            visibility:hidden — those make focus() a silent no-op on iOS. */}
-        <input
-          aria-hidden
-          autoCapitalize="off"
-          autoCorrect="off"
-          inputMode="text"
-          onChange={() => {
-            /* controlled at "" so the soft keyboard sees a fresh empty field
-               every keystroke and never accumulates a value or autofills */
-          }}
-          ref={softKeyboardInputRef}
-          spellCheck={false}
-          style={{
-            background: "transparent",
-            border: 0,
-            caretColor: "transparent",
-            color: "transparent",
-            height: "1px",
-            left: 0,
-            margin: 0,
-            opacity: 0,
-            padding: 0,
-            pointerEvents: "none",
-            position: "absolute",
-            top: 0,
-            width: "1px",
-          }}
-          type="text"
-          value=""
+        <SurfacePlaceholder display={status.display} />
+        <canvas
+          className="absolute inset-0 m-auto block max-h-full max-w-full select-none"
+          height={seedViewport.height}
+          ref={canvasRef}
+          style={{ height: "auto", width: "auto" }}
+          width={seedViewport.width}
         />
       </div>
     </div>
   );
 }
-
 function SurfacePlaceholder({ display }: { display: DisplayState }) {
   return (
     <div className="flex h-full w-full items-center justify-center p-8">
@@ -4899,14 +5039,14 @@ async function sendSheetTextToBrowser({
   policy,
   setLocalText,
   setPasteState,
-  surface,
+  pasteText,
 }: {
   localText: string;
   logDebug: StreamDebugLogger;
   policy: ClipboardPolicyDecision;
   setLocalText: (text: string) => void;
   setPasteState: (state: ClipboardPasteState) => void;
-  surface: NekoSurfaceAdapter | null;
+  pasteText: ((text: string) => Promise<boolean>) | null;
 }) {
   const localToRemoteAllowed =
     policy.directionPolicy === "local-to-remote" || policy.directionPolicy === "bidirectional-text";
@@ -4921,14 +5061,22 @@ async function sendSheetTextToBrowser({
     });
     return;
   }
-  const surfaceState = surface?.getLifecycleState() ?? null;
+  const surfaceState = pasteText ? "mounted" : null;
   let pasted = false;
-  if (surface && surfaceState === "mounted") {
-    pasted = await surface.pasteText(localText);
+  let pasteError: unknown;
+  if (pasteText && surfaceState === "mounted") {
+    try {
+      pasted = await pasteText(localText);
+    } catch (err) {
+      // A transport rejection is a failed explicit control action, never a
+      // successful paste. Keep the local text available for retry.
+      pasteError = err;
+    }
   }
   logDebug(
     "clipboard.local_to_remote",
     clipboardDebugMetadata(localText, {
+      error: errorMessageOrUndefined(pasteError),
       method: "control.paste",
       phase: "send-result",
       policy: policy.directionPolicy,
@@ -5016,7 +5164,7 @@ async function requestBrowserCopyFromSheet({
   logDebug: StreamDebugLogger;
   policy: ClipboardPolicyDecision;
   setCopyState: (state: ClipboardCopyState) => void;
-  session: NekoRemoteSurfaceSession | null;
+  session: NekoRemoteSurfaceSession | RemoteSurfaceSession | null;
 }) {
   const remoteToLocalAllowed =
     policy.directionPolicy === "remote-to-local" || policy.directionPolicy === "bidirectional-text";
@@ -5031,8 +5179,15 @@ async function requestBrowserCopyFromSheet({
     });
     return;
   }
-  let dispatched = false;
+  let surfaceState: string | null = null;
   if (session) {
+    surfaceState =
+      "getLifecycleState" in session && typeof session.getLifecycleState === "function"
+        ? String(session.getLifecycleState())
+        : "mounted";
+  }
+  let dispatched = false;
+  if (session && surfaceState === "mounted") {
     dispatched = await session.copyRemoteSelection();
   }
   logDebug("clipboard.remote_to_local", {
@@ -5041,7 +5196,7 @@ async function requestBrowserCopyFromSheet({
     policy: policy.directionPolicy,
     sent: dispatched,
     surface: policy.surface,
-    surfaceState: session ? "mounted" : null,
+    surfaceState,
   });
   if (!dispatched) {
     setCopyState("failed");
@@ -5051,7 +5206,7 @@ async function requestBrowserCopyFromSheet({
 function ClipboardSheet({
   capabilities,
   connectorName,
-  getSurface,
+  getPasteText,
   getViewerSession,
   logDebug,
   onClearRemoteClipboard,
@@ -5063,8 +5218,8 @@ function ClipboardSheet({
 }: {
   capabilities: ClipboardCapabilities;
   connectorName: string;
-  getSurface: () => NekoSurfaceAdapter | null;
-  getViewerSession: () => NekoRemoteSurfaceSession | null;
+  getPasteText: () => ((text: string) => Promise<boolean>) | null;
+  getViewerSession: () => NekoRemoteSurfaceSession | RemoteSurfaceSession | null;
   logDebug: StreamDebugLogger;
   onClearRemoteClipboard: () => void;
   onOpenChange: (open: boolean) => void;
@@ -5100,7 +5255,7 @@ function ClipboardSheet({
       policy,
       setLocalText,
       setPasteState,
-      surface: getSurface(),
+      pasteText: getPasteText(),
     }).catch((err) => {
       setPasteState("failed");
       logDebug("clipboard.local_to_remote", {
@@ -5668,7 +5823,7 @@ function StreamInteractionDock({
     });
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
     if (interactionKind === "otp") {
       const trimmed = code.trim();

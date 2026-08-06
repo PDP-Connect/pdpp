@@ -39,6 +39,7 @@ import {
   BROWSER_SURFACE_STREAM_BASE_URL_ENV,
   DEADLINE_TIMEOUT,
   manualAction,
+  manualBrowserLogin,
   prepareBrowserInteractionTarget,
   prepareManualAction,
   resolveWsUrlForExactPage,
@@ -594,6 +595,43 @@ test("manualAction calls sendInteraction with kind=manual_action and the generat
   assert.equal(response.request_id, sent.request_id);
 });
 
+test("manualAction unregisters its exact target after response or send failure", async () => {
+  const env = envWithFullStreaming();
+  const page = makeMockPage();
+  const unregistered: string[] = [];
+  const resolveStreamingRegistration = () =>
+    Promise.resolve({
+      runId: "run_test_123",
+      register: () => Promise.resolve(true),
+      unregister: ({ interactionId }: { interactionId: string }) => {
+        unregistered.push(interactionId);
+        return Promise.resolve(true);
+      },
+    });
+
+  const success = await manualAction(
+    { env, message: "Continue after the response.", page, resolveStreamingRegistration },
+    (req) =>
+      Promise.resolve({
+        request_id: req.request_id ?? "",
+        status: "success",
+        type: "INTERACTION_RESPONSE",
+      })
+  );
+  assert.equal(success.status, "success");
+  assert.equal(unregistered.length, 1);
+  assert.match(unregistered[0] ?? "", /^int_\d+_[0-9a-f]{8}$/);
+
+  await assert.rejects(
+    manualAction({ env, message: "Continue after the failure.", page, resolveStreamingRegistration }, () =>
+      Promise.reject(new Error("interaction transport failed"))
+    ),
+    /interaction transport failed/
+  );
+  assert.equal(unregistered.length, 2, "failed interaction must still unregister its exact target");
+  assert.notEqual(unregistered[0], unregistered[1]);
+});
+
 test("manualAction passes optional schema through to sendInteraction", async () => {
   const page = makeMockPage();
   const schema = { type: "object", properties: { ok: { type: "string" } } } as const;
@@ -724,6 +762,36 @@ test("manualAction omits schema/timeout when not provided", async () => {
   );
   assert.equal(received?.schema, undefined);
   assert.equal(received?.timeout_seconds, undefined);
+});
+
+test("manualBrowserLogin re-probes after the owner handoff instead of trusting the response", async () => {
+  const page = makeMockPage();
+  const requests: InteractionRequest[] = [];
+  let probeCalls = 0;
+  const result = await manualBrowserLogin({
+    env: {},
+    message: "Sign in in the secure browser.",
+    page,
+    probe: (): Promise<string> => {
+      probeCalls += 1;
+      return Promise.resolve("session-live");
+    },
+    sendInteraction: (req) => {
+      requests.push(req);
+      return Promise.resolve({
+        type: "INTERACTION_RESPONSE",
+        request_id: req.request_id ?? "",
+        status: "cancelled",
+      });
+    },
+    timeoutSeconds: 1800,
+  });
+
+  assert.equal(result, "session-live");
+  assert.equal(probeCalls, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.kind, "manual_action");
+  assert.equal(requests[0]?.timeout_seconds, 1800);
 });
 
 // ─── withDeadline + bounded metadata read ──────────────────────────────────

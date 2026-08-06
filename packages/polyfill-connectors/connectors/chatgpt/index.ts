@@ -8,8 +8,8 @@
  * endpoint and falls back to the existing per-id detail fetch for omissions or
  * endpoint unavailability.
  *
- * Uses an isolated patchright profile under `~/.pdpp/profiles/chatgpt/` via
- * `acquireIsolatedBrowser`. Initial credentialing happens through the
+ * Uses an isolated Patchright profile under the deployment-owned profile root
+ * (host default `~/.pdpp/profiles/chatgpt/`) via `acquireIsolatedBrowser`. Initial credentialing happens through the
  * connector's auto-login flow (`src/auto-login/chatgpt.ts`), which drives
  * login + 2FA via `INTERACTION kind=credentials`/`kind=otp` from a normal
  * connector run. All subsequent fetches happen via page.evaluate(fetch)

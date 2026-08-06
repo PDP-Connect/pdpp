@@ -1405,6 +1405,21 @@ test("clearNonce is idempotent", () => {
   registry.shutdown();
 });
 
+test("clearNonce removes every target owned by the terminal run", () => {
+  const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
+  registry.registerNonce({ nonce: "tok", runId: "run_a" });
+  registry.register({ deviceId: "dev_owner", interactionId: "int_a", runId: "run_a", wsUrl: VALID_WS });
+  registry.register({ deviceId: "dev_owner", interactionId: "int_b", runId: "run_a", wsUrl: VALID_WS_2 });
+  registry.register({ deviceId: "dev_owner", interactionId: "int_other", runId: "run_b", wsUrl: VALID_WS });
+
+  registry.clearNonce({ runId: "run_a" });
+
+  assert.equal(registry.get({ interactionId: "int_a", runId: "run_a" }), null);
+  assert.equal(registry.get({ interactionId: "int_b", runId: "run_a" }), null);
+  assert.equal(registry.get({ interactionId: "int_other", runId: "run_b" }), VALID_WS);
+  registry.shutdown();
+});
+
 test("shutdown clears the nonce store", () => {
   const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
   registry.registerNonce({ nonce: "tok", runId: "run_a" });

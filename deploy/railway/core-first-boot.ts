@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // First-boot credential bootstrap for the standalone Core image
-// (Dockerfile targets `railway-core` / `platform-core`).
+// (Dockerfile targets the public `core` image; compatibility aliases remain available.)
 //
 // Managed platforms make owner credentials a deploy-time prompt (Railway) or a
 // launch flag (Fly). A bare `docker run` has neither, and the runtime's
@@ -38,7 +38,7 @@ export const DEFAULT_DATA_DIR = "/var/lib/pdpp";
 export const OWNER_PASSWORD_FILENAME = "owner-password";
 export const CREDENTIAL_KEY_FILENAME = "credential-encryption-key";
 
-const LOG_PREFIX = "[railway-core]";
+const LOG_PREFIX = "[core]";
 const BANNER_RULE = "─".repeat(64);
 const TRAILING_SLASHES_PATTERN = /\/+$/;
 

@@ -180,14 +180,80 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
   }
 }
 
+// Browser/SSO connections (ChatGPT and every other browser-bound connector)
+// have no stored credential at all — copy here must never say "credential" or
+// imply a secret was expected. Progress (an active/last run) is real evidence
+// even before any material is captured; see `deriveSetupState`'s
+// browser_session handling in the RI runtime projection.
+function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescription {
+  switch (status.setup_state) {
+    case "active":
+      return describeActiveConnectionState(status);
+    case "first_sync_running":
+      return {
+        detail: "Login is complete and the first sync is in progress. This page updates as it finishes.",
+        headline: "First sync running",
+        tone: "pending",
+      };
+    case "first_sync_pending":
+      return {
+        detail: "Login is complete and the first sync is queued. This page updates as it runs.",
+        headline: "First sync starting",
+        tone: "pending",
+      };
+    case "awaiting_browser_login":
+      return {
+        detail: "Continue in the secure browser to finish signing in. This page updates once login completes.",
+        headline: "Sign-in needed",
+        tone: "pending",
+      };
+    case "first_sync_failed":
+      return {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
+        detail: status.last_error?.remediation ?? "Continue in the secure browser and start the first sync again.",
+        headline: "First sync failed",
+        tone: "failed",
+      };
+    case "paused":
+      return { detail: "This connection is paused.", headline: "Connection paused", tone: "pending" };
+    case "revoked":
+      return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
+    default:
+      return {
+        detail: "This connection is being set up. This page updates as the setup progresses.",
+        headline: "Setting up",
+        tone: "pending",
+      };
+  }
+}
+
 function describeState(status: ConnectionSetupStatus): StatusDescription {
-  return status.setup_kind === "manual_upload" ? describeImportState(status) : describeConnectionState(status);
+  if (status.setup_kind === "manual_upload") {
+    return describeImportState(status);
+  }
+  if (status.setup_kind === "browser_session") {
+    return describeBrowserSessionState(status);
+  }
+  return describeConnectionState(status);
 }
 
 function setupHref(status: ConnectionSetupStatus): string {
   const encoded = encodeURIComponent(status.connector_id);
   if (status.setup_kind === "manual_upload") {
     return `/connect/manual-upload/${encoded}?connection_id=${encodeURIComponent(status.connection_id)}`;
+  }
+  if (status.setup_kind === "browser_session") {
+    // A revoked browser-session shell can't be relaunched — send the owner
+    // back to the connect form to start a fresh enrollment instead of the
+    // launch route, which requires a live (draft or active) connection.
+    if (status.status === "revoked") {
+      return `/connect/browser-session/${encoded}`;
+    }
+    const params = new URLSearchParams({
+      connection_id: status.connection_id,
+      draft: status.status === "draft" ? "1" : "0",
+    });
+    return `/connect/browser-session/${encoded}/launch?${params.toString()}`;
   }
   return `/connect/static-secret/${encoded}`;
 }
@@ -203,7 +269,13 @@ function sourceRecordsHref(status: ConnectionSetupStatus): string {
 }
 
 function retryLabel(status: ConnectionSetupStatus): string {
-  return status.setup_kind === "manual_upload" ? "Choose another file and retry" : "Re-enter credential and retry";
+  if (status.setup_kind === "manual_upload") {
+    return "Choose another file and retry";
+  }
+  if (status.setup_kind === "browser_session") {
+    return "Start browser setup again";
+  }
+  return "Re-enter credential and retry";
 }
 
 function displayValue(value: string | number | null | undefined): string {
@@ -597,12 +669,16 @@ export default async function ConnectionSetupStatusPage({
               ) : null}
             </>
           ) : null}
-          {described.tone === "failed" || status.setup_state === "awaiting_credential" ? (
+          {described.tone === "failed" ||
+          status.setup_state === "awaiting_credential" ||
+          status.setup_state === "awaiting_browser_login" ? (
             <Link className={buttonVariants({ size: "sm", variant: "default" })} href={setupHref(status)}>
               {retryLabel(status)}
             </Link>
           ) : null}
-          {described.tone === "pending" && status.setup_state !== "awaiting_credential" ? (
+          {described.tone === "pending" &&
+          status.setup_state !== "awaiting_credential" &&
+          status.setup_state !== "awaiting_browser_login" ? (
             <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={refreshHref}>
               Refresh status
             </Link>

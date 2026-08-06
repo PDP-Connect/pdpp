@@ -285,6 +285,7 @@ export interface MockCompanion {
   onFrame: (fn: (frame: unknown) => void) => () => void;
   pushEvent: (event: unknown) => void;
   pushFrame: (frame: unknown) => void;
+  readRemoteSelection: () => Promise<string>;
   start: (viewport?: unknown) => Promise<void>;
   started: () => boolean;
   stop: () => Promise<void>;
@@ -317,6 +318,15 @@ export function createMockCompanion({
     cdpCalls,
     // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
     async dispatch(event) {
+      if (
+        event &&
+        typeof event === "object" &&
+        (event as { type?: unknown }).type === "clipboard" &&
+        (event as { action?: unknown }).action === "local_to_remote"
+      ) {
+        inputs.push(event);
+        return;
+      }
       const commands = mapInputEventToCdp(event);
       inputs.push(event);
       for (const cmd of commands) {
@@ -342,6 +352,9 @@ export function createMockCompanion({
       for (const handler of handlers) {
         handler(frame);
       }
+    },
+    readRemoteSelection() {
+      return Promise.resolve("");
     },
     // biome-ignore lint/suspicious/useAwait: satisfies the MockCompanion/Companion contract (the real CDP companion twin awaits).
     async start(viewport) {

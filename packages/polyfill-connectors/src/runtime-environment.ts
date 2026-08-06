@@ -6,13 +6,11 @@
  * to make container-aware routing decisions.
  *
  * The current consumer is `acquireBrowserForConnector` in
- * `browser-launch.ts`: when the connector runs inside a container AND
- * requests a headed browser, the runtime must fail closed if no host
- * browser bridge is configured. Launching an invisible in-container
- * Chromium is the silent-failure path we explicitly want to avoid (an
- * interactive connector — Cloudflare/OTP — would block on an
- * `auto-login` INTERACTION handshake forever with no operator-visible
- * signal).
+ * `browser-launch.ts`: when a headed browser runs inside a container, the
+ * runtime must verify that the deployment supplied an operator-visible
+ * browser surface. Core satisfies that contract with its packaged runtime and
+ * managed Xvfb display; unrelated containers still fail closed rather than
+ * launch an invisible Chromium that could block an interactive flow.
  *
  * Spec reference:
  *   openspec/changes/design-host-browser-bridge-for-docker/design.md

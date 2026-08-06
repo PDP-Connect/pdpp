@@ -29,12 +29,10 @@
  * closed mid-resolution, the connector still emits the interaction; the
  * streaming companion just won't have a target for it. Records still flow.
  *
- * NOTE on the launcher-time registration code path: this is the parallel
- * NEW code that replaces it. The launcher still pre-registers under a
- * `_launcher_bootstrap` interactionId — that path is scheduled for removal
- * once the connectors and binding paths route through this helper. Until
- * then, the two paths co-exist; the per-interaction registration here
- * overrides the launcher-time placeholder for any real `manual_action`.
+ * The launcher only publishes the browser's loopback CDP endpoint. This
+ * module is the single registration seam: a connector interaction (or
+ * browser-surface assistance request) supplies the exact interaction id and
+ * page, and this module binds that page to the run-scoped registry record.
  */
 
 import { randomBytes } from "node:crypto";
@@ -60,11 +58,11 @@ import {
 //   - it works for popup targets that may not appear in `/json` immediately;
 //   - one fewer HTTP round trip during launch / handoff.
 //
-// Requires the browser to have been launched with `cdpPort: 0` (or
-// `--remote-debugging-port=0`) AND a known port — Patchright's pipe
+// Requires the browser to have been launched with `--remote-debugging-port=0`
+// AND a known port — Patchright's pipe
 // transport carries CDP for Playwright-internal use, but an external CDP
 // client connecting via wsUrl needs an HTTP-exposed listener. Production
-// already sets `cdpPort: 0` in streaming-registration mode (see
+// already sets `--remote-debugging-port=0` in streaming-registration mode (see
 // `browser-launch.ts`).
 
 export interface ResolveWsUrlOptions {
@@ -114,7 +112,7 @@ export async function resolveWsUrlForExactPage(page: Page, opts: ResolveWsUrlOpt
 //
 // Both env vars are required. If either is missing — typical when streaming
 // is not configured for this run, or the launcher chose not to enable
-// `cdpPort: 0` — `prepareManualAction` returns `{ registered: false }` and
+// `--remote-debugging-port=0` — `prepareManualAction` returns `{ registered: false }` and
 // emits a warning, but does not throw.
 
 const BROWSER_CDP_HOST_ENV = "PDPP_BROWSER_CDP_HOST";
@@ -397,7 +395,15 @@ export async function prepareBrowserInteractionTarget(
   const resolveWsUrl = args.resolveWsUrl ?? resolveWsUrlForExactPage;
   const interactionId = args.interactionId ?? generateInteractionId();
 
-  const registration = await resolveStreamingRegistration(env);
+  let registration: StreamingTargetRegistrationHooks | undefined;
+  try {
+    registration = await resolveStreamingRegistration(env);
+  } catch {
+    process.stderr.write(
+      `[browser-handoff] streaming registration resolver failed for interaction ${interactionId}; continuing without streaming.\n`
+    );
+    return { interactionId, registered: false };
+  }
   if (!registration) {
     // No PDPP_RUN_ID + base URL + token combo in env. Streaming is not
     // configured for this run — return the interactionId so the connector
@@ -457,6 +463,44 @@ export async function prepareBrowserInteractionTarget(
 
 export function prepareManualAction(args: PrepareManualActionArgs): Promise<PrepareManualActionResult> {
   return prepareBrowserInteractionTarget(args);
+}
+
+/**
+ * Remove the interaction-scoped target after its owner interaction reaches a
+ * terminal state. The helper deliberately resolves the same run-scoped
+ * registration client as preparation; callers never handle a registry URL,
+ * CDP endpoint, or bearer token directly.
+ *
+ * Cleanup is best-effort. The reference server also removes every target for
+ * a terminal run, so a connector killed between registration and this call
+ * cannot leave an indefinitely controllable page behind.
+ */
+export async function unregisterBrowserInteractionTarget(args: {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly interactionId: string;
+  readonly resolveStreamingRegistration?: (
+    env?: NodeJS.ProcessEnv
+  ) => Promise<StreamingTargetRegistrationHooks | undefined>;
+}): Promise<boolean> {
+  if (!args.interactionId) {
+    return false;
+  }
+  const env = args.env ?? process.env;
+  const resolveStreamingRegistration = args.resolveStreamingRegistration ?? resolveStreamingRegistrationFromEnv;
+  let registration: StreamingTargetRegistrationHooks | undefined;
+  try {
+    registration = await resolveStreamingRegistration(env);
+  } catch {
+    return false;
+  }
+  if (!registration) {
+    return false;
+  }
+  try {
+    return await registration.unregister({ interactionId: args.interactionId, runId: registration.runId });
+  } catch {
+    return false;
+  }
 }
 
 // ─── manualAction: connector-author convenience layer ──────────────────────
@@ -536,13 +580,61 @@ export async function manualAction(
     ...(args.reason ? { reason: args.reason } : {}),
   });
 
-  return await sendInteraction({
-    kind: "manual_action",
-    request_id: interactionId,
-    message: args.message,
-    ...(args.schema ? { schema: args.schema } : {}),
-    ...(args.timeoutSeconds === undefined ? {} : { timeout_seconds: args.timeoutSeconds }),
-  });
+  try {
+    return await sendInteraction({
+      kind: "manual_action",
+      request_id: interactionId,
+      message: args.message,
+      ...(args.schema ? { schema: args.schema } : {}),
+      ...(args.timeoutSeconds === undefined ? {} : { timeout_seconds: args.timeoutSeconds }),
+    });
+  } finally {
+    await unregisterBrowserInteractionTarget({
+      interactionId,
+      ...(args.env ? { env: args.env } : {}),
+      ...(args.resolveStreamingRegistration ? { resolveStreamingRegistration: args.resolveStreamingRegistration } : {}),
+    });
+  }
+}
+
+/**
+ * Hand the current browser page to the owner for sign-in, then let the
+ * connector prove whether the session is live. The owner response is only a
+ * signal to re-probe; site-specific session evidence stays with the connector.
+ */
+export interface ManualBrowserLoginArgs<Result> {
+  readonly capture?: CaptureSession | null;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly message: string;
+  readonly page: Page;
+  readonly probe: () => Promise<Result>;
+  readonly reason?: ManualActionReason;
+  readonly sendInteraction: SendInteraction;
+  readonly timeoutSeconds?: number;
+}
+
+export async function manualBrowserLogin<Result>({
+  capture,
+  env,
+  message,
+  page,
+  probe,
+  reason = "login",
+  sendInteraction,
+  timeoutSeconds,
+}: ManualBrowserLoginArgs<Result>): Promise<Result> {
+  await manualAction(
+    {
+      ...(capture ? { capture } : {}),
+      ...(env ? { env } : {}),
+      message,
+      page,
+      reason,
+      ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    },
+    sendInteraction
+  );
+  return await probe();
 }
 
 // ─── Exports for tests ─────────────────────────────────────────────────────

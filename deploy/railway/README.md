@@ -2,11 +2,11 @@
 
 This runbook describes the selected Railway pushbutton shape for the PDPP
 reference implementation: one public Core app service, one durable Postgres
-backend, and no browser-backed connector runtime inside the deployed app.
+backend, with browser-backed connectors available in the deployed app.
 
 This is operator documentation for someone running their own instance. The
-Docker image at `ghcr.io/pdp-connect/pdpp/railway-core` is the forkable reference
-implementation packaged for Railway.
+Docker image at `ghcr.io/pdp-connect/pdpp/core` is the browser-capable
+single-container artifact packaged for Railway.
 
 ## Pushbutton Railway template
 
@@ -23,7 +23,7 @@ The published template uses:
 
 | Service | Source | Public? | Purpose |
 |---|---|---:|---|
-| `core` | `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS on loopback inside the same container. |
+| `core` | `ghcr.io/pdp-connect/pdpp/core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS and browser connectors inside the same container. |
 | `Postgres` | Railway plugin | no | Durable records, grants, runs, sessions, and tokens. |
 
 Pin a concrete version tag, not `latest`, so the template is reproducible. The
@@ -50,7 +50,7 @@ internet ──HTTPS──▶ core (public Railway app service)
 Why this is the selected button shape: live Railway testing showed that a
 separate private `reference` image service needs an explicit service `PORT` to
 boot reliably, and Railway turns that `PORT` variable into a required deploy-page
-prompt. The `railway-core` image removes that prompt while preserving the
+prompt. The `core` image removes that prompt while preserving the
 protocol shape: the public console still fronts the full protocol surface, and
 the AS/RS listeners remain non-public loopback endpoints.
 
@@ -134,8 +134,11 @@ the unmounted default path is not durable across redeploys.
   cookies are marked `Secure`.
 - The owner-session signing key derives from `PDPP_OWNER_PASSWORD`, so a stable
   password keeps owner sessions valid across restarts.
-- Browser-backed connector collection is out of scope for the Core button and
-  should run through a separate local collector or explicit browser profile.
+- The bundled Core browser is full Patchright Chromium. Core starts a managed
+  Xvfb display and defaults every local browser session to headed mode while
+  preserving direct-CDP streaming and persistent profiles. Set
+  `PDPP_BROWSER_HEADLESS=1` only for the advanced deployment-wide headless
+  path. n.eko remains optional and headed when remote CDP is configured.
 
 ## First-live-test gate
 
@@ -150,7 +153,7 @@ pnpm docker:smoke
 
 For a live source project or scratch template deploy:
 
-1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` and add
+1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/core:<version-tag>` and add
    Railway Postgres.
 2. Set `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and
    `PDPP_DATABASE_URL` exactly as above.

@@ -1864,6 +1864,18 @@ export interface DeploymentDiagnostics {
       model_cache_path: string | null;
       model_cache_present: boolean | null;
       download_allowed: boolean | null;
+      warm_status?: {
+        cache_bytes: number;
+        cache_files: number;
+        error: string | null;
+        failed_at: string | null;
+        last_observed_at: string;
+        last_progress_at: string | null;
+        mode: "lexical_only" | "semantic";
+        ready_at: string | null;
+        started_at: string | null;
+        status: "not_started" | "downloading" | "ready" | "failed";
+      } | null;
     };
     index: {
       kind: "sqlite-vec" | "blob-flat" | null;

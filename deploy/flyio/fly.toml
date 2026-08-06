@@ -19,7 +19,7 @@ primary_region = "iad"  # Replace with your preferred region
 
 [build]
   dockerfile = "Dockerfile"
-  target = "platform-core"
+  target = "core"
 
 [env]
   NODE_ENV = "production"

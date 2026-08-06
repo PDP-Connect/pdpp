@@ -202,7 +202,6 @@ async function main(): Promise<void> {
   console.error("[request-export] launching isolated patchright browser (profile=amazon)");
   const { context, release } = await acquireIsolatedBrowser({
     profileName: "amazon",
-    headless: false,
   });
   const page = await context.newPage();
 

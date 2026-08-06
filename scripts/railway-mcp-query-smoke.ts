@@ -331,7 +331,12 @@ async function establishOwnerSession(origin: string, ownerPassword: string, log:
 
 // Mint an owner access token via the device flow. /device/approve is owner-
 // session gated when a password is set, so we carry the session cookie.
-async function mintOwnerToken(origin: string, sessionCookie: string, subjectId: string, log: LogFn): Promise<string> {
+export async function mintOwnerToken(
+  origin: string,
+  sessionCookie: string,
+  subjectId: string,
+  log: LogFn
+): Promise<string> {
   const clientId = "pdpp-polyfill-owner-bootstrap";
   const deviceResp = await fetch(`${origin}/oauth/device_authorization`, {
     method: "POST",
@@ -377,7 +382,11 @@ async function mintOwnerToken(origin: string, sessionCookie: string, subjectId: 
   return ((await readBody(tokenResp)).json as { access_token: string }).access_token;
 }
 
-async function registerSeedManifest(origin: string, log: LogFn): Promise<Record<string, unknown>> {
+async function registerSeedManifest(
+  origin: string,
+  sessionCookie: string,
+  log: LogFn
+): Promise<Record<string, unknown>> {
   // The manifest body is small; fetch it from the running AS would be circular,
   // so we register the same connector_id/streams the committed spotify fixture
   // declares. Re-register is idempotent (409 on unchanged version is fine).
@@ -411,7 +420,10 @@ async function registerSeedManifest(origin: string, log: LogFn): Promise<Record<
   };
   const resp = await fetch(`${origin}/connectors`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+    },
     body: JSON.stringify(manifest),
   });
   if (![200, 201, 409].includes(resp.status)) {
@@ -651,7 +663,7 @@ export async function runLiveSmoke(options: RunLiveSmokeOptions): Promise<void> 
   const sessionCookie = await establishOwnerSession(origin, ownerPassword, log);
   if (seed) {
     const ownerToken = await mintOwnerToken(origin, sessionCookie, subjectId, log);
-    await registerSeedManifest(origin, log);
+    await registerSeedManifest(origin, sessionCookie, log);
     await seedRecords(origin, ownerToken, log);
   } else {
     log("seed: skipped (--no-seed); querying existing records only");

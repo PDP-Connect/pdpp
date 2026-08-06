@@ -36,6 +36,7 @@ export interface MintStreamSessionInput {
 }
 
 export interface MintedStreamSession extends StreamingSessionMintResponse {
+  clipboard_url: string;
   input_url: string;
   viewer_url: string;
   viewport_url: string;
@@ -66,7 +67,8 @@ export async function mintStreamSessionAction(input: MintStreamSessionInput): Pr
     getReferencePublicUrl(minted.input_path),
     getReferencePublicUrl(minted.viewport_path),
   ]);
-  return { ...minted, input_url, viewer_url, viewport_url };
+  const clipboard_url = await getReferencePublicUrl(minted.clipboard_path);
+  return { ...minted, clipboard_url, input_url, viewer_url, viewport_url };
 }
 
 export interface StreamReachFailureInput {

@@ -149,7 +149,11 @@ import {
   reconcileDirtyDatasetSummaryRecordTimeBounds,
 } from "./dataset-summary-read-model.ts";
 import { closeDb, getDb, initDb } from "./db.ts";
-import { collectDeploymentDiagnostics, probeDiskHeadroom } from "./deployment-diagnostics.ts";
+import {
+  collectDeploymentDiagnostics,
+  probeDiskHeadroom,
+  runtimeBrowserCapabilityFromEnv,
+} from "./deployment-diagnostics.ts";
 import { composeFleetHealthVerdict } from "./fleet-health.ts";
 import { deriveReferenceFreshness } from "./freshness.ts";
 import {
@@ -412,6 +416,7 @@ import {
   getSemanticIndexBackfillProgress,
   resolveSemanticBackendFromEnv,
   runSemanticSearch,
+  scheduleSemanticEmbeddingWarmup,
   semanticIndexBackfillForManifest,
   supportsDeviceSemanticAttemptDeadline,
 } from "./search-semantic.ts";
@@ -438,6 +443,7 @@ import {
   createSqliteConnectorInstanceCredentialStore,
 } from "./stores/connector-instance-credential-store.ts";
 import {
+  admitOwnerBrowserEnrollmentRunConnection,
   admitOwnerRunConnection,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -4315,7 +4321,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
             return {
               accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
               bindings: {
-                browser: false,
+                browser: runtimeBrowserCapabilityFromEnv(process.env),
                 filesystem: true,
                 local_device: false,
                 network: true,
@@ -4459,6 +4465,14 @@ export function buildAsApp(opts: ServerOpts = {}) {
     clearTimeoutImpl: opts.streamingClearTimeout,
     companionFactory: streamingCompanionFactory,
     controller,
+    ...(opts.streamingCompanionFactory === undefined
+      ? {
+          hasDirectStreamingTargetForInteraction: (runId: string, interactionId: string) =>
+            typeof runTargetRegistry.get({ interactionId, runId }) === "string",
+        }
+      : {}),
+    forceUnregisterStreamingTarget: (runId: string, interactionId: string) =>
+      runTargetRegistry.forceUnregister({ interactionId, runId }),
     isNekoProxyTargetApproved: (
       target: unknown,
       { session }: { session?: { interaction_id?: string | null; run_id?: string | null } }
@@ -4584,11 +4598,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
     };
     if (originalCancelRun) {
       controller.cancelRun = async (runId, requestingOwnerSubjectId) => {
-        // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
-        const pending = controller.getPendingInteraction?.(runId);
-        if (pending?.interaction_id) {
-          await restorePresentationBeforeTerminal(runId, pending.interaction_id, "run_cancelled");
-        }
+        // Cancellation is a run-final barrier even when the connector is
+        // blocked in structured browser assistance rather than a legacy
+        // pending INTERACTION. Retire every presentation lifecycle here;
+        // finalizeRunCleanup also purges every registry target and nonce.
+        await streamingRoutes.restoreOrRetirePresentationForRun({ reason: "run_cancelled", run_id: runId });
         return await originalCancelRun(runId, requestingOwnerSubjectId);
       };
     }
@@ -4631,7 +4645,23 @@ export function buildAsApp(opts: ServerOpts = {}) {
   if (streamPlaygroundEnabled && controller) {
     const playground = (createPlayground as (...args: unknown[]) => ReturnType<typeof createPlayground>)({
       controller,
+      emitTimelineEvent: emitSpineEvent,
       logger: opts.streamingLogger,
+      onSessionTerminal: async ({
+        interactionId,
+        reason,
+        runId,
+      }: {
+        interactionId: string;
+        reason: string;
+        runId: string;
+      }) => {
+        await streamingRoutes.invalidateForInteractionResolved({
+          interaction_id: interactionId,
+          reason,
+          run_id: runId,
+        });
+      },
       runTargetRegistry,
     });
     mountRefDevPlaygroundSession(app, {
@@ -6442,6 +6472,14 @@ export async function startServer(opts: ServerOpts = {}) {
     configureSemanticBackend(opts.semanticRetrievalBackend as Parameters<typeof configureSemanticBackend>[0]);
   }
 
+  // Model preparation is an optional acceleration effect, not a boot gate.
+  // The backend owns its single-flight promise and lifecycle status; scheduling
+  // it here ensures a fresh Core with no semantic backfill work still starts
+  // the same provider/cache path after the event loop yields.
+  scheduleSemanticEmbeddingWarmup({
+    log: (message) => logger.warn({ message }, "semantic embedding preparation did not complete"),
+  }).catch(() => undefined);
+
   // Startup retrieval backfill. Existing data should become searchable after
   // restart without requiring re-ingest, but a large local corpus can take
   // minutes to rebuild. Capture the boot-time manifest set now, then schedule
@@ -6572,13 +6610,21 @@ export async function startServer(opts: ServerOpts = {}) {
   } = { invoke: null, releaseLease: null };
   const controller = createController({
     ...(configuredAsPublicUrl === null ? {} : { asPublicUrl: configuredAsPublicUrl }),
-    admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId }) => {
-      const namespace = await admitOwnerRunConnection({
-        connectorId,
-        connectorInstanceId,
-        connectorInstanceStore: createRequestConnectorInstanceStore(),
-        ownerSubjectId,
-      });
+    admitRunConnection: async ({ connectorId, connectorInstanceId, ownerSubjectId, runAdmission }) => {
+      const namespace =
+        runAdmission === "browser_enrollment"
+          ? await admitOwnerBrowserEnrollmentRunConnection({
+              connectorId,
+              connectorInstanceId,
+              connectorInstanceStore: createRequestConnectorInstanceStore(),
+              ownerSubjectId,
+            })
+          : await admitOwnerRunConnection({
+              connectorId,
+              connectorInstanceId,
+              connectorInstanceStore: createRequestConnectorInstanceStore(),
+              ownerSubjectId,
+            });
       return { connectorId: namespace.connectorId, connectorInstanceId: namespace.connectorInstanceId };
     },
     ownerSubjectId: ownerAuthSubjectId,
@@ -6590,14 +6636,14 @@ export async function startServer(opts: ServerOpts = {}) {
           connectorPathResolver: opts.connectorPathResolver as import("../runtime/controller.ts").ConnectorPathResolver,
         }),
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
-    beforeBrowserSurfaceLeaseRelease: async (args) => {
-      if (typeof presentationTerminalBarrier.releaseLease === "function") {
-        await presentationTerminalBarrier.releaseLease(args);
-      }
-    },
     beforeInteractionTerminal: async (args) => {
       if (typeof presentationTerminalBarrier.invoke === "function") {
         await presentationTerminalBarrier.invoke(args);
+      }
+    },
+    beforeRunCleanup: async (args) => {
+      if (typeof presentationTerminalBarrier.releaseLease === "function") {
+        await presentationTerminalBarrier.releaseLease(args);
       }
     },
     markStaticSecretCredentialRejected:

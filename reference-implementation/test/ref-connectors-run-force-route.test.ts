@@ -60,13 +60,14 @@ interface RunNowCall {
   readonly options: {
     connectorInstanceId?: string | null;
     force?: boolean;
+    runAdmission?: "browser_enrollment";
     resources?: Readonly<Record<string, readonly string[]>>;
   };
 }
 
 interface ResolveNamespaceCall {
   readonly connectorId: string | null;
-  readonly options: { connectorInstanceId?: string | null };
+  readonly options: { allowStatuses?: readonly string[]; connectorInstanceId?: string | null };
 }
 
 type MountRefRun = typeof mountRefConnectionRun | typeof mountRefConnectorRun;
@@ -359,6 +360,51 @@ test("POST /_ref/connectors/:id/run forwards explicit force override to the cont
   assert.equal(firstEvent.event_type, "owner_agent.connection.run");
   assert.equal(firstEvent.data?.forced, true);
   assert.equal(firstEvent.data?.connection_id, "cin_chatgpt");
+});
+
+test("POST /_ref/connections/:id/run uses the typed draft enrollment admission", async () => {
+  const harness = buildHarness(mountRefConnectionRun);
+
+  const res = await harness.invoke({
+    body: { run_admission: "browser_enrollment" },
+    params: { connectorInstanceId: "cin_amazon_draft" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(harness.calls.resolveOwnerConnectorNamespace, [
+    {
+      connectorId: null,
+      options: {
+        allowDefaultAccount: false,
+        allowStatuses: ["draft"],
+        connectorInstanceId: "cin_amazon_draft",
+        ownerSubjectId: "owner_local",
+      },
+    },
+  ]);
+  assert.deepEqual(harness.calls.runNow, [
+    {
+      connectorId: "chatgpt",
+      options: {
+        connectorInstanceId: "cin_amazon_draft",
+        force: false,
+        ownerSubjectId: "owner_local",
+        runAdmission: "browser_enrollment",
+      },
+    },
+  ]);
+});
+
+test("connector-wide run never accepts draft enrollment admission", async () => {
+  const harness = buildHarness(mountRefConnectorRun);
+
+  const res = await harness.invoke({
+    body: { run_admission: "browser_enrollment" },
+    params: { connectorId: "amazon" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.equal(harness.calls.runNow[0]?.options.runAdmission, undefined);
 });
 
 test("POST /_ref/connections/:id/run does not force unless the body value is exactly true", async () => {

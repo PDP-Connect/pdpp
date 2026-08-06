@@ -36,6 +36,8 @@ export interface MobileKeyboardFocusState {
   affordanceVisible: boolean;
   editableRectCache: ConfirmedEditableRectCacheEntry | null;
   gesture: MobileKeyboardFocusGesture | null;
+  /** Prevents an unrelated script focus after a canceled local gesture from looking initial. */
+  localGestureObserved: boolean;
   remoteEditableFocused: boolean;
 }
 
@@ -67,6 +69,7 @@ export function createMobileKeyboardFocusState(): MobileKeyboardFocusState {
     affordanceVisible: false,
     editableRectCache: null,
     gesture: null,
+    localGestureObserved: false,
     remoteEditableFocused: false,
   };
 }
@@ -141,6 +144,7 @@ function transitionPointerDown(
         startedAtMs: event.atMs,
         startRemotePoint: event.remotePoint,
       },
+      localGestureObserved: true,
     },
   };
 }
@@ -218,9 +222,11 @@ function transitionRemoteFocus(
     gesture?.phase === "awaiting-confirmation" &&
     !isGestureExpired(gesture, event.atMs) &&
     isPointInsideRect(gesture.lastRemotePoint, event.rect);
+  const shouldShowInitialAffordance = !state.localGestureObserved && gesture === null;
+  const shouldShowAffordance = canMatchLateConfirmation || shouldShowInitialAffordance;
   const matchedState = {
     ...state,
-    affordanceVisible: canMatchLateConfirmation,
+    affordanceVisible: shouldShowAffordance,
     editableRectCache: event.rect ? { confirmedAtMs: event.atMs, rect: event.rect } : null,
     remoteEditableFocused: true,
   };

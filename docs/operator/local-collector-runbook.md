@@ -20,14 +20,14 @@ This is the single-page operator runbook for running Claude Code and Codex local
   +-----------------------------+         +---------------------------------+
 ```
 
-The reference deployment issues a short-lived enrollment code from `/dashboard/device-exporters`. The host that owns the Claude Code / Codex data exchanges that code for a device-scoped credential, then runs the collector. The credential cannot read records, mint owner tokens, or mutate unrelated devices &mdash; it can only ingest into its own scoped lane. See `openspec/changes/introduce-local-collector-runner`.
+The reference deployment issues a short-lived enrollment code from `/device-exporters`. The host that owns the Claude Code / Codex data exchanges that code for a device-scoped credential, then runs the collector. The credential cannot read records, mint owner tokens, or mutate unrelated devices &mdash; it can only ingest into its own scoped lane. See `openspec/changes/introduce-local-collector-runner`.
 
 State is authoritative on the server. Before each connector pass the runner fetches prior state for the local connection via `GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state` and populates `START.state`. After records are durably accepted it flushes the per-stream `STATE` map back via `PUT`. Process crashes between record ingest and state flush replay safely &mdash; `(device_id, batch_id, body_hash)` ingest is idempotent and connectors are idempotent at the record key. See `openspec/changes/design-local-collector-state-sync`.
 
 ## Prerequisites
 
 - A PDPP reference deployment reachable at a stable URL (e.g. `http://server.local:7662` or `https://your-pdpp-host.example.com`). See `reference-implementation/docs/migrate-storage.md` and the Docker compose under `reference-implementation/docker/` for the deployment side.
-- Owner session for that deployment so you can mint enrollment codes from `/dashboard/device-exporters`.
+- Owner session for that deployment so you can mint enrollment codes from `/device-exporters`.
 - Node.js 22.14+ and npm on the host that owns the data.
 - `@pdpp/local-collector` installed globally, or
   `npx -y @pdpp/local-collector` available for one-shot execution. A PDPP
@@ -63,7 +63,7 @@ Both `claude_code` and `codex` require the `filesystem` binding, which the colle
 
 ## Step 2 &mdash; Mint an enrollment code
 
-In a browser, open `/dashboard/device-exporters` on the reference deployment, signed in as owner.
+In a browser, open `/device-exporters` on the reference deployment, signed in as owner.
 
 Use the "Create enrollment code" form:
 
@@ -133,18 +133,18 @@ Run the same command on a schedule (cron, systemd timer, ad-hoc) to keep the lan
 
 ## Step 5 &mdash; Verify on the dashboard
 
-Open `/dashboard/device-exporters`. The device row updates with:
+Open `/device-exporters`. The device row updates with:
 
 - `fresh` heartbeat (or `stale` if the runner has not heartbeated within the threshold).
 - Accepted / rejected ingest counts.
 - Per-connection breakdown of last ingest time and last error.
 
-`/dashboard/runs` and `/dashboard/grants` show the underlying record/run flow for the connector. For low-level diagnostics, use the `pdpp ref ...` commands &mdash; see `apps/web/content/docs/reference-implementation.md`.
+`/syncs` and `/grants` show the underlying record/run flow for the connector. For low-level diagnostics, use the `pdpp ref ...` commands &mdash; see `apps/web/content/docs/reference-implementation.md`.
 
 ## Recovery and re-runs
 
 - **Re-running the same command**: safe. STATE replays so the connector starts where it left off; ingest is idempotent at `(device_id, batch_id, body_hash)`.
-- **Lost the device token**: revoke the device from `/dashboard/device-exporters` and re-enroll a new device. Connection ids are stable per `(connector_id, local_binding_name)` so accepted records are not lost; older routes and JSON still call this `source_instance_id`.
+- **Lost the device token**: revoke the device from `/device-exporters` and re-enroll a new device. Connection ids are stable per `(connector_id, local_binding_name)` so accepted records are not lost; older routes and JSON still call this `source_instance_id`.
 - **`status: blocked` with `state_get_failed`**: the runner refuses to advance without prior state to avoid over-collecting. Inspect the dashboard for the underlying error (typically a transient AS reach issue or a removed source instance) before retrying.
 - **`status: retrying` with `state_put_failed`**: benign; the next pass re-reads state and re-emits records the connector child considered consumed. Server-side idempotency absorbs the duplicates.
 
@@ -257,7 +257,7 @@ check (`ok`/`warn`) and a one-line remediation hint for any non-`ok` state.
 > `coverage_missing` — the surface does not guess from a partial scan.
 
 **Server side.** Hit `/_ref/device-exporters/source-instances` (or read it
-through `/dashboard/device-exporters`) and compare per source instance:
+through `/device-exporters`) and compare per source instance:
 
 - `accepted_record_count` &mdash; records the server has durably retained.
 - `records_pending` &mdash; the latest heartbeat's snapshot of work still
@@ -290,7 +290,7 @@ When the Docker reference deployment moves, update `PDPP_REFERENCE_BASE_URL` in
 each collector env file. If the database moves with the deployment, keep the
 existing `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, and
 `PDPP_CONNECTION_ID` values. If the new deployment starts from a fresh database,
-re-enroll each host from `/dashboard/device-exporters`; old device credentials
+re-enroll each host from `/device-exporters`; old device credentials
 are scoped to the old database.
 
 For the consolidated public docs, see `docs/reference/local-collector.md`.

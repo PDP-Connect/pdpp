@@ -1363,10 +1363,8 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "amazon",
     validateRecord,
-    // Amazon's bot detection fingerprints headless Chromium; cold sessions get
-    // challenged. Opt into headed mode via PDPP_AMAZON_HEADLESS=0 (first-run,
-    // re-auth). Warm sessions can go headless since cookies + TLS fingerprint
-    // stay consistent across runs on the persistent profile.
+    // Persistent profile keeps cookies and session state across runs; browser
+    // mode is selected by the deployment, not by this connector.
     browser: { profileName: "amazon" },
     async ensureSession({ capture, checkpoint, context, page, sendInteraction }): Promise<void> {
       await ensureAmazonSession({

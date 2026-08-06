@@ -253,6 +253,11 @@ export interface RunNowOptions {
   recoveryOnly?: boolean;
   resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
+  /**
+   * Narrow owner-session admission for the first run of a browser enrollment
+   * shell. Omitted means the ordinary active-connection collection path.
+   */
+  runAdmission?: "browser_enrollment";
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
@@ -410,6 +415,7 @@ export interface ControllerOptions {
     connectorId: string;
     connectorInstanceId: string | null;
     ownerSubjectId: string;
+    runAdmission: "collection" | "browser_enrollment";
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
@@ -424,6 +430,12 @@ export interface ControllerOptions {
     readonly reason: "interaction_timeout";
     readonly runId: string;
   }) => Promise<void> | void;
+  /**
+   * Awaited at every run-final barrier, including runs without a managed
+   * browser-surface lease. Streaming presentation state must be retired before
+   * the run nonce and all connector-owned targets are purged.
+   */
+  beforeRunCleanup?: (args: { readonly runId: string }) => Promise<void> | void;
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   /** Stable non-secret identity of the dynamic allocator scope for cache coalescing. */
   browserSurfaceAllocatorScopeId?: string;
@@ -538,19 +550,25 @@ function resolveAdmittedRunConnection(
   controllerOptions: ControllerOptions,
   connectorId: string,
   connectorInstanceId: string | undefined,
-  ownerSubjectId: string
+  ownerSubjectId: string,
+  runAdmission: "collection" | "browser_enrollment"
 ): Promise<{ connectorId: string; connectorInstanceId: string }> {
   if (controllerOptions.admitRunConnection) {
     return controllerOptions.admitRunConnection({
       connectorId,
       connectorInstanceId: connectorInstanceId ?? null,
       ownerSubjectId,
+      runAdmission,
     });
   }
   throw new ControllerError(
     "run-connection authority resolver is required before a run can be created.",
     "connector_instance_store_required"
   );
+}
+
+function runAdmissionFor(options: RunNowOptions): "collection" | "browser_enrollment" {
+  return options.runAdmission ?? "collection";
 }
 
 function createInteractionTimeoutTerminalHandler(
@@ -3025,6 +3043,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] failed to clear active run ${input.runId} for ${input.connectorId}: ${message}`);
     });
+    try {
+      await opts.beforeRunCleanup?.({ runId: input.runId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] run cleanup barrier failed for ${input.runId}: ${message}`);
+    }
     clearStreamingNonceForRun(input.runId);
     if (input.browserSurfaceLease) {
       await opts.beforeBrowserSurfaceLeaseRelease?.({ runId: input.runId });
@@ -3471,7 +3495,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       opts,
       connectorId,
       options.connectorInstanceId,
-      runOwnerSubjectId
+      runOwnerSubjectId,
+      runAdmissionFor(options)
     );
     const { connectorId: admittedConnectorId, connectorInstanceId } = admittedConnection;
     const key = runtimeKey(admittedConnectorId, connectorInstanceId);

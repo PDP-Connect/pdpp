@@ -21,10 +21,11 @@
  *     membership over the CANONICAL key (so a registry-URL id still matches).
  *   - isSupportedLocalCollectorConnector: membership over the ENROLLMENT key
  *     (so `claude-code` matches `claude_code`); non-string => false.
- *   - isSupportedBrowserCollectorConnector / isBrowserBoundConnector: membership
- *     over the canonical key; non-string => false.
+ *   - isSupportedBrowserCollectorConnector / isBrowserBoundConnector: shipped
+ *     capability membership over the canonical key; non-string => false.
  *
- * Pure classification over frozen allowlists — no DB, no server, no fixtures.
+ * Pure classification over shipped connector capability data — no DB, no
+ * server, no fixtures.
  */
 
 import assert from "node:assert/strict";
@@ -137,13 +138,17 @@ test("isSupportedLocalCollectorConnector: membership over the ENROLLMENT key", (
 
 // --- isSupportedBrowserCollectorConnector -----------------------------------
 
-test("isSupportedBrowserCollectorConnector: amazon only; canonical-key based", () => {
+test("isSupportedBrowserCollectorConnector: production-ready browser runtimes; canonical-key based", () => {
   assert.equal(isSupportedBrowserCollectorConnector("amazon"), true);
   assert.equal(
     isSupportedBrowserCollectorConnector("https://registry.pdpp.org/connectors/amazon"),
     true,
     "registry-url id matches"
   );
+  for (const key of ["chase", "chatgpt", "heb", "reddit", "usaa"]) {
+    assert.equal(isSupportedBrowserCollectorConnector(key), true, `${key} is a shipped browser runtime`);
+  }
+  assert.equal(isSupportedBrowserCollectorConnector("anthropic"), false, "unlisted scaffold stays unavailable");
   assert.equal(isSupportedBrowserCollectorConnector("claude_code"), false, "local collector is not browser");
   assert.equal(isSupportedBrowserCollectorConnector(null), false);
 });

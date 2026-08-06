@@ -1908,12 +1908,24 @@ export interface CollectionRateReadout {
 export function formatCollectionRateReadout(
   rate: RefCollectionRateSnapshot | null | undefined
 ): CollectionRateReadout | null {
-  if (!rate || typeof rate.effective_rate_per_min !== "number") {
+  if (!rate) {
     return null;
   }
-  const backoffLabel = rate.last_backoff
-    ? `last backed off to ${rate.last_backoff.at_interval_ms.toLocaleString()}ms (${rate.last_backoff.reason})`
-    : null;
+  if (
+    !(
+      Number.isFinite(rate.ceiling_interval_ms) &&
+      Number.isFinite(rate.ceiling_rate_per_min) &&
+      Number.isFinite(rate.current_interval_ms) &&
+      Number.isFinite(rate.effective_rate_per_min)
+    )
+  ) {
+    return null;
+  }
+  const backoff = rate.last_backoff;
+  const backoffLabel =
+    backoff && Number.isFinite(backoff.at_interval_ms) && typeof backoff.reason === "string"
+      ? `last backed off to ${backoff.at_interval_ms.toLocaleString()}ms (${backoff.reason})`
+      : null;
   return {
     backoffLabel,
     ceilingLabel: `ceiling ${rate.ceiling_rate_per_min.toLocaleString()}/min · interval ${rate.ceiling_interval_ms.toLocaleString()}ms`,

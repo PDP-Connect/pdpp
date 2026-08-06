@@ -20,6 +20,9 @@ const OWNER_PASSWORD = "static-secret-status-owner-password";
 const OWNER_SUBJECT_ID = "owner_local";
 const TEST_KEY = "static-secret-status-test-key";
 const SECRET = "status app password synthetic";
+const NO_BROWSER_CREDENTIAL_REMEDIATION = /provider credential/i;
+const NO_BROWSER_REENTER_REMEDIATION = /re-enter/i;
+const SECURE_BROWSER_REMEDIATION = /secure browser/i;
 
 type StartedServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -227,6 +230,15 @@ async function createDraft(
 ): Promise<JsonResult> {
   return fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, {
     body: JSON.stringify({ setup_fields: setupFields }),
+    headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
+    method: "POST",
+  });
+}
+
+// biome-ignore lint/suspicious/useAwait: async test doubles retain the Promise-returning dependency contract and its microtask timing.
+async function createBrowserEnrollmentShell(asUrl: string, cookie: string, connectorId: string): Promise<JsonResult> {
+  return fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/browser-enrollment-shell`, {
+    body: JSON.stringify({}),
     headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
     method: "POST",
   });
@@ -783,6 +795,60 @@ test("manual/upload setup status shows committed acquisition-batch counts after 
         [providerBatchId, 1],
       ]
     );
+  });
+});
+
+test("ChatGPT browser-enrollment-shell draft is classified browser_session, not static_secret, despite its credential-capture manifest", async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, "chatgpt");
+    const cookie = await login(asUrl);
+
+    const created = await createBrowserEnrollmentShell(asUrl, cookie, "chatgpt");
+    assert.equal(created.status, 201, created.text);
+    assert.equal(created.body.object, "browser_enrollment_shell");
+    const connectionId = requireString(created.body.connection_id, "created.body.connection_id");
+
+    // Binding-first classification: ChatGPT's manifest declares an optional
+    // static_secret credential_capture block, but the connection is bound as
+    // a browser-enrollment shell, so it must classify as browser_session and
+    // never fall back to the manifest's static-secret capability.
+    const awaiting = await getStatus(asUrl, cookie, connectionId);
+    assert.equal(awaiting.status, 200, awaiting.text);
+    assert.equal(awaiting.body.status, "draft");
+    assert.equal(awaiting.body.setup_kind, "browser_session");
+    assert.notEqual(awaiting.body.setup_kind, "static_secret");
+    assert.equal(awaiting.body.setup_state, "awaiting_browser_login");
+    assert.notEqual(awaiting.body.setup_state, "awaiting_credential");
+    assert.equal(subObject(awaiting.body, "setup_material").kind, "browser_session");
+    assert.equal(subObject(awaiting.body, "setup_material").label, "Browser login");
+    assert.equal(subObject(awaiting.body, "setup_material").present, false);
+    assert.equal(subObject(awaiting.body, "credential").present, false);
+    assert.equal(awaiting.body.pending, true);
+    assert.equal(awaiting.body.running, false);
+
+    // An active run is real login/setup progress for a browser-session
+    // connection even though no credential was ever captured.
+    seedActiveRun(connectionId, "chatgpt", "run_browser_status_inflight");
+    const running = await getStatus(asUrl, cookie, connectionId);
+    assert.equal(running.body.setup_kind, "browser_session");
+    assert.equal(running.body.setup_state, "first_sync_running");
+    assert.equal(running.body.running, true);
+    assert.equal(subObject(running.body, "credential").present, false);
+    clearActiveRun(connectionId);
+
+    // A failed first sync on a browser-session connection gets a browser-safe
+    // remediation, never "re-enter the provider credential".
+    const runId = "run_browser_status_failed";
+    await emitTerminalRunEvent("chatgpt", runId, "failed");
+    const failed = await getStatus(asUrl, cookie, connectionId, runId);
+    assert.equal(failed.status, 200, failed.text);
+    assert.equal(failed.body.setup_kind, "browser_session");
+    assert.equal(failed.body.setup_state, "first_sync_failed");
+    assert.ok(failed.body.last_error, "failed first sync must carry last_error");
+    const remediation = String(subObject(failed.body, "last_error").remediation);
+    assert.doesNotMatch(remediation, NO_BROWSER_CREDENTIAL_REMEDIATION);
+    assert.doesNotMatch(remediation, NO_BROWSER_REENTER_REMEDIATION);
+    assert.match(remediation, SECURE_BROWSER_REMEDIATION);
   });
 });
 

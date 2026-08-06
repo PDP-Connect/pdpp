@@ -131,7 +131,10 @@ function makePageWithVisibleOtpAndLiveSessionAfterBrowserCompletion(): Page {
   return fake as Page;
 }
 
-async function withRedditCredentials(run: () => Promise<void>): Promise<void> {
+async function withRedditCredentialValues(
+  credentials: { password?: string; username?: string },
+  run: () => Promise<void>
+): Promise<void> {
   const priorUsername = process.env.REDDIT_USERNAME;
   const priorPassword = process.env.REDDIT_PASSWORD;
   const priorStreamingEnv = new Map<(typeof STREAMING_ENV_KEYS)[number], string | undefined>();
@@ -139,8 +142,12 @@ async function withRedditCredentials(run: () => Promise<void>): Promise<void> {
     priorStreamingEnv.set(key, process.env[key]);
     delete process.env[key];
   }
-  process.env.REDDIT_USERNAME = "test-user";
-  process.env.REDDIT_PASSWORD = "test-password";
+  if (credentials.username) {
+    process.env.REDDIT_USERNAME = credentials.username;
+  }
+  if (credentials.password) {
+    process.env.REDDIT_PASSWORD = credentials.password;
+  }
   try {
     await run();
   } finally {
@@ -164,6 +171,41 @@ async function withRedditCredentials(run: () => Promise<void>): Promise<void> {
     }
   }
 }
+
+async function withRedditCredentials(run: () => Promise<void>): Promise<void> {
+  await withRedditCredentialValues({ password: "test-password", username: "test-user" }, run);
+}
+
+async function withoutRedditCredentials(run: () => Promise<void>): Promise<void> {
+  await withRedditCredentialValues({}, run);
+}
+
+test("ensureRedditSession hands off when optional credentials are absent", async () => {
+  await withoutRedditCredentials(async () => {
+    const requests: InteractionRequest[] = [];
+
+    await assert.rejects(
+      ensureRedditSession({
+        context: makeContext(),
+        page: makePageWithoutLoginInputs(),
+        sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+          requests.push(req);
+          return Promise.resolve({
+            request_id: req.request_id ?? "test_interaction",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+        },
+      }),
+      /reddit_login_manual_incomplete/u
+    );
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.kind, "manual_action");
+    assert.match(requests[0]?.message ?? "", /No optional Reddit sign-in details/);
+    assert.doesNotMatch(requests[0]?.message ?? "", /password|test-user/u);
+  });
+});
 
 test("ensureRedditSession emits manual_action when login inputs are blocked", async () => {
   await withRedditCredentials(async () => {

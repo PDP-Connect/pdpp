@@ -14,7 +14,7 @@
  * when an operator opens a streaming session for that interaction.
  *
  * Boundary: this is reference-runtime orchestration plumbing, NOT a PDPP
- * wire surface (no manifest fields, no capability vocabulary). The
+ * wire surface (no manifest fields, no connector browser-mode vocabulary). The
  * boundary that exists IS the registration HTTP call across the
  * connector-runtime / reference-server process boundary established by
  * `introduce-local-collector-runner`. See:
@@ -386,7 +386,7 @@ export interface StreamingTargetRegistrationHooks {
  * Why env vars: the runtime entry point is the connector subprocess
  * itself. Whatever spawned it (collector-runner OR in-process runtime)
  * is the right place to pass in `runId` + bearer context. Existing
- * patterns (PDPP_TRACE, PDPP_CAPTURE_FIXTURES, PDPP_*_HEADLESS) all use
+ * patterns (PDPP_TRACE, PDPP_CAPTURE_FIXTURES, PDPP_BROWSER_HEADLESS) all use
  * the same env-var channel.
  */
 export function resolveStreamingRegistrationFromEnv(

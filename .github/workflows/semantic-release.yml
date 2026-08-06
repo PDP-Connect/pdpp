@@ -161,6 +161,10 @@ jobs:
             target: console
             title: PDPP reference operator console
             description: PDPP browser-facing reference operator console
+          - image: core
+            target: core
+            title: PDPP Core node
+            description: PDPP platform-neutral single-container Core node with console and loopback AS/RS
 
     steps:
       - name: Checkout
@@ -284,6 +288,10 @@ jobs:
             target: console
             title: PDPP reference operator console
             description: PDPP browser-facing reference operator console
+          - image: core
+            target: core
+            title: PDPP Core node
+            description: PDPP platform-neutral single-container Core node with console and loopback AS/RS
 
     steps:
       - name: Checkout

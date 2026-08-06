@@ -26,10 +26,13 @@ const SERVER_ACTION_TRANSPORT_RE = /startBrowserEnrollmentAction|from "\.\/actio
 const POST_ROUTE_TRANSPORT_RE =
   /<form action=\{`\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/start`\} method="post">/;
 const PAGE_SETUP_DESCRIPTION_RE =
-  /Create a new account here\. If you need to reconnect an existing source, go back to Sources and open that source's reconnect flow\./;
+  /Create a new account in a secure browser\. You can optionally remember sign-in details for automatic reconnection and repair/;
 const PAGE_NEW_ACCOUNT_COPY_RE = /Create a new account/;
 const PAGE_OPTIONAL_LABEL_RE = /Source label \(optional\)/;
 const PAGE_DISPLAY_NAME_FIELD_RE = /name="display_name"/;
+const PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE = /Remember my sign-in details for automatic reconnection \(optional\)/;
+const PAGE_MANIFEST_CREDENTIAL_FIELDS_RE = /setup\.credential_capture\.fields\.map/;
+const PAGE_NO_GUARANTEED_UNATTENDED_RE = /unattended reconnection is not guaranteed/;
 const PAGE_EXISTING_SOURCE_LINK_RE = /Choose an existing source/;
 const START_ROUTE_POST_RE = /export async function POST/;
 const START_ROUTE_AUTH_RE = /await requireDashboardAccess\(pagePath\(connectorId\)\)/;
@@ -38,10 +41,15 @@ const START_ROUTE_CONNECTION_FIELD_RE = /readConnectionIdField\(formData\)/;
 const START_ROUTE_DISPLAY_NAME_FIELD_RE = /readOptionalDisplayNameField\(formData\)/;
 const START_ROUTE_SUPPORTED_BROWSER_RE = /isSupportedBrowserCollectorConnector\(connectorId\)/;
 const START_ROUTE_CREATE_SHELL_RE = /createBrowserEnrollmentShell\(connectorId, \{ displayName \}\)/;
-const START_ROUTE_DRAFT_ONE_RE = /draft: "1"/;
+const START_ROUTE_DRAFT_ONE_RE = /draft: draft \? "1" : "0"/;
 const START_ROUTE_UNSUPPORTED_REDIRECT_RE = /This browser-backed source is not available for self-service setup/;
 const START_ROUTE_LAUNCH_REDIRECT_RE = /\$\{pagePath\(connectorId\)\}\/launch\?\$\{\w+\.toString\(\)\}/;
-const START_ROUTE_FORBIDS_SLOW_RUN_RE = /runConnectionNow|abandonBrowserEnrollmentShell/;
+const START_ROUTE_FORBIDS_SLOW_RUN_RE = /runConnectionNow/;
+const START_ROUTE_OPTIONAL_CREDENTIAL_RE = /remember_sign_in_details/;
+const START_ROUTE_CREDENTIAL_CAPTURE_RE = /captureStaticSecretCredential/;
+const START_ROUTE_SAFE_CONTEXT_RE = /setupFields/;
+const START_ROUTE_NO_SECRET_LOG_RE = /\b(?:console|logger)\.(?:debug|info|log|warn|error)\s*\(/;
+const START_ROUTE_NO_SECRET_QUERY_RE = /query\.set\([^)]*(?:password|secret)/iu;
 const START_ROUTE_PUBLIC_ORIGIN_RE = /x-forwarded-host/;
 const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, publicOrigin\(request\)\), 303\)/;
 const PAGE_CONNECTION_ID_FIELD_RE = /browser-session-connection-id/;
@@ -53,6 +61,7 @@ const LAUNCH_PANEL_LOST_TRANSPORT_RECOVERY_RE = /recoverStartedBrowserRun\(conne
 const LAUNCH_PANEL_INLINE_FAILURE_RE = /Browser session did not finish starting/;
 const LAUNCH_PANEL_RUNS_FALLBACK_RE = /href="\/syncs"/;
 const LAUNCH_START_ROUTE_RUN_RE = /runConnectionNow\(connectionId\)/;
+const LAUNCH_START_ROUTE_ENROLLMENT_ADMISSION_RE = /runAdmission: "browser_enrollment"/;
 const LAUNCH_START_ROUTE_CLEANUP_RE = /abandonBrowserEnrollmentShell\(connectionId\)/;
 const LAUNCH_START_ROUTE_JSON_RE = /NextResponse\.json/;
 const LAUNCH_RECOVER_ROUTE_FILE = `${HERE}[connectorId]/launch/recover/route.ts`;
@@ -75,6 +84,9 @@ test("browser-session setup page keeps the new-account form and reconnect escape
   assert.match(src, PAGE_EXISTING_SOURCE_LINK_RE);
   assert.match(src, PAGE_OPTIONAL_LABEL_RE);
   assert.match(src, PAGE_DISPLAY_NAME_FIELD_RE);
+  assert.match(src, PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE);
+  assert.match(src, PAGE_MANIFEST_CREDENTIAL_FIELDS_RE);
+  assert.match(src, PAGE_NO_GUARANTEED_UNATTENDED_RE);
   assert.doesNotMatch(src, PAGE_CONNECTION_ID_FIELD_RE);
 });
 
@@ -94,6 +106,11 @@ test("browser-session start route preserves auth and repair handoff semantics", 
   assert.match(route, START_ROUTE_ORIGIN_RE);
   assert.match(route, START_ROUTE_CONNECTION_FIELD_RE);
   assert.match(route, START_ROUTE_DISPLAY_NAME_FIELD_RE);
+  assert.match(route, START_ROUTE_OPTIONAL_CREDENTIAL_RE);
+  assert.match(route, START_ROUTE_CREDENTIAL_CAPTURE_RE);
+  assert.match(route, START_ROUTE_SAFE_CONTEXT_RE);
+  assert.doesNotMatch(route, START_ROUTE_NO_SECRET_LOG_RE);
+  assert.doesNotMatch(route, START_ROUTE_NO_SECRET_QUERY_RE);
   assert.match(route, START_ROUTE_SUPPORTED_BROWSER_RE);
   assert.match(route, START_ROUTE_CREATE_SHELL_RE);
   assert.match(route, START_ROUTE_DRAFT_ONE_RE);
@@ -114,6 +131,7 @@ test("browser-session launch page owns slow run-start and renders inline failure
   assert.match(route, START_ROUTE_AUTH_RE);
   assert.match(route, START_ROUTE_ORIGIN_RE);
   assert.match(route, LAUNCH_START_ROUTE_RUN_RE);
+  assert.match(route, LAUNCH_START_ROUTE_ENROLLMENT_ADMISSION_RE);
   assert.match(route, LAUNCH_START_ROUTE_CLEANUP_RE);
   assert.match(route, LAUNCH_START_ROUTE_JSON_RE);
 });

@@ -124,22 +124,74 @@ async function requestManualLoginForChallenge({
 }: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
   readonly reason: string;
 }): Promise<boolean> {
+  return await waitForManualLogin({
+    ...(capture ? { capture } : {}),
+    handoffReason: "captcha",
+    message:
+      `Amazon did not render the expected sign-in form (${reason}). ` +
+      "This usually means Amazon is showing a CAPTCHA/puzzle or an approve-on-device challenge to the automated browser. " +
+      "If this run opened a visible browser, complete Amazon sign-in there and respond success. " +
+      "If it is headless, cancel this interaction and rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.",
+    page,
+    sendInteraction,
+  });
+}
+
+async function requestManualLoginWithoutCredentials({
+  capture,
+  page,
+  sendInteraction,
+}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction">): Promise<boolean> {
+  return await waitForManualLogin({
+    ...(capture ? { capture } : {}),
+    handoffReason: "login",
+    message:
+      "No optional Amazon sign-in details were provided. Sign in to Amazon in the secure browser and complete any CAPTCHA, OTP, passkey, or other human verification there, then respond success.",
+    page,
+    sendInteraction,
+  });
+}
+
+async function waitForManualLogin({
+  capture,
+  handoffReason,
+  message,
+  page,
+  sendInteraction,
+}: Pick<EnsureAmazonSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly handoffReason: "captcha" | "login";
+  readonly message: string;
+}): Promise<boolean> {
   await manualAction(
     {
       ...(capture ? { capture } : {}),
       page,
-      reason: "captcha",
-      message:
-        `Amazon did not render the expected sign-in form (${reason}). ` +
-        "This usually means Amazon is showing a CAPTCHA/puzzle or an approve-on-device challenge to the automated browser. " +
-        "If this run opened a visible browser, complete Amazon sign-in there and respond success. " +
-        "If it is headless, cancel this interaction and rerun Amazon headed (for example with PDPP_AMAZON_HEADLESS=0 on a desktop or under xvfb-run).",
+      reason: handoffReason,
+      message,
       timeoutSeconds: 1800,
     },
     sendInteraction
   );
   await page.waitForTimeout(3000);
   return probeAmazonSession(page);
+}
+
+async function ensureManualSessionWithoutCredentials({
+  capture,
+  checkpoint,
+  page,
+  sendInteraction,
+}: {
+  capture?: CaptureSession | null;
+  checkpoint: SessionCheckpointFn;
+  page: Page;
+  sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
+}): Promise<boolean> {
+  await checkpoint("amazon-signin-manual-required");
+  if (await requestManualLoginWithoutCredentials({ ...(capture ? { capture } : {}), page, sendInteraction })) {
+    return true;
+  }
+  throw new Error("amazon_login_manual_incomplete");
 }
 
 /**
@@ -205,7 +257,12 @@ export async function ensureAmazonSession({
   const email = process.env.AMAZON_USERNAME;
   const password = process.env.AMAZON_PASSWORD;
   if (!(email && password)) {
-    throw new Error("AMAZON_USERNAME/PASSWORD not set for auto-login");
+    return await ensureManualSessionWithoutCredentials({
+      ...(capture ? { capture } : {}),
+      checkpoint,
+      page,
+      sendInteraction,
+    });
   }
 
   // Drive login. Navigate to the signin page explicitly; a prior page may

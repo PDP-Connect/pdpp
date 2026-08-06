@@ -85,15 +85,21 @@ function connectionControlPath(connectionId: string, suffix: string): string {
 
 interface RunNowOptions {
   force?: boolean;
+  runAdmission?: "browser_enrollment";
 }
 
 async function runNowAt(path: string, options: RunNowOptions = {}) {
-  const force = options.force === true;
+  const { force: forceOption, runAdmission } = options;
+  const requestBody = {
+    ...(forceOption === true ? { force: true } : {}),
+    ...(runAdmission ? { run_admission: runAdmission } : {}),
+  };
+  const hasBody = Object.keys(requestBody).length > 0;
   const response = await fetchAs(path, {
     method: "POST",
-    ...(force
+    ...(hasBody
       ? {
-          body: asJson({ force: true }),
+          body: asJson(requestBody),
           headers: { "Content-Type": "application/json" },
         }
       : {}),
@@ -253,6 +259,7 @@ export async function submitRunInteraction(
  */
 export interface StreamingSessionMintResponse {
   browser_session_id: string;
+  clipboard_path: string;
   expires_at_ms: number;
   /**
    * `true` when the server returned the cached session record for an

@@ -4,18 +4,20 @@ Two paths, by intent:
 
 - **Quickstart** — one `docker run`, SQLite on a named volume, running on a
   laptop in under a minute. Start here.
-- **Production** — a small Docker Compose stack with Postgres + pgvector for a
-  node you intend to keep.
+- **Production** — the same one-service Core Compose stack with Postgres +
+  pgvector for a node you intend to keep.
 
 Both run the same proven one-service Core runtime as the Railway button and
 the Fly.io launch path: the operator console on the public port, the
 Authorization Server and Resource Server on loopback inside the container.
+The public `core` image also bundles Patchright/Chromium, enables semantic
+search downloads, and persists its model cache under `/var/lib/pdpp`.
 
 ## Quickstart
 
 ```sh
-docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
-  ghcr.io/pdp-connect/pdpp/railway-core:main
+docker run -d --name pdpp --restart unless-stopped -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
+  ghcr.io/pdp-connect/pdpp/core:main
 docker logs -f pdpp
 ```
 
@@ -23,17 +25,17 @@ No flags to fill in. On first boot the container generates an owner password,
 saves it to the `pdpp_data` volume, and prints a one-time banner:
 
 ```
-[railway-core] ────────────────────────────────────────────────────────────────
-[railway-core] First boot — generated an owner password for this instance.
-[railway-core]
-[railway-core]   Dashboard:      http://localhost:3000/dashboard
-[railway-core]   Owner password: hCJ3hQ0X8evNNCH9R9KqL5Ai
-[railway-core]
-[railway-core] Saved to /var/lib/pdpp/owner-password (on the data volume), so restarts keep
-[railway-core] this password. To change it, set the PDPP_OWNER_PASSWORD environment
-[railway-core] variable and restart; the environment variable always wins.
-[railway-core] This password is printed only on first boot.
-[railway-core] ────────────────────────────────────────────────────────────────
+[core] ────────────────────────────────────────────────────────────────
+[core] First boot — generated an owner password for this instance.
+[core]
+[core]   Dashboard:      http://localhost:3000/
+[core]   Owner password: hCJ3hQ0X8evNNCH9R9KqL5Ai
+[core]
+[core] Saved to /var/lib/pdpp/owner-password (on the data volume), so restarts keep
+[core] this password. To change it, set the PDPP_OWNER_PASSWORD environment
+[core] variable and restart; the environment variable always wins.
+[core] This password is printed only on first boot.
+[core] ────────────────────────────────────────────────────────────────
 ```
 
 Open the dashboard URL, sign in with the printed password, and connect your
@@ -50,8 +52,8 @@ metadata matches the real origin — or use the production path below.
 
 ## Production
 
-[`docker-compose.yml`](./docker-compose.yml) runs the reference and console as
-separate services on Postgres with pgvector. No repository clone required:
+[`docker-compose.yml`](./docker-compose.yml) runs one Core application service
+plus Postgres with pgvector. No repository clone required:
 
 ```sh
 mkdir pdpp && cd pdpp
@@ -90,42 +92,40 @@ These are deployment-level OAuth app settings. They are not per-account Google
 credentials, and a Gmail/Google app password cannot authorize the Google Data
 Portability API.
 
-**Browser-backed connectors (ChatGPT, USAA, ...):** the default `reference`
-image is browser-free. If you run these connectors inside the reference
-container rather than via the local collector, add this to `.env`:
-
-```sh
-PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference-browser:main
-```
-
-That image includes Patchright and a bundled Chromium so the connector can
-launch a headless browser inside the container.
+**Browser-backed connectors:** the `core` image includes full Patchright
+Chromium and Xvfb. Core defaults every local browser session to headed mode
+under the managed virtual display while preserving per-connector persistent
+profiles and direct-CDP streaming. Set `PDPP_BROWSER_HEADLESS=1` only for the
+advanced deployment-wide headless/minimal path. n.eko remains optional and
+headed: when configured, the runtime attaches to its remote CDP browser.
+`reference` and `reference-browser` remain split-runtime compatibility images.
 
 Serve a real domain through your HTTPS reverse proxy (Caddy, Traefik, nginx)
-pointed at the `web` port, and set `PDPP_REFERENCE_ORIGIN` to that domain so
+pointed at the Core port, and set `PDPP_REFERENCE_ORIGIN` to that domain so
 owner-session cookies and OAuth metadata are correct.
 
 ## Verification
 
 ```sh
 curl -fsS "$ORIGIN/.well-known/oauth-authorization-server" | head -c 200; echo
-curl -s -o /dev/null -w '%{http_code}\n' "$ORIGIN/dashboard"   # 307 -> /owner/login (gated)
+curl -s -o /dev/null -w '%{http_code}\n' "$ORIGIN/"   # 307 -> /owner/login (gated)
 ```
 
-Sign in at `$ORIGIN/dashboard`, then check Deployment in the console for the
+Sign in at `$ORIGIN/`, then check Deployment in the console for the
 runtime diagnostics surface (`GET /_ref/deployment`).
 
 ## Storage and upgrades
 
 - Quickstart: everything (SQLite database, owner password, credential
   encryption key) lives on the `pdpp_data` volume. Back up the volume.
-- Production: records live in the `pdpp-postgres-data` volume; secrets live in
-  `.env`. Back up both together.
+- Production: records live in the `pdpp-postgres-data` volume, semantic model
+  files and first-boot state live in `pdpp-data`, and secrets live in `.env`.
+  Back up all three together.
 
 Upgrade by pulling and recreating; volumes persist:
 
 ```sh
-docker pull ghcr.io/pdp-connect/pdpp/railway-core:main && docker rm -f pdpp && <your docker run>
+docker pull ghcr.io/pdp-connect/pdpp/core:main && docker rm -f pdpp && <your docker run>
 # or, compose:
 docker compose pull && docker compose up -d
 ```

@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
+import { extractCsrfFieldValue, findSetCookiePair, getSetCookieList } from "./lib/owner-session.ts";
+
 const [, , mode] = process.argv;
 const repoRoot = new URL("..", import.meta.url).pathname;
 const cliBin = join(repoRoot, "packages/cli/bin/pdpp.ts");
@@ -126,6 +128,10 @@ async function runLocalConnectSmoke(): Promise<void> {
       lexicalRetrievalSupported: false,
       hybridRetrievalSupported: false,
       awaitStartupBackfill: true,
+      // This is a disposable open local-dev server. Explicitly override any
+      // ambient owner password in the developer shell so the smoke does not
+      // accidentally turn its own consent flow into an authenticated deploy.
+      ownerAuthPassword: "",
     });
 
     const providerUrl = `http://localhost:${server?.rsPort}`;
@@ -185,9 +191,13 @@ function runConnectAndApprove({
   timeoutMs: number;
 }): Promise<ConnectResult> {
   return new Promise((resolve, reject) => {
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+    childEnv.PDPP_OWNER_PASSWORD = undefined;
+    childEnv.PDPP_OWNER_TOKEN = undefined;
+    childEnv.PDPP_OWNER_SESSION_COOKIE = undefined;
     const child = spawn(process.execPath, [cliBin, "connect", providerUrl], {
       cwd,
-      env: { ...process.env, NO_COLOR: "1" },
+      env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -240,10 +250,27 @@ async function approveAccess(approvalUrl: string): Promise<void> {
   if (!requestUri) {
     throw new Error(`FAIL approval URL missing request_uri: ${approvalUrl}`);
   }
+  const consentPage = await fetch(url, {
+    headers: { Accept: "text/html" },
+    redirect: "manual",
+  });
+  const csrfCookie = findSetCookiePair(getSetCookieList(consentPage), "pdpp_owner_csrf");
+  const csrfField = extractCsrfFieldValue(await consentPage.text());
+  const approveBody: Record<string, string> = { request_uri: requestUri, subject_id: "owner_local" };
+  if (csrfField) {
+    approveBody._csrf = csrfField;
+  }
+  const approveHeaders: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  if (csrfCookie) {
+    approveHeaders.Cookie = csrfCookie;
+  }
   const response = await fetch(new URL("/consent/approve", url), {
     method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ request_uri: requestUri, subject_id: "owner_local" }).toString(),
+    headers: approveHeaders,
+    body: new URLSearchParams(approveBody).toString(),
     redirect: "manual",
   });
   if (!(response.ok || response.status === 302 || response.status === 303)) {

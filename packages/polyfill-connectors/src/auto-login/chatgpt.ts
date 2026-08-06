@@ -633,8 +633,8 @@ async function fallbackForUnexpectedLoginUi({
 >): Promise<boolean> {
   const cf = await detectCloudflareChallenge(page);
   const diagnosticMessage = cf.isChallenge
-    ? `Cloudflare challenge confirmed (signals: ${cf.signals.join(", ")}). Complete the "Verify you are human" check in the streaming companion, then the run will resume — or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.`
-    : "ChatGPT login inputs were not found and no Cloudflare challenge was detected (the login page may have changed). Complete login in the streaming companion, or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.";
+    ? `Cloudflare challenge confirmed (signals: ${cf.signals.join(", ")}). Complete the "Verify you are human" check in the streaming companion, then the run will resume — or rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.`
+    : "ChatGPT login inputs were not found and no Cloudflare challenge was detected (the login page may have changed). Complete login in the streaming companion, or rerun with PDPP_BROWSER_HEADLESS=0 (or unset it) on a browser-capable deployment.";
   return await handleBrowserLoginAssistance({
     ...(assist ? { assist } : {}),
     ...(capture ? { capture } : {}),

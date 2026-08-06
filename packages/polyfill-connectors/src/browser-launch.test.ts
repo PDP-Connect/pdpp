@@ -18,13 +18,14 @@ import {
   HEADED_BROWSER_UNAVAILABLE_CODE,
   HeadedBrowserUnavailableError,
   isCdpAttachSessionRaceError,
+  resolveDeploymentBrowserHeadless,
   resolvePageTargetWsUrl,
   runCdpAttemptWithRaceGuard,
   shouldCleanRemoteCdpPageTargets,
   type UnhandledRejectionHost,
 } from "./browser-launch.ts";
 
-const ENV_VARS = ["PDPP_FORCE_CONTAINER", "PDPP_ALLOW_HEADED_CONTAINER_BROWSER"] as const;
+const ENV_VARS = ["PDPP_BROWSER_HEADLESS", "PDPP_FORCE_CONTAINER", "PDPP_ALLOW_HEADED_CONTAINER_BROWSER"] as const;
 
 function withEnv(values: Partial<Record<(typeof ENV_VARS)[number], string>>) {
   const previous = new Map<string, string | undefined>();
@@ -85,6 +86,30 @@ test("decideContainerHeadedBrowserGate: HEADED in container fails closed", () =>
   );
 });
 
+test("decideContainerHeadedBrowserGate: Core's managed browser runtime permits headed local Chromium", () => {
+  assert.deepEqual(
+    decideContainerHeadedBrowserGate({
+      headless: false,
+      inContainer: true,
+      escapeHatchEnabled: false,
+      managedDisplayAvailable: true,
+    }),
+    { kind: "proceed" }
+  );
+});
+
+test("decideContainerHeadedBrowserGate: Core's omitted browser mode uses the managed headed path", () => {
+  assert.deepEqual(
+    decideContainerHeadedBrowserGate({
+      headless: undefined,
+      inContainer: true,
+      escapeHatchEnabled: false,
+      managedDisplayAvailable: true,
+    }),
+    { kind: "proceed" }
+  );
+});
+
 test("decideContainerHeadedBrowserGate: escape hatch downgrades HEADED-in-container to warn_and_proceed", () => {
   assert.deepEqual(decideContainerHeadedBrowserGate({ headless: false, inContainer: true, escapeHatchEnabled: true }), {
     kind: "warn_and_proceed",
@@ -98,7 +123,7 @@ test("decideContainerHeadedBrowserGate: escape hatch is a no-op when not in cont
   );
 });
 
-test("decideContainerHeadedBrowserGate: undefined headless in container fails closed (mirrors acquireIsolatedBrowser default)", () => {
+test("decideContainerHeadedBrowserGate: undefined headless in container fails closed (mirrors the headed baseline)", () => {
   assert.deepEqual(
     decideContainerHeadedBrowserGate({ headless: undefined, inContainer: true, escapeHatchEnabled: false }),
     { kind: "fail_closed" }
@@ -223,6 +248,14 @@ test("configuredBrowserChannel defaults to bundled Patchright Chromium", () => {
 test("configuredBrowserChannel preserves explicit channel override", () => {
   assert.equal(configuredBrowserChannel({ PDPP_BROWSER_CHANNEL: " chrome " }), "chrome");
   assert.equal(configuredBrowserChannel({ PDPP_BROWSER_CHANNEL: "chromium" }), "chromium");
+});
+
+test("resolveDeploymentBrowserHeadless keeps mode deployment-owned when callers omit it", () => {
+  assert.equal(resolveDeploymentBrowserHeadless(undefined, {}), false);
+  assert.equal(resolveDeploymentBrowserHeadless(undefined, { PDPP_BROWSER_HEADLESS: "1" }), true);
+  assert.equal(resolveDeploymentBrowserHeadless(undefined, { PDPP_BROWSER_HEADLESS: "0" }), false);
+  assert.equal(resolveDeploymentBrowserHeadless(false, { PDPP_BROWSER_HEADLESS: "1" }), false);
+  assert.equal(resolveDeploymentBrowserHeadless(true, { PDPP_BROWSER_HEADLESS: "0" }), true);
 });
 
 // ─── wsUrl extraction (DevToolsActivePort + /json target listing) ──────

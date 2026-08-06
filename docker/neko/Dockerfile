@@ -15,9 +15,9 @@ ARG NEKO_BASE_IMAGE=ghcr.io/m1k1o/neko/chromium:3.0@sha256:13264ee217ecccda06b07
 # independent of which binary is on disk here — but the binary patches only
 # come from this binary.
 #
-# Pinned to patchright@1.59.4 (matching the reference container) so the
-# revision (Chromium 1217, "Chrome for Testing 147.0.7727.15") stays in
-# lockstep with what the driver expects to see in Browser.getVersion.
+# The exact Patchright version is read from the workspace manifest below, so
+# n.eko's binary stays in lockstep with the reference-side driver without a
+# second authoritative pin.
 FROM node:26-slim AS patchright-chromium
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl unzip \
@@ -26,6 +26,7 @@ RUN apt-get update \
 WORKDIR /tmp/patchright-install
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/patchright-browsers
 COPY docker/neko/install-patchright-chromium.sh /usr/local/bin/install-patchright-chromium.sh
+COPY packages/polyfill-connectors/package.json /tmp/polyfill-connectors-package.json
 # Initialise a throwaway package.json so npm doesn't try to write tracker
 # metadata into the cache mount (which conflicts with --mount=type=cache).
 #
@@ -38,11 +39,11 @@ COPY docker/neko/install-patchright-chromium.sh /usr/local/bin/install-patchrigh
 # install-patchright-chromium.sh reproduces the exact on-disk layout a real
 # `patchright install` leaves (chromium-<revision>/chrome-linux64/chrome +
 # INSTALLATION_COMPLETE marker) while extracting with the system `unzip`. The
-# revision/version are read from the patchright-core package just installed, so
-# this stays pinned to patchright@1.59.4 (Chromium 1217, Chrome for Testing
-# 147.0.7727.15) — bumping patchright updates the download automatically.
-RUN echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
-  && npm install --no-save patchright@1.59.4 \
+# revision/version are read from the patchright-core package just installed;
+# changing the workspace dependency updates the download automatically.
+RUN PATCHRIGHT_VERSION="$(node --input-type=module -e "import { readFileSync } from 'node:fs'; const version = JSON.parse(readFileSync('/tmp/polyfill-connectors-package.json', 'utf8')).dependencies.patchright; if (!/^\\d+\\.\\d+\\.\\d+$/.test(version)) throw new Error('Patchright dependency must be exact, got: ' + version); process.stdout.write(version)")" \
+  && echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
+  && npm install --no-save "patchright@${PATCHRIGHT_VERSION}" \
   && chmod +x /usr/local/bin/install-patchright-chromium.sh \
   && /usr/local/bin/install-patchright-chromium.sh /tmp/patchright-install
 

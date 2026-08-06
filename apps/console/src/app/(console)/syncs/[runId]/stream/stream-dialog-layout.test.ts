@@ -45,11 +45,9 @@ const DIALOG_COMPOUND_RULE_RE =
   /\.pdpp-dialog\.pdpp-stream-dialog\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?inset:\s*0;[\s\S]*?display:\s*grid;/;
 const BACKDROP_COMPOUND_RULE_RE =
   /\.pdpp-dialog-backdrop\.pdpp-stream-dialog-backdrop\s*\{[\s\S]*?background:\s*transparent;/;
-const FRAME_STYLE_BLOCK_RE = /aspectRatio:\s*aspect,[\s\S]{0,200}?\}\}/;
-const FRAME_WIDTH_100_RE = /width:\s*"100%"/;
-const FRAME_HEIGHT_100_RE = /height:\s*"100%"/;
-const FRAME_MAX_HEIGHT_100_RE = /maxHeight:\s*"100%"/;
-const FRAME_MAX_WIDTH_100_RE = /maxWidth:\s*"100%"/;
+const ASSEMBLED_CANVAS_RE = /createRemoteSurfaceViewer\(\{[\s\S]{0,240}?mediaPlane:\s*"canvas-frames"/;
+const CONTAINED_CANVAS_RE =
+  /<canvas[\s\S]{0,240}?className="[^"]*max-h-full[^"]*max-w-full[^"]*"[\s\S]{0,200}?style=\{\{\s*height:\s*"auto",\s*width:\s*"auto"\s*\}\}/;
 const FIT_HOST_WRAPPER_RE = /<div className="pdpp-stream-fit-host[^"]*">/;
 const FIT_HOST_CONTAINER_TYPE_RE = /\.pdpp-stream-fit-host\s*\{\s*container-type:\s*size;/;
 
@@ -97,7 +95,7 @@ test("the stream dialog override is specificity-safe: compound selectors that al
   );
 });
 
-test("the CDP-fallback frame is sized to CONTAIN inside its host on both axes, never overflow either", async () => {
+test("the assembled CDP canvas is sized to CONTAIN inside its host on both axes", async () => {
   // LIVE UAT regression #2: even with the dialog itself full-bleed, the
   // CDP-fallback frame's `aspectRatio` + `width: 100%` + `height: 100%`
   // together is an over-constrained CSS box — the browser resolves width
@@ -107,29 +105,8 @@ test("the CDP-fallback frame is sized to CONTAIN inside its host on both axes, n
   // `overflow: hidden`. `width`/`height: 100%` together with `aspect-ratio`
   // on the SAME element is exactly the defect shape this asserts against.
   const viewerSrc = await readFile(STREAM_VIEWER_FILE, "utf8");
-  const frameStyleMatch = viewerSrc.match(FRAME_STYLE_BLOCK_RE);
-  if (!frameStyleMatch) {
-    throw new Error("the CDP-fallback frame's aspect-ratio style block must exist");
-  }
-  const [frameStyle] = frameStyleMatch;
-
-  assert.ok(
-    !(FRAME_WIDTH_100_RE.test(frameStyle) && FRAME_HEIGHT_100_RE.test(frameStyle)),
-    "the aspect-ratio'd frame must not set BOTH width:100% and height:100% " +
-      "(over-constrained: aspect-ratio cannot shrink either axis back down " +
-      "once both are made definite, so the box overflows on whichever axis " +
-      "the ratio doesn't match)"
-  );
-  assert.match(
-    frameStyle,
-    FRAME_MAX_HEIGHT_100_RE,
-    "the frame must cap its height at 100% of its container so it never overflows vertically"
-  );
-  assert.match(
-    frameStyle,
-    FRAME_MAX_WIDTH_100_RE,
-    "the frame must cap its width at 100% of its container so it never overflows horizontally"
-  );
+  assert.match(viewerSrc, ASSEMBLED_CANVAS_RE, "Remote Surface must remain the CDP canvas authority");
+  assert.match(viewerSrc, CONTAINED_CANVAS_RE, "the canvas must cap both axes and preserve intrinsic aspect ratio");
 
   assert.match(
     viewerSrc,

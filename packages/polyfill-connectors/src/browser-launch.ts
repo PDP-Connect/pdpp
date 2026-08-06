@@ -8,8 +8,9 @@
  * directory. Used by the connector runtime (`connector-runtime.ts`) and by
  * operator-side scripts under `bin/` that need a Chromium context.
  *
- * Profile directories live under `~/.pdpp/profiles/<profileName>/`. Each
- * profile is independent: cookies, localStorage, and "trusted device" state
+ * Profile directories live under `~/.pdpp/profiles/<profileName>/` by default,
+ * or under the deployment-owned `PDPP_BROWSER_PROFILE_ROOT` when configured.
+ * Each profile is independent: cookies, localStorage, and "trusted device" state
  * persist across runs of the same connector but never cross between
  * connectors. Concurrent runs across different `profileName`s are safe.
  *
@@ -18,12 +19,12 @@
  * full stealth stack (launch-side + client-side); using stock playwright over
  * CDP would forfeit the client-side layer.
  *
- * Container policy: a HEADED browser inside a container is invisible to the
- * operator. The legacy host-browser bridge that used to bridge that gap is
- * retired (see `openspec/changes/introduce-local-collector-runner`). Headed
- * browser-backed connectors must run in a local collector runtime that
- * advertises a `browser` binding; provider/control-plane runtimes that lack
- * that binding fail spawn before launch via the runtime-capability gate.
+ * Container policy: Core owns the browser mode for local sessions. Its
+ * browser-bearing image advertises `PDPP_RUNTIME_BROWSER=1` and its supervisor
+ * supplies a managed Xvfb `DISPLAY`, so the normal local launch is a visible
+ * headed Chromium even though the service has no physical desktop. Other
+ * containers still fail closed unless they provide the existing escape hatch
+ * or attach to an operator-visible remote CDP browser such as n.eko.
  */
 
 import { existsSync, mkdirSync } from "node:fs";
@@ -36,6 +37,7 @@ import { isRunningInContainer } from "./runtime-environment.ts";
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const EXTRA_BROWSER_ARGS_RE = /\s+/;
+export const BROWSER_HEADLESS_ENV = "PDPP_BROWSER_HEADLESS";
 // The two halves of the transient remote-CDP-attach race signature. See
 // `isCdpAttachSessionRaceError` for the full root-cause explanation.
 const CDP_ATTACH_RACE_METHOD_RE = /Network\.setCacheDisabled/;
@@ -76,7 +78,7 @@ export interface AcquireIsolatedBrowserOptions {
   remoteCdpUrl?: string;
   /**
    * When true, the launcher launches Chromium in CDP-port mode
-   * (`cdpPort: 0` plus `--remote-debugging-address=127.0.0.1`), reads
+   * (`--remote-debugging-port=0` plus `--remote-debugging-address=127.0.0.1`), reads
    * the resolved random port out of `<userDataDir>/DevToolsActivePort`,
    * and publishes `PDPP_BROWSER_CDP_HOST` / `PDPP_BROWSER_CDP_PORT` to
    * `process.env` for the browser-binding-local handoff helper
@@ -130,17 +132,15 @@ export class HeadedBrowserUnavailableError extends Error {
  * acquire path itself is hard to test without spinning up a real
  * browser).
  *
- * Headed-vs-headless interpretation MUST mirror `acquireIsolatedBrowser`'s
- * effective default. That function destructures `{ headless = false }`,
- * so:
+ * Headed-vs-headless interpretation MUST mirror the effective mode resolved by
+ * `acquireBrowserForConnector`, which applies the deployment override when a
+ * caller omits `headless`. The baseline is headed, so:
  *
  *   - `headless: true`  → headless (allowed in container)
- *   - `headless: false` → headed   (gate fires in container)
- *   - `headless: undefined` (caller omitted the field) → headed,
- *     because the launcher's default kicks in. A library-direct caller
- *     writing `acquireBrowserForConnector({ profileName })` with no
- *     headless field is asking for a visible browser, and that must
- *     fail closed in a container exactly like `headless: false` does.
+ *   - `headless: false` → headed   (container gate requires managed display or escape hatch)
+ *   - `headless: undefined` (caller omitted the field) → the deployment
+ *     choice (`PDPP_BROWSER_HEADLESS=1` means headless; otherwise headed).
+ *     A connector's browser config never supplies this field.
  *
  * Returns:
  *   - `{ kind: "fail_closed" }` when the effective request is HEADED,
@@ -161,6 +161,12 @@ export interface ContainerHeadedBrowserGateInputs {
   readonly headless: boolean | undefined;
   readonly inContainer: boolean;
   /**
+   * Core's startup supervisor has installed the image-owned browser runtime
+   * and waited for its managed Xvfb display. Omitted/false preserves the
+   * fail-closed behavior for unrelated container runtimes.
+   */
+  readonly managedDisplayAvailable?: boolean;
+  /**
    * When set, the launcher will NOT spawn a local headed Chromium — it
    * will attach to a remote CDP endpoint (e.g. a n.eko browser surface) which
    * already renders the browser visibly for the operator. In that case
@@ -172,10 +178,21 @@ export interface ContainerHeadedBrowserGateInputs {
 }
 
 /**
- * Effective default for the `headless` option, mirroring the
- * destructured default in `acquireIsolatedBrowser` (`headless = false`).
- * If this default ever changes there, change it here in lockstep —
- * keep the gate honest about what the launcher will actually do.
+ * Resolve the deployment-owned local browser mode. Connector manifests do not
+ * call this with an explicit value; the explicit argument remains available to
+ * operator-side low-level callers as the existing headless escape hatch.
+ */
+export function resolveDeploymentBrowserHeadless(
+  headless: boolean | undefined,
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  return headless ?? env[BROWSER_HEADLESS_ENV]?.trim() === "1";
+}
+
+/**
+ * Baseline used by the pure gate when a test or policy caller supplies no
+ * deployment environment. The production wrapper resolves the environment
+ * before it calls the gate.
  */
 const ACQUIRE_ISOLATED_BROWSER_HEADLESS_DEFAULT = false;
 
@@ -190,6 +207,9 @@ export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserG
   // via the streaming companion. There is no invisible headed Chromium in the
   // reference container to fail closed against.
   if (inputs.remoteCdpUrl && inputs.remoteCdpUrl.length > 0) {
+    return { kind: "proceed" };
+  }
+  if (inputs.managedDisplayAvailable) {
     return { kind: "proceed" };
   }
   if (inputs.escapeHatchEnabled) {
@@ -214,7 +234,7 @@ export function configuredBrowserChannel(env: Record<string, string | undefined>
  *   Protocol error (Network.setCacheDisabled): Internal server error, session closed.
  *       at ... crNetworkManager.setRequestInterception
  *
- * Root cause (verified against patchright-core 1.59.4 internals):
+ * Root cause (verified against patchright-core 1.61.1 internals):
  * Patchright's `CRPage` constructor eagerly calls
  * `this._networkManager.setRequestInterception(true)` so its stealth
  * Fetch-domain hooks are always active (`server/chromium/crPage.js` line 80).
@@ -652,17 +672,13 @@ function redactCdpUrl(rawUrl: string): string {
 }
 
 /**
- * Launch an isolated per-connector browser context with its own profile dir.
- *
- * NOTE: the default profile-name derivation in `connector-runtime.ts` is
- * `profileName = connectorName`, which is single-account by design. When
- * multi-account support ships, switch the derivation to include a stable
- * subject identifier (e.g. `${connectorName}__${subjectId}`) so two accounts
- * on the same platform get independent profile directories.
+ * Launch an isolated per-connection browser context with its own profile dir.
+ * The connector runtime scopes the profile name with the stable connector
+ * instance ID when the reference runtime supplies one.
  */
 export async function acquireIsolatedBrowser({
   profileName,
-  headless = false,
+  headless,
   streamingEnabled,
   remoteCdpUrl,
   preserveRemotePagesOnAcquire,
@@ -680,7 +696,9 @@ export async function acquireIsolatedBrowser({
       preserveRemotePagesOnAcquire ? { preserveRemotePagesOnAcquire } : {}
     );
   }
-  const isolatedDir = join(homedir(), ".pdpp", "profiles", profileName);
+  const effectiveHeadless = resolveDeploymentBrowserHeadless(headless);
+  const profileRoot = process.env.PDPP_BROWSER_PROFILE_ROOT?.trim() || join(homedir(), ".pdpp", "profiles");
+  const isolatedDir = join(profileRoot, profileName);
   if (!existsSync(isolatedDir)) {
     mkdirSync(isolatedDir, { recursive: true, mode: 0o700 });
   }
@@ -690,35 +708,14 @@ export async function acquireIsolatedBrowser({
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
   const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
 
-  // Streaming-registration mode needs Chromium to expose a TCP CDP
-  // endpoint (so the streaming companion can connect by URL later) AND
-  // write `<userDataDir>/DevToolsActivePort` so we can discover the
-  // randomly-assigned port without scraping stderr. We also pin the bind
-  // to loopback as defense in depth — the wsUrl path encodes a bearer
-  // secret, and we never want it reachable from a non-local listener.
-  //
-  // The right way to do this through Patchright/Playwright is the
-  // `cdpPort` launch option: when set, Patchright pushes
-  // `--remote-debugging-port=<port>` AND switches the parent's CDP
-  // transport from pipe to WebSocket (server/browserType.js dispatch on
-  // `options.cdpPort !== undefined`). It also skips its own
-  // `--remote-debugging-pipe` default (server/chromium/chromium.js
-  // `defaultArgs` else branch).
-  //
-  // We CANNOT achieve the same effect by pushing
-  // `--remote-debugging-port=0` into `args[]`: Patchright only checks
-  // `options.cdpPort` (not the args array) when deciding whether to add
-  // `--remote-debugging-pipe`, so Chromium ends up launched with BOTH
-  // `--remote-debugging-port=0` AND `--remote-debugging-pipe`, the
-  // parent connects over the pipe, and the first CDP command after
-  // launch (`Network.setCacheDisabled` from initial page setup) fails
-  // with `Internal server error, session closed`. That manifested as
-  // `companion_start_failed` for any run that needed streaming.
-  //
-  // `cdpPort: 0` lets Chromium pick a random free port; we then read
-  // it back out of `DevToolsActivePort` for the wsUrl. The
-  // `--remote-debugging-address=127.0.0.1` arg is still set explicitly
-  // because Patchright doesn't expose a host-binding option.
+  // Streaming-registration mode needs Chromium to expose a TCP CDP endpoint
+  // (so the streaming companion can connect by URL later) and write
+  // `<userDataDir>/DevToolsActivePort` so we can discover the random port.
+  // Patchright 1.61.1's persistent-context path still owns its parent CDP
+  // transport through `--remote-debugging-pipe`; adding a second
+  // `--remote-debugging-port=0` is supported by Chromium and preserves the
+  // driver's pipe while publishing the companion endpoint. Bind it to
+  // loopback because the wsUrl path carries a bearer secret.
   const baseArgs = [
     // Workaround for microsoft/playwright#40158: headed Chrome's download
     // bubble races Playwright's CDP-based download interception.
@@ -746,10 +743,11 @@ export async function acquireIsolatedBrowser({
   // child reports "Internal server error, session closed" on the first call.
   // We don't auto-fix (operator may have a real reason for the env shape) but
   // we flag it once so the next operator who hits this isn't debugging blind.
-  // Production / Docker / headless-server deployments do not have DISPLAY set
-  // and so will not trip this warning.
+  // Core's managed Xvfb display uses `-ac`, so it does not need XAUTHORITY and
+  // skips this host/tmux diagnostic. Other X displays still get the warning.
+  const managedDisplayAvailable = process.env.PDPP_RUNTIME_BROWSER === "1" && Boolean(process.env.DISPLAY);
   if (
-    !displayAuthWarningEmitted &&
+    !(displayAuthWarningEmitted || managedDisplayAvailable) &&
     process.env.DISPLAY &&
     !process.env.XAUTHORITY &&
     !extraArgsRaw?.includes("--disable-gpu")
@@ -764,21 +762,16 @@ export async function acquireIsolatedBrowser({
   }
   if (streamingEnabled) {
     baseArgs.push("--remote-debugging-address=127.0.0.1");
+    baseArgs.push("--remote-debugging-port=0");
   }
 
   type PatchrightLaunchOptions = NonNullable<Parameters<typeof localChromium.launchPersistentContext>[1]> & {
     cdpPort?: number;
   };
   const baseLaunchOptions: PatchrightLaunchOptions = {
-    headless,
+    headless: effectiveHeadless,
     viewport: null,
     args: baseArgs,
-    // `cdpPort: 0` is honored by Patchright (`server/browserType.js`
-    // dispatches CDP transport on this; `server/chromium/chromium.js`
-    // `defaultArgs` skips `--remote-debugging-pipe` when it is set).
-    // Playwright's public `LaunchOptions` typing doesn't surface `cdpPort`,
-    // but Patchright's protocol validator accepts it and forwards it.
-    ...(streamingEnabled ? { cdpPort: 0 } : {}),
   };
 
   const explicitChannel = configuredBrowserChannel();
@@ -1188,16 +1181,13 @@ let displayAuthWarningEmitted = false;
  * Acquire a browser context for connector use.
  *
  * Container policy:
- *   - Headless container acquisitions (`headless: true`) are allowed —
- *     non-interactive scrapes (cookie-based authenticated GETs, headless
- *     fetches that need a Chromium-backed fingerprint) have no operator
- *     interaction surface and are a legitimate Docker workload.
- *   - HEADED in-container acquisitions fail closed with
- *     `HeadedBrowserUnavailableError`. A headed Chromium in a container
- *     is invisible to the operator; an interactive flow (Cloudflare,
- *     OTP) blocks indefinitely on the `auto-login` INTERACTION
- *     handshake with no visible signal. Operators must run the connector
- *     in a local collector runtime instead — see
+ *   - Headless container acquisitions (`headless: true`) remain available as
+ *     the advanced deployment-level escape hatch.
+ *   - Core's headed local acquisitions proceed when its packaged runtime and
+ *     managed Xvfb display are present.
+ *   - Other headed container acquisitions fail closed with
+ *     `HeadedBrowserUnavailableError` because there is no visible browser
+ *     surface. Operators can use a local collector runtime instead — see
  *     `bin/collector-runner.ts`.
  *   - Operators who need to escape the gate (e.g., debugging a headed
  *     container browser locally with X11 forwarding) can set
@@ -1205,20 +1195,23 @@ let displayAuthWarningEmitted = false;
  *     per-acquisition warning so the override is visible in logs.
  *   - The host-direct path is unaffected — without any container signal,
  *     the runtime uses `acquireIsolatedBrowser` against
- *     `~/.pdpp/profiles/<name>/`.
+ *     `PDPP_BROWSER_PROFILE_ROOT/<name>/` (default `~/.pdpp/profiles/<name>/`).
  */
 export async function acquireBrowserForConnector(options: AcquireIsolatedBrowserOptions): Promise<IsolatedBrowser> {
+  const effectiveHeadless = resolveDeploymentBrowserHeadless(options.headless);
   const gate = decideContainerHeadedBrowserGate({
-    headless: options.headless,
+    headless: effectiveHeadless,
     inContainer: isRunningInContainer(),
     escapeHatchEnabled: process.env.PDPP_ALLOW_HEADED_CONTAINER_BROWSER === "1",
+    managedDisplayAvailable: process.env.PDPP_RUNTIME_BROWSER === "1" && Boolean(process.env.DISPLAY?.trim()),
     ...(options.remoteCdpUrl ? { remoteCdpUrl: options.remoteCdpUrl } : {}),
   });
   if (gate.kind === "fail_closed") {
     throw new HeadedBrowserUnavailableError({
       message:
-        "Headed (visible) browser-backed connector requested in a container with no local collector runtime to render it. " +
-        "Run this connector in a local collector runtime that advertises a `browser` binding " +
+        "Headed (visible) browser-backed connector requested in a container without a managed browser runtime/display. " +
+        "Use the browser-capable Core image (it starts full Patchright Chromium under Xvfb), " +
+        "or run this connector in a local collector runtime that advertises a `browser` binding " +
         "(`pdpp collector enroll --base-url <url> --code <code>` then `pdpp collector run --base-url <url> --connector <id> ...`), " +
         "or run the provider/control-plane outside the container so the host-direct launcher can open a visible browser. " +
         "Headless container browsers are unaffected; interactive flows must use a local collector so the operator can complete login/OTP/Cloudflare.",
@@ -1232,5 +1225,5 @@ export async function acquireBrowserForConnector(options: AcquireIsolatedBrowser
     );
   }
 
-  return await acquireIsolatedBrowser(options);
+  return await acquireIsolatedBrowser({ ...options, headless: effectiveHeadless });
 }

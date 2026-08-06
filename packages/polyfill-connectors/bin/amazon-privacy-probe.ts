@@ -9,7 +9,6 @@ import { acquireIsolatedBrowser } from "../src/browser-launch.ts";
 
 const { context, release } = await acquireIsolatedBrowser({
   profileName: "amazon",
-  headless: false,
 });
 const page = await context.newPage();
 

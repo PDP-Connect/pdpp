@@ -12,8 +12,16 @@ Scope of this first slice:
 
 - In scope: one public Core app, Fly Postgres, owner gating, an authenticated MCP
   query against a small hand-imported record set, and restart-survival proof.
-- Out of scope: browser-backed connector collection inside the deployed app,
-  semantic retrieval, recurring collection, scheduler operations, and n.eko.
+- The public `core` image includes browser-backed collection and semantic
+  retrieval with its model cache under `/var/lib/pdpp`; that cache is durable
+  only when the operator mounts persistent storage there. n.eko remains an
+  optional separate headed/X11/WebRTC backend.
+
+The bundled browser is full Patchright Chromium. Core starts managed Xvfb and
+defaults every local browser session to headed mode while preserving direct-CDP
+streaming and persistent profiles. Set `PDPP_BROWSER_HEADLESS=1` only for the
+advanced deployment-wide headless/minimal path. n.eko remains optional and
+headed when remote CDP is configured.
 
 ## Shareable Path
 
@@ -34,7 +42,7 @@ APP="pdpp-core-$(openssl rand -hex 3)"
 OWNER_PASSWORD="$(openssl rand -base64 24)"
 
 fly launch \
-  --image ghcr.io/pdp-connect/pdpp/railway-core:sha-39232ac \
+  --image ghcr.io/pdp-connect/pdpp/core:sha-39232ac \
   --name "$APP" \
   --region iad \
   --internal-port 3000 \
@@ -62,7 +70,7 @@ fly launch \
   --name "$APP" \
   --region iad \
   --copy-config \
-  --build-target platform-core \
+  --build-target core \
   --db \
   --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \
   --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \
@@ -99,13 +107,13 @@ internet --HTTPS--> core (public Fly app)
 
 Why this is the selected shape: live Railway testing already proved the
 one-service Core image is the lowest-prompt, easiest-to-share shape for managed
-platforms. Fly can run that same `platform-core` Docker target directly. That
+platforms. Fly can run the same `core` Docker target directly. That
 avoids a second private app, avoids `*.internal` wiring, and lets Fly's `--db`
 provisioning provide the standard `DATABASE_URL` that the runtime accepts.
 
 ## Configuration
 
-[`fly.toml`](./fly.toml) builds the root `Dockerfile` target `platform-core` and
+[`fly.toml`](./fly.toml) builds the root `Dockerfile` target `core` and
 exposes the console on port 3000.
 
 Set or let `fly launch` set:
@@ -124,7 +132,7 @@ fly postgres attach --app <app-name> <postgres-app> --variable-name PDPP_DATABAS
 ```
 
 Do not set `PORT`, `AS_PORT`, `RS_PORT`, `PDPP_AS_URL`, or `PDPP_RS_URL` on the
-Fly app. The `platform-core` image owns those values internally.
+Fly app. The `core` image owns those values internally.
 
 Preflight a local env file before a live deploy:
 

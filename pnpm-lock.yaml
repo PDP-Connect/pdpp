@@ -432,7 +432,7 @@ importers:
         specifier: ^8.0.0
         version: 8.0.0
       patchright:
-        specifier: ^1.61.1
+        specifier: 1.61.1
         version: 1.61.1
       pdf-parse:
         specifier: ^2.4.5
@@ -502,7 +502,7 @@ importers:
         specifier: 2.4.0
         version: 2.4.0
       patchright:
-        specifier: ^1.61.1
+        specifier: 1.61.1
         version: 1.61.1
       pg:
         specifier: ^8.22.0

@@ -117,7 +117,7 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
 
 function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: number): string {
   if (entry.modality === "browser_bound" && entry.setupModality === "static_secret") {
-    return "Start with a secure browser session, or save sign-in details for automatic repair.";
+    return "Connect in a secure browser, with optional encrypted sign-in details for repair.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":

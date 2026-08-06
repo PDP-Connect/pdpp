@@ -1,4 +1,34 @@
 {
+  "server/routes/run-interaction.ts": {
+    "allowed_mass": 29,
+    "reason": "Direct-CDP terminal-barrier closure (2026-08-05): run-final cleanup must invoke the presentation terminal barrier for every run, including direct-CDP runs without a managed n.eko lease, before clearing the run nonce. The added hook is the single lifecycle seam that prevents a connector finalization path from skipping target purge; extracting it would obscure the required ordering.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/playground.ts": {
+    "allowed_mass": 26,
+    "reason": "Built-Core direct-CDP oracle (2026-08-05): the dev-only Patchright fixture must launch a real browser, pin one selected Page while opening a decoy, emit browser-surface assistance, support registration-disabled mutation, and terminalize cached run/interaction state. These branches are the bounded discriminator required to prove exact-page frame/input and stale fencing; collapsing them would remove an oracle state or conflate fixture cache policy with run identity.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/routes.ts": {
+    "allowed_mass": 201,
+    "reason": "Core direct-CDP lifecycle closure (2026-08-05): companion and controller authority must be keyed by runId, interactionId, and browserSessionId; direct-target readiness must fail closed before mint; terminalization must invalidate, stop, and force-unregister; and run cleanup must retire every lifecycle. These are independent security and cleanup predicates proven by route and built-Core tests, not incidental branching suitable for a shallow extraction.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/cdp-adapter.ts": {
+    "allowed_mass": 19,
+    "reason": "Direct-CDP Remote Surface 1.5.1 migration (2026-08-05): the adapter must preserve exact-page target discovery, adopted-page URL/title events, opener-gated popup classification, and blank-child deferral while bridging the installed assembled server backend's lifecycle, frame, keyboard-focus, input, viewport, and clipboard events into PDPP's existing wire. Those ordered predicates and the single lifecycle bridge are load-bearing authority/security boundaries; extracting them would either obscure event-state transitions or split the adapter from the one backend owner. Proven by the focused adapter, Remote Surface session, route authorization, and parity regressions.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/protocol-wire.ts": {
+    "allowed_mass": 30,
+    "reason": "Direct-CDP Remote Surface 1.5.1 migration (2026-08-05): the existing PDPP wire must carry the installed backend's keyboard_focus event without changing the SSE protocol's explicit event envelope or weakening its fallback payload handling. The added discriminant and projection are the single compatibility seam for server-side focus detection; removing them would drop the event or duplicate a second focus channel. Proven by the focused adapter, session, route, and parity regressions.",
+    "date": "2026-08-05"
+  },
+  "server/streaming/run-target-registry.ts": {
+    "allowed_mass": 1,
+    "reason": "Run-final direct-CDP target purge (2026-08-05): clearNonce now deletes every target record owned by the terminal run as the crash/timeout safety net before nonce state is cleared. The single added branch is the load-bearing all-target cleanup predicate; TTL remains only defensive eviction.",
+    "date": "2026-08-05"
+  },
   "server/connector-maintenance-sweep.ts": {
     "allowed_mass": 18,
     "reason": "P0/P1/P2 fleet evidence convergence correction (2026-07-30): periodic and startup bounded evidence maintenance must retain a keyset cursor through a durable cross-backend store, acquire a generation-and-token fenced lease before the full read/sweep/write unit, reject malformed/non-resumable results without overwriting the prior cursor, reject a malformed completed result that carries a cursor, retain progress on failure, and discard a completion when its lease was superseded. An incomplete NULL result is valid only when the leased current cursor is also NULL, because the bounded sweep uses the cursor-before-page to retry a heavy first-page fold; after a non-null cursor it remains fail-closed. Startup must likewise retry the valid first-page NULL only through its existing round cap. These independent scheduling-safety branches sit at the orchestration boundary; extracting them would conceal ownership/error ordering or split a small module into shallow helpers. SQLite/real-PostgreSQL restart, cursor-loss, heavy-first-page, overlap, and stale-writer regressions prove the paths.",

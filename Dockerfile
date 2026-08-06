@@ -77,8 +77,8 @@ FROM source AS console-builder
 
 RUN pnpm --filter pdpp-console build
 
-# Core AS/RS reference runtime. Keep this browser-free: managed-platform Core
-# deploys do not run browser-backed collection inside the server container.
+# Split-service AS/RS reference runtime. Keep this stage browser-free; the
+# browser-capable Core payload is assembled by the core-browser stage below.
 FROM base AS reference
 
 # `.git` is excluded from the Docker build context (.dockerignore), so the
@@ -112,25 +112,38 @@ CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_U
 # reinvalidate the ~300MB browser install. Bumping the pinned version is the
 # only thing that forces a rebuild of this layer.
 #
-# The version is pinned to the same patchright used by docker/neko/Dockerfile
-# (1.59.4 → Chromium 1217). Bump both files together to keep the driver-side
-# (reference container) and binary-side (n.eko container) revisions in
-# lockstep; otherwise the CDP attach against n.eko sees a Chromium revision
-# the driver was not built for.
+# The browser installer reads the exact dependency version from the workspace
+# manifest. Keeping the runtime dependency exact and deriving this install from
+# it makes a Patchright/Chromium revision drift fail at build review time rather
+# than at connector launch.
 FROM base AS browsers
 
 ARG TARGETARCH
-ARG PATCHRIGHT_VERSION=1.59.4
+
+# Image-owned runtime capability. Browser-bearing final stages inherit this
+# marker; non-browser stages start from `base` and therefore remain false.
+ENV PDPP_RUNTIME_BROWSER=1
+
+# Core's default browser mode is headed. Keep the virtual display explicit in
+# the image rather than relying on Patchright's transitive OS dependencies.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends xvfb \
+  && rm -rf /var/lib/apt/lists/* \
+  && test -x /usr/bin/Xvfb
+
+COPY packages/polyfill-connectors/package.json /tmp/polyfill-connectors-package.json
 
 WORKDIR /tmp/patchright-install
 
-RUN echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
+RUN PATCHRIGHT_VERSION="$(node --input-type=module -e "import { readFileSync } from 'node:fs'; const version = JSON.parse(readFileSync('/tmp/polyfill-connectors-package.json', 'utf8')).dependencies.patchright; if (!/^\\d+\\.\\d+\\.\\d+$/.test(version)) throw new Error('Patchright dependency must be exact, got: ' + version); process.stdout.write(version)")" \
+  && echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
   && npm install --no-save --ignore-scripts "patchright@${PATCHRIGHT_VERSION}" \
   && if [ "$TARGETARCH" = "arm64" ]; then \
        npx patchright install --with-deps chromium; \
      else \
        npx patchright install --with-deps chrome chromium; \
      fi \
+  && test -n "$(find /opt/patchright-browsers -type f \( -path '*/chrome-linux64/chrome' -o -path '*/chrome-linux/chrome' \) -print -quit)" \
   && rm -rf /tmp/patchright-install
 
 WORKDIR /app
@@ -173,7 +186,7 @@ EXPOSE 3000
 
 CMD ["node", "apps/console/server.js"]
 
-# Railway pushbutton Core image: one public service runs the console on Railway
+# Browser-capable Core payload: one public service runs the console on Railway
 # $PORT and the reference AS/RS on loopback. This avoids a separate private app
 # service whose reserved PORT variable becomes a template prompt.
 #
@@ -184,7 +197,18 @@ CMD ["node", "apps/console/server.js"]
 # makes the SQLite database (and first-boot credentials, see
 # deploy/railway/core-first-boot.ts) durable. With a database URL present the
 # runtime selects Postgres and the SQLite default is ignored.
-FROM base AS railway-core
+#
+# reference-implementation/server/index.ts's generic
+# shouldAutoReconcilePolyfillManifests() default stays fail-closed for SQLite
+# (it only recognizes the dev script's ../packages/polyfill-connectors/
+# path) so ad-hoc/test SQLite DBs never get unexpected auto-registration.
+# /var/lib/pdpp/pdpp.sqlite is NOT that dev path, so this stage is the only
+# place that knows its own DB is the real polyfill deployment DB: bake
+# PDPP_RECONCILE_POLYFILL_MANIFESTS=1 so first-party manifests (amazon, ...)
+# get registered on boot. An operator can still force it off with
+# `-e PDPP_RECONCILE_POLYFILL_MANIFESTS=0`; the env var always overrides this
+# default (see index.ts's envEnabled handling).
+FROM browsers AS core-browser
 
 ARG PDPP_REFERENCE_REVISION=unknown
 
@@ -207,9 +231,12 @@ ENV NODE_ENV=production \
     PDPP_RS_URL=http://127.0.0.1:7663 \
     PDPP_REFERENCE_ORIGIN=http://localhost:3000 \
     PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite \
-    PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0 \
+    PDPP_BROWSER_PROFILE_ROOT=/var/lib/pdpp/browser-profiles \
+    PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1 \
+    PDPP_EMBEDDING_CACHE_DIR=/var/lib/pdpp/transformers \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1 \
+    PDPP_RECONCILE_POLYFILL_MANIFESTS=1 \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
 # See the `reference` stage: retain built workspace artifacts from source.
@@ -222,6 +249,12 @@ EXPOSE 3000
 
 CMD ["node", "--import", "tsx", "/app/deploy/railway/core-supervisor.ts"]
 
-# Generic managed-platform Core alias. It uses the same one-public-service
-# supervisor as the Railway target: console on $PORT, AS/RS on loopback.
-FROM railway-core AS platform-core
+# Public platform-neutral self-host artifact. Core is the browser-capable
+# default; core-browser remains only as a build/backward-compatibility alias.
+FROM core-browser AS core
+
+# Keep the historical Railway target available for old source-build references.
+FROM core AS railway-core
+
+# Generic managed-platform alias for Fly and other source-build paths.
+FROM core AS platform-core
