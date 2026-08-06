@@ -43,6 +43,9 @@ interface PatchrightMouse {
 interface PatchrightTouchscreen {
   tap: (x: number, y: number) => Promise<void>;
 }
+interface PatchrightBrowserContext {
+  grantPermissions: (permissions: string[], options: { origin: string }) => Promise<void>;
+}
 interface PatchrightRequestFailure {
   errorText: string;
 }
@@ -71,6 +74,7 @@ type PatchrightPageEventArg<Name extends string> = Name extends "request" | "req
       : never;
 interface PatchrightPage {
   addInitScript: (fn: () => void) => Promise<void>;
+  context: () => PatchrightBrowserContext;
   evaluate: <T, Arg = undefined>(fn: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
   getByRole: (role: string, options: { name: RegExp | string }) => PatchrightLocator;
   goto: (url: string, options: { timeout: number; waitUntil: string }) => Promise<unknown>;
@@ -135,6 +139,11 @@ interface RequestEvidence {
   failedRequests: RequestFailureEvidence[];
   httpFailures: HttpFailureEvidence[];
   nekoHttpFailures: HttpFailureEvidence[];
+}
+
+interface ClipboardResponseEvidence {
+  body: unknown;
+  status: number;
 }
 
 interface StreamPixelStats {
@@ -211,6 +220,11 @@ function mobileSmokeEnabled(): boolean {
   return env("PDPP_STREAM_SMOKE_MOBILE") === MOBILE_SMOKE;
 }
 
+function smokeBackend(): "cdp" | "neko" | "neko-remote-cdp" {
+  const value = env("PDPP_STREAM_SMOKE_BACKEND");
+  return value === "cdp" || value === "neko-remote-cdp" ? value : "neko";
+}
+
 function appendEvidence<T>(list: T[], entry: T): void {
   if (list.length < 50) {
     list.push(entry);
@@ -237,7 +251,7 @@ function browserExecutablePath(): string | null {
 
 function smokeUrl(origin: string): string {
   const url = new URL("/stream-playground", origin);
-  url.searchParams.set("backend", env("PDPP_STREAM_SMOKE_BACKEND") || "neko");
+  url.searchParams.set("backend", smokeBackend());
   url.searchParams.set("stream_debug", "1");
   return url.toString();
 }
@@ -1197,6 +1211,48 @@ async function clickInsideStream(
   await page.mouse.click(x, y);
 }
 
+async function streamCanvasViewport(page: PatchrightPage): Promise<RemoteViewport> {
+  const viewport = await page.locator(`${STREAM_FRAME_SELECTOR} canvas`).evaluate<RemoteViewport, undefined>(
+    (node) => ({
+      height: (node as HTMLCanvasElement).height,
+      width: (node as HTMLCanvasElement).width,
+    }),
+    undefined
+  );
+  if (!(viewport.width > 0 && viewport.height > 0)) {
+    fail("direct-CDP stream canvas has no remote viewport");
+  }
+  return viewport;
+}
+
+async function assertDirectCdpRemoteCopy(
+  page: PatchrightPage,
+  clipboardResponses: ClipboardResponseEvidence[]
+): Promise<void> {
+  const remoteViewport = await streamCanvasViewport(page);
+  const target = strictVisualInputTarget(remoteViewport);
+  const token = `pdpp-copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+  await clickInsideStream(page, target.clickPoint, remoteViewport);
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type(token, { delay: 8 });
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Control+C");
+
+  try {
+    await waitFor(
+      () => page.evaluate(async (expected) => (await navigator.clipboard.readText()) === expected, token),
+      "direct-CDP remote selection did not reach the host clipboard"
+    );
+  } catch {
+    const localClipboard = await page
+      .evaluate(async () => await navigator.clipboard.readText())
+      .catch((error: unknown) => `read failed: ${error instanceof Error ? error.message : String(error)}`);
+    const diagnostics = { localClipboard, responses: clipboardResponses };
+    fail(`direct-CDP remote selection did not reach the host clipboard (${JSON.stringify(diagnostics)})`);
+  }
+}
+
 async function tapLocalButton(
   page: PatchrightPage,
   locator: PatchrightLocator,
@@ -1320,6 +1376,7 @@ async function run() {
     httpFailures: [],
     nekoHttpFailures: [],
   };
+  const clipboardResponses: ClipboardResponseEvidence[] = [];
   let debugEventSequence = 0;
   const mobile = mobileSmokeEnabled();
   const executablePath = browserExecutablePath();
@@ -1333,6 +1390,7 @@ async function run() {
     isMobile: mobile,
     hasTouch: mobile,
   });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(origin).origin });
 
   await page.addInitScript(() => {
     const NativeEventSource = window.EventSource;
@@ -1384,6 +1442,20 @@ async function run() {
         if (url.pathname === "/neko" || url.pathname.startsWith("/neko/")) {
           appendEvidence(requestEvidence.nekoHttpFailures, failure);
         }
+      }
+      if (url.pathname.includes("/_ref/run-interaction-streams/") && url.pathname.endsWith("/clipboard")) {
+        response
+          .text()
+          .then((body) => {
+            let parsed: unknown = body;
+            try {
+              parsed = JSON.parse(body);
+            } catch {
+              // Preserve non-JSON response text as diagnostic evidence.
+            }
+            clipboardResponses.push({ body: parsed, status });
+          })
+          .catch(() => undefined);
       }
       if (url.pathname.includes("/_ref/run-interaction-streams/") && url.pathname.endsWith("/events")) {
         response
@@ -1470,6 +1542,12 @@ async function run() {
         ),
       "stream debug telemetry did not initialize"
     );
+
+    if (smokeBackend() === "cdp") {
+      await assertDirectCdpRemoteCopy(page, clipboardResponses);
+      process.stdout.write(`PASS manual-action stream smoke ${JSON.stringify({ backend: "cdp", mobile, url })}\n`);
+      return;
+    }
 
     await waitFor(
       () => resolveRemoteControlTarget(debugEvents, "counter") || latestNekoPageCdpAvailability(debugEvents) === false,
