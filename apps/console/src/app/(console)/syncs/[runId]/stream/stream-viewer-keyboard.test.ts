@@ -89,10 +89,14 @@ const NEKO_POST_CANONICAL_VIEWPORT_RE =
   /const (\w+) = viewportInfoFromPayload\(viewport\);\s*setCanonicalViewportInfo\(\1\)/;
 const NEKO_LOCAL_SURFACE_VIEWPORT_RE =
   /recordLocalSurfaceViewport[\s\S]*viewport\.surface\.local[\s\S]*localSurfaceViewportInfo=\{nekoLocalSurfaceViewportInfo\}/;
-const CDP_SURFACE_ADAPTER_IMPORT_RE =
-  /CdpClientSurface,[\s\S]*NekoSurfaceAdapter,[\s\S]*from "@opendatalabs\/remote-surface\/client"/;
-const CDP_SURFACE_ADAPTER_WIRING_RE =
-  /new CdpClientSurface\(\{[\s\S]*cdp: createPdppCdpTransport\(sendCdpInput\)[\s\S]*mediaSink:[\s\S]*getViewportInfo: \(\) => viewportInfoRef\.current[\s\S]*getFrameElement: \(\) => imgRef\.current[\s\S]*getSoftKeyboardElement: \(\) => softKeyboardInputRef\.current/;
+const CDP_ASSEMBLED_SESSION_RE =
+  /createRemoteSurfaceViewer\(\{[\s\S]*initialViewport[\s\S]*mediaPlane: "canvas-frames"[\s\S]*transport/;
+const NO_HOST_DIRECT_CDP_MACHINERY_RE =
+  /CdpClientSurface|attachCdpMobileTextInputBridge|data-pdpp-soft-keyboard="cdp"|<img/;
+const CDP_SINGLE_VIEWPORT_AUTHORITY_RE =
+  /readyBackend === "cdp"[\s\S]*viewport\.host\.skip-single-authority[\s\S]*remote-surface\.session/;
+const CDP_BROWSER_SESSION_KEY_RE = /<BrowserSurface[\s\S]*key=\{browserSessionIdRef\.current \?\? "cdp"\}/;
+const NO_HOST_CDP_FIT_RE = /aspectRatio:|100cqw|100cqh/;
 const VIEWER_DIRECT_CDP_KEYBOARD_POST_RE = /postInput\(\{[\s\S]*type: "keyboard"/;
 const VIEWER_REACT_CDP_KEYBOARD_HANDLER_RE = /onKeyDown=\{\(e\) => handleKey\(e, "keydown"\)\}|function handleKey\(/;
 const STREAM_SURFACE_RESOLUTION_POLL_PROP_RE = /pollForResolution\?: boolean/;
@@ -134,10 +138,13 @@ const NEKO_BACKEND_READY_REMEASURE_RE =
 const READ_STAGE_VIEWPORT_POST_RE = /createViewportWriters\([\s\S]*readViewport: readStageViewport/;
 const READ_STAGE_VIEWPORT_RECT_RE = /const viewport = readStageViewport\(rect\.width, rect\.height\)/;
 
-test("legacy CDP keyboard and mobile soft-keyboard path is package-backed", async () => {
+test("direct-CDP input, IME, canvas, and viewport are assembled by Remote Surface 1.5.1", async () => {
   const viewerSrc = await readFile(STREAM_VIEWER_FILE, "utf8");
-  assert.match(viewerSrc, CDP_SURFACE_ADAPTER_IMPORT_RE);
-  assert.match(viewerSrc, CDP_SURFACE_ADAPTER_WIRING_RE);
+  assert.match(viewerSrc, CDP_ASSEMBLED_SESSION_RE);
+  assert.match(viewerSrc, CDP_SINGLE_VIEWPORT_AUTHORITY_RE);
+  assert.match(viewerSrc, CDP_BROWSER_SESSION_KEY_RE);
+  assert.doesNotMatch(viewerSrc, NO_HOST_DIRECT_CDP_MACHINERY_RE);
+  assert.doesNotMatch(viewerSrc, NO_HOST_CDP_FIT_RE);
   assert.doesNotMatch(viewerSrc, VIEWER_DIRECT_CDP_KEYBOARD_POST_RE);
   assert.doesNotMatch(viewerSrc, VIEWER_REACT_CDP_KEYBOARD_HANDLER_RE);
 });

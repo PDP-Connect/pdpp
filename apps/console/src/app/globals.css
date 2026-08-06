@@ -301,15 +301,9 @@ html:has(.pdpp-stream-dialog) {
 }
 
 /*
- * Enables `cqw`/`cqh` container-query units for the CDP-fallback
- * `BrowserSurface` frame's contain-fit sizing (see its inline `style` in
- * stream-viewer.tsx): `width`/`height: 100%` together with `aspect-ratio` on
- * that frame is over-constrained and overflows the host on whichever axis
- * the ratio doesn't match, silently cropped by the dialog's `overflow:
- * hidden` — reproduced live at 1981x960 with a 16/10 frame rendering
- * 1976x1235. `container-type: size` here lets that frame express "fit inside
- * both axes" via `min(100cqw, 100cqh * ratio)`, which plain `%`-based
- * width/height cannot do.
+ * The outer box is a size container for the assembled Remote Surface viewer.
+ * Remote Surface owns direct-CDP canvas fit/geometry; this class only keeps
+ * the shared stream host's available size observable to its flex child.
  */
 .pdpp-stream-fit-host {
   container-type: size;

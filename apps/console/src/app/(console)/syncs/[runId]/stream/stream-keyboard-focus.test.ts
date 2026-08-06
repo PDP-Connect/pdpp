@@ -29,6 +29,15 @@ function transition(
   return transitionMobileKeyboardFocus(state, event);
 }
 
+test("an input focused before any local gesture exposes the existing keyboard affordance without focusing", () => {
+  const result = transition(createMobileKeyboardFocusState(), { atMs: 10, rect: null, type: "remote-focus" });
+
+  assert.equal(result.state.remoteEditableFocused, true);
+  assert.equal(result.state.affordanceVisible, true);
+  assert.equal(result.effect, "none");
+  assert.notEqual(result.effect, "focus-text-input");
+});
+
 test("confirmation before pointerup focuses only when the current mapped point is inside the confirmed rect", () => {
   let state = createMobileKeyboardFocusState();
   ({ state } = transition(state, { atMs: 10, pointerId: 7, remotePoint: editablePoint, type: "pointerdown" }));

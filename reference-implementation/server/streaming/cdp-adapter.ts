@@ -1,7 +1,18 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import type { ScreencastParams } from "./cdp-companion.ts";
+// biome-ignore-all lint/correctness/noUnresolvedImports: remote-surface 1.5.1 is installed in the reference implementation workspace; the repository-root checker does not resolve that local package.
+import {
+  type CdpBackendLifecycle,
+  type CdpCommandParams,
+  type CdpCommandTransport,
+  createCdpServerBackend,
+} from "@opendatalabs/remote-surface/backends/cdp";
+import type {
+  RemoteSurfaceClipboardPayload,
+  RemoteSurfaceInputPayload,
+  RemoteSurfaceViewportPayload,
+} from "@opendatalabs/remote-surface/protocol";
 /**
  * Real CDP companion adapter.
  *
@@ -17,57 +28,30 @@ import type { ScreencastParams } from "./cdp-companion.ts";
  * (`PDPP_RUN_INTERACTION_CDP_WS_URL`, `PDPP_RUN_INTERACTION_CDP_HTTP_URL`)
  * have been removed; the registry path is the only supported wireup.
  *
- * Wire mapping is delegated to `mapInputEventToCdp` / `buildScreencastParams`
- * in `cdp-companion.js`, which keeps frame/input shape identical to the mock
- * companion so tests cover the protocol surface deterministically.
+ * Surface mechanics are delegated to Remote Surface 1.5.1's assembled CDP
+ * backend. The small adapter below only translates that backend's lifecycle
+ * messages to the existing PDPP companion wire and preserves the target
+ * router's URL/popup events.
  *
  * Lifecycle:
  *   createCdpCompanion({ wsUrl, ... }) → companion handle
- *     start(viewport)  - opens ws (lazily), enables Page domain, sets device
- *                        metrics, starts screencast.
+ *     start(viewport)  - opens ws (lazily) and starts the assembled Remote
+ *                        Surface CDP lifecycle, including focus detection.
  *     stop()           - stops screencast, closes ws.
- *     onFrame(handler) - subscribe to decoded `Page.screencastFrame` events.
- *     dispatch(event)  - run wire input event through `mapInputEventToCdp`,
- *                        send each command, await Page acks.
- *     ackFrame(id)     - send `Page.screencastFrameAck` so the next frame is
- *                        delivered (back-pressure).
+ *     onFrame(handler) - subscribe to assembled frame events.
+ *     dispatch(event)  - route Remote Surface input/viewport/clipboard payloads
+ *                        through the assembled lifecycle.
+ *     ackFrame(id)     - compatibility hook; the assembled backend already
+ *                        acknowledges each CDP frame before emitting it.
  *
  * The adapter is intentionally tolerant: a single dropped command must not
  * crash the streaming session. Errors propagate via `start()` (which the route
  * surfaces to the viewer as an `error` SSE event) and via `dispatch()` (which
  * surfaces as a 4xx on the input POST).
  */
-import { buildScreencastParams, mapInputEventToCdp } from "./cdp-companion.ts";
+import { mapInputEventToCdp } from "./cdp-companion.ts";
 
-type CdpMethod =
-  | "Page.enable"
-  | "Page.startScreencast"
-  | "Page.stopScreencast"
-  | "Page.screencastFrameAck"
-  | "Target.setDiscoverTargets"
-  | "Emulation.setDeviceMetricsOverride"
-  | "Input.dispatchMouseEvent"
-  | "Input.dispatchKeyEvent"
-  | "Input.dispatchTouchEvent"
-  | "Input.insertText";
-
-interface CdpMethodParams {
-  "Emulation.setDeviceMetricsOverride": {
-    width: number;
-    height: number;
-    deviceScaleFactor: number;
-    mobile: boolean;
-  };
-  "Input.dispatchKeyEvent": Record<string, unknown>;
-  "Input.dispatchMouseEvent": Record<string, unknown>;
-  "Input.dispatchTouchEvent": Record<string, unknown>;
-  "Input.insertText": { text: string };
-  "Page.enable": Record<string, never>;
-  "Page.screencastFrameAck": { sessionId: number };
-  "Page.startScreencast": ScreencastParams;
-  "Page.stopScreencast": Record<string, never>;
-  "Target.setDiscoverTargets": { discover: boolean };
-}
+type CdpMethod = string;
 
 interface CdpJsonObject {
   readonly [key: string]: unknown;
@@ -100,7 +84,7 @@ interface CdpError {
 interface CdpResponse<M extends CdpMethod = CdpMethod> {
   readonly error?: CdpError;
   readonly id: number;
-  readonly result?: M extends keyof CdpMethodParams ? CdpJsonObject : CdpJsonObject;
+  readonly result?: M extends CdpMethod ? CdpJsonObject : CdpJsonObject;
 }
 
 interface PageScreencastFrameMetadata {
@@ -121,6 +105,7 @@ interface PageScreencastFrameEvent {
 }
 
 interface TargetInfo {
+  readonly openerId?: string;
   readonly targetId: string;
   readonly title?: string;
   readonly type: string;
@@ -154,7 +139,8 @@ type CdpEvent =
   | { readonly method: "Page.frameNavigated"; readonly params: PageFrameNavigatedEvent }
   | { readonly method: "Target.targetCreated"; readonly params: TargetCreatedEvent }
   | { readonly method: "Target.targetDestroyed"; readonly params: TargetDestroyedEvent }
-  | { readonly method: "Target.targetInfoChanged"; readonly params: TargetInfoChangedEvent };
+  | { readonly method: "Target.targetInfoChanged"; readonly params: TargetInfoChangedEvent }
+  | { readonly method: string; readonly params: CdpJsonObject };
 
 type CdpMessage = CdpResponse | CdpEvent;
 type CdpFrame = Omit<PageScreencastFrameEvent, "metadata"> & { readonly metadata: PageScreencastFrameMetadata | null };
@@ -173,6 +159,7 @@ interface CdpCompanion {
   dispatch: (event: unknown) => Promise<void>;
   onEvent: (handler: CdpEventHandler) => () => void;
   onFrame: (handler: CdpFrameHandler) => () => void;
+  readRemoteSelection: () => Promise<string>;
   start: (viewport?: Viewport) => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -185,24 +172,6 @@ function isCdpSocketMessageData(value: unknown): value is CdpSocketMessageData {
     typeof value === "string" ||
     value instanceof Uint8Array ||
     (isObject(value) && typeof value.toString === "function")
-  );
-}
-
-function isCdpMethod(value: string): value is CdpMethod {
-  return (
-    value in
-    {
-      "Emulation.setDeviceMetricsOverride": true,
-      "Input.dispatchKeyEvent": true,
-      "Input.dispatchMouseEvent": true,
-      "Input.dispatchTouchEvent": true,
-      "Input.insertText": true,
-      "Page.enable": true,
-      "Page.screencastFrameAck": true,
-      "Page.startScreencast": true,
-      "Page.stopScreencast": true,
-      "Target.setDiscoverTargets": true,
-    }
   );
 }
 
@@ -273,6 +242,7 @@ function parsedTargetInfo(
   const info: TargetInfo = {
     targetId: targetInfo.targetId,
     type: targetInfo.type,
+    ...(typeof targetInfo.openerId === "string" ? { openerId: targetInfo.openerId } : {}),
     ...(typeof targetInfo.url === "string" ? { url: targetInfo.url } : {}),
     ...(typeof targetInfo.title === "string" ? { title: targetInfo.title } : {}),
   };
@@ -300,14 +270,14 @@ function parsedCdpEvent(value: CdpJsonObject): CdpEvent | null {
   if (!params) {
     return null;
   }
-  return CDP_EVENT_PARSERS[value.method]?.(params) ?? null;
+  return CDP_EVENT_PARSERS[value.method]?.(params) ?? { method: value.method, params };
 }
 
 function parsedCdpMessage(value: CdpJsonObject): CdpMessage | null {
   return parsedCdpResponse(value) ?? parsedCdpEvent(value);
 }
 
-function cdpParams(value: unknown): CdpMethodParams[CdpMethod] {
+function cdpParams(value: unknown): CdpCommandParams {
   return isObject(value) ? value : {};
 }
 
@@ -405,8 +375,11 @@ function notifyHandlers<T>(
   }
 }
 
-function targetInfoOptionalFields(info: CdpJsonObject): { url?: string; title?: string } {
-  const fields: { url?: string; title?: string } = {};
+function targetInfoOptionalFields(info: CdpJsonObject): { openerId?: string; url?: string; title?: string } {
+  const fields: { openerId?: string; url?: string; title?: string } = {};
+  if (typeof info.openerId === "string") {
+    fields.openerId = info.openerId;
+  }
   if (typeof info.url === "string") {
     fields.url = info.url;
   }
@@ -456,6 +429,35 @@ function urlChangedEvent(url: string, title: unknown): CdpOutputEvent {
   return event;
 }
 
+function targetIdFromWsUrl(wsUrl: string): string | null {
+  try {
+    const { pathname } = new URL(wsUrl);
+    const prefix = "/devtools/page/";
+    if (!pathname.startsWith(prefix)) {
+      return null;
+    }
+    const targetId = pathname.slice(prefix.length);
+    if (!isNonEmptyString(targetId) || targetId.includes("/")) {
+      return null;
+    }
+    return decodeURIComponent(targetId);
+  } catch {
+    return null;
+  }
+}
+
+function isBlankPageUrl(url: string | undefined): boolean {
+  if (!isNonEmptyString(url)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "about:" && parsed.pathname === "blank";
+  } catch {
+    return false;
+  }
+}
+
 function popupOpenedEvent(info: TargetInfo): CdpOutputEvent {
   return {
     kind: "popup_opened",
@@ -467,20 +469,24 @@ function popupOpenedEvent(info: TargetInfo): CdpOutputEvent {
 function createCdpEventRouter({
   emitFrame,
   emitEvent,
+  ownPageTargetId,
 }: {
   emitFrame: CdpProtocolFrameHandler;
   emitEvent: CdpEventHandler;
+  ownPageTargetId?: string | null;
 }): (message: CdpEvent) => void {
   const state: {
     lastEmittedUrl: string | null;
     lastKnownTitle: string | null;
     ownPageTargetId: string | null;
-    knownPageTargetIds: Set<string>;
+    pendingPopupTargetIds: Set<string>;
+    popupTargetIds: Set<string>;
   } = {
-    knownPageTargetIds: new Set<string>(),
     lastEmittedUrl: null,
     lastKnownTitle: null,
-    ownPageTargetId: null,
+    ownPageTargetId: ownPageTargetId ?? null,
+    pendingPopupTargetIds: new Set<string>(),
+    popupTargetIds: new Set<string>(),
   };
 
   function emitUrlChanged(url: string | null): void {
@@ -492,13 +498,27 @@ function createCdpEventRouter({
   }
 
   function rememberOwnPage(info: TargetInfo): void {
-    state.ownPageTargetId = info.targetId || null;
-    state.knownPageTargetIds.add(info.targetId);
+    if (state.ownPageTargetId !== null && info.targetId !== state.ownPageTargetId) {
+      return;
+    }
+    state.ownPageTargetId = info.targetId;
     if (isNonEmptyString(info.title)) {
       state.lastKnownTitle = info.title;
     }
   }
 
+  function announcePopup(info: TargetInfo): void {
+    if (state.popupTargetIds.has(info.targetId)) {
+      return;
+    }
+    state.pendingPopupTargetIds.delete(info.targetId);
+    state.popupTargetIds.add(info.targetId);
+    emitEvent(popupOpenedEvent(info));
+  }
+
+  // Target discovery can replay existing pages. The registered page owns the
+  // stream; only a nonblank page explicitly opened by it is user-visible.
+  // Hold blank child targets until they reveal whether they are real popups.
   function handleTargetCreated(params: TargetCreatedEvent): void {
     const info = pageTargetInfo(params);
     if (!info) {
@@ -508,8 +528,18 @@ function createCdpEventRouter({
       rememberOwnPage(info);
       return;
     }
-    state.knownPageTargetIds.add(info.targetId);
-    emitEvent(popupOpenedEvent(info));
+    if (info.targetId === state.ownPageTargetId) {
+      rememberOwnPage(info);
+      return;
+    }
+    if (info.openerId !== state.ownPageTargetId) {
+      return;
+    }
+    if (isBlankPageUrl(info.url)) {
+      state.pendingPopupTargetIds.add(info.targetId);
+      return;
+    }
+    announcePopup(info);
   }
 
   function handleTargetDestroyed(params: TargetDestroyedEvent): void {
@@ -517,15 +547,11 @@ function createCdpEventRouter({
     if (!isNonEmptyString(targetId)) {
       return;
     }
-    if (!isKnownPopup(targetId)) {
+    state.pendingPopupTargetIds.delete(targetId);
+    if (!state.popupTargetIds.delete(targetId)) {
       return;
     }
-    state.knownPageTargetIds.delete(targetId);
     emitEvent({ kind: "popup_closed", targetId });
-  }
-
-  function isKnownPopup(targetId: string): boolean {
-    return targetId !== state.ownPageTargetId && state.knownPageTargetIds.has(targetId);
   }
 
   function handleOwnTargetInfo(info: TargetInfo): void {
@@ -542,28 +568,31 @@ function createCdpEventRouter({
     if (!info) {
       return;
     }
-    if (state.ownPageTargetId !== null && info.targetId !== state.ownPageTargetId) {
+    if (state.ownPageTargetId === null || info.targetId === state.ownPageTargetId) {
+      handleOwnTargetInfo(info);
       return;
     }
-    handleOwnTargetInfo(info);
+    if (state.pendingPopupTargetIds.has(info.targetId) && !isBlankPageUrl(info.url)) {
+      announcePopup(info);
+    }
   }
 
   return (message) => {
     switch (message.method) {
       case "Page.screencastFrame":
-        emitFrame(message.params);
+        emitFrame(message.params as PageScreencastFrameEvent);
         return;
       case "Page.frameNavigated":
         emitUrlChanged(mainFrameUrl(message.params));
         return;
       case "Target.targetCreated":
-        handleTargetCreated(message.params);
+        handleTargetCreated(message.params as TargetCreatedEvent);
         return;
       case "Target.targetDestroyed":
-        handleTargetDestroyed(message.params);
+        handleTargetDestroyed(message.params as TargetDestroyedEvent);
         return;
       case "Target.targetInfoChanged":
-        handleTargetInfoChanged(message.params);
+        handleTargetInfoChanged(message.params as TargetInfoChangedEvent);
         return;
     }
   };
@@ -749,6 +778,12 @@ function createResolvedCompanion({
       }
       return pendingFrames.add(handler);
     },
+    readRemoteSelection() {
+      if (!inner) {
+        return Promise.reject(codedError("Streaming companion is not started", "companion_not_started"));
+      }
+      return inner.readRemoteSelection();
+    },
     async start(viewport) {
       await startInner(viewport);
     },
@@ -787,7 +822,7 @@ export function createCdpCompanion({
   openTimeoutMs?: number | undefined;
 } = {}): CdpCompanion & {
   readonly _internal: {
-    send: (method: CdpMethod, params?: CdpMethodParams[CdpMethod]) => Promise<CdpJsonObject>;
+    send: (method: CdpMethod, params?: CdpCommandParams) => Promise<CdpJsonObject>;
     isStarted: () => boolean;
     isClosed: () => boolean;
   };
@@ -816,6 +851,13 @@ export function createCdpCompanion({
   let openPromise: Promise<void> | null = null;
   let started = false;
   let closed = false;
+  let serverBackend: ReturnType<typeof createCdpServerBackend> | null = null;
+  let backendLifecycle: CdpBackendLifecycle | null = null;
+  let backendLifecycleSubscription: { unsubscribe: () => void } | null = null;
+  let frameSessionSubscription: { unsubscribe: () => void } | null = null;
+  const pendingFrameSessionIds: number[] = [];
+  const pendingFrameMetadata: (PageScreencastFrameMetadata | null)[] = [];
+  const protocolEventHandlers = new Map<string, Set<(params: unknown) => void>>();
 
   let lastFrame: CdpFrame | null = null;
 
@@ -836,7 +878,14 @@ export function createCdpCompanion({
     notifyHandlers(eventHandlers, event, log, "cdp_event_handler_error", { kind: event.kind });
   }
 
-  const routeCdpEvent = createCdpEventRouter({ emitEvent, emitFrame });
+  const routeCdpEvent = createCdpEventRouter({
+    emitEvent,
+    emitFrame: () => {
+      // The assembled Remote Surface server backend owns frame decode/ack
+      // lifecycle. The popup/URL router still observes the raw event below.
+    },
+    ownPageTargetId: targetIdFromWsUrl(targetUrl),
+  });
 
   function closedCdpError(reason: unknown): CodedError {
     const error: CodedError = reason instanceof Error ? reason : new Error(String(reason || "cdp_closed"));
@@ -881,6 +930,20 @@ export function createCdpCompanion({
 
   function handleCdpEvent(msg: CdpEvent): void {
     routeCdpEvent(msg);
+    const handlers = protocolEventHandlers.get(msg.method);
+    if (!handlers) {
+      return;
+    }
+    for (const handler of handlers) {
+      try {
+        handler(msg.params);
+      } catch (err) {
+        log("warn", "cdp_protocol_event_handler_error", {
+          error: errorMessage(err),
+          method: msg.method,
+        });
+      }
+    }
   }
 
   function parseCdpMessage(raw: CdpSocketMessageData): unknown {
@@ -1061,7 +1124,7 @@ export function createCdpCompanion({
     socket: CdpSocket,
     id: number,
     method: CdpMethod,
-    params: CdpMethodParams[CdpMethod],
+    params: CdpCommandParams,
     timer: ReturnType<typeof setTimeout>,
     reject: (error: CodedError) => void
   ): void {
@@ -1076,7 +1139,7 @@ export function createCdpCompanion({
     }
   }
 
-  function sendOpenCdpCommand(method: CdpMethod, params: CdpMethodParams[CdpMethod]): Promise<CdpJsonObject> {
+  function sendOpenCdpCommand(method: CdpMethod, params: CdpCommandParams): Promise<CdpJsonObject> {
     return new Promise<CdpJsonObject>((resolve, reject) => {
       const socket = ws;
       if (!isOpenSocket(socket)) {
@@ -1087,8 +1150,82 @@ export function createCdpCompanion({
     });
   }
 
-  function send(method: CdpMethod, params: CdpMethodParams[CdpMethod] = {}): Promise<CdpJsonObject> {
+  function send(method: CdpMethod, params: CdpCommandParams = {}): Promise<CdpJsonObject> {
     return ensureOpen().then(() => sendOpenCdpCommand(method, params));
+  }
+
+  const cdpCommandTransport: CdpCommandTransport = {
+    on(eventName, handler) {
+      const handlers = protocolEventHandlers.get(eventName) ?? new Set<(params: unknown) => void>();
+      handlers.add(handler);
+      protocolEventHandlers.set(eventName, handlers);
+      return {
+        unsubscribe() {
+          handlers.delete(handler);
+          if (handlers.size === 0) {
+            protocolEventHandlers.delete(eventName);
+          }
+        },
+      };
+    },
+    send<Result = unknown>(method: string, params: CdpCommandParams = {}) {
+      return send(method, params) as Promise<Result>;
+    },
+  };
+
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This is the one protocol boundary that translates Remote Surface's finite event union into PDPP's legacy frame and SSE event wire.
+  function emitRemoteSurfaceBackendEvent(event: unknown): void {
+    if (!isObject(event) || typeof event.type !== "string") {
+      return;
+    }
+    if (event.type === "frame" && typeof event.data === "string") {
+      const sessionId = pendingFrameSessionIds.shift();
+      const metadata = pendingFrameMetadata.shift();
+      const frameMetadata =
+        metadata ?? (isObject(event.metadata) ? (event.metadata as PageScreencastFrameMetadata) : null);
+      emitFrame({
+        data: event.data,
+        ...(frameMetadata === null ? {} : { metadata: frameMetadata }),
+        sessionId: sessionId ?? (typeof event.sessionId === "number" ? event.sessionId : 0),
+      });
+      return;
+    }
+    if (event.type !== "backend_event" || typeof event.name !== "string") {
+      return;
+    }
+    const payload = isObject(event.payload) ? event.payload : {};
+    if (event.name === "keyboard_focus") {
+      emitEvent({ kind: "keyboard_focus", ...payload });
+      return;
+    }
+    emitEvent({ kind: event.name, ...payload });
+  }
+
+  function createServerBackend(viewport: Viewport): ReturnType<typeof createCdpServerBackend> {
+    const maxWidth =
+      typeof viewport?.width === "number" && Number.isFinite(viewport.width) ? Math.floor(viewport.width) : undefined;
+    const maxHeight =
+      typeof viewport?.height === "number" && Number.isFinite(viewport.height)
+        ? Math.floor(viewport.height)
+        : undefined;
+    frameSessionSubscription = cdpCommandTransport.on("Page.screencastFrame", (params) => {
+      if (isObject(params) && typeof params.sessionId === "number") {
+        pendingFrameSessionIds.push(params.sessionId);
+        pendingFrameMetadata.push(isObject(params.metadata) ? (params.metadata as PageScreencastFrameMetadata) : null);
+      }
+    });
+    return createCdpServerBackend({
+      detectTextInputFocus: true,
+      screencast: {
+        everyNthFrame: 1,
+        format: "jpeg",
+        quality: 70,
+        ...(maxHeight === undefined ? {} : { maxHeight }),
+        ...(maxWidth === undefined ? {} : { maxWidth }),
+      },
+      targetId: targetIdFromWsUrl(targetUrl) || browserSessionId || "pdpp-cdp-target",
+      transport: cdpCommandTransport,
+    });
   }
 
   async function setTargetDiscovery(discover: boolean, failureLog: string): Promise<void> {
@@ -1099,50 +1236,21 @@ export function createCdpCompanion({
     });
   }
 
-  function hasViewportDimensions(
-    viewport: Viewport
-  ): viewport is { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean } {
-    return (
-      viewport !== null && viewport !== undefined && Number.isFinite(viewport.width) && Number.isFinite(viewport.height)
-    );
-  }
-
-  function deviceMetricsParams(viewport: {
-    width: number;
-    height: number;
-    deviceScaleFactor?: number;
-    mobile?: boolean;
-  }): CdpMethodParams["Emulation.setDeviceMetricsOverride"] {
-    return {
-      deviceScaleFactor: Number.isFinite(viewport.deviceScaleFactor) ? Number(viewport.deviceScaleFactor) : 1,
-      height: Math.floor(viewport.height),
-      mobile: viewport.mobile === true,
-      width: Math.floor(viewport.width),
-    };
-  }
-
-  async function setDeviceMetrics(viewport: Viewport): Promise<void> {
-    if (!hasViewportDimensions(viewport)) {
-      return;
-    }
-    await send("Emulation.setDeviceMetricsOverride", deviceMetricsParams(viewport)).catch((err) => {
-      log("warn", "cdp_set_device_metrics_failed", { error: err?.message });
-    });
-  }
-
   async function start(viewport?: Viewport): Promise<void> {
     if (started) {
       return;
     }
     await ensureOpen();
-    await send("Page.enable");
     await setTargetDiscovery(true, "cdp_target_discovery_failed");
-    await setDeviceMetrics(viewport);
-    await send("Page.startScreencast", buildScreencastParams({ viewport }));
+    serverBackend = createServerBackend(viewport);
+    backendLifecycle = await serverBackend.start(
+      viewport === null || viewport === undefined ? undefined : (viewport as RemoteSurfaceViewportPayload)
+    );
+    backendLifecycleSubscription = backendLifecycle.onEvent(emitRemoteSurfaceBackendEvent);
     started = true;
   }
 
-  async function bestEffortSend(method: CdpMethod, params: CdpMethodParams[CdpMethod] = {}): Promise<void> {
+  async function bestEffortSend(method: CdpMethod, params: CdpCommandParams = {}): Promise<void> {
     try {
       await send(method, params);
     } catch {
@@ -1154,8 +1262,18 @@ export function createCdpCompanion({
     if (!started) {
       return;
     }
+    backendLifecycleSubscription?.unsubscribe();
+    backendLifecycleSubscription = null;
+    frameSessionSubscription?.unsubscribe();
+    frameSessionSubscription = null;
+    pendingFrameSessionIds.length = 0;
+    pendingFrameMetadata.length = 0;
+    backendLifecycle = null;
+    await serverBackend?.stop().catch(() => {
+      /* best-effort teardown */
+    });
+    serverBackend = null;
     await bestEffortSend("Target.setDiscoverTargets", { discover: false });
-    await bestEffortSend("Page.stopScreencast");
     started = false;
   }
 
@@ -1176,6 +1294,7 @@ export function createCdpCompanion({
     openPromise = null;
     frameHandlers.clear();
     eventHandlers.clear();
+    protocolEventHandlers.clear();
     lastFrame = null;
   }
 
@@ -1183,8 +1302,8 @@ export function createCdpCompanion({
     if (closed) {
       return;
     }
-    closed = true;
     await stopStreaming();
+    closed = true;
     closeSocket();
     clearCompanionState();
   }
@@ -1206,30 +1325,45 @@ export function createCdpCompanion({
     return () => eventHandlers.delete(handler);
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This adapter deliberately keeps the three assembled-session channels and the legacy CDP fallback in one explicit dispatch boundary.
   async function dispatch(event: unknown): Promise<void> {
+    if (isObject(event) && typeof event.type === "string") {
+      if (event.type === "pointer" || event.type === "keyboard" || event.type === "text") {
+        if (!backendLifecycle) {
+          throw codedError("Streaming companion is not started", "companion_not_started");
+        }
+        await backendLifecycle.input(event as unknown as RemoteSurfaceInputPayload);
+        return;
+      }
+      if (event.type === "clipboard" && event.action === "local_to_remote") {
+        if (!backendLifecycle) {
+          throw codedError("Streaming companion is not started", "companion_not_started");
+        }
+        await backendLifecycle.clipboard?.(event as unknown as RemoteSurfaceClipboardPayload);
+        return;
+      }
+      if (event.type === "viewport") {
+        if (!backendLifecycle) {
+          throw codedError("Streaming companion is not started", "companion_not_started");
+        }
+        await backendLifecycle.setViewport(event as unknown as RemoteSurfaceViewportPayload);
+        return;
+      }
+    }
     const commands = mapInputEventToCdp(event);
     await commands.reduce(async (previous, cmd) => {
       await previous;
       // Errors here are surfaced to the route which returns a 4xx with the
       // CDP-side message. We do not retry: the viewer can resend.
-      if (!isCdpMethod(cmd.method)) {
-        throw codedError(`Unsupported CDP command ${cmd.method}`, "cdp_method_unsupported");
-      }
       await send(cmd.method, cdpParams(cmd.params));
     }, Promise.resolve());
   }
 
-  async function ackFrame(sessionId: number): Promise<void> {
-    if (!Number.isFinite(sessionId)) {
-      return;
+  function readRemoteSelection(): Promise<string> {
+    if (!backendLifecycle?.readRemoteSelection) {
+      throw codedError("Remote selection is unavailable", "clipboard_unsupported");
     }
-    try {
-      await send("Page.screencastFrameAck", { sessionId: Number(sessionId) });
-    } catch (err) {
-      // A failed ack can stall future frames, but failing the input POST or
-      // tearing the SSE is worse UX. Log and let the next ack recover.
-      log("warn", "cdp_screencast_ack_failed", { error: errorMessage(err) });
-    }
+    return backendLifecycle.readRemoteSelection();
   }
 
   return {
@@ -1239,11 +1373,15 @@ export function createCdpCompanion({
       isStarted: () => started,
       send,
     },
-    ackFrame,
+    ackFrame: async () => {
+      // CdpServerBackend acknowledges each frame as it receives it. The route
+      // keeps this compatibility hook, but it must not send a second ack.
+    },
     browser_session_id: browserSessionId,
     dispatch,
     onEvent,
     onFrame,
+    readRemoteSelection,
     start,
     stop,
   };

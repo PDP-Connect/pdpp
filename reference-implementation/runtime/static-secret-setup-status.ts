@@ -32,18 +32,20 @@ import type { ConnectionHealthState } from "./connection-health.ts";
 // `ConnectionHealthState` (see `SETUP_STATE_HEALTH` below) so the dashboard can
 // reuse its existing pill vocabulary instead of inventing a setup-only pill.
 //
-//   awaiting_credential  draft, no credential captured yet        -> idle
-//   first_sync_running   credential captured, a run is in flight  -> idle (+ syncing activity)
-//   first_sync_pending   credential captured, no run yet / queued -> idle
-//   first_sync_failed    last run failed, still a draft           -> needs_attention
-//   active               first ingest accepted records           -> healthy
-//   paused               owner-paused connection                  -> idle
-//   revoked              owner-revoked connection                 -> idle
+//   awaiting_credential    draft, no credential captured yet        -> idle
+//   awaiting_browser_login draft, browser/SSO login not completed   -> idle
+//   first_sync_running     setup material or browser login, run in flight -> idle (+ syncing activity)
+//   first_sync_pending     setup material or browser login, no run yet     -> idle
+//   first_sync_failed      last run failed, still a draft           -> needs_attention
+//   active                 first ingest accepted records           -> healthy
+//   paused                 owner-paused connection                  -> idle
+//   revoked                owner-revoked connection                 -> idle
 //
 // `unknown` is the honest fallback for any instance status the lifecycle does
 // not model.
 export type StaticSecretSetupState =
   | "active"
+  | "awaiting_browser_login"
   | "awaiting_credential"
   | "first_sync_failed"
   | "first_sync_pending"
@@ -54,6 +56,7 @@ export type StaticSecretSetupState =
 
 const SETUP_STATE_HEALTH: Record<StaticSecretSetupState, ConnectionHealthState> = {
   active: "healthy",
+  awaiting_browser_login: "idle",
   awaiting_credential: "idle",
   first_sync_failed: "needs_attention",
   first_sync_pending: "idle",
@@ -72,7 +75,7 @@ export interface SetupStatusCredentialMetadata {
   readonly rotatedAt?: string | null;
 }
 
-export type ConnectionSetupKind = "manual_upload" | "static_secret" | "unknown";
+export type ConnectionSetupKind = "browser_session" | "manual_upload" | "static_secret" | "unknown";
 
 export interface SetupStatusMaterialMetadata {
   readonly capturedAt?: string | null;
@@ -254,10 +257,17 @@ function accountIdentity(input: ProjectConnectionSetupStatusInput): string | nul
 
 // Failure remediation copy is owner-safe and operator-voiced: it names the
 // recovery step for a failed first sync without leaking the secret or the
-// provider error verbatim.
+// provider error verbatim. Browser-session connections have no stored
+// credential to re-enter, so their remediation never says "credential".
+const SETUP_REMEDIATION_BY_KIND: Partial<Record<ConnectionSetupKind, string>> = {
+  browser_session: "Continue in the secure browser to finish signing in, then start the first sync again.",
+  manual_upload: "Choose a valid import file and start the first import again.",
+};
+
 function remediationForReason(reason: string, setupKind: ConnectionSetupKind): string {
-  if (setupKind === "manual_upload") {
-    return "Choose a valid import file and start the first import again.";
+  const setupRemediation = SETUP_REMEDIATION_BY_KIND[setupKind];
+  if (setupRemediation) {
+    return setupRemediation;
   }
   const lower = reason.toLowerCase();
   if (lower.includes("auth") || lower.includes("credential") || lower.includes("password") || lower.includes("login")) {
@@ -266,8 +276,36 @@ function remediationForReason(reason: string, setupKind: ConnectionSetupKind): s
   return "Start the first sync again. If it keeps failing, re-enter the provider credential.";
 }
 
+function hasRunEvidence(input: ProjectConnectionSetupStatusInput): boolean {
+  return input.activeRun !== null || input.lastRun !== null;
+}
+
+const AWAITING_MATERIAL_STATE: Record<ConnectionSetupKind, StaticSecretSetupState> = {
+  browser_session: "awaiting_browser_login",
+  manual_upload: "awaiting_credential",
+  static_secret: "awaiting_credential",
+  unknown: "awaiting_credential",
+};
+
+// The no-material draft state before any first-sync run evidence exists. A
+// browser-session connection has no stored credential — its owner action is
+// completing the in-browser login, never re-entering a secret — so it gets
+// its own state rather than reusing the credential-shaped one.
+function awaitingMaterialState(setupKind: ConnectionSetupKind): StaticSecretSetupState {
+  return AWAITING_MATERIAL_STATE[setupKind];
+}
+
+function hasDraftSetupProgress(
+  input: ProjectConnectionSetupStatusInput,
+  setupKind: ConnectionSetupKind,
+  hasSetupMaterial: boolean
+): boolean {
+  return hasSetupMaterial || (setupKind === "browser_session" && hasRunEvidence(input));
+}
+
 function deriveSetupState(
   input: ProjectConnectionSetupStatusInput,
+  setupKind: ConnectionSetupKind,
   hasSetupMaterial: boolean,
   running: boolean
 ): StaticSecretSetupState {
@@ -285,9 +323,12 @@ function deriveSetupState(
   if (status !== "draft") {
     return "unknown";
   }
-  // Draft lifecycle.
-  if (!hasSetupMaterial) {
-    return "awaiting_credential";
+  // Draft lifecycle. A browser-session draft has no stored credential to
+  // capture, but an active or last run is still real progress evidence (the
+  // owner completed login and a first sync started) — surface that instead of
+  // parking on "awaiting login" once a run exists.
+  if (!hasDraftSetupProgress(input, setupKind, hasSetupMaterial)) {
+    return awaitingMaterialState(setupKind);
   }
   if (running) {
     return "first_sync_running";
@@ -296,7 +337,8 @@ function deriveSetupState(
   if (runIsFailure(input.lastRun)) {
     return "first_sync_failed";
   }
-  // Credential captured, run queued or just-submitted but not yet running and
+  // Credential/browser-login material present (or run evidence exists for a
+  // browser session), run queued or just-submitted but not yet running and
   // not yet failed: the first sync is pending.
   return "first_sync_pending";
 }
@@ -315,6 +357,9 @@ function defaultSetupMaterial(
       label: "Provider credential",
       present: credential?.present === true,
     };
+  }
+  if (setupKind === "browser_session") {
+    return { capturedAt: null, kind: "browser_session", label: "Browser login", present: false };
   }
   return { capturedAt: null, kind: "unknown", label: "Setup material", present: false };
 }
@@ -375,7 +420,7 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
   // summary still reports a non-terminal status (covers the window between
   // submit and the active-run row landing).
   const running = runIsRunning(input.activeRun) || (input.activeRun === null && runIsRunning(input.lastRun));
-  const setupState = deriveSetupState(input, hasSetupMaterial, running);
+  const setupState = deriveSetupState(input, setupKind, hasSetupMaterial, running);
   const run = input.activeRun ?? input.lastRun ?? null;
 
   const failed = setupState === "first_sync_failed";

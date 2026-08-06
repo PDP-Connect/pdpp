@@ -204,9 +204,26 @@ interface SemanticEmbeddingBackend {
   identity: () => string;
   languageBias: () => unknown;
   model: () => string;
+  prepare?: () => Promise<void>;
   profileId: () => string;
   supportsDeviceAttemptDeadline?: () => boolean;
+  warmStatus?: () => SemanticEmbeddingWarmStatus | null;
   [key: string]: unknown;
+}
+
+export type SemanticEmbeddingPreparationState = "not_started" | "downloading" | "ready" | "failed";
+
+export interface SemanticEmbeddingWarmStatus {
+  readonly cache_bytes: number;
+  readonly cache_files: number;
+  readonly error: string | null;
+  readonly failed_at: string | null;
+  readonly last_observed_at: string;
+  readonly last_progress_at: string | null;
+  readonly mode: "lexical_only" | "semantic";
+  readonly ready_at: string | null;
+  readonly started_at: string | null;
+  readonly status: SemanticEmbeddingPreparationState;
 }
 
 type SemanticEmbeddingConfig = Record<string, unknown> & {
@@ -357,7 +374,7 @@ function getMany<R extends SemanticDbRow = SemanticDbRow>(
 }
 
 async function getConnectorManifest(connectorId: string): Promise<SemanticSearchManifest | null> {
-  const auth = await import(new URL("./auth.js", import.meta.url).href);
+  const auth = await import(new URL("./auth.ts", import.meta.url).href);
   return (await auth.getConnectorManifest(connectorId)) as unknown as SemanticSearchManifest | null;
 }
 
@@ -713,6 +730,65 @@ function modelCachePresent({
   return required.every((file) => fs.existsSync(file));
 }
 
+function cacheFileSize(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    // A file can disappear while a provider is replacing a partial cache.
+    return null;
+  }
+}
+
+function cacheDirectoryStats(directory: string, pending: string[]): { bytes: number; files: number } {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return { bytes: 0, files: 0 };
+  }
+
+  let bytes = 0;
+  let files = 0;
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      pending.push(entryPath);
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    const size = cacheFileSize(entryPath);
+    if (size === null) {
+      continue;
+    }
+    bytes += size;
+    files += 1;
+  }
+  return { bytes, files };
+}
+
+function modelCacheStats({ cacheDir, modelId }: Pick<SemanticEmbeddingConfig, "cacheDir" | "modelId">): {
+  bytes: number;
+  files: number;
+} {
+  const pending = [path.join(cacheDir, modelId)];
+  let bytes = 0;
+  let files = 0;
+
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    if (!directory) {
+      continue;
+    }
+    const stats = cacheDirectoryStats(directory, pending);
+    bytes += stats.bytes;
+    files += stats.files;
+  }
+
+  return { bytes, files };
+}
+
 function normalizeEmbeddingVector(
   output: { data?: ArrayLike<number> } | ArrayLike<number>,
   expectedDimensions: number
@@ -753,6 +829,42 @@ export function makeLocalTransformerBackend(
 ): SemanticEmbeddingBackend {
   let lastLoadError: unknown = null;
   const executor = new LocalTransformerExecutor(executorOptions);
+  const initialCacheStats = modelCacheStats(config);
+  const initialCachePresent = modelCachePresent(config);
+  let preparation: SemanticEmbeddingWarmStatus = {
+    cache_bytes: initialCacheStats.bytes,
+    cache_files: initialCacheStats.files,
+    error: null,
+    failed_at: null,
+    last_observed_at: new Date().toISOString(),
+    last_progress_at: null,
+    mode: initialCachePresent || config.downloadAllowed ? "semantic" : "lexical_only",
+    ready_at: initialCachePresent || !config.downloadAllowed ? new Date().toISOString() : null,
+    started_at: null,
+    status: initialCachePresent || !config.downloadAllowed ? "ready" : "not_started",
+  };
+  let preparationPromise: Promise<void> | null = null;
+
+  function observePreparation(): SemanticEmbeddingWarmStatus {
+    const stats = modelCacheStats(config);
+    const observedAt = new Date().toISOString();
+    const changed = stats.bytes !== preparation.cache_bytes || stats.files !== preparation.cache_files;
+    preparation = {
+      ...preparation,
+      cache_bytes: stats.bytes,
+      cache_files: stats.files,
+      last_observed_at: observedAt,
+      last_progress_at: changed && preparation.status === "downloading" ? observedAt : preparation.last_progress_at,
+    };
+    return { ...preparation };
+  }
+
+  function preparationError(error: unknown): string {
+    if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
+      return error.code;
+    }
+    return error instanceof Error && error.message ? error.message : "embedding preparation failed";
+  }
 
   async function embed(text: string): Promise<SemanticVector> {
     try {
@@ -780,6 +892,67 @@ export function makeLocalTransformerBackend(
     }
   }
 
+  function prepare(): Promise<void> {
+    const current = observePreparation();
+    if (current.status === "ready") {
+      return Promise.resolve();
+    }
+    if (current.status === "failed") {
+      return Promise.reject(new Error(current.error || "embedding preparation failed"));
+    }
+    if (preparationPromise) {
+      return preparationPromise;
+    }
+
+    const startedAt = new Date().toISOString();
+    preparation = {
+      ...current,
+      error: null,
+      failed_at: null,
+      last_observed_at: startedAt,
+      last_progress_at: null,
+      mode: "semantic",
+      ready_at: null,
+      started_at: startedAt,
+      status: "downloading",
+    };
+    preparationPromise = embed("")
+      .then(() => {
+        const stats = modelCacheStats(config);
+        const readyAt = new Date().toISOString();
+        preparation = {
+          ...preparation,
+          cache_bytes: stats.bytes,
+          cache_files: stats.files,
+          error: null,
+          failed_at: null,
+          last_observed_at: readyAt,
+          last_progress_at:
+            stats.bytes !== preparation.cache_bytes || stats.files !== preparation.cache_files
+              ? readyAt
+              : preparation.last_progress_at,
+          mode: "semantic",
+          ready_at: readyAt,
+          status: "ready",
+        };
+      })
+      .catch((error: unknown) => {
+        const failedAt = new Date().toISOString();
+        preparation = {
+          ...observePreparation(),
+          error: preparationError(error),
+          failed_at: failedAt,
+          last_observed_at: failedAt,
+          status: "failed",
+        };
+        throw error;
+      })
+      .finally(() => {
+        preparationPromise = null;
+      });
+    return preparationPromise;
+  }
+
   return {
     available: () => {
       if (lastLoadError) {
@@ -801,9 +974,11 @@ export function makeLocalTransformerBackend(
     model: () => config.modelId,
     modelCachePath: () => config.cacheDir,
     modelCachePresent: () => modelCachePresent(config),
+    prepare,
     profileId: () => config.profileId,
     resetExecutionTelemetry: () => executor.resetTelemetry(),
     supportsDeviceAttemptDeadline: () => true,
+    warmStatus: observePreparation,
   };
 }
 
@@ -913,6 +1088,38 @@ export function configureSemanticBackend(b: SemanticEmbeddingBackend | null): vo
 
 export function getSemanticBackend(): SemanticEmbeddingBackend | null {
   return backend;
+}
+
+export function startSemanticEmbeddingWarmup({ log }: { log?: (message: string) => void } = {}): Promise<void> {
+  const activeBackend = backend;
+  if (!activeBackend?.prepare) {
+    return Promise.resolve();
+  }
+  return Promise.resolve()
+    .then(() => activeBackend.prepare?.())
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      const code = error && typeof error === "object" && "code" in error ? error.code : null;
+      let message = String(error);
+      if (error instanceof Error) {
+        const { message: errorMessage } = error;
+        message = errorMessage;
+      }
+      if (typeof code === "string") {
+        message = code;
+      }
+      log?.(`semantic embedding preparation failed: ${message}`);
+    });
+}
+
+export function scheduleSemanticEmbeddingWarmup({ log }: { log?: (message: string) => void } = {}): Promise<void> {
+  const scheduledBackend = backend;
+  return new Promise<void>((resolve) => setImmediate(resolve)).then(() => {
+    if (backend !== scheduledBackend) {
+      return;
+    }
+    return log ? startSemanticEmbeddingWarmup({ log }) : startSemanticEmbeddingWarmup();
+  });
 }
 
 export function isSemanticCapabilityAvailable() {

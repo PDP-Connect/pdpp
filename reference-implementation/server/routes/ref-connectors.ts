@@ -221,6 +221,7 @@ export interface MountRefConnectorsContext {
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
+      runAdmission?: "browser_enrollment";
       resources?: Readonly<Record<string, readonly string[]>>;
     }
   ) => Promise<unknown>;
@@ -742,6 +743,25 @@ function readExplicitRunForce(req: RouteRequest): boolean {
   );
 }
 
+type RunAdmission = "collection" | "browser_enrollment";
+
+function readRunAdmission(req: RouteRequest): RunAdmission {
+  const { body } = req;
+  if (!(body && typeof body === "object" && !Array.isArray(body))) {
+    return "collection";
+  }
+  const raw = (body as { run_admission?: unknown }).run_admission;
+  if (raw === undefined) {
+    return "collection";
+  }
+  if (raw === "browser_enrollment") {
+    return raw;
+  }
+  const err = new Error("run_admission must be browser_enrollment when provided") as Error & { code: string };
+  err.code = "invalid_request";
+  throw err;
+}
+
 function readRunId(started: unknown): string | null {
   if (!started || typeof started !== "object") {
     return null;
@@ -821,6 +841,7 @@ async function executeRunNow(
     connectionId: string | null;
     force: boolean;
     ownerSubjectId: string | null;
+    runAdmission: RunAdmission;
   }
 ): Promise<void> {
   assertRemoteControlSupported(namespace);
@@ -829,6 +850,7 @@ async function executeRunNow(
     connectorInstanceId: namespace.connectorInstanceId,
     force: audit.force,
     ...(audit.ownerSubjectId ? { ownerSubjectId: audit.ownerSubjectId } : {}),
+    ...(audit.runAdmission === "browser_enrollment" ? { runAdmission: audit.runAdmission } : {}),
     ...(resources ? { resources } : {}),
   });
   ctx.invalidateConnectorSummariesCache?.();
@@ -871,6 +893,7 @@ export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContex
           connectorKey,
           force,
           ownerSubjectId,
+          runAdmission: "collection",
         });
       } catch (err) {
         await emitConnectionControlAudit(ctx, res, {
@@ -899,11 +922,13 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
       const force = readExplicitRunForce(req);
       let connectionId: string | null = null;
       let connectorKey: string | null = null;
+      let runAdmission: RunAdmission = "collection";
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         connectionId = connectorInstanceId;
+        runAdmission = readRunAdmission(req);
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
-          allowStatuses: ["active", "draft"],
+          allowStatuses: runAdmission === "browser_enrollment" ? ["draft"] : ["active", "draft"],
         });
         connectionId = namespace.connectorInstanceId;
         connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
@@ -912,6 +937,7 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
           connectorKey,
           force,
           ownerSubjectId,
+          runAdmission,
         });
       } catch (err) {
         await emitConnectionControlAudit(ctx, res, {

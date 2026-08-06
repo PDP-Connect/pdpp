@@ -6,6 +6,8 @@ import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
+  admitOwnerBrowserEnrollmentRunConnection,
+  admitOwnerRunConnection,
   ConnectorInstanceResolutionError,
   createSqliteConnectorInstanceStore,
   resolveOwnerConnectorInstanceNamespace,
@@ -139,6 +141,72 @@ test("resolver rejects a draft by default and admits it only with allowStatuses"
     });
     assert.equal(ns.connectorInstanceId, draft.connectorInstanceId);
     assert.equal(ns.status, "draft");
+  } finally {
+    closeDb();
+  }
+});
+
+test("browser enrollment admission accepts only an exact owner-owned shell draft", async () => {
+  initDb();
+  try {
+    seedConnector("amazon");
+    const store = createSqliteConnectorInstanceStore();
+    const shell = store.upsert({
+      connectorId: "amazon",
+      createdAt: NOW,
+      displayName: "Amazon",
+      ownerSubjectId: "owner_1",
+      sourceBinding: { enrollment_expires_at: "2026-06-02T14:00:00.000Z", kind: "browser_enrollment_shell" },
+      sourceBindingKey: "browser_shell_admission",
+      sourceKind: "account",
+      status: "draft",
+      updatedAt: NOW,
+    });
+    assert.ok(shell, "upsert returned the shell draft");
+
+    const admitted = await admitOwnerBrowserEnrollmentRunConnection({
+      connectorId: "amazon",
+      connectorInstanceId: shell.connectorInstanceId,
+      connectorInstanceStore: store,
+      ownerSubjectId: "owner_1",
+    });
+    assert.equal(admitted.connectorInstanceId, shell.connectorInstanceId);
+    assert.equal(admitted.status, "draft");
+
+    await assert.rejects(
+      () =>
+        admitOwnerRunConnection({
+          connectorId: "amazon",
+          connectorInstanceId: shell.connectorInstanceId,
+          connectorInstanceStore: store,
+          ownerSubjectId: "owner_1",
+        }),
+      (err) => err instanceof ConnectorInstanceResolutionError && err.code === "connector_instance_inactive"
+    );
+
+    await assert.rejects(
+      () =>
+        admitOwnerBrowserEnrollmentRunConnection({
+          connectorId: "amazon",
+          connectorInstanceId: "amazon",
+          connectorInstanceStore: store,
+          ownerSubjectId: "owner_1",
+        }),
+      (err) => err instanceof ConnectorInstanceResolutionError && err.code === "connector_instance_not_found"
+    );
+
+    const staticDraft = makeDraft(store, { connectorId: "amazon", sourceBindingKey: "static_secret_draft" });
+    assert.ok(staticDraft, "upsert returned the static-secret draft");
+    await assert.rejects(
+      () =>
+        admitOwnerBrowserEnrollmentRunConnection({
+          connectorId: "amazon",
+          connectorInstanceId: staticDraft.connectorInstanceId,
+          connectorInstanceStore: store,
+          ownerSubjectId: "owner_1",
+        }),
+      (err) => err instanceof ConnectorInstanceResolutionError && err.code === "browser_enrollment_shell_required"
+    );
   } finally {
     closeDb();
   }

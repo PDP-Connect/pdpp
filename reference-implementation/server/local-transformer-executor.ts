@@ -341,6 +341,7 @@ export class LocalTransformerExecutor {
       // The child receives only execution limits. Model/cache settings travel in
       // a job payload; no parent credentials or service configuration are inherited.
       env: {
+        NODE_ENV: "production",
         PDPP_LOCAL_TRANSFORMER_QUEUE_LIMIT: String(this.#queueLimit),
         PDPP_LOCAL_TRANSFORMER_WORK_LIMIT: String(this.#workLimit),
       },

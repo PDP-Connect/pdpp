@@ -1093,6 +1093,55 @@ export function admitOwnerRunConnection({
   });
 }
 
+/**
+ * Admit the one owner-session run that is allowed to start from a browser
+ * enrollment shell. This is intentionally a separate capability from
+ * `admitOwnerRunConnection`: a draft is runnable here only when the exact row
+ * belongs to the owner, belongs to the requested connector, and still carries
+ * the browser-enrollment-shell binding.
+ */
+export async function admitOwnerBrowserEnrollmentRunConnection({
+  ownerSubjectId,
+  connectorId,
+  connectorInstanceId,
+  connectorInstanceStore,
+}: {
+  ownerSubjectId: string;
+  connectorId: string;
+  connectorInstanceId: string | null;
+  connectorInstanceStore: ConnectorInstanceStoreLike;
+}): Promise<ConnectorInstanceNamespace> {
+  if (!connectorInstanceId) {
+    throw new ConnectorInstanceResolutionError(
+      "connector_instance_selector_required",
+      "A browser enrollment run requires an exact connector instance id.",
+      { connectorId, ownerSubjectId }
+    );
+  }
+  const namespace = await resolveOwnerConnectorInstanceNamespace({
+    allowDefaultAccount: false,
+    allowStatuses: ["draft"],
+    connectorId,
+    connectorInstanceId,
+    connectorInstanceStore,
+    ownerSubjectId,
+  });
+  const binding = namespace.sourceBinding;
+  const isBrowserEnrollmentShell =
+    binding !== null &&
+    typeof binding === "object" &&
+    !Array.isArray(binding) &&
+    (binding as { kind?: unknown }).kind === "browser_enrollment_shell";
+  if (!isBrowserEnrollmentShell) {
+    throw new ConnectorInstanceResolutionError(
+      "browser_enrollment_shell_required",
+      `Connector instance '${connectorInstanceId}' is not a browser enrollment shell.`,
+      { connectorId, connectorInstanceId, ownerSubjectId }
+    );
+  }
+  return namespace;
+}
+
 export function createSqliteConnectorInstanceStore() {
   const store = {
     // Flip a static-secret draft to active on its first successful ingest.

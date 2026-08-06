@@ -162,8 +162,6 @@ const QUERY_WHITESPACE_RE = /\s+/;
  * server load-more beneath it (count==reachability).
  */
 const UPCOMING_PREVIEW_DAYS = 10;
-/** Strips the trailing `/explore` segment to derive the records section base. */
-const EXPLORE_SUFFIX_RE = /\/explore$/;
 /** Strips the trailing whitespace-delimited fragment (keeps the leading separator). */
 const TRAILING_FRAGMENT_RE = /(^|\s)\S*$/;
 
@@ -353,6 +351,13 @@ interface ExploreCanvasProps {
    * no record is open or no readable metadata was available.
    */
   peekRelationships?: PeekRelationships | null;
+  /**
+   * The route-map-owned records base path (e.g. "/sources" in the live
+   * console). Kept separate from `explorePath` because the console promotes
+   * Explore out of the legacy Records subtree, while embeddable dashboard
+   * callers retain their own route map.
+   */
+  recordsBasePath: string;
 }
 
 /**
@@ -3010,7 +3015,13 @@ function SavedViewTabs({
 // ─── ExploreCanvas ────────────────────────────────────────────────
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: ExploreCanvas orchestrates the full workbench state; this cell only swaps the shared record identity renderer.
-export function ExploreCanvas({ data, explorePath, order = "newest", peekRelationships = null }: ExploreCanvasProps) {
+export function ExploreCanvas({
+  data,
+  explorePath,
+  order = "newest",
+  peekRelationships = null,
+  recordsBasePath,
+}: ExploreCanvasProps) {
   const router = useRouter();
 
   // ── In-page navigation loading state ──
@@ -3086,10 +3097,6 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   const bucketSeries = loadedBand && loadedBand.key === bucketRequestKey ? loadedBand.series : null;
   // Pending = a request is live (non-null key) and no band for THIS key has landed.
   const bucketBandPending = bucketRequestKey !== null && !(loadedBand && loadedBand.key === bucketRequestKey);
-
-  // Records section base path for mobile push-navigation row Links.
-  // e.g. "/explore" → "/sources".
-  const recordsBasePath = `${explorePath.replace(EXPLORE_SUFFIX_RE, "")}/records`;
 
   // The facet rail is a <details> that renders CLOSED (feed-first on phones).
   // On wide viewports we open it so the disclosure state matches the always-

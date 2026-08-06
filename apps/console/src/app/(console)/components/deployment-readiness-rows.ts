@@ -44,6 +44,7 @@ export interface ServerInputs {
   embeddingBackendConfigured: boolean;
   embeddingDownloadAllowed: boolean | null;
   embeddingModelCachePresent: boolean | null;
+  embeddingWarmStatus?: NonNullable<DeploymentDiagnostics["semantic"]["backend"]["warm_status"]> | null;
   ownerPasswordProvenance: "absent" | "present" | "redacted";
   referenceOriginConfigured: string | null;
   vectorIndexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
@@ -81,6 +82,7 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
     embeddingBackendConfigured: report.semantic.backend.configured,
     embeddingDownloadAllowed: report.semantic.backend.download_allowed,
     embeddingModelCachePresent: report.semantic.backend.model_cache_present,
+    embeddingWarmStatus: report.semantic.backend.warm_status ?? null,
     ownerPasswordProvenance: owner?.provenance ?? "absent",
     referenceOriginConfigured: origin?.provenance === "present" ? origin.value : null,
     vectorIndexKind: report.semantic.index.kind,
@@ -176,6 +178,18 @@ export function embeddingCacheRow(inputs: ServerInputs): ReadinessRow {
       status: "info",
     };
   }
+  const warmStatus = inputs.embeddingWarmStatus;
+  if (
+    warmStatus?.mode === "lexical_only" ||
+    (inputs.embeddingModelCachePresent === false && inputs.embeddingDownloadAllowed === false)
+  ) {
+    return {
+      check: "Embedding cache",
+      detail: "Semantic model downloads are disabled. Lexical-only retrieval is ready.",
+      hint: "Enable `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1` and restart if you want semantic retrieval too.",
+      status: "ok",
+    };
+  }
   if (inputs.embeddingModelCachePresent === true && inputs.embeddingBackendAvailable) {
     return {
       check: "Embedding cache",
@@ -183,18 +197,33 @@ export function embeddingCacheRow(inputs: ServerInputs): ReadinessRow {
       status: "ok",
     };
   }
-  if (inputs.embeddingModelCachePresent === false && inputs.embeddingDownloadAllowed === false) {
+  if (warmStatus?.status === "failed") {
     return {
       check: "Embedding cache",
-      detail: "Embedding model is not cached and download is disabled.",
-      hint: "Embedding cache is still downloading or missing. Wait for first-boot download to finish, or set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you do not need semantic search yet.",
-      status: "error",
+      detail: `Semantic model preparation failed${warmStatus.error ? `: ${warmStatus.error}` : "."} Lexical retrieval remains ready.`,
+      hint: "Restart Core to retry model preparation; this failure does not block lexical retrieval.",
+      status: "warn",
+    };
+  }
+  if (warmStatus?.status === "downloading") {
+    return {
+      check: "Embedding cache",
+      detail: `Semantic model preparation is downloading. Lexical retrieval is ready. Observed ${warmStatus.cache_bytes} bytes across ${warmStatus.cache_files} files.`,
+      status: "warn",
+    };
+  }
+  if (warmStatus?.status === "not_started") {
+    return {
+      check: "Embedding cache",
+      detail: "Semantic model preparation has not started. Lexical retrieval is ready.",
+      hint: "Core starts model preparation in the background; no semantic model is required for lexical retrieval.",
+      status: "warn",
     };
   }
   return {
     check: "Embedding cache",
-    detail: "Embedding model cache is still warming up or the backend is not yet ready.",
-    hint: "Embedding cache is still downloading or missing. Wait for first-boot download to finish, or set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you do not need semantic search yet.",
+    detail: "Semantic model preparation status is unavailable. Lexical retrieval remains ready.",
+    hint: "Refresh deployment diagnostics to observe model lifecycle status; lexical retrieval does not depend on it.",
     status: "warn",
   };
 }

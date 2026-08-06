@@ -128,7 +128,7 @@ export function pdppBrowserCollectorEnrollCommand(args: {
 export function pdppBrowserCollectorRunCommand(args: { baseUrl: string; connectorId: string }): string {
   return [
     "PDPP_CAPTURE_FIXTURES=1 \\",
-    `PDPP_${args.connectorId.toUpperCase()}_HEADLESS=0 \\`,
+    "PDPP_BROWSER_HEADLESS=0 \\",
     "pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts run \\",
     `  --base-url ${args.baseUrl} \\`,
     `  --connector ${args.connectorId} \\`,

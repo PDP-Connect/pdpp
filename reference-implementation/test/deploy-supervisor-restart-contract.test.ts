@@ -71,17 +71,17 @@ test("root docker-compose.yml pairs the restart-contract flag with a real restar
   assertRealRestartPolicy(referenceBlock, "root docker-compose.yml reference");
 });
 
-test("deploy/docker/docker-compose.yml (quickstart) pairs the restart-contract flag with restart: unless-stopped", async () => {
+test("deploy/docker/docker-compose.yml (quickstart) Core pairs the restart-contract flag with restart: unless-stopped", async () => {
   const compose = await read("deploy/docker/docker-compose.yml");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-  const referenceBlockMatch = compose.match(/^\s*reference:\n([\s\S]*?)(?=\n {2}\S|\nvolumes:)/m);
-  assert.ok(referenceBlockMatch, "could not isolate the reference service block");
+  const referenceBlockMatch = compose.match(/^\s*core:\n([\s\S]*?)(?=\n {2}\S|\nvolumes:)/m);
+  assert.ok(referenceBlockMatch, "could not isolate the Core service block");
   // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const referenceBlock = referenceBlockMatch[1];
   assert.ok(referenceBlock, "reference service block capture group is empty");
 
   assert.match(referenceBlock, new RegExp(`${RESTART_FLAG}:\\s*"1"`));
-  assertRealRestartPolicy(referenceBlock, "deploy/docker/docker-compose.yml reference");
+  assertRealRestartPolicy(referenceBlock, "deploy/docker/docker-compose.yml Core");
 });
 
 test(".env.docker.example documents the restart-contract flag with its rationale", async () => {
@@ -93,20 +93,19 @@ test(".env.docker.example documents the restart-contract flag with its rationale
   assert.match(envExample, /restart: unless-stopped/);
 });
 
-test("Railway railway-core/platform-core Dockerfile stage bakes the flag only alongside a committed ON_FAILURE restart policy", async () => {
+test("Railway Core Dockerfile stage bakes the flag only alongside a committed ON_FAILURE restart policy", async () => {
   const dockerfile = await read("Dockerfile");
   const consoleConfig = await read("deploy/railway/railway.console.json");
 
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-  const railwayCoreStageMatch = dockerfile.match(/FROM base AS railway-core\n([\s\S]*?)(?=\nFROM )/);
-  assert.ok(railwayCoreStageMatch, "could not isolate the railway-core Dockerfile stage");
+  const railwayCoreStageMatch = dockerfile.match(/FROM browsers AS core-browser\n([\s\S]*?)(?=\nFROM )/);
+  assert.ok(railwayCoreStageMatch, "could not isolate the public Core Dockerfile stage");
   // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
   const railwayCoreStage = railwayCoreStageMatch[1];
   assert.ok(railwayCoreStage, "railway-core stage capture group is empty");
 
-  // railway.console.json builds the Dockerfile's default (final) stage,
-  // which is platform-core (FROM railway-core AS platform-core) — the same
-  // baked ENV block. Non-vacuous: fails if the flag is baked without a real
+  // railway.console.json builds the Dockerfile's public Core stage. Non-vacuous:
+  // fails if the flag is baked without a real
   // restart policy in the Railway service config that deploys it, and fails
   // if the flag is simply missing (the pre-fix state).
   const hasFlag = new RegExp(`${RESTART_FLAG}=1`).test(railwayCoreStage);
@@ -156,14 +155,14 @@ test("root Dockerfile plain reference/reference-browser stages do NOT bake the r
   assert.doesNotMatch(referenceBrowserStage, new RegExp(`${RESTART_FLAG}=1`));
 });
 
-test("Fly.io platform-core deploy has no explicit restart override that would contradict the baked flag", async () => {
+test("Fly.io Core deploy has no explicit restart override that would contradict the baked flag", async () => {
   const flyToml = await read("deploy/flyio/fly.toml");
   // fly.toml intentionally carries no [[restart]] block, so Fly's platform
   // default (restart on machine exit) applies. If a future edit adds an
   // explicit [[restart]] block with policy = "no", that would falsify the
-  // flag baked into the platform-core Dockerfile stage this app builds.
+  // flag baked into the Core Dockerfile stage this app builds.
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
-  assert.match(flyToml, /target = "platform-core"/);
+  assert.match(flyToml, /target = "core"/);
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.doesNotMatch(flyToml, /policy\s*=\s*"no"/);
 });

@@ -17,10 +17,10 @@ const SESSION_FOCUS_RE = /function focusNekoKeyboardProxy[\s\S]*session\.focusKe
 const TRUSTED_TAP_SESSION_FOCUS_RE =
   /focusNekoKeyboardProxy\(viewerRef\.current, nekoSurfaceAdapterRef\.current, mountNode\)/;
 const AWAIT_RE = /\bawait\b/;
-const Neko_SESSION_PARAMETER_RE = /session: NekoRemoteSurfaceSession \| null/;
+const SESSION_PARAMETER_RE = /session: NekoRemoteSurfaceSession \| RemoteSurfaceSession \| null/;
 const SESSION_COPY_RE = /await session\.copyRemoteSelection\(\)/;
-const TYPED_SHEET_PASTE_RE = /await surface\.pasteText\(localText\)/;
-const TYPED_SHEET_ADAPTER_RE = /sendSheetTextToBrowser\([\s\S]*surface: getSurface\(\)/;
+const TYPED_SHEET_PASTE_RE = /await pasteText\(localText\)/;
+const TYPED_SHEET_ADAPTER_RE = /sendSheetTextToBrowser\([\s\S]*pasteText: getPasteText\(\)/;
 const VIEWPORT_DIAGNOSTIC_RE = /const handleViewerDiagnostic = useCallback/;
 const VIEWPORT_DIAGNOSTIC_WIRING_RE = /onDiagnostic: handleViewerDiagnostic/;
 const VIEWPORT_ERROR_STATE_RE = /viewerRef\.current\?\.getViewportState\(\) === "error"/;
@@ -30,13 +30,19 @@ const INLINE_ERROR_RETRY_RE = /Retry secure browser/;
 const PRESENTATION_ATTACHMENT_GATE_RE =
   /if \(!presentationAttachmentReadyRef\.current\) \{[\s\S]{0,450}viewport\.skip\.awaiting-presentation-attachment/;
 const PRESENTATION_ATTACHMENT_AFTER_SSE_RE =
-  /onAttached: \(\) => \{[\s\S]{0,350}presentationAttachmentReadyRef\.current = true;[\s\S]{0,350}requestViewportMeasureRef\.current\?\.\("stream-attached"\)/;
+  /cdpRemoteSurfaceTransportRef\.current\?\.setPresentationAttachmentReady\(true\);[\s\S]{0,220}callbacks\.onAttached\(\);/;
+const CDP_VIEWPORT_MATCH_OWNS_RE =
+  /readyBackend === "cdp"[\s\S]{0,280}viewport\.host\.skip-single-authority[\s\S]{0,220}remote-surface\.session/;
+const HOST_STREAM_ATTACHED_VIEWPORT_POST_RE = /requestViewportMeasureRef\.current\?\.\("stream-attached"\)/;
 const SAME_ORIGIN_VIEWPORT_CREDENTIALS_RE = /viewport\.post\.start[\s\S]{0,1400}credentials: "same-origin"/;
-const SAME_ORIGIN_INPUT_CREDENTIALS_RE = /const sendCdpInput = useCallback[\s\S]{0,2000}credentials: "same-origin"/;
+const SAME_ORIGIN_INPUT_CREDENTIALS_RE = /createPdppRemoteSurfaceTransport[\s\S]{0,2500}credentials: "same-origin"/;
 const SAME_ORIGIN_COPY_CREDENTIALS_RE = /neko\.clipboard_remote_to_local[\s\S]{0,1800}credentials: "same-origin"/;
 const ATTACHED_BROWSER_SESSION_BOUNDARY_RE =
   /beginPresentationSession\([\s\S]*?browserSessionId: browserSessionIdRef\.current[\s\S]*?payload\.browser_session_id[\s\S]*?if \(presentationSession\.reset\) \{[\s\S]*?resetPresentationForBrowserSession\(\)/;
 const NEKO_BROWSER_SESSION_KEY_RE = /<NekoSurface[\s\S]*?key=\{nekoSession\.browserSessionId\}/;
+const KEYBOARD_FOCUS_RESET_RE =
+  /keyboardFocusStateRef\.current = createMobileKeyboardFocusState\(\)[\s\S]{0,160}setKeyboardAffordanceVisible\(false\)/;
+const TRANSPORT_FILE = fileURLToPath(new URL("./stream-viewer-remote-surface-transport.ts", import.meta.url));
 
 function readViewerSource(): Promise<string> {
   return readFile(VIEWER_FILE, "utf8");
@@ -64,7 +70,7 @@ test("mounted browser-selection copy uses the session while typed sheet paste st
   const pasteEnd = src.indexOf("async function copySheetTextToDevice", pasteStart);
   const typedPastePath = src.slice(pasteStart, pasteEnd);
 
-  assert.match(copyPath, Neko_SESSION_PARAMETER_RE);
+  assert.match(copyPath, SESSION_PARAMETER_RE);
   assert.match(copyPath, SESSION_COPY_RE);
   assert.match(typedPastePath, TYPED_SHEET_PASTE_RE);
   assert.match(src, TYPED_SHEET_ADAPTER_RE);
@@ -120,15 +126,17 @@ test("viewer viewport errors render the existing retryable inline stream error",
 });
 
 test("viewport changes wait for the SSE controller attachment and send its same-origin cookie", async () => {
-  const src = await readViewerSource();
+  const [src, transportSrc] = await Promise.all([readViewerSource(), readFile(TRANSPORT_FILE, "utf8")]);
 
-  // The route keeps its controller-only check. The viewer must therefore not
-  // issue the initial ResizeObserver write until the SSE response has set the
-  // HttpOnly controller attachment cookie, then it remeasures once.
+  // The route keeps its controller-only check. The assembled canvas session
+  // queues its own initial match until the SSE response has set the HttpOnly
+  // controller attachment cookie; the host must not issue a second match.
   assert.match(src, PRESENTATION_ATTACHMENT_GATE_RE);
   assert.match(src, PRESENTATION_ATTACHMENT_AFTER_SSE_RE);
+  assert.match(src, CDP_VIEWPORT_MATCH_OWNS_RE);
+  assert.doesNotMatch(src, HOST_STREAM_ATTACHED_VIEWPORT_POST_RE);
   assert.match(src, SAME_ORIGIN_VIEWPORT_CREDENTIALS_RE);
-  assert.match(src, SAME_ORIGIN_INPUT_CREDENTIALS_RE);
+  assert.match(transportSrc, SAME_ORIGIN_INPUT_CREDENTIALS_RE);
   assert.match(src, SAME_ORIGIN_COPY_CREDENTIALS_RE);
 });
 
@@ -139,4 +147,5 @@ test("browser-session replacement clears presentation state and remounts n.eko, 
   // that decision to the actual SSE attachment and React remount path.
   assert.match(src, ATTACHED_BROWSER_SESSION_BOUNDARY_RE);
   assert.match(src, NEKO_BROWSER_SESSION_KEY_RE);
+  assert.match(src, KEYBOARD_FOCUS_RESET_RE);
 });

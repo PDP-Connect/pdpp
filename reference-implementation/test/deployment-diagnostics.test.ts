@@ -29,7 +29,9 @@ import {
   DISK_ERROR_BYTES,
   DISK_WARN_BYTES,
   type DiskHeadroom,
+  RUNTIME_BROWSER_CAPABILITY_ENV,
   type RuntimeCapabilityPosture,
+  runtimeBrowserCapabilityFromEnv,
   type SemanticBackfillProgress,
   shouldAttemptSemanticUplift,
 } from "../server/deployment-diagnostics.ts";
@@ -214,6 +216,12 @@ test("runtime_capabilities: absent input renders an empty/host-default report wi
   assert.equal(report.runtime_capabilities.bindings.browser, false);
   const codes = report.warnings.map((w) => w.code);
   assert.ok(!codes.includes("browser_connectors_need_collector"));
+});
+
+test("runtime_capabilities: image-owned browser marker projects true, while non-browser defaults stay false", () => {
+  assert.equal(runtimeBrowserCapabilityFromEnv({ [RUNTIME_BROWSER_CAPABILITY_ENV]: "1" }), true);
+  assert.equal(runtimeBrowserCapabilityFromEnv({ [RUNTIME_BROWSER_CAPABILITY_ENV]: "0" }), false);
+  assert.equal(runtimeBrowserCapabilityFromEnv({}), false);
 });
 
 test("runtime_capabilities: containerized provider without collector warns", () => {
@@ -511,6 +519,18 @@ test("missing model cache + disabled downloads are reported", () => {
       downloadAllowed: () => false,
       modelCachePath: () => "/var/cache/embed",
       modelCachePresent: () => false,
+      warmStatus: () => ({
+        cache_bytes: 0,
+        cache_files: 0,
+        error: null,
+        failed_at: null,
+        last_observed_at: "2026-08-05T18:00:00.000Z",
+        last_progress_at: null,
+        mode: "lexical_only",
+        ready_at: "2026-08-05T18:00:00.000Z",
+        started_at: null,
+        status: "ready",
+      }),
     }),
     db: { vectorIndexKind: "sqlite-vec" },
     dbPath: "/tmp/test.sqlite",
@@ -521,6 +541,43 @@ test("missing model cache + disabled downloads are reported", () => {
   const codes = report.warnings.map((w) => w.code);
   assert.ok(codes.includes("missing_model_cache"));
   assert.ok(codes.includes("download_disabled"));
+  assert.equal(report.semantic.backend.warm_status?.status, "ready");
+  assert.equal(report.semantic.backend.warm_status?.mode, "lexical_only");
+  assert.ok(report.warnings.find((warning) => warning.code === "download_disabled")?.message.includes("lexical-only"));
+});
+
+test("embedding diagnostics expose lifecycle timestamps and observed cache evidence without percent", () => {
+  const warmStatus = {
+    cache_bytes: 4096,
+    cache_files: 3,
+    error: null,
+    failed_at: null,
+    last_observed_at: "2026-08-05T18:00:05.000Z",
+    last_progress_at: "2026-08-05T18:00:05.000Z",
+    mode: "semantic" as const,
+    ready_at: null,
+    started_at: "2026-08-05T18:00:00.000Z",
+    status: "downloading" as const,
+  };
+  const report = buildDeploymentDiagnostics({
+    backend: fakeBackend({
+      downloadAllowed: () => true,
+      modelCachePresent: () => false,
+      warmStatus: () => warmStatus,
+    }),
+    db: { vectorIndexKind: "sqlite-vec" },
+    dbPath: "/var/lib/pdpp/pdpp.sqlite",
+    env: {},
+    indexState: "built",
+    manifests: [{ manifest: manifestWithSemantic(), provenance: "polyfill-registered" }],
+  });
+
+  assert.deepEqual(report.semantic.backend.warm_status, warmStatus);
+  const missingCacheWarning = report.warnings.find((warning) => warning.code === "missing_model_cache");
+  assert.ok(missingCacheWarning);
+  assert.equal(missingCacheWarning.message.includes("downloading"), true);
+  assert.equal(missingCacheWarning.message.includes("warming"), false);
+  assert.equal(JSON.stringify(report.semantic.backend.warm_status).toLowerCase().includes("percent"), false);
 });
 
 // ─── participation computation ─────────────────────────────────────────────

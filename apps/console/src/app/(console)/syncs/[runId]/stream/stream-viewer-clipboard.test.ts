@@ -21,7 +21,8 @@ const BUFFERED_TOAST_TEXT_RE = /Copy ready\./;
 const CLICKABLE_TOAST_RE = /<button|onClick|Copy to this device/;
 const POLICY_WRITE_GUARD_RE = /!currentClipboardPolicy\.canWriteLocalClipboard[\s\S]*reason: "write-unavailable"/;
 const WRITE_TEXT_RE = /navigator\.clipboard\.writeText\(text\)/;
-const NATIVE_PASTE_POLICY_GUARD_RE = /getClipboardPolicy: \(\) => clipboardPolicyRef\.current/;
+const NATIVE_PASTE_POLICY_GUARD_RE =
+  /const gateNativePaste = \(event: Event\): void => \{[\s\S]*canForwardNativePasteEvent[\s\S]*stopImmediatePropagation\(\)/;
 const PASSWORD_INPUT_RE = /inputType === "password"/;
 const MASKED_LOCAL_INPUT_RE = /remoteInputSensitive && !revealLocalText/;
 const MASKED_ATTRIBUTE_RE = /data-masked=\{localInputMasked \? "true" : "false"\}/;
@@ -30,7 +31,7 @@ const SESSION_CLIPBOARD_CLEANUP_RE =
 const POLICY_CLIPBOARD_SHEET_CLOSE_RE =
   /if \(!clipboardPolicy\.showClipboardSheet\) \{[\s\S]*setClipboardSheetOpen\(false\);[\s\S]*\}/;
 const POLICY_CLIPBOARD_SHEET_RENDER_RE =
-  /nekoSession && clipboardPolicy\.showClipboardSheet \? \([\s\S]*<ClipboardSheet/;
+  /\(nekoSession \|\| mountedCdpViewer\) && clipboardPolicy\.showClipboardSheet \? \([\s\S]*<ClipboardSheet/;
 const CORNER_PASTE_OPENS_SHEET_RE =
   /const handleMobilePaste = useCallback\(\(\) => \{[\s\S]*phase: "open-sheet"[\s\S]*setClipboardSheetOpen\(true\)/;
 const CORNER_PASTE_ARIA_RE = /aria-label=\{`Open paste controls for \$\{connectorName\} browser`\}/;
@@ -38,10 +39,12 @@ const CORNER_PASTE_DIRECT_READ_RE =
   /const handleMobilePaste = useCallback\(\(\) => \{[\s\S]*pasteLocalClipboardIntoNeko/;
 const VIEWER_DIRECT_NEKO_CLIPBOARD_CALL_RE = /\b(?:pasteTextIntoNeko|copyRemoteSelectionFromNeko)\(/;
 const VIEWER_CLIPBOARD_MECHANISM_SPLIT_RE =
-  /if \(surface && surfaceState === "mounted"\) \{[\s\S]*pasted = await surface\.pasteText\(localText\)[\s\S]*if \(session\) \{[\s\S]*dispatched = await session\.copyRemoteSelection\(\)/;
-const CDP_NATIVE_PASTE_VIA_ADAPTER_RE =
-  /new CdpClientSurface\(\{[\s\S]*cdp: createPdppCdpTransport\(sendCdpInput\)[\s\S]*getClipboardPolicy: \(\) => clipboardPolicyRef\.current/;
-const VIEWER_DIRECT_CDP_PASTE_POST_RE = /postInput\(\{ type: "paste", text \}\)/;
+  /const surfaceState = pasteText \? "mounted" : null;[\s\S]*pasted = await pasteText\(localText\)[\s\S]*if \(session && surfaceState === "mounted"\) \{[\s\S]*dispatched = await session\.copyRemoteSelection\(\)/;
+const CDP_CLIPBOARD_TRANSPORT_RE = /clipboardUrlRef[\s\S]*getPasteText=\{\(\) => \{[\s\S]*sendClipboardText/;
+const CDP_COPY_USES_SESSION_RE = /getMountedRemoteSurfaceSession\(mountedCdpViewer\)/;
+const NO_HOST_CDP_CLIPBOARD_RE = /CdpClientSurface|clipboardSink|createPdppCdpTransport/;
+const SEND_SHEET_TEXT_CATCHES_PASTE_RE =
+  /try \{[\s\S]{0,40}pasted = await pasteText\(localText\);[\s\S]{0,80}\} catch \(err\) \{[\s\S]*pasteError = err;/;
 
 test("mobile clipboard uses explicit copy and paste buttons with sheet fallback", async () => {
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
@@ -100,8 +103,14 @@ test("selection copy routes through the viewer session while typed sheet paste s
   assert.doesNotMatch(src, VIEWER_DIRECT_NEKO_CLIPBOARD_CALL_RE);
 });
 
-test("native CDP paste forwarding is package-backed", async () => {
+test("direct-CDP clipboard controls use the assembled transport and session", async () => {
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
-  assert.match(src, CDP_NATIVE_PASTE_VIA_ADAPTER_RE);
-  assert.doesNotMatch(src, VIEWER_DIRECT_CDP_PASTE_POST_RE);
+  assert.match(src, CDP_CLIPBOARD_TRANSPORT_RE);
+  assert.match(src, CDP_COPY_USES_SESSION_RE);
+  assert.doesNotMatch(src, NO_HOST_CDP_CLIPBOARD_RE);
+});
+
+test("typed sheet paste treats a transport rejection as a failed explicit control", async () => {
+  const src = await readFile(STREAM_VIEWER_FILE, "utf8");
+  assert.match(src, SEND_SHEET_TEXT_CATCHES_PASTE_RE);
 });

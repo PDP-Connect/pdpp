@@ -33,8 +33,15 @@ test("supported local-collector set is exactly claude_code and codex", () => {
   assert.deepEqual([...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS], ["claude_code", "codex"]);
 });
 
-test("supported manual browser-collector set is exactly amazon and heb", () => {
-  assert.deepEqual([...SUPPORTED_BROWSER_COLLECTOR_CONNECTORS], ["amazon", "heb"]);
+test("supported browser-collector set is derived from browser-bound production runtimes", () => {
+  assert.deepEqual([...SUPPORTED_BROWSER_COLLECTOR_CONNECTORS].sort(), [
+    "amazon",
+    "chase",
+    "chatgpt",
+    "heb",
+    "reddit",
+    "usaa",
+  ]);
 });
 
 test("supported set matches the enrollment form's pinned COLLECTOR_RUN_CONNECTORS literal", async () => {
@@ -64,11 +71,14 @@ test("isSupportedLocalCollectorConnector narrows only the supported keys", () =>
   assert.equal(isSupportedLocalCollectorConnector(undefined), false);
 });
 
-test("isSupportedBrowserCollectorConnector narrows only the generated manual browser path", () => {
+test("isSupportedBrowserCollectorConnector follows shipped runtime support", () => {
   assert.equal(isSupportedBrowserCollectorConnector("amazon"), true);
   assert.equal(isSupportedBrowserCollectorConnector("https://registry.pdpp.org/connectors/amazon"), true);
-  assert.equal(isSupportedBrowserCollectorConnector("chase"), false);
-  assert.equal(isSupportedBrowserCollectorConnector("chatgpt"), false);
+  assert.equal(isSupportedBrowserCollectorConnector("chase"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("chatgpt"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("reddit"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("usaa"), true);
+  assert.equal(isSupportedBrowserCollectorConnector("anthropic"), false);
   assert.equal(isSupportedBrowserCollectorConnector("claude_code"), false);
   assert.equal(isSupportedBrowserCollectorConnector(""), false);
   assert.equal(isSupportedBrowserCollectorConnector(null), false);

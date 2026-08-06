@@ -29,18 +29,24 @@ type PlaygroundPage = ReturnType<IsolatedBrowser["context"]["pages"]>[number];
 type PlaygroundBackend = "cdp" | "neko" | "neko-remote-cdp";
 
 interface PlaygroundSession {
+  assistance?: boolean;
   backend: PlaygroundBackend;
   baseUrl?: string;
   cdpHttpUrl?: string | null;
   debugCalibration?: boolean;
   interactionId: string;
+  page?: PlaygroundPage;
+  registerTarget?: boolean;
   runId: string;
   wsUrl?: string;
 }
 
 interface PlaygroundSessionOptions {
+  assistance?: boolean;
   backend?: string;
   debug?: string;
+  fresh?: boolean;
+  registerTarget?: boolean;
   streamDebug?: string;
 }
 
@@ -48,6 +54,10 @@ type PlaygroundRunTargetRegistry = Pick<RunTargetRegistry, "register">;
 
 interface PlaygroundController {
   getPendingInteraction: (runId: string) => unknown;
+  respondToInteraction?: (
+    runId: string,
+    input: { interaction_id: string; status: string }
+  ) => unknown | Promise<unknown>;
 }
 
 type PlaygroundLoggerLevel = "info" | "warn";
@@ -60,10 +70,26 @@ interface PlaygroundEnvironment {
   [key: string]: string | undefined;
 }
 
+interface PlaygroundTimelineEvent {
+  actor_id: string;
+  actor_type: string;
+  data: Record<string, unknown>;
+  event_type: string;
+  interaction_id: string;
+  object_id: string;
+  object_type: string;
+  run_id: string;
+  status: string;
+}
+
+type PlaygroundTimelineEmitter = (event: PlaygroundTimelineEvent) => Promise<unknown>;
+
 interface PlaygroundFactoryOptions {
   controller: PlaygroundController;
+  emitTimelineEvent?: PlaygroundTimelineEmitter;
   env?: PlaygroundEnvironment;
   logger?: PlaygroundLogger | null;
+  onSessionTerminal?: (args: { interactionId: string; reason: string; runId: string }) => Promise<void>;
   runTargetRegistry: PlaygroundRunTargetRegistry;
 }
 
@@ -386,6 +412,23 @@ function pdppPointerExtras(event) {
     calibration: calibration,
   };
 }
+// Built-Core discriminator marker: the oracle sends bounded pointer and
+// keyboard events through the token route without depending on this page's
+// responsive grid geometry. Mark the selected Page's raster on either event
+// so a subsequent screencast refresh proves that the same registered target
+// received the input.
+function pdppMarkOracleInput(kind) {
+  if (kind === 'pointer') {
+    document.body.style.background = '#dbeafe';
+    document.body.dataset.pdppOraclePointer = 'received';
+    return;
+  }
+  document.body.style.background = '#dcfce7';
+  document.body.dataset.pdppOracleKeyboard = 'received';
+}
+window.addEventListener('pointerdown', () => pdppMarkOracleInput('pointer'), { capture: true, passive: true });
+window.addEventListener('mousedown', () => pdppMarkOracleInput('pointer'), { capture: true, passive: true });
+window.addEventListener('keydown', () => pdppMarkOracleInput('keyboard'), { capture: true, passive: true });
 // Stamp the beacon registry once at boot AND every time the layout
 // container changes (Chromium emulation re-applying device metrics
 // late, soft-keyboard activation, orientation flip). Without the
@@ -501,6 +544,12 @@ function buildTestPageUrl(options: { debug?: boolean } = {}) {
   return `data:text/html;charset=utf-8,${encodeURIComponent(buildTestPageHtml(options))}`;
 }
 
+function buildDecoyPageUrl() {
+  return `data:text/html;charset=utf-8,${encodeURIComponent(
+    "<!doctype html><title>PDPP decoy page</title><body style='background:#101010;color:#fff'>decoy</body>"
+  )}`;
+}
+
 /**
  * Module-level singleton state. The first caller wins the launch race; all
  * concurrent callers await the same in-flight promise. Subsequent calls
@@ -526,6 +575,7 @@ const cachedSessions = new Map<PlaygroundBackend, PlaygroundSession>();
 // session?" — separated from cachedSessions so the cache-reuse policy is
 // orthogonal to the runId-resolution policy.
 const activeSessions = new Map<string, PlaygroundSession>();
+const remoteTelemetryRunIdsByPage = new WeakMap<PlaygroundPage, Set<string>>();
 let cleanupBrowser: (() => Promise<void>) | null = null;
 let exitHookRegistered = false;
 let controllerShimInstalled = false;
@@ -544,7 +594,14 @@ let controllerShimInstalled = false;
  * imports — `playground.js` does not need to import `index.js`.
  */
 export function createPlayground(options?: PlaygroundFactoryOptions) {
-  const { runTargetRegistry, controller, logger = null, env = process.env } = options ?? {};
+  const {
+    runTargetRegistry,
+    controller,
+    emitTimelineEvent,
+    logger = null,
+    onSessionTerminal,
+    env = process.env,
+  } = options ?? {};
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   if (!runTargetRegistry || typeof runTargetRegistry.register !== "function") {
     throw new Error("createPlayground: runTargetRegistry with .register() is required");
@@ -554,6 +611,31 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
   }
   const playgroundRunTargetRegistry = runTargetRegistry;
   const playgroundController = controller;
+
+  async function emitBrowserSurfaceAssistance(session: PlaygroundSession): Promise<void> {
+    if (!(session.assistance === true && typeof emitTimelineEvent === "function")) {
+      return;
+    }
+    await emitTimelineEvent({
+      actor_id: "playground:dev",
+      actor_type: "runtime",
+      data: {
+        assistance_request_id: session.interactionId,
+        attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+        message: "Operate the deterministic browser fixture.",
+        owner_action: "operate_attachment",
+        progress_posture: "blocked",
+        response_contract: "none",
+        sensitivity: "non_secret",
+      },
+      event_type: "run.assistance_requested",
+      interaction_id: session.interactionId,
+      object_id: session.runId,
+      object_type: "run",
+      run_id: session.runId,
+      status: "started",
+    });
+  }
 
   function callLogger(level: PlaygroundLoggerLevel, entry: Record<string, unknown>) {
     try {
@@ -664,10 +746,19 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
    * subscribes when the companion is created.
    */
   async function installRemoteTelemetryBinding(page: PlaygroundPage, runId: string) {
+    const existingRunIds = remoteTelemetryRunIdsByPage.get(page);
+    if (existingRunIds) {
+      existingRunIds.add(runId);
+      return;
+    }
+    const runIds = new Set([runId]);
+    remoteTelemetryRunIdsByPage.set(page, runIds);
     try {
       await page.exposeBinding("__pdppRemoteTelemetry", (_source, payload) => {
         try {
-          emitRemoteTelemetry(runId, payload);
+          for (const currentRunId of runIds) {
+            emitRemoteTelemetry(currentRunId, payload);
+          }
         } catch {
           /* never throw back into the page binding */
         }
@@ -678,7 +769,22 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
         error: err instanceof Error ? err.message : String(err),
         runId,
       });
+      remoteTelemetryRunIdsByPage.delete(page);
     }
+  }
+
+  function removeRemoteTelemetryRunId(session: PlaygroundSession): void {
+    if (!session.page) {
+      return;
+    }
+    const runIds = remoteTelemetryRunIdsByPage.get(session.page);
+    if (!runIds) {
+      return;
+    }
+    runIds.delete(session.runId);
+    // Keep the empty set as the marker that `exposeBinding` already ran. A
+    // cached Page cannot install the same binding name twice when the next
+    // fresh run/interaction is cloned around it.
   }
 
   function registerNekoPlaygroundTarget(session: PlaygroundSession, startUrl: string) {
@@ -720,6 +826,9 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
   }
 
   function registerPlaygroundTarget(session: PlaygroundSession): PlaygroundSession {
+    if (session.registerTarget === false) {
+      return session;
+    }
     const startUrl = buildTestPageUrl({ debug: session.debugCalibration === true });
     if (session.backend === "neko") {
       registerNekoPlaygroundTarget(session, startUrl);
@@ -746,8 +855,12 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
     }
     controllerShimInstalled = true;
     const original = playgroundController.getPendingInteraction.bind(playgroundController);
+    const originalRespond = playgroundController.respondToInteraction?.bind(playgroundController);
     playgroundController.getPendingInteraction = function getPendingInteractionWithPlayground(runId: string): unknown {
       const session = getCachedSessionForRunId(runId);
+      if (session?.assistance === true) {
+        return null;
+      }
       if (session) {
         return {
           connector_id: "playground:dev",
@@ -759,6 +872,45 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
       }
       return original(runId);
     };
+    if (originalRespond) {
+      playgroundController.respondToInteraction = async function respondToPlaygroundInteraction(
+        runId: string,
+        input: { interaction_id: string; status: string }
+      ): Promise<unknown> {
+        const session = getCachedSessionForRunId(runId);
+        if (!session) {
+          return await originalRespond(runId, input);
+        }
+        if (input.interaction_id !== session.interactionId) {
+          throw new Error(`Stale interaction_id for playground run ${runId}`);
+        }
+        if (input.status !== "success" && input.status !== "cancelled") {
+          throw new Error(`Invalid playground interaction status: ${input.status}`);
+        }
+        await onSessionTerminal?.({
+          interactionId: session.interactionId,
+          reason: `interaction_${input.status}`,
+          runId,
+        });
+        removeRemoteTelemetryRunId(session);
+        activeSessions.delete(runId);
+        await emitTimelineEvent?.({
+          actor_id: "playground:dev",
+          actor_type: "runtime",
+          data: {
+            assistance_request_id: session.interactionId,
+            status: input.status,
+          },
+          event_type: input.status === "cancelled" ? "run.assistance_cancelled" : "run.assistance_resolved",
+          interaction_id: session.interactionId,
+          object_id: runId,
+          object_type: "run",
+          run_id: runId,
+          status: "completed",
+        });
+        return { accepted: true, status: input.status };
+      };
+    }
   }
 
   function ignoreCleanupFailure() {
@@ -872,8 +1024,12 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
    */
   async function createCdpPlaygroundSession({
     debugCalibration = false,
+    assistance = false,
+    registerTarget = true,
   }: {
+    assistance?: boolean;
     debugCalibration?: boolean;
+    registerTarget?: boolean;
   } = {}): Promise<PlaygroundSession> {
     // Dynamic import: keeps patchright off the cold-start path for
     // production builds that never instantiate the playground. The two
@@ -906,6 +1062,8 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
     const cdpIds = makeIds("cdp");
     await installRemoteTelemetryBinding(page, cdpIds.runId);
     await navigatePlaygroundPage(page, debugCalibration, () => releasePlaygroundBrowser(isolated));
+    const decoyPage = await isolated.context.newPage();
+    await decoyPage.goto(buildDecoyPageUrl(), { timeout: 15_000, waitUntil: "load" });
 
     // Pull the CDP host:port the launcher published into env vars. The
     // launcher writes them after a successful `streamingEnabled: true`
@@ -925,7 +1083,16 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
     // pageUrl is the short literal `data:text/html` instead of the full
     // encoded HTML (which is multi-KB) — the registry surfaces this on
     // debug paths only, so a label is more useful than the full payload.
-    const session = registerPlaygroundTarget({ backend: "cdp", debugCalibration, interactionId, runId, wsUrl });
+    const session = registerPlaygroundTarget({
+      assistance,
+      backend: "cdp",
+      debugCalibration,
+      interactionId,
+      page,
+      registerTarget,
+      runId,
+      wsUrl,
+    });
     installControllerShim();
 
     log("info", "playground_ready", { interactionId, runId });
@@ -1054,7 +1221,11 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
 
   function sessionFactoryForBackend(
     backend: PlaygroundBackend
-  ): (options: { debugCalibration?: boolean }) => Promise<PlaygroundSession> {
+  ): (options: {
+    assistance?: boolean;
+    debugCalibration?: boolean;
+    registerTarget?: boolean;
+  }) => Promise<PlaygroundSession> {
     return {
       cdp: createCdpPlaygroundSession,
       neko: createNekoPlaygroundSession,
@@ -1065,6 +1236,12 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
   function recordPlaygroundSession(session: PlaygroundSession, backend: PlaygroundBackend, debugCalibration: boolean) {
     session.debugCalibration = debugCalibration;
     activeSessions.set(session.runId, session);
+    // Keep the browser/page cached even for the oracle's assistance and
+    // registration-negative variants. Those variants intentionally mint a
+    // fresh run/interaction around the same selected Page; launching another
+    // persistent profile would obscure the target-identity assertion and can
+    // contend on the profile lock. The target itself remains per-session and
+    // is still registered only when `registerTarget` is true.
     if (backend !== "neko") {
       cachedSessions.set(backend, session);
     }
@@ -1072,24 +1249,29 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
 
   async function createAndTrackPlaygroundSession(
     backend: PlaygroundBackend,
-    debugCalibration: boolean
+    debugCalibration: boolean,
+    assistance: boolean,
+    registerTarget: boolean
   ): Promise<PlaygroundSession> {
-    const promise = sessionFactoryForBackend(backend)({ debugCalibration });
+    const promise = sessionFactoryForBackend(backend)({ assistance, debugCalibration, registerTarget });
     inFlights.set(backend, promise);
     try {
       const session = await promise;
       recordPlaygroundSession(session, backend, debugCalibration);
+      await emitBrowserSurfaceAssistance(session);
       return session;
     } finally {
       inFlights.delete(backend);
     }
   }
 
-  // biome-ignore lint/suspicious/useAwait: The async signature is part of this caller-facing contract.
   // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
   async function getOrCreatePlaygroundSession(options: PlaygroundSessionOptions = {}): Promise<PlaygroundSession> {
     const backend = normalizeBackend(options.backend);
     const debugCalibration = isDebugEnabled(options.streamDebug ?? options.debug ?? env.PDPP_STREAM_PLAYGROUND_DEBUG);
+    const assistance = options.assistance === true;
+    const registerTarget = options.registerTarget !== false;
+    const fresh = options.fresh === true;
     // n.eko-backed sessions are never cached: the runId is per-call so
     // the run-target registry's lifetime/eviction semantics match what a
     // real connector run would experience. The local-CDP and
@@ -1105,14 +1287,32 @@ export function createPlayground(options?: PlaygroundFactoryOptions) {
     // backend) caused a stale entry to be returned only when two
     // sequential calls landed in the same Date.now() millisecond.
     const cached = cachedSessionForBackend(backend, debugCalibration);
-    if (cached) {
+    if (cached && !fresh && !assistance && registerTarget) {
       return registerPlaygroundTarget(cached);
     }
     const existing = inFlights.get(backend);
     if (existing) {
       return existing;
     }
-    return createAndTrackPlaygroundSession(backend, debugCalibration);
+    if (cached && backend !== "neko") {
+      const { runId, interactionId } = makeIds(backend === "neko-remote-cdp" ? "neko_remote_cdp" : "cdp");
+      const session = registerPlaygroundTarget({
+        ...cached,
+        assistance,
+        debugCalibration,
+        interactionId,
+        registerTarget,
+        runId,
+      });
+      installControllerShim();
+      if (session.page) {
+        await installRemoteTelemetryBinding(session.page, session.runId);
+      }
+      activeSessions.set(session.runId, session);
+      await emitBrowserSurfaceAssistance(session);
+      return session;
+    }
+    return createAndTrackPlaygroundSession(backend, debugCalibration, assistance, registerTarget);
   }
 
   return { getOrCreatePlaygroundSession };

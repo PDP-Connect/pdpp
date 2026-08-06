@@ -39,7 +39,7 @@ import {
 const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
 const SECURE_BROWSER_SESSION_RE = /secure browser session/i;
-const SAVE_SIGN_IN_DETAILS_RE = /save sign-in details/i;
+const SAVE_SIGN_IN_DETAILS_RE = /sign-in details/i;
 
 function canonicalKeyFromManifestId(connectorId: string): string {
   if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
@@ -119,7 +119,7 @@ test("only proven-creatable dispositions carry an enrollment deep-link key", asy
   }
 });
 
-test("heb is cataloged as a browser-bound static-secret-capable source with both setup choices", async () => {
+test("heb is cataloged as one browser-bound account setup with optional stored credentials", async () => {
   const catalog = buildConnectorCatalog(await loadCommittedManifests());
   const heb = catalog.find((entry) => entry.connectorKey === "heb");
   if (!heb) {
@@ -132,14 +132,13 @@ test("heb is cataloged as a browser-bound static-secret-capable source with both
   assert.equal(sourceSetupStatus(heb).label, "Connect account");
   assert.equal(sourceSetupAction(heb)?.href, "/connect/browser-session/heb");
   assert.equal(sourceSetupAction(heb)?.label, "Connect account");
-  assert.equal(sourceSetupSecondaryAction(heb)?.href, "/connect/static-secret/heb");
-  assert.equal(sourceSetupSecondaryAction(heb)?.label, "Save sign-in details");
+  assert.equal(sourceSetupSecondaryAction(heb), null);
   assert.match(sourceSetupGuidance(heb), SECURE_BROWSER_SESSION_RE);
   assert.match(sourceSetupGuidance(heb), SAVE_SIGN_IN_DETAILS_RE);
   assert.deepEqual(browserCollectorEntries(catalog), []);
 });
 
-test("browser-bound static-secret-capable connectors get the same dual choice generically", () => {
+test("browser-bound static-secret-capable connectors get one primary choice generically", () => {
   const catalog = buildConnectorCatalog([
     {
       connector_id: "https://registry.pdpp.org/connectors/browser-sample",
@@ -161,7 +160,7 @@ test("browser-bound static-secret-capable connectors get the same dual choice ge
   assert.equal(entry.setupModality, "static_secret");
   assert.equal(entry.disposition, "static_secret_connect");
   assert.equal(sourceSetupAction(entry)?.href, "/connect/browser-session/browser-sample");
-  assert.equal(sourceSetupSecondaryAction(entry)?.href, "/connect/static-secret/browser-sample");
+  assert.equal(sourceSetupSecondaryAction(entry), null);
   assert.equal(sourceSetupStatus(entry).label, "Connect account");
 });
 

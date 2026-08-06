@@ -431,9 +431,39 @@ async function waitForCondition(condition: () => boolean, message: string, attem
 
 function buildManualActionConnector(
   tmpDir: string,
-  { kind = "manual_action", timeoutSeconds = 60 }: { kind?: string; timeoutSeconds?: number } = {}
+  {
+    kind = "manual_action",
+    registerTarget = false,
+    timeoutSeconds = 60,
+  }: { kind?: string; registerTarget?: boolean; timeoutSeconds?: number } = {}
 ): string {
   const path = join(tmpDir, "connector.mjs");
+  const targetRegistration = registerTarget
+    ? `
+    const runId = process.env.PDPP_RUN_ID;
+    const referenceBaseUrl = process.env.PDPP_REFERENCE_BASE_URL;
+    const registrationToken = process.env.PDPP_STREAMING_REGISTRATION_TOKEN;
+    const registrationUrl = \`\${referenceBaseUrl}/admin/runs/\${encodeURIComponent(runId)}/interactions/int_stream_1/streaming-target\`;
+    const registration = await fetch(registrationUrl, {
+      body: JSON.stringify({ backend: 'cdp', ws_url: 'ws://127.0.0.1:9222/devtools/page/direct-cdp-test' }),
+      headers: { authorization: \`Bearer \${registrationToken}\`, 'content-type': 'application/json' },
+      method: 'PUT',
+    });
+    if (!registration.ok) throw new Error(\`streaming target registration failed: \${registration.status}\`);
+`
+    : "";
+  const interactionResponse = `process.stdout.write(JSON.stringify({
+      type: 'INTERACTION',
+      request_id: 'int_stream_1',
+      kind: '${kind}',
+      message: 'Need browser control to continue.',
+      timeout_seconds: ${timeoutSeconds},
+    }) + '\\n');`;
+  const startHandler = registerTarget
+    ? `(async () => {${targetRegistration}
+    ${interactionResponse}
+    })().catch((error) => { process.stderr.write(String(error)); process.exit(1); });`
+    : interactionResponse;
   writeFileSync(
     path,
     `
@@ -445,13 +475,7 @@ rl.on('line', (line) => {
   try { msg = JSON.parse(line); } catch { return; }
   if (msg.type === 'START' && !started) {
     started = true;
-    process.stdout.write(JSON.stringify({
-      type: 'INTERACTION',
-      request_id: 'int_stream_1',
-      kind: '${kind}',
-      message: 'Need browser control to continue.',
-      timeout_seconds: ${timeoutSeconds},
-    }) + '\\n');
+    ${startHandler}
     return;
   }
   if (msg.type === 'INTERACTION_RESPONSE') {
@@ -711,6 +735,7 @@ interface HarnessOptions extends Record<string, unknown> {
   manifestName?: string;
   nekoProxyAutoLogin?: unknown;
   nekoWindowSettleProbe?: (endpoint: string) => Promise<unknown>;
+  registerTarget?: boolean;
   streamingClearTimeout?: (timer: unknown) => void;
   streamingLogger?: unknown;
   streamingNow?: () => number;
@@ -747,6 +772,7 @@ interface HarnessContext {
  * as the other `Record<string, unknown>`-based local types in this file.
  */
 interface MintBody {
+  clipboard_path?: string;
   error?: { code?: string; message?: string; [key: string]: unknown };
   input_path?: string;
   interaction_id?: string;
@@ -1632,6 +1658,172 @@ test("mint with a different idempotency_key supersedes the prior token (legitima
     assert.ok(reattach.status === 401 || reattach.status === 410);
     await cancelRun(asUrl, started.run_id, pending.interaction_id);
   });
+});
+
+test("viewer handoff preserves the direct-CDP target for a replacement attach", async () => {
+  let directCdpTargetAvailable = true;
+  let forceUnregisterCount = 0;
+  const streamingLogger = {
+    info(record: unknown) {
+      const msg = record && typeof record === "object" ? (record as { msg?: unknown }).msg : undefined;
+      if (msg === "run_target_force_unregistered") {
+        forceUnregisterCount += 1;
+        directCdpTargetAvailable = false;
+      }
+    },
+  };
+  await withHarness(
+    {
+      makeCompanion: ({ browser_session_id }) => {
+        const base = createMockCompanion({ browser_session_id });
+        const wrapped: MockCompanion = {
+          ...base,
+          async start(viewport) {
+            if (!directCdpTargetAvailable) {
+              const error = new Error("No streaming target registered for this run") as Error & { code?: string };
+              error.code = "streaming_target_unregistered";
+              throw error;
+            }
+            await base.start(viewport);
+          },
+        };
+        return wrapped;
+      },
+      registerTarget: true,
+      streamingLogger,
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mintUrl = `${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`;
+
+      const first = await fetchJson(mintUrl, {
+        body: JSON.stringify({ idempotency_key: "desktop-viewer", interaction_id: pending.interaction_id }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(first.status, 201);
+      const firstBody = first.body as MintBody;
+
+      const firstAbort = new AbortController();
+      const firstStream = await fetch(`${asUrl}${firstBody.viewer_path}`, { signal: firstAbort.signal });
+      assert.equal(firstStream.status, 200);
+      const firstCookie = presentationAttachmentCookie(firstStream);
+      assert.ok(firstStream.body, "first SSE response has a body stream");
+      const firstReader = firstStream.body.getReader();
+      await firstReader.read();
+
+      const second = await fetchJson(mintUrl, {
+        body: JSON.stringify({ idempotency_key: "phone-viewer", interaction_id: pending.interaction_id }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(second.status, 201);
+      const secondBody = second.body as MintBody;
+      assert.notEqual(secondBody.token, firstBody.token);
+      assert.equal(
+        forceUnregisterCount,
+        0,
+        "replacing a viewer session must not retire the interaction-owned direct-CDP target"
+      );
+
+      firstAbort.abort();
+      try {
+        await firstReader.cancel();
+      } catch {
+        /* aborted */
+      }
+
+      const secondAbort = new AbortController();
+      const secondStream = await fetch(`${asUrl}${secondBody.viewer_path}`, { signal: secondAbort.signal });
+      assert.equal(secondStream.status, 200);
+      const secondCookie = presentationAttachmentCookie(secondStream);
+      assert.ok(secondStream.body, "replacement SSE response has a body stream");
+      const secondReader = secondStream.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      async function readEvent(name: string, deadlineMs = 1500): Promise<Record<string, unknown>> {
+        const deadline = Date.now() + deadlineMs;
+        while (Date.now() < deadline) {
+          const block = buffer.indexOf("\n\n");
+          if (block !== -1) {
+            const event = buffer.slice(0, block);
+            buffer = buffer.slice(block + 2);
+            if (event.includes("event: error")) {
+              throw new Error(`replacement stream emitted an error before ${name}: ${event}`);
+            }
+            if (event.includes(`event: ${name}`)) {
+              const dataLine = event.split("\n").find((line) => line.startsWith("data:"));
+              assert.ok(dataLine, `SSE event ${name} is missing a data: line`);
+              return JSON.parse(dataLine.slice(5).trim());
+            }
+            continue;
+          }
+          // biome-ignore lint/performance/noAwaitInLoops: Sequential test setup and assertion order is intentional.
+          const { value, done } = await secondReader.read();
+          if (done) {
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+        }
+        throw new Error(`Did not receive SSE event ${name} in ${deadlineMs}ms`);
+      }
+
+      await readEvent("attached");
+      const backendReady = await readEvent("backend_ready");
+      assert.equal(backendReady.backend, "cdp");
+
+      const staleInput = await fetchJson(`${asUrl}${firstBody.input_path}`, {
+        body: JSON.stringify({ action: "click", type: "mouse", x: 1, y: 1 }),
+        headers: { "Content-Type": "application/json", Cookie: firstCookie },
+        method: "POST",
+      });
+      assert.equal(staleInput.status, 401, "the superseded viewer bearer must remain fenced");
+
+      const staleClipboard = await fetchJson(`${asUrl}${firstBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "local_to_remote", text: "stale" }),
+        headers: { "Content-Type": "application/json", Cookie: firstCookie },
+        method: "POST",
+      });
+      assert.equal(staleClipboard.status, 401, "the superseded viewer bearer must fence clipboard writes too");
+
+      const staleClipboardRead = await fetchJson(`${asUrl}${firstBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "remote_to_local", requestId: 1 }),
+        headers: { "Content-Type": "application/json", Cookie: firstCookie },
+        method: "POST",
+      });
+      assert.equal(staleClipboardRead.status, 401, "the superseded viewer bearer must fence clipboard reads too");
+
+      const currentInput = await fetchJson(`${asUrl}${secondBody.input_path}`, {
+        body: JSON.stringify({ action: "click", type: "mouse", x: 2, y: 2 }),
+        headers: { "Content-Type": "application/json", Cookie: secondCookie },
+        method: "POST",
+      });
+      assert.equal(currentInput.status, 202);
+
+      const currentClipboard = await fetchJson(`${asUrl}${secondBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "local_to_remote", text: "current" }),
+        headers: { "Content-Type": "application/json", Cookie: secondCookie },
+        method: "POST",
+      });
+      assert.equal(currentClipboard.status, 202);
+
+      const currentClipboardRead = await fetchJson(`${asUrl}${secondBody.clipboard_path}`, {
+        body: JSON.stringify({ action: "remote_to_local", requestId: 2 }),
+        headers: { "Content-Type": "application/json", Cookie: secondCookie },
+        method: "POST",
+      });
+      assert.equal(currentClipboardRead.status, 200);
+
+      secondAbort.abort();
+      try {
+        await secondReader.cancel();
+      } catch {
+        /* aborted */
+      }
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    }
+  );
 });
 
 test("SSE attach delivers an attached event and dispatches frames", async () => {
@@ -3407,8 +3599,15 @@ test("only the controlling SSE attachment may rotate the presentation viewport",
 test("two stream sessions in one cookie jar retain session-scoped controller authority", async () => {
   const dispatched: InputEvent[] = [];
   await withHarness(
-    { makeCompanion: makeMockNekoCompanion("http://127.0.0.1:9", { dispatchedEvents: dispatched }) },
-    async ({ asUrl, server, spotifyManifest }) => {
+    {
+      makeCompanion: makeMockNekoCompanion("http://127.0.0.1:9", { dispatchedEvents: dispatched }),
+      // A browser_session_id is intentionally not globally unique. Reusing it
+      // across two live run/interaction pairs must still create two isolated
+      // companions; the complete (run, interaction, browser-session) identity
+      // is the cache key.
+      makeStreamingBrowserSessionId: () => "bs_same_across_runs",
+    },
+    async ({ asUrl, companions, server, spotifyManifest }) => {
       // Same canonicalization requirement as the direct-`runNow` test above,
       // plus: each run below claims an explicit, literal `connectorInstanceId`
       // that must actually exist in the store for the controller's real-store
@@ -3470,6 +3669,8 @@ test("two stream sessions in one cookie jar retain session-scoped controller aut
       );
       assert.ok(mintA, "expected a mint result for run A");
       assert.ok(mintB, "expected a mint result for run B");
+      assert.equal(companions.length, 2, "same browser_session_id must not reuse a cross-run companion");
+      assert.notEqual(companions[0]?.companion, companions[1]?.companion, "companion objects must remain isolated");
 
       const controllerAbortA = new AbortController();
       const controllerAbortB = new AbortController();
@@ -3488,7 +3689,7 @@ test("two stream sessions in one cookie jar retain session-scoped controller aut
         assert.equal(observerA.headers.get("set-cookie"), null, "observer must not receive controller authority");
         const cookieA = presentationAttachmentCookie(streamA);
         const cookieB = presentationAttachmentCookie(streamB);
-        assert.notEqual(cookieA.split("=", 1)[0], cookieB.split("=", 1)[0]);
+        assert.notEqual(cookieA, cookieB, "same browser_session_id still needs distinct attachment values");
 
         for (const [path, body] of [
           [mintA.viewport_path, { height: 390, width: 844 }],

@@ -49,12 +49,10 @@ import {
 export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = SHARED_SUPPORTED_LOCAL_COLLECTOR_CONNECTORS;
 
 /**
- * Browser-bound connectors for which the console can honestly mint an
- * enrollment code and generate manual runner commands today. This is
- * intentionally narrower than `BROWSER_BOUND_CONNECTORS`: most browser-bound
- * manifests can be classified for row/action honesty, but only a proven subset
- * has the runner profile and proof-run runbook needed for a supported console
- * path before the one-click intent flip.
+ * Browser-bound connectors for which the bundled connector/runtime pair is
+ * production-ready enough for the console's browser-session setup path. This
+ * is derived by the shared planner from the shipped browser-bound manifests
+ * and production-ready connector roster; this module carries no provider list.
  */
 export const SUPPORTED_BROWSER_COLLECTOR_CONNECTORS = SHARED_SUPPORTED_BROWSER_COLLECTOR_CONNECTORS;
 
