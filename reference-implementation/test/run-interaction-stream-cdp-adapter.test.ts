@@ -622,13 +622,13 @@ test("cdp adapter emits url_changed for main-frame Page.frameNavigated and ignor
   const companion = createCdpCompanion({
     browser_session_id: "bs_url_main",
     WebSocketCtor: FakeSocket,
-    wsUrl: "ws://fake/page-url",
+    wsUrl: "ws://fake/devtools/page/tg_main",
   });
   const events: CdpEvent[] = [];
   companion.onEvent((e) => events.push(e));
   const startPromise = companion.start();
   await flush();
-  const sock = findSocket(sockets, "ws://fake/page-url");
+  const sock = findSocket(sockets, "ws://fake/devtools/page/tg_main");
   assert.ok(sock, "adapter opened a socket");
   await startAndDrainNoViewport(sock.peer);
   await startPromise;
@@ -662,13 +662,13 @@ test("cdp adapter emits url_changed for main-frame Page.frameNavigated and ignor
   await flush();
   assert.equal(events.length, 1, "identical URL must not re-emit");
 
-  // First page target is recorded as our own and suppressed; its title is cached.
+  // The registered page target is suppressed; its title is cached.
   sock.peer.deliver({
     method: "Target.targetCreated",
     params: { targetInfo: { targetId: "tg_main", title: "Sign in", type: "page", url: "https://example.com/login" } },
   });
   await flush();
-  assert.equal(events.length, 1, "first page target is treated as our own and suppressed");
+  assert.equal(events.length, 1, "registered page target is suppressed");
 
   // Now navigate again — title should appear because it was cached.
   sock.peer.deliver({
@@ -686,7 +686,7 @@ test("cdp adapter emits url_changed for main-frame Page.frameNavigated and ignor
   await companion.stop();
 });
 
-test("cdp adapter emits popup_opened/closed for additional page targets only", async () => {
+test("cdp adapter emits popup_opened/closed for user-relevant child page targets", async () => {
   const { FakeSocket, sockets } = makeFakeSocketCtor();
   const companion = createCdpCompanion({
     browser_session_id: "bs_popup",
@@ -721,7 +721,14 @@ test("cdp adapter emits popup_opened/closed for additional page targets only", a
   // Second page target → popup.
   sock.peer.deliver({
     method: "Target.targetCreated",
-    params: { targetInfo: { targetId: "tg_popup", type: "page", url: "https://oauth.example.com/auth" } },
+    params: {
+      targetInfo: {
+        openerId: "tg_self",
+        targetId: "tg_popup",
+        type: "page",
+        url: "https://oauth.example.com/auth",
+      },
+    },
   });
   await flush();
   assert.equal(events.length, 1);
@@ -746,6 +753,118 @@ test("cdp adapter emits popup_opened/closed for additional page targets only", a
   sock.peer.deliver({ method: "Target.targetDestroyed", params: { targetId: "tg_never_seen" } });
   await flush();
   assert.equal(events.length, 2);
+
+  await companion.stop();
+});
+
+test("cdp adapter only announces a nonblank child of the registered page target", async () => {
+  const { FakeSocket, sockets } = makeFakeSocketCtor();
+  const companion = createCdpCompanion({
+    browser_session_id: "bs_popup_classification",
+    WebSocketCtor: FakeSocket,
+    wsUrl: "ws://fake/devtools/page/tg_adopted",
+  });
+  const events: CdpEvent[] = [];
+  companion.onEvent((e) => events.push(e));
+  const startPromise = companion.start();
+  await flush();
+  const sock = findSocket(sockets, "ws://fake/devtools/page/tg_adopted");
+  assert.ok(sock, "adapter opened a socket");
+  await startAndDrainNoViewport(sock.peer);
+  await startPromise;
+
+  // Discovery can replay an auxiliary page before the exact registered page.
+  // It is not a popup, and the provider's navigation on the registered page
+  // is not a popup either.
+  sock.peer.deliver({
+    method: "Target.targetCreated",
+    params: { targetInfo: { targetId: "tg_aux", type: "page", url: "about:blank" } },
+  });
+  sock.peer.deliver({
+    method: "Target.targetCreated",
+    params: {
+      targetInfo: {
+        targetId: "tg_adopted",
+        type: "page",
+        url: "https://accounts.google.com/signin",
+      },
+    },
+  });
+  // Provider redirects on the adopted page are URL changes, not popups.
+  sock.peer.deliver({
+    method: "Target.targetInfoChanged",
+    params: {
+      targetInfo: {
+        targetId: "tg_adopted",
+        type: "page",
+        url: "https://accounts.google.com/consent",
+      },
+    },
+  });
+  // Same-flow target churn has no opener relationship to the adopted page.
+  sock.peer.deliver({
+    method: "Target.targetCreated",
+    params: {
+      targetInfo: {
+        targetId: "tg_churn",
+        type: "page",
+        url: "https://accounts.google.com/continue",
+      },
+    },
+  });
+  // A genuine popup is a nonblank child of the adopted page.
+  sock.peer.deliver({
+    method: "Target.targetCreated",
+    params: {
+      targetInfo: {
+        openerId: "tg_adopted",
+        targetId: "tg_popup",
+        type: "page",
+        url: "https://oauth.example.com/auth",
+      },
+    },
+  });
+  // Some providers create the child as about:blank, then navigate it.
+  sock.peer.deliver({
+    method: "Target.targetCreated",
+    params: {
+      targetInfo: {
+        openerId: "tg_adopted",
+        targetId: "tg_blank_popup",
+        type: "page",
+        url: "about:blank",
+      },
+    },
+  });
+  sock.peer.deliver({
+    method: "Target.targetInfoChanged",
+    params: {
+      targetInfo: {
+        openerId: "tg_adopted",
+        targetId: "tg_blank_popup",
+        type: "page",
+        url: "https://oauth.example.com/blank-child-auth",
+      },
+    },
+  });
+  await flush();
+
+  assert.deepEqual(events[0], { kind: "url_changed", url: "https://accounts.google.com/consent" });
+  assert.deepEqual(
+    events.filter((event) => event.kind === "popup_opened"),
+    [
+      { kind: "popup_opened", targetId: "tg_popup", url: "https://oauth.example.com/auth" },
+      { kind: "popup_opened", targetId: "tg_blank_popup", url: "https://oauth.example.com/blank-child-auth" },
+    ]
+  );
+
+  sock.peer.deliver({ method: "Target.targetDestroyed", params: { targetId: "tg_popup" } });
+  sock.peer.deliver({ method: "Target.targetDestroyed", params: { targetId: "tg_blank_popup" } });
+  await flush();
+  assert.deepEqual(events.slice(3), [
+    { kind: "popup_closed", targetId: "tg_popup" },
+    { kind: "popup_closed", targetId: "tg_blank_popup" },
+  ]);
 
   await companion.stop();
 });

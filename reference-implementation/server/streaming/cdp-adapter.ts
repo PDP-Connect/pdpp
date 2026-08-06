@@ -121,6 +121,7 @@ interface PageScreencastFrameEvent {
 }
 
 interface TargetInfo {
+  readonly openerId?: string;
   readonly targetId: string;
   readonly title?: string;
   readonly type: string;
@@ -273,6 +274,7 @@ function parsedTargetInfo(
   const info: TargetInfo = {
     targetId: targetInfo.targetId,
     type: targetInfo.type,
+    ...(typeof targetInfo.openerId === "string" ? { openerId: targetInfo.openerId } : {}),
     ...(typeof targetInfo.url === "string" ? { url: targetInfo.url } : {}),
     ...(typeof targetInfo.title === "string" ? { title: targetInfo.title } : {}),
   };
@@ -405,8 +407,11 @@ function notifyHandlers<T>(
   }
 }
 
-function targetInfoOptionalFields(info: CdpJsonObject): { url?: string; title?: string } {
-  const fields: { url?: string; title?: string } = {};
+function targetInfoOptionalFields(info: CdpJsonObject): { openerId?: string; url?: string; title?: string } {
+  const fields: { openerId?: string; url?: string; title?: string } = {};
+  if (typeof info.openerId === "string") {
+    fields.openerId = info.openerId;
+  }
   if (typeof info.url === "string") {
     fields.url = info.url;
   }
@@ -456,6 +461,35 @@ function urlChangedEvent(url: string, title: unknown): CdpOutputEvent {
   return event;
 }
 
+function targetIdFromWsUrl(wsUrl: string): string | null {
+  try {
+    const { pathname } = new URL(wsUrl);
+    const prefix = "/devtools/page/";
+    if (!pathname.startsWith(prefix)) {
+      return null;
+    }
+    const targetId = pathname.slice(prefix.length);
+    if (!isNonEmptyString(targetId) || targetId.includes("/")) {
+      return null;
+    }
+    return decodeURIComponent(targetId);
+  } catch {
+    return null;
+  }
+}
+
+function isBlankPageUrl(url: string | undefined): boolean {
+  if (!isNonEmptyString(url)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "about:" && parsed.pathname === "blank";
+  } catch {
+    return false;
+  }
+}
+
 function popupOpenedEvent(info: TargetInfo): CdpOutputEvent {
   return {
     kind: "popup_opened",
@@ -467,20 +501,24 @@ function popupOpenedEvent(info: TargetInfo): CdpOutputEvent {
 function createCdpEventRouter({
   emitFrame,
   emitEvent,
+  ownPageTargetId,
 }: {
   emitFrame: CdpProtocolFrameHandler;
   emitEvent: CdpEventHandler;
+  ownPageTargetId?: string | null;
 }): (message: CdpEvent) => void {
   const state: {
     lastEmittedUrl: string | null;
     lastKnownTitle: string | null;
     ownPageTargetId: string | null;
-    knownPageTargetIds: Set<string>;
+    pendingPopupTargetIds: Set<string>;
+    popupTargetIds: Set<string>;
   } = {
-    knownPageTargetIds: new Set<string>(),
     lastEmittedUrl: null,
     lastKnownTitle: null,
-    ownPageTargetId: null,
+    ownPageTargetId: ownPageTargetId ?? null,
+    pendingPopupTargetIds: new Set<string>(),
+    popupTargetIds: new Set<string>(),
   };
 
   function emitUrlChanged(url: string | null): void {
@@ -492,13 +530,27 @@ function createCdpEventRouter({
   }
 
   function rememberOwnPage(info: TargetInfo): void {
-    state.ownPageTargetId = info.targetId || null;
-    state.knownPageTargetIds.add(info.targetId);
+    if (state.ownPageTargetId !== null && info.targetId !== state.ownPageTargetId) {
+      return;
+    }
+    state.ownPageTargetId = info.targetId;
     if (isNonEmptyString(info.title)) {
       state.lastKnownTitle = info.title;
     }
   }
 
+  function announcePopup(info: TargetInfo): void {
+    if (state.popupTargetIds.has(info.targetId)) {
+      return;
+    }
+    state.pendingPopupTargetIds.delete(info.targetId);
+    state.popupTargetIds.add(info.targetId);
+    emitEvent(popupOpenedEvent(info));
+  }
+
+  // Target discovery can replay existing pages. The registered page owns the
+  // stream; only a nonblank page explicitly opened by it is user-visible.
+  // Hold blank child targets until they reveal whether they are real popups.
   function handleTargetCreated(params: TargetCreatedEvent): void {
     const info = pageTargetInfo(params);
     if (!info) {
@@ -508,8 +560,18 @@ function createCdpEventRouter({
       rememberOwnPage(info);
       return;
     }
-    state.knownPageTargetIds.add(info.targetId);
-    emitEvent(popupOpenedEvent(info));
+    if (info.targetId === state.ownPageTargetId) {
+      rememberOwnPage(info);
+      return;
+    }
+    if (info.openerId !== state.ownPageTargetId) {
+      return;
+    }
+    if (isBlankPageUrl(info.url)) {
+      state.pendingPopupTargetIds.add(info.targetId);
+      return;
+    }
+    announcePopup(info);
   }
 
   function handleTargetDestroyed(params: TargetDestroyedEvent): void {
@@ -517,15 +579,11 @@ function createCdpEventRouter({
     if (!isNonEmptyString(targetId)) {
       return;
     }
-    if (!isKnownPopup(targetId)) {
+    state.pendingPopupTargetIds.delete(targetId);
+    if (!state.popupTargetIds.delete(targetId)) {
       return;
     }
-    state.knownPageTargetIds.delete(targetId);
     emitEvent({ kind: "popup_closed", targetId });
-  }
-
-  function isKnownPopup(targetId: string): boolean {
-    return targetId !== state.ownPageTargetId && state.knownPageTargetIds.has(targetId);
   }
 
   function handleOwnTargetInfo(info: TargetInfo): void {
@@ -542,10 +600,13 @@ function createCdpEventRouter({
     if (!info) {
       return;
     }
-    if (state.ownPageTargetId !== null && info.targetId !== state.ownPageTargetId) {
+    if (state.ownPageTargetId === null || info.targetId === state.ownPageTargetId) {
+      handleOwnTargetInfo(info);
       return;
     }
-    handleOwnTargetInfo(info);
+    if (state.pendingPopupTargetIds.has(info.targetId) && !isBlankPageUrl(info.url)) {
+      announcePopup(info);
+    }
   }
 
   return (message) => {
@@ -836,7 +897,11 @@ export function createCdpCompanion({
     notifyHandlers(eventHandlers, event, log, "cdp_event_handler_error", { kind: event.kind });
   }
 
-  const routeCdpEvent = createCdpEventRouter({ emitEvent, emitFrame });
+  const routeCdpEvent = createCdpEventRouter({
+    emitEvent,
+    emitFrame,
+    ownPageTargetId: targetIdFromWsUrl(targetUrl),
+  });
 
   function closedCdpError(reason: unknown): CodedError {
     const error: CodedError = reason instanceof Error ? reason : new Error(String(reason || "cdp_closed"));

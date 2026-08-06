@@ -14,6 +14,11 @@
     "reason": "Core direct-CDP lifecycle closure (2026-08-05): companion and controller authority must be keyed by runId, interactionId, and browserSessionId; direct-target readiness must fail closed before mint; terminalization must invalidate, stop, and force-unregister; and run cleanup must retire every lifecycle. These are independent security and cleanup predicates proven by route and built-Core tests, not incidental branching suitable for a shallow extraction.",
     "date": "2026-08-05"
   },
+  "server/streaming/cdp-adapter.ts": {
+    "allowed_mass": 8,
+    "reason": "Direct-CDP popup classification closure (2026-08-05): target discovery must bind to the exact registered page, preserve adopted-page URL/title events, require an opener relationship for user-relevant child pages, and defer blank children until navigation proves a real popup. These ordered predicates are the terminal safety boundary that suppresses same-flow target churn without hiding genuine popup visibility; extracting them would obscure the event-state transitions. Proven by the focused fail-before/pass-after adapter regression and SSE forwarding test.",
+    "date": "2026-08-05"
+  },
   "server/streaming/run-target-registry.ts": {
     "allowed_mass": 1,
     "reason": "Run-final direct-CDP target purge (2026-08-05): clearNonce now deletes every target record owned by the terminal run as the crash/timeout safety net before nonce state is cleared. The single added branch is the load-bearing all-target cleanup predicate; TTL remains only defensive eviction.",
