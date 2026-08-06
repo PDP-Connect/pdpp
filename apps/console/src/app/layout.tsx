@@ -1,29 +1,16 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { LAUNCH_COLORS, launchFoucGuardCss } from "@pdpp/brand/launch-colors";
-import { RootProvider } from "fumadocs-ui/provider/next";
+import { brandMono, brandSans } from "@pdpp/brand/fonts";
+import { LAUNCH_COLORS } from "@pdpp/brand/launch-colors";
+import { ThemeProvider } from "@pdpp/operator-ui/components/theme/theme-provider";
 import type { Metadata } from "next";
-import { Schibsted_Grotesk } from "next/font/google";
 import { cookies } from "next/headers";
 import DensityProvider from "@/components/density/density-provider.tsx";
 import { DENSITY_KEY, normalizeDensity } from "@/components/density/density-state.ts";
-import { ThemeProvider } from "@/components/theme/theme-provider.tsx";
-import { normalizeThemeChoice, THEME_KEY } from "@/components/theme/theme-state.ts";
 import { TooltipProvider } from "@/components/ui/tooltip.tsx";
+import { cn } from "@/lib/utils.ts";
 import "./globals.css";
-
-// Ink Carbon human voice: Schibsted Grotesk. Loaded via next/font/google
-// for optimal preloading and self-hosting. Variable font with full weight
-// range and italic support. The CSS variable --ink-carbon-sans is injected
-// on <html> and @pdpp/brand/ink-carbon.css picks it up via --font-sans override.
-const schibstedGrotesk = Schibsted_Grotesk({
-  display: "swap",
-  style: ["normal", "italic"],
-  subsets: ["latin"],
-  variable: "--ink-carbon-sans",
-  weight: ["400", "500", "600", "700", "800", "900"],
-});
 
 export const metadata: Metadata = {
   // iOS home-screen launch. statusBarStyle "default" lets iOS pick the bar
@@ -73,45 +60,20 @@ export const viewport = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  // Cookie-backed SSR theme: read the user's saved choice and emit the
-  // matching `data-theme` (and `dark` class for explicit dark) on <html>.
-  // For "system" we deliberately render no `dark` class — the brand CSS
-  // resolves the OS preference at first paint via @media (prefers-color-scheme: dark)
-  // (see packages/pdpp-brand/base.css around line 143). This is the only
-  // honest first paint without an inline script: the server cannot know
-  // the OS preference, but CSS can.
   const cookieStore = await cookies();
-  const choice = normalizeThemeChoice(cookieStore.get(THEME_KEY)?.value);
   const density = normalizeDensity(cookieStore.get(DENSITY_KEY)?.value);
-  // For "dark" we add the `dark` class so Tailwind/shadcn dark variants apply
-  // immediately. For "light" and "system" we omit the class entirely; CSS
-  // resolves "system" via @media (prefers-color-scheme: dark).
-  const htmlClassName = choice === "dark" ? "dark" : undefined;
 
   return (
     <html
-      className={[schibstedGrotesk.variable, htmlClassName].filter(Boolean).join(" ")}
+      className={cn(brandSans.variable, brandMono.variable)}
       data-density={density}
-      data-theme={choice}
       lang="en"
+      suppressHydrationWarning
     >
-      <head>
-        {/* Anti-FOUC first-paint guard. This blocking inline <style> sets the
-            html background to the right color BEFORE the external brand CSS
-            loads, for every theme path (explicit dark/light, and system via
-            prefers-color-scheme). The SSR-emitted data-theme above makes the
-            cookie-known theme correct immediately; the @media rule handles the
-            "system" case the server can't know. Mirrors base.css resolution so
-            the token-driven value takes over seamlessly once CSS loads. */}
-        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: static, app-authored CSS from launch-colors.ts (no user input) — the only way to emit a raw blocking <style> into <head>. */}
-        <style dangerouslySetInnerHTML={{ __html: launchFoucGuardCss() }} />
-      </head>
       <body>
         <ThemeProvider>
           <DensityProvider initialDensity={density}>
-            <RootProvider theme={{ enabled: false }}>
-              <TooltipProvider>{children}</TooltipProvider>
-            </RootProvider>
+            <TooltipProvider>{children}</TooltipProvider>
           </DensityProvider>
         </ThemeProvider>
       </body>

@@ -1,0 +1,28 @@
+/* Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+@theme {
+  --color-paper: var(--pdpp-concept-paper);
+  --color-paper-deep: var(--pdpp-concept-paper-deep);
+  --color-paper-panel: var(--pdpp-concept-paper-panel);
+  --color-ink: var(--pdpp-concept-ink);
+  --color-ink-soft: var(--pdpp-concept-ink-soft);
+  --color-ink-faint: var(--pdpp-concept-ink-faint);
+  --color-teal: var(--pdpp-concept-teal);
+  --color-teal-deep: var(--pdpp-concept-teal-deep);
+  --color-teal-wash: var(--pdpp-concept-teal-wash);
+  --color-teal-on-wash: var(--pdpp-concept-teal-on-wash);
+  --color-onteal-deep: var(--pdpp-concept-onteal-deep);
+  --color-onteal-deep-soft: var(--pdpp-concept-onteal-deep-soft);
+  --color-onteal-deep-label: var(--pdpp-concept-onteal-deep-label);
+  --color-onteal-deep-wash: var(--pdpp-concept-onteal-deep-wash);
+
+  --container-page: var(--pdpp-concept-max);
+  --container-measure: var(--pdpp-concept-measure);
+
+  --spacing-pad: var(--pdpp-concept-pad);
+  --spacing-gutter: var(--pdpp-concept-gutter);
+  --spacing-rail: var(--pdpp-concept-rail);
+  --spacing-section-gap: var(--pdpp-concept-section-gap);
+}

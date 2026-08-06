@@ -3,11 +3,11 @@
 
 "use client";
 
-import { siteNav } from "@pdpp/brand/chrome";
 import { useSearchContext } from "fumadocs-ui/contexts/search";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { publicSiteNav } from "@/lib/public-site-nav.ts";
 import { SearchIcon, WordmarkIcon } from "./icons.tsx";
 import { PdppThemeSwitch } from "./theme-switch.tsx";
 
@@ -55,7 +55,7 @@ export function PdppConceptMasthead() {
   const skipTarget = pathname.startsWith("/specification") ? "#nd-page" : "#main";
 
   // Below the same 700px container-query threshold the masthead label already
-  // stands down at (see .pdpp-masthead__inner in pdpp-concept.css), the nav
+  // stands down at (see .pdpp-masthead__inner in editorial.css), the nav
   // itself collapses behind a disclosure toggle rather than wrapping as
   // visible text links — the concept's own mobile pattern (styles.css's
   // .nav-toggle/.nav.is-open). `mobileNavOpen` only matters below that width;
@@ -120,7 +120,7 @@ export function PdppConceptMasthead() {
             Menu
           </button>
           <nav aria-label="Primary" className="pdpp-nav" data-open={mobileNavOpen} id="pdpp-primary-nav">
-            {siteNav.map((item) => {
+            {publicSiteNav.map((item) => {
               const active = pathname === item.link || pathname.startsWith(`${item.link}/`);
               return (
                 <Link aria-current={active ? "page" : undefined} href={item.link} key={item.link}>

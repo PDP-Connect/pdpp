@@ -1,0 +1,100 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Custom Tailwind utilities (`@utility` only). Theme flips live on tokens in
+ * primitive.css — utilities consume vars, they do not re-branch on data-theme.
+ */
+
+/* ─── Density ─────────────────────────────────────────────────────────────── */
+@utility pdpp-data-list-row {
+  padding-block: var(--data-list-row-padding-block);
+}
+
+/* ─── Layout ──────────────────────────────────────────────────────────────── */
+@utility container {
+  width: 100%;
+  max-width: min(
+    var(--container-content),
+    calc(100% - (2 * var(--spacing-inset)))
+  );
+  padding-inline: var(--spacing-inset);
+  margin-inline: auto;
+}
+
+@utility h-viewport {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+@utility safe-area-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+@utility safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@utility safe-area-left {
+  padding-left: env(safe-area-inset-left);
+}
+
+@utility safe-area-right {
+  padding-right: env(safe-area-inset-right);
+}
+
+@utility safe-area-inset {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* ─── Chrome ──────────────────────────────────────────────────────────────── */
+@utility border-shadow {
+  box-shadow:
+    0 0 0 1px var(--border-shadow-ring),
+    var(--border-shadow-lift);
+
+  &:hover {
+    box-shadow:
+      0 0 0 1px var(--border-shadow-ring-hover),
+      var(--border-shadow-lift-hover);
+  }
+}
+
+@utility border-shadow-brand {
+  &:hover {
+    --border-shadow-ring-hover: var(--brand);
+  }
+}
+
+@utility border-shadow-raised {
+  &:hover {
+    box-shadow:
+      0 0 0 1px var(--border-shadow-ring-hover),
+      var(--border-shadow-lift-hover),
+      var(--raised-shadow);
+  }
+}
+
+@utility border-shadow-overlay {
+  &:hover {
+    box-shadow:
+      0 0 0 1px var(--border-shadow-ring-hover),
+      var(--border-shadow-lift-hover),
+      var(--overlay-shadow);
+  }
+}
+
+@utility hr-vertical {
+  width: 1px;
+  border-left-style: solid;
+  border-left-width: 1px;
+}
+
+@utility hide-scrollbar {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

@@ -12,9 +12,9 @@
  * data source itself.
  */
 
+import { formatConnectorKeyForDisplay } from "@pdpp/display";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
 import { Button } from "../../ui/button.tsx";
 import { Input } from "../../ui/input.tsx";

@@ -4,105 +4,80 @@
 /**
  * Guard tests for the theme runtime.
  *
- * The accepted shape is cookie-backed SSR:
- *   - Server reads the `pdpp-theme` cookie via `cookies()` from `next/headers`
- *     and renders `<html data-theme=...>` (with `dark` class for explicit
- *     dark) — no inline script, no hydration suppression, no flicker.
- *   - Client persists the user's choice to the same cookie. localStorage is
- *     intentionally NOT used so there's a single source of truth.
- *   - "system" mode resolves to the OS preference at first paint via the
- *     `@media (prefers-color-scheme: dark)` rules in the brand CSS.
+ * The accepted shape is next-themes:
+ *   - The shared provider owns browser persistence under `pdpp-theme`.
+ *   - Root layouts suppress the expected theme hydration delta.
+ *   - Theme state is applied with `data-theme` and follows the system default.
  */
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildThemeCookie, normalizeThemeChoice, THEME_KEY } from "./theme-state.ts";
+import { THEME_KEY } from "./theme-state.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 // theme-provider.tsx is a re-export shim; the real implementation lives in
 // packages/operator-ui so that both apps share one source of truth.
 const PROVIDER_FILE = `${HERE}../../../../../packages/operator-ui/src/components/theme/theme-provider.tsx`;
 const LAYOUT_FILE = `${HERE}../../app/layout.tsx`;
-const GLOBALS_FILE = `${HERE}../../app/globals.css`;
-const BRAND_BASE_FILE = `${HERE}../../../../../packages/pdpp-brand/base.css`;
+const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/tokens/primitive.css`;
+const BRAND_INDEX_FILE = `${HERE}../../../../../packages/pdpp-brand/index.css`;
+const STATUS_BADGE_CSS_FILE = `${HERE}../../../../../packages/operator-ui/src/components/status-badge.css`;
 
-const DANGEROUSLY_SET = /dangerouslySetInnerHTML/;
-const INLINE_THEME_SCRIPT = /<script|next\/script|ThemeScript|pdpp-theme-init/;
-const SUPPRESS_HYDRATION = /suppressHydrationWarning/;
-const COOKIES_IMPORT = /from\s+["']next\/headers["']/;
-const COOKIES_CALL = /await\s+cookies\(\)/;
-const HTML_DATA_THEME_DYNAMIC = /<html[^>]*data-theme=\{choice\}/;
+const NEXT_THEMES_IMPORT = /from "next-themes"/;
+const NEXT_THEMES_PROVIDER = /ThemeProvider as NextThemesProvider/;
+const ATTRIBUTE = /attribute="data-theme"/;
+const DEFAULT_THEME = /defaultTheme="system"/;
+const DISABLE_TRANSITIONS = /disableTransitionOnChange/;
+const DISABLE_COLOR_SCHEME = /enableColorScheme=\{false\}/;
+const ENABLE_SYSTEM = /enableSystem/;
+const STORAGE_KEY = /storageKey="pdpp-theme"/;
 const ROOT_PROVIDER = /<ThemeProvider>/;
-const COOKIE_READ = /document\.cookie/;
-const COOKIE_WRITE = /document\.cookie\s*=\s*buildThemeCookie\(/;
-const NO_LOCAL_STORAGE = /window\.localStorage/;
-const SYSTEM_MEDIA = /@media \(prefers-color-scheme: dark\)[\s\S]*html\[data-theme="system"\]/;
-const EXPLICIT_DARK_SELECTOR = /html\[data-theme="dark"\]/;
-const DATA_THEME_DARK_VARIANT =
-  /@custom-variant\s+dark\s*\(\s*&:where\(\s*\.dark\s*,\s*\.dark\s+\*\s*,\s*\[data-theme\s*=\s*(?:dark|["']dark["'])\]\s*,\s*\[data-theme\s*=\s*(?:dark|["']dark["'])\]\s+\*\s*\)\s*\)/;
+const SUPPRESS_HYDRATION = /suppressHydrationWarning/;
+const THEME_COOKIE_IMPORT = /components\/theme\/theme-state/;
+const THEME_FOUC_GUARD = /launchFoucGuardCss|dangerouslySetInnerHTML/;
+const DATA_THEME_DARK_VARIANT = /@custom-variant\s+dark\s*\([\s\S]*\[data-theme="dark"\]/;
 const STATUS_BADGE_FOREGROUND_TOKENS =
   /--success-badge-foreground:[\s\S]*--warning-badge-foreground:[\s\S]*--danger-badge-foreground:/;
-const STATUS_BADGE_SEMANTIC_COLOR_RULES =
-  /\.pdpp-status-badge\[data-status-tone="success"\]\s*{\s*color: var\(--status-success-fg\);[\s\S]*\.pdpp-status-badge\[data-status-tone="danger"\]\s*{\s*color: var\(--status-danger-fg\);[\s\S]*\.pdpp-status-badge\[data-status-tone="warning"\]\s*{\s*color: var\(--status-warning-fg\);/;
-const COOKIE_SYSTEM_NO_SECURE = /^pdpp-theme=; Path=\/; SameSite=Lax; Max-Age=0$/;
-const COOKIE_SYSTEM_SECURE = /^pdpp-theme=; Path=\/; SameSite=Lax; Max-Age=0; Secure$/;
-const COOKIE_LIGHT_NO_SECURE = /^pdpp-theme=light; Path=\/; SameSite=Lax; Max-Age=31536000$/;
-const COOKIE_DARK_SECURE = /^pdpp-theme=dark; Path=\/; SameSite=Lax; Max-Age=31536000; Secure$/;
+const STATUS_BADGE_RING_TOKENS =
+  /--status-success-ring:[\s\S]*--status-warning-ring:[\s\S]*--status-danger-ring:[\s\S]*--status-neutral-ring:/;
+const STATUS_BADGE_TONE_CLASSES =
+  /\.pdpp-status-badge\s*{[\s\S]*color: var\(--status-badge-fg\);[\s\S]*background-color: var\(--status-badge-bg\);[\s\S]*box-shadow: inset 0 0 0 1px var\(--status-badge-ring\);[\s\S]*\.pdpp-status-success\s*{[\s\S]*--status-badge-fg: var\(--status-success-fg\);[\s\S]*\.pdpp-status-danger\s*{[\s\S]*--status-badge-fg: var\(--status-danger-fg\);[\s\S]*\.pdpp-status-warning\s*{[\s\S]*--status-badge-fg: var\(--status-warning-fg\);[\s\S]*\.pdpp-status-neutral\s*{[\s\S]*--status-badge-fg: var\(--status-neutral-fg\);/;
 
-test("theme choice normalization accepts only the supported vocabulary", () => {
+test("theme storage key stays stable", () => {
   assert.equal(THEME_KEY, "pdpp-theme");
-  assert.equal(normalizeThemeChoice("light"), "light");
-  assert.equal(normalizeThemeChoice("dark"), "dark");
-  assert.equal(normalizeThemeChoice("system"), "system");
-  assert.equal(normalizeThemeChoice(""), "system");
-  assert.equal(normalizeThemeChoice("midnight"), "system");
-  assert.equal(normalizeThemeChoice(undefined), "system");
 });
 
-test("buildThemeCookie emits a clearing cookie for system and a long-lived cookie for explicit choices", () => {
-  // System reverts to default — express that as cookie removal.
-  assert.match(buildThemeCookie("system", false), COOKIE_SYSTEM_NO_SECURE);
-  assert.match(buildThemeCookie("system", true), COOKIE_SYSTEM_SECURE);
-
-  // Explicit choices persist for a year. Secure attribute follows the env.
-  assert.match(buildThemeCookie("light", false), COOKIE_LIGHT_NO_SECURE);
-  assert.match(buildThemeCookie("dark", true), COOKIE_DARK_SECURE);
-});
-
-test("root layout reads the theme cookie server-side and renders without scripts or hydration suppression", async () => {
+test("root layout delegates theme state to next-themes", async () => {
   const src = await readFile(LAYOUT_FILE, "utf8");
-  assert.match(src, COOKIES_IMPORT, "root layout must import cookies() from next/headers");
-  assert.match(src, COOKIES_CALL, "root layout must call cookies() to read the theme preference");
-  assert.match(src, HTML_DATA_THEME_DYNAMIC, "root layout must render data-theme from the cookie value");
   assert.match(src, ROOT_PROVIDER);
-  assert.equal(INLINE_THEME_SCRIPT.test(src), false, "root layout must not render theme scripts");
-  assert.equal(SUPPRESS_HYDRATION.test(src), false, "theme runtime must not rely on hydration-warning suppression");
+  assert.match(src, SUPPRESS_HYDRATION);
+  assert.equal(THEME_COOKIE_IMPORT.test(src), false, "root layout must not read a theme cookie");
+  assert.equal(THEME_FOUC_GUARD.test(src), false, "root layout must not own a theme FOUC guard");
 });
 
-test("theme provider persists explicit choices via cookies, not localStorage", async () => {
+test("shared provider configures the required next-themes runtime", async () => {
   const src = await readFile(PROVIDER_FILE, "utf8");
-  assert.match(src, COOKIE_READ, "client theme runtime must read document.cookie");
-  assert.match(src, COOKIE_WRITE, "client theme runtime must write document.cookie via buildThemeCookie");
-  assert.equal(NO_LOCAL_STORAGE.test(src), false, "cookie is the single source of truth — no localStorage");
-  assert.equal(DANGEROUSLY_SET.test(src), false);
-  assert.equal(SUPPRESS_HYDRATION.test(src), false);
+  assert.match(src, NEXT_THEMES_IMPORT);
+  assert.match(src, NEXT_THEMES_PROVIDER);
+  assert.match(src, ATTRIBUTE);
+  assert.match(src, DEFAULT_THEME);
+  assert.match(src, DISABLE_TRANSITIONS);
+  assert.equal(DISABLE_COLOR_SCHEME.test(src), false, "provider must let next-themes manage color-scheme");
+  assert.match(src, ENABLE_SYSTEM);
+  assert.match(src, STORAGE_KEY);
 });
 
-test("brand CSS supports explicit dark and first-paint system dark without JavaScript", async () => {
-  const src = await readFile(BRAND_BASE_FILE, "utf8");
-  assert.match(src, EXPLICIT_DARK_SELECTOR);
-  assert.match(src, SYSTEM_MEDIA);
+test("status badge tones bind status surface tokens via co-located CSS", async () => {
+  const semantic = await readFile(BRAND_PRIMITIVE_FILE, "utf8");
+  const statusBadge = await readFile(STATUS_BADGE_CSS_FILE, "utf8");
+  assert.match(semantic, STATUS_BADGE_FOREGROUND_TOKENS);
+  assert.match(semantic, STATUS_BADGE_RING_TOKENS);
+  assert.match(statusBadge, STATUS_BADGE_TONE_CLASSES);
 });
 
-test("brand CSS gives status badges dedicated accessible foreground tokens", async () => {
-  const src = await readFile(BRAND_BASE_FILE, "utf8");
-  assert.match(src, STATUS_BADGE_FOREGROUND_TOKENS);
-  assert.match(src, STATUS_BADGE_SEMANTIC_COLOR_RULES);
-});
-
-test("Tailwind dark variant follows explicit dark theme attributes", async () => {
-  const src = await readFile(GLOBALS_FILE, "utf8");
+test("Tailwind dark variant follows the next-themes data attribute", async () => {
+  const src = await readFile(BRAND_INDEX_FILE, "utf8");
   assert.match(src, DATA_THEME_DARK_VARIANT);
 });

@@ -18,7 +18,7 @@ export interface PdppRailProps {
 // Ports the concept's rail (styles.css .rail/.toc, site.js's TOC IntersectionObserver
 // and <960px disclosure collapse) to a React component. Participate/self-host/home
 // render .pdpp-doc alone today because no component filled this slot — the CSS
-// (.pdpp-rail, .pdpp-toc, .pdpp-rail__meta) already exists in pdpp-concept.css and
+// (.pdpp-rail, .pdpp-toc, .pdpp-rail__meta) already exists in editorial.css and
 // only needed a renderer.
 export function PdppRail({ governance, toc }: PdppRailProps) {
   const [activeHref, setActiveHref] = useState<string | null>(null);
@@ -27,7 +27,7 @@ export function PdppRail({ governance, toc }: PdppRailProps) {
   linksRef.current = toc;
 
   useEffect(() => {
-    // Matches the .pdpp-page rail-stacking breakpoint in pdpp-concept.css
+    // Matches the .pdpp-page rail-stacking breakpoint in editorial.css
     // (720px), not the concept's own 959px — the two sites collapse to a
     // single column at different widths, and this must track the PR's own.
     const narrow = window.matchMedia("(max-width: 720px)");

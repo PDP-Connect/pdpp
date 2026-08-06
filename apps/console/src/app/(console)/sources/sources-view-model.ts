@@ -27,7 +27,7 @@
  * a false zero or green.
  */
 
-import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
 import {
   type ConnectorManifestLike,
   canonicalConnectorKey,

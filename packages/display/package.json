@@ -1,0 +1,21 @@
+{
+  "name": "@pdpp/display",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Framework-independent rules that turn PDPP values and metadata into human-readable display models.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx \"src/**/*.test.ts\"",
+    "verify": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  },
+  "license": "Apache-2.0"
+}

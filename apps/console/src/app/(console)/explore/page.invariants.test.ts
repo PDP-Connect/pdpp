@@ -181,7 +181,7 @@ const GENERIC_BODY_RENDERS_KV_RE =
   /function GenericBody\([\s\S]*preview\.fields\.map\(\(field\)[\s\S]*?<dt className="rr-x-kv__label">\{field\.label\}<\/dt>[\s\S]*?<dd className="rr-x-kv__value">\{field\.value\}<\/dd>/;
 // The humanized label is a LABEL transform via the shared humanizeFieldLabel —
 // the inspector peek table must use it, never infer semantics from the name.
-const HUMANIZE_IMPORT_RE = /import \{ humanizeFieldLabel \} from "\.\.\/\.\.\/lib\/field-label\.ts";/;
+const HUMANIZE_IMPORT_RE = /import \{[^}]*\bhumanizeFieldLabel\b[^}]*\} from "@pdpp\/display";/;
 const PEEK_HUMANIZED_LABEL_RE = /humanizeFieldLabel\(field\.name\)/;
 // The honest generic key/value card has design-system CSS (no inline guess card).
 const GENERIC_KV_CSS_RE = /\.rr-x-kv\s*\{/;
@@ -197,8 +197,7 @@ const ASSEMBLER_PASSES_ROLES_RE = /buildRecordPreview\(kind, data, dtypes, drole
 // first humanized declared key/value, else a NEUTRAL fallback — never a guessed title
 // from a stream/kind name OR the timeline `entry.summary`. Pin the import of the honest
 // projection and the content-first call whose fallback is ONLY the neutral record id.
-const CANVAS_GENERIC_KV_LEAD_RE =
-  /import \{ rowPrimary, rowSecondary \} from "@pdpp\/operator-ui\/lib\/record-preview";/;
+const CANVAS_GENERIC_KV_LEAD_RE = /import \{ rowPrimary, rowSecondary \} from "@pdpp\/display";/;
 const CANVAS_GENERIC_TITLE_LINE_RE = /const primaryLine = rowPrimary\(entry\.preview \?\? null, entry\.recordId\);/;
 // RL1 hardening (end-review P0): the row primary must NEVER fall back to
 // `entry.summary` (the timeline summary heuristic), even for retrieval/search rows.
@@ -272,7 +271,7 @@ const TYPEAHEAD_VIEWPORT_CLAMP_RE =
 const REVEAL_STATIC_FALLBACK_RE =
   /\.rr-x-upcoming__body,\s*\.rr-x-burst__rows,\s*\.rr-x-day \{\s*\/\*[\s\S]*?\*\/\s*opacity: 1;\s*transform: none;\s*\}/;
 const REVEAL_GATED_BEHIND_NO_PREFERENCE_RE =
-  /@media \(prefers-reduced-motion: no-preference\) \{\s*\.rr-x-upcoming__body,\s*\.rr-x-burst__rows,\s*\.rr-x-day \{\s*animation: rr-x-reveal var\(--motion-enter\) var\(--ease-standard\) both;\s*\}\s*\}/;
+  /@media \(prefers-reduced-motion: no-preference\) \{\s*\.rr-x-upcoming__body,\s*\.rr-x-burst__rows,\s*\.rr-x-day \{\s*animation: rr-x-reveal var\(--duration-enter\) var\(--ease-enter\) both;\s*\}\s*\}/;
 const REVEAL_KEYFRAME_TRANSFORM_OPACITY_ONLY_RE =
   /@keyframes rr-x-reveal \{\s*from \{\s*opacity: 0;\s*transform: translateY\(4px\);\s*\}\s*to \{\s*opacity: 1;\s*transform: translateY\(0\);\s*\}\s*\}/;
 // Selection motion: the row crossfades background + selected outline via the state
@@ -280,7 +279,7 @@ const REVEAL_KEYFRAME_TRANSFORM_OPACITY_ONLY_RE =
 // motion (base.css zeroes --duration-*), so no keyframe gating is required for a
 // pure transition.
 const SELECTION_TRANSITION_RE =
-  /\.rr-x-row \{[\s\S]*?transition:\s*background var\(--motion-state\),\s*box-shadow var\(--motion-state\);/;
+  /\.rr-x-row \{[\s\S]*?transition:\s*background var\(--duration-state\) var\(--ease-standard\),\s*box-shadow var\(--duration-state\) var\(--ease-standard\);/;
 // The burst expanded rows are wrapped in the reveal container in the canvas.
 const BURST_REVEAL_WRAPPER_RE = /<div className="rr-x-burst__rows">/;
 
@@ -775,7 +774,7 @@ test("Slice 5 (#7): selection motion is a paint-only token transition (no layout
   assert.match(
     css,
     SELECTION_TRANSITION_RE,
-    "the row must transition background + box-shadow via --motion-state (paint-only → no reflow; token zeroes under reduced motion)"
+    "the row must transition background + box-shadow via state duration/easing tokens (paint-only → no reflow; duration zeroes under reduced motion)"
   );
 });
 
@@ -819,7 +818,7 @@ test("Slice 5: every Explore animation reference sits inside a prefers-reduced-m
   const inNoPref = (pos: number) => noPrefRanges.some(([s, e]) => pos >= s && pos <= e);
 
   // Find every `animation:` declaration that references a gated keyframe and assert
-  // it lives inside a no-preference block. (Pure transitions via --motion-state are
+  // it lives inside a no-preference block. (Pure transitions via the state tokens are
   // fine ungated — they collapse to an instant cut under the base.css duration
   // reset — so we only check keyframe-driven `animation:` here.)
   const animationDeclRe = /animation:\s*[^;]+;/g;

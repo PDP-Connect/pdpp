@@ -3,13 +3,11 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { siteNav } from "@pdpp/brand/chrome";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
-
-const publicSiteNav = siteNav;
+import { publicSiteNav } from "@/lib/public-site-nav.ts";
 
 export function SiteHeader({
   currentLabel,

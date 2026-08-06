@@ -227,7 +227,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
               background: "var(--color-card)",
               border: "1px solid var(--color-border)",
               fontFamily: "var(--font-mono)",
-              padding: "var(--space-2)",
+              padding: "calc(var(--spacing) * 2)",
             }}
           >
             {JSON.stringify(redactSecrets(event.data), null, 2)}
@@ -342,7 +342,7 @@ export default async function TraceDetailPage({
         <a href="/audit" style={{ color: "inherit" }}>
           Audit
         </a>
-        <span aria-hidden="true" style={{ margin: "0 var(--space-2)" }}>
+        <span aria-hidden="true" style={{ margin: "0 calc(var(--spacing) * 2)" }}>
           /
         </span>
         <span style={{ color: "var(--color-foreground)" }}>Trace</span>
@@ -406,7 +406,7 @@ export default async function TraceDetailPage({
 
       {/* ─── Pivot links ─── */}
       {grantIds.length > 0 || runIds.length > 0 ? (
-        <div className="mb-6" style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
+        <div className="mb-6" style={{ display: "flex", flexWrap: "wrap", gap: "calc(var(--spacing) * 2)" }}>
           {grantIds.map((id) => (
             <a
               className="pdpp-caption"
@@ -417,7 +417,7 @@ export default async function TraceDetailPage({
                 border: "1px solid var(--color-border)",
                 color: "var(--color-foreground)",
                 display: "inline-flex",
-                padding: "var(--space-1) var(--space-2-5)",
+                padding: "var(--spacing) calc(var(--spacing) * 2.5)",
               }}
             >
               grant{" "}
@@ -437,7 +437,7 @@ export default async function TraceDetailPage({
                 border: "1px solid var(--color-border)",
                 color: "var(--color-foreground)",
                 display: "inline-flex",
-                padding: "var(--space-1) var(--space-2-5)",
+                padding: "var(--spacing) calc(var(--spacing) * 2.5)",
               }}
             >
               run{" "}

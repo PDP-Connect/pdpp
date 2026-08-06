@@ -3,6 +3,16 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  formatCalendarDate,
+  formatInstantAbsolute,
+  formatRelative,
+  formatTimestampTitle,
+  MINUTE,
+  parseTimestampValue,
+  RELATIVE_CUTOFF,
+  type TimestampValueKind,
+} from "@pdpp/display";
 /**
  * Timestamp — Ink Carbon temporal primitive.
  *
@@ -24,7 +34,9 @@ import "./components.css";
 
 export type TimestampMode = "auto" | "relative" | "absolute";
 export type TimestampPrecision = "datetime" | "date";
-export type TimestampValueKind = "auto" | "calendar-date" | "instant";
+export type { TimestampValueKind } from "@pdpp/display";
+// biome-ignore lint/performance/noBarrelFile: preserve the existing brand timestamp API while mechanics live in @pdpp/display.
+export { parseTimestampValue } from "@pdpp/display";
 
 export interface IcTimestampProps {
   className?: string;
@@ -32,159 +44,6 @@ export interface IcTimestampProps {
   precision?: TimestampPrecision;
   value: string | number | Date | null | undefined;
   valueKind?: TimestampValueKind;
-}
-
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-const RELATIVE_CUTOFF = 7 * DAY;
-
-const localDateFmt = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
-
-const localDateTimeFmt = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  month: "short",
-  year: "numeric",
-});
-
-const tooltipFmt = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  month: "short",
-  second: "2-digit",
-  timeZoneName: "short",
-  weekday: "short",
-  year: "numeric",
-});
-
-const relFmt = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-
-const utcDateFmt = new Intl.DateTimeFormat("en-US", {
-  day: "numeric",
-  month: "short",
-  timeZone: "UTC",
-  year: "numeric",
-});
-
-const utcDateTimeFmt = new Intl.DateTimeFormat("en-US", {
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  month: "short",
-  timeZone: "UTC",
-  year: "numeric",
-});
-
-const CALENDAR_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const ISO_DATETIME_PREFIX_RE = /^\d{4}-\d{2}-\d{2}T/;
-const SQL_DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
-const OFFSET_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
-
-type ParsedTimestamp =
-  | {
-      date: Date;
-      dateTime: string;
-      kind: "calendar-date";
-      raw: string;
-    }
-  | {
-      date: Date;
-      dateTime: string;
-      kind: "instant";
-      raw: string;
-    };
-
-function parseCalendarDate(value: string, mode: "exact" | "date-prefix" = "exact"): ParsedTimestamp | null {
-  const dateText = mode === "date-prefix" ? value.slice(0, 10) : value;
-  const match = CALENDAR_DATE_RE.exec(dateText);
-  if (!match) {
-    return null;
-  }
-  const [, yearText, monthText, dayText] = match;
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
-    return null;
-  }
-  return { date, dateTime: dateText, kind: "calendar-date", raw: value };
-}
-
-function normalizeInstantString(value: string): string {
-  const trimmed = value.trim();
-  if (SQL_DATETIME_RE.test(trimmed)) {
-    return `${trimmed.replace(" ", "T")}Z`;
-  }
-  if (ISO_DATETIME_PREFIX_RE.test(trimmed) && !OFFSET_RE.test(trimmed)) {
-    return `${trimmed}Z`;
-  }
-  return trimmed;
-}
-
-export function parseTimestampValue(
-  value: IcTimestampProps["value"],
-  valueKind: TimestampValueKind = "auto"
-): ParsedTimestamp | null {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (valueKind === "calendar-date") {
-      return parseCalendarDate(trimmed, "date-prefix");
-    }
-    if (valueKind !== "instant") {
-      // Calendar dates are not instants. Keep `YYYY-MM-DD` stable across
-      // viewer, server, and container time zones.
-      const looksLikeCalendarDate = CALENDAR_DATE_RE.test(trimmed);
-      const calendarDate = parseCalendarDate(trimmed);
-      if (calendarDate || looksLikeCalendarDate) {
-        return calendarDate;
-      }
-    }
-    const date = new Date(normalizeInstantString(trimmed));
-    return Number.isNaN(date.getTime()) ? null : { date, dateTime: date.toISOString(), kind: "instant", raw: trimmed };
-  }
-
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime())
-    ? null
-    : { date, dateTime: date.toISOString(), kind: "instant", raw: date.toISOString() };
-}
-
-function formatCalendarDate(d: Date): string {
-  return utcDateFmt.format(d);
-}
-
-function formatInstantAbsolute(d: Date, precision: TimestampPrecision, mounted: boolean): string {
-  if (precision === "date") {
-    return mounted ? localDateFmt.format(d) : utcDateFmt.format(d);
-  }
-  return mounted ? localDateTimeFmt.format(d) : utcDateTimeFmt.format(d);
-}
-
-function formatRelative(d: Date, now: number): string {
-  const diffMs = d.getTime() - now;
-  const abs = Math.abs(diffMs);
-  if (abs < 45_000) {
-    return "just now";
-  }
-  if (abs < HOUR) {
-    return relFmt.format(Math.round(diffMs / MINUTE), "minute");
-  }
-  if (abs < DAY) {
-    return relFmt.format(Math.round(diffMs / HOUR), "hour");
-  }
-  return relFmt.format(Math.round(diffMs / DAY), "day");
 }
 
 /** Single shared ticker for all <IcTimestamp /> instances on a page. */
@@ -281,7 +140,7 @@ export function IcTimestamp({
     <time
       className={joinClass("pdpp-timestamp", className)}
       dateTime={iso}
-      title={mounted ? tooltipFmt.format(parsed.date) : iso}
+      title={formatTimestampTitle(parsed.date, mounted)}
     >
       {label}
     </time>

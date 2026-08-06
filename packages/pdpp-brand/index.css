@@ -1,0 +1,18 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* External framework styles */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* PDPP brand styles — tokens → base → components → typography → utilities */
+@import "./tokens/index.css";
+@import "./base.css";
+@import "./components.css";
+@import "./typography.css";
+@import "./utilities.css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));

@@ -2,15 +2,25 @@
  * Copyright The PDP-Connect Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * PDPP public-site document register — ported from the design concept
- * (see /home/tnunamak/.tmp/pdpp-site-concept/DESIGN-SPEC.md). These tokens are
- * DELIBERATELY separate from @pdpp/brand's oklch product-UI tokens: the
- * concept is an editorial/document register (paper, ink, teal, Literata,
- * oversized numerals) for the public marketing + docs site, not the dense
- * operator-console design system @pdpp/brand also serves. Bolting this
- * vocabulary onto the shared package would corrupt it for apps/console.
+ * PDPP public-site editorial / marketing register — ported from the design
+ * concept (see /home/tnunamak/.tmp/pdpp-site-concept/DESIGN-SPEC.md).
  *
+ * Owns: --pdpp-concept-* tokens (paper, ink, teal, Newsreader, oversized
+ * numerals) and the concept component classes (.pdpp-concept, .pdpp-page,
+ * .pdpp-doc, .pdpp-frontdoor-*, .pdpp-masthead, .pdpp-cta, etc.). Marketing
+ * routes (/, self-host, …) are styled HERE via those classes — not by
+ * @pdpp/brand Tailwind utilities.
+ *
+ * DELIBERATELY separate from @pdpp/brand's oklch product-UI tokens — bolting
+ * this vocabulary onto the shared package would corrupt it for apps/console.
  * Namespaced --pdpp-concept-* so nothing here can collide with @pdpp/brand.
+ *
+ * Cascade reality: brand + this sheet + fumadocs + docs.css all load on every
+ * site page (see apps/site/src/app/globals.css). This register nests under
+ * .pdpp-concept; it does not replace brand at :root. docs.css bridges fumadocs
+ * chrome onto these tokens under [data-pdpp-doc-theme].
+ *
+ * Not docs.css (Fumadocs shell) and not docs-prose.css (ProsePage markdown).
  */
 
 :root {
@@ -63,9 +73,9 @@
   --pdpp-concept-serif:
     var(--font-pdpp-serif), Georgia, "Times New Roman", serif;
   --pdpp-concept-sans:
-    var(--font-pdpp-doc-sans), system-ui, -apple-system, sans-serif;
+    var(--font-pdpp-sans), system-ui, -apple-system, sans-serif;
   --pdpp-concept-mono:
-    var(--font-pdpp-doc-mono), "SFMono-Regular", Menlo, Consolas, monospace;
+    var(--font-pdpp-mono), "SFMono-Regular", Menlo, Consolas, monospace;
 
   /* 1240 rather than 1200: the concept bumped this 2026-08-04 (its own
      comment: "the extra 40px goes entirely to the rail, whose longest TOC
@@ -89,20 +99,19 @@
 
 /* ─── Dark variant ────────────────────────────────────────────────────────
    The concept is light-only by design (a paper document). apps/site has a
-   working dark mode (ThemeProvider + three theme blocks in
-   packages/pdpp-brand/base.css) that must not regress. Rather than gate the
+   working dark mode (ThemeProvider + data-theme tokens in
+   packages/pdpp-brand/tokens/primitive.css) that must not regress. Rather than gate the
    concept surface to light-only (which would make /docs, /reference, /,
    /participate go blank or unstyled for dark-mode users), a dark variant is
    derived here using the SAME token names, following @pdpp/brand's own
-   three-block dark-mode mechanism, so `.dark`/`[data-theme="dark"]` and the
-   OS-driven `[data-theme="system"]` path both work. The light paper moved from
+   data-theme mechanism, so `[data-theme="dark"]` works. The light paper moved from
    a warm cream (#faf7f2) to a cool near-white (#f5f6f6) per the concept, so the
    dark ground is re-derived to match that family — a cool-neutral near-black
    rather than the old warm-near-black — while keeping the same relationships:
    teal lightened for contrast, the teal-wash fill inverted to a low-alpha
    tint. The concept's ink/paper/teal relationship is preserved, not merely
    dimmed. */
-:is(html.dark, html[data-theme="dark"]) {
+[data-theme="dark"] {
   --pdpp-concept-paper: #17181a;
   --pdpp-concept-paper-deep: #1e2022;
   --pdpp-concept-paper-panel: #12211e;
@@ -113,21 +122,6 @@
   --pdpp-concept-teal-deep: #0a3f3b;
   --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
   --pdpp-concept-teal-on-wash: #a8e0d6;
-}
-
-@media (prefers-color-scheme: dark) {
-  html[data-theme="system"] {
-    --pdpp-concept-paper: #17181a;
-    --pdpp-concept-paper-deep: #1e2022;
-    --pdpp-concept-paper-panel: #12211e;
-    --pdpp-concept-ink: #eceeed;
-    --pdpp-concept-ink-soft: #b3b6b3;
-    --pdpp-concept-ink-faint: #85887f;
-    --pdpp-concept-teal: #4bb3a6;
-    --pdpp-concept-teal-deep: #0a3f3b;
-    --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
-    --pdpp-concept-teal-on-wash: #a8e0d6;
-  }
 }
 
 /* ─── Document surface ──────────────────────────────────────────────────── */
@@ -286,7 +280,7 @@
    the browser default line-height at 15px left this the tallest thing in the
    row (27.75px) against the 20px box .pdpp-nav-search-trigger and
    .pdpp-theme-switch both already use. A line-height ratio landed a px off
-   (21px, not 20px — Public Sans' real ascent/descent vs. an assumed ratio),
+   (21px, not 20px — the sans face's real ascent/descent vs. an assumed ratio),
    so this takes the same explicit-box approach the search trigger already
    established instead: box-sizing height rather than a font-metric guess.
    padding-bottom is kept for the underline's gap from the text. This closes
@@ -698,6 +692,16 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-concept p {
   margin: 0 0 16px;
 }
+.pdpp-note {
+  padding: 16px 20px;
+  margin: 24px 0;
+  font-size: 16px;
+  background: var(--pdpp-concept-teal-wash);
+  border-left: 2px solid var(--pdpp-concept-teal);
+}
+.pdpp-note p:last-child {
+  margin-bottom: 0;
+}
 /* .pdpp-doc itself no longer caps at --measure (see .pdpp-doc, above), so the
    cap moves onto the elements that are actually prose. Headings are included
    because the concept includes them: an uncapped h1/h2 runs the full 870px
@@ -937,16 +941,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 
 /* ─── Note ───────────────────────────────────────────────────────────────── */
-.pdpp-note {
-  padding: 16px 20px;
-  margin: 24px 0;
-  font-size: 16px;
-  background: var(--pdpp-concept-teal-wash);
-  border-left: 2px solid var(--pdpp-concept-teal);
-}
-.pdpp-note p:last-child {
-  margin-bottom: 0;
-}
 
 /* ─── Tables ─────────────────────────────────────────────────────────────── */
 .pdpp-doc table {
@@ -1146,50 +1140,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   color: inherit;
 }
 
-/* ─── Docs (fumadocs) — asymmetric rail applied to generated DOM ─────────
-   Following the pattern @pdpp/brand/docs.css already established: target
-   fumadocs' generated IDs directly rather than swapping DocsLayout props.
-   Scoped under [data-pdpp-doc-theme] so it only applies where the app opts
-   in, leaving other consumers of the same fumadocs DOM (if any existed)
-   unaffected. */
-[data-pdpp-doc-theme] {
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-paper);
-}
-[data-pdpp-doc-theme] #nd-docs-layout {
-  background: var(--pdpp-concept-paper);
-}
-[data-pdpp-doc-theme] #nd-sidebar {
-  font-family: var(--pdpp-concept-sans);
-  background: var(--pdpp-concept-paper);
-  border-color: color-mix(
-    in srgb,
-    var(--pdpp-concept-ink) 18%,
-    var(--pdpp-concept-paper)
-  );
-}
-[data-pdpp-doc-theme] #nd-sidebar a {
-  color: var(--pdpp-concept-ink-soft);
-}
-[data-pdpp-doc-theme] #nd-sidebar [data-active="true"] {
-  color: var(--pdpp-concept-teal);
-}
-[data-pdpp-doc-theme] #nd-toc {
-  font-family: var(--pdpp-concept-sans);
-  color: var(--pdpp-concept-ink-soft);
-}
-[data-pdpp-doc-theme] #nd-toc a.data-\[active\=true\],
-[data-pdpp-doc-theme] #nd-toc [data-active="true"] {
-  color: var(--pdpp-concept-teal);
-}
-[data-pdpp-doc-theme] #nd-page {
-  font-family: var(--pdpp-concept-serif);
-}
-[data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
-[data-pdpp-doc-theme] #nd-page h1 {
-  font-family: var(--pdpp-concept-serif);
-}
-
 /* ─── Sticky footer ──────────────────────────────────────────────────────────
    Short pages (the front door especially) otherwise float the footer mid-
    viewport with dead ground beneath it. The concept surface becomes a flex
@@ -1383,7 +1333,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 /* Plain mono text, not a bordered chip. The concept renders this as
    `.definition__status`: mono, 12px, uppercase, ink-soft, no border and no
-   padding. The shared `.pdpp-stamp` is a bordered Public Sans chip built for a
+   padding. The shared `.pdpp-stamp` is a bordered sans chip built for a
    different surface, and on the front door it read as a button sitting under
    the real buttons. Measured both: concept border 0px none / padding 0px,
    PR was 1px solid / 6px 10px. */
@@ -1886,11 +1836,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   color: inherit;
   cursor: pointer;
 }
-.pdpp-cmd__panel--copyable:hover .pdpp-cmd__copy,
-.pdpp-cmd__panel--copyable:focus-visible .pdpp-cmd__copy {
-  color: var(--pdpp-concept-onteal-deep);
-  border-color: var(--pdpp-concept-onteal-deep);
-}
 /* The focus ring is on-teal too: a teal ring on a teal-deep ground is invisible. */
 .pdpp-cmd__panel--copyable:focus-visible {
   outline: 2px solid var(--pdpp-concept-onteal-deep);
@@ -1951,11 +1896,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   border: 1px solid
     color-mix(in srgb, var(--pdpp-concept-onteal-deep) 35%, transparent);
   border-radius: 2px;
-}
-.pdpp-cmd__copy:hover,
-.pdpp-cmd__copy:focus-visible {
-  color: var(--pdpp-concept-onteal-deep);
-  border-color: var(--pdpp-concept-onteal-deep);
 }
 /* One line, outside the panel so the panel itself stays bare. */
 .pdpp-cmd__note {
@@ -2043,9 +1983,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
    above it is what must not move, because it sits between the two segmented
    controls; a sentence appearing below the last control pushes nothing the
    reader is currently looking at. */
-.pdpp-cmd__reveal:not(.is-shown) .pdpp-cmd__hint {
-  display: none;
-}
 .pdpp-cmd__url {
   display: flex;
   flex-wrap: wrap;
@@ -2104,6 +2041,16 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   .pdpp-cmd__hint {
     margin-left: 0;
   }
+}
+.pdpp-cmd__panel--copyable:hover .pdpp-cmd__copy,
+.pdpp-cmd__panel--copyable:focus-visible .pdpp-cmd__copy,
+.pdpp-cmd__copy:hover,
+.pdpp-cmd__copy:focus-visible {
+  color: var(--pdpp-concept-onteal-deep);
+  border-color: var(--pdpp-concept-onteal-deep);
+}
+.pdpp-cmd__reveal:not(.is-shown) .pdpp-cmd__hint {
+  display: none;
 }
 /* The one sentence that replaced a two-column section. Sits directly under the
    builder because it explains the Access choice made there. */

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants } from "@pdpp/brand-react";
+import { formatConnectorKeyForDisplay } from "@pdpp/display";
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
-import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";

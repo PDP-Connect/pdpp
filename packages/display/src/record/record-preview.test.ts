@@ -158,30 +158,6 @@ test("declared stream with null content renders a placeholder, NOT an operationa
   assert.equal(preview?.fields, undefined);
 });
 
-test("declared stream with null content renders a placeholder, NOT an operational field dump", () => {
-  // A gmail/messages-shaped record whose declared content (subject/snippet) was
-  // not collected: subject=null, but operational fields (labels/is_seen/is_draft)
-  // are present. It MUST NOT dump those as a key/value wall.
-  const preview = buildRecordPreview(
-    "message",
-    {
-      from_name: null,
-      id: "rec_1",
-      is_draft: false,
-      is_seen: false,
-      labels: ["\\Inbox"],
-      snippet: null,
-      subject: null,
-    },
-    null,
-    { from_name: "actor", snippet: "secondary", subject: "primary-title" }
-  );
-  assert.equal(preview?.kind, "generic");
-  assert.equal(preview?.title, "(no subject)");
-  // NEVER surfaces the undeclared operational fields as a key/value table.
-  assert.equal(preview?.fields, undefined);
-});
-
 test("kinds without role-backed card slots render as generic previews", () => {
   for (const kind of ["activity", "location", "reader"] as const) {
     const preview = buildRecordPreview(kind, { distance: 5000, lat: 37.77, lng: -122.41, name: "Run" });

@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
  * Two layout modes and three gradient variants, composed independently.
  *
  * - `layout="cross"` renders the signature cross-quadrant pattern: a blank
- *   left column sized to `--pdpp-sidebar-width`, and a hero content column
+ *   left column sized to `--spacing-sidebar`, and a hero content column
  *   with a copper vertical border. Used by pages that have (or visually
  *   relate to) a sidebar at the same x coordinate — `/design`, `/`.
  * - `layout="bleeding"` renders a single-column hero that bleeds its copper
@@ -76,7 +76,7 @@ export function Hero({
             style={{
               background: gradientForLeftQuadrant(gradient),
               borderBottom: "1px solid var(--border)",
-              width: "var(--pdpp-sidebar-width)",
+              width: "var(--spacing-sidebar)",
             }}
           />
           <div

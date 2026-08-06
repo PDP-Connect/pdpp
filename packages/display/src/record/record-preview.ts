@@ -39,8 +39,8 @@ import {
   hasDeclaredRoles,
 } from "./declared-field-roles.ts";
 import { humanizeFieldLabel } from "./field-label.ts";
-import { formatDeclaredAmount } from "./record-field-format.ts";
-import type { DeclaredFieldTypes, RecordKind } from "./record-kind.ts";
+import { formatDeclaredAmount } from "./record-format.ts";
+import type { DeclaredFieldTypes, PreviewKind } from "./record-kind.ts";
 
 /** One humanized key/value row of the honest generic card (design.md §5.4). */
 export interface GenericField {
@@ -79,7 +79,7 @@ export interface RecordPreview {
    * this absent (they carry their typed slots instead).
    */
   fields?: readonly GenericField[];
-  kind: RecordKind;
+  kind: PreviewKind;
   /**
    * Labelled stat chips for activity rows, e.g. `[{value:"5.2 km",label:"distance"}]`.
    * Already formatted for display; the renderer lays them out as a stat strip.
@@ -426,7 +426,7 @@ function buildGenericPreview(data: RecordData, roles?: DeclaredFieldRoles): Reco
  * guessed shape. Returns null only when there is no body.
  */
 export function buildRecordPreview(
-  kind: RecordKind,
+  kind: PreviewKind,
   data: RecordData | null,
   fieldTypes?: DeclaredFieldTypes | null,
   roles: DeclaredFieldRoles = EMPTY_DECLARED_FIELD_ROLES
@@ -456,7 +456,7 @@ export function buildRecordPreview(
 }
 
 function buildRoleBackedPreview(
-  kind: RecordKind,
+  kind: PreviewKind,
   data: RecordData,
   fieldTypes: DeclaredFieldTypes | null | undefined,
   roles: DeclaredFieldRoles

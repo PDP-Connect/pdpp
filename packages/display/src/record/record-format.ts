@@ -18,11 +18,8 @@
  * this module deliberately does NOT apply a magnitude heuristic, so a bare
  * undeclared integer is never silently reinterpreted as cents.
  *
- * This lives in `@pdpp/brand` (the shared design-system LEAF) so every consumer
- * — the React component library `@pdpp/brand-react`, the console substrate
- * `@pdpp/operator-ui` (which re-exports it), and the console record pages —
- * shares ONE source of truth without any of them depending on the others. The
- * dependency direction stays apps → {operator-ui, brand-react} → brand.
+ * This lives in the framework-free `@pdpp/display` package so all consumers
+ * share one source of truth without depending on a UI framework.
  */
 
 /**
@@ -31,7 +28,9 @@
  * names that carry a declared type appear here. Inlined here (rather than pulling
  * in operator-ui's `record-kind.ts`) to keep this module a self-contained leaf.
  */
-export type DeclaredFieldTypes = Readonly<Record<string, string>>;
+import type { DeclaredFieldTypes } from "./declared-field-types.ts";
+
+export type { DeclaredFieldTypes } from "./declared-field-types.ts";
 
 // Declared presentation types denoting a monetary value carried in MINOR units
 // (integer cents). `currency` is the vocabulary the pilot manifests use (e.g.

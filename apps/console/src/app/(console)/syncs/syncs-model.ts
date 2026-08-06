@@ -26,7 +26,7 @@
  * health-snapshot path exists only for older references.
  */
 
-import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
 import { indexCollectionReportByStream } from "../lib/collection-report.ts";
 import type { FailureSummary } from "../lib/connection-evidence.ts";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";

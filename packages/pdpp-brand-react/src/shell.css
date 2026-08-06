@@ -15,7 +15,7 @@
 /* ─── Frame ───────────────────────────────────────────────────────── */
 .rr-app {
   display: grid;
-  grid-template-columns: var(--pdpp-sidebar-width) 1fr;
+  grid-template-columns: var(--spacing-sidebar) 1fr;
   height: 100vh;
   /* biome-ignore lint/suspicious/noDuplicateProperties: 100vh is the legacy fallback; 100dvh corrects dynamic mobile viewport height where supported. */
   height: 100dvh;
@@ -56,10 +56,8 @@
   --pdpp-mark-cool: oklch(0.58 0.18 253);
   --pdpp-mark-counter: oklch(0.985 0.005 85);
 }
-/* Dark surface — the elevated "night" pair. Follows the same theme predicate
-   the shell toggle sets on <html> (data-theme="dark" or the .dark class). */
-[data-theme="dark"] .rr-app,
-.dark .rr-app {
+/* Dark surface — the elevated "night" pair. */
+[data-theme="dark"] .rr-app {
   --pdpp-mark-warm: oklch(0.72 0.12 45);
   --pdpp-mark-cool: oklch(0.74 0.16 253);
   --pdpp-mark-counter: oklch(0.16 0.01 60);
@@ -107,9 +105,9 @@
   border: 0;
   border-radius: var(--radius-control);
   transition:
-    color var(--motion-state),
-    background var(--motion-state),
-    box-shadow var(--motion-state);
+    color var(--duration-state) var(--ease-standard),
+    background var(--duration-state) var(--ease-standard),
+    box-shadow var(--duration-state) var(--ease-standard);
 }
 /* Hover is a QUIET neutral lift — distinct from the protocol-blue active state. */
 .rr-nav-item:hover {
@@ -209,9 +207,9 @@
   border: 1px solid var(--input);
   border-radius: var(--radius-control);
   transition:
-    color var(--motion-state),
-    border-color var(--motion-state),
-    background var(--motion-state);
+    color var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard),
+    background var(--duration-state) var(--ease-standard);
 }
 .rr-chrome-btn:hover {
   color: var(--foreground);

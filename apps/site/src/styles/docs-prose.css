@@ -1,0 +1,121 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Our own markdown body typography for .docs-prose
+ * (components/docs/prose-page.tsx → react-markdown).
+ *
+ * Owns: headings, paragraphs, lists, links, code, tables, blockquotes inside
+ * .docs-prose. Hand-rolled so ProsePage does not inherit fumadocs-ui article
+ * styles.
+ *
+ * Not docs.css (Fumadocs layout/chrome) and not editorial.css (marketing
+ * --pdpp-concept-* register).
+ */
+
+.docs-prose {
+  --docs-prose-spacing: 1rem;
+}
+.docs-prose > * + * {
+  margin-top: var(--docs-prose-spacing);
+}
+.docs-prose h1 {
+  margin-top: 1.75rem;
+  font-size: 1.6rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.docs-prose h2 {
+  padding-top: 0.5rem;
+  margin-top: 1.75rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  border-top: 1px solid var(--border);
+}
+.docs-prose h3 {
+  margin-top: 1.25rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.docs-prose h4,
+.docs-prose h5,
+.docs-prose h6 {
+  margin-top: 1rem;
+  font-weight: 600;
+}
+.docs-prose p {
+  color: var(--foreground);
+}
+.docs-prose a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.docs-prose a:hover {
+  text-decoration-thickness: 2px;
+}
+.docs-prose ul {
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+.docs-prose ol {
+  padding-left: 1.25rem;
+  list-style: decimal;
+}
+.docs-prose li + li {
+  margin-top: 0.25rem;
+}
+.docs-prose li > p {
+  margin: 0;
+}
+.docs-prose code {
+  padding: 0.1em 0.35em;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--muted);
+  border-radius: 0.3em;
+}
+.docs-prose pre {
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  font-size: 0.85em;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.docs-prose pre code {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+.docs-prose blockquote {
+  padding: 0.25rem 0 0.25rem 0.875rem;
+  color: var(--muted-foreground);
+  border-left: 2px solid var(--border);
+}
+.docs-prose hr {
+  margin: 2rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.docs-prose table {
+  width: 100%;
+  font-size: 0.9em;
+  border-collapse: collapse;
+}
+.docs-prose th,
+.docs-prose td {
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.docs-prose th {
+  font-weight: 600;
+}
+.docs-prose input[type="checkbox"] {
+  margin-right: 0.4rem;
+}
+.docs-prose strong {
+  font-weight: 600;
+}

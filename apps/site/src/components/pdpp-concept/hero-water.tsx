@@ -60,7 +60,7 @@ export function PdppHeroWater() {
     if (!host) {
       return;
     }
-    // Matches the `display: none` breakpoint in pdpp-concept.css. If one moves
+    // Matches the `display: none` breakpoint in editorial.css. If one moves
     // the other must; they describe the same decision, and a disagreement
     // means either an invisible canvas still running a loop or a visible empty
     // box. Below it the figure is not built at all, so a phone never pays for
@@ -142,7 +142,8 @@ export function PdppHeroWater() {
         return;
       }
       ctx.clearRect(0, 0, w, h);
-      ctx.font = `300 ${FONT_SIZE}px "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace`;
+      const monoFamily = getComputedStyle(document.documentElement).getPropertyValue("--font-pdpp-mono").trim();
+      ctx.font = `300 ${FONT_SIZE}px ${monoFamily || "ui-monospace, monospace"}`;
       ctx.textBaseline = "alphabetic";
       const colW = w / HERO_WATER_STREAMS.length;
 

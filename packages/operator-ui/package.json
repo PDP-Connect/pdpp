@@ -8,14 +8,9 @@
     "./lib/data-source": "./src/lib/data-source.ts",
     "./lib/ref-client": "./src/lib/ref-client.ts",
     "./lib/rs-client": "./src/lib/rs-client.ts",
-    "./lib/record-field-format": "./src/lib/record-field-format.ts",
-    "./lib/record-kind": "./src/lib/record-kind.ts",
-    "./lib/record-preview": "./src/lib/record-preview.ts",
     "./lib/search-record-timestamps": "./src/lib/search-record-timestamps.ts",
     "./lib/timeline-summaries": "./src/lib/timeline-summaries.ts",
     "./lib/timeline": "./src/lib/timeline.ts",
-    "./lib/connector-display": "./src/lib/connector-display.ts",
-    "./lib/summary-row-label": "./src/lib/summary-row-label.ts",
     "./components/empty-state": "./src/components/empty-state.tsx",
     "./components/record-identity": "./src/components/record-identity.tsx",
     "./components/primitives": "./src/components/primitives.tsx",
@@ -72,15 +67,17 @@
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node --test --import tsx \"src/**/*.test.ts\"",
+    "test": "node --test --import tsx --import ./css-stub-register.ts \"src/**/*.test.ts\"",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
     "@pdpp/brand": "workspace:*",
+    "@pdpp/display": "workspace:*",
     "@pdpp/list-envelope": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.28.0",
+    "next-themes": "^0.4.6",
     "tailwind-merge": "^3.6.0"
   },
   "peerDependencies": {

@@ -17,7 +17,7 @@
  * already render and only aggregates it per source.
  */
 
-import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorNameForDisplay } from "@pdpp/display";
 import { isRevokedConnection } from "./records-list-classification.ts";
 import type { ConnectorOverview } from "./rs-client.ts";
 

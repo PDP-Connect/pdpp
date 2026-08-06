@@ -3,8 +3,8 @@
 
 "use client";
 
+import { useTheme } from "@pdpp/operator-ui/components/theme/theme-provider";
 import { useEffect, useState } from "react";
-import { useTheme } from "@/components/theme/theme-provider.tsx";
 import type { ResolvedTheme } from "@/components/theme/theme-state.ts";
 
 // Concept-native theme control. Drives the SAME ThemeProvider/cookie as the
@@ -14,7 +14,7 @@ import type { ResolvedTheme } from "@/components/theme/theme-state.ts";
 // Two states, not three. Owner instruction, verbatim: "dark/light/system
 // should be dark/light with the default based on system." "system" is not a
 // state a reader picks; it is what happens before they pick anything —
-// ThemeProvider already resolves an absent cookie via prefers-color-scheme
+// ThemeProvider resolves the saved choice and system preference before paint.
 // (see theme-provider.tsx's readStoredChoice/readSystemPreference), so no UI
 // is needed for it. A prior version cycled dark -> system -> light, which on
 // an OS set to dark made "system" visually indistinguishable from "dark":

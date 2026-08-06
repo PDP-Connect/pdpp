@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-export interface SiteNavLink {
+export interface PublicSiteNavLink {
   readonly link: string;
   readonly text: string;
 }
@@ -21,7 +21,7 @@ export interface SiteNavLink {
 // Each label matches its own URL. A reader who sees "Self-Host" and lands on
 // /reference has been told the page is two different things; the old paths
 // redirect permanently rather than 404.
-export const siteNav: readonly SiteNavLink[] = [
+export const publicSiteNav: readonly PublicSiteNavLink[] = [
   { text: "Specification", link: "/specification" },
   { text: "Self-Host", link: "/self-host" },
   { text: "Participate", link: "/participate" },

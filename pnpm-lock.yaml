@@ -72,6 +72,9 @@ importers:
       '@pdpp/brand-react':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand-react
+      '@pdpp/display':
+        specifier: workspace:*
+        version: link:../../packages/display
       '@pdpp/list-envelope':
         specifier: workspace:*
         version: link:../../packages/list-envelope
@@ -96,15 +99,6 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
-      fumadocs-core:
-        specifier: ^16.14.0
-        version: 16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
-      fumadocs-mdx:
-        specifier: ^15.2.1
-        version: 15.2.1(@types/mdast@4.0.4)(@types/mdx@2.0.14)(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
-      fumadocs-ui:
-        specifier: ^16.14.0
-        version: 16.14.0(@types/mdx@2.0.14)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)
       imapflow:
         specifier: ^1.6.5
         version: 1.6.5
@@ -113,7 +107,7 @@ importers:
         version: 1.28.0(react@19.2.8)
       next:
         specifier: 16.3.0-preview.10
-        version: 16.3.0-preview.10(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       pdpp-reference-implementation:
         specifier: workspace:*
         version: link:../../reference-implementation
@@ -135,18 +129,12 @@ importers:
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
-      shadcn:
-        specifier: ^4.16.1
-        version: 4.16.1(typescript@7.0.2)
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
-      tw-animate-css:
-        specifier: ^1.4.0
-        version: 1.4.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -172,15 +160,15 @@ importers:
       '@base-ui/react':
         specifier: ^1.6.0
         version: 1.6.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@demodesk/neko':
-        specifier: 1.6.32
-        version: 1.6.32
       '@fumadocs/mdx-remote':
         specifier: ^1.4.0
         version: 1.5.1(@types/mdx@2.0.14)(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(react@19.2.8)
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
+      '@pdpp/display':
+        specifier: workspace:*
+        version: link:../../packages/display
       '@pdpp/operator-ui':
         specifier: workspace:*
         version: link:../../packages/operator-ui
@@ -219,7 +207,7 @@ importers:
         version: 1.28.0(react@19.2.8)
       next:
         specifier: 16.3.0-preview.10
-        version: 16.3.0-preview.10(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       pdpp-reference-implementation:
         specifier: workspace:*
         version: link:../../reference-implementation
@@ -241,18 +229,12 @@ importers:
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
-      shadcn:
-        specifier: ^4.16.1
-        version: 4.16.1(typescript@7.0.2)
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
-      tw-animate-css:
-        specifier: ^1.4.0
-        version: 1.4.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -278,6 +260,18 @@ importers:
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
+
+  packages/display:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.1.2
+      tsx:
+        specifier: ^4.23.1
+        version: 4.23.1
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
 
   packages/list-envelope: {}
 
@@ -318,6 +312,9 @@ importers:
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../pdpp-brand
+      '@pdpp/display':
+        specifier: workspace:*
+        version: link:../display
       '@pdpp/list-envelope':
         specifier: workspace:*
         version: link:../list-envelope
@@ -332,7 +329,10 @@ importers:
         version: 1.28.0(react@19.2.8)
       next:
         specifier: 16.3.0-canary.93
-        version: 16.3.0-canary.93(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 16.3.0-canary.93(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      next-themes:
+        specifier: ^0.4.6
+        version: 0.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
@@ -364,12 +364,19 @@ importers:
 
   packages/pdpp-brand:
     dependencies:
-      '@fontsource-variable/geist':
-        specifier: ^5.3.0
-        version: 5.3.0
-      '@fontsource-variable/jetbrains-mono':
-        specifier: ^5.3.0
-        version: 5.3.0
+      shadcn:
+        specifier: ^4.16.0
+        version: 4.16.1(typescript@7.0.2)
+      tailwindcss:
+        specifier: ^4.3.3
+        version: 4.3.3
+      tw-animate-css:
+        specifier: ^1.4.0
+        version: 1.4.0
+    devDependencies:
+      next:
+        specifier: 16.3.0-canary.93
+        version: 16.3.0-canary.93(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
 
   packages/pdpp-brand-react:
     dependencies:
@@ -379,12 +386,15 @@ importers:
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../pdpp-brand
+      '@pdpp/display':
+        specifier: workspace:*
+        version: link:../display
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
       next:
         specifier: 16.3.0-canary.93
-        version: 16.3.0-canary.93(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 16.3.0-canary.93(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       '@types/node':
         specifier: ^26.1.2
@@ -1207,12 +1217,6 @@ packages:
 
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
-
-  '@fontsource-variable/geist@5.3.0':
-    resolution: {integrity: sha512-j0m+vLQuG5XAYoHtGCVu0spvlGreR3EzpECUVzkFmI1mTVnAO38l/NEPDCFgZ177JxzYJCLSmTQibIiYPilGrA==}
-
-  '@fontsource-variable/jetbrains-mono@5.3.0':
-    resolution: {integrity: sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw==}
 
   '@fuma-translate/react@1.0.2':
     resolution: {integrity: sha512-uOiOtBx3nRXR8Nu1GzBf1tApgF1FErDBTHxRIAQeyQdyOoZbrNRN6H4kDCWObY4qyGeGbHydG0DHzgeUgFDMIw==}
@@ -2906,11 +2910,6 @@ packages:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
 
-  baseline-browser-mapping@2.10.16:
-    resolution: {integrity: sha512-Lyf3aK28zpsD1yQMiiHD4RvVb6UdMoo8xzG2XzFIfR9luPzOpcBlAsT/qfB1XWS1bxWT+UtE4WmQgsp297FYOA==}
-    engines: {node: '>=6.0.0'}
-    hasBin: true
-
   baseline-browser-mapping@2.11.12:
     resolution: {integrity: sha512-r7WnVImvVCeFpf2DOXfy41aPWzeNg3H/A2X4dKmy1QL0MSyyk/e7z8ihJ3N6Nn2PsdhkVlqnEfnUE4a05P2aTA==}
     engines: {node: '>=6.0.0'}
@@ -2986,9 +2985,6 @@ packages:
   callsites@3.1.0:
     resolution: {integrity: sha512-P8BjAsXvZS+VIDUI11hHCQEv74YT67YUi5JJFNWIqL235sBmjX4+qx9Muvls5ivyNENctx46xQLQ3aTuE7ssaQ==}
     engines: {node: '>=6'}
-
-  caniuse-lite@1.0.30001787:
-    resolution: {integrity: sha512-mNcrMN9KeI68u7muanUpEejSLghOKlVhRqS/Za2IeyGllJ9I9otGpR9g3nsw7n4W378TE/LyIteA0+/FOZm4Kg==}
 
   caniuse-lite@1.0.30001806:
     resolution: {integrity: sha512-72Cuvd95zbSYPKq6Fhg8eDJRlzgWDf7/mtoZv6Qe/DYNCEBdNxoA3+rZAU2ZhGCpZlns3EssFavaZomckT5Uuw==}
@@ -7216,10 +7212,6 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
-  '@fontsource-variable/geist@5.3.0': {}
-
-  '@fontsource-variable/jetbrains-mono@5.3.0': {}
-
   '@fuma-translate/react@1.0.2(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       react: 19.2.8
@@ -8726,8 +8718,6 @@ snapshots:
 
   balanced-match@4.0.4: {}
 
-  baseline-browser-mapping@2.10.16: {}
-
   baseline-browser-mapping@2.11.12: {}
 
   beautiful-mermaid@1.1.3:
@@ -8806,8 +8796,6 @@ snapshots:
       get-intrinsic: 1.3.0
 
   callsites@3.1.0: {}
-
-  caniuse-lite@1.0.30001787: {}
 
   caniuse-lite@1.0.30001806: {}
 
@@ -9701,7 +9689,7 @@ snapshots:
       '@types/react': 19.2.18
       algoliasearch: 5.50.1
       lucide-react: 1.28.0(react@19.2.8)
-      next: 16.3.0-preview.10(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      next: 16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
       zod: 4.4.3
@@ -9734,7 +9722,7 @@ snapshots:
       '@types/mdast': 4.0.4
       '@types/mdx': 2.0.14
       '@types/react': 19.2.18
-      next: 16.3.0-preview.10(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      next: 16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react: 19.2.8
     transitivePeerDependencies:
       - supports-color
@@ -9769,7 +9757,7 @@ snapshots:
     optionalDependencies:
       '@types/mdx': 2.0.14
       '@types/react': 19.2.18
-      next: 16.3.0-preview.10(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      next: 16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     transitivePeerDependencies:
       - '@emotion/is-prop-valid'
       - '@types/react-dom'
@@ -11037,12 +11025,12 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
-  next@16.3.0-canary.93(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  next@16.3.0-canary.93(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       '@next/env': 16.3.0-canary.93
       '@swc/helpers': 0.5.15
-      baseline-browser-mapping: 2.10.16
-      caniuse-lite: 1.0.30001787
+      baseline-browser-mapping: 2.11.12
+      caniuse-lite: 1.0.30001806
       postcss: 8.5.10
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -11063,7 +11051,7 @@ snapshots:
       - '@types/node'
       - babel-plugin-macros
 
-  next@16.3.0-preview.10(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       '@next/env': 16.3.0-preview.10
       '@swc/helpers': 0.5.15

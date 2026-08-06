@@ -30,16 +30,20 @@
  */
 
 import type { DeclaredFieldRoles } from "./declared-field-roles.ts";
+import type { DeclaredFieldTypes } from "./declared-field-types.ts";
 
-export type RecordKind = "message" | "money" | "event" | "activity" | "reader" | "location" | "titled" | "generic";
+export type { DeclaredFieldTypes } from "./declared-field-types.ts";
 
-export interface RecordKindDescriptor {
-  kind: RecordKind;
+export type PreviewKind = "message" | "money" | "event" | "activity" | "reader" | "location" | "titled" | "generic";
+export type RecordKind = PreviewKind;
+
+export interface PreviewKindDescriptor {
+  kind: PreviewKind;
   /** Short eyebrow-style label rendered as the row's kind tag. */
   label: string;
 }
 
-const KIND_LABELS: Record<RecordKind, string> = {
+const KIND_LABELS: Record<PreviewKind, string> = {
   activity: "activity",
   event: "event",
   generic: "record",
@@ -64,8 +68,6 @@ const KIND_LABELS: Record<RecordKind, string> = {
  * Presentation-only and read-only; only field names that carry a declared
  * type appear here.
  */
-export type DeclaredFieldTypes = Readonly<Record<string, string>>;
-
 // Declared-type signals. Matched case-insensitively against a normalized
 // declared `type` string. These intentionally mirror the small vocabulary the
 // sandbox demo manifests already encode (`currency_minor_units`, `timestamp`,
@@ -142,7 +144,7 @@ function collectDeclaredSignals(fieldTypes: DeclaredFieldTypes): Set<DeclaredSig
   return signals;
 }
 
-function classifyByDeclaredTypes(fieldTypes: DeclaredFieldTypes): RecordKind | null {
+function classifyByDeclaredTypes(fieldTypes: DeclaredFieldTypes): PreviewKind | null {
   const signals = collectDeclaredSignals(fieldTypes);
   if (signals.has("money")) {
     return "money";
@@ -188,7 +190,7 @@ function classifyByDeclaredTypes(fieldTypes: DeclaredFieldTypes): RecordKind | n
  *
  * Returns null when no role implies a distinct kind.
  */
-function classifyByDeclaredRoles(roles: DeclaredFieldRoles): RecordKind | null {
+function classifyByDeclaredRoles(roles: DeclaredFieldRoles): PreviewKind | null {
   const declared = new Set(Object.values(roles));
   if (declared.has("amount")) {
     return "money";
@@ -226,7 +228,7 @@ export function classifyRecordKind(
   fieldTypes?: DeclaredFieldTypes | null,
   _manifestFieldNames?: readonly string[] | null,
   roles?: DeclaredFieldRoles | null
-): RecordKindDescriptor {
+): PreviewKindDescriptor {
   if (declaredTypesPresent(fieldTypes)) {
     const declared = classifyByDeclaredTypes(fieldTypes as DeclaredFieldTypes);
     if (declared) {
@@ -243,3 +245,5 @@ export function classifyRecordKind(
   // No declared type or role signal → honest neutral `generic` glyph.
   return { kind: "generic", label: KIND_LABELS.generic };
 }
+
+export type RecordKindDescriptor = PreviewKindDescriptor;

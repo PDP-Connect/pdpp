@@ -47,9 +47,8 @@
  *     the cell never sniffs the preview for an image.
  */
 
+import { type RecordKind, type RecordPreview, rowPrimary, rowSecondary } from "@pdpp/display";
 import type { ReactElement } from "react";
-import type { RecordKind } from "../lib/record-kind.ts";
-import { type RecordPreview, rowPrimary, rowSecondary } from "../lib/record-preview.ts";
 
 /**
  * The leading kind-glyph map (W1 row anatomy; prior art: Primer ActionList

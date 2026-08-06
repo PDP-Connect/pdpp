@@ -1,6 +1,16 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  buildRecordPreview,
+  classifyRecordKind,
+  type DeclaredFieldRoles,
+  type DeclaredFieldTypes,
+  EMPTY_DECLARED_FIELD_ROLES,
+  type FieldRole,
+  formatConnectorNameForDisplay,
+  parseFieldRole,
+} from "@pdpp/display";
 import { validateListEnvelope } from "@pdpp/list-envelope";
 /**
  * Shared Explorer data assembly, parameterized by a DashboardDataSource adapter.
@@ -29,16 +39,7 @@ import {
   parseExplorerPeekParam,
   type RecordsExplorerData,
 } from "../components/views/records-explorer-view.tsx";
-import { formatConnectorNameForDisplay } from "../lib/connector-display.ts";
 import type { DashboardDataSource } from "../lib/data-source.ts";
-import {
-  type DeclaredFieldRoles,
-  EMPTY_DECLARED_FIELD_ROLES,
-  type FieldRole,
-  parseFieldRole,
-} from "../lib/declared-field-roles.ts";
-import { classifyRecordKind, type DeclaredFieldTypes } from "../lib/record-kind.ts";
-import { buildRecordPreview } from "../lib/record-preview.ts";
 import type { ExploreTimelinePage, RefConnectorIdentitySummary } from "../lib/ref-client.ts";
 import type { RecordsWindowMeta, SearchRecallMeta, SearchResultPage, StreamMetadata } from "../lib/rs-client.ts";
 import {
