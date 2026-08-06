@@ -10,9 +10,8 @@ import {
   StreamingCompanionUnavailableError,
   type StreamingSessionMintResponse,
 } from "../../../lib/operator-runs.ts";
-import { getReferencePublicUrl } from "../../../lib/owner-token.ts";
 import { sanitizeStreamReachReason } from "./stream-reach-diagnostics.ts";
-import { STREAMING_UNAVAILABLE_TAG } from "./streaming-protocol.ts";
+import { STREAMING_UNAVAILABLE_TAG, sameOriginStreamUrls } from "./streaming-protocol.ts";
 
 export interface MintStreamSessionInput {
   /**
@@ -44,7 +43,7 @@ export interface MintedStreamSession extends StreamingSessionMintResponse {
 
 /**
  * Owner-authenticated mint of a run-interaction streaming session. Returns
- * absolute browser-facing URLs the viewer page connects to. The token is
+ * same-origin browser-facing URLs the viewer page connects to. The token is
  * embedded in those URLs and is valid for ~5 minutes, single-attach.
  */
 export async function mintStreamSessionAction(input: MintStreamSessionInput): Promise<MintedStreamSession> {
@@ -62,13 +61,7 @@ export async function mintStreamSessionAction(input: MintStreamSessionInput): Pr
     }
     throw err;
   }
-  const [viewer_url, input_url, viewport_url] = await Promise.all([
-    getReferencePublicUrl(minted.viewer_path),
-    getReferencePublicUrl(minted.input_path),
-    getReferencePublicUrl(minted.viewport_path),
-  ]);
-  const clipboard_url = await getReferencePublicUrl(minted.clipboard_path);
-  return { ...minted, clipboard_url, input_url, viewer_url, viewport_url };
+  return { ...minted, ...sameOriginStreamUrls(minted) };
 }
 
 export interface StreamReachFailureInput {
