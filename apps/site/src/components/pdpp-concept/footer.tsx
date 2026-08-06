@@ -28,7 +28,8 @@ const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");
 // Four columns exactly, on all four pages. A fifth was tried during the concept
 // pass and reverted: it wrapped to a second row at 1280px.
 //
-// Type via Text; column rhythm via flex gap (zeros .pdpp-concept p margin).
+// Type via Text; column rhythm via flex gap (footer is outside .pdpp-doc —
+// no prose p margin to zero).
 // License rows stay a dl — leave .pdpp-doc table / .pdpp-impl-table alone.
 // `pdpp-footer` remains a ::selection cascade hook on teal-deep grounds.
 
@@ -39,11 +40,7 @@ const footerLinkClassName = cn(
   "focus-visible:border-onteal-deep focus-visible:text-white!"
 );
 
-const colClassName = cn(
-  "flex max-w-[34ch] flex-col gap-1.5",
-  // Gap owns rhythm — kill concept prose margin on Text children
-  "[&_[data-slot=pdpp-concept-text]]:mb-0!"
-);
+const colClassName = "flex max-w-[34ch] flex-col gap-1.5";
 
 export function PdppConceptFooter() {
   return (

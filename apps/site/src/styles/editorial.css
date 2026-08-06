@@ -272,8 +272,13 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   font-weight: 600;
   line-height: 1.45;
 }
-.pdpp-concept p {
+/* Prose article rhythm for raw <p> only — not <Text data-slot>. Composed
+   stacks own spacing with gap; no mb-0! hammer needed on Text trees. */
+.pdpp-doc p:not([data-slot="pdpp-concept-text"]) {
   margin: 0 0 16px;
+}
+.pdpp-doc p:not([data-slot="pdpp-concept-text"]):last-child {
+  margin-bottom: 0;
 }
 .pdpp-note {
   padding: 16px 20px;
