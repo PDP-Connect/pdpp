@@ -318,9 +318,9 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
             Deployment readiness
           </Link>
         }
-        breadcrumbs={[{ href: "/", label: "Dashboard" }, { label: "Connect AI apps" }]}
-        description="Give AI apps and local agents grant-scoped read access to data already in this instance. To add or manage the data sources that populate it, go to Sources."
-        title="Connect AI apps"
+        breadcrumbs={[{ href: "/", label: "Dashboard" }, { label: "Connect apps" }]}
+        description="Give apps and local agents grant-scoped read access to data already in this instance. To add or manage the data sources that populate it, go to Sources."
+        title="Connect apps"
       />
 
       <div className="mb-5 grid gap-2">
@@ -329,8 +329,8 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       </div>
 
       <Section
-        description="Use these when an AI app or local agent needs read access to records already collected in this PDPP instance."
-        title="Connect AI apps"
+        description="Use these when an app or local agent needs read access to records already collected in this PDPP instance."
+        title="Connect apps"
       >
         <ul className="divide-y divide-border/70 border-border/70 border-y">
           {primaryEntries.map((entry) => (
