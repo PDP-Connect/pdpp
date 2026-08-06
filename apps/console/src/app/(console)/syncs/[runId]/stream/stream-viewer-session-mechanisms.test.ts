@@ -17,7 +17,7 @@ const SESSION_FOCUS_RE = /function focusNekoKeyboardProxy[\s\S]*session\.focusKe
 const TRUSTED_TAP_SESSION_FOCUS_RE =
   /focusNekoKeyboardProxy\(viewerRef\.current, nekoSurfaceAdapterRef\.current, mountNode\)/;
 const AWAIT_RE = /\bawait\b/;
-const Neko_SESSION_PARAMETER_RE = /session: NekoRemoteSurfaceSession \| null/;
+const SESSION_PARAMETER_RE = /session: NekoRemoteSurfaceSession(?: \| CdpClientSurface)? \| null/;
 const SESSION_COPY_RE = /await session\.copyRemoteSelection\(\)/;
 const TYPED_SHEET_PASTE_RE = /await surface\.pasteText\(localText\)/;
 const TYPED_SHEET_ADAPTER_RE = /sendSheetTextToBrowser\([\s\S]*surface: getSurface\(\)/;
@@ -64,7 +64,7 @@ test("mounted browser-selection copy uses the session while typed sheet paste st
   const pasteEnd = src.indexOf("async function copySheetTextToDevice", pasteStart);
   const typedPastePath = src.slice(pasteStart, pasteEnd);
 
-  assert.match(copyPath, Neko_SESSION_PARAMETER_RE);
+  assert.match(copyPath, SESSION_PARAMETER_RE);
   assert.match(copyPath, SESSION_COPY_RE);
   assert.match(typedPastePath, TYPED_SHEET_PASTE_RE);
   assert.match(src, TYPED_SHEET_ADAPTER_RE);

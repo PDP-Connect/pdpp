@@ -92,7 +92,7 @@ const NEKO_LOCAL_SURFACE_VIEWPORT_RE =
 const CDP_SURFACE_ADAPTER_IMPORT_RE =
   /CdpClientSurface,[\s\S]*NekoSurfaceAdapter,[\s\S]*from "@opendatalabs\/remote-surface\/client"/;
 const CDP_SURFACE_ADAPTER_WIRING_RE =
-  /new CdpClientSurface\(\{[\s\S]*cdp: createPdppCdpTransport\(sendCdpInput\)[\s\S]*mediaSink:[\s\S]*getViewportInfo: \(\) => viewportInfoRef\.current[\s\S]*getFrameElement: \(\) => imgRef\.current[\s\S]*getSoftKeyboardElement: \(\) => softKeyboardInputRef\.current/;
+  /new CdpClientSurface\(\{[\s\S]*cdp: createPdppCdpTransport\(sendCdpInput\)[\s\S]*mediaSink:[\s\S]*getViewportInfo: \(\) => viewportInfoRef\.current[\s\S]*getFrameElement: \(\) => imgRef\.current[\s\S]*getSoftKeyboardElement: \(\) => softKeyboardTextareaRef\.current/;
 const VIEWER_DIRECT_CDP_KEYBOARD_POST_RE = /postInput\(\{[\s\S]*type: "keyboard"/;
 const VIEWER_REACT_CDP_KEYBOARD_HANDLER_RE = /onKeyDown=\{\(e\) => handleKey\(e, "keydown"\)\}|function handleKey\(/;
 const STREAM_SURFACE_RESOLUTION_POLL_PROP_RE = /pollForResolution\?: boolean/;
