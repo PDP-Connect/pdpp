@@ -28,7 +28,6 @@ const PILOT_FIXTURE_EXEMPT: Record<string, string> = {
   notion:
     "Runtime ships without a connectors/notion/schemas.ts validator; pilot-fixture-test-helper has nothing to assert against.",
   oura: "Runtime ships without a connectors/oura/schemas.ts validator; same gap as notion.",
-  strava: "Runtime ships without a connectors/strava/schemas.ts validator; same gap as notion.",
 };
 
 interface PublicListing {

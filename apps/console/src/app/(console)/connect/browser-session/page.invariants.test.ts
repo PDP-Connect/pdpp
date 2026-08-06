@@ -52,8 +52,8 @@ const START_ROUTE_CREDENTIAL_CAPTURE_RE = /captureStaticSecretCredential/;
 const START_ROUTE_SAFE_CONTEXT_RE = /setupFields/;
 const START_ROUTE_NO_SECRET_LOG_RE = /\b(?:console|logger)\.(?:debug|info|log|warn|error)\s*\(/;
 const START_ROUTE_NO_SECRET_QUERY_RE = /query\.set\([^)]*(?:password|secret)/iu;
-const START_ROUTE_PUBLIC_ORIGIN_RE = /x-forwarded-host/;
-const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, publicOrigin\(request\)\), 303\)/;
+const START_ROUTE_ORIGIN_HELPER_IMPORT_RE = /same-origin-route\.ts/;
+const START_ROUTE_REDIRECT_HELPER_RE = /redirectToPublicPath/;
 const PAGE_CONNECTION_ID_FIELD_RE = /browser-session-connection-id/;
 const LAUNCH_PANEL_FETCH_RE =
   /fetch\(`\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/launch\/start`/;
@@ -121,8 +121,8 @@ test("browser-session start route preserves auth and repair handoff semantics", 
   assert.match(route, START_ROUTE_UNSUPPORTED_REDIRECT_RE);
   assert.match(route, START_ROUTE_LAUNCH_REDIRECT_RE);
   assert.doesNotMatch(route, START_ROUTE_FORBIDS_SLOW_RUN_RE);
-  assert.match(route, START_ROUTE_PUBLIC_ORIGIN_RE);
-  assert.match(route, START_ROUTE_REDIRECT_RE);
+  assert.match(route, START_ROUTE_ORIGIN_HELPER_IMPORT_RE);
+  assert.match(route, START_ROUTE_REDIRECT_HELPER_RE);
 });
 
 test("browser-session launch page owns slow run-start and renders inline failure", async () => {

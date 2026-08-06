@@ -139,7 +139,7 @@ test("only self-service and server-setup dispositions expose primary actions", (
       continue;
     }
     if (disposition === serverSetupDisposition) {
-      assert.equal(action, null, "provider settings must not link to the diagnostics page");
+      assert.equal(action, null, "blocked provider authorization must not render a dead action");
       assert.equal(availability, "requires_server_setup");
       continue;
     }

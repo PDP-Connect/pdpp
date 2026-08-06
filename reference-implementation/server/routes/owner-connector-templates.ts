@@ -60,6 +60,7 @@ interface ConnectorInstanceStore {
 
 export interface MountOwnerConnectorTemplatesContext {
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  configuredProviderAuthConnectorKeys?: readonly string[];
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
   getConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike | null> | ConnectorManifestLike | null;
   getOwnerTokenSubjectId: (req: unknown) => string;
@@ -171,7 +172,11 @@ function projectTemplate(
   if (!connectorKey) {
     return null;
   }
-  const plan = buildConnectionSetupPlan({ connectorKey, manifest });
+  const plan = buildConnectionSetupPlan({
+    configuredProviderAuthConnectorKeys: ctx.configuredProviderAuthConnectorKeys ?? [],
+    connectorKey,
+    manifest,
+  });
   const modality = plan.connectorModality;
   const connections = (connectionsByConnector.get(connectorKey) ?? []).map((instance) =>
     projectConnectionSummary(ctx, instance)

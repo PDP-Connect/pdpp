@@ -1308,6 +1308,29 @@ export async function refFetch(
   return res.json();
 }
 
+export interface ProviderAuthInitiateResponse {
+  authorization_url: string;
+  connector_id: string;
+  expires_at: string;
+  next_step: {
+    authorization_url: string;
+    expires_at: string;
+    kind: "open_provider_auth";
+    reason: string;
+    redirect_uri: string;
+  };
+  object: "provider_auth_initiate";
+  setup_modality: "provider_authorization";
+}
+
+export async function initiateProviderAuthorization(connectorId: string): Promise<ProviderAuthInitiateResponse> {
+  return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/provider-auth-initiate`, undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as ProviderAuthInitiateResponse;
+}
+
 export { RefNotFoundError, RefRequestError };
 
 // Thrown when the owner-session static-secret capture route rejects a credential

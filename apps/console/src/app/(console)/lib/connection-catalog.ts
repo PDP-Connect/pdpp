@@ -49,6 +49,10 @@ export interface CatalogManifestLike {
     refresh_policy?: {
       rationale?: string | null;
     } | null;
+    public_listing?: {
+      listed?: boolean | null;
+      status?: string | null;
+    } | null;
   } | null;
   connector_id: string;
   connector_key?: string | null;
@@ -243,14 +247,17 @@ function acquisitionPathsFromManifest(manifest: CatalogManifestLike): ConnectorA
  * renders. Entries only carry an `enrollmentKey` for dispositions the console can
  * actually start, so a caller cannot accidentally deep-link a gated connector.
  */
-export function buildConnectorCatalog(manifests: readonly CatalogManifestLike[]): ConnectorCatalogEntry[] {
+export function buildConnectorCatalog(
+  manifests: readonly CatalogManifestLike[],
+  configuredProviderAuthConnectorKeys: readonly string[] = []
+): ConnectorCatalogEntry[] {
   const entries: ConnectorCatalogEntry[] = [];
   for (const manifest of manifests) {
     if (!manifest.connector_id) {
       continue;
     }
     const connectorKey = canonicalConnectorKey(manifest.connector_id);
-    const plan = buildConnectionSetupPlan({ connectorKey, manifest });
+    const plan = buildConnectionSetupPlan({ connectorKey, configuredProviderAuthConnectorKeys, manifest });
     const setupCopy = setupCopyFromManifest(manifest);
     const entry: ConnectorCatalogEntry = {
       acquisitionPaths: acquisitionPathsFromManifest(manifest),
@@ -278,6 +285,25 @@ export function buildConnectorCatalog(manifests: readonly CatalogManifestLike[])
   }
   entries.sort((a, b) => a.displayName.localeCompare(b.displayName));
   return entries;
+}
+
+/**
+ * The owner picker only lists connectors whose manifest explicitly opts into
+ * public listing. Registered-but-unlisted manifests remain available to the
+ * backend registry and conformance tests without implying an owner setup path.
+ */
+export function ownerCatalogManifests(manifests: readonly CatalogManifestLike[]): CatalogManifestLike[] {
+  return manifests.filter((manifest) => manifest.capabilities?.public_listing?.listed === true);
+}
+
+/** A ready provider-auth plan has the same action contract as the backend route. */
+export function isReadyProviderAuthorizationEntry(entry: ConnectorCatalogEntry): boolean {
+  return (
+    entry.setupModality === "provider_authorization" &&
+    entry.nextStepKind === "open_provider_auth" &&
+    entry.supportState === "supported" &&
+    entry.deploymentReadiness.state === "ready"
+  );
 }
 
 /** Catalog entries the console can start as a one-click local-collector enroll. */
@@ -323,6 +349,11 @@ export function manualUploadPendingEntries(catalog: readonly ConnectorCatalogEnt
   return catalog.filter((e) => e.disposition === "manual_upload_pending");
 }
 
+/** Provider-auth entries whose shared plan authorizes an owner action now. */
+export function providerAuthConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
+  return catalog.filter(isReadyProviderAuthorizationEntry);
+}
+
 /** Provider-authorization entries blocked on instance-level deployment config. */
 export function deploymentBlockedEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "provider_auth_deployment_blocked");
@@ -333,7 +364,7 @@ export function unsupportedNetworkEntries(catalog: readonly ConnectorCatalogEntr
   return catalog.filter(
     (e) =>
       e.disposition === "api_network_unsupported" ||
-      e.disposition === "provider_auth_proof_gated" ||
+      (e.disposition === "provider_auth_proof_gated" && !isReadyProviderAuthorizationEntry(e)) ||
       e.disposition === "unknown_unsupported"
   );
 }

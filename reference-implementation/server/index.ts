@@ -6250,6 +6250,7 @@ function buildRsApp(opts: ServerOpts = {}) {
   // an owner bearer can add a provider account.
   mountOwnerConnectorTemplates(app, {
     canonicalConnectorKey,
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
     createRequestConnectorInstanceStore,
     getConnectorManifest: (connectorId: string) => getConnectorManifest(connectorId),
     getOwnerTokenSubjectId,
@@ -6820,6 +6821,15 @@ export async function startServer(opts: ServerOpts = {}) {
   // (it lazily imports the connector package's probe + live transport). Tests
   // may inject their own via `opts.staticSecretCredentialProber`.
   const staticSecretCredentialProber = opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
+  const configuredProviderAuthConnectorKeys =
+    opts.configuredProviderAuthConnectorKeys ?? configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
+  const providerAuthExchanger =
+    opts.providerAuthExchanger ??
+    (configuredProviderAuthConnectorKeys.includes("google-maps-data-portability")
+      ? createGoogleDataPortabilityProviderAuthExchanger({
+          credentialStoreFactory: createRequestConnectorInstanceCredentialStore,
+        })
+      : null);
 
   const asApp = buildAsApp({
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
@@ -6866,10 +6876,10 @@ export async function startServer(opts: ServerOpts = {}) {
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     cancelScheduledRun: (runId: string) => schedulerManager?.cancelRun?.(runId) ?? null,
-    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
+    configuredProviderAuthConnectorKeys,
     logger,
     onScheduleMutation: () => schedulerManager?.refresh(),
-    providerAuthExchanger: opts.providerAuthExchanger ?? null,
+    providerAuthExchanger,
     runTargetRegistry,
     staticSecretAutoResume: opts.staticSecretAutoResume,
   } as unknown as ServerOpts);
@@ -6918,6 +6928,7 @@ export async function startServer(opts: ServerOpts = {}) {
     asIssuer: configuredAsIssuer || asPublicUrl,
     asPort,
     asPublicUrl,
+    configuredProviderAuthConnectorKeys,
     controller,
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     // Hybrid retrieval experimental extension knobs — see search-hybrid.js +

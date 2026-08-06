@@ -142,6 +142,19 @@ export interface StreamMetadata {
 }
 
 export interface ConnectorManifest {
+  capabilities?: {
+    auth?: {
+      deployment_config?: readonly string[] | null;
+      kind?: string | null;
+      mode?: string | null;
+      required?: readonly string[] | null;
+      type?: string | null;
+    } | null;
+    public_listing?: {
+      listed?: boolean | null;
+      status?: string | null;
+    } | null;
+  } | null;
   connector_id: string;
   connector_key?: string;
   display_name?: string;
@@ -787,6 +800,22 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
   const manifests = parsed.filter((m): m is ConnectorManifest => Boolean(m?.connector_id));
   manifests.sort((a, b) => a.connector_id.localeCompare(b.connector_id));
   return manifests;
+}
+
+/** Minimal owner-template projection used to reuse the reference planner's readiness decision. */
+export interface OwnerConnectorTemplate {
+  connector_key?: string | null;
+  setup_plan?: {
+    deployment_readiness?: {
+      state?: "needs_config" | "ready" | "not_applicable" | string | null;
+    } | null;
+    setup_modality?: string | null;
+  } | null;
+}
+
+export async function listOwnerConnectorTemplates(): Promise<OwnerConnectorTemplate[]> {
+  const body = (await authedFetch("/v1/owner/connector-templates")) as { data?: OwnerConnectorTemplate[] };
+  return Array.isArray(body.data) ? body.data : [];
 }
 
 export interface ConnectorOverview {

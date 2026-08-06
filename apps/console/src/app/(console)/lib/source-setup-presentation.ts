@@ -23,7 +23,7 @@
  * `owner-journey-slvp-realignment-plan-2026-06-10.md`.
  */
 
-import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
+import { type ConnectorCatalogEntry, isReadyProviderAuthorizationEntry } from "./connection-catalog.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -85,6 +85,9 @@ export type SourceSetupAvailability = "available_now" | "requires_server_setup" 
 
 /** Owner-facing picker order: actionable dispositions first, unsupported last. */
 export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
+  if (isReadyProviderAuthorizationEntry(entry)) {
+    return 5;
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return 0;
@@ -97,16 +100,16 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
     case "manual_upload_pending":
       return 4;
     case "provider_auth_deployment_blocked":
-      return 5;
+      return 6;
     case "browser_bound_runbook":
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
-      return 6;
+      return 7;
     case "api_network_unsupported":
     case "unknown_unsupported":
-      return 7;
-    default:
       return 8;
+    default:
+      return 9;
   }
 }
 
@@ -115,6 +118,12 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
   if (browserBoundWithStoredCredentials(entry)) {
     return {
       label: "Connect account",
+      tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
+    };
+  }
+  if (isReadyProviderAuthorizationEntry(entry)) {
+    return {
+      label: "Authorize account",
       tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
     };
   }
@@ -168,6 +177,9 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
   if (browserBoundWithStoredCredentials(entry)) {
     return "Sign in in the secure browser. Saving sign-in details is optional and may help with setup or repair, but one-time codes, passkeys, and other human steps still happen in the browser. Automatic reconnection is not guaranteed.";
   }
+  if (isReadyProviderAuthorizationEntry(entry)) {
+    return "Authorize this provider account in the provider's browser. The connection activates after authorization and account inventory succeed.";
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
@@ -209,6 +221,12 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
       label: "Connect account",
     };
   }
+  if (isReadyProviderAuthorizationEntry(entry)) {
+    return {
+      href: `/connect/provider-auth/${encodeURIComponent(entry.connectorKey)}`,
+      label: "Authorize account",
+    };
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return {
@@ -243,6 +261,9 @@ export function sourceSetupSecondaryAction(_entry: ConnectorCatalogEntry): Sourc
 }
 
 export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSetupAvailability {
+  if (isReadyProviderAuthorizationEntry(entry)) {
+    return "available_now";
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
     case "static_secret_connect":
@@ -263,6 +284,9 @@ export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSet
  * self-service add-another-account (the browser-bound dispositions).
  */
 export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSupport {
+  if (isReadyProviderAuthorizationEntry(entry)) {
+    return "self_service";
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
     case "static_secret_connect":
