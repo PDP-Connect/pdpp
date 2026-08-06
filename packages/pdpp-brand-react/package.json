@@ -19,7 +19,8 @@
   "dependencies": {
     "@base-ui/react": "^1.6.0",
     "class-variance-authority": "^0.7.1",
-    "@pdpp/brand": "workspace:*"
+    "@pdpp/brand": "workspace:*",
+    "@pdpp/display": "workspace:*"
   },
   "peerDependencies": {
     "next": "16.3.0-canary.93",

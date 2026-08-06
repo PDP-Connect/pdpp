@@ -165,6 +165,22 @@ export interface DashboardDataSource {
     rewindToFirstPage?: boolean;
     streams?: readonly string[];
     /**
+     * EXCLUDE scope ("is not" facet / `-con:`/`-stream:`), applied server-side.
+     * Mirrors the runtime client's `listExploreTimeline` in ref-client.ts — this
+     * type had silently dropped these params, and it stayed typechecked because
+     * every field here is optional.
+     */
+    excludeConnectionIds?: readonly string[];
+    excludeStreams?: readonly string[];
+    /**
+     * Page the Upcoming (future) projection to exhaustion. When set, the request
+     * pages ONLY the future set (the cursor carries the pinned snapshot + scope +
+     * per-partition positions), so `cursor`/`rewind`/scope are not sent.
+     */
+    upcomingCursor?: string | null;
+    /** Page-1 head size for the bounded Upcoming set, independent of `limit`. */
+    upcomingLimit?: number;
+    /**
      * Sort DIRECTION for the merged feed. "desc" (default) = newest-first;
      * "asc" = the `order=oldest` re-page (earliest record first, paging forward).
      */

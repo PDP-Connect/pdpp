@@ -37,7 +37,7 @@ import {
   Typed,
   TypedSm,
 } from "@pdpp/brand-react";
-import { traceRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
+import { traceRowLabel } from "@pdpp/display";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";

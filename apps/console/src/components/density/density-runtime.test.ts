@@ -10,7 +10,9 @@ import { buildDensityCookie, DENSITY_KEY, normalizeDensity } from "./density-sta
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PROVIDER_FILE = `${HERE}density-provider.tsx`;
 const LAYOUT_FILE = `${HERE}../../app/layout.tsx`;
+const BRAND_UTILITIES_FILE = `${HERE}../../../../../packages/pdpp-brand/utilities.css`;
 const BRAND_BASE_FILE = `${HERE}../../../../../packages/pdpp-brand/base.css`;
+const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/tokens/primitive.css`;
 
 const NEXT_HEADERS_IMPORT_RE = /from "next\/headers"/;
 const LAYOUT_NORMALIZES_DENSITY_RE = /normalizeDensity\(cookieStore\.get\(DENSITY_KEY\)\?\.value\)/;
@@ -21,9 +23,9 @@ const DOCUMENT_COOKIE_RE = /document\.cookie/;
 const DOCUMENT_DATASET_RE = /document\.documentElement\.dataset\.density = density/;
 const BUILD_COOKIE_RE = /buildDensityCookie\(next, secure\)/;
 const LOCAL_STORAGE_RE = /localStorage/;
-const ROW_PY_DEFAULT_RE = /--data-list-row-py:\s*0\.5rem/;
-const ROW_PY_COMPACT_RE = /html\[data-density="compact"\]\s*\{[\s\S]*--data-list-row-py:\s*0\.3125rem/;
-const ROW_CLASS_RE = /\.pdpp-data-list-row\s*\{[\s\S]*padding-block:\s*var\(--data-list-row-py\)/;
+const ROW_UTILITY_RE = /@utility\s+pdpp-data-list-row\s*\{\s*padding-block:\s*var\(--data-list-row-padding-block\)/;
+const ROW_DEFAULT_RE = /--data-list-row-padding-block:\s*0\.5rem/;
+const ROW_COMPACT_RE = /html\[data-density="compact"\]\s*\{\s*--data-list-row-padding-block:\s*0\.3125rem/;
 
 test("density normalization accepts compact and defaults to comfortable", () => {
   assert.equal(DENSITY_KEY, "pdpp-density");
@@ -50,7 +52,7 @@ test("root layout renders density from the cookie on html and seeds the provider
   assert.match(src, LAYOUT_NORMALIZES_DENSITY_RE);
   assert.match(src, HTML_DATA_DENSITY_RE);
   assert.match(src, DENSITY_PROVIDER_RE);
-  assert.equal(SUPPRESS_HYDRATION_RE.test(src), false);
+  assert.match(src, SUPPRESS_HYDRATION_RE, "next-themes owns the expected theme hydration delta on html");
 });
 
 test("density provider uses cookies as the only persisted source of truth", async () => {
@@ -62,10 +64,14 @@ test("density provider uses cookies as the only persisted source of truth", asyn
   assert.equal(LOCAL_STORAGE_RE.test(src), false);
 });
 
-test("brand CSS exposes a density row token and compact html override", async () => {
-  const src = await readFile(BRAND_BASE_FILE, "utf8");
+test("brand CSS owns data-list row density via token + utility", async () => {
+  const [utilities, base, primitive] = await Promise.all([
+    readFile(BRAND_UTILITIES_FILE, "utf8"),
+    readFile(BRAND_BASE_FILE, "utf8"),
+    readFile(BRAND_PRIMITIVE_FILE, "utf8"),
+  ]);
 
-  assert.match(src, ROW_PY_DEFAULT_RE);
-  assert.match(src, ROW_PY_COMPACT_RE);
-  assert.match(src, ROW_CLASS_RE);
+  assert.match(primitive, ROW_DEFAULT_RE);
+  assert.match(base, ROW_COMPACT_RE);
+  assert.match(utilities, ROW_UTILITY_RE);
 });

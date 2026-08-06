@@ -27,9 +27,7 @@ export function CopyButton({ value, ariaLabel, size = "sm", className }: CopyBut
 
   useEffect(
     () => () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
+      clearTimeout(timerRef.current ?? undefined);
     },
     []
   );
@@ -38,9 +36,7 @@ export function CopyButton({ value, ariaLabel, size = "sm", className }: CopyBut
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
+      clearTimeout(timerRef.current ?? undefined);
       timerRef.current = setTimeout(() => setCopied(false), RESET_MS);
     } catch {
       // Clipboard unavailable (insecure origin, permission denied). Fail silent —

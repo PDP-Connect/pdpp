@@ -9,10 +9,9 @@
  * renders the hero, status strip, and four sections.
  */
 
+import { formatSourceForDisplay, grantRowLabel, traceRowLabel } from "@pdpp/display";
 import Link from "next/link";
-import { formatSourceForDisplay } from "../../lib/connector-display.ts";
 import type { DatasetSummary, GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
-import { grantRowLabel, traceRowLabel } from "../../lib/summary-row-label.ts";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";
 import { OverviewHero } from "../overview-hero.tsx";

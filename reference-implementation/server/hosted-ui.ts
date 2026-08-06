@@ -10,7 +10,7 @@
  *
  * Design intent:
  *   - reuse the PDPP brand language (tokens, typography classes, semantic
- *     surfaces) from `packages/pdpp-brand/base.css`
+ *     surfaces) from `packages/pdpp-brand/` (`components.css` for surfaces)
  *   - no framework, no hydration — plain strings and one stylesheet
  *   - do not fork the design system for hosted pages; keep the hosted-ui
  *     layer minimal and clearly prefixed (`hosted-ui-*`)
@@ -255,7 +255,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   color: var(--muted-foreground);
 }
 
-/* ─── Semantic surfaces (match base.css) ────────────────────────────── */
+/* ─── Semantic surfaces (match @pdpp/brand/components.css) ──────────── */
 [data-surface="human"] {
   border-top: 1px solid var(--border);
   border-right: 1px solid var(--border);

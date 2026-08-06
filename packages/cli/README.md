@@ -114,7 +114,7 @@ After the package exists on npm, configure the trusted publisher with npm CLI
 
 ```bash
 # npm trust command for the @pdpp/cli package publisher config
-npm trust github @pdpp/cli --repo vana-com/pdpp --file semantic-release.yml
+npm trust github @pdpp/cli --repo PDP-Connect/pdpp --file semantic-release.yml
 npm trust list @pdpp/cli
 ```
 

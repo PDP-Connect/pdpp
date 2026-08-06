@@ -1,0 +1,45 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * StatusBadge presentation — co-located with the component so tone ownership
+ * lives next to StatusBadge, not in @pdpp/brand/utilities.css.
+ *
+ * Unlayered (not @utility): `.pdpp-eyebrow { color: var(--muted-foreground) }`
+ * is unlayered and beats @layer utilities. Base owns the composed presentation;
+ * tone classes only bind the CSS vars (border-shadow pattern). The Next bundler
+ * injects this after the app's brand stylesheet, so `.pdpp-status-badge` wins
+ * color over `.pdpp-eyebrow` at equal specificity.
+ *
+ * Tokens (--status-*-fg/bg/ring) stay in @pdpp/brand/tokens/primitive.css.
+ *
+ * Later: StatusBadge probably belongs in @pdpp/brand-react (that package already
+ * co-locates component CSS). Keep here until that move is intentional — don't
+ * half-migrate.
+ */
+
+.pdpp-status-badge {
+  color: var(--status-badge-fg);
+  background-color: var(--status-badge-bg);
+  box-shadow: inset 0 0 0 1px var(--status-badge-ring);
+}
+.pdpp-status-success {
+  --status-badge-fg: var(--status-success-fg);
+  --status-badge-bg: var(--status-success-bg);
+  --status-badge-ring: var(--status-success-ring);
+}
+.pdpp-status-danger {
+  --status-badge-fg: var(--status-danger-fg);
+  --status-badge-bg: var(--status-danger-bg);
+  --status-badge-ring: var(--status-danger-ring);
+}
+.pdpp-status-warning {
+  --status-badge-fg: var(--status-warning-fg);
+  --status-badge-bg: var(--status-warning-bg);
+  --status-badge-ring: var(--status-warning-ring);
+}
+.pdpp-status-neutral {
+  --status-badge-fg: var(--status-neutral-fg);
+  --status-badge-bg: var(--status-neutral-bg);
+  --status-badge-ring: var(--status-neutral-ring);
+}

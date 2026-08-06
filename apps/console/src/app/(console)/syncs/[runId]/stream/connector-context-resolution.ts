@@ -18,7 +18,7 @@
  * observable change from the pre-migration behavior.
  */
 
-import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorNameForDisplay } from "@pdpp/display";
 
 export interface ConnectorContext {
   connectorId: string;

@@ -39,14 +39,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Import the operator-ui helpers RELATIVELY (mirroring the sibling
-// `relationship-navigation-smoke.test.ts`, which reaches the bundled manifest the
-// same `../../../../../../../../packages/...` depth): the `@pdpp/operator-ui/...`
-// alias only resolves under the console's next/tsconfig toolchain, not in a plain
-// `node --import tsx` run, while the page itself imports via the alias (pinned by
-// the WIRING source-pin below).
-import { formatDeclaredAmount } from "../../../../../../../../packages/operator-ui/src/lib/record-field-format.ts";
-import type { DeclaredFieldTypes } from "../../../../../../../../packages/operator-ui/src/lib/record-kind.ts";
+import { type DeclaredFieldTypes, formatDeclaredAmount } from "@pdpp/display";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const LIST_PAGE = `${HERE}page.tsx`;
@@ -54,7 +47,7 @@ const LIST_PAGE = `${HERE}page.tsx`;
 // Source-pin regexes for the wiring tests, hoisted to module scope per the
 // project's `useTopLevelRegex` lint rule and the sibling
 // `relationship-navigation-smoke.test.ts` convention.
-const LIST_IMPORTS_FORMAT = /formatDeclaredAmount[\s\S]*from "@pdpp\/operator-ui\/lib\/record-field-format"/;
+const LIST_IMPORTS_FORMAT = /formatDeclaredAmount[\s\S]*from "@pdpp\/display"/;
 // Both cell surfaces must derive the amount from the value + the declared type
 // for that column, then fall back to plain stringification.
 const LIST_FORMATS_CELL_AMOUNT = /formatDeclaredAmount\(value, declaredFieldTypes\[column\]\)/;

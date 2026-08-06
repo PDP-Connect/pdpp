@@ -228,6 +228,26 @@
       ]
     },
     {
+      "id": "display",
+      "cwd": ".",
+      "loader": "node-test",
+      "authority_argument": null,
+      "execution": "direct",
+      "environment": {
+        "TSX_TSCONFIG_PATH": "packages/display/tsconfig.json"
+      },
+      "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
+      "command": [
+        "node",
+        "--test",
+        "--import",
+        "tsx",
+        "--test-reporter",
+        "scripts/test-accounting/node-reporter.ts"
+      ],
+      "include": ["packages/display/src/**/*.test.ts"]
+    },
+    {
       "id": "operator-ui",
       "cwd": ".",
       "loader": "node-test",
@@ -242,6 +262,8 @@
         "--test",
         "--import",
         "tsx",
+        "--import",
+        "./packages/operator-ui/css-stub-register.ts",
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
@@ -282,6 +304,8 @@
         "--test",
         "--import",
         "tsx",
+        "--import",
+        "./packages/operator-ui/css-stub-register.ts",
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],
@@ -300,6 +324,8 @@
         "--test",
         "--import",
         "tsx",
+        "--import",
+        "./packages/operator-ui/css-stub-register.ts",
         "--test-reporter",
         "scripts/test-accounting/node-reporter.ts"
       ],

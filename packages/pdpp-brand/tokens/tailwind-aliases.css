@@ -1,0 +1,93 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Tailwind default scale names remapped onto PDPP's semantic scale.
+ * @see https://tailwindcss.com/docs/theme#default-theme-variable-reference
+ * @see https://tailwindcss.com/docs/theme#theme-variable-namespaces
+ *
+ * Keep PDPP-owned theme registrations in semantic.css.
+ */
+
+@theme inline {
+  /* Text size aliases */
+  --text-xs: var(--text-caption);
+  --text-sm: var(--text-body);
+  --text-base: var(--text-body);
+  --text-lg: var(--text-body-lg);
+  --text-xl: var(--text-heading);
+  --text-2xl: var(--text-heading);
+  --text-3xl: var(--text-heading);
+  --text-4xl: var(--text-display);
+  --text-5xl: var(--text-display);
+  --text-6xl: var(--text-display-lg);
+  --text-7xl: var(--text-display-lg);
+  --text-8xl: var(--text-display-lg);
+  --text-9xl: var(--text-display-lg);
+
+  /* Text line-height aliases */
+  --text-xs--line-height: var(--text-caption--line-height);
+  --text-sm--line-height: var(--text-body--line-height);
+  --text-base--line-height: var(--text-body--line-height);
+  --text-lg--line-height: var(--text-body-lg--line-height);
+  --text-xl--line-height: var(--text-heading--line-height);
+  --text-2xl--line-height: var(--text-heading--line-height);
+  --text-3xl--line-height: var(--text-heading--line-height);
+  --text-4xl--line-height: var(--text-display--line-height);
+  --text-5xl--line-height: var(--text-display--line-height);
+  --text-6xl--line-height: var(--text-display-lg--line-height);
+  --text-7xl--line-height: var(--text-display-lg--line-height);
+  --text-8xl--line-height: var(--text-display-lg--line-height);
+  --text-9xl--line-height: var(--text-display-lg--line-height);
+
+  /* Text letter-spacing aliases */
+  --text-xs--letter-spacing: var(--text-caption--letter-spacing);
+  --text-sm--letter-spacing: var(--text-body--letter-spacing);
+  --text-base--letter-spacing: var(--text-body--letter-spacing);
+  --text-lg--letter-spacing: var(--text-body-lg--letter-spacing);
+  --text-xl--letter-spacing: var(--text-heading--letter-spacing);
+  --text-2xl--letter-spacing: var(--text-heading--letter-spacing);
+  --text-3xl--letter-spacing: var(--text-heading--letter-spacing);
+  --text-4xl--letter-spacing: var(--text-display--letter-spacing);
+  --text-5xl--letter-spacing: var(--text-display--letter-spacing);
+  --text-6xl--letter-spacing: var(--text-display-lg--letter-spacing);
+  --text-7xl--letter-spacing: var(--text-display-lg--letter-spacing);
+  --text-8xl--letter-spacing: var(--text-display-lg--letter-spacing);
+  --text-9xl--letter-spacing: var(--text-display-lg--letter-spacing);
+
+  /* Text font-weight aliases */
+  --text-xs--font-weight: var(--text-caption--font-weight);
+  --text-sm--font-weight: var(--text-body--font-weight);
+  --text-base--font-weight: var(--text-body--font-weight);
+  --text-lg--font-weight: var(--text-body-lg--font-weight);
+  --text-xl--font-weight: var(--text-heading--font-weight);
+  --text-2xl--font-weight: var(--text-heading--font-weight);
+  --text-3xl--font-weight: var(--text-heading--font-weight);
+  --text-4xl--font-weight: var(--text-display--font-weight);
+  --text-5xl--font-weight: var(--text-display--font-weight);
+  --text-6xl--font-weight: var(--text-display-lg--font-weight);
+  --text-7xl--font-weight: var(--text-display-lg--font-weight);
+  --text-8xl--font-weight: var(--text-display-lg--font-weight);
+  --text-9xl--font-weight: var(--text-display-lg--font-weight);
+
+  /* Radius aliases */
+  --radius-sm: calc(var(--radius) * 4 / 9);
+  --radius-md: calc(var(--radius) * 8 / 9);
+  --radius-lg: var(--radius-md);
+  --radius-xl: var(--radius-md);
+  --radius-2xl: var(--radius-md);
+  --radius-3xl: var(--radius-md);
+  --radius-4xl: var(--radius-md);
+}
+
+/* `rounded` and `rounded-full` are static Tailwind utilities, so they have no
+   theme variable to remap. This file is imported after Tailwind's utilities;
+   these compatibility selectors redirect the legacy names until callers move
+   to explicit PDPP semantic utilities. */
+.rounded {
+  border-radius: var(--radius-sm);
+}
+
+.rounded-full {
+  border-radius: var(--radius-pill);
+}

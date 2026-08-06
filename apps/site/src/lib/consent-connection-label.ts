@@ -21,13 +21,10 @@
  * suite, which executes `apps/site` TS directly
  * (`reference-implementation/test/consent-connection-label.test.js`).
  *
- * The placeholder-detection rule is the same one the operator console uses to
- * decide whether a connection still needs a label
- * (`apps/console/src/app/(console)/lib/connector-display.ts:isFallbackConnectionLabel`).
- * It is duplicated here rather than imported because the two apps are split
- * surfaces that do not share an internal package; the parity is asserted by
- * tests on both sides. If a shared `@pdpp/*` package later hosts this rule,
- * collapse both copies into it.
+ * `@pdpp/display` owns the shared operator presentation rules. This
+ * consent-specific mapper remains dependency-free because the reference suite
+ * executes it directly outside the site workspace; parity tests pin the small
+ * duplicated normalization rule until that runner can import workspace code.
  */
 
 const LOCAL_DEVICE_PREFIX = "local-device:";

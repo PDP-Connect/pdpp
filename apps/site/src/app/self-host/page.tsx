@@ -1,0 +1,261 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+import type { Metadata } from "next";
+import Link from "next/link";
+import { PdppCommandBuilder } from "@/components/pdpp-concept/command-tabs.tsx";
+import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
+import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
+import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
+import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
+import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
+import { Text } from "@/components/pdpp-concept/text.tsx";
+
+const SELF_HOST_TOC = [
+  { href: "#run", label: "Run it" },
+  { href: "#features", label: "What you get" },
+  { href: "#configuration", label: "Advanced configuration" },
+  { href: "#implementations", label: "Other implementations" },
+] as const;
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/self-host" },
+  description:
+    "Run your own personal data server. Query Gmail, GitHub, Notion, and more from Claude, ChatGPT, or Codex.",
+  openGraph: { url: "/self-host" },
+  title: "Self-Host - PDPP",
+};
+
+// SELF-HOST. One dominant command, built from outcome-level choices, then the
+// things a reader needs after it is running. No env var, port, profile, service
+// or image name appears above Advanced.
+//
+// THE BUILDER ITSELF lives in `command-tabs.tsx` and its commands come from
+// `@/lib/self-host-command.ts`, which is a pure module so the capability test
+// can assert against the exact command a reader copies rather than regexing
+// this file's JSX.
+//
+// WHAT WAS VERIFIED BY EXECUTION 2026-08-05, and what that ruled out:
+//   KEPT   the Compose path as the durable/operator alternative. Fetched by
+//          URL into an empty directory and booted end to end: postgres
+//          healthy, reference healthy, web serving, `/` 307 -> /owner/login,
+//          AS metadata 200, and chromium-1217 present inside the RUNNING
+//          reference container. The public-origin and keyword-only variants
+//          were booted too.
+//   GATED  the single-container `docker run` tab on PR #79's publication (see
+//          `CORE_PUBLISHED` in self-host-command.ts). Core is proven
+//          browser-capable — the built-image friend gate passed at head
+//          5e158736a with native Patchright/Chromium, ChatGPT setup, MCP
+//          read, semantic search, and restart persistence — but #79 is open,
+//          not merged, and `ghcr.io/pdp-connect/pdpp/core:main` /
+//          `core-browser:main` both fail anonymous manifest inspect today
+//          (DENIED/403, vs. 200 for the already-published reference-browser).
+//          Showing that command now would tell a reader it works when the
+//          image does not exist; the gate flips it on with one edit once the
+//          tag resolves.
+//   DROPPED releases/latest/download/docker-compose.yml. 404s — every release
+//          v1.0.0 to v1.0.4 shipped zero assets.
+//
+// RAILWAY IS LAST because a template link cannot carry variable values (its
+// documented deploy-URL params are attribution only), so it cannot honour the
+// choices above and says so instead of discarding them silently.
+const GITHUB_DOCKER_README = `${GITHUB_REPO_URL}/blob/main/deploy/docker/README.md`;
+const GITHUB_LOCAL_COLLECTOR = `${GITHUB_REPO_URL}/blob/main/docs/operator/local-collector-runbook.md`;
+
+const features = [
+  {
+    body: (
+      <>
+        Claude, ChatGPT, and Codex query your data over{" "}
+        <a href="https://modelcontextprotocol.io/" rel="noopener noreferrer" target="_blank">
+          MCP
+        </a>
+        .
+      </>
+    ),
+    title: "MCP built in",
+  },
+  { body: <>Gmail, GitHub, Notion, Oura, YNAB, and more.</>, title: "33 sources" },
+  { body: <>Full text and semantic, on by default. Nothing to switch on.</>, title: "Search included" },
+  { body: <>Give a client read access to the fields you pick. Revoke it anytime.</>, title: "Scoped grants" },
+  {
+    // Browser support is included, not optional: 14 of the 33 connectors
+    // cannot sign in without it. When a sign-in needs a human — a code, a
+    // confirmation — the browser is streamed to your dashboard so you can
+    // take over. Verified in the code: the runtime registers a page-target
+    // CDP stream per run and the controller mints its token on every run.
+    body: <>Amazon, ChatGPT and USAA sign in through a browser you can watch and take over.</>,
+    title: "Browser sources included",
+  },
+  {
+    // The default is durable SQLite on a volume, which is the whole point of
+    // running a data SERVER rather than a cache — but the page never said so
+    // in those terms until now. One line, same discipline as every other row
+    // here: state the fact, not the mechanism.
+    body: <>Your records stay on the machine you run it on, and survive a restart.</>,
+    title: "Yours",
+  },
+] as const;
+
+const configuration = [
+  // NEVER a concrete localhost value here. This column's job is "the default
+  // an unmodified deployment actually has," and PDPP_REFERENCE_ORIGIN's only
+  // job is to be a real public HTTPS origin — `http://localhost:3000` reads
+  // as a plausible copy-pasteable default but can never satisfy that job, so
+  // showing it risks a reader shipping a broken OAuth metadata origin. Shown
+  // as a placeholder shape instead, same idiom as PUBLIC_URL_PLACEHOLDER in
+  // the command builder above.
+  { default: "https://your-host", name: "PDPP_REFERENCE_ORIGIN", sets: "Public origin in OAuth metadata" },
+  { default: "generated", name: "PDPP_OWNER_PASSWORD", sets: "Dashboard sign-in" },
+  { default: "—", name: "PDPP_DATABASE_URL", sets: "Postgres instead of SQLite" },
+  { default: "/var/lib/pdpp/pdpp.sqlite", name: "PDPP_DB_PATH", sets: "SQLite location" },
+] as const;
+
+const implementations = [
+  {
+    href: `${GITHUB_REPO_URL}/tree/main/reference-implementation`,
+    linkLabel: "Source",
+    name: "Reference implementation",
+    type: "Authorization server and resource server",
+  },
+  { href: "https://dtinit.org", linkLabel: "DTI", name: "Data Connect", type: "Portability and transfer interface" },
+  { href: "https://vana.org/", linkLabel: "Vana", name: "Vana network", type: "Deployed personal-data network" },
+] as const;
+
+export default function ReferencePage() {
+  return (
+    <>
+      <PdppConceptPage>
+        <PdppRail toc={SELF_HOST_TOC} />
+        <PdppConceptDoc>
+          <PdppConceptDocHeader
+            lede="Your own personal data server. Ask Claude, ChatGPT, or Codex about your Gmail, GitHub, Notion, and 30 more."
+            title="Self-Host"
+          />
+
+          <section className="pdpp-section pdpp-section--lead" id="run">
+            <Text as="h2" intent="title" sectionIndex="01">
+              Run it
+            </Text>
+            <PdppCommandBuilder />
+
+            <Text className="mt-3.5!" intent="callout">
+              A tool running on this machine reaches the node directly. Anything hosted elsewhere, including web
+              assistants, calls from its own servers and needs the public address above.
+            </Text>
+          </section>
+
+          <section className="pdpp-section" id="features">
+            <Text as="h2" intent="title" sectionIndex="02">
+              What you get
+            </Text>
+            <ul className="pdpp-features">
+              {features.map((feature) => (
+                <li key={feature.title}>
+                  <Text as="span" color="ink" intent="body" weight="semi">
+                    {feature.title}
+                  </Text>{" "}
+                  <Text as="span" color="ink" intent="body">
+                    {feature.body}
+                  </Text>
+                </li>
+              ))}
+            </ul>
+            <Text intent="callout">
+              Data that only lives on your machine, like Claude Code or Codex history, is ingested by the{" "}
+              <a href={GITHUB_LOCAL_COLLECTOR} rel="noopener noreferrer" target="_blank">
+                local collector →
+              </a>
+            </Text>
+          </section>
+
+          <section className="pdpp-section" id="configuration">
+            <Text as="h2" intent="title" sectionIndex="03">
+              Advanced configuration
+            </Text>
+            <table className="pdpp-impl-table pdpp-config-table">
+              <thead>
+                <tr>
+                  <th scope="col">Setting</th>
+                  <th scope="col">Default</th>
+                  <th scope="col">Sets</th>
+                </tr>
+              </thead>
+              <tbody>
+                {configuration.map((row) => (
+                  <tr key={row.name}>
+                    <td>
+                      <code>{row.name}</code>
+                    </td>
+                    <td>{row.default === "—" ? "—" : <code>{row.default}</code>}</td>
+                    <td>{row.sets}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Text intent="body">
+              Serving a domain? Put HTTPS in front and set the public origin to match. Full runbook:{" "}
+              <a href={GITHUB_DOCKER_README} rel="noopener noreferrer" target="_blank">
+                deploy/docker/README.md →
+              </a>
+            </Text>
+          </section>
+
+          <section className="pdpp-section" id="implementations">
+            <Text as="h2" intent="title" sectionIndex="04">
+              Other implementations
+            </Text>
+            <table className="pdpp-impl-table">
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">
+                    <span className="pdpp-visually-hidden">Link</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {implementations.map((impl) => (
+                  <tr key={impl.name}>
+                    <td>{impl.name}</td>
+                    <td>{impl.type}</td>
+                    <td>
+                      <a href={impl.href} rel="noopener noreferrer" target="_blank">
+                        {impl.linkLabel} →
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Text intent="body">
+              The specification defines conformance by role in{" "}
+              <Link className="link-prose" href="/specification/spec-core#conformance">
+                section 9
+              </Link>
+              .
+            </Text>
+            <p>
+              <a
+                className="group inline-flex items-center gap-1.5 text-teal no-underline hover:text-teal-deep focus-visible:text-teal-deep"
+                href={GITHUB_ISSUES_URL}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                <GithubIcon />
+                <span className="link-prose group-hover:border-teal group-focus-visible:border-teal">
+                  Open an issue on GitHub
+                </span>
+                <span aria-hidden="true">→</span>
+              </a>
+            </p>
+          </section>
+        </PdppConceptDoc>
+      </PdppConceptPage>
+
+      <PdppConceptFooter />
+    </>
+  );
+}

@@ -29,10 +29,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const COMPONENT_PATH = new URL("../src/components/reference-app.tsx", import.meta.url);
-const BRAND_BASE_PATH = new URL("../../../packages/pdpp-brand/base.css", import.meta.url);
+const BRAND_MOTION_PATH = new URL("../../../packages/pdpp-brand/tokens/motion.css", import.meta.url);
 
 const MATCH_MEDIA_REDUCED_MOTION_RE = /matchMedia\(\s*["']\(prefers-reduced-motion: reduce\)["']\s*\)/;
-const REDUCED_JUMPS_TO_RESULT_RE = /prefersReduced\.current[\s\S]*?setPhase\(\s*["']result["']\s*\)/;
+const REDUCED_JUMPS_TO_RESULT_RE = /if\s*\(\s*prefersReduced\s*\)[\s\S]*?setPhase\(\s*["']result["']\s*\)/;
 const REDUCED_DURATION_ZEROES_RE = /reduced\s*\?\s*0\s*:\s*PROJECTION_DURATION_MS/;
 const REDUCED_STAGGER_ZEROES_RE = /reduced\s*\?\s*0\s*:\s*PROJECTION_STAGGER_MS/;
 const PROJECTION_DURATION_CONST_RE = /const PROJECTION_DURATION_MS\s*=\s*(\d+)/;
@@ -116,9 +116,13 @@ test("grant filter reads as a protocol fact via authorship tokens, no literals",
   assert.doesNotMatch(projectionSrc, HARDCODED_COLOR_LITERAL_RE, "set-piece must not hardcode colour literals");
 });
 
-test("brand base.css zeroes durations under prefers-reduced-motion", async () => {
-  const src = await readFile(fileURLToPath(BRAND_BASE_PATH), "utf8");
-  // The reduced-motion media query must collapse --duration-base (which the
-  // --motion-projection token and the set-piece both build on).
-  assert.match(src, REDUCED_MOTION_ZEROES_DURATION_BASE_RE, "base.css must zero --duration-base under reduced motion");
+test("brand motion policy zeroes durations under prefers-reduced-motion", async () => {
+  const src = await readFile(fileURLToPath(BRAND_MOTION_PATH), "utf8");
+  // The reduced-motion media query must collapse the base duration used by the
+  // set-piece and semantic motion intent.
+  assert.match(
+    src,
+    REDUCED_MOTION_ZEROES_DURATION_BASE_RE,
+    "motion.css must zero --duration-base under reduced motion"
+  );
 });

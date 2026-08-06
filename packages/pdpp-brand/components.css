@@ -1,0 +1,31 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Named presentation patterns keyed by data-surface. `@layer components` so
+ * utilities can still override at call sites.
+ *
+ * Human/protocol: flat card tint + 1px border. Authorship is carried by type
+ * (mono vs grotesk), not a colored left stripe — matches Ink Carbon.
+ */
+
+@layer components {
+  [data-surface="stage"] {
+    background-image: radial-gradient(
+      circle,
+      var(--stage-dot) 1px,
+      transparent 1px
+    );
+    @apply bg-muted bg-[length:20px_20px];
+  }
+
+  [data-surface="human"] {
+    @apply border border-border;
+    @apply bg-[color-mix(in_oklab,var(--card)_95%,var(--human))];
+  }
+
+  [data-surface="protocol"] {
+    @apply border border-border;
+    @apply bg-[color-mix(in_oklab,var(--card)_95%,var(--primary))];
+  }
+}

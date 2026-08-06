@@ -312,8 +312,8 @@
   border: 1.5px solid var(--foreground);
   border-radius: var(--radius-control);
   transition:
-    background var(--motion-state),
-    border-color var(--motion-state);
+    background var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard);
 }
 .pdpp-btn:focus {
   outline: none;
@@ -377,7 +377,7 @@
   background: var(--card);
   border: 1px solid var(--input);
   border-radius: var(--radius-control);
-  transition: border-color var(--motion-state);
+  transition: border-color var(--duration-state) var(--ease-standard);
 }
 .pdpp-input:focus {
   outline: none;
@@ -444,7 +444,7 @@
   background: var(--card);
   border: 1px solid var(--input);
   border-radius: var(--radius-control);
-  transition: border-color var(--motion-state);
+  transition: border-color var(--duration-state) var(--ease-standard);
 }
 .pdpp-select__trigger:focus-visible {
   outline: 2px solid var(--ring);
@@ -495,7 +495,7 @@
   box-shadow: 0 8px 24px -6px
     color-mix(in oklab, var(--foreground) 28%, transparent);
   /* Fade on open/close (base-ui data attrs). */
-  transition: opacity var(--motion-state);
+  transition: opacity var(--duration-state) var(--ease-standard);
 }
 .pdpp-select-popup[data-starting-style],
 .pdpp-select-popup[data-ending-style] {
@@ -522,7 +522,7 @@
   cursor: pointer;
   user-select: none;
   outline: none;
-  transition: background var(--motion-state);
+  transition: background var(--duration-state) var(--ease-standard);
 }
 /* Highlighted (keyboard or pointer hover) */
 .pdpp-select-item[data-highlighted] {
@@ -574,7 +574,7 @@
   inset: 0;
   z-index: 50;
   background: color-mix(in oklab, var(--foreground) 32%, transparent);
-  transition: opacity var(--motion-state);
+  transition: opacity var(--duration-state) var(--ease-standard);
 }
 .pdpp-dialog-backdrop[data-starting-style],
 .pdpp-dialog-backdrop[data-ending-style] {
@@ -601,8 +601,8 @@
     color-mix(in oklab, var(--foreground) 40%, transparent);
   transform: translate(-50%, -50%);
   transition:
-    opacity var(--motion-state),
-    transform var(--motion-state);
+    opacity var(--duration-state) var(--ease-standard),
+    transform var(--duration-state) var(--ease-standard);
 }
 .pdpp-dialog[data-starting-style],
 .pdpp-dialog[data-ending-style] {
@@ -682,19 +682,10 @@
   letter-spacing: 0.04em;
 }
 
-/* ─── Surface wrappers — flat tints, no accent stripe, no gradient ──
-   Temperature surfaces. The author shows in the VOICE (mono vs grotesk),
-   not in a colored stripe. */
-[data-surface="human"] {
-  background-color: color-mix(in oklab, var(--card) 95%, var(--human));
-  border: 1px solid var(--border);
-}
-[data-surface="protocol"] {
-  background-color: color-mix(in oklab, var(--card) 95%, var(--primary));
-  border: 1px solid var(--border);
-}
-/* Legacy class aliases */
+/* ─── Surface wrappers — owned by @pdpp/brand/components.css ─────────
+   Keep class aliases here for call sites that still use .pdpp-surface-*. */
 .pdpp-surface-human {
+  /* Same recipe as [data-surface="human"] in @pdpp/brand/components.css */
   background-color: color-mix(in oklab, var(--card) 95%, var(--human));
   border: 1px solid var(--border);
 }
@@ -703,62 +694,8 @@
   border: 1px solid var(--border);
 }
 
-/* ─── Type scale — utility classes ──────────────────────────────────
-   For cases where you need a type step without a full semantic component.
-   Mono = protocol (IDs, scopes, timestamps, terms).
-   Grotesk = human (labels, descriptions, UI copy). */
-.pdpp-display-lg {
-  font-family: var(--font-sans);
-  font-size: 3.75rem;
-  font-weight: 700;
-  line-height: 1.04;
-  letter-spacing: -0.028em;
-}
-.pdpp-display {
-  font-family: var(--font-sans);
-  font-size: 2.5rem;
-  font-weight: 700;
-  line-height: 1.08;
-  letter-spacing: -0.022em;
-}
-.pdpp-heading {
-  font-family: var(--font-sans);
-  font-size: 1.25rem;
-  font-weight: 700;
-  line-height: 1.3;
-  letter-spacing: -0.012em;
-}
-.pdpp-title {
-  font-family: var(--font-sans);
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.pdpp-body-lg {
-  font-family: var(--font-sans);
-  font-size: 1.125rem;
-  font-weight: 400;
-  line-height: 1.6;
-}
-.pdpp-body {
-  font-family: var(--font-sans);
-  font-size: 0.875rem;
-  font-weight: 400;
-  line-height: 1.6;
-}
-.pdpp-label {
-  font-family: var(--font-sans);
-  font-size: 0.75rem;
-  font-weight: 500;
-  line-height: 1.4;
-}
-.pdpp-caption {
-  font-family: var(--font-sans);
-  font-size: 0.75rem;
-  font-weight: 400;
-  line-height: 1.5;
-}
-/* The protocol's own voice */
+/* Protocol-data compatibility classes. The shared .pdpp-* typography aliases
+   live in @pdpp/brand/typography.css. */
 .pdpp-typed {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
@@ -773,15 +710,6 @@
   font-variant-numeric: tabular-nums;
   line-height: 1.5;
 }
-.pdpp-eyebrow {
-  font-family: var(--font-sans);
-  font-size: 0.67rem;
-  font-weight: 500;
-  color: var(--muted-foreground);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-}
-
 /* ─── Focus policy — rings only for keyboards ─────────────────────── */
 .pdpp-sheet button:focus,
 .pdpp-table button:focus,
@@ -966,7 +894,7 @@
   cursor: pointer;
   background: none;
   border: 0;
-  transition: color var(--motion-state);
+  transition: color var(--duration-state) var(--ease-standard);
 }
 .rr-copyid:hover {
   color: var(--primary);
@@ -1318,7 +1246,7 @@
 /* biome-ignore lint/style/noDescendingSpecificity: the preceding open-state selector intentionally wins by higher specificity. */
 .rr-sync-row {
   cursor: pointer;
-  transition: background var(--motion-state);
+  transition: background var(--duration-state) var(--ease-standard);
 }
 .rr-sync-row:hover {
   background: var(--muted);
@@ -1713,7 +1641,7 @@
   background: none;
   border: 0;
   opacity: 0;
-  transition: opacity var(--motion-state);
+  transition: opacity var(--duration-state) var(--ease-standard);
 }
 .rr-rel:hover .rr-rel__revoke,
 .rr-rel:focus-within .rr-rel__revoke {
@@ -2034,8 +1962,8 @@
   border: 0;
   border-radius: var(--radius-control);
   transition:
-    background var(--motion-state),
-    color var(--motion-state);
+    background var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard);
 }
 .rr-x-views-tab:hover {
   color: var(--foreground);
@@ -2072,8 +2000,8 @@
   border: 0;
   opacity: 0;
   transition:
-    opacity var(--motion-state),
-    color var(--motion-state);
+    opacity var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard);
 }
 .rr-x-views-tab-wrap:hover .rr-x-views-tab__del,
 .rr-x-views-tab__del:focus-visible {
@@ -2161,7 +2089,7 @@
   background: var(--input);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  transition: border-color var(--motion-state);
+  transition: border-color var(--duration-state) var(--ease-standard);
 }
 .rr-x-facets__search::placeholder {
   color: var(--muted-foreground);
@@ -2186,7 +2114,7 @@
   color: var(--muted-foreground);
   cursor: pointer;
   list-style: none;
-  transition: color var(--motion-state);
+  transition: color var(--duration-state) var(--ease-standard);
 }
 .rr-x-source-group__summary::-webkit-details-marker {
   display: none;
@@ -2200,7 +2128,7 @@
   font-size: 9px;
   color: var(--muted-foreground);
   content: "▸";
-  transition: transform var(--motion-state);
+  transition: transform var(--duration-state) var(--ease-standard);
 }
 .rr-x-source-group[open] > .rr-x-source-group__summary::before {
   transform: rotate(90deg);
@@ -2238,7 +2166,7 @@
   cursor: pointer;
   background: none;
   border: 0;
-  transition: color var(--motion-state);
+  transition: color var(--duration-state) var(--ease-standard);
 }
 .rr-x-source-group__more:hover {
   color: var(--foreground);
@@ -2255,7 +2183,7 @@
   cursor: pointer;
   background: none;
   border: 0;
-  transition: color var(--motion-state);
+  transition: color var(--duration-state) var(--ease-standard);
 }
 .rr-x-facet:hover {
   color: var(--foreground);
@@ -2330,8 +2258,8 @@
   border: 0;
   opacity: 0.45;
   transition:
-    opacity var(--motion-state),
-    color var(--motion-state);
+    opacity var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard);
 }
 .rr-x-facet-row:hover .rr-x-facet-not {
   opacity: 0.8;
@@ -2371,8 +2299,8 @@
   background: none;
   border: 1px solid var(--border-strong);
   transition:
-    color var(--motion-state),
-    border-color var(--motion-state);
+    color var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard);
 }
 .rr-lens:hover {
   color: var(--foreground);
@@ -2469,8 +2397,8 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   transition:
-    border-color var(--motion-state),
-    background var(--motion-state);
+    border-color var(--duration-state) var(--ease-standard),
+    background var(--duration-state) var(--ease-standard);
 }
 .rr-x-datechip__chip:hover {
   border-color: var(--border-strong);
@@ -2492,7 +2420,7 @@
   cursor: pointer;
   background: none;
   border: 0;
-  transition: color var(--motion-state);
+  transition: color var(--duration-state) var(--ease-standard);
 }
 .rr-x-datechip__chip:hover .rr-x-datechip__trigger,
 .rr-x-datechip__chip.is-active .rr-x-datechip__trigger {
@@ -2564,8 +2492,8 @@
   border: 0;
   border-radius: var(--radius-control);
   transition:
-    background var(--motion-state),
-    color var(--motion-state);
+    background var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard);
 }
 .rr-x-datechip__preset:hover {
   background: color-mix(in oklab, var(--foreground) 5%, transparent);
@@ -2638,7 +2566,7 @@
   background: var(--primary);
   border: 1px solid var(--primary);
   border-radius: var(--radius-control);
-  transition: opacity var(--motion-state);
+  transition: opacity var(--duration-state) var(--ease-standard);
 }
 .rr-x-datechip__apply:hover:not(:disabled) {
   opacity: 0.9;
@@ -2748,8 +2676,8 @@
   background: none;
   border: 1px solid var(--border-strong);
   transition:
-    color var(--motion-state),
-    border-color var(--motion-state);
+    color var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard);
 }
 .rr-x-queryinput__chevron:hover {
   color: var(--foreground);
@@ -3055,8 +2983,8 @@
   background: color-mix(in oklab, var(--primary-tint) 60%, var(--background));
   border-right: 1px solid color-mix(in oklab, var(--primary) 20%, transparent);
   transition:
-    background var(--motion-state),
-    color var(--motion-state);
+    background var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard);
 }
 .rr-x-chip__op[role="button"] {
   cursor: pointer;
@@ -3099,8 +3027,8 @@
   border: none;
   opacity: 0.7;
   transition:
-    opacity var(--motion-state),
-    background var(--motion-state);
+    opacity var(--duration-state) var(--ease-standard),
+    background var(--duration-state) var(--ease-standard);
 }
 .rr-x-chip__x:hover {
   background: color-mix(in oklab, var(--primary) 15%, var(--background));
@@ -3305,8 +3233,8 @@
   background: var(--foreground);
   opacity: 0.82;
   transition:
-    opacity var(--motion-state),
-    background var(--motion-state);
+    opacity var(--duration-state) var(--ease-standard),
+    background var(--duration-state) var(--ease-standard);
 }
 .rr-x-chart__bar.is-empty .rr-x-chart__bar-fill {
   /* An empty bucket is an explicit faint baseline tick — present, never a gap. */
@@ -3527,7 +3455,7 @@
   cursor: pointer;
   background: transparent;
   border: 0;
-  transition: color var(--motion-state);
+  transition: color var(--duration-state) var(--ease-standard);
 }
 .rr-x-burst__toggle:hover {
   color: var(--foreground);
@@ -3553,7 +3481,7 @@
 .rr-x-row {
   position: relative;
   display: flex;
-  gap: var(--space-3);
+  gap: calc(var(--spacing) * 3);
   align-items: flex-start;
   width: 100%;
   min-width: 0;
@@ -3576,8 +3504,8 @@
      shadow) are paint-only — zero layout shift, no reflow of the feed. The token
      collapses to an instant cut under reduced-motion (base.css zeroes --duration-*). */
   transition:
-    background var(--motion-state),
-    box-shadow var(--motion-state);
+    background var(--duration-state) var(--ease-standard),
+    box-shadow var(--duration-state) var(--ease-standard);
 }
 /* Reset anchor chrome when .rr-x-row is used on an <a> (mobile push nav). */
 a.rr-x-row {
@@ -3677,7 +3605,7 @@ a.rr-x-row {
   border-color: var(--primary);
 }
 /* Primary tier: content line, 14px / 500 / full foreground, SANS. The 500 weight
-   (not 600) matches the verified target type scale (Geist label-14 / Primer
+   (not 600) matches the verified target type scale (Inter label-14 / Primer
    body-medium): primary by color + a restrained weight step, never heavy. This is
    what flips the list from "terminal" to "product". */
 .rr-x-row__title {
@@ -3865,7 +3793,7 @@ a.rr-x-row {
    re-rendering" signals while a `useTransition` is pending.
 
    MOTION = design-system tokens ONLY. Token-based TRANSITIONS collapse under the
-   `:root` reduced-motion duration reset in base.css (--motion-state etc.).
+   shared reduced-motion duration reset in motion.css.
    KEYFRAME animations do NOT — base.css only zeroes the duration tokens — so
    every keyframe here (the indeterminate slide, the spinner) is gated behind
    `@media (prefers-reduced-motion: no-preference)` and falls back to a STATIC,
@@ -3907,7 +3835,7 @@ a.rr-x-row {
 @media (prefers-reduced-motion: no-preference) {
   .rr-x-progress {
     /* Token-based one-shot fade-in; only when motion is allowed. */
-    animation: fade-in var(--motion-enter) both;
+    animation: fade-in var(--duration-enter) var(--ease-enter) both;
   }
   .rr-x-progress__bar {
     animation: rr-x-progress-slide calc(var(--duration-slow) * 3)
@@ -3942,9 +3870,9 @@ a.rr-x-row {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
   transition:
-    color var(--motion-state),
-    border-color var(--motion-state),
-    opacity var(--motion-state);
+    color var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard),
+    opacity var(--duration-state) var(--ease-standard);
 }
 .rr-x-loadmore:hover:not(:disabled) {
   color: var(--primary);
@@ -3994,7 +3922,7 @@ a.rr-x-row {
     );
     background-size: 200% 100%;
     animation:
-      fade-in var(--motion-enter) both,
+      fade-in var(--duration-enter) var(--ease-enter) both,
       rr-x-row-pending-sweep calc(var(--duration-slow) * 3) var(--ease-standard)
       infinite;
   }
@@ -4046,7 +3974,7 @@ a.rr-x-row {
 @media (prefers-reduced-motion: no-preference) {
   .rr-x-loadmore-skeleton {
     /* One-shot token fade-in on appear (matches rr-x-progress / rr-x-row__pending). */
-    animation: fade-in var(--motion-enter) both;
+    animation: fade-in var(--duration-enter) var(--ease-enter) both;
   }
   .rr-x-skel-bar {
     /* Reuse the existing brand shimmer sweep keyframe + cadence (the documented
@@ -4161,7 +4089,7 @@ a.rr-x-row {
   .rr-x-upcoming__body,
   .rr-x-burst__rows,
   .rr-x-day {
-    animation: rr-x-reveal var(--motion-enter) var(--ease-standard) both;
+    animation: rr-x-reveal var(--duration-enter) var(--ease-enter) both;
   }
 }
 @keyframes rr-x-reveal {
@@ -4211,9 +4139,9 @@ a.rr-x-row {
   border-radius: var(--radius-control);
   opacity: 0;
   transition:
-    opacity var(--motion-state),
-    color var(--motion-state),
-    border-color var(--motion-state);
+    opacity var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard);
 }
 .rr-x-row-wrap--desktop:hover .rr-x-row-open,
 .rr-x-row-wrap--desktop:focus-within .rr-x-row-open,
@@ -4357,7 +4285,7 @@ a.rr-x-row {
   background: transparent;
   border: 0;
   border-radius: var(--radius-control);
-  transition: background var(--motion-state);
+  transition: background var(--duration-state) var(--ease-standard);
 }
 .rr-x-zero__action:hover {
   background: color-mix(in oklab, var(--primary) 6%, transparent);
@@ -5056,8 +4984,8 @@ a.rr-x-row {
   border: 0;
   border-bottom: 1px solid var(--border);
   transition:
-    background var(--motion-state),
-    box-shadow var(--motion-state);
+    background var(--duration-state) var(--ease-standard),
+    box-shadow var(--duration-state) var(--ease-standard);
 }
 .rr-s-item:hover {
   background: var(--muted);

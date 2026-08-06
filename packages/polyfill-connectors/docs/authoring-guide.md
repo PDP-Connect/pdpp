@@ -19,12 +19,13 @@ connectors/<name>/
 ```
 
 Captured live fixtures live at `fixtures/<name>/raw/` (gitignored).
-The scrubber (`bin/scrub-fixtures.ts`) produces
-`fixtures/<name>/scrubbed/` (not ignored). Commit scrubbed fixtures only
-after running the scrubber and reviewing the output by eye. For free-form
-text that regexes cannot safely classify, pass reviewed structured plans
-with `--llm-redactions-dir`; the scrubber validates those plans locally and
-fails closed without calling an API.
+The scrubber (`bin/scrub-fixtures.ts`) writes to
+`fixtures/<name>/scrubbed/<runId>/`, which is gitignored by default.
+Only the curated `fixtures/<name>/scrubbed/pilot-real-shape/` fixture is
+committable, and only after running the scrubber and reviewing the output
+by eye. For free-form text that regexes cannot safely classify, pass
+reviewed structured plans with `--llm-redactions-dir`; the scrubber
+validates those plans locally and fails closed without calling an API.
 
 ## The runConnector contract
 

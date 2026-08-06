@@ -11,7 +11,7 @@
  * cannot load under the test runner). It inlines the same non-null
  * stringification `stringifyCell` performs so the two stay behavior-identical.
  */
-import { formatDeclaredAmount } from "@pdpp/operator-ui/lib/record-field-format";
+import { formatDeclaredAmount } from "@pdpp/display";
 
 export const ROW_DT = "pdpp-caption truncate text-muted-foreground font-mono";
 export const ROW_DD = "pdpp-caption break-words";

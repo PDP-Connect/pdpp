@@ -1,6 +1,13 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+  formatConnectorKeyForDisplay,
+  formatConnectorNameForDisplay,
+  humanizeFieldLabel,
+  type RecordKind,
+  type RecordPreview,
+} from "@pdpp/display";
 /**
  * Records explorer view.
  *
@@ -15,10 +22,6 @@
  */
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
-import { humanizeFieldLabel } from "../../lib/field-label.ts";
-import type { RecordKind } from "../../lib/record-kind.ts";
-import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
 import { Button, buttonVariants } from "../../ui/button.tsx";
 import { Input } from "../../ui/input.tsx";

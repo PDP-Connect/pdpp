@@ -5,11 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { IcTimestamp, parseTimestampValue } from "./timestamp.tsx";
+import { IcTimestamp } from "./timestamp.tsx";
 
 // IcTimestamp must render a <time> element in the mono token voice and stay
 // SSR-stable (absolute label on the server; relative is a post-mount upgrade).
-// These render checks pin both the markup contract and the parse logic.
+// These render checks pin the markup contract; pure parsing is tested in
+// @pdpp/display.
 
 const TIME_EL = /<time[^>]*class="[^"]*pdpp-timestamp/;
 // React 19's renderToStaticMarkup preserves the JSX prop name casing (`dateTime`)
@@ -47,13 +48,4 @@ test("IcTimestamp merges a caller className onto the token class", () => {
     createElement(IcTimestamp, { className: "text-right", value: "2024-01-02T03:04:05Z" })
   );
   assert.match(html, MERGED_CLASS);
-});
-
-test("parseTimestampValue returns null for unparseable input and a Date for valid instants", () => {
-  assert.equal(parseTimestampValue(""), null);
-  assert.equal(parseTimestampValue("not-a-date"), null);
-  const parsed = parseTimestampValue("2024-01-02T03:04:05Z");
-  assert.ok(parsed);
-  assert.equal(parsed.kind, "instant");
-  assert.equal(parsed.date.toISOString(), "2024-01-02T03:04:05.000Z");
 });

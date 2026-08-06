@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { classifyRecordKind } from "@pdpp/operator-ui/lib/record-kind";
+import { classifyRecordKind } from "@pdpp/display";
 import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
 import { sandboxDashboardDataSource as ds } from "./data-source.ts";
 import { createSandboxRefDatasetSummaryDependencies } from "./operations-fixtures.ts";

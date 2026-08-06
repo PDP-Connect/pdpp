@@ -120,7 +120,7 @@ export default function DesignSystemPage() {
       <Hero
         actions={
           <div className="flex flex-wrap gap-1.5">
-            {["Tailwind v4", "shadcn base-nova", "Base UI", "Geist", "JetBrains Mono"].map((t) => (
+            {["Tailwind v4", "shadcn base-nova", "Base UI", "Inter", "JetBrains Mono", "Newsreader"].map((t) => (
               <span
                 className="rounded px-2 py-0.5 font-mono text-[10px]"
                 key={t}
@@ -146,7 +146,7 @@ export default function DesignSystemPage() {
         {/* Bottom-left quadrant — sticky nav */}
         <aside
           className="sticky top-12 hidden h-[calc(100vh-3rem)] shrink-0 flex-col overflow-y-auto md:flex"
-          style={{ borderRight: "1px solid var(--border)", width: "var(--pdpp-sidebar-width)" }}
+          style={{ borderRight: "1px solid var(--border)", width: "var(--spacing-sidebar)" }}
         >
           <div className="px-3 py-6">
             <div
@@ -460,7 +460,7 @@ function BrandSection() {
       </div>
 
       <RuleBlock>
-        Plate I is the canonical mark. The wordmark pairs the mark with &ldquo;PDPP&rdquo; in Geist (the system sans);
+        Plate I is the canonical mark. The wordmark pairs the mark with &ldquo;PDPP&rdquo; in Inter (the system sans);
         don&rsquo;t typeset it in serif, italic, or all lowercase. Below 20&thinsp;px the mark reduces to the
         two-rectangle favicon form automatically &mdash; don&rsquo;t force the full P at favicon sizes.
       </RuleBlock>
@@ -856,14 +856,14 @@ function TypographySection() {
   return (
     <SectionWrap id="typography">
       <SectionHeader
-        description="Two typefaces. Geist for human-readable copy. JetBrains Mono for everything the protocol produces."
+        description="Inter for interface copy, JetBrains Mono for protocol output, and Newsreader for long-form editorial reading."
         title="Typography"
       />
 
       <div className="flex flex-col gap-14">
-        {/* Geist Sans */}
+        {/* Inter */}
         <div>
-          <SubLabel>Geist Sans — interface copy</SubLabel>
+          <SubLabel>Inter — interface copy</SubLabel>
           <div className="overflow-x-auto">
             <table className="w-full" style={{ borderCollapse: "collapse", minWidth: "300px", tableLayout: "auto" }}>
               <colgroup>
@@ -981,16 +981,13 @@ function TypographySection() {
           </div>
         </div>
 
-        {/* Dual access — class vs utility */}
+        {/* Semantic utilities with legacy class compatibility */}
         <div>
-          <SubLabel>Dual access — class vs Tailwind utility</SubLabel>
+          <SubLabel>Semantic utilities and legacy classes</SubLabel>
           <p className="pdpp-caption mb-6 max-w-[56ch] text-muted-foreground">
-            Every Geist step is reachable two ways. Use the <code className="font-mono">.pdpp-*</code> class when you
-            want the full semantic bundle (family + size + weight + line-height + letter-spacing). Use the{" "}
-            <code className="font-mono">text-pdpp-*</code> Tailwind utility when you need the size step alone — e.g.
-            paired with <code className="font-mono">font-mono</code>, or inside a responsive variant like{" "}
-            <code className="font-mono">md:text-pdpp-heading</code>. Both resolve to the same CSS custom property;
-            rendering is pixel-identical.
+            The semantic Tailwind utilities are the public API for new code. The{" "}
+            <code className="font-mono">.pdpp-*</code> classes remain as Console and operator-ui compatibility aliases.
+            Both resolve through the type tokens in <code className="font-mono">tokens/semantic.css</code>.
           </p>
           <div className="overflow-x-auto">
             <table className="w-full" style={{ borderCollapse: "collapse" }}>
@@ -1020,42 +1017,42 @@ function TypographySection() {
                     sample: "Grant request",
                     spec: "20/600",
                     step: "heading",
-                    utility: "text-pdpp-heading font-semibold tracking-[-0.01em]",
+                    utility: "text-heading",
                   },
                   {
                     className: "pdpp-title",
                     sample: "Longview",
                     spec: "14/600",
                     step: "title",
-                    utility: "text-pdpp-title font-semibold",
+                    utility: "text-title",
                   },
                   {
                     className: "pdpp-body-lg",
                     sample: "An authorization and disclosure protocol.",
                     spec: "18/400",
                     step: "body-lg",
-                    utility: "text-pdpp-body-lg",
+                    utility: "text-body-lg",
                   },
                   {
                     className: "pdpp-body",
                     sample: "Comparing salary, equity, benefits, and tax tradeoffs.",
                     spec: "14/400",
                     step: "body",
-                    utility: "text-pdpp-body",
+                    utility: "text-body",
                   },
                   {
                     className: "pdpp-label",
                     sample: "What they can access",
                     spec: "12/500",
                     step: "label",
-                    utility: "text-pdpp-label font-medium",
+                    utility: "text-label",
                   },
                   {
                     className: "pdpp-caption",
                     sample: "Helper copy.",
                     spec: "12/400",
                     step: "caption",
-                    utility: "text-pdpp-caption",
+                    utility: "text-caption",
                   },
                 ].map(({ step, className, utility, sample, spec }) => (
                   <tr key={step}>
@@ -1103,11 +1100,9 @@ function TypographySection() {
             </table>
           </div>
           <p className="pdpp-caption mt-6 max-w-[56ch] text-muted-foreground/80">
-            <span className="font-medium text-foreground">Eyebrow</span> is intentionally class-only — its identity{" "}
-            <em>is</em> the mono family + uppercase + <code className="font-mono">0.12em</code> tracking bundle. A
-            utility alias for the size alone would invite misuse. Reach for{" "}
-            <code className="font-mono">.pdpp-eyebrow</code> directly, or compose from{" "}
-            <code className="font-mono">font-mono uppercase tracking-pdpp-eyebrow</code> when you need to vary the size.
+            <span className="font-medium text-foreground">Eyebrow</span> remains a legacy composed class because it also
+            applies family, colour, and uppercase treatment. New code can compose{" "}
+            <code className="font-mono">font-eyebrow text-eyebrow uppercase</code> from the same semantic tokens.
           </p>
         </div>
 
@@ -1359,20 +1354,24 @@ function MotionSection() {
           <SubLabel>Semantic aliases</SubLabel>
           <div style={{ borderTop: "1px solid var(--border)" }}>
             {[
-              { composes: "300ms ease-enter", token: "--motion-enter", usage: "Modals, drawers, toasts arriving" },
+              {
+                composes: "300ms ease-enter",
+                token: "--duration-enter + --ease-enter",
+                usage: "Modals, drawers, toasts arriving",
+              },
               {
                 composes: "100ms ease-exit",
-                token: "--motion-exit",
+                token: "--duration-exit + --ease-exit",
                 usage: "Any element leaving — exits are faster than enters",
               },
               {
                 composes: "200ms ease-standard",
-                token: "--motion-state",
+                token: "--duration-state + --ease-standard",
                 usage: "Button hover, checkbox, toggle, tab switch",
               },
               {
                 composes: "100ms ease-spring",
-                token: "--motion-feedback",
+                token: "--duration-feedback + --ease-spring",
                 usage: "Success flash, error indication, confirm action",
               },
             ].map(({ token, composes, usage }) => (
@@ -1575,7 +1574,7 @@ function StaggerDemo() {
           Play stagger
         </Button>
         <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-          50ms delay per item · <code className="font-mono">--stagger-base</code>
+          50ms delay per item
         </span>
       </div>
     </div>
@@ -3340,7 +3339,7 @@ function DocsSection() {
                   background:
                     "linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, var(--surface-tint)), transparent 18%), color-mix(in oklab, var(--background) 97%, var(--surface-tint))",
                   borderRight: "1px solid var(--border)",
-                  width: "var(--pdpp-sidebar-width)",
+                  width: "var(--spacing-sidebar)",
                 }}
               >
                 <div className="px-3 py-5">
@@ -4354,13 +4353,13 @@ function StatusSection() {
         <div>
           <SubLabel>Spec citation</SubLabel>
           <div className="flex items-center gap-3 rounded-lg px-5 py-4" style={{ border: "1px solid var(--border)" }}>
-            <a className="font-mono text-xs transition-colors" href="/docs" style={{ color: "var(--edu-fg)" }}>
+            <a className="font-mono text-xs transition-colors" href="/specification" style={{ color: "var(--edu-fg)" }}>
               §4.2 Selection Request
             </a>
             <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
               ·
             </span>
-            <a className="font-mono text-xs transition-colors" href="/docs" style={{ color: "var(--edu-fg)" }}>
+            <a className="font-mono text-xs transition-colors" href="/specification" style={{ color: "var(--edu-fg)" }}>
               §6.1 Stream Metadata
             </a>
             <code className="ml-auto font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>

@@ -1,5 +1,18 @@
-<!-- biome-ignore lint/a11y/noSvgWithoutTitle: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. -->
-<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-  <rect fill="oklch(0.52 0.11 45)" height="24" width="12" x="4" y="4" />
-  <rect fill="oklch(0.58 0.18 253)" height="24" width="12" x="16" y="4" />
+<!-- A single mark that works on ANY tab strip, rather than a theme-adaptive
+     one. SVG favicons CAN carry prefers-color-scheme, but Safari ignores it
+     (it wants mask-icon), and the query follows the OS theme rather than the
+     browser chrome, so a dark browser theme on a light OS gets the wrong
+     variant silently.
+     So: one mid-tone teal, measured against every chrome it will sit on.
+     #0e5a54 (the site teal) is 8.05 on light but 1.77 on dark, which is why it
+     read as a blob. #4bb3a6 inverts the problem at 2.53 / 5.62. #1c9488 is the
+     same hue and clears the 3:1 UI bar everywhere: 3.72 light, 3.82 dark,
+     4.32 very dark. -->
+<!-- biome-ignore lint/a11y/noSvgWithoutTitle: decorative favicon; the accessible name lives on the link that renders the mark. -->
+<svg viewBox="0 30 80 130" xmlns="http://www.w3.org/2000/svg">
+  <path
+    d="M60 30C65.3043 30 70.3919 32.1067 74.1426 35.8574C77.8933 39.6081 80 44.6957 80 50V110C80 115.304 77.8933 120.392 74.1426 124.143C70.3919 127.893 65.3043 130 60 130H20V160H0V30H60ZM20 50V110H60V50H20Z"
+    fill="#1c9488"
+    fill-rule="evenodd"
+  />
 </svg>

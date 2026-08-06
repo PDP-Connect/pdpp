@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const GLOBALS_CSS_FILE = `${HERE}../../../../globals.css`;
+const STREAM_CSS_FILE = `${HERE}stream.css`;
 const STREAM_VIEWER_FILE = `${HERE}stream-viewer.tsx`;
 
 /**
@@ -19,15 +19,15 @@ const STREAM_VIEWER_FILE = `${HERE}stream-viewer.tsx`;
  * `IcDialogPopup` (packages/pdpp-brand-react/src/dialog.tsx) applies BOTH the
  * shared `pdpp-dialog` class (max-width: 32rem, from that package's own
  * components.css) and the caller's override class (`pdpp-stream-dialog`,
- * globals.css). Both are single-class selectors of equal specificity
+ * stream.css). Both are single-class selectors of equal specificity
  * (0,0,1,0). Next.js's per-ROUTE CSS chunking re-emits `components.css`'s
  * `.pdpp-dialog` rule (via `dialog.tsx`'s own `import "./components.css"`,
  * transitively pulled in by every `@pdpp/brand-react` component the stream
  * route imports) into a SEPARATE `page.css` chunk that loads its `<link>`
- * AFTER the shared `layout.css` chunk containing globals.css's
- * `.pdpp-stream-dialog` override — so cascade SOURCE ORDER, not intent,
+ * AFTER the shared `layout.css` chunk — so cascade SOURCE ORDER, not intent,
  * decided the winner, and it silently flipped depending on how Next.js
- * chunked that route's CSS.
+ * chunked that route's CSS. stream.css is imported from stream-viewer.tsx
+ * (route chunk), which makes compound specificity mandatory.
  *
  * A same-specificity override is fragile against this bundler behavior by
  * construction — this test enforces the actual CSS rule that fixes it:
@@ -71,7 +71,7 @@ test("pdpp-dialog specificity fact: a bare .pdpp-dialog and a bare .pdpp-stream-
 });
 
 test("the stream dialog override is specificity-safe: compound selectors that always beat the shared base class", async () => {
-  const css = await readFile(GLOBALS_CSS_FILE, "utf8");
+  const css = await readFile(STREAM_CSS_FILE, "utf8");
 
   const dialogSelector = ".pdpp-dialog.pdpp-stream-dialog";
   if (!DIALOG_COMPOUND_RULE_RE.test(css)) {
@@ -114,7 +114,7 @@ test("the assembled CDP canvas is sized to CONTAIN inside its host on both axes"
     "the frame's wrapper must opt into container-query sizing (pdpp-stream-fit-host)"
   );
 
-  const css = await readFile(GLOBALS_CSS_FILE, "utf8");
+  const css = await readFile(STREAM_CSS_FILE, "utf8");
   assert.match(
     css,
     FIT_HOST_CONTAINER_TYPE_RE,

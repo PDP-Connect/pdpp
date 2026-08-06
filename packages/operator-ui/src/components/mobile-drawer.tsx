@@ -3,7 +3,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { Button } from "../ui/button.tsx";
 import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from "../ui/dialog.tsx";
 
@@ -85,22 +85,20 @@ export function MobileDrawerTrigger() {
 
 export function MobileDrawer({ children }: { children: ReactNode }) {
   const drawer = useMobileDrawer();
-  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [content, setContent] = useState<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const content = contentRef.current;
     if (!content) {
       return;
     }
     function closeOnLinkClick(event: MouseEvent) {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("a")) {
+      if ((event.target as HTMLElement | null)?.closest("a")) {
         drawer.close();
       }
     }
     content.addEventListener("click", closeOnLinkClick);
     return () => content.removeEventListener("click", closeOnLinkClick);
-  }, [drawer]);
+  }, [content, drawer]);
 
   return (
     <Dialog modal onOpenChange={drawer.setOpen} open={drawer.isOpen}>
@@ -116,7 +114,7 @@ export function MobileDrawer({ children }: { children: ReactNode }) {
               ×
             </Button>
           </div>
-          <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-5" ref={contentRef}>
+          <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-5" ref={setContent}>
             {children}
           </div>
         </DialogPopup>

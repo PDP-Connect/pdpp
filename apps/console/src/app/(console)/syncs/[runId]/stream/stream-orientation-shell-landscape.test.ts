@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const GLOBALS_CSS_FILE = `${HERE}../../../../globals.css`;
+const STREAM_CSS_FILE = `${HERE}stream.css`;
 const STREAM_VIEWER_FILE = `${HERE}stream-viewer.tsx`;
 
 /**
@@ -28,7 +28,7 @@ const STREAM_VIEWER_FILE = `${HERE}stream-viewer.tsx`;
  *
  * Fix: a `pdpp-stream-orientation-shell` class on that same wrapper, with a
  * `@media (orientation: landscape) and (max-height: 30rem)` rule in
- * globals.css reducing its block padding to `3rem` (48px each side, 96px
+ * stream.css reducing its block padding to `3rem` (48px each side, 96px
  * total) — enough that the same content comfortably fits 390px. Portrait and
  * desktop viewports are untouched (the media query excludes them), and the
  * shared dialog/backdrop CSS (17dbf438f's fix) is not touched at all.
@@ -45,7 +45,7 @@ test("the pre-open orientation shell wrapper carries the landscape-scoped class 
   assert.match(
     src,
     ORIENTATION_SHELL_CLASS_RE,
-    "StreamSurface's pre-mint wrapper must carry pdpp-stream-orientation-shell so the landscape-scoped override in globals.css can target it"
+    "StreamSurface's pre-mint wrapper must carry pdpp-stream-orientation-shell so the landscape-scoped override in stream.css can target it"
   );
   assert.match(
     src,
@@ -54,8 +54,8 @@ test("the pre-open orientation shell wrapper carries the landscape-scoped class 
   );
 });
 
-test("globals.css scopes the padding reduction to short landscape only, via unlayered CSS that beats the py-16 utility", async () => {
-  const css = await readFile(GLOBALS_CSS_FILE, "utf8");
+test("stream.css scopes the padding reduction to short landscape only, via unlayered CSS that beats the py-16 utility", async () => {
+  const css = await readFile(STREAM_CSS_FILE, "utf8");
   assert.match(
     css,
     LANDSCAPE_MEDIA_QUERY_RE,

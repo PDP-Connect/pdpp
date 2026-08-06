@@ -16,9 +16,9 @@
  */
 
 import { IcButton, IcTimestamp } from "@pdpp/brand-react";
+import { formatSourceWithConnectionForDisplay } from "@pdpp/display";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
-import { formatSourceWithConnectionForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";

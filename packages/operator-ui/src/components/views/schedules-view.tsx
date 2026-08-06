@@ -1,8 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/display";
 import type { ReactNode } from "react";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import type { RefConnectorSummary } from "../../lib/ref-client.ts";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";

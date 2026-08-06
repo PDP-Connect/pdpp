@@ -32,7 +32,7 @@
  *   `NAV_GROUPS` is a typed array so leaf views / future edits are trivial.
  *
  * THEME: the toggle flips BOTH `data-theme` and the `dark` class on <html> so
- * the Ink Carbon tokens (light `:root`, dark `.dark,[data-theme="dark"]`) and
+ * the Ink Carbon tokens (light `:root`, dark `[data-theme="dark"]`) and
  * the existing Tailwind/shadcn `dark:` variants react together.
  *
  * OWNER IDENTITY: there is none to show — owner auth is invisible (cookie-gated).

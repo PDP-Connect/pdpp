@@ -337,23 +337,22 @@ const PROJECTION_DURATION_MS = 200;
 const PROJECTION_STAGGER_MS = 24;
 
 function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]; allFields: string[] }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const prefersReduced = useRef(false);
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
+  const [prefersReduced, setPrefersReduced] = useState(false);
   const [phase, setPhase] = useState<"hidden" | "show" | "filter" | "result">("hidden");
 
   useEffect(() => {
-    prefersReduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setPrefersReduced(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }, []);
 
   useEffect(() => {
-    const el = ref.current;
-    if (!el) {
+    if (!element) {
       return;
     }
     const obs = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          if (prefersReduced.current) {
+          if (prefersReduced) {
             // Static final state: skip the show→filter→result choreography and
             // render the projected outcome directly, with no transitions.
             setPhase("result");
@@ -367,18 +366,18 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
       },
       { threshold: 0.3 }
     );
-    obs.observe(el);
+    obs.observe(element);
     return () => obs.disconnect();
-  }, []);
+  }, [element, prefersReduced]);
 
-  const reduced = prefersReduced.current;
+  const reduced = prefersReduced;
   const easeOut = PROJECTION_EASE;
   // Reduced-motion: zero-duration so any property change is an instant cut.
   const dur = reduced ? 0 : PROJECTION_DURATION_MS;
   const stagger = reduced ? 0 : PROJECTION_STAGGER_MS;
 
   return (
-    <div className="w-full py-4" ref={ref} style={{ maxWidth: "580px" }}>
+    <div className="w-full py-4" ref={setElement} style={{ maxWidth: "580px" }}>
       <div
         className="mb-8 font-mono text-xs"
         style={{
@@ -522,12 +521,11 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
 // ─── Incremental sync animation ─────────────────────────────────────────────
 
 function IncrementalSync() {
-  const ref = useRef<HTMLDivElement>(null);
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
   const [phase, setPhase] = useState<"hidden" | "first" | "delta">("hidden");
 
   useEffect(() => {
-    const el = ref.current;
-    if (!el) {
+    if (!element) {
       return;
     }
     const obs = new IntersectionObserver(
@@ -540,12 +538,12 @@ function IncrementalSync() {
       },
       { threshold: 0.5 }
     );
-    obs.observe(el);
+    obs.observe(element);
     return () => obs.disconnect();
-  }, []);
+  }, [element]);
 
   return (
-    <div className="w-full py-4" ref={ref} style={{ maxWidth: "520px" }}>
+    <div className="w-full py-4" ref={setElement} style={{ maxWidth: "520px" }}>
       <div className="flex flex-col gap-6">
         {/* First query */}
         <div>
@@ -766,17 +764,16 @@ function OutcomeCard({
 // ─── Scroll reveal ──────────────────────────────────────────────────────────
 
 function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
-  const prefersReduced = useRef(false);
+  const [prefersReduced, setPrefersReduced] = useState(false);
 
   useEffect(() => {
-    prefersReduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setPrefersReduced(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }, []);
 
   useEffect(() => {
-    const el = ref.current;
-    if (!el) {
+    if (!element) {
       return;
     }
     const obs = new IntersectionObserver(
@@ -788,15 +785,15 @@ function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
       },
       { threshold: 0.15 }
     );
-    obs.observe(el);
+    obs.observe(element);
     return () => obs.disconnect();
-  }, []);
+  }, [element]);
 
-  const reduced = prefersReduced.current;
+  const reduced = prefersReduced;
 
   return (
     <div
-      ref={ref}
+      ref={setElement}
       style={{
         opacity: visible ? 1 : 0,
         transform: visible || reduced ? "translateY(0)" : "translateY(12px)",
@@ -815,12 +812,11 @@ function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
 const COLLECTION_PATHS = [{ label: "Native API" }, { label: "Browser" }, { label: "Import" }] as const;
 
 function CollectionConvergence() {
-  const ref = useRef<HTMLDivElement>(null);
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    const el = ref.current;
-    if (!el) {
+    if (!element) {
       return;
     }
     const obs = new IntersectionObserver(
@@ -832,14 +828,14 @@ function CollectionConvergence() {
       },
       { threshold: 0.3 }
     );
-    obs.observe(el);
+    obs.observe(element);
     return () => obs.disconnect();
-  }, []);
+  }, [element]);
 
   const ease = "cubic-bezier(0.16, 1, 0.3, 1)";
 
   return (
-    <div className="w-full" ref={ref} style={{ padding: "1.5rem 0" }}>
+    <div className="w-full" ref={setElement} style={{ padding: "1.5rem 0" }}>
       {/* Different realization paths converging to one record model */}
       <div className="flex items-center">
         {/* Input paths column */}
@@ -1911,7 +1907,7 @@ Content-Type: application/json
                 STATE from single_use runs. See{" "}
                 <a
                   className="underline"
-                  href="/docs/reference-implementation-examples#example-6-single-use-grant-consumption"
+                  href="/specification/reference-implementation-examples#example-6-single-use-grant-consumption"
                 >
                   Example 6
                 </a>{" "}
@@ -1976,7 +1972,7 @@ PDPP-Version: 0.1.0
                 see{" "}
                 <a
                   className="underline"
-                  href="/docs/reference-implementation-examples#example-4-token-introspection-verify-an-issued-token-and-read-its-grant"
+                  href="/specification/reference-implementation-examples#example-4-token-introspection-verify-an-issued-token-and-read-its-grant"
                 >
                   Example 4
                 </a>{" "}

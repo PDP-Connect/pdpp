@@ -15,6 +15,18 @@ contract changes, test expectations, and pull-request conventions.
   code, fixtures, or reports. Use role-neutral labels (`the owner`, `an
   operator`, `your-pdpp-host.example.com`) unless a real value is explicitly
   approved.
+- **Connector fixtures are opt-in, and raw captures never leave your
+  machine.** Capturing live connector runs (`PDPP_CAPTURE_FIXTURES=1`) is
+  something you choose to do locally; nothing captures or commits
+  automatically. Raw captures under `fixtures/<connector>/raw/` are
+  gitignored and must never be committed. Turning a capture into a
+  contributed fixture is a deliberate, separate act: run the scrubber
+  (`bin/scrub-fixtures.ts`), then **review the scrubbed output yourself as a
+  human before committing it** — the deterministic scrubber is a
+  conservative first pass, not a guarantee, and DOM/HTML captures in
+  particular can carry unredacted names. See
+  `packages/polyfill-connectors/docs/connector-authoring-guide.md` for the
+  full scrub-and-review workflow.
 - **Respect the authority order.** This repo has a strict authority order:
   1. Root PDPP specs (`spec-*.md`) define normative protocol semantics.
   2. Code and tests define what the current reference implementation actually

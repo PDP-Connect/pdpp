@@ -1,69 +1,23 @@
-"use client";
-
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import Link from "next/link";
-import { Hero } from "@/components/hero.tsx";
-import { ReferenceApp } from "@/components/reference-app.tsx";
-import { ReferenceHeroProof } from "@/components/reference-hero-proof.tsx";
-import { buttonVariants } from "@/components/ui/button.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
+import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
+import { PdppFrontDoor } from "@/components/pdpp-concept/front-door.tsx";
+import { PdppConceptMasthead } from "@/components/pdpp-concept/masthead.tsx";
 
 export default function Home() {
   return (
-    <ReferenceApp
-      currentLabel="Overview"
-      hero={
-        <Hero
-          actions={
-            <div className="flex w-full flex-col gap-6">
-              <div className="flex flex-wrap gap-2.5">
-                <Link className={buttonVariants({ size: "lg", variant: "default" })} href="/docs">
-                  Read the docs
-                </Link>
-                <a className={buttonVariants({ size: "lg", variant: "outline" })} href="#request">
-                  See the flow
-                </a>
-              </div>
-              <ReferenceHeroProof />
-            </div>
-          }
-          description={
-            <>
-              PDPP builds on OAuth with one model for personal data.
-              <br />
-              Owners decide which of their records and fields each app can read.
-            </>
-          }
-          eyebrow={
-            <span className="flex items-center gap-2">
-              <span
-                className="rounded px-2 py-0.5 font-mono text-xs"
-                style={{
-                  backgroundColor: "var(--primary-wash)",
-                  border: "1px solid var(--authorship-protocol-border)",
-                  color: "var(--primary)",
-                }}
-              >
-                PDPP
-              </span>
-              <span className="font-mono text-xs tracking-wide" style={{ color: "var(--muted-foreground)" }}>
-                v0.1.0 · Open reference
-              </span>
-            </span>
-          }
-          gradient="dual"
-          layout="cross"
-          size="splash"
-          title={
-            <>
-              An open protocol for
-              <br />
-              portable, user-owned data
-            </>
-          }
-        />
-      }
-    />
+    <div className="pdpp-concept">
+      <PdppConceptMasthead />
+
+      <PdppConceptPage home>
+        <PdppConceptDoc>
+          <PdppFrontDoor />
+        </PdppConceptDoc>
+      </PdppConceptPage>
+
+      <PdppConceptFooter />
+    </div>
   );
 }
