@@ -40,6 +40,8 @@ const SAME_ORIGIN_COPY_CREDENTIALS_RE = /neko\.clipboard_remote_to_local[\s\S]{0
 const ATTACHED_BROWSER_SESSION_BOUNDARY_RE =
   /beginPresentationSession\([\s\S]*?browserSessionId: browserSessionIdRef\.current[\s\S]*?payload\.browser_session_id[\s\S]*?if \(presentationSession\.reset\) \{[\s\S]*?resetPresentationForBrowserSession\(\)/;
 const NEKO_BROWSER_SESSION_KEY_RE = /<NekoSurface[\s\S]*?key=\{nekoSession\.browserSessionId\}/;
+const KEYBOARD_FOCUS_RESET_RE =
+  /keyboardFocusStateRef\.current = createMobileKeyboardFocusState\(\)[\s\S]{0,160}setKeyboardAffordanceVisible\(false\)/;
 const TRANSPORT_FILE = fileURLToPath(new URL("./stream-viewer-remote-surface-transport.ts", import.meta.url));
 
 function readViewerSource(): Promise<string> {
@@ -145,4 +147,5 @@ test("browser-session replacement clears presentation state and remounts n.eko, 
   // that decision to the actual SSE attachment and React remount path.
   assert.match(src, ATTACHED_BROWSER_SESSION_BOUNDARY_RE);
   assert.match(src, NEKO_BROWSER_SESSION_KEY_RE);
+  assert.match(src, KEYBOARD_FOCUS_RESET_RE);
 });

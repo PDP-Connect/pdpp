@@ -802,6 +802,22 @@ test("cdp adapter emits popup_opened/closed for user-relevant child page targets
     url: "https://oauth.example.com/auth",
   });
 
+  // Target discovery can replay the same target. Its target ID proves this
+  // is the same transition, so the adapter must not announce it twice.
+  sock.peer.deliver({
+    method: "Target.targetCreated",
+    params: {
+      targetInfo: {
+        openerId: "tg_self",
+        targetId: "tg_popup",
+        type: "page",
+        url: "https://oauth.example.com/auth",
+      },
+    },
+  });
+  await flush();
+  assert.equal(events.length, 1, "the same popup target must not be announced twice");
+
   // Destroying the popup emits popup_closed.
   sock.peer.deliver({ method: "Target.targetDestroyed", params: { targetId: "tg_popup" } });
   await flush();

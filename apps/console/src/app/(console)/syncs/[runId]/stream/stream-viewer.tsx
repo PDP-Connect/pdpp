@@ -124,6 +124,7 @@ import {
   readRemoteEditableRect,
   transitionMobileKeyboardFocus,
 } from "./stream-keyboard-focus.ts";
+import { claimPopupNotice, createPopupNoticeSeenRegistry } from "./stream-popup-notice-dedupe.ts";
 import { beginPresentationSession } from "./stream-presentation-session.ts";
 import { classifyStreamReachFailure, type StreamReachProbeResult } from "./stream-reach-diagnostics.ts";
 import { createStreamSurfaceMeasureCoordinator } from "./stream-surface-measure-gate.ts";
@@ -481,6 +482,7 @@ function markRemoteKeyboardFocused(
     viewerRef,
   }: RemoteKeyboardFocusContext
 ): void {
+  const hadAwaitingGesture = keyboardFocusStateRef.current.gesture?.phase === "awaiting-confirmation";
   const focusTransition = transitionMobileKeyboardFocus(keyboardFocusStateRef.current, {
     atMs: Date.now(),
     rect: remoteEditableRect,
@@ -511,10 +513,10 @@ function markRemoteKeyboardFocused(
       inputType,
       reason: "remote-focus-event-is-not-a-trusted-local-gesture",
     });
-    if (focusTransition.effect === "show-affordance") {
+    if (focusTransition.state.affordanceVisible) {
       logDebug("neko.keyboard_focus.affordance", {
         inputType,
-        reason: "remote-focus-confirmed-after-trusted-touch",
+        reason: hadAwaitingGesture ? "remote-focus-confirmed-after-trusted-touch" : "remote-focus-before-local-gesture",
         remoteEditableRect,
       });
     } else if (!remoteEditableRect) {
@@ -1858,6 +1860,7 @@ function StreamStage({
   // burst of openings always shows the latest for the full window rather than
   // dismissing mid-read.
   const popupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const popupNoticeSeenRegistryRef = useRef(createPopupNoticeSeenRegistry());
   const keyboardBlurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyboardFocusStateRef = useRef(createMobileKeyboardFocusState());
   const [keyboardAffordanceVisible, setKeyboardAffordanceVisible] = useState(false);
@@ -1961,6 +1964,9 @@ function StreamStage({
     cdpRemoteSurfaceTransportRef.current = null;
     pendingCdpFrameRef.current = null;
     pendingCdpKeyboardFocusRef.current = null;
+    popupNoticeSeenRegistryRef.current = createPopupNoticeSeenRegistry();
+    keyboardFocusStateRef.current = createMobileKeyboardFocusState();
+    setKeyboardAffordanceVisible(false);
     presentationControlStateRef.current = createStreamViewerControlState();
     presentationKeyboardFocusedRef.current = false;
     presentationKeyboardHoldUntilRef.current = 0;
@@ -2254,6 +2260,18 @@ function StreamStage({
           return;
         }
         const payload = parsed.value;
+        const browserSessionId = browserSessionIdRef.current;
+        const popupClaim = claimPopupNotice(popupNoticeSeenRegistryRef.current, {
+          browserSessionId,
+          targetId: payload.targetId,
+        });
+        if (popupClaim === "duplicate") {
+          logDebug("stream.popup_opened.duplicate", {
+            browserSessionId,
+            targetId: payload.targetId,
+          });
+          return;
+        }
         setPopup({
           message: `${connectorName} opened a new tab. The action may continue there.`,
           targetId: payload.targetId,
