@@ -3,10 +3,7 @@
 
 // Real fields from the specification's worked examples. Never lorem.
 //
-// Shared between the client canvas (hero-water.tsx) and the server-rendered
-// still frame (hero-water-still.tsx) so the two can never drift apart: the
-// still frame is what a reader sees until the canvas replaces it, so it has
-// to be the same records in the same columns, not a stand-in.
+// Shared record streams for the three server-rendered hero columns.
 export const HERO_WATER_STREAMS: readonly (readonly (readonly [string, string])[])[] = [
   [
     ["sleep_score", "82"],
