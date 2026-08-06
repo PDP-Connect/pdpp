@@ -111,7 +111,7 @@ export const SHELL_NAV_REQUIRED_ITEMS = [
   { label: "Sources", href: "/sources" },
   { label: "Syncs", href: "/syncs" },
   { label: "Schedules", href: "/schedules" },
-  { label: "Connect AI apps", href: "/connect" },
+  { label: "Connect Apps", href: "/connect" },
   { label: "Grants", href: "/grants" },
   { label: "Audit", href: "/audit" },
   { label: "Deployment", href: "/deployment" },

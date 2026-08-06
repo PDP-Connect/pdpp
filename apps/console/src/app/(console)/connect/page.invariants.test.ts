@@ -4,7 +4,7 @@
 /**
  * Source-regex guard for the dashboard's ordinary connect page.
  *
- * This page is the low-cognitive-tax path for connecting AI apps to the
+ * This page is the low-cognitive-tax path for connecting apps to the
  * grant-scoped MCP surface. Source-account setup belongs under Sources and must
  * not be rendered here.
  *
@@ -29,8 +29,8 @@ const CODEX_COMMAND_RE = /codex mcp add pdpp --url/;
 const CODEX_CIMD_COMMAND_RE = /--oauth-client-id \$\{clientId\}/;
 const CHATGPT_RE = /ChatGPT/;
 const CLAUDE_AI_RE = /Claude\.ai/;
-const HEADLESS_MCP_DEVICE_CODE_RE = /sandboxed clients can use the advertised device-code flow/;
-const HEADLESS_MCP_CLIENT_TOKEN_RE = /Headless MCP setup still returns a scoped client token/;
+const HEADLESS_MCP_DEVICE_CODE_RE = /some clients use the device-code flow/;
+const HEADLESS_MCP_CLIENT_TOKEN_RE = /That flow returns a scoped client token/;
 const PDPP_CLI_CONNECT_RE = /npx -y @pdpp\/cli connect/;
 const AGENT_ENTRYPOINT_RE = /\/llms\.txt/;
 const OWNER_AGENT_LINK_RE = /href="\/deployment\/tokens"/;
@@ -91,7 +91,7 @@ test("connect page has no owner source-setup vocabulary", async () => {
   assert.doesNotMatch(src, SOURCE_FORBIDDEN_NORMAL_COPY_RE);
 });
 
-test("connect page also exposes CLI and agent-readable entrypoints", async () => {
+test("connect page also exposes CLI and instructions entrypoints", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(src, PDPP_CLI_CONNECT_RE);
   assert.match(src, AGENT_ENTRYPOINT_RE);

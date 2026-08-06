@@ -5,7 +5,7 @@
  * Syncs — the Recordroom reskin of the Runs route.
  *
  * Health-first: this surface answers "what was recently collected, and what (in
- * plain English) needs my hand?" It fuses three real reference contracts:
+ * needs my attention?" It fuses three real reference contracts:
  *   - `_ref/runs`       → the runs feed, for per-connection Rhythm + last result
  *   - `_ref/connectors` → per-connection health + schedule + stream list
  * via the pure {@link buildSyncsViewModel}, then renders the {@link SyncsView}

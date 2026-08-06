@@ -94,7 +94,7 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
   const secondary = paths.filter((path) => !visibleLabels.has(path.label));
   return (
     <div className="mt-3" data-testid="source-acquisition-paths">
-      <p className="pdpp-eyebrow mb-1 text-muted-foreground">Acquisition paths</p>
+      <p className="pdpp-eyebrow mb-1 text-muted-foreground">Ways to add data</p>
       <ul className="grid gap-2">
         {visible.map((path) => (
           <SourceAcquisitionPathRow key={`${path.posture}:${path.label}`} path={path} />
@@ -103,7 +103,7 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
       {secondary.length > 0 ? (
         <details className="group mt-2">
           <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
-            Other ways to add coverage
+            Other ways to add data
           </summary>
           <ul className="mt-2 grid gap-2">
             {secondary.map((path) => (
@@ -122,22 +122,22 @@ function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: num
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
-      return "Local collector on the machine that has this data.";
+      return "Run the local collector on the machine that has this data.";
     case "static_secret_connect":
-      return "Provider credential captured by this instance.";
+      return "Enter the provider credential for this account.";
     case "manual_upload_connect":
       return existingSourceCount > 0
         ? `${existingSourceCount} existing ${existingSourceCount === 1 ? "source" : "sources"} can receive another export; choose on the import page.`
         : "Owner-exported file import.";
     case "provider_auth_deployment_blocked":
-      return "Provider authorization is separate from file import; server provider settings are required before account setup.";
+      return "This source needs provider authorization. Configure provider settings before adding an account.";
     case "browser_collector_manual":
     case "browser_bound_runbook":
       return entry.disposition === "browser_collector_manual"
         ? "Connect account from a secure browser session."
-        : "Browser-backed setup is not packaged in this dashboard yet.";
+        : "Browser setup is not available in this dashboard yet.";
     default:
-      return "No owner-usable setup path in this build.";
+      return "No setup path is available in this dashboard.";
   }
 }
 
@@ -279,7 +279,7 @@ function SourceSetupCard({
       <div className="flex flex-col items-end justify-start gap-1">
         {action ? (
           <>
-            <span className="pdpp-eyebrow text-muted-foreground">Next</span>
+            <span className="pdpp-eyebrow text-muted-foreground">Next step</span>
             <Link className={buttonVariants({ size: "sm", variant: "default" })} href={action.href}>
               {action.label}
             </Link>
@@ -294,7 +294,7 @@ function SourceSetupCard({
             className="pdpp-caption rounded-md border border-border/70 bg-muted/20 px-2.5 py-1 text-muted-foreground"
             data-testid="source-unavailable-fact"
           >
-            {unavailable ? "Not available from this page" : "No primary action"}
+            {unavailable ? "Not available from this page" : "No setup path available here"}
           </span>
         )}
       </div>

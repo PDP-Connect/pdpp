@@ -27,7 +27,7 @@ const SIZE_PREFLIGHT = /max_file_bytes/;
 const HELP_URL = /help_url/;
 const NEW_TAB = /target="_blank"/;
 const NOREFERRER = /rel="noreferrer"/;
-const SECURITY_BOUNDARY_COPY = /never returned to agents, MCP clients, REST reads/i;
+const SECURITY_BOUNDARY_COPY = /stored for this source and is not exposed to connected apps or clients/i;
 const NO_CONNECTOR_BRANCH = /connectorId\s*===/;
 const NO_PROVIDER_COPY = /\bGoogle\b|\bTimeline\b|\bMaps\b/i;
 

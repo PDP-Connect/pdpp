@@ -979,12 +979,12 @@ function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): Stan
   const more = pending.length - 1;
   const who = first ? clientLabel(first.client_id ?? null, first.approval_id) : "An app";
   const reads = first ? approvalReads(first) : "parts of your data";
-  const moreSub = `Nothing leaves until you say so — review each request one at a time. ${more} more after this one.`;
+  const moreSub = `No data is shared until you approve a request. Review each request one at a time. ${more} more after this one.`;
   return {
     cta: { href: hrefs.grants, human: true, label: "Review the request" },
     kicker: pending.length === 1 ? "A request is waiting on you" : `${pending.length} requests are waiting`,
     line: { emphasis: reads, tail: ".", text: `${who} wants to read ` },
-    sub: more > 0 ? moreSub : "Nothing leaves until you say so — approve it one piece at a time.",
+    sub: more > 0 ? moreSub : "No data is shared until you approve this request.",
     tone: "decide",
   };
 }

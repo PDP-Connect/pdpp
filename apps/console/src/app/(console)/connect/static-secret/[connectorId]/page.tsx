@@ -81,10 +81,10 @@ export default async function StaticSecretConnectPage({
   const pageTitle = isReplaceMode ? `Reconnect ${setup.display_name}` : `Add ${setup.display_name}`;
   const pageDescription = isReplaceMode
     ? "Enter the credential this connection should use. Records, history, and schedule stay attached to the same connection."
-    : "Seal the provider secret from this owner session and start the first sync. The account keeps its own connection identity and credentials.";
+    : "Enter the provider credential to create this connection and start its first sync. The account keeps its own connection identity and credentials.";
   const backHref =
     isReplaceMode && pageParams.connectionId ? `/sources/${encodeURIComponent(pageParams.connectionId)}` : "/sources";
-  const backLabel = isReplaceMode ? "Back to connection" : "Back to connections";
+  const backLabel = "Back to Sources";
 
   return (
     <RecordroomShellWithPalette>

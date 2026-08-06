@@ -40,7 +40,7 @@ export function EnrollmentForm({
 
   return (
     <Callout
-      description="Creates a short-lived reference-experimental enrollment code for a local exporter agent. This is not a PDPP Core/Profile protocol control."
+      description="Create a short-lived enrollment code for a local collector. This links the collector to this server and is separate from PDPP Core/Profile protocol controls."
       surface="human"
       title="Create enrollment code"
     >
@@ -75,13 +75,12 @@ export function EnrollmentForm({
           </div>
 
           <div>
-            <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the host that has the data</div>
+            <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the device that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Run this <code className="font-mono">@pdpp/local-collector</code> command on the host with Claude Code or
-              Codex data. It uses the npx-launched <code className="font-mono">pdpp-local-collector</code> binary; no
-              PDPP source checkout is required. The JSON response returns <code className="font-mono">device_id</code>,{" "}
+              Run this <code className="font-mono">@pdpp/local-collector</code> command on the device with Claude Code
+              or Codex data. The response returns <code className="font-mono">device_id</code>,{" "}
               <code className="font-mono">device_token</code>, and <code className="font-mono">source_instance_id</code>{" "}
-              &mdash; persist all three without logging the token.
+              &mdash; save all three, and never log the token.
             </p>
             <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
               <code
@@ -95,10 +94,10 @@ export function EnrollmentForm({
           </div>
 
           <div>
-            <div className="pdpp-eyebrow text-muted-foreground">2. Run a connector pass</div>
+            <div className="pdpp-eyebrow text-muted-foreground">2. Start collection</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Use the three values from the enrollment response. The command resumes from prior connector state via the
-              device-scoped STATE route; re-running is safe.
+              Use the three values from the enrollment response. The collector resumes from its saved state, so running
+              it again is safe.
             </p>
             <div className="mt-2 space-y-2">
               {COLLECTOR_RUN_CONNECTORS.map((connectorId) => {

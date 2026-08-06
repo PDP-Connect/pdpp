@@ -41,6 +41,7 @@ import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../li
 import { listConnectorManifests } from "../lib/rs-client.ts";
 import { reactivateConnectionAction, revokeConnectionAction } from "./[connector]/actions.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
+import { SOURCE_ACCESS_NOTE } from "./sources-copy.ts";
 import { SourcesView } from "./sources-view.tsx";
 import {
   buildSourcesChurnAdvisory,
@@ -179,7 +180,7 @@ function SourcesHeader({ error, message, notice }: { error?: string; message?: s
           margin: 0,
         }}
       >
-        your loading dock · each source pushes into your streams · nothing leaves
+        {SOURCE_ACCESS_NOTE}
       </p>
       {notice ? (
         <div className="rr-s-toast" data-tone="ok" role="status" style={{ marginTop: 12 }}>

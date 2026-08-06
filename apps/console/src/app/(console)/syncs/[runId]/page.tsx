@@ -284,16 +284,16 @@ function getAssistanceTitle(assistance: CurrentRunAssistance, active: boolean): 
     assistance.ownerAction === "act_elsewhere" &&
     assistance.responseContract === "none"
   ) {
-    return "Waiting for external approval";
+    return "Waiting for approval outside this dashboard";
   }
   if (
     assistance.progressPosture === "waiting_retry" &&
     assistance.ownerAction === "none" &&
     assistance.responseContract === "none"
   ) {
-    return "Waiting before retry";
+    return "Retry scheduled";
   }
-  return "Waiting on operator input";
+  return "Waiting for your input";
 }
 
 function getAssistanceDescription(
@@ -309,14 +309,14 @@ function getAssistanceDescription(
     assistance.ownerAction === "act_elsewhere" &&
     assistance.responseContract === "none"
   ) {
-    return "The connector is still running and watching for completion. No dashboard response is required.";
+    return "The source is still running and watching for completion. No dashboard response is required.";
   }
   if (
     assistance.progressPosture === "waiting_retry" &&
     assistance.ownerAction === "none" &&
     assistance.responseContract === "none"
   ) {
-    return "The connector is waiting before retrying. No owner action is required right now.";
+    return "The source will retry automatically. No action is needed right now.";
   }
   if (supportsStreaming) {
     return "This run is blocked until the requested browser-surface action is completed.";
@@ -334,9 +334,9 @@ function formatAssistanceAttachments(assistance: CurrentRunAssistance): string {
         return attachment.kind;
       }
       if (hasAvailableBrowserSurfaceAttachment(assistance)) {
-        return "browser_surface available";
+        return "Secure browser ready";
       }
-      return "browser_surface waiting for stream target";
+      return "Waiting for the secure browser";
     })
     .join(", ");
 }
@@ -625,7 +625,7 @@ function ViolationDiagnosis({ failure }: { failure: SpineEvent | undefined }) {
     <section className="mb-8 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 shadow-[inset_3px_0_0_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]">
       <header className="mb-2 flex items-baseline justify-between gap-4">
         <h3 className="pdpp-eyebrow">Failure diagnosis</h3>
-        <span className="pdpp-caption text-muted-foreground">runtime-authored</span>
+        <span className="pdpp-caption text-muted-foreground">Runtime message</span>
       </header>
       <dl className="pdpp-caption grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">subtype</dt>

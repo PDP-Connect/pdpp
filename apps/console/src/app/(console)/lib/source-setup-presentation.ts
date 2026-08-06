@@ -138,7 +138,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       };
     case "manual_upload_pending":
       return {
-        label: "Import not packaged",
+        label: "Import not available yet",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "provider_auth_deployment_blocked":
@@ -148,7 +148,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       };
     case "browser_bound_runbook":
       return {
-        label: "Browser setup not packaged",
+        label: "Browser setup not available yet",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "local_collector_unproven":
@@ -166,29 +166,29 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
 /** One short owner-facing guidance line for first-account setup. */
 export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
   if (browserBoundWithStoredCredentials(entry)) {
-    return "Connect in a secure browser session. Interactive sign-in is valid; optional saved sign-in details may assist initial sign-in or repair, but CAPTCHA, OTP, passkeys, and other human steps stay in the secure browser and unattended reconnection is not guaranteed.";
+    return "Sign in in the secure browser. Saving sign-in details is optional and may help with setup or repair, but one-time codes, passkeys, and other human steps still happen in the browser. Automatic reconnection is not guaranteed.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
     case "browser_collector_manual":
-      return "Create a browser-session shell to connect a new account. Add an optional source label so the source is easy to distinguish; if you need to reconnect an existing source, go back to Sources and open that source's reconnect flow.";
+      return "Connect a new account in a secure browser. Add an optional source label to distinguish it later; to reconnect an existing source, go back to Sources and open its reconnect flow.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
       return "Upload an owner-exported file. Reuse an existing source for another export from the same identity; create a new source only for a different account, profile, device, or source identity.";
     case "manual_upload_pending":
-      return "This source imports an owner-provided file, but the dashboard upload step is not packaged yet.";
+      return "This source accepts an owner-provided file, but file import is not available in this dashboard yet.";
     case "provider_auth_deployment_blocked":
-      return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
+      return `Finish the server setup first: ${entry.deploymentReadiness.blockers
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "browser_bound_runbook":
-      return "This source can collect through a logged-in browser, but this dashboard does not yet package the add-account path safely.";
+      return "This source can collect through a logged-in browser, but this dashboard cannot start a new account from here yet.";
     case "local_collector_unproven":
-      return "This connector needs a packaged collector path before it can be started from this dashboard.";
+      return "This source needs a local collection setup before it can start from this dashboard.";
     case "provider_auth_proof_gated":
-      return "Provider authorization is not packaged in this dashboard yet.";
+      return "Provider authorization is not available in this dashboard yet.";
     case "api_network_unsupported":
       return "This dashboard cannot add this source yet.";
     default:
