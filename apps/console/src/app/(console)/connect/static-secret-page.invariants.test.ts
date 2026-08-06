@@ -60,9 +60,11 @@ const STATUS_FETCH = /getConnectionSetupStatus\(/;
 const STATUS_SETUP_STATE = /setup_state/;
 const STATUS_SETUP_MATERIAL = /setup_material/;
 const STATUS_FAILED_STATE = /first_sync_failed/;
+const STATUS_ZERO_YIELD_STATE = /first_sync_zero_yield/;
 const STATUS_LAST_ERROR = /last_error/;
 const STATUS_CONNECTION_ID = /connection_id/;
 const STATUS_NOT_FOUND = /notFound\(\)/;
+const STATUS_LIVE_POLLER = /<LivePoller enabled=\{status\.pending\} \/>/;
 const STATUS_NO_PASSWORD_INPUT = /type="password"/;
 const STATUS_NO_SECRET_INPUT = /name="secret"/;
 const ROTATED_AT = /rotated_at/;
@@ -162,6 +164,7 @@ test("durable setup-status page reads the connection-scoped status route and sur
   assert.match(src, STATUS_SETUP_STATE);
   assert.match(src, STATUS_SETUP_MATERIAL);
   assert.match(src, STATUS_FAILED_STATE);
+  assert.match(src, STATUS_ZERO_YIELD_STATE);
   assert.match(src, STATUS_LAST_ERROR);
   assert.match(src, STATUS_CONNECTION_ID);
   assert.match(src, ROTATED_AT);
@@ -169,6 +172,8 @@ test("durable setup-status page reads the connection-scoped status route and sur
   assert.doesNotMatch(src, NO_UNPROVEN_FIRST_SYNC_COPY);
   // 404s a missing connection rather than fabricating a status.
   assert.match(src, STATUS_NOT_FOUND);
+  // Transitional setup status refreshes automatically while it remains pending.
+  assert.match(src, STATUS_LIVE_POLLER);
   // No provider-specific copy and no secret-bearing input on a read-only
   // status surface (the status page never captures a credential).
   assert.doesNotMatch(src, NO_PROVIDER_COPY);

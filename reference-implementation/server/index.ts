@@ -5095,7 +5095,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
     createRequestConnectorInstanceStore,
     getOwnerSubjectId,
     getRunStartedAt: async (runId: string) => (await getRunStartedEvent(runId))?.occurred_at ?? null,
-    getRunTerminalStatus,
+    getRunTerminalEvent,
     handleError,
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,
@@ -6620,6 +6620,7 @@ export async function startServer(opts: ServerOpts = {}) {
               ownerSubjectId,
             })
           : await admitOwnerRunConnection({
+              allowDraft: runAdmission === "setup",
               connectorId,
               connectorInstanceId,
               connectorInstanceStore: createRequestConnectorInstanceStore(),

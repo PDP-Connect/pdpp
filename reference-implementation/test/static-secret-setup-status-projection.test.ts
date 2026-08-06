@@ -85,10 +85,33 @@ test("draft with a failed last run projects first_sync_failed -> needs_attention
   });
   assert.equal(status.setup_state, "first_sync_failed");
   assert.equal(status.health_state, "needs_attention");
+  assert.equal(status.pending, false);
   assert.ok(status.last_error);
   assert.equal(status.last_error.reason, "authentication_failed");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.match(status.last_error.remediation, /credential/i);
+});
+
+test("a completed zero-yield first run is terminal instead of pending forever", () => {
+  const status = projectStaticSecretSetupStatus({
+    activeRun: null,
+    credential: { capturedAt: null, credentialKind: "app_password", present: true },
+    identityFieldName: "account_email",
+    instance: baseInstance,
+    lastRun: {
+      finishedAt: "2026-06-10T00:04:00.000Z",
+      recordsEmitted: 0,
+      reportedRecordsEmitted: 0,
+      runId: "run_zero_yield",
+      status: "completed",
+    },
+  });
+  assert.equal(status.setup_state, "first_sync_zero_yield");
+  assert.equal(status.health_state, "idle");
+  assert.equal(status.pending, false);
+  assert.equal(status.running, false);
+  assert.equal(status.run?.records_emitted, 0);
+  assert.equal(status.run?.reported_records_emitted, 0);
 });
 
 test("active instance projects active -> healthy and not pending", () => {

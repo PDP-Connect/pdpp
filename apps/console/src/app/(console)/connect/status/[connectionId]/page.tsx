@@ -6,6 +6,7 @@ import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primi
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import { LivePoller } from "../../../components/live-poller.tsx";
 import { type ConnectionSetupStatus, getConnectionSetupStatus, RefNotFoundError } from "../../../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
@@ -89,6 +90,16 @@ function describeActiveConnectionState(status: ConnectionSetupStatus): StatusDes
   };
 }
 
+function describeZeroYieldState(status: ConnectionSetupStatus): StatusDescription {
+  let detail = "The first sync finished without saving records. Retry if you expected data.";
+  if (status.setup_kind === "browser_session") {
+    detail = "The browser run finished without saving records. Start browser setup again if you expected data.";
+  } else if (status.setup_kind === "manual_upload") {
+    detail = "The import finished without saving records. Choose another file if you expected data.";
+  }
+  return { detail, headline: "No records collected", tone: "pending" };
+}
+
 function describeImportState(status: ConnectionSetupStatus): StatusDescription {
   switch (status.setup_state) {
     case "active":
@@ -111,6 +122,8 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
         headline: "Import starting",
         tone: "pending",
       };
+    case "first_sync_zero_yield":
+      return describeZeroYieldState(status);
     case "awaiting_credential":
       return {
         detail: "This source is set up but no import file is captured yet.",
@@ -153,6 +166,8 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
         headline: "First sync starting",
         tone: "pending",
       };
+    case "first_sync_zero_yield":
+      return describeZeroYieldState(status);
     case "awaiting_credential":
       return {
         detail: "This connection is set up but no provider credential is captured yet.",
@@ -200,6 +215,8 @@ function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescr
         headline: "First sync starting",
         tone: "pending",
       };
+    case "first_sync_zero_yield":
+      return describeZeroYieldState(status);
     case "awaiting_browser_login":
       return {
         detail: "Continue in the secure browser to finish signing in. The first sync starts after login.",
@@ -597,6 +614,7 @@ export default async function ConnectionSetupStatusPage({
 
   return (
     <RecordroomShellWithPalette>
+      <LivePoller enabled={status.pending} />
       <PageHeader
         actions={
           <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
@@ -670,12 +688,14 @@ export default async function ConnectionSetupStatusPage({
           ) : null}
           {described.tone === "failed" ||
           status.setup_state === "awaiting_credential" ||
-          status.setup_state === "awaiting_browser_login" ? (
+          status.setup_state === "awaiting_browser_login" ||
+          status.setup_state === "first_sync_zero_yield" ? (
             <Link className={buttonVariants({ size: "sm", variant: "default" })} href={setupHref(status)}>
               {retryLabel(status)}
             </Link>
           ) : null}
           {described.tone === "pending" &&
+          status.pending &&
           status.setup_state !== "awaiting_credential" &&
           status.setup_state !== "awaiting_browser_login" ? (
             <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={refreshHref}>

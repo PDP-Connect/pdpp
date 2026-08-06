@@ -36,6 +36,7 @@ import type { ConnectionHealthState } from "./connection-health.ts";
 //   awaiting_browser_login draft, browser/SSO login not completed   -> idle
 //   first_sync_running     setup material or browser login, run in flight -> idle (+ syncing activity)
 //   first_sync_pending     setup material or browser login, no run yet     -> idle
+//   first_sync_zero_yield  first run completed but accepted no records      -> idle
 //   first_sync_failed      last run failed, still a draft           -> needs_attention
 //   active                 first ingest accepted records           -> healthy
 //   paused                 owner-paused connection                  -> idle
@@ -50,6 +51,7 @@ export type StaticSecretSetupState =
   | "first_sync_failed"
   | "first_sync_pending"
   | "first_sync_running"
+  | "first_sync_zero_yield"
   | "paused"
   | "revoked"
   | "unknown";
@@ -61,6 +63,7 @@ const SETUP_STATE_HEALTH: Record<StaticSecretSetupState, ConnectionHealthState> 
   first_sync_failed: "needs_attention",
   first_sync_pending: "idle",
   first_sync_running: "idle",
+  first_sync_zero_yield: "idle",
   paused: "idle",
   revoked: "idle",
   unknown: "unknown",
@@ -117,6 +120,8 @@ export interface SetupStatusImportReceipt {
 export interface SetupStatusRun {
   readonly failureReason?: string | null;
   readonly finishedAt?: string | null;
+  readonly recordsEmitted?: number | null;
+  readonly reportedRecordsEmitted?: number | null;
   readonly runId: string | null;
   readonly startedAt?: string | null;
   readonly status: string | null;
@@ -201,8 +206,8 @@ export interface ConnectionSetupStatus {
     readonly remediation: string;
   } | null;
   readonly object: "connection_setup_status";
-  // True while the connection is not yet a working connection (draft) and the
-  // owner still has a setup action to complete or await.
+  // True while setup is transitional. A draft with a terminal zero-yield run
+  // or terminal failure is not pending merely because it remains draft.
   readonly pending: boolean;
   // The current/last run, for the owner to follow progress or read a failure.
   readonly run: {
@@ -210,6 +215,8 @@ export interface ConnectionSetupStatus {
     readonly status: string | null;
     readonly started_at: string | null;
     readonly finished_at: string | null;
+    readonly records_emitted: number | null;
+    readonly reported_records_emitted: number | null;
   } | null;
   // True while a first sync run is in flight.
   readonly running: boolean;
@@ -229,6 +236,13 @@ export interface ConnectionSetupStatus {
 
 const TERMINAL_FAILURE_STATUSES = new Set(["failed", "errored", "error", "cancelled", "canceled", "aborted"]);
 const RUNNING_STATUSES = new Set(["started", "in_progress", "running", "pending"]);
+const TERMINAL_SUCCESS_STATUSES = new Set(["completed", "complete", "succeeded", "success"]);
+const TRANSITIONAL_SETUP_STATES = new Set<StaticSecretSetupState>([
+  "awaiting_browser_login",
+  "awaiting_credential",
+  "first_sync_pending",
+  "first_sync_running",
+]);
 
 function runIsFailure(run: SetupStatusRun | null): boolean {
   return run !== null && typeof run.status === "string" && TERMINAL_FAILURE_STATUSES.has(run.status);
@@ -236,6 +250,27 @@ function runIsFailure(run: SetupStatusRun | null): boolean {
 
 function runIsRunning(run: SetupStatusRun | null): boolean {
   return run !== null && typeof run.status === "string" && RUNNING_STATUSES.has(run.status);
+}
+
+function runIsTerminalZeroYield(run: SetupStatusRun | null): boolean {
+  const recordsEmitted = run?.recordsEmitted ?? run?.reportedRecordsEmitted;
+  return (
+    run !== null && typeof run.status === "string" && TERMINAL_SUCCESS_STATUSES.has(run.status) && recordsEmitted === 0
+  );
+}
+
+function terminalDraftState(run: SetupStatusRun | null): StaticSecretSetupState | null {
+  if (runIsFailure(run)) {
+    return "first_sync_failed";
+  }
+  if (runIsTerminalZeroYield(run)) {
+    return "first_sync_zero_yield";
+  }
+  return null;
+}
+
+export function isTransitionalSetupState(state: StaticSecretSetupState): boolean {
+  return TRANSITIONAL_SETUP_STATES.has(state);
 }
 
 function credentialUpdatedAt(credential: SetupStatusCredentialMetadata | null): string | null {
@@ -333,9 +368,10 @@ function deriveSetupState(
   if (running) {
     return "first_sync_running";
   }
-  // No in-flight run. A terminal failure on the last run is a failed first sync.
-  if (runIsFailure(input.lastRun)) {
-    return "first_sync_failed";
+  // No in-flight run. Terminal run evidence is authoritative for the draft.
+  const terminalState = terminalDraftState(input.lastRun);
+  if (terminalState) {
+    return terminalState;
   }
   // Credential/browser-login material present (or run evidence exists for a
   // browser session), run queued or just-submitted but not yet running and
@@ -446,10 +482,16 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
     import_receipt: projectImportReceipt(setupKind, input.importReceipt),
     last_error: lastError,
     object: "connection_setup_status",
-    pending: input.instance.status === "draft",
+    // Pending is a lifecycle state, not a storage-status synonym. A draft with
+    // a terminal first-sync failure must stop polling and expose the failure as
+    // terminal; otherwise every owner surface can remain indefinitely pending
+    // after the run has already failed.
+    pending: isTransitionalSetupState(setupState),
     run: run
       ? {
           finished_at: run.finishedAt ?? null,
+          records_emitted: nullable(run.recordsEmitted),
+          reported_records_emitted: nullable(run.reportedRecordsEmitted),
           run_id: run.runId,
           started_at: run.startedAt ?? null,
           status: run.status,

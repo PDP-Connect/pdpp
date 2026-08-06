@@ -18,6 +18,10 @@ const ENDED_SURFACE_GATE_RE =
   /noAssistanceState === "ended"[\s\S]{0,360}<RunEndedSurface[\s\S]{0,360}resolveNoAssistanceEndedTerminalStatus/;
 const CONTINUING_SURFACE_RE = /<RunContinuingSurface/;
 const CONTINUING_POLLER_RE = /<NoAssistanceRunPoller runId=\{runId\} \/>/;
+const SETUP_STATUS_LINK_RE =
+  /function SetupStatusLink[\s\S]{0,520}\/connect\/status\/\$\{encodeURIComponent\(connectionId\)\}/;
+const SETUP_STATUS_CTA_RE = /<SetupStatusLink connectionId=\{connectionId\} runId=\{runId\} \/>/g;
+const NO_PENDING_TIMELINE_DETOUR_RE = /still being checked[\s\S]{0,220}Open the run timeline/;
 const UNAVAILABLE_STREAM_POLLER_RE =
   /function UnavailableStreamSurface[\s\S]{0,520}<NoAssistanceRunPoller runId=\{runId\} \/>/;
 const PREPARING_BROWSER_SURFACE_GATE_RE =
@@ -94,6 +98,9 @@ test("stream page does not render resolved copy solely because assistance disapp
   assert.match(pageSource, PREPARING_BROWSER_SURFACE_COPY_RE);
   assert.match(pageSource, CONTINUING_SURFACE_RE);
   assert.match(pageSource, CONTINUING_POLLER_RE);
+  assert.match(pageSource, SETUP_STATUS_LINK_RE);
+  assert.equal([...pageSource.matchAll(SETUP_STATUS_CTA_RE)].length, 2);
+  assert.doesNotMatch(pageSource, NO_PENDING_TIMELINE_DETOUR_RE);
 });
 
 test("automatic waits keep run details visibly optional", () => {

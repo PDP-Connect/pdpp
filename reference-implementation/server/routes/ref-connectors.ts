@@ -221,7 +221,7 @@ export interface MountRefConnectorsContext {
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
-      runAdmission?: "browser_enrollment";
+      runAdmission?: "browser_enrollment" | "setup";
       resources?: Readonly<Record<string, readonly string[]>>;
     }
   ) => Promise<unknown>;
@@ -743,21 +743,21 @@ function readExplicitRunForce(req: RouteRequest): boolean {
   );
 }
 
-type RunAdmission = "collection" | "browser_enrollment";
+type RunAdmission = "collection" | "setup" | "browser_enrollment";
 
 function readRunAdmission(req: RouteRequest): RunAdmission {
   const { body } = req;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
-    return "collection";
+    return "setup";
   }
   const raw = (body as { run_admission?: unknown }).run_admission;
   if (raw === undefined) {
-    return "collection";
+    return "setup";
   }
-  if (raw === "browser_enrollment") {
+  if (raw === "setup" || raw === "browser_enrollment") {
     return raw;
   }
-  const err = new Error("run_admission must be browser_enrollment when provided") as Error & { code: string };
+  const err = new Error("run_admission must be setup or browser_enrollment when provided") as Error & { code: string };
   err.code = "invalid_request";
   throw err;
 }
@@ -850,7 +850,7 @@ async function executeRunNow(
     connectorInstanceId: namespace.connectorInstanceId,
     force: audit.force,
     ...(audit.ownerSubjectId ? { ownerSubjectId: audit.ownerSubjectId } : {}),
-    ...(audit.runAdmission === "browser_enrollment" ? { runAdmission: audit.runAdmission } : {}),
+    ...(audit.runAdmission === "collection" ? {} : { runAdmission: audit.runAdmission }),
     ...(resources ? { resources } : {}),
   });
   ctx.invalidateConnectorSummariesCache?.();
@@ -922,7 +922,7 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
       const force = readExplicitRunForce(req);
       let connectionId: string | null = null;
       let connectorKey: string | null = null;
-      let runAdmission: RunAdmission = "collection";
+      let runAdmission: RunAdmission = "setup";
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         connectionId = connectorInstanceId;

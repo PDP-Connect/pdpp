@@ -348,11 +348,16 @@ function clearActiveRun(connectorInstanceId: string): void {
   getDb().prepare("DELETE FROM controller_active_runs WHERE connector_instance_id = ?").run(connectorInstanceId);
 }
 
-async function emitTerminalRunEvent(connectorId: string, runId: string, status: string): Promise<void> {
+async function emitTerminalRunEvent(
+  connectorId: string,
+  runId: string,
+  status: string,
+  data: Readonly<Record<string, unknown>> = {}
+): Promise<void> {
   await emitSpineEvent({
     actor_id: connectorId,
     actor_type: "runtime",
-    data: { source: { id: connectorId, kind: "connector" } },
+    data: { source: { id: connectorId, kind: "connector" }, ...data },
     event_type: status === "failed" ? "run.failed" : "run.completed",
     object_id: runId,
     object_type: "run",
@@ -463,6 +468,18 @@ test("pending static-secret setup is visible before any records are accepted", a
       assert.ok(!running.text.includes(SECRET), "status must not echo the secret");
       assert.ok(!afterCapture.text.includes(SECRET), "status must not echo the secret");
       clearActiveRun(connectionId);
+
+      await emitTerminalRunEvent("gmail", "run_status_zero_yield", "succeeded", {
+        records_emitted: 0,
+        reported_records_emitted: 0,
+      });
+      const zeroYield = await getStatus(asUrl, cookie, connectionId, "run_status_zero_yield");
+      assert.equal(zeroYield.status, 200, zeroYield.text);
+      assert.equal(zeroYield.body.setup_state, "first_sync_zero_yield");
+      assert.equal(zeroYield.body.health_state, "idle");
+      assert.equal(zeroYield.body.pending, false);
+      assert.equal(subObject(zeroYield.body, "run").records_emitted, 0);
+      assert.equal(subObject(zeroYield.body, "run").reported_records_emitted, 0);
     });
   });
 });
@@ -528,7 +545,7 @@ test("a failed first sync is visible with an actionable error and no secret leak
       assert.equal(failed.body.status, "draft");
       assert.equal(failed.body.setup_state, "first_sync_failed");
       assert.equal(failed.body.health_state, "needs_attention");
-      assert.equal(failed.body.pending, true);
+      assert.equal(failed.body.pending, false);
       assert.equal(failed.body.running, false);
       assert.ok(failed.body.last_error, "failed first sync must carry last_error");
       assert.equal(typeof subObject(failed.body, "last_error").reason, "string");
@@ -844,6 +861,7 @@ test("ChatGPT browser-enrollment-shell draft is classified browser_session, not 
     assert.equal(failed.status, 200, failed.text);
     assert.equal(failed.body.setup_kind, "browser_session");
     assert.equal(failed.body.setup_state, "first_sync_failed");
+    assert.equal(failed.body.pending, false);
     assert.ok(failed.body.last_error, "failed first sync must carry last_error");
     const remediation = String(subObject(failed.body, "last_error").remediation);
     assert.doesNotMatch(remediation, NO_BROWSER_CREDENTIAL_REMEDIATION);

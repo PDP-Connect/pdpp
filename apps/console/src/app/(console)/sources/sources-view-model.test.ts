@@ -573,6 +573,8 @@ test("formatSchedule is honest about no schedule, paused, and policy-ineligible"
   assert.equal(formatSchedule({ ...base, enabled: false }), "paused");
   assert.equal(formatSchedule({ ...base, effective_mode: "paused" }), "paused");
   assert.equal(formatSchedule({ ...base, ineligibility_reason: "manifest_policy" }), "every 1d · paused by policy");
+  assert.equal(formatSchedule({ ...base, enabled: undefined as never }), "schedule details unavailable");
+  assert.equal(formatSchedule({ ...base, interval_seconds: undefined as never }), "schedule details unavailable");
 });
 
 test("exploreHrefFor encodes connection + stream into the Explore deep link", () => {

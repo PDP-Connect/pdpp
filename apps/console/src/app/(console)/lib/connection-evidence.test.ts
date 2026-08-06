@@ -2237,7 +2237,7 @@ test("formatCollectionRateReadout fails closed for partial projection payloads",
     ceiling_rate_per_min: 240,
     current_interval_ms: 250,
     effective_rate_per_min: 240,
-    last_backoff: { reason: "throttle" } as never,
+    last_backoff: { reason: "throttle" },
   });
   assert.ok(partialBackoff);
   assert.equal(partialBackoff.backoffLabel, null, "partial back-off → omit optional line");

@@ -60,7 +60,7 @@ interface RunNowCall {
   readonly options: {
     connectorInstanceId?: string | null;
     force?: boolean;
-    runAdmission?: "browser_enrollment";
+    runAdmission?: "browser_enrollment" | "setup";
     resources?: Readonly<Record<string, readonly string[]>>;
   };
 }
@@ -330,7 +330,12 @@ test("POST /_ref/connections/:id/run forwards explicit force override to the con
   assert.deepEqual(harness.calls.runNow, [
     {
       connectorId: "chatgpt",
-      options: { connectorInstanceId: "cin_chatgpt", force: true, ownerSubjectId: "owner_local" },
+      options: {
+        connectorInstanceId: "cin_chatgpt",
+        force: true,
+        ownerSubjectId: "owner_local",
+        runAdmission: "setup",
+      },
     },
   ]);
   const [firstEvent] = harness.calls.emitSpineEvent;
@@ -440,9 +445,21 @@ test("POST /_ref/connections/:id/run forwards scoped stream resources", async ()
         force: false,
         ownerSubjectId: "owner_local",
         resources: { messages: ["C07JYF0U8BY"] },
+        runAdmission: "setup",
       },
     },
   ]);
+});
+
+test("POST /_ref/connections/:id/run accepts explicit setup admission", async () => {
+  const harness = buildHarness(mountRefConnectionRun);
+  const res = await harness.invoke({
+    body: { run_admission: "setup" },
+    params: { connectorInstanceId: "cin_chatgpt" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.equal(harness.calls.runNow[0]?.options.runAdmission, "setup");
 });
 
 test("POST /_ref/connections/:id/run rejects prototype-polluting resource keys", async () => {

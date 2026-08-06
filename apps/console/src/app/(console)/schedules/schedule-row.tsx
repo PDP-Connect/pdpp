@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import type { RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
+import { activeScheduleRunId, scheduleEnabled, scheduleIntervalSeconds } from "../lib/schedule-evidence.ts";
 import { formatTotalRecordsLabel } from "../lib/total-records-label.ts";
 import { deleteScheduleAction, pauseScheduleAction, resumeScheduleAction, upsertScheduleAction } from "./actions.ts";
 
@@ -19,7 +20,10 @@ interface ScheduleRowProps {
 
 type EditState = "idle" | "editing";
 
-function formatInterval(seconds: number): string {
+function formatInterval(seconds: number | null): string {
+  if (seconds === null) {
+    return "—";
+  }
   if (seconds < 60) {
     return `${seconds}s`;
   }
@@ -32,7 +36,10 @@ function formatInterval(seconds: number): string {
   return `${Math.round(seconds / 86_400)}d`;
 }
 
-function formatIntervalForInput(seconds: number): string {
+function formatIntervalForInput(seconds: number | null): string {
+  if (seconds === null) {
+    return "";
+  }
   if (seconds < 60) {
     return `${seconds}s`;
   }
@@ -46,10 +53,11 @@ function formatIntervalForInput(seconds: number): string {
 }
 
 function recommendedIntervalLabel(policy: RefConnectorSummary["refresh_policy"]): string | null {
-  if (!policy?.recommended_interval_seconds) {
+  const seconds = scheduleIntervalSeconds(policy?.recommended_interval_seconds);
+  if (seconds === null) {
     return null;
   }
-  return formatInterval(policy.recommended_interval_seconds);
+  return formatInterval(seconds);
 }
 
 /**
@@ -93,16 +101,37 @@ function remoteScheduleFor(summary: RefConnectorSummary): RefSchedule | null {
   return summary.source_kind === "local_device" ? null : summary.schedule;
 }
 
+function ScheduleEditButton({
+  intervalSeconds,
+  isPending,
+  jitterSeconds,
+  onEdit,
+}: {
+  intervalSeconds: number | null;
+  isPending: boolean;
+  jitterSeconds: number | null;
+  onEdit: (every: string, jitter: string) => void;
+}) {
+  return (
+    <IcButton
+      disabled={isPending || intervalSeconds === null}
+      onClick={() => onEdit(formatIntervalForInput(intervalSeconds), formatIntervalForInput(jitterSeconds))}
+      size="sm"
+      variant="ghost"
+    >
+      Edit
+    </IcButton>
+  );
+}
+
 export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [editState, setEditState] = useState<EditState>("idle");
-  const [every, setEvery] = useState(() =>
-    summary.schedule ? formatIntervalForInput(summary.schedule.interval_seconds) : "1h"
-  );
-  const [jitter, setJitter] = useState(() =>
-    summary.schedule?.jitter_seconds ? formatIntervalForInput(summary.schedule.jitter_seconds) : ""
-  );
+  const initialIntervalSeconds = scheduleIntervalSeconds(summary.schedule?.interval_seconds);
+  const initialJitterSeconds = scheduleIntervalSeconds(summary.schedule?.jitter_seconds);
+  const [every, setEvery] = useState(() => formatIntervalForInput(initialIntervalSeconds));
+  const [jitter, setJitter] = useState(() => formatIntervalForInput(initialJitterSeconds));
   const [toast, setToast] = useState<{ kind: "error" | "warning"; message: string } | null>(null);
 
   const showToast = useCallback((kind: "error" | "warning", message: string) => {
@@ -194,7 +223,10 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   });
   const connectorKey = formatConnectorKeyForDisplay(summary.connector_id);
   const recordsHref = recordsHrefForSummary(summary);
-  const activeRunId = schedule?.active_run_id;
+  const activeRunId = activeScheduleRunId(schedule);
+  const enabled = scheduleEnabled(schedule?.enabled);
+  const intervalSeconds = scheduleIntervalSeconds(schedule?.interval_seconds);
+  const jitterSeconds = scheduleIntervalSeconds(schedule?.jitter_seconds);
   // schedule is RefSchedule | null (remoteScheduleFor can return null); tsc
   // confirms schedule.human_attention_needed errors without the guard when
   // the fallback is removed. Biome's type-aware pass mis-resolves this one.
@@ -247,9 +279,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
                 running →
               </Link>
             )}
-            {schedule && (
+            {schedule && enabled !== null && (
               <>
-                {schedule.enabled ? (
+                {enabled ? (
                   <IcButton disabled={isPending} onClick={handlePause} size="sm" variant="ghost">
                     Pause
                   </IcButton>
@@ -258,18 +290,16 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
                     Resume
                   </IcButton>
                 )}
-                <IcButton
-                  disabled={isPending}
-                  onClick={() => {
-                    setEvery(formatIntervalForInput(schedule.interval_seconds));
-                    setJitter(schedule.jitter_seconds ? formatIntervalForInput(schedule.jitter_seconds) : "");
+                <ScheduleEditButton
+                  intervalSeconds={intervalSeconds}
+                  isPending={isPending}
+                  jitterSeconds={jitterSeconds}
+                  onEdit={(nextEvery, nextJitter) => {
+                    setEvery(nextEvery);
+                    setJitter(nextJitter);
                     setEditState(editState === "editing" ? "idle" : "editing");
                   }}
-                  size="sm"
-                  variant="ghost"
-                >
-                  Edit
-                </IcButton>
+                />
                 <IcButton disabled={isPending} onClick={handleDelete} size="sm" variant="ghost">
                   Delete
                 </IcButton>
@@ -294,7 +324,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
                 Automation: <span className="text-foreground">{automationModeLabel(schedule.automation_mode)}</span>
               </span>
               <span>
-                Every: <span className="text-foreground tabular-nums">{formatInterval(schedule.interval_seconds)}</span>
+                Every: <span className="text-foreground tabular-nums">{formatInterval(intervalSeconds)}</span>
               </span>
             </>
           ) : (
