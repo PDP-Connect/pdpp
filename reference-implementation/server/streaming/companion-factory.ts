@@ -51,6 +51,7 @@ export interface StreamingCompanion {
   onEvent: (handler: (...args: unknown[]) => unknown) => () => void;
   onFrame: (handler: (...args: unknown[]) => unknown) => () => void;
   queryNekoStatus: () => Promise<unknown>;
+  readRemoteSelection: () => Promise<string>;
   resolveBackend: () => Promise<string>;
   start: (viewport: unknown) => Promise<void>;
   stop: () => Promise<void>;
@@ -429,6 +430,15 @@ function createResolvedCompanion({
         return null;
       }
       return companion.queryNekoStatus();
+    },
+    async readRemoteSelection() {
+      const companion = await ensureInner();
+      if (typeof companion.readRemoteSelection !== "function") {
+        const err: CodedError = new Error("Remote selection is unavailable");
+        err.code = "clipboard_unsupported";
+        throw err;
+      }
+      return companion.readRemoteSelection();
     },
     async resolveBackend() {
       const companion = await ensureInner();

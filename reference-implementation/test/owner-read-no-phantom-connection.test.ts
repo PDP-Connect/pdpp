@@ -112,6 +112,16 @@ test("owner /v1/streams read for an unconnected manual connector persists no con
 
     assert.equal(store.listByOwner(OWNER_AUTH_DEFAULT_SUBJECT_ID).length, 0);
 
+    const ownerWideResp = await fetch(`${rsUrl}/v1/streams`, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const ownerWideBody = (await ownerWideResp.json()) as { data?: unknown[] };
+    assert.equal(ownerWideResp.status, 200, JSON.stringify(ownerWideBody));
+    assert.deepEqual(ownerWideBody.data, [], "unconnected registered connectors are absent from owner-wide discovery");
+
     const resp = await fetch(`${rsUrl}/v1/streams?connector_id=${encodeURIComponent(CONNECTOR_ID)}`, {
       headers: {
         Accept: "application/json",

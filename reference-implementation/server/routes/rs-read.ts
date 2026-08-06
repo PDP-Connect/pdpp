@@ -1240,11 +1240,7 @@ async function listOwnerStreamsAcrossRegisteredConnectors(
       try {
         return await listOwnerStreamsForConnector(ctx, req, connectorId);
       } catch (err) {
-        if (
-          requestedConnectionId &&
-          err instanceof Error &&
-          (err as Error & { code?: string }).code === "connection_not_found"
-        ) {
+        if (err instanceof Error && (err as Error & { code?: string }).code === "connection_not_found") {
           skippedConnectionErrors.push(err);
           return [];
         }

@@ -27,7 +27,7 @@
  *       owner-facing label from the page title. See SYNCS_NOTE below.
  *     - "Schedules" -> the real schedule management route.
  *     - "Notifications" -> device-level owner-action alert setup.
- *     - "Connect AI apps" -> reader/client access, grouped with sharing, not
+ *     - "Connect apps" -> reader/client access, grouped with sharing, not
  *       source collection.
  *   `NAV_GROUPS` is a typed array so leaf views / future edits are trivial.
  *
@@ -87,7 +87,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     heading: "Sharing",
     items: [
-      { label: "Connect AI apps", href: "/connect" },
+      { label: "Connect apps", href: "/connect" },
       { label: "Grants", href: "/grants" },
       { label: "Audit", href: "/audit" },
     ],

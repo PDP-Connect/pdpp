@@ -232,3 +232,19 @@ test("resolved companion prefers route-resolved target over legacy registry reso
   assert.equal(await companion.resolveBackend(), "neko");
   assert.equal(companion.backend, "neko");
 });
+
+test("resolved companion preserves the backend remote-selection capability", () => {
+  const factory = createDefaultStreamingCompanionFactory({
+    resolveTargetForInteraction: () => "ws://fake/page",
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: capability shape is asserted before the lazy socket opens
+    WebSocketCtor() {},
+  });
+  assert.ok(factory, "expected a factory when resolveTargetForInteraction is a function");
+  const companion = factory({
+    browser_session_id: "bs_clipboard",
+    interaction_id: "int_clipboard",
+    run_id: "run_clipboard",
+  });
+  assert.ok(companion, "expected a companion for valid companion ids");
+  assert.equal(typeof companion.readRemoteSelection, "function");
+});

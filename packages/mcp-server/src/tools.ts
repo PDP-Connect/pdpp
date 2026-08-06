@@ -212,7 +212,7 @@ const SUPPORTED_AGGREGATE_QUERY_KEYS = new Set([
 ]);
 
 const CONNECTION_ID_DESCRIPTION =
-  "Optional. Scope this call to one connection. Omit to fan in across all granted connections. Obtain from `schema` or the `available_connections` field in a typed 409 error — each entry includes `connector_key` and `connection_id`. Persist `connection_id` (not `grant_id`) across reconnects.";
+  "Optional connection scope. Omit to fan in across granted connections. Get it from `schema` or typed 409 `available_connections` entries with `connector_key` and `connection_id`; persist `connection_id`, not `grant_id`, across reconnects.";
 
 const LIMIT_DESCRIPTION =
   "Records per page. Omit for the default page of 25; the maximum is 100 (the spec-core §8 contract). Values above 100 are rejected here rather than silently clamped, so the page size you request is always the page size you get. Page forward with the returned `cursor` instead of asking for a larger page.";
@@ -227,7 +227,7 @@ const VIEW_DESCRIPTION =
   "Named projection. A stream-declared view id (advertised by `GET /v1/schema` under each stream's `views`) that projects the returned records down to the view's field set. Mutually exclusive with `fields` (passing both is rejected by the RS); an unknown view id is rejected rather than silently ignored. Use `view` for a curated projection and `fields` for an ad-hoc one.";
 
 const FILTER_DESCRIPTION =
-  'Typed per-field filter. Pass an OBJECT keyed by field name — never a pre-encoded query string. Exact match: `{ "user_id": "U123" }`. Range: `{ "created_at": { "gte": "2026-01-01T00:00:00Z", "lt": "2026-02-01T00:00:00Z" } }`, where the operator is one of `gte`, `gt`, `lte`, `lt`. Multiple fields AND together. The adapter encodes this into the RS `filter[field]=value` / `filter[field][op]=value` query shape for you. Allowed fields and operators are advertised by `GET /v1/schema` (`field_capabilities`); unsupported fields or operators are rejected by the RS rather than silently ignored.';
+  'Typed object filter, not a pre-encoded query string: exact `{ "user_id": "U123" }` or range `{ "created_at": { "gte": "...", "lt": "..." } }`; fields AND. The adapter encodes RS `filter[field]` / `filter[field][op]` params. Fields and operators (`gte`, `gt`, `lte`, `lt`) come from `GET /v1/schema`; unsupported values are rejected.';
 
 const EXPAND_DESCRIPTION =
   "One-hop inline expansion list. Each entry is a manifest-declared parent-to-child relation. Expandable relations and per-relation `expand_limit` caps are advertised by `GET /v1/schema` (`expand_capabilities`); unadvertised relations are rejected by the RS.";
@@ -504,7 +504,7 @@ const ConnectionIdInputShape = {
 // lives at `GET /v1/schema` and in the OpenAPI artifacts published by the
 // reference-contract package.
 const CANONICAL_SCHEMA_HINT =
-  "Per-stream filter operators, expandable relations, projection support, search modes, count support, granted `connection_id` values, and canonical `connector_key` metadata are advertised by `GET /v1/schema`. Consult it before constructing filter, sort, expand, fields, count, or source-disambiguation arguments.";
+  "Use `GET /v1/schema` first for per-stream filter, sort, expand, projection, search, count, `connection_id`, and `connector_key` capabilities.";
 
 // outputSchema describes the MCP wrapper around the RS response body. We do
 // NOT bake the RS body shape into the outputSchema because the canonical

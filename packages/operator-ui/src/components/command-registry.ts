@@ -166,13 +166,13 @@ function buildLiveOnlyNavigationCommands(basePath: string): DashboardCommand[] {
     },
     {
       description:
-        "Give AI apps and local agents grant-scoped read access to data already in this instance: copy MCP/CLI setup for ChatGPT, Claude, Claude Code, Codex. To add data sources, use Sources.",
+        "Give apps and local agents grant-scoped read access to data already in this instance. To add data sources, use Sources.",
       href: `${basePath}/connect`,
       id: "nav-connect",
       keywords: ["connect", "ai apps", "read access", "mcp", "claude", "codex", "chatgpt", "agent", "client", "setup"],
       kind: "jump",
       section: "Navigate",
-      title: "Connect AI apps",
+      title: "Connect apps",
     },
     {
       description: "Manage device-bound exporters for this PDPP instance.",
