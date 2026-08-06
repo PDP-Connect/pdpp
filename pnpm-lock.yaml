@@ -364,9 +364,15 @@ importers:
 
   packages/pdpp-brand:
     dependencies:
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
       shadcn:
         specifier: ^4.16.0
         version: 4.16.1(typescript@7.0.2)
+      tailwind-merge:
+        specifier: ^3.6.0
+        version: 3.6.0
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3

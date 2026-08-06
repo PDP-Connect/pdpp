@@ -47,22 +47,21 @@ Site agent notes: [`apps/site/AGENTS.md`](../../apps/site/AGENTS.md). Cascade: [
 ## Class names: always `cn`
 
 ```ts
-// apps/site/src/lib/utils.ts  |  apps/console/src/lib/utils.ts  |  packages/operator-ui/src/ui/utils.ts
-import { type ClassValue, clsx } from "clsx";
-import { twMerge } from "tailwind-merge";
+// Brand (source of truth for brand @theme scales):
+// packages/pdpp-brand/tw-merge.ts → @pdpp/brand/tw-merge
 
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
+// Console / operator-ui: thin wrapper around brand cn (keep @/lib/utils for shadcn).
+// Site: editorial theme keys + withPdppBrand — apps/site/src/lib/utils.ts
 ```
 
 shadcn → `"utils": "@/lib/utils"`. Use `cn` for conditional / merged classes. Do not hand-roll `filter(Boolean).join`.
 
-Site `cn` extends `tailwind-merge` via `extend.theme` for custom `--text-*` /
-`--spacing-*` / `--container-*` / `--radius-*` (editorial-tokens + brand).
-Custom `--color-*` names need no listing. Unlisted `text-stamp` is treated as a
-**colour**, so `text-teal` deletes it. Keep `apps/site/src/lib/utils.ts` in step
-with those `@theme` files.
+Brand `cn` / `withPdppBrand` registers custom `--text-*` / `--spacing-*` /
+`--container-*` / `--radius-*` from brand `tokens/semantic.css`. Site extends
+that with editorial-tokens only (`stamp`, `pad`, `page`, …). Custom `--color-*`
+names need no listing. Unlisted `text-stamp` is treated as a **colour**, so
+`text-teal` deletes it. Keep the brand + site lists in step with those `@theme`
+files.
 
 ```tsx
 // good

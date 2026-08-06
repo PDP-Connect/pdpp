@@ -10,6 +10,7 @@ shared utilities.
 | --- | --- |
 | `tokens/primitive.css` | Runtime theme values shared by plain CSS, shadcn-compatible consumers and Tailwind. Light values live in `:root`; `[data-theme="dark"]` overrides the same variables. Theme branching belongs here only. |
 | `tokens/semantic.css` | PDPP's Tailwind-facing API. Semantic tokens use plain `@theme` so generated utilities retain the semantic variable and scoped overrides. |
+| `tw-merge.ts` | Brand-aware `cn` / `withPdppBrand` for tailwind-merge. Theme keys must match custom scales in `semantic.css`. Apps keep a local `cn` path (shadcn); console/operator-ui wrap brand `cn`; site composes editorial keys on top. |
 | `tokens/motion.css` | Runtime durations, easing and reduced-motion token policy. |
 | `tokens/tailwind-aliases.css` | Tailwind default scale names and static radius utilities remapped onto PDPP's semantic scale. It does not own PDPP colour, type or spacing vocabulary. |
 | `base.css` | `@layer base` — document defaults, element resets, scrollbar, density preference vars, hard reduced-motion stop. Keyframes stay unlayered. |
