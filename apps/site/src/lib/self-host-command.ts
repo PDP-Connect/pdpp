@@ -84,34 +84,31 @@ export type MethodId = "docker" | "compose" | "fly" | "railway";
 /**
  * THE GATE. PR #79 (github.com/PDP-Connect/pdpp/pull/79) makes `core` the
  * complete self-host default — one image, SQLite on a persistent volume,
- * bundled Patchright/Chromium — and the built-image friend gate already
- * passed on that code. This flag is the ONLY thing standing between the page
- * and showing it: flip it to `true` once the PR is merged and
- * `ghcr.io/pdp-connect/pdpp/core-browser:main` resolves (re-run the
- * `docker manifest inspect` check in this file's test to confirm before
- * flipping). Leaving it `false` keeps `docker` out of `METHODS`, so Compose
- * stays the primary default and no command names a tag that does not exist.
+ * bundled Chromium — and the built-image friend gate passed on that code.
+ *
+ * 2026-08-06: PR #79 merged as 2f0a62ae5, and
+ * `ghcr.io/pdp-connect/pdpp/core:main` now resolves anonymously
+ * (sha256:a13e92e8…, linux/amd64 + linux/arm64). The published image carries
+ * `/usr/bin/google-chrome`, so `core` itself is the browser-capable artifact
+ * and there is no separate `core-browser`. Flag flipped.
  */
-const CORE_PUBLISHED = false;
+const CORE_PUBLISHED = true;
 
 /**
- * The browser-capable image Compose and Fly still name today.
- * `core`/`core-browser` are the intended public artifact names once #79
- * publishes (see `CORE_PUBLISHED`); until then commands must name an
- * artifact that actually exists, so this stays `reference-browser`.
+ * The browser-capable image every method names. Since #79 this is `core`:
+ * one image that serves the console, the MCP endpoint and the browser-backed
+ * connectors, so there is no `-browser` variant to choose between.
  */
-const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/reference-browser:main";
+const BROWSER_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
 
 /**
- * The neutral versioned public artifact name PR #79 publishes. Not
- * `railway-core` (a deployment-provider-specific internal build target,
- * banned from reader-facing copy — see
- * self-host-browser-capability.test.ts, "no command or copy exposes a
- * platform-specific artifact name") and not a platform name. `core-browser`
- * is the browser-capable variant of `core`, same pairing as
- * `reference`/`reference-browser` today.
+ * The neutral public artifact name. Not `railway-core` (a
+ * deployment-provider-specific internal build target, banned from
+ * reader-facing copy — see self-host-browser-capability.test.ts, "no command
+ * or copy exposes a platform-specific artifact name") and not a platform
+ * name.
  */
-const CORE_IMAGE = "ghcr.io/pdp-connect/pdpp/core-browser:main";
+const CORE_IMAGE = "ghcr.io/pdp-connect/pdpp/core:main";
 
 /**
  * Raw URL rather than a release asset. `releases/latest/download/...` 404s:
@@ -177,7 +174,10 @@ function composeCommand(choices: SelfHostChoices): CommandSegment[] {
       text:
         "\nprintf 'PDPP_OWNER_PASSWORD=%s\\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\\n' \\\n" +
         '  "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env\n' +
-        `echo PDPP_REFERENCE_IMAGE=${BROWSER_IMAGE} >> .env\n`,
+        // PDPP_CORE_IMAGE since #79 (2f0a62ae5). Only the image variable was
+        // renamed there; PDPP_REFERENCE_ORIGIN below is still what the merged
+        // compose reads, so it deliberately keeps its name.
+        `echo PDPP_CORE_IMAGE=${BROWSER_IMAGE} >> .env\n`,
     },
   ];
   if (choices.access === "public") {
