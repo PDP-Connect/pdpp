@@ -1,13 +1,45 @@
 {
   "biome.enabled": true,
   "biome.requireConfiguration": true,
+  "editor.defaultFormatter": "biomejs.biome",
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": false,
+  // Match repo Biome lineWidth (120). Ultracite's default is 80; this repo
+  // overrides it — wrap column must match or soft-wrap mid-breaks legal lines.
+  "editor.wordWrap": "wordWrapColumn",
+  "editor.wordWrapColumn": 120,
   "editor.codeActionsOnSave": {
     "source.fixAll.biome": "explicit",
     "source.organizeImports.biome": "explicit"
   },
-  "editor.formatOnSave": true,
   "files.associations": {
     "*.css": "tailwindcss"
+  },
+  // Per-language keys (not a combined selector) so workspace Biome beats
+  // user-level Prettier defaults for the same language ids.
+  "[javascript]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[json]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
   },
   "[css]": {
     "editor.defaultFormatter": "biomejs.biome",
@@ -16,8 +48,5 @@
   "[tailwindcss]": {
     "editor.defaultFormatter": "biomejs.biome",
     "editor.formatOnSave": true
-  },
-  "[javascript][javascriptreact][json][jsonc][typescript][typescriptreact]": {
-    "editor.defaultFormatter": "biomejs.biome"
   }
 }
