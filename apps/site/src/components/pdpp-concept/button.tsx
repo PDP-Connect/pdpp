@@ -7,8 +7,8 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils.ts";
 
 /*
- * Editorial CTAs — replaces `.pdpp-cta*` BEM. Base UI primitive + concept
- * tokens (ink/paper/teal). Kept under pdpp-concept, not @/components/ui
+ * Editorial CTAs built from the Base UI primitive and concept tokens
+ * (ink/paper/teal). Kept under pdpp-concept, not @/components/ui
  * (that re-exports operator brand). `!` beats `.pdpp-concept a` color/underline.
  */
 const buttonVariants = cva(
@@ -54,7 +54,7 @@ function Button({
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
   return (
     <ButtonPrimitive
-      className={cn(buttonVariants({ variant, className }))}
+      className={cn(buttonVariants({ variant }), className)}
       data-slot="pdpp-concept-button"
       {...props}
     />
