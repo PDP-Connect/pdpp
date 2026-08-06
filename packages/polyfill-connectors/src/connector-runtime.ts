@@ -1609,7 +1609,9 @@ export function resolveBrowserRuntimeVisibility(
   name: string,
   env: NodeJS.ProcessEnv = process.env
 ): BrowserRuntimeVisibility {
-  const profileName = browser.profileName ?? name;
+  const baseProfileName = browser.profileName ?? name;
+  const connectorInstanceId = env.PDPP_CONNECTOR_INSTANCE_ID?.trim();
+  const profileName = connectorInstanceId ? `${baseProfileName}__${connectorInstanceId}` : baseProfileName;
   return {
     envKey: BROWSER_HEADLESS_ENV,
     headless: env[BROWSER_HEADLESS_ENV]?.trim() === "1",

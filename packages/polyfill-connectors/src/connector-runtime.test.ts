@@ -254,6 +254,19 @@ test("resolveBrowserRuntimeVisibility keeps browser mode deployment-owned across
   });
 });
 
+test("resolveBrowserRuntimeVisibility isolates local profiles by connector instance", () => {
+  assert.deepEqual(
+    resolveBrowserRuntimeVisibility({ profileName: "chatgpt" }, "ignored", {
+      PDPP_CONNECTOR_INSTANCE_ID: "cin_second_account",
+    }),
+    {
+      envKey: "PDPP_BROWSER_HEADLESS",
+      headless: false,
+      profileName: "chatgpt__cin_second_account",
+    }
+  );
+});
+
 test("resolveBrowserLaunchSource prefers managed n.eko lease env over legacy profile CDP env", () => {
   assert.deepEqual(
     resolveBrowserLaunchSource(

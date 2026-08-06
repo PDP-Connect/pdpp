@@ -672,13 +672,9 @@ function redactCdpUrl(rawUrl: string): string {
 }
 
 /**
- * Launch an isolated per-connector browser context with its own profile dir.
- *
- * NOTE: the default profile-name derivation in `connector-runtime.ts` is
- * `profileName = connectorName`, which is single-account by design. When
- * multi-account support ships, switch the derivation to include a stable
- * subject identifier (e.g. `${connectorName}__${subjectId}`) so two accounts
- * on the same platform get independent profile directories.
+ * Launch an isolated per-connection browser context with its own profile dir.
+ * The connector runtime scopes the profile name with the stable connector
+ * instance ID when the reference runtime supplies one.
  */
 export async function acquireIsolatedBrowser({
   profileName,

@@ -2231,6 +2231,30 @@ test("formatCollectionRateReadout omits the back-off line when none has fired", 
   assert.equal(readout.backoffLabel, null, "no back-off → no back-off line");
 });
 
+test("formatCollectionRateReadout fails closed for partial projection payloads", () => {
+  const partialBackoff = formatCollectionRateReadout({
+    ceiling_interval_ms: 250,
+    ceiling_rate_per_min: 240,
+    current_interval_ms: 250,
+    effective_rate_per_min: 240,
+    last_backoff: { reason: "throttle" } as never,
+  });
+  assert.ok(partialBackoff);
+  assert.equal(partialBackoff.backoffLabel, null, "partial back-off → omit optional line");
+
+  assert.equal(
+    formatCollectionRateReadout({
+      ceiling_interval_ms: 250,
+      ceiling_rate_per_min: 240,
+      current_interval_ms: Number.NaN,
+      effective_rate_per_min: 240,
+      last_backoff: null,
+    }),
+    null,
+    "invalid core rate → honest unknown"
+  );
+});
+
 // The single-voice "handling it" badge synthesizer (`synthesizeConnectionVerdict`
 // / `badgeState`) that used to live here was deleted (Wave 10a/10b, 2026-07-09
 // state-model convergence): the server-owned `RenderedVerdict.pill` is the one
