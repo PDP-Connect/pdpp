@@ -1,8 +1,10 @@
 /* Copyright The PDP-Connect Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * DORMANT duplicate of editorial runtime concept tokens. Live source remains
- * editorial.css until this package is wired.
+ * Runtime concept token values for the Tailwind bridge (semantic.css).
+ * Keep in sync with the live --pdpp-concept-* block in editorial.css —
+ * editorial.css still owns component/shell classes; this file + semantic.css
+ * expose ink/paper/type utilities for concept JSX (Text, FrontDoor, …).
  */
 
 :root {

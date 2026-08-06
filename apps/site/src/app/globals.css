@@ -14,7 +14,7 @@
  *
  * Surfaces → system:
  *   /sandbox, buttons, ThemeProvider     → brand
- *   /, self-host, masthead (.pdpp-concept) → editorial (BEM classes, not TW)
+ *   /, self-host, masthead (.pdpp-concept) → editorial (+ TW via editorial-tokens)
  *   /specification                       → both (fumadocs chrome + concept remaps)
  *
  * Editorial does NOT replace brand at :root — it nests a second palette under
@@ -28,16 +28,18 @@
  *   (3) Keep dual, document it — THIS FILE. Override volume is the cost of
  *       not doing (1) or (2).
  *
- * Dormant TW bridge (not imported): styles/editorial-tokens/
- *   primitive.css — duplicate of --pdpp-concept-* runtime values + dark
- *   semantic.css  — @theme → bg-paper / text-ink / max-w-page / p-pad etc.
- * editorial.css still owns the live token block and all component classes.
+ * TW bridge: styles/editorial-tokens/ (after editorial.css — do not merge into brand)
+ *   primitive.css — --pdpp-concept-* runtime values + dark (keep sync w/ editorial.css)
+ *   semantic.css  — @theme → bg-paper / text-ink / text-lede / text-display / …
+ * editorial.css still owns the live token block and component/shell classes.
+ * Concept Text: components/pdpp-concept/text.tsx (editorial intents + colors).
  */
 
 @import "@pdpp/brand/styles.css";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 @import "../styles/editorial.css";
+@import "../styles/editorial-tokens/index.css";
 @import "../styles/docs.css";
 @import "../styles/docs-prose.css";
 
