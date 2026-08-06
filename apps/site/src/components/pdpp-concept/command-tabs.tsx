@@ -195,10 +195,13 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
               other devices" made the reader decode the question before they
               could answer it (owner, 2026-08-05: "Access and Search are sort of
               esoteric; you are making the user really think about what the
-              question is"). The question a reader actually has is which of
-              their assistants will be able to reach this node, so the label
-              asks that and the options name the assistants rather than a
-              network topology. */}
+              question is").
+              THE OPTIONS NAME A PLACE, NOT A PRODUCT. An earlier pass labelled
+              these with the assistants themselves, which dated the page to
+              whichever tools shipped this quarter and read as an endorsement.
+              A reader picks where the node has to be reachable FROM; the named
+              examples belong in the sentence below, where they explain the
+              choice rather than define it. */}
           <fieldset className="pdpp-cmd__choice">
             <legend className="pdpp-cmd__choice-label">Who can reach it</legend>
             <div className="pdpp-cmd__seg">
@@ -208,7 +211,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, access: "local" }))}
                 type="button"
               >
-                Claude Code and Codex
+                This computer
               </button>
               <button
                 aria-pressed={choices.access === "public"}
@@ -216,7 +219,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
                 onClick={() => setChoices((prev) => ({ ...prev, access: "public" }))}
                 type="button"
               >
-                Also Claude.ai and ChatGPT
+                Web apps and other devices
               </button>
             </div>
           </fieldset>

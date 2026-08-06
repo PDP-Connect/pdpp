@@ -144,13 +144,15 @@ export default function ReferencePage() {
             <PdppCommandBuilder />
 
             {/* WAS A WHOLE SECTION, now one sentence. The distinction is real —
-                Codex and Claude Code reach loopback, Claude.ai and ChatGPT call
-                from their own infrastructure and cannot — but the Access choice
-                in the builder above is where a reader acts on it, so restating it
-                as a two-column section was furniture. */}
+                a tool on this machine reaches a local node, a hosted one calls
+                from its own infrastructure and cannot — but the access choice
+                in the builder above is where a reader acts on it, so restating
+                it as a two-column section was furniture.
+                NAMED TOOLS ARE EXAMPLES, NOT THE RULE, and the sentence leads
+                with the general case so it stays true as those names change. */}
             <p className="pdpp-note pdpp-note--access">
-              Codex and Claude Code reach a local node directly; Claude.ai and ChatGPT call from their own servers, so
-              they need the public address above.
+              A tool running on this machine reaches the node directly. Anything hosted elsewhere, including web
+              assistants, calls from its own servers and needs the public address above.
             </p>
           </section>
 
