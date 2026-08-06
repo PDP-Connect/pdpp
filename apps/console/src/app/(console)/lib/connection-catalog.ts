@@ -29,6 +29,7 @@ import {
   enrollmentKeyForCanonicalKey,
   manualUploadSetupFromManifest,
   type StaticSecretSetupFieldLike,
+  staticSecretCredentialCaptureFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
 
 /**
@@ -45,10 +46,14 @@ export interface CatalogManifestLike {
       required?: readonly string[] | null;
       type?: string | null;
     } | null;
+    refresh_policy?: {
+      rationale?: string | null;
+    } | null;
   } | null;
   connector_id: string;
   connector_key?: string | null;
   display_name?: string | null;
+  external_docs?: readonly { label?: string | null; url?: string | null }[] | null;
   name?: string | null;
   runtime_requirements?: { bindings?: Record<string, unknown> | null } | null;
   setup?: {
@@ -125,6 +130,11 @@ export interface ConnectorAcquisitionPath {
   posture: string;
 }
 
+export interface ConnectorExternalDoc {
+  readonly label: string;
+  readonly url: string;
+}
+
 export interface ConnectorCatalogEntry {
   /** Manifest-declared owner acquisition jobs, such as export/upload paths. */
   acquisitionPaths: readonly ConnectorAcquisitionPath[];
@@ -143,14 +153,22 @@ export interface ConnectorCatalogEntry {
    * never renders an enrollment link the reference cannot complete.
    */
   enrollmentKey?: string;
+  /** Manifest-authored external documentation links. */
+  externalDocs: readonly ConnectorExternalDoc[];
   /** Binding-derived modality. */
   modality: CatalogModality;
   /** The next owner step selected by the shared planner. */
   nextStepKind: ConnectorSetupNextStepKind;
   /** Proof gate blocking support, if any. */
   proofGate: string | null;
+  /** Existing capability rationale used for owner context where no setup copy exists. */
+  refreshPolicyRationale: string | null;
   /** Optional runbook path surfaced in advanced/details copy. */
   runbookPath: string | null;
+  /** Manifest-authored setup description, when the setup modality provides one. */
+  setupDescription: string | null;
+  /** Manifest-authored setup help text, when the setup modality provides one. */
+  setupHelpText: string | null;
   /** The owner setup modality selected by the shared planner. */
   setupModality: ConnectorSetupModality;
   /** Support state selected by the shared planner. */
@@ -176,6 +194,33 @@ function displayNameFor(manifest: CatalogManifestLike, connectorKey: string): st
     return name;
   }
   return connectorKey;
+}
+
+function cleanManifestText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function setupCopyFromManifest(manifest: CatalogManifestLike): {
+  description: string | null;
+  helpText: string | null;
+} {
+  const uploadSetup = manualUploadSetupFromManifest(manifest);
+  const credentialSetup = staticSecretCredentialCaptureFromManifest(manifest);
+  return {
+    description: uploadSetup?.description ?? credentialSetup?.description ?? null,
+    helpText: uploadSetup?.helpText ?? null,
+  };
+}
+
+function externalDocsFromManifest(manifest: CatalogManifestLike): ConnectorExternalDoc[] {
+  if (!Array.isArray(manifest.external_docs)) {
+    return [];
+  }
+  return manifest.external_docs.flatMap((doc) => {
+    const label = cleanManifestText(doc?.label);
+    const url = cleanManifestText(doc?.url);
+    return label && url ? [{ label, url }] : [];
+  });
 }
 
 function acquisitionPathsFromManifest(manifest: CatalogManifestLike): ConnectorAcquisitionPath[] {
@@ -206,16 +251,21 @@ export function buildConnectorCatalog(manifests: readonly CatalogManifestLike[])
     }
     const connectorKey = canonicalConnectorKey(manifest.connector_id);
     const plan = buildConnectionSetupPlan({ connectorKey, manifest });
+    const setupCopy = setupCopyFromManifest(manifest);
     const entry: ConnectorCatalogEntry = {
       acquisitionPaths: acquisitionPathsFromManifest(manifest),
       connectorKey,
       deploymentReadiness: plan.deploymentReadiness,
       displayName: displayNameFor(manifest, connectorKey),
       disposition: plan.catalogDisposition,
+      externalDocs: externalDocsFromManifest(manifest),
       modality: plan.connectorModality,
       nextStepKind: plan.nextStepKind,
       proofGate: plan.proofGate,
+      refreshPolicyRationale: cleanManifestText(manifest.capabilities?.refresh_policy?.rationale),
       runbookPath: plan.runbookPath,
+      setupDescription: setupCopy.description,
+      setupHelpText: setupCopy.helpText,
       setupModality: plan.setupModality,
       supportState: plan.supportState,
     };

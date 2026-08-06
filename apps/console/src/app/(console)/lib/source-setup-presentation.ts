@@ -37,6 +37,25 @@ export interface SourceSetupAction {
   label: string;
 }
 
+/**
+ * Owner context projected from manifest setup/capability metadata. The
+ * fallback is intentionally setup-modality based: it keeps provider auth
+ * distinct from file import without naming a connector or claiming a new
+ * protocol behavior.
+ */
+export function sourceSetupContext(entry: ConnectorCatalogEntry): string | null {
+  if (entry.setupHelpText) {
+    return entry.setupHelpText;
+  }
+  if (entry.setupModality === "provider_authorization") {
+    return (
+      entry.refreshPolicyRationale ??
+      "This source uses provider authorization, not a file import. Provider app settings must be configured on the instance before an owner can authorize an account."
+    );
+  }
+  return entry.setupDescription;
+}
+
 function browserBoundWithStoredCredentials(entry: ConnectorCatalogEntry): boolean {
   return entry.modality === "browser_bound" && entry.setupModality === "static_secret";
 }
@@ -147,7 +166,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
 /** One short owner-facing guidance line for first-account setup. */
 export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
   if (browserBoundWithStoredCredentials(entry)) {
-    return "Connect in a secure browser session. You can optionally remember sign-in details for automatic reconnection; they may help with initial sign-in or repair, but CAPTCHA, OTP, passkeys, and other human steps stay in the secure browser and unattended reconnection is not guaranteed.";
+    return "Connect in a secure browser session. Interactive sign-in is valid; optional saved sign-in details may assist initial sign-in or repair, but CAPTCHA, OTP, passkeys, and other human steps stay in the secure browser and unattended reconnection is not guaranteed.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
@@ -211,8 +230,6 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
         href: `/connect/browser-session/${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
         label: "Connect account",
       };
-    case "provider_auth_deployment_blocked":
-      return { href: "/deployment", label: "Open server settings" };
     default:
       return null;
   }

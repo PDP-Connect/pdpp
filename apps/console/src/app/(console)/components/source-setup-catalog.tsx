@@ -9,6 +9,7 @@ import type { RefCountState } from "../lib/ref-client.ts";
 import {
   sourceSetupAction,
   sourceSetupAvailability,
+  sourceSetupContext,
   sourceSetupGuidance,
   sourceSetupRank,
   sourceSetupSecondaryAction,
@@ -117,7 +118,7 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
 
 function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: number): string {
   if (entry.modality === "browser_bound" && entry.setupModality === "static_secret") {
-    return "Connect in a secure browser, with optional encrypted sign-in details for repair.";
+    return "Connect in a secure browser; interactive sign-in is valid, with optional saved details for repair.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
@@ -129,7 +130,7 @@ function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: num
         ? `${existingSourceCount} existing ${existingSourceCount === 1 ? "source" : "sources"} can receive another export; choose on the import page.`
         : "Owner-exported file import.";
     case "provider_auth_deployment_blocked":
-      return "Server provider settings are required before account setup.";
+      return "Provider authorization is separate from file import; server provider settings are required before account setup.";
     case "browser_collector_manual":
     case "browser_bound_runbook":
       return entry.disposition === "browser_collector_manual"
@@ -138,6 +139,21 @@ function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: num
     default:
       return "No owner-usable setup path in this build.";
   }
+}
+
+function SourceSetupContext({ entry }: { entry: ConnectorCatalogEntry }) {
+  const context = sourceSetupContext(entry);
+  if (!context) {
+    return null;
+  }
+  return (
+    <p
+      className="pdpp-caption mt-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-muted-foreground"
+      data-testid="source-setup-context"
+    >
+      {context}
+    </p>
+  );
 }
 
 function sourceDetailHref(connectorKey: string, connectionId: string): string {
@@ -256,6 +272,7 @@ function SourceSetupCard({
           </span>
         </div>
         <p className="pdpp-caption mt-1 text-muted-foreground">{sourceMethodLine(entry, existingSources.length)}</p>
+        <SourceSetupContext entry={entry} />
         <ExistingSourceLinks connectorKey={entry.connectorKey} sources={existingSources} />
         <SourceSetupDetails entry={entry} />
       </div>
@@ -296,18 +313,33 @@ function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEnt
       </summary>
       <div className="mt-3 grid gap-3">
         <p className="pdpp-caption text-muted-foreground">
-          These sources need provider app settings on this instance before an account can be added.
+          These sources need provider app settings on the instance before an account can be added. This dashboard shows
+          the missing requirements but does not edit provider applications here.
         </p>
         <ul className="grid gap-2">
           {entries.map((entry) => (
-            <li className="flex flex-wrap items-center justify-between gap-2" key={entry.connectorKey}>
+            <li className="grid gap-2" key={entry.connectorKey}>
               <div className="min-w-0">
                 <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
                 <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
+                <SourceSetupContext entry={entry} />
               </div>
-              <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
-                Open server settings
-              </Link>
+              {entry.externalDocs.length > 0 ? (
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  <span className="pdpp-caption text-muted-foreground">Provider documentation:</span>
+                  {entry.externalDocs.map((doc) => (
+                    <a
+                      className="pdpp-caption text-foreground underline underline-offset-4"
+                      href={doc.url}
+                      key={`${entry.connectorKey}:${doc.url}`}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      {doc.label}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>

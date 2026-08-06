@@ -80,6 +80,19 @@ interface ConnectorInstanceStore {
   }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
+interface ParsedDisplayName {
+  readonly displayName: string | null;
+  readonly ok: true;
+}
+
+interface InvalidDisplayName {
+  readonly error: {
+    readonly message: string;
+    readonly param: "display_name";
+  };
+  readonly ok: false;
+}
+
 export interface MountRefStaticSecretDraftConnectionContext {
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
@@ -225,6 +238,72 @@ function parseSetupFields(
   return output;
 }
 
+function bodyRecord(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+function parseDisplayNameText(raw: string): ParsedDisplayName | InvalidDisplayName {
+  const displayName = raw.trim();
+  if (!displayName) {
+    return {
+      displayName: null,
+      ok: true,
+    };
+  }
+  if (displayName.length > 200) {
+    return {
+      error: { message: "display_name must be 200 characters or fewer", param: "display_name" },
+      ok: false,
+    };
+  }
+  return { displayName, ok: true };
+}
+
+function parseDisplayNameValue(raw: unknown): ParsedDisplayName | InvalidDisplayName {
+  if (raw === null || raw === undefined) {
+    return { displayName: null, ok: true };
+  }
+  if (typeof raw !== "string") {
+    return {
+      error: { message: "display_name must be a string when provided", param: "display_name" },
+      ok: false,
+    };
+  }
+  return parseDisplayNameText(raw);
+}
+
+function parseOptionalDisplayName(body: unknown): ParsedDisplayName | InvalidDisplayName {
+  const objectBody = bodyRecord(body);
+  if (!Object.hasOwn(objectBody, "display_name")) {
+    return { displayName: null, ok: true };
+  }
+  return parseDisplayNameValue(objectBody.display_name);
+}
+
+interface ParsedDraftSetup {
+  readonly displayName: string | null;
+  readonly setupFields: Record<string, string>;
+}
+
+function parseDraftSetup(
+  ctx: MountRefStaticSecretDraftConnectionContext,
+  res: RouteResponse,
+  body: unknown,
+  fields: readonly StaticSecretSetupField[]
+): ParsedDraftSetup | null {
+  const setupFields = parseSetupFields(ctx, res, body, fields);
+  if (setupFields === null) {
+    return null;
+  }
+
+  const parsedDisplayName = parseOptionalDisplayName(body);
+  if (!parsedDisplayName.ok) {
+    ctx.pdppError(res, 400, "invalid_request", parsedDisplayName.error.message, parsedDisplayName.error.param);
+    return null;
+  }
+  return { displayName: parsedDisplayName.displayName, setupFields };
+}
+
 function identityValue(fields: readonly StaticSecretSetupField[], setupFields: Record<string, string>): string | null {
   const field = fields.find((candidate) => candidate.identity && !candidate.secret);
   return field ? (setupFields[field.name] ?? null) : null;
@@ -281,6 +360,7 @@ function createDraftConnection(
     connectorId: string;
     manifest: ConnectorManifestLike;
     captureSetup: NonNullable<ReturnType<typeof staticSecretCredentialCaptureFromManifest>>;
+    displayName: string | null;
     setupFields: Record<string, string>;
     ownerSubjectId: string;
   }
@@ -294,9 +374,10 @@ function createDraftConnection(
   const now = ctx.now ? ctx.now() : new Date().toISOString();
   const store = ctx.createRequestConnectorInstanceStore();
   const idValue = identityValue(input.captureSetup.fields, input.setupFields);
-  const displayName = idValue
+  const fallbackDisplayName = idValue
     ? `${displayNameForConnector(input.connectorId, input.manifest)} - ${idValue}`
     : displayNameForConnector(input.connectorId, input.manifest);
+  const displayName = input.displayName ?? fallbackDisplayName;
   const instance = store.upsert({
     connectorId: input.connectorId,
     createdAt: now,
@@ -401,8 +482,8 @@ export function mountRefStaticSecretDraftConnection(
           ctx.pdppError(res, 503, "credential_encryption_key_missing", staticSecretSetupErrorMessage());
           return;
         }
-        const setupFields = parseSetupFields(ctx, res, req.body, captureSetup.fields);
-        if (setupFields === null) {
+        const parsedSetup = parseDraftSetup(ctx, res, req.body, captureSetup.fields);
+        if (parsedSetup === null) {
           await emitDraftAudit(ctx, req, res, {
             connectorId,
             credentialKind,
@@ -412,10 +493,12 @@ export function mountRefStaticSecretDraftConnection(
           });
           return;
         }
+        const { displayName: requestedDisplayName, setupFields } = parsedSetup;
 
         const { displayName, instance: pendingInstance } = createDraftConnection(ctx, {
           captureSetup,
           connectorId,
+          displayName: requestedDisplayName,
           manifest,
           ownerSubjectId,
           setupFields,

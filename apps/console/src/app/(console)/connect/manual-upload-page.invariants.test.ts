@@ -39,7 +39,7 @@ const OPTIONAL_PREVIEW_COPY = /Preview checks one file/;
 const WHAT_PDPP_FOUND_COPY = /What PDPP found/;
 const TARGET_CHOICE_COPY = /Create a new source for these files/;
 const EXISTING_SOURCE_COPY = /Add these files to an existing source/;
-const LABEL_INPUT = /name="display_name"/;
+const LABEL_INPUT = /name=\{connectionName\.name\}/;
 const NO_SERVER_ACTION = /useActionState|manualUploadConnectionFormAction|action=\{formAction\}/;
 const NO_SECRET_LOG = /console\.(log|error|warn)\([\s\S]*secret/;
 

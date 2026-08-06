@@ -259,10 +259,14 @@ async function createDraft(
   asUrl: string,
   cookie: string,
   connectorId: string,
-  setupFields: Record<string, unknown> = { account_email: "owner@example.com" }
+  setupFields: Record<string, unknown> = { account_email: "owner@example.com" },
+  displayName?: string
 ): Promise<JsonResult> {
   return fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/draft-connection`, {
-    body: JSON.stringify({ setup_fields: setupFields }),
+    body: JSON.stringify({
+      setup_fields: setupFields,
+      ...(displayName === undefined ? {} : { display_name: displayName }),
+    }),
     headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
     method: "POST",
   });
@@ -459,6 +463,29 @@ test("static-secret setup descriptor is manifest-authored and readiness-gated", 
   });
 });
 
+test("owner-selected display name is stored on the static-secret draft", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const created = await createDraft(
+        asUrl,
+        cookie,
+        "gmail",
+        { account_email: "owner@example.com" },
+        "Primary account"
+      );
+      assert.equal(created.status, 201, created.text);
+      assert.equal(created.body.display_name, "Primary account");
+
+      const row = getDb()
+        .prepare("SELECT display_name FROM connector_instances WHERE connector_instance_id = ?")
+        .get(created.body.connection_id) as { display_name?: string } | undefined;
+      assert.equal(row?.display_name, "Primary account");
+    });
+  });
+});
+
 test("draft create blocks before row creation when credential key provider is missing", async () => {
   await withCredentialKey(null, async () => {
     await withServer(async ({ asUrl }) => {
@@ -498,6 +525,17 @@ test("draft create validates manifest-declared non-secret setup fields", async (
       });
       assert.equal(unknown.status, 400);
       assert.equal(errorOf(unknown.body).code, "unknown_setup_field");
+
+      const overlongName = await createDraft(
+        asUrl,
+        cookie,
+        "gmail",
+        { account_email: "owner@example.com" },
+        "x".repeat(201)
+      );
+      assert.equal(overlongName.status, 400);
+      assert.equal(errorOf(overlongName.body).code, "invalid_request");
+      assert.equal(errorOf(overlongName.body).param, "display_name");
 
       const list = await listConnections(asUrl, cookie);
       assert.equal(dataArrayOf(list.body).length, 0, "invalid setup fields must not create a draft");

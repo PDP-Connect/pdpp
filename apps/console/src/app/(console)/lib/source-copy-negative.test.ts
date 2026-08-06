@@ -127,8 +127,8 @@ test("only self-service and server-setup dispositions expose primary actions", (
     "static_secret_connect",
     "manual_upload_connect",
     "browser_collector_manual",
-    "provider_auth_deployment_blocked",
   ]);
+  const serverSetupDisposition = "provider_auth_deployment_blocked" as const;
   for (const disposition of ALL_DISPOSITIONS) {
     const entry = entryForDisposition(disposition);
     const action = sourceSetupAction(entry);
@@ -136,6 +136,11 @@ test("only self-service and server-setup dispositions expose primary actions", (
     if (expectedActionDispositions.has(disposition)) {
       assert.ok(action, `${disposition} should expose a real in-product next action`);
       assert.notEqual(availability, "not_available_here");
+      continue;
+    }
+    if (disposition === serverSetupDisposition) {
+      assert.equal(action, null, "provider settings must not link to the diagnostics page");
+      assert.equal(availability, "requires_server_setup");
       continue;
     }
     assert.equal(action, null, `${disposition} must not render a fake primary setup action`);

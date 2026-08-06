@@ -7,6 +7,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { getStaticSecretSetup, RefNotFoundError, type StaticSecretSetupField } from "../../../lib/ref-client.ts";
+import { staticSecretFormContract } from "../../../lib/source-setup-form-contract.ts";
 import { createStaticSecretConnectionAction, replaceStaticSecretCredentialAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,7 @@ interface PageSearchParams {
   // When present, the form is in "replace credential" mode for an existing
   // connection — preserves connection_id, history, schedule, and records.
   connectionId?: string;
+  displayName?: string;
   error?: string;
 }
 
@@ -56,12 +58,14 @@ export default async function StaticSecretConnectPage({
   const resolvedSearchParams = await searchParams;
   const pageParams: PageSearchParams = {
     connectionId: firstValue(resolvedSearchParams.connection_id),
+    displayName: firstValue(resolvedSearchParams.display_name),
     error: firstValue(resolvedSearchParams.error),
   };
   // Repair/update mode: a connection_id in the query means the owner is
   // replacing the credential on an existing connection, not creating a new one.
   const isReplaceMode = Boolean(pageParams.connectionId);
   const readinessBlocked = setup.deployment_readiness.state !== "ready";
+  const formContract = staticSecretFormContract(setup, isReplaceMode);
 
   // After a validation failure the action redirects back here with the owner's
   // non-secret field values as `field_<name>` query params so the form context
@@ -97,13 +101,7 @@ export default async function StaticSecretConnectPage({
 
       <div className="mb-5 grid gap-2">{pageParams.error ? <InlineNotice message={pageParams.error} /> : null}</div>
 
-      <Section
-        description={
-          setup.credential_capture.description ??
-          "This form is generated from the connector manifest. Secrets are submitted to the owner-session capture route and are not returned to agents, MCP clients, REST reads, audit payloads, or the dashboard."
-        }
-        title={setup.credential_capture.label}
-      >
+      <Section description={formContract.credentialSectionDescription} title={setup.credential_capture.label}>
         {readinessBlocked ? (
           <Callout
             description={
@@ -130,7 +128,21 @@ export default async function StaticSecretConnectPage({
             {isReplaceMode && pageParams.connectionId ? (
               <input name="connection_id" type="hidden" value={pageParams.connectionId} />
             ) : null}
-            {setup.credential_capture.fields.map((field) => (
+            {isReplaceMode ? null : (
+              <label className="grid gap-1" htmlFor="static-secret-display-name">
+                <span className="pdpp-eyebrow">{formContract.connectionName.label}</span>
+                <IcInput
+                  defaultValue={pageParams.displayName}
+                  id="static-secret-display-name"
+                  maxLength={formContract.connectionName.maxLength}
+                  name={formContract.connectionName.name}
+                  placeholder={formContract.connectionName.placeholder}
+                  type="text"
+                />
+                <span className="pdpp-caption text-muted-foreground">{formContract.connectionName.helpText}</span>
+              </label>
+            )}
+            {formContract.credentialFields.map((field) => (
               <label className="grid gap-1" htmlFor={`static-secret-${field.name}`} key={field.name}>
                 <span className="pdpp-eyebrow">{field.label}</span>
                 <IcInput
@@ -170,9 +182,7 @@ export default async function StaticSecretConnectPage({
             ) : null}
             <div>
               <IcButton type="submit" variant="human">
-                {isReplaceMode
-                  ? "Reconnect account and run sync"
-                  : (setup.credential_capture.submit_label ?? "Create connection and start first sync")}
+                {formContract.primaryActionLabel}
               </IcButton>
             </div>
           </form>
