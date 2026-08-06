@@ -3,7 +3,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { Section } from "@pdpp/operator-ui/components/primitives";
+import { Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import type { StatusVocabulary } from "@pdpp/operator-ui/components/status-vocabularies";
 import { useEffect, useState } from "react";
 import {
   embeddingCacheRow,
@@ -162,37 +163,14 @@ function ReadinessRowItem({ row }: { row: ReadinessRow }) {
   );
 }
 
-const STATUS_TONE: Record<ReadinessStatus, string> = {
-  error: "bg-destructive/10 text-destructive",
-  info: "bg-muted text-muted-foreground",
-  ok: "bg-[color:var(--success-wash)] text-[color:var(--success)]",
-  unknown: "bg-muted text-muted-foreground",
-  warn: "bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
-};
-
-const STATUS_LABEL: Record<ReadinessStatus, string> = {
-  error: "blocked",
-  info: "n/a",
-  ok: "ready",
-  unknown: "checking",
-  warn: "attention",
-};
-
-const STATUS_BADGE_TONE: Record<ReadinessStatus, string> = {
-  error: "danger",
-  info: "neutral",
-  ok: "success",
-  unknown: "neutral",
-  warn: "warning",
+const DEPLOYMENT_READINESS_VOCABULARY: StatusVocabulary = {
+  error: { label: "blocked", tone: "danger" },
+  info: { label: "n/a", tone: "neutral" },
+  ok: { label: "ready", tone: "success" },
+  unknown: { label: "checking", tone: "neutral" },
+  warn: { label: "attention", tone: "warning" },
 };
 
 function StatusChip({ status }: { status: ReadinessStatus }) {
-  return (
-    <span
-      className={`pdpp-status-badge pdpp-eyebrow inline-flex rounded-[3px] px-1.5 py-0.5 font-medium tabular-nums ${STATUS_TONE[status]}`}
-      data-status-tone={STATUS_BADGE_TONE[status]}
-    >
-      {STATUS_LABEL[status]}
-    </span>
-  );
+  return <StatusBadge status={status} vocabulary={DEPLOYMENT_READINESS_VOCABULARY} />;
 }

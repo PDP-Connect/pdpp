@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
-const GLOBALS_CSS_FILE = `${HERE}../../../../globals.css`;
+const STREAM_CSS_FILE = `${HERE}stream.css`;
 
 /**
  * Static structure guard only. The behavioral contract (both axes locked
@@ -24,8 +24,8 @@ const GLOBALS_CSS_FILE = `${HERE}../../../../globals.css`;
 const HTML_HAS_STREAM_DIALOG_RE = /html:has\(\.pdpp-stream-dialog\)\s*\{\s*overflow:\s*hidden;\s*\}/;
 const UNCONDITIONAL_HTML_OVERFLOW_HIDDEN_RE = /^html\s*\{[^}]*overflow:\s*hidden/m;
 
-test("globals.css locks <html> overflow off .pdpp-stream-dialog's own presence, scoped (not unconditional)", async () => {
-  const css = await readFile(GLOBALS_CSS_FILE, "utf8");
+test("stream.css locks <html> overflow off .pdpp-stream-dialog's own presence, scoped (not unconditional)", async () => {
+  const css = await readFile(STREAM_CSS_FILE, "utf8");
   assert.match(
     css,
     HTML_HAS_STREAM_DIALOG_RE,

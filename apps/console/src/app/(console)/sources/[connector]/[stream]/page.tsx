@@ -2,13 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants, IcTimestamp } from "@pdpp/brand-react";
+import {
+  buildRecordPreview,
+  classifyRecordKind,
+  type DeclaredFieldTypes,
+  deriveDeclaredFieldTypes,
+  formatDeclaredAmount,
+  type RecordPreview,
+} from "@pdpp/display";
 import { DataList, PageHeader, Pager, Section } from "@pdpp/operator-ui/components/primitives";
 import { RecordIdentity } from "@pdpp/operator-ui/components/record-identity";
 import { buildBlobAffordance, type ExplorerFieldCapability } from "@pdpp/operator-ui/components/views/explorer-utils";
 import { declaredRolesFromCapabilities } from "@pdpp/operator-ui/explore/explore-data-assembler";
-import { deriveDeclaredFieldTypes, formatDeclaredAmount } from "@pdpp/operator-ui/lib/record-field-format";
-import { classifyRecordKind, type DeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-kind";
-import { buildRecordPreview, type RecordPreview } from "@pdpp/operator-ui/lib/record-preview";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";

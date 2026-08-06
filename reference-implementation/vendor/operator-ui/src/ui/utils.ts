@@ -1,11 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve this pnpm package export; tsc and pnpm Node resolution validate it.
-import { type ClassValue, clsx } from "clsx";
-// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve this pnpm package export; tsc and pnpm Node resolution validate it.
-import { twMerge } from "tailwind-merge";
+import { cn as brandCn } from "@pdpp/brand/tw-merge";
+// biome-ignore lint/correctness/noUnresolvedImports: Biome can't resolve pnpm package exports; tsc validates.
+import type { ClassValue } from "clsx";
 
 export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
+  return brandCn(...inputs);
 }

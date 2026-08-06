@@ -1,0 +1,149 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * PDPP's Tailwind-facing semantic API. Keep semantic tokens in plain `@theme`
+ * so generated utilities retain the semantic variable and scoped overrides.
+ * `@theme inline` is reserved for Tailwind default-name remaps.
+ * @see https://tailwindcss.com/docs/theme#theme-variable-namespaces
+ * @see https://tailwindcss.com/docs/theme#referencing-other-variables
+ */
+
+@theme {
+  --font-sans: var(--font-pdpp-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-pdpp-mono), ui-monospace, monospace;
+  --font-serif: var(--font-pdpp-serif), ui-serif, Georgia, serif;
+  --font-eyebrow: var(--font-mono);
+
+  --text-eyebrow: 11.5px;
+  --text-eyebrow--line-height: normal;
+  --text-eyebrow--letter-spacing: 0.12em;
+  --text-eyebrow--font-weight: 400;
+
+  --text-caption: 12px;
+  --text-caption--line-height: 1.5;
+  --text-caption--letter-spacing: 0;
+  --text-caption--font-weight: 400;
+
+  --text-label: 12px;
+  --text-label--line-height: 1.4;
+  --text-label--letter-spacing: 0;
+  --text-label--font-weight: 500;
+
+  --text-body: 14px;
+  --text-body--line-height: 1.6;
+  --text-body--letter-spacing: 0;
+  --text-body--font-weight: 400;
+
+  --text-title: 14px;
+  --text-title--line-height: 1.4;
+  --text-title--letter-spacing: 0;
+  --text-title--font-weight: 600;
+
+  --text-body-lg: 18px;
+  --text-body-lg--line-height: 1.625;
+  --text-body-lg--letter-spacing: 0;
+  --text-body-lg--font-weight: 400;
+
+  --text-heading: 20px;
+  --text-heading--line-height: 1.3;
+  --text-heading--letter-spacing: -0.01em;
+  --text-heading--font-weight: 600;
+
+  --text-display: 40px;
+  --text-display--line-height: 1.08;
+  --text-display--letter-spacing: -0.025em;
+  --text-display--font-weight: 600;
+
+  --text-display-lg: 60px;
+  --text-display-lg--line-height: 1.05;
+  --text-display-lg--letter-spacing: -0.03em;
+  --text-display-lg--font-weight: 600;
+
+  --spacing-sidebar: 240px;
+  --radius-pill: 999px;
+  --shadow-raised: var(--raised-shadow);
+  --shadow-overlay: var(--overlay-shadow);
+  --shadow-focus: var(--focus-shadow);
+  --container-content: 72rem;
+
+  --color-brand: var(--brand);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-data-list-divider: var(--data-list-divider);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --color-success-badge-foreground: var(--success-badge-foreground);
+  --color-warning-badge-foreground: var(--warning-badge-foreground);
+  --color-danger-badge-foreground: var(--danger-badge-foreground);
+  --color-human: var(--human);
+  --color-human-wash: var(--human-wash);
+  --color-primary-wash: var(--primary-wash);
+  --color-success-wash: var(--success-wash);
+  --color-success-wash-strong: var(--success-wash-strong);
+  --color-warning-wash: var(--warning-wash);
+  --color-edu-fg: var(--edu-fg);
+
+  --color-surface-page: var(--surface-page);
+  --color-surface-card: var(--surface-card);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-overlay: var(--surface-overlay);
+
+  --color-status-success-bg: var(--status-success-bg);
+  --color-status-success-fg: var(--status-success-fg);
+  --color-status-progress-bg: var(--status-progress-bg);
+  --color-status-progress-fg: var(--status-progress-fg);
+  --color-status-warning-bg: var(--status-warning-bg);
+  --color-status-warning-fg: var(--status-warning-fg);
+  --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-danger-fg: var(--status-danger-fg);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+  --color-status-neutral-fg: var(--status-neutral-fg);
+  --color-status-disabled-bg: var(--status-disabled-bg);
+  --color-status-disabled-fg: var(--status-disabled-fg);
+
+  --color-authorship-protocol-fg: var(--authorship-protocol-fg);
+  --color-authorship-protocol-accent: var(--authorship-protocol-accent);
+  --color-authorship-protocol-border: var(--authorship-protocol-border);
+  --color-authorship-protocol-wash: var(--authorship-protocol-wash);
+  --color-authorship-manifest-fg: var(--authorship-manifest-fg);
+  --color-authorship-manifest-accent: var(--authorship-manifest-accent);
+  --color-authorship-manifest-border: var(--authorship-manifest-border);
+  --color-authorship-manifest-wash: var(--authorship-manifest-wash);
+  --color-authorship-client-fg: var(--authorship-client-fg);
+  --color-authorship-client-accent: var(--authorship-client-accent);
+  --color-authorship-client-border: var(--authorship-client-border);
+  --color-authorship-client-wash: var(--authorship-client-wash);
+
+  --color-callout-info-bg: var(--callout-info-bg);
+  --color-callout-info-fg: var(--callout-info-fg);
+  --color-callout-info-border: var(--callout-info-border);
+  --color-callout-warning-bg: var(--callout-warning-bg);
+  --color-callout-warning-fg: var(--callout-warning-fg);
+  --color-callout-warning-border: var(--callout-warning-border);
+}
+
+@media (min-width: 1440px) {
+  :root {
+    --spacing-sidebar: 280px;
+  }
+}

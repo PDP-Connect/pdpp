@@ -69,9 +69,6 @@
       // fall into three categories:
       //   - packages with an `exports` field: clsx, tailwind-merge,
       //     class-variance-authority
-      //   - documented subpath exports: fumadocs-core/{negotiation,source,
-      //     search/server,source/lucide-icons}, fumadocs-ui/{layouts/*,
-      //     mdx, provider/next}
       //   - our own workspace package's subpath exports:
       //     pdpp-reference-implementation/{owner-session,
       //     reference-local-defaults,reference-topology}

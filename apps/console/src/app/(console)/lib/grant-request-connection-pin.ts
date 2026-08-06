@@ -12,7 +12,7 @@
  * the records dashboard do — one definition of "owner-meaningful label".
  */
 
-import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
 
 /** Source kinds a grant request can address. Only `connector` has connections. */
 export type GrantRequestSourceKind = "connector" | "provider_native";

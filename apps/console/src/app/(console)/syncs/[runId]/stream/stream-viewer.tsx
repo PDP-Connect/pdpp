@@ -10,6 +10,7 @@
  * remote media, while the direct-CDP canvas is sized by Remote Surface's assembled session. */
 "use client";
 
+import "./stream.css";
 import {
   assessNekoMediaSettle,
   createNekoMediaSettleState,

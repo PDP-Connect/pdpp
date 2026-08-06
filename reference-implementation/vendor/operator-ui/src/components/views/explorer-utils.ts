@@ -9,10 +9,9 @@
  * from here; call-sites do not need to change their import paths.
  */
 
+import type { RecordKind, RecordPreview } from "@pdpp/display";
 import type { BucketSeries } from "../../explore/over-time-chart.ts";
 import type { SetDescriptor } from "../../explore/set-descriptor.ts";
-import type { RecordKind } from "../../lib/record-kind.ts";
-import type { RecordPreview } from "../../lib/record-preview.ts";
 
 export type { SetDescriptor } from "../../explore/set-descriptor.ts";
 

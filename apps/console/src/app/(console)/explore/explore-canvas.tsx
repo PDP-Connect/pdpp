@@ -40,6 +40,7 @@
 "use client";
 
 import { IcInput } from "@pdpp/brand-react";
+import { rowPrimary, rowSecondary } from "@pdpp/display";
 import { kindGlyph, RecordIdentity } from "@pdpp/operator-ui/components/record-identity";
 import { feedDescription, feedSectionTitle } from "@pdpp/operator-ui/components/views/explorer-utils";
 import {
@@ -60,7 +61,6 @@ import {
   feedHeaderLabel,
   legalSortOptions,
 } from "@pdpp/operator-ui/explore/set-descriptor";
-import { rowPrimary, rowSecondary } from "@pdpp/operator-ui/lib/record-preview";
 import { Timestamp } from "@pdpp/operator-ui/ui/timestamp";
 import Link, { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
@@ -965,7 +965,7 @@ function QueryInput(props: QueryInputProps) {
 //   - the indeterminate slide is a keyframe gated behind
 //     `@media (prefers-reduced-motion: no-preference)`; reduced-motion users get
 //     a static, visible bar (no flashing).
-//   - the wrapper fades in via the `fade-in` keyframe / `--motion-enter` token.
+//   - the wrapper fades in via the `fade-in` keyframe and enter duration/easing tokens.
 // a11y: a polite live region with an sr-only "Loading" label names the state for
 // assistive tech; the moving bar itself is decorative (`aria-hidden`).
 function RouteProgress({ active }: { active: boolean }) {
@@ -988,7 +988,7 @@ function RouteProgress({ active }: { active: boolean }) {
 // (a route change, so loading.tsx CAN fire — but a subtle inline shimmer on the
 // tapped row is the canonical, immediate Next affordance). Decorative + token-
 // based: a thin shimmer line using the design-system `fade-in` keyframe and the
-// `--motion-state` easing, reduced-motion-safe (static, no flash) in CSS. The
+// state duration/easing tokens, reduced-motion-safe (static, no flash) in CSS. The
 // parent Link already carries the accessible label, so this overlay is
 // `aria-hidden`.
 function LinkPending() {

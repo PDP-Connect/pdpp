@@ -24,9 +24,9 @@
  * spot failures sub-second on long lists. Design direction decision 2.
  */
 
+import { runRowLabel } from "@pdpp/display";
 import Link from "next/link";
 import type { RunSummary } from "../lib/ref-client.ts";
-import { runRowLabel } from "../lib/summary-row-label.ts";
 import { Timestamp } from "../ui/timestamp.tsx";
 import { StatusBadge } from "./primitives.tsx";
 import { browserSurfaceStatusCopy, isAwaitingInteraction } from "./run-row-helpers.ts";

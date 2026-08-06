@@ -1,29 +1,15 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Derive the human-readable PRIMARY label for a run / trace / grant list row.
- *
- * The list rows used to lead with the raw artifact id (`run_1780463950373`)
- * in foreground weight and demote the connector/source to dim subtext — the
- * inverse of what an operator scans for. These helpers pick the meaningful
- * label (the connector/source, falling back to the client or kind) so the row
- * can lead with *what happened to whom* and demote the raw id to a monospace
- * lookup-key detail.
- *
- * Each helper returns a plain string and never the raw artifact id; the id is
- * rendered separately as secondary mono text.
- */
-
 import { formatConnectorKeyForDisplay, formatSourceForDisplay, type SourceDisplayInput } from "./connector-display.ts";
 
-interface RunLabelInput {
+export interface RunLabelInput {
   connector_id?: string | null;
   provider_id?: string | null;
   source?: SourceDisplayInput | null;
 }
 
-interface TraceLabelInput {
+export interface TraceLabelInput {
   client?: ClientDisplayInput | null;
   client_id?: string | null;
   kinds?: string[] | null;
@@ -31,7 +17,7 @@ interface TraceLabelInput {
   source?: SourceDisplayInput | null;
 }
 
-interface GrantLabelInput {
+export interface GrantLabelInput {
   client?: ClientDisplayInput | null;
   client_id?: string | null;
   connector_id?: string | null;
@@ -39,7 +25,7 @@ interface GrantLabelInput {
   source?: SourceDisplayInput | null;
 }
 
-interface ClientDisplayInput {
+export interface ClientDisplayInput {
   client_name?: string | null;
 }
 
@@ -47,19 +33,15 @@ function clean(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-/** Connector/source label for a source object, without any technical kind prefix. */
 function sourceConnectorLabel(source: SourceDisplayInput | null | undefined): string {
   if (!source) {
     return "";
   }
-  // formatSourceForDisplay returns a clean connector label for connector-backed
-  // sources and a typed identity for other source kinds.
   const label = formatSourceForDisplay(source);
   const colon = label.indexOf(":");
   return colon >= 0 ? clean(label.slice(colon + 1)) : clean(label);
 }
 
-/** Primary label for a connector-run row: connector name, never the run id. */
 export function runRowLabel(run: RunLabelInput): string {
   const connector = clean(run.connector_id);
   if (connector) {
@@ -76,7 +58,6 @@ export function runRowLabel(run: RunLabelInput): string {
   return "Run";
 }
 
-/** Primary label for a trace row: the source/connector, client, or kind. */
 export function traceRowLabel(trace: TraceLabelInput): string {
   const fromSource = sourceConnectorLabel(trace.source);
   if (fromSource && fromSource !== "-") {
@@ -101,7 +82,6 @@ export function traceRowLabel(trace: TraceLabelInput): string {
   return "Trace";
 }
 
-/** Primary label for a grant row: the source/connector or the client. */
 export function grantRowLabel(grant: GrantLabelInput): string {
   const fromSource = sourceConnectorLabel(grant.source);
   if (fromSource && fromSource !== "-") {

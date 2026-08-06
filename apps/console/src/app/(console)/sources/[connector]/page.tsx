@@ -2,13 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
-import {
-  formatConnectorKeyForDisplay,
-  formatConnectorNameForDisplay,
-  isFallbackConnectionLabel,
-} from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {

@@ -1,9 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { formatConnectorKeyForDisplay } from "@pdpp/display";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
 import { buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
 import { Timestamp } from "../../ui/timestamp.tsx";

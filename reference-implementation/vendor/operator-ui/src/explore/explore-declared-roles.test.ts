@@ -20,7 +20,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildRecordPreview } from "../lib/record-preview.ts";
+import { buildRecordPreview } from "@pdpp/display";
 import type { StreamMetadata } from "../lib/rs-client.ts";
 import { declaredRolesFromCapabilities, fieldCapabilitiesFromMetadata } from "./explore-data-assembler.ts";
 

@@ -15,7 +15,7 @@
  * The display logic lives in `record-fields-display.ts` so it is unit-tested as
  * pure functions; this file is the thin JSX layer.
  */
-import { deriveDeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-field-format";
+import { deriveDeclaredFieldTypes } from "@pdpp/display";
 import { Fragment } from "react";
 import type { StreamMetadata } from "../../../../lib/rs-client.ts";
 import { ROW_DT, renderValue, valueClassName } from "./record-fields-display.ts";

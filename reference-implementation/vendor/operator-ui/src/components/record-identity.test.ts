@@ -5,11 +5,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  buildRecordPreview,
+  classifyRecordKind,
+  type DeclaredFieldRoles,
+  type DeclaredFieldTypes,
+  EMPTY_DECLARED_FIELD_ROLES,
+} from "@pdpp/display";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { type DeclaredFieldRoles, EMPTY_DECLARED_FIELD_ROLES } from "../lib/declared-field-roles.ts";
-import { classifyRecordKind, type DeclaredFieldTypes } from "../lib/record-kind.ts";
-import { buildRecordPreview } from "../lib/record-preview.ts";
 import { kindGlyph, RecordIdentity, type RecordIdentityVariant, recordIdentityView } from "./record-identity.tsx";
 
 // ─── Minimal CSS-cascade resolver ───────────────────────────────────────────

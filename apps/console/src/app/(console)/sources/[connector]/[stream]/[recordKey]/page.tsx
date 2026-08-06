@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { IcTimestamp } from "@pdpp/brand-react";
+import { buildRecordPreview, classifyRecordKind, deriveDeclaredFieldTypes } from "@pdpp/display";
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { RecordIdentity } from "@pdpp/operator-ui/components/record-identity";
 import { buildBlobAffordance, buildPeekFields } from "@pdpp/operator-ui/components/views/explorer-utils";
 import { declaredRolesFromCapabilities } from "@pdpp/operator-ui/explore/explore-data-assembler";
-import { deriveDeclaredFieldTypes } from "@pdpp/operator-ui/lib/record-field-format";
-import { classifyRecordKind } from "@pdpp/operator-ui/lib/record-kind";
-import { buildRecordPreview } from "@pdpp/operator-ui/lib/record-preview";
 import { notFound } from "next/navigation";
 import { RecordInspector } from "@/app/(console)/components/record-inspector.tsx";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";

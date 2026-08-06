@@ -1,9 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { type ClassValue, clsx } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { cn as brandCn } from "@pdpp/brand/tw-merge";
+import type { ClassValue } from "clsx";
 
 export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
+  return brandCn(...inputs);
 }

@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { IcButton, IcTimestamp } from "@pdpp/brand-react";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/display";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";

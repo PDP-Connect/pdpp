@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
+import { formatSourceForDisplay, grantRowLabel } from "@pdpp/display";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-vocabularies";
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
-import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
-import { grantRowLabel } from "@pdpp/operator-ui/lib/summary-row-label";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { IcButton } from "@pdpp/brand-react";
+import { formatConnectorKeyForDisplay } from "@pdpp/display";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { Callout, DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
-import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";

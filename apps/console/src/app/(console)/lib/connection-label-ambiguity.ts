@@ -24,7 +24,7 @@
  * directly under `node --test` without a Next/server harness.
  */
 
-import { isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
+import { isFallbackConnectionLabel } from "@pdpp/display";
 import type { ConnectorOverview } from "./rs-client.ts";
 
 /** The stable per-row key the list uses for routing and React keys. */

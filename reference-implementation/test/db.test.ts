@@ -120,6 +120,69 @@ test("initDb advances SQLite store cache identity across reopen", () => {
   }
 });
 
+test("initDb does not close a handle a previous caller still holds", () => {
+  // Regression: `initDb` used to call `closeDb()`, so booting a second
+  // server instance in the same process (Vercel Fluid compute, a test
+  // harness booting two servers, a multi-tenant demo) silently closed the
+  // FIRST instance's database out from under it. Cross-instance state
+  // bleed on a personal-data server is a privacy defect, not just a
+  // stability one. Instances must not be able to interfere.
+  const dirA = mkdtempSync(join(tmpdir(), "pdpp-db-instance-a-"));
+  const dirB = mkdtempSync(join(tmpdir(), "pdpp-db-instance-b-"));
+  let instanceA: DbHandle | undefined;
+  let instanceB: DbHandle | undefined;
+  try {
+    instanceA = initDb(join(dirA, "pdpp.sqlite"));
+    instanceA.exec("CREATE TABLE instance_probe (v TEXT)");
+    instanceA.prepare("INSERT INTO instance_probe (v) VALUES ('A')").run();
+
+    // Second instance boots in the same process.
+    instanceB = initDb(join(dirB, "pdpp.sqlite"));
+
+    // Each instance got its own handle...
+    assert.notEqual(instanceA, instanceB, "each initDb must return a distinct handle");
+
+    // ...and A's connection must still be usable and hold only A's data.
+    assert.equal(
+      (instanceA.prepare("SELECT COUNT(*) AS n FROM instance_probe").get() as { n: number }).n,
+      1,
+      "instance A's database was closed by instance B's boot"
+    );
+
+    // B is a genuinely separate database, not an alias of A.
+    assert.equal(
+      (
+        instanceB
+          .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='instance_probe'")
+          .get() as { n: number }
+      ).n,
+      0,
+      "instance B must not observe instance A private tables"
+    );
+
+    // B stays usable too.
+    instanceB.exec("CREATE TABLE instance_probe (v TEXT)");
+    instanceB.prepare("INSERT INTO instance_probe (v) VALUES ('B')").run();
+    assert.equal((instanceB.prepare("SELECT v FROM instance_probe").get() as { v: string }).v, "B");
+    assert.equal((instanceA.prepare("SELECT v FROM instance_probe").get() as { v: string }).v, "A");
+  } finally {
+    // Each instance owns its own close; closeDb() only covers the current one.
+    try {
+      instanceA?.close();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      instanceB?.close();
+    } catch {
+      /* best-effort */
+    }
+    closeDb();
+    rmSync(dirA, { force: true, recursive: true });
+    rmSync(dirB, { force: true, recursive: true });
+  }
+});
+
 test("initDb migrates legacy event subscriptions before creating authority index", () => {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-event-sub-migrate-"));
   const dbPath = join(dir, "pdpp.sqlite");
