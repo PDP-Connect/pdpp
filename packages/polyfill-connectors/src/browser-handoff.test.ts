@@ -39,6 +39,7 @@ import {
   BROWSER_SURFACE_STREAM_BASE_URL_ENV,
   DEADLINE_TIMEOUT,
   manualAction,
+  manualBrowserLogin,
   prepareBrowserInteractionTarget,
   prepareManualAction,
   resolveWsUrlForExactPage,
@@ -761,6 +762,36 @@ test("manualAction omits schema/timeout when not provided", async () => {
   );
   assert.equal(received?.schema, undefined);
   assert.equal(received?.timeout_seconds, undefined);
+});
+
+test("manualBrowserLogin re-probes after the owner handoff instead of trusting the response", async () => {
+  const page = makeMockPage();
+  const requests: InteractionRequest[] = [];
+  let probeCalls = 0;
+  const result = await manualBrowserLogin({
+    env: {},
+    message: "Sign in in the secure browser.",
+    page,
+    probe: (): Promise<string> => {
+      probeCalls += 1;
+      return Promise.resolve("session-live");
+    },
+    sendInteraction: (req) => {
+      requests.push(req);
+      return Promise.resolve({
+        type: "INTERACTION_RESPONSE",
+        request_id: req.request_id ?? "",
+        status: "cancelled",
+      });
+    },
+    timeoutSeconds: 1800,
+  });
+
+  assert.equal(result, "session-live");
+  assert.equal(probeCalls, 1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.kind, "manual_action");
+  assert.equal(requests[0]?.timeout_seconds, 1800);
 });
 
 // ─── withDeadline + bounded metadata read ──────────────────────────────────

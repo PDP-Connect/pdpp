@@ -597,6 +597,46 @@ export async function manualAction(
   }
 }
 
+/**
+ * Hand the current browser page to the owner for sign-in, then let the
+ * connector prove whether the session is live. The owner response is only a
+ * signal to re-probe; site-specific session evidence stays with the connector.
+ */
+export interface ManualBrowserLoginArgs<Result> {
+  readonly capture?: CaptureSession | null;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly message: string;
+  readonly page: Page;
+  readonly probe: () => Promise<Result>;
+  readonly reason?: ManualActionReason;
+  readonly sendInteraction: SendInteraction;
+  readonly timeoutSeconds?: number;
+}
+
+export async function manualBrowserLogin<Result>({
+  capture,
+  env,
+  message,
+  page,
+  probe,
+  reason = "login",
+  sendInteraction,
+  timeoutSeconds,
+}: ManualBrowserLoginArgs<Result>): Promise<Result> {
+  await manualAction(
+    {
+      ...(capture ? { capture } : {}),
+      ...(env ? { env } : {}),
+      message,
+      page,
+      reason,
+      ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    },
+    sendInteraction
+  );
+  return await probe();
+}
+
 // ─── Exports for tests ─────────────────────────────────────────────────────
 
 export {

@@ -21,7 +21,7 @@
  */
 
 import type { BrowserContext, Locator, Page } from "playwright";
-import { manualAction } from "../browser-handoff.ts";
+import { manualBrowserLogin } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession, LocatorProbe } from "../fixture-capture.ts";
 import { detectCloudflareChallenge } from "../platform-probes.ts";
@@ -34,6 +34,8 @@ const PASSWORD_SELECTOR = 'input[name="password"], input#loginPassword';
 const SUBMIT_SELECTOR = 'button[type="submit"]:has-text("Log In"), button[type="submit"]:has-text("Continue")';
 const OTP_SELECTOR = 'input[name="otp"], input[name="verification_code"], input[autocomplete="one-time-code"]';
 const SUBMIT_BUTTON_NAME_RE = /^(log in|continue)$/i;
+const MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE =
+  "No optional Reddit sign-in details were provided. Sign in to Reddit in the secure browser, then respond success.";
 
 const LOGIN_LOCATOR_PROBES: LocatorProbe[] = [
   {
@@ -146,6 +148,50 @@ function loginBlockedMessage(cfSignals: string[]): string {
   return "Reddit login page did not render expected inputs and no Cloudflare challenge was detected (the page may have changed). Log in to reddit.com in the browser window and re-run.";
 }
 
+async function ensureRedditManualSession({
+  capture,
+  page,
+  sendInteraction,
+}: Pick<EnsureRedditSessionArgs, "capture" | "page" | "sendInteraction">): Promise<void> {
+  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
+  if (
+    await manualBrowserLogin({
+      ...(capture ? { capture } : {}),
+      message: MANUAL_LOGIN_WITHOUT_CREDENTIALS_MESSAGE,
+      page,
+      probe: () => isSessionLive(page),
+      sendInteraction,
+      timeoutSeconds: 1800,
+    })
+  ) {
+    return;
+  }
+  throw new Error("reddit_login_manual_incomplete");
+}
+
+async function recoverRedditBlockedLogin({
+  capture,
+  page,
+  sendInteraction,
+}: Pick<EnsureRedditSessionArgs, "capture" | "page" | "sendInteraction">): Promise<void> {
+  const cf = await detectCloudflareChallenge(page);
+  const message = loginBlockedMessage(cf.signals);
+  if (
+    await manualBrowserLogin({
+      ...(capture ? { capture } : {}),
+      message,
+      page,
+      probe: () => isSessionLive(page),
+      reason: "captcha",
+      sendInteraction,
+      timeoutSeconds: 1800,
+    })
+  ) {
+    return;
+  }
+  throw new Error("reddit_login_unexpected_ui");
+}
+
 export async function ensureRedditSession({
   capture,
   context,
@@ -159,7 +205,8 @@ export async function ensureRedditSession({
   const username = process.env.REDDIT_USERNAME;
   const password = process.env.REDDIT_PASSWORD;
   if (!(username && password)) {
-    throw new Error("reddit_creds_missing: set REDDIT_USERNAME and REDDIT_PASSWORD in .env.local");
+    await ensureRedditManualSession({ ...(capture === undefined ? {} : { capture }), page, sendInteraction });
+    return;
   }
 
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch((): undefined => undefined);
@@ -170,21 +217,7 @@ export async function ensureRedditSession({
     // Cloudflare challenge, shadow DOM change, or redirect loop — hand off.
     // Earn the diagnosis via the shared detector instead of guessing "possible
     // Cloudflare challenge" from absence of inputs alone.
-    const cf = await detectCloudflareChallenge(page);
-    const message = loginBlockedMessage(cf.signals);
-    await manualAction(
-      {
-        page,
-        reason: "captcha",
-        message,
-        timeoutSeconds: 1800,
-        ...(capture === undefined ? {} : { capture }),
-      },
-      sendInteraction
-    );
-    if (!(await isSessionLive(page))) {
-      throw new Error("reddit_login_unexpected_ui");
-    }
+    await recoverRedditBlockedLogin({ ...(capture === undefined ? {} : { capture }), page, sendInteraction });
     return;
   }
 

@@ -325,7 +325,10 @@ function makePostPasswordSourceUnavailablePage(bodyText: string): Page {
   return fake as Page;
 }
 
-async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
+async function withUsaaCredentialValues(
+  credentials: { password?: string; username?: string },
+  run: () => Promise<void>
+): Promise<void> {
   const priorUsername = process.env.USAA_USERNAME;
   const priorPassword = process.env.USAA_PASSWORD;
   const priorStreamingEnv = new Map<(typeof STREAMING_ENV_KEYS)[number], string | undefined>();
@@ -333,8 +336,12 @@ async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
     priorStreamingEnv.set(key, process.env[key]);
     delete process.env[key];
   }
-  process.env.USAA_USERNAME = "test-user";
-  process.env.USAA_PASSWORD = "test-password";
+  if (credentials.username) {
+    process.env.USAA_USERNAME = credentials.username;
+  }
+  if (credentials.password) {
+    process.env.USAA_PASSWORD = credentials.password;
+  }
   try {
     await run();
   } finally {
@@ -358,6 +365,36 @@ async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
     }
   }
 }
+
+async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
+  await withUsaaCredentialValues({ password: "test-password", username: "test-user" }, run);
+}
+
+async function withoutUsaaCredentials(run: () => Promise<void>): Promise<void> {
+  await withUsaaCredentialValues({}, run);
+}
+
+test("ensureUsaaSession hands off to the secure browser when optional credentials are absent", async () => {
+  await withoutUsaaCredentials(async () => {
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const { gotoCalls, page } = makePage(new Error(`page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at ${LOGIN_URL}`));
+    const interactions = makeInteractionHarness();
+
+    const ok = await ensureUsaaSession({
+      context,
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.deepEqual(gotoCalls, [LOGIN_URL, DASHBOARD_URL]);
+    assert.equal(interactions.requests.length, 1);
+    assert.equal(interactions.requests[0]?.kind, "manual_action");
+    assert.match(interactions.requests[0]?.message ?? "", /No optional USAA sign-in details/);
+    assert.match(interactions.requests[0]?.message ?? "", /secure browser/);
+    assert.doesNotMatch(interactions.requests[0]?.message ?? "", /password|test-user/u);
+  });
+});
 
 test("ensureUsaaSession emits manual_action when USAA login navigation trips HTTP/2 bot failure", async () => {
   await withUsaaCredentials(async () => {
