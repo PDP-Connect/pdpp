@@ -43,10 +43,12 @@ const ACTION_USE_SERVER = /^"use server";/;
 const REQUIRE_ACCESS = /await requireDashboardAccess\(/;
 const CREATE_DRAFT = /createStaticSecretDraftConnection\(connectorId, setupFields, \{ displayName \}\)/;
 const CAPTURE_SECRET = /captureStaticSecretCredential\(\{/;
-const AUTO_RESUME = /auto_resume/;
+const START_HELPER_IMPORT = /static-secret-start\.ts/;
 const RUN_ID_AFTER_CAPTURE = /runIdAfterCapture\(/;
-const LEGACY_RUN_FALLBACK = /runConnectionNow\(connectionId\)/;
+const RUN_START_HELPER = /runIdAfterCapture\([\s\S]{0,180}runConnectionNow/;
 const NO_AUTO_RESUME_FIELD_SUPPRESSION = /"auto_resume"\s+in\s+capture[\s\S]{0,120}return null/;
+const TERMINAL_RETRY =
+  /formRetryHrefWithConnectionId\(connectorId, draftConnectionId, errorMessage\(err\), setupFields\)/;
 const STATUS_SURFACE_PATH = /\/connect\/status\//;
 const STATUS_HREF_CALL = /statusHref\(/;
 const NO_NOTICE_REDIRECT = /notice:\s*"first_sync_started"/;
@@ -133,14 +135,16 @@ test("static-secret action redirects to the durable setup-status surface, not a 
   assert.match(src, GET_SETUP);
   assert.match(src, CREATE_DRAFT);
   assert.match(src, CAPTURE_SECRET);
-  assert.match(src, AUTO_RESUME);
+  assert.match(src, START_HELPER_IMPORT);
   assert.match(src, RUN_ID_AFTER_CAPTURE);
-  assert.match(src, LEGACY_RUN_FALLBACK);
+  assert.match(src, RUN_START_HELPER);
   assert.doesNotMatch(src, NO_AUTO_RESUME_FIELD_SUPPRESSION);
-  // The success and the draft-created-then-failed paths both land on the
-  // durable per-connection status surface, keyed on the real connection id.
+  // Success lands on the durable per-connection status surface, keyed on the
+  // real connection id. A draft-created start failure returns to the repair
+  // form instead of fabricating first_sync_pending with no run id.
   assert.match(src, STATUS_SURFACE_PATH);
   assert.match(src, STATUS_HREF_CALL);
+  assert.match(src, TERMINAL_RETRY);
   assert.doesNotMatch(src, NO_NOTICE_REDIRECT);
   assert.doesNotMatch(src, NO_LEGACY_BRANCH);
   assert.doesNotMatch(src, NO_CONNECTOR_BRANCH);

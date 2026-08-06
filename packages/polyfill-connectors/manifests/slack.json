@@ -33,7 +33,7 @@
     "credential_capture": {
       "kind": "secret_bundle",
       "label": "Slack workspace credentials",
-      "description": "Paste the session credentials from your Slack browser session. These are captured and sealed per-connection; the deployment does not need env vars.",
+      "description": "Slackdump uses a logged-in Slack web session, not an OAuth app token: enter your workspace subdomain, the xoxc web-client session token, and the value of the browser cookie named d. These are captured and sealed per-connection; the deployment does not need env vars.",
       "submit_label": "Create Slack connection and start first sync",
       "fields": [
         {
@@ -50,23 +50,24 @@
         },
         {
           "name": "slack_token",
-          "label": "Slack session token (xoxc-…)",
+          "label": "Slack web-client session token (xoxc-…)",
           "type": "password",
           "required": true,
           "secret": true,
           "autocomplete": "off",
-          "help_url": "https://github.com/rusq/slackdump/wiki/How-to-get-your-Slack-credentials",
-          "help_text": "Copy the xoxc-… token from your browser's Slack JS context. See the runbook link for exact steps.",
+          "help_url": "https://github.com/rusq/slackdump/blob/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7/doc/login-manual.md",
+          "help_text": "In Slack on the web, open Developer Tools → Console and run JSON.parse(localStorage.localConfig_v2).teams[document.location.pathname.match(/^\\/client\/([A-Z0-9]+)/)[1]].token. Paste the returned xoxc-… value.",
           "env": ["SLACK_TOKEN"]
         },
         {
           "name": "slack_cookie",
-          "label": "Slack 'd' cookie",
+          "label": "Slack browser d cookie value (xoxd-…)",
           "type": "password",
           "required": true,
           "secret": true,
           "autocomplete": "off",
-          "help_text": "Copy the 'd' cookie from your browser while logged in to Slack. Same runbook as above.",
+          "help_url": "https://github.com/rusq/slackdump/blob/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7/doc/login-manual.md",
+          "help_text": "In Developer Tools → Application/Storage → Cookies, select your Slack domain, find the cookie named exactly d, and copy its Value. Paste the value only (usually starts xoxd-), not d=; preserve %2F/%2B escapes.",
           "env": ["SLACK_COOKIE"]
         }
       ]

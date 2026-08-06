@@ -144,8 +144,8 @@ test("base archive resume is throttled on the 90-minute follow-up without invoki
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
@@ -184,8 +184,8 @@ test("a failed base archive resume remains owed and retries successfully on the 
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
@@ -228,8 +228,8 @@ test("base archive resume runs again after the seven-day lookback expires", asyn
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
@@ -284,8 +284,8 @@ test("upgrade compatibility: a pre-upgrade successful base archive is throttled 
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
@@ -313,8 +313,8 @@ test("upgrade compatibility: a pre-upgrade successful base archive is throttled 
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
@@ -358,8 +358,8 @@ test("upgrade compatibility does NOT seed the throttle from archive existence al
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdump.path,
         TEST_SLACKDUMP_CALL_LOG: fakeSlackdump.callLog,
@@ -444,8 +444,8 @@ test("connector emits phase-timing and archive-size PROGRESS every run", async (
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: "timing-ws",
       },
       start: { type: "START", scope: { streams: [{ name: "messages" }] } },
@@ -482,8 +482,8 @@ test("__uploads reclaim is OFF by default: a normal run leaves __uploads intact"
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: "off-ws",
       },
       start: { type: "START", scope: { streams: [{ name: "messages" }] } },
@@ -512,9 +512,9 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim when the run fails (gate honored)
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
+        SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: "fail-ws",
       },
       start: { type: "START", scope: { streams: [{ name: "messages" }] } },
@@ -537,9 +537,9 @@ test("SLACK_RECLAIM_UPLOADS=1 removes __uploads after a successful run, sqlite i
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
+        SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: "on-ws",
       },
       start: { type: "START", scope: { streams: [{ name: "messages" }] } },
@@ -617,9 +617,9 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims __uploads/ in every archive the run actua
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
+        SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -708,9 +708,9 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims a repair archive that was successfully cr
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
+        SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -784,9 +784,9 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim a repair archive when the repair 
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
+        SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -863,8 +863,8 @@ test("scoped-archive-reconcile phase timing is reported when source-cache healin
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -940,8 +940,8 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -1019,8 +1019,8 @@ test("scoped-archive-reconcile throttles a scoped archive's resume to at most on
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -1119,8 +1119,8 @@ test("scoped-archive-reconcile resumes a scoped archive again once its lookback 
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -1232,8 +1232,8 @@ process.exit(0);
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdumpPath,
       },
@@ -1345,8 +1345,8 @@ test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-fail
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -1465,9 +1465,9 @@ process.exit(0);
       entrypoint: SLACK_ENTRYPOINT,
       env: {
         HOME: homeDir,
-        SLACK_COOKIE: "d=fake",
+        SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
         SLACKDUMP_BIN: fakeSlackdumpPath,
       },
@@ -1590,8 +1590,8 @@ test("a later successful NEW-repair attempt emits DETAIL_GAP_RECOVERED for a pre
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {

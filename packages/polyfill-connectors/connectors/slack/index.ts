@@ -372,6 +372,18 @@ function formatSlackdumpProgress(label: string, snapshot: SlackdumpProgressSnaps
   return `Slack slackdump ${label} progress: ${facts.join(" ")}`;
 }
 
+function redactSlackdumpOutput(output: string, env: NodeJS.ProcessEnv): string {
+  let redacted = output;
+  for (const secret of [env.SLACK_TOKEN, env.SLACK_COOKIE]) {
+    if (secret) {
+      redacted = redacted.replaceAll(secret, "[REDACTED]");
+    }
+  }
+  // Keep diagnostics safe even if a child prints only a token-shaped value or
+  // wraps the known credential before the exact replacement above can match.
+  return redacted.replace(/xox[a-z]-[^\s"'`]+/giu, "[REDACTED]");
+}
+
 // Default timeout accommodates long-lived workspaces (10+ years) where a
 // first-run archive of DMs + history can run 6-20h depending on file count
 // and Slack rate-limit bursts. The cost of a too-high default is only "late
@@ -442,7 +454,8 @@ export function runSlackdump(
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error(`slackdump_exit_${code}: ${stderr.slice(0, 400) || stdout.slice(0, 400)}`));
+        const detail = redactSlackdumpOutput(`${stderr}\n${stdout}`, env).slice(0, 400);
+        reject(new Error(`slackdump_exit_${code}${detail ? `: ${detail}` : ""}`));
       }
     });
     child.on("error", (e) => {
@@ -509,14 +522,75 @@ interface SlackOpts {
 
 export const SLACK_RETRYABLE_FAILURE_RE = /ECONN|ETIMEDOUT|timeout|slackdump_exit_6|slack_rate_limited/i;
 
-function extractCredentials(credentials: Record<string, string>): SlackCredentials {
-  const workspace = credentials.SLACK_WORKSPACE;
-  const token = credentials.SLACK_TOKEN;
-  const cookie = credentials.SLACK_COOKIE;
-  if (!(workspace && token && cookie)) {
+const SLACKDUMP_CLIENT_TOKEN_PREFIX = "xoxc-";
+const SLACKDUMP_D_COOKIE_PREFIX = "xoxd-";
+const SLACK_WORKSPACE_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+// Slackdump's value path preserves URL-safe percent escapes and QueryEscapes
+// raw unsafe cookie characters. Keep provider values opaque here: only enforce
+// the documented xoxc/xoxd prefixes, transport-safe control characters, and a
+// bounded input size.
+const SLACKDUMP_CREDENTIAL_MAX_LENGTH = 4096;
+const INVALID_PERCENT_ESCAPE_RE = /%(?![0-9a-f]{2})/iu;
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeSlackOpaqueValue(raw: string, prefix: string | null, invalidCode: string): string {
+  const value = raw.trim();
+  if (
+    !value ||
+    (prefix !== null && !value.startsWith(prefix)) ||
+    value.length > SLACKDUMP_CREDENTIAL_MAX_LENGTH ||
+    hasControlCharacter(value)
+  ) {
+    throw new Error(invalidCode);
+  }
+  return value;
+}
+
+export function normalizeSlackWorkspace(raw: string): string {
+  const workspace = raw.trim().toLowerCase();
+  if (!SLACK_WORKSPACE_RE.test(workspace)) {
+    throw new Error("slack_workspace_invalid");
+  }
+  return workspace;
+}
+
+export function normalizeSlackToken(raw: string): string {
+  return normalizeSlackOpaqueValue(raw, SLACKDUMP_CLIENT_TOKEN_PREFIX, "slack_token_invalid");
+}
+
+export function normalizeSlackCookie(raw: string): string {
+  let cookie = raw.trim();
+  if (cookie.startsWith("d=")) {
+    cookie = cookie.slice(2).trim();
+  }
+  const normalized = normalizeSlackOpaqueValue(cookie, SLACKDUMP_D_COOKIE_PREFIX, "slack_cookie_invalid");
+  if (INVALID_PERCENT_ESCAPE_RE.test(normalized)) {
+    throw new Error("slack_cookie_invalid");
+  }
+  return normalized;
+}
+
+export function extractSlackCredentials(credentials: Record<string, string>): SlackCredentials {
+  const rawWorkspace = typeof credentials.SLACK_WORKSPACE === "string" ? credentials.SLACK_WORKSPACE : "";
+  const rawToken = typeof credentials.SLACK_TOKEN === "string" ? credentials.SLACK_TOKEN : "";
+  const rawCookie = typeof credentials.SLACK_COOKIE === "string" ? credentials.SLACK_COOKIE : "";
+  if (!(rawWorkspace.trim() && rawToken.trim() && rawCookie.trim())) {
     throw new Error("slack_credentials_missing");
   }
-  return { workspace, token, cookie };
+  return {
+    workspace: normalizeSlackWorkspace(rawWorkspace),
+    token: normalizeSlackToken(rawToken),
+    cookie: normalizeSlackCookie(rawCookie),
+  };
 }
 
 function readSlackOptions(): SlackOpts {
@@ -2393,7 +2467,7 @@ if (isMainModule(import.meta.url)) {
     async collect(ctx: CollectContext): Promise<void> {
       const { state, requested, credentials, emit, progress } = ctx;
 
-      const { workspace, token, cookie } = extractCredentials(credentials);
+      const { workspace, token, cookie } = extractSlackCredentials(credentials);
       const opts = readSlackOptions();
 
       // Resource filters (pre-fetch: pass as positional args; post-fetch: enforce too)
