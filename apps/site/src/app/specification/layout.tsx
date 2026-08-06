@@ -38,9 +38,13 @@ export default function Layout({ children }: { children: ReactNode }) {
     <div className="pdpp-docs-shell pdpp-concept" data-pdpp-doc-theme="true">
       <PdppConceptMasthead />
       <SpecRailProvider frontMatter={getSpecFrontMatter()}>
-        <DocsLayout sidebar={{ collapsible: false }} slots={specRailSlots} tree={getSpecNavTree()} {...baseOptions()}>
-          {children}
-        </DocsLayout>
+        {/* Same page measure as PdppConceptPage / masthead / footer — fumadocs
+            alone defaults full-bleed (--fd-layout-width: 200rem in docs.css). */}
+        <div className="container max-w-page">
+          <DocsLayout sidebar={{ collapsible: false }} slots={specRailSlots} tree={getSpecNavTree()} {...baseOptions()}>
+            {children}
+          </DocsLayout>
+        </div>
       </SpecRailProvider>
       <PdppConceptFooter />
     </div>

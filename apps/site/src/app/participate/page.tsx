@@ -3,6 +3,8 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { DiscordIcon, GithubIcon } from "@/components/pdpp-concept/icons.tsx";
 import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
@@ -13,6 +15,7 @@ import {
   GITHUB_REPO_URL,
 } from "@/components/pdpp-concept/site-facts.ts";
 import { SPEC_STATUS } from "@/components/pdpp-concept/spec-status.ts";
+import { Text } from "@/components/pdpp-concept/text.tsx";
 
 const PARTICIPATE_TOC = [
   { href: "#get-involved", label: "Get involved" },
@@ -64,11 +67,13 @@ const changeSteps = [
 export default function ParticipatePage() {
   return (
     <>
-      <main className="pdpp-page">
-        <PdppRail governance="PDP-Connect, an LF Decentralized Trust Lab" toc={PARTICIPATE_TOC} />
-        <article className="pdpp-doc">
-          <h1>Participate</h1>
-          <p className="pdpp-lede">Ask a question about the draft, or propose a change to the protocol.</p>
+      <PdppConceptPage>
+        <PdppRail toc={PARTICIPATE_TOC} />
+        <PdppConceptDoc>
+          <PdppConceptDocHeader
+            lede="Ask a question about the draft, or propose a change to the protocol."
+            title="Participate"
+          />
 
           {/* Actionable links FIRST, directly under the lede. The owner's note:
               landing here, you should be able to open an issue or find Discord
@@ -82,9 +87,9 @@ export default function ParticipatePage() {
               /issues/new, not /issues — the owner said "I want to open an
               issue", which is the compose action, not the index. */}
           <section className="pdpp-section pdpp-section--lead" id="get-involved">
-            <h2>
-              <span className="pdpp-section__numeral">01</span>Get involved
-            </h2>
+            <Text as="h2" intent="title" sectionIndex="01">
+              Get involved
+            </Text>
             <div className="pdpp-channels">
               <a className="pdpp-channel" href={GITHUB_NEW_ISSUE_URL} rel="noopener noreferrer" target="_blank">
                 <GithubIcon className="pdpp-icon-github pdpp-channel__icon" />
@@ -108,10 +113,10 @@ export default function ParticipatePage() {
                 </span>
               </a>
             </div>
-            <p className="pdpp-channels__note">
+            <Text color="soft" intent="note">
               In an issue, name the part of the specification your question applies to and what the text does not let
               you decide. A maintainer answers there.
-            </p>
+            </Text>
           </section>
 
           {/* Grounded against the WHATWG Working Mode and the OpenTelemetry OTEP
@@ -120,68 +125,92 @@ export default function ParticipatePage() {
               pipeline (proposal / PR / review / consultation) that no comparable
               project runs and this lab cannot honour. */}
           <section className="pdpp-section" id="how-it-changes">
-            <h2>
-              <span className="pdpp-section__numeral">02</span>How the specification changes
-            </h2>
-            <p>
+            <Text as="h2" intent="title" sectionIndex="02">
+              How the specification changes
+            </Text>
+            <Text intent="body">
               Normative text lives in the root <code>spec-*.md</code> files. Everything else, including the
               specification pages on this site, is a downstream copy.
-            </p>
+            </Text>
             <div className="pdpp-ruled-list pdpp-ruled-list--plain">
               {changeSteps.map((step) => (
                 <div className="pdpp-ruled-list__item" key={step.title}>
                   <div className="pdpp-ruled-list__body">
-                    <h3>{step.title}</h3>
-                    <p>{step.body}</p>
+                    <Text as="h3" intent="heading">
+                      {step.title}
+                    </Text>
+                    <Text intent="body">{step.body}</Text>
                   </div>
                 </div>
               ))}
               <div className="pdpp-ruled-list__item">
                 <div className="pdpp-ruled-list__body">
-                  <h3>Two maintainers approve before merge</h3>
-                  <p>
+                  <Text as="h3" intent="heading">
+                    Two maintainers approve before merge
+                  </Text>
+                  <Text intent="body">
                     Maintainers are the editors of the current draft, listed in{" "}
                     <a href={GITHUB_MAINTAINERS_URL} rel="noopener noreferrer" target="_blank">
                       MAINTAINERS.md
                     </a>
                     .
-                  </p>
+                  </Text>
                 </div>
               </div>
             </div>
-            <p>
+            <Text intent="body">
               Interfaces may still change: {SPEC_STATUS.version} has not been through public consultation, which opens
               before v1.0 is pinned. Governance and the license split are recorded in{" "}
               <Link href="/specification#specification-governance">specification governance</Link>.
-            </p>
+            </Text>
           </section>
 
           {/* Renamed from "Status of this document". The owner spotted that the
               content is PDPP-project-wide status, not the status of this page,
               and the heading was the thing that was wrong. Content kept. */}
           <section className="pdpp-section" id="status">
-            <h2>
-              <span className="pdpp-section__numeral">03</span>Where PDPP is today
-            </h2>
-            <p>
+            <Text as="h2" intent="title" sectionIndex="03">
+              Where PDPP is today
+            </Text>
+            <Text intent="body">
               {SPEC_STATUS.version} is a {SPEC_STATUS.label.toLowerCase()}.
-            </p>
+            </Text>
             <ul className="pdpp-updates">
               <li>
-                <time dateTime="2026-07">2026 · Jul</time>
-                <span>LFDT Labs proposal accepted; repositories public under the PDP-Connect organization.</span>
+                <Text
+                  as="time"
+                  className="normal-case tracking-[0.04em]"
+                  color="faint"
+                  dateTime="2026-07"
+                  intent="eyebrow"
+                  numeric="tabular"
+                >
+                  2026 · Jul
+                </Text>
+                <Text intent="note">
+                  LFDT Labs proposal accepted; repositories public under the PDP-Connect organization.
+                </Text>
               </li>
               <li>
-                <time dateTime="2026-04">2026 · Apr</time>
-                <span>
+                <Text
+                  as="time"
+                  className="normal-case tracking-[0.04em]"
+                  color="faint"
+                  dateTime="2026-04"
+                  intent="eyebrow"
+                  numeric="tabular"
+                >
+                  2026 · Apr
+                </Text>
+                <Text intent="note">
                   Core protocol {SPEC_STATUS.version} published as a normative draft alongside the forkable reference
                   implementation.
-                </span>
+                </Text>
               </li>
             </ul>
           </section>
-        </article>
-      </main>
+        </PdppConceptDoc>
+      </PdppConceptPage>
 
       <PdppConceptFooter />
     </>

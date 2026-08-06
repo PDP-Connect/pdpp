@@ -6,10 +6,8 @@
  * concept (see /home/tnunamak/.tmp/pdpp-site-concept/DESIGN-SPEC.md).
  *
  * Owns: --pdpp-concept-* tokens (paper, ink, teal, Newsreader, oversized
- * numerals) and the concept component classes (.pdpp-concept, .pdpp-page,
- * .pdpp-doc, .pdpp-frontdoor-*, .pdpp-masthead, .pdpp-cta, etc.). Marketing
- * routes (/, self-host, …) are styled HERE via those classes — not by
- * @pdpp/brand Tailwind utilities.
+ * numerals) and leftover concept BEM (.pdpp-concept, .pdpp-doc, .pdpp-cta*,
+ * footer/rail/…). Masthead chrome lives in masthead.tsx (TW + editorial-tokens).
  *
  * DELIBERATELY separate from @pdpp/brand's oklch product-UI tokens — bolting
  * this vocabulary onto the shared package would corrupt it for apps/console.
@@ -126,6 +124,7 @@
 
 /* ─── Document surface ──────────────────────────────────────────────────── */
 .pdpp-concept {
+  --spacing-inset: var(--pdpp-concept-pad);
   font-family: var(--pdpp-concept-serif);
   font-size: 17px;
   font-variant-numeric: oldstyle-nums;
@@ -156,331 +155,20 @@
   background: var(--pdpp-concept-teal-wash);
 }
 
-.pdpp-concept a {
-  color: var(--pdpp-concept-teal);
-  text-decoration: none;
-  border-bottom: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-teal) 30%, transparent);
-  transition:
-    color 120ms ease,
-    border-color 120ms ease;
-}
-.pdpp-concept a:hover,
-.pdpp-concept a:focus-visible {
-  color: var(--pdpp-concept-teal-deep);
-  border-bottom-color: var(--pdpp-concept-teal);
-}
-.pdpp-concept a:focus-visible {
-  outline: 2px solid var(--pdpp-concept-teal);
-  outline-offset: 3px;
-  border-radius: 1px;
-}
-
-/* ─── Skip link ──────────────────────────────────────────────────────────── */
-.pdpp-skip-link {
-  position: absolute;
-  top: 0;
-  left: -9999px;
-  z-index: 100;
-  padding: 10px 16px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 15px;
-  color: var(--pdpp-concept-teal);
-  background: var(--pdpp-concept-paper);
-  border: 1px solid var(--pdpp-concept-teal);
-}
-.pdpp-skip-link:focus {
-  top: 8px;
-  left: 8px;
-}
-
-/* ─── Masthead ──────────────────────────────────────────────────────────── */
-.pdpp-masthead {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: var(--pdpp-concept-paper);
-  border-bottom: var(--pdpp-concept-rule);
-}
-.pdpp-masthead__inner {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 32px;
-  align-items: baseline;
-  justify-content: space-between;
-  max-width: var(--pdpp-concept-max);
-  padding-block: 20px;
-  padding-inline: var(--pdpp-concept-pad);
-  margin-inline: auto;
-}
-/* The wordmark is Callum's vector mark, inheriting currentColor so it picks up
-   --pdpp-concept-ink here and --pdpp-concept-paper in the footer. Height is
-   locked to the concept's own value so the masthead's sticky height matches.
-   Scoped `.pdpp-concept a.pdpp-wordmark` to match the specificity of the
-   `.pdpp-concept a` base rule (0,1,1): unscoped, that base rule's teal color
-   won and the mark rendered teal instead of ink, the same trap already fixed
-   below for `.pdpp-concept a.pdpp-cta`. */
-.pdpp-concept a.pdpp-wordmark {
-  display: inline-flex;
-  align-items: center;
-  color: var(--pdpp-concept-ink);
-  border-bottom: none;
-}
-.pdpp-concept a.pdpp-wordmark:hover {
-  color: var(--pdpp-concept-teal);
-}
-.pdpp-wordmark__mark {
-  display: block;
-  width: auto;
-  height: 19px;
-}
-.pdpp-masthead__wordmark-line {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 14px;
-  align-items: baseline;
-  min-inline-size: 0;
-}
-/* The site's full name, next to the wordmark mark. `white-space: nowrap` plus
-   the parent's `flex-wrap: nowrap` mean this is one line or hidden outright
-   (see the container query below) — a wrapped label would grow the sticky
-   masthead's height and shift the whole page under it. */
-.pdpp-masthead__label {
-  font-family: var(--pdpp-concept-sans);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--pdpp-concept-ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-}
-.pdpp-masthead__inner {
-  container: pdpp-masthead / inline-size;
-}
-@container pdpp-masthead (max-width: 700px) {
-  .pdpp-masthead__label {
-    display: none;
-  }
-}
-.pdpp-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 24px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 15px;
-}
-/* Text-only nav links have a much shorter line box than the 44px touch-target
-   floor. A transparent ::before overlay expands the HIT AREA the same way
-   .pdpp-theme-switch::before does below, without changing the link's own box
-   (font size, underline position) or requiring position:relative to affect
-   layout since the link is already an inline-flex participant in a wrapping
-   row.
-   Height IS a row-height concern, though: the masthead row is
-   align-items: baseline, so its cross-size is set by its tallest child, and
-   the browser default line-height at 15px left this the tallest thing in the
-   row (27.75px) against the 20px box .pdpp-nav-search-trigger and
-   .pdpp-theme-switch both already use. A line-height ratio landed a px off
-   (21px, not 20px — the sans face's real ascent/descent vs. an assumed ratio),
-   so this takes the same explicit-box approach the search trigger already
-   established instead: box-sizing height rather than a font-metric guess.
-   padding-bottom is kept for the underline's gap from the text. This closes
-   a masthead-height drift that predates this branch's theme work — confirmed
-   by A/B testing with the theme control removed entirely, which left the row
-   unchanged. See THEME.md for the before/after measurement. */
-.pdpp-nav a {
-  position: relative;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  /* Clipping the box to 20px isn't enough on its own: the masthead row is
-     align-items: baseline, and baseline computation for a flex item uses its
-     OWN internal line-box, not its clipped visible box — the inherited
-     24.75px line-height (from .pdpp-nav's 15px font-size, browser-default
-     leading) was still the value the row measured against, landing at
-     66.875px instead of 66px. line-height: 1 collapses the link's internal
-     line-box to the font's em-square, matching what height: 20px already
-     visually clips it to, so the two agree. Confirmed by direct measurement:
-     without this the masthead sits at 66.875px; with it, exactly 66px. */
-  padding-bottom: 2px;
-  line-height: 1;
-  color: var(--pdpp-concept-ink-soft);
-  border-bottom: 1px solid transparent;
-}
-.pdpp-nav a::before {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max(44px, 100%);
-  height: max(44px, 100%);
-  content: "";
-  transform: translate(-50%, -50%);
-}
-.pdpp-nav a:hover,
-.pdpp-nav a:focus-visible {
-  color: var(--pdpp-concept-teal);
-}
-.pdpp-nav a[aria-current="page"] {
-  color: var(--pdpp-concept-teal);
-  border-bottom-color: var(--pdpp-concept-teal);
-}
-
-/* The toggle that stands in for the full nav below 720px (see the media query
-   below) — hidden above it, matching the concept's .nav-toggle. A viewport
-   media query, not the masthead's own container query: the nav's rendered
-   width changes with collapse state, and sizing that collapse off the
-   container it's also mutating would be circular. */
-.pdpp-nav-toggle {
-  display: none;
-}
-@media (max-width: 720px) {
-  .pdpp-masthead__inner {
-    position: relative;
-    flex-wrap: wrap;
-  }
-  .pdpp-nav-toggle {
-    position: absolute;
-    top: 0;
-    right: var(--pdpp-concept-pad);
-    box-sizing: border-box;
-    display: block;
-    min-width: 44px;
-    min-height: 44px;
-    padding: 6px 10px;
-    font-family: var(--pdpp-concept-sans);
-    font-size: 12px;
-    color: var(--pdpp-concept-ink-soft);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    cursor: pointer;
-    background: none;
-    border: var(--pdpp-concept-rule);
-  }
-  .pdpp-nav-toggle:hover,
-  .pdpp-nav-toggle:focus-visible {
-    color: var(--pdpp-concept-teal);
-  }
-  .pdpp-nav-toggle:focus-visible {
-    outline: 2px solid var(--pdpp-concept-teal);
-    outline-offset: 2px;
-  }
-  /* Collapsed by default; the toggle's onClick flips `data-open`, matching
-     the concept's `.nav.is-open` class toggle. */
-  .pdpp-nav {
-    display: none;
-    flex-direction: column;
-    gap: 12px;
-    align-items: flex-start;
-    width: 100%;
-  }
-  .pdpp-nav[data-open="true"] {
-    display: flex;
-  }
-  .pdpp-nav a {
-    height: auto;
-  }
-}
-
-/* ─── Hero (homepage only) ──────────────────────────────────────────────── */
-.pdpp-hero {
-  border-bottom: var(--pdpp-concept-rule);
-}
-.pdpp-hero__inner {
-  max-width: var(--pdpp-concept-max);
-  padding-block: clamp(40px, 2rem + 3vw, 72px)
-    clamp(36px, 1.75rem + 2.6vw, 64px);
-  padding-inline: var(--pdpp-concept-pad);
-  margin-inline: auto;
-}
-.pdpp-hero__inner h1 {
-  max-width: 22ch;
-  margin-bottom: 24px;
-}
-.pdpp-hero__lede {
-  max-width: 58ch;
-  margin-bottom: 32px;
-  font-size: 20px;
-  line-height: 1.5;
-  color: var(--pdpp-concept-ink-soft);
-}
-.pdpp-hero__lede--placement {
-  max-width: 58ch;
-  font-size: 17px;
-  color: var(--pdpp-concept-ink-faint);
-}
-.pdpp-hero__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 24px;
-  align-items: center;
-  margin: 0;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 15px;
-}
-
-/* ─── Layout: rail + document ────────────────────────────────────────────
-   One primitive for every page. The 3-column rail template only applies
-   when a .pdpp-rail is actually rendered inside — the home article still
-   renders .pdpp-doc alone, and reserving the rail+gutter tracks unconditionally
-   left 250-300px of dead space beside the article and pushed .pdpp-doc off
-   center (measured: docLeft 450-780px against a 1050-1068px page at
-   1280-1920px). Rail-less is the default; :has() opts a page INTO the split
-   only where a rail exists, so no page needs its own modifier class. */
-.pdpp-page {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-  max-width: var(--pdpp-concept-max);
-  padding-inline: var(--pdpp-concept-pad);
-  margin-inline: auto;
-}
-.pdpp-page:has(> .pdpp-rail) {
-  grid-template-columns: var(--pdpp-concept-rail) var(--pdpp-concept-gutter) minmax(
-      0,
-      1fr
-    );
-}
-.pdpp-page--home {
-  /* Containing block for the absolutely positioned water figure. */
-  position: relative;
-}
-
-.pdpp-rail {
-  position: sticky;
-  top: 72px;
-  grid-column: 1;
-  align-self: start;
-  padding-top: 64px;
-  font-family: var(--pdpp-concept-sans);
-  scrollbar-color: transparent transparent;
-  transition: scrollbar-color 0.2s ease;
-}
+/* ─── Layout: document track ─────────────────────────────────────────────
+   Page chrome (container / max-w-page / rail grid / short-page flex) lives on
+   PdppConceptPage. Rail sticky/type/mobile strip lives on PdppRail.
+   .pdpp-doc track pad stays here. Hero type: PdppFrontDoor + Text. */
 /* @pdpp/brand's base.css gives the operator console an always-visible page
    scrollbar thumb, which is correct for a dense app shell but not for this
-   document register — the concept scopes its OWN custom scrollbar to the
-   rail only (styles.css's .rail::-webkit-scrollbar block) and leaves the
-   page-level scrollbar as the plain browser default everywhere else.
-   Scoping this reset to `html::-webkit-scrollbar-thumb` (not the unscoped
-   `::-webkit-scrollbar-thumb` base.css uses) touches only the page-level
-   bar, not the terminal/table's own overflow-x scrollbars, which were never
-   part of this finding and keep base.css's thumb unchanged. */
+   document register — the concept leaves the page-level scrollbar as the
+   plain browser default. Scoping this reset to `html::-webkit-scrollbar-thumb`
+   (not the unscoped `::-webkit-scrollbar-thumb` base.css uses) touches only
+   the page-level bar, not the terminal/table's own overflow-x scrollbars. */
 html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   background: transparent;
 }
-.pdpp-rail:hover,
-.pdpp-rail:focus-within {
-  scrollbar-color: color-mix(in srgb, var(--pdpp-concept-ink) 28%, transparent)
-    transparent;
-}
-.pdpp-rail:hover::-webkit-scrollbar-thumb,
-.pdpp-rail:focus-within::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--pdpp-concept-ink) 28%, transparent);
-}
-.pdpp-rail::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--pdpp-concept-ink) 45%, transparent);
-}
 .pdpp-doc {
-  grid-column: 1;
   /* The measure is a property of the TYPE, not of the container. Capping the
      CONTAINER here also capped the terminal block, tables and the CTA grid to
      prose width: it held .pdpp-doc at 680px regardless of viewport, which
@@ -494,66 +182,12 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   padding-top: 64px;
   padding-bottom: 120px;
 }
-.pdpp-page:has(> .pdpp-rail) .pdpp-doc {
-  grid-column: 3;
-}
-/* The front door's trailing space, trimmed (concept's own `body.is-home
-   .doc`, styles.css:322): 120px of bottom padding reads as breathing room at
-   the end of a long document and as a dead gap at the end of a short one,
-   where the footer is already in view. The other pages keep the 120px. */
-.pdpp-page--home .pdpp-doc {
-  padding-bottom: 20px;
-}
 
 @media (max-width: 720px) {
-  /* Same specificity as .pdpp-page:has(> .pdpp-rail) (line 437) is required,
-     not just a later source position: :has() adds a class's worth of
-     specificity, so a plain .pdpp-page here loses to that unconditional rule
-     at every width, and the 3-column rail grid never collapsed below 720px
-     (measured: pdpp-doc left 260px in a 390px viewport, doc column 105px
-     wide, page overflowing to 476px). Repeating the :has() clause matches
-     that specificity so the media query actually wins here. */
-  .pdpp-page,
-  .pdpp-page:has(> .pdpp-rail) {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  /* grid-column folded into each rule rather than shared by a grouped
-     selector: the group sat before these two and read as descending
-     specificity against them. */
-  .pdpp-rail {
-    position: static;
-    display: flex;
-    flex-wrap: wrap;
-    grid-column: 1;
-    gap: 20px 32px;
-    align-items: flex-start;
-    padding-top: 32px;
-    padding-bottom: 8px;
-    margin-bottom: 8px;
-    border-bottom: var(--pdpp-concept-rule);
-  }
-  .pdpp-doc,
-  .pdpp-page:has(> .pdpp-rail) .pdpp-doc {
-    grid-column: 1;
+  .pdpp-doc {
     max-width: 100%;
     padding-top: 32px;
     padding-bottom: 72px;
-  }
-  /* The mobile type step for h1, h2, .pdpp-lede and .pdpp-section__num is NOT
-     here. Their base rules are declared further down this file, in the document
-     type block, so a step written here loses to them on source order at every
-     width and renders desktop sizes on a phone. It lives immediately after
-     those base rules instead. */
-  .pdpp-hero__inner h1 {
-    max-width: none;
-    margin-bottom: 18px;
-  }
-  .pdpp-hero__lede {
-    margin-bottom: 24px;
-    font-size: 18px;
-  }
-  .pdpp-hero__lede--placement {
-    font-size: 16px;
   }
   .pdpp-section {
     --pdpp-concept-section-gap: 64px;
@@ -571,11 +205,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   .pdpp-ruled-list__arrow {
     grid-column: 2;
     justify-self: start;
-  }
-  .pdpp-footer__inner {
-    flex-direction: column;
-    gap: 24px;
-    padding-block: 32px;
   }
 }
 
@@ -619,62 +248,16 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   letter-spacing: 0.08em;
   border: 1px solid var(--pdpp-concept-teal);
 }
-.pdpp-toc {
-  font-size: 13px;
-}
-.pdpp-toc__title {
-  margin-bottom: 12px;
-  font-size: 11px;
-  color: var(--pdpp-concept-ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.pdpp-toc ol {
-  padding: 0;
-  margin: 0;
-  list-style: none;
-}
-.pdpp-toc li {
-  margin-bottom: 9px;
-  line-height: 1.35;
-}
-.pdpp-toc a {
-  display: block;
-  color: var(--pdpp-concept-ink-soft);
-  border-bottom: none;
-}
-.pdpp-toc a:hover {
-  color: var(--pdpp-concept-teal);
-}
-.pdpp-toc a[aria-current="location"] {
-  font-weight: 500;
-  color: var(--pdpp-concept-teal);
-}
-/* "Contents" reads as a rail block heading, same 12px/uppercase/ink-soft
-   treatment as .pdpp-rail__meta dt, so the disclosure summary matches the
-   label voice used everywhere else in the apparatus. */
-.pdpp-toc-details {
-  padding-top: 16px;
-}
-.pdpp-toc-details summary {
-  padding-bottom: 10px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 12px;
-  color: var(--pdpp-concept-ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-}
 
 /* ─── Document type ──────────────────────────────────────────────────────── */
-.pdpp-concept h1 {
+/* .pdpp-concept h1 {
   margin: 0 0 8px;
   font-family: var(--pdpp-concept-serif);
   font-size: 44px;
   font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.01em;
-}
+} */
 .pdpp-concept h2 {
   margin: 0 0 16px;
   font-family: var(--pdpp-concept-serif);
@@ -748,12 +331,10 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   position: relative;
   padding-top: calc(var(--pdpp-concept-section-gap) / 2);
   margin-top: calc(var(--pdpp-concept-section-gap) / 2);
-  border-top: var(--pdpp-concept-rule);
 }
 .pdpp-section:first-of-type {
   padding-top: 0;
   margin-top: 40px;
-  border-top: none;
 }
 .pdpp-section__head {
   display: grid;
@@ -1044,102 +625,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   letter-spacing: 0.04em;
 }
 
-/* ─── Footer ─────────────────────────────────────────────────────────────── */
-.pdpp-footer {
-  margin-top: 96px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 13px;
-  line-height: 1.7;
-  /* --pdpp-concept-onteal-deep-soft, not -paper/-ink-soft: the footer keeps
-     its teal-deep ground in both color schemes, so its text tokens must be
-     pinned to that ground rather than following the page's light/dark flip
-     (see the --pdpp-concept-onteal-deep* definitions above). */
-  color: var(--pdpp-concept-onteal-deep-soft);
-  background: var(--pdpp-concept-teal-deep);
-  /* Against the light paper this hairline is nearly invisible (teal-deep
-     already reads as a deliberate change of surface next to a bright page),
-     but against the dark paper — itself near-black — the footer's fixed
-     teal-deep ground was landing as an unstyled seam: no signal that the
-     abrupt color jump was intentional rather than a missing dark-mode rule.
-     --pdpp-concept-teal (not -rule, which is calibrated for ink-on-paper
-     contexts, not a ground that's already teal) is the token that's ALSO
-     re-derived per color scheme, so the hairline stays visible against
-     teal-deep in both: 0e5a54 on light, the lighter 4bb3a6 on dark. */
-  border-top: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-teal) 55%, transparent);
-}
-.pdpp-footer__inner {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 32px 64px;
-  justify-content: space-between;
-  max-width: var(--pdpp-concept-max);
-  padding-block: 40px;
-  padding-inline: var(--pdpp-concept-pad);
-  margin-inline: auto;
-}
-.pdpp-footer a {
-  color: var(--pdpp-concept-onteal-deep);
-  border-bottom-color: color-mix(
-    in srgb,
-    var(--pdpp-concept-onteal-deep) 30%,
-    transparent
-  );
-}
-.pdpp-footer a:hover {
-  color: #fff;
-  border-bottom-color: var(--pdpp-concept-onteal-deep);
-}
-.pdpp-footer__licenses {
-  max-width: 40ch;
-  font-variant-numeric: tabular-nums;
-}
-.pdpp-footer__col {
-  max-width: 34ch;
-}
-.pdpp-footer__label {
-  margin-bottom: 6px;
-  font-size: 11px;
-  color: var(--pdpp-concept-onteal-deep-label);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.pdpp-footer__source-link {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-}
-.pdpp-icon-github {
-  flex: none;
-  width: 1em;
-  height: 1em;
-  color: currentColor;
-}
-.pdpp-footer__license-list {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-.pdpp-footer__license-list .pdpp-license-row {
-  display: flex;
-  gap: 6px;
-  white-space: nowrap;
-}
-.pdpp-footer__license-list .pdpp-license-row + .pdpp-license-row {
-  margin-top: 2px;
-}
-.pdpp-footer__license-list dt {
-  margin: 0;
-  color: inherit;
-  opacity: 0.75;
-}
-.pdpp-footer__license-list dt::after {
-  content: ":";
-}
-.pdpp-footer__license-list dd {
-  margin: 0;
-  color: inherit;
-}
-
 /* ─── Sticky footer ──────────────────────────────────────────────────────────
    Short pages (the front door especially) otherwise float the footer mid-
    viewport with dead ground beneath it. The concept surface becomes a flex
@@ -1157,10 +642,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   display: flex;
   flex-direction: column;
   min-height: 100dvh;
-}
-/* Absorbs the slack above the footer on short pages. */
-.pdpp-concept > .pdpp-page {
-  flex: 1 0 auto;
 }
 
 /* ─── Front door ─────────────────────────────────────────────────────────────
@@ -1222,16 +703,15 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   align-self: center;
   min-width: 0;
   block-size: clamp(320px, 46vh, 480px);
-  pointer-events: auto;
+  pointer-events: none;
   /* The concept's own edge (.hero__figure, styles.css:2603): records read as
      leaving one edge and arriving at another, bounded on the two vertical
      sides only. A full box would read as a card, which this page has none
      of. */
-  border-inline: var(--pdpp-concept-rule-faint);
+  /* border-inline: var(--pdpp-concept-rule-faint); */
 }
 /* Under this width the column cannot hold three legible record columns, so the
-   figure is dropped and the grid collapses to one column. The component checks
-   the same breakpoint before building anything, so a phone pays nothing. */
+   figure is dropped and the grid collapses to one column. */
 @media (max-width: 1200px) {
   .pdpp-frontdoor--hero {
     display: block;
@@ -1240,17 +720,8 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
     display: none;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .pdpp-frontdoor__water {
-    pointer-events: none;
-  }
-}
-/* Server-rendered first frame: same three columns, same records, same fade,
-   as plain HTML that exists in the initial response. Removed the instant the
-   canvas in hero-water.tsx has painted its own first frame, so a reader on a
-   slow connection sees this instead of an empty box. Column math mirrors the
-   canvas's own (ROW_GAP=34, COL_PAD=18, FONT_SIZE=12 in hero-water.tsx) so
-   the swap is not visually detectable. */
+/* Server-rendered record streams. Each column contains two identical groups;
+   moving between them makes the downward loop seamless without client JS. */
 .pdpp-frontdoor__water-still {
   display: flex;
   inline-size: 100%;
@@ -1280,7 +751,34 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   flex: 1 1 0;
   min-width: 0;
   padding-inline-start: 18px;
+  overflow: hidden;
   white-space: nowrap;
+}
+.pdpp-frontdoor__water-still-track {
+  animation: pdpp-water-drift 38.5s linear infinite;
+  will-change: transform;
+}
+.pdpp-frontdoor__water-still-col:nth-child(2)
+  .pdpp-frontdoor__water-still-track {
+  animation-duration: 33s;
+}
+.pdpp-frontdoor__water-still-col:nth-child(3)
+  .pdpp-frontdoor__water-still-track {
+  animation-duration: 29s;
+}
+@keyframes pdpp-water-drift {
+  from {
+    transform: translateY(-50%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pdpp-frontdoor__water-still-track {
+    transform: translateY(-50%);
+    animation: none;
+  }
 }
 .pdpp-frontdoor__water-still-key {
   color: rgba(14, 90, 84, 0.78);
@@ -1296,7 +794,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
    paragraph, compounding by the time it reached the CTAs.
    `.pdpp-concept p` (0,1,1) outranks a plain `.pdpp-frontdoor__identity`
    (0,1,0) on the shared `margin` shorthand, so these need the same
-   `.pdpp-concept` prefix already used for `.pdpp-concept a.pdpp-cta` below. */
+   CTA pills use a.pdpp-cta* — not link-prose. */
 /* No max-width here: the concept's own .identity/.definition/.amplification
    carry `max-width: 54ch` (styles.css:1081, 1093, 1115), but that computes
    against each element's OWN font -- 680px in the concept's Newsreader
@@ -1369,11 +867,8 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
     justify-content: center;
   }
 }
-/* Scoped `.pdpp-concept a.pdpp-cta` to match the specificity of the
-   `.pdpp-concept a` base rule (0,2,0). Unscoped, that base rule won on both
-   color and border-bottom: the primary CTA rendered teal-on-teal (an
-   invisible label) and the outline CTAs carried a stray link underline. */
-.pdpp-concept a.pdpp-cta {
+/* CTA pills — opt-in via .pdpp-cta*; not the global prose link (see link-prose util). */
+a.pdpp-cta {
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
@@ -1390,12 +885,12 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
     background-color 120ms ease,
     color 120ms ease;
 }
-.pdpp-concept a.pdpp-cta--primary {
+a.pdpp-cta--primary {
   color: var(--pdpp-concept-paper);
   background: var(--pdpp-concept-teal);
 }
-.pdpp-concept a.pdpp-cta--primary:hover,
-.pdpp-concept a.pdpp-cta--primary:focus-visible {
+a.pdpp-cta--primary:hover,
+a.pdpp-cta--primary:focus-visible {
   /* --pdpp-concept-onteal-deep, not -paper: this state's background is
      fixed teal-deep in both schemes (see --pdpp-concept-onteal-deep* above),
      unlike the resting state's --teal background, which flips with it. */
@@ -1403,136 +898,26 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   background: var(--pdpp-concept-teal-deep);
   border-color: var(--pdpp-concept-teal-deep);
 }
-.pdpp-concept a.pdpp-cta--secondary {
+a.pdpp-cta--secondary {
   color: var(--pdpp-concept-teal);
   background: transparent;
 }
-.pdpp-concept a.pdpp-cta--secondary:hover,
-.pdpp-concept a.pdpp-cta--secondary:focus-visible {
+a.pdpp-cta--secondary:hover,
+a.pdpp-cta--secondary:focus-visible {
   color: var(--pdpp-concept-teal-deep);
   background: var(--pdpp-concept-teal-wash);
 }
 /* Not a peer of the other two: a text link, no border, no fill. */
-.pdpp-concept a.pdpp-cta--quiet {
+a.pdpp-cta--quiet {
   padding-inline: 4px;
   color: var(--pdpp-concept-ink-soft);
   border-color: transparent;
 }
-.pdpp-concept a.pdpp-cta--quiet:hover,
-.pdpp-concept a.pdpp-cta--quiet:focus-visible {
+a.pdpp-cta--quiet:hover,
+a.pdpp-cta--quiet:focus-visible {
   color: var(--pdpp-concept-teal-deep);
   text-decoration: underline;
   text-underline-offset: 3px;
-}
-
-/* ─── Nav search trigger ─────────────────────────────────────────────────────
-   .pdpp-masthead__inner aligns to baseline, and a bordered, padded button has
-   no comparable text baseline — left at its intrinsic size it renders taller
-   than the links and, because the row's cross-size is set by its tallest child,
-   pushes the whole sticky masthead down. Pinning the button to the link's 20px
-   line-box (border inside, via box-sizing) makes it match rather than dominate,
-   so masthead height is unchanged at 66px. */
-.pdpp-nav-search-trigger {
-  position: relative;
-  box-sizing: border-box;
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  height: 20px;
-  padding: 0 8px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 13px;
-  color: var(--pdpp-concept-ink-soft);
-  cursor: pointer;
-  background: var(--pdpp-concept-paper-deep);
-  border: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 16%, var(--pdpp-concept-paper));
-  border-radius: 3px;
-}
-/* Same 44px hit-area overlay as .pdpp-theme-switch::before — the visible
-   pill stays pinned to the link's 20px line-box (see above) so the masthead
-   row height is unaffected, but the tap target still meets the floor. */
-.pdpp-nav-search-trigger::before {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max(44px, 100%);
-  height: max(44px, 100%);
-  content: "";
-  transform: translate(-50%, -50%);
-}
-.pdpp-nav-search-trigger:hover,
-.pdpp-nav-search-trigger:focus-visible {
-  color: var(--pdpp-concept-teal);
-  border-color: var(--pdpp-concept-teal);
-}
-.pdpp-nav-search-trigger__icon {
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-.pdpp-nav-search-trigger__key {
-  padding: 0 4px;
-  font-family: var(--pdpp-concept-mono);
-  font-size: 11px;
-  color: var(--pdpp-concept-ink-faint);
-  background: var(--pdpp-concept-paper);
-  border: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
-  border-radius: 2px;
-}
-@media (max-width: 640px) {
-  .pdpp-nav-search-trigger__key {
-    display: none;
-  }
-}
-
-/* ─── Theme switch ────────────────────────────────────────────────────────
-   Single icon button, not the three-segment control this used to be — see
-   theme-switch.tsx for the precedent (Linear's docs header) this now
-   follows. Matches .pdpp-nav-search-trigger's own box exactly (20px,
-   box-sizing: border-box) rather than inventing a new size, per the masthead
-   row's own discipline: it sits in a baseline-aligned flex row, so a new
-   element must fit the existing 20px reference box, not define its own.
-   The 44px touch target is a transparent ::before laid over the button via
-   an absolutely-positioned box centered on it — this expands the HIT AREA
-   without adding to the button's own layout box, so the row's height is
-   unaffected by the touch-target floor. */
-.pdpp-theme-switch {
-  position: relative;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  color: var(--pdpp-concept-ink-soft);
-  cursor: pointer;
-  background: none;
-  border: none;
-  border-radius: 2px;
-}
-.pdpp-theme-switch::before {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max(44px, 100%);
-  height: max(44px, 100%);
-  content: "";
-  transform: translate(-50%, -50%);
-}
-.pdpp-theme-switch:hover {
-  color: var(--pdpp-concept-teal);
-}
-.pdpp-theme-switch:focus-visible {
-  outline: 2px solid var(--pdpp-concept-teal);
-  outline-offset: 2px;
-}
-.pdpp-theme-switch__icon {
-  display: block;
-  width: 14px;
-  height: 14px;
 }
 
 /* ─── Channels (Participate) ─────────────────────────────────────────────────
@@ -1625,41 +1010,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-section--lead {
   padding-top: 0;
   margin-top: 48px;
-  border-top: none;
-}
-/* Mono, not sans: the numeral is the same "code" register as the terminal
-   block and the impl-table's status labels, tying the inline "01/02" to the
-   spec's own numbered-section convention rather than reading as prose. 0.52em
-   of the 28px h2 matches the concept's own derivation (14.56px). */
-.pdpp-section__numeral {
-  margin-inline-end: 0.75em;
-  font-family: var(--pdpp-concept-mono);
-  font-size: 0.52em;
-  font-weight: 400;
-  font-variant-numeric: tabular-nums lining-nums;
-  vertical-align: 0.35em;
-  color: var(--pdpp-concept-teal);
-  letter-spacing: 0.04em;
-  user-select: none;
-}
-/* THE NUMERAL HANGS. Inline, "01" reads as the first word of the heading and
-   the heading's own left edge moves with each numeral's width. Hung into the
-   gutter it becomes an index mark beside the text column, and every h2 starts
-   on the same vertical line — which is what the concept does, and what the
-   owner asked for twice ("floating outside of the body, not in line as a part
-   of the body"). Same 1000px threshold and same offsets as the concept: below
-   it, the gutter is gone and the numeral falls back inline. */
-@media (min-width: 1000px) {
-  .pdpp-doc h2:has(> .pdpp-section__numeral) {
-    position: relative;
-  }
-  .pdpp-section__numeral {
-    position: absolute;
-    top: 0.34em;
-    right: calc(100% + 0.6em);
-    margin-inline-end: 0;
-    vertical-align: baseline;
-  }
 }
 
 /* ─── Terminal head (copy button) ────────────────────────────────────────── */
@@ -1708,7 +1058,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-features li {
   padding: 14px 0;
-  color: var(--pdpp-concept-ink-soft);
+  color: var(--pdpp-concept-ink);
   border-bottom: var(--pdpp-concept-rule-faint);
 }
 /* The list opens on its own border-top, so each item's border-bottom is a

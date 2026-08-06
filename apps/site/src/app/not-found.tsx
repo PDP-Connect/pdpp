@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
+import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { PdppConceptMasthead } from "@/components/pdpp-concept/masthead.tsx";
 
@@ -15,8 +16,8 @@ export default function NotFound() {
     <div className="pdpp-concept">
       <PdppConceptMasthead />
 
-      <main className="pdpp-page pdpp-page--home">
-        <article className="pdpp-doc pdpp-frontdoor">
+      <PdppConceptPage home>
+        <PdppConceptDoc className="pdpp-frontdoor">
           <h1>Page not found</h1>
           <p className="pdpp-frontdoor__definition">
             There is no page at this address. It may have moved, or the link may be out of date.
@@ -29,8 +30,8 @@ export default function NotFound() {
               Read the specification
             </Link>
           </div>
-        </article>
-      </main>
+        </PdppConceptDoc>
+      </PdppConceptPage>
 
       <PdppConceptFooter />
     </div>

@@ -11,10 +11,10 @@
  * (marketing --pdpp-concept-* register).
  */
 :root {
-  /* Max docs layout width. Large value disables the side-margin cap
-     so the sidebar flushes to the viewport edge, matching /design.
-     TOC right-edge breathing room is handled via padding on the TOC
-     container directly (see below) instead of side-margin columns. */
+  /* Fills the parent measure. Spec wraps #nd-docs-layout in
+     `container max-w-page` (specification/layout.tsx) so this large
+     value expands to the concept page width rather than the viewport.
+     Without that wrapper, 200rem is full-bleed. */
   --fd-layout-width: 200rem;
 }
 
@@ -27,6 +27,12 @@
 @media (min-width: 1024px) {
   #nd-docs-layout {
     --fd-sidebar-width: var(--spacing-sidebar);
+  }
+
+  /* Concept rail, not brand sidebar — must live in this MQ or the
+     unscoped rule above wins on the layout track. */
+  [data-pdpp-doc-theme] #nd-docs-layout {
+    --fd-sidebar-width: var(--pdpp-concept-rail);
   }
 }
 
@@ -429,6 +435,10 @@
 }
 
 [data-pdpp-doc-theme] #nd-docs-layout {
+  --fd-sidebar-width: var(--pdpp-concept-rail);
+  /* Right TOC column stays closed (tableOfContent.enabled: false; TOC
+     lives in the left rail). Beats the unscoped 1440px 18rem reserve. */
+  --fd-toc-width: 0px;
   font-family: var(--pdpp-concept-sans);
   background: var(--pdpp-concept-paper);
 }
@@ -456,6 +466,15 @@
 [data-pdpp-doc-theme] #nd-page {
   font-family: var(--pdpp-concept-serif);
   color: var(--pdpp-concept-ink);
+}
+
+/* Match PdppConceptPage `gap-x-gutter` between rail and doc. Kill fumadocs'
+   px-4/md:px-6/xl:px-8 so the start edge is exactly the concept gutter. */
+@media (min-width: 768px) {
+  [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
+    padding-inline-start: var(--pdpp-concept-gutter);
+    padding-inline-end: 0;
+  }
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
@@ -496,9 +515,18 @@
   color: var(--pdpp-concept-ink-faint);
 }
 
+/* Same split as .pdpp-doc: track is full column; measure lives on prose
+   nodes. Capping .pdpp-docs-body itself left tables/code/prev-next at 68ch
+   and made the column read ~611px vs participate's ~852. */
 [data-pdpp-doc-theme] .pdpp-docs-body {
-  max-width: var(--pdpp-concept-measure);
+  width: 100%;
+  max-width: none;
   font-family: var(--pdpp-concept-serif);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body :where(h1, h2, h3, h4, p, li, blockquote),
+[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
+  max-width: var(--pdpp-concept-measure);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
@@ -567,14 +595,10 @@
   font-weight: 700;
 }
 
+/* Docs prose links — independent of marketing; spec theme owns hover here. */
 [data-pdpp-doc-theme] .pdpp-docs-body a {
   color: var(--pdpp-concept-teal);
 }
-/* The base .pdpp-concept a:hover rule (editorial.css) is a lower-specificity
-   (0,2,1) selector than this file's [data-pdpp-doc-theme] .pdpp-docs-body a
-   (0,3,0) — its darken-on-hover never won the cascade here, so prose links sat
-   at the same teal on hover as at rest while nav links (which don't have a
-   competing higher-specificity rule) correctly darkened. */
 [data-pdpp-doc-theme] .pdpp-docs-body a:hover,
 [data-pdpp-doc-theme] .pdpp-docs-body a:focus-visible {
   color: var(--pdpp-concept-teal-deep);
@@ -763,13 +787,13 @@
   color: var(--pdpp-concept-teal);
 }
 
-/* fumadocs pads the sidebar's scroll viewport with p-4 (16px all round) and
-   sets a fade mask. The concept pads the rail 64px from the top of the page
-   and nothing on the left — its rail sits flush in its own grid track. */
+/* fumadocs pads the sidebar content with `p-4` (16px). Concept rail is flush
+   to the masthead logo edge — zero inline pad, 64px top (matches .pdpp-doc). */
+[data-pdpp-doc-theme] #nd-sidebar > div.flex,
 [data-pdpp-doc-theme] #nd-sidebar > div > div > div,
 [data-pdpp-doc-theme] #nd-sidebar [data-radix-scroll-area-viewport] > div {
   gap: 0 !important;
-  padding: 64px 24px 24px 0;
+  padding: 64px 0 24px !important;
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__block {
