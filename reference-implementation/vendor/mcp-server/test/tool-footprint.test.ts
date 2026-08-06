@@ -38,6 +38,11 @@ const SUPPORTS_S_PDPP_READ_TOOLS = /supports\s+PDPP read tools and event-subscri
 const EVENT_SUBSCRIPTION_MANAGEMENT_STAYS_IN =
   /event-subscription management stays in\s+the operator console and REST\/control-plane docs/i;
 const PDPP_RECORD = /pdpp:\/\/record/;
+const TYPED_OBJECT_FILTER = /typed object filter/i;
+const PRE_ENCODED_QUERY_STRING = /pre-encoded query string/i;
+const FILTER_BRACKET_ENCODING = /filter\[field\].*filter\[field\]\[op\]/;
+const FILTER_RANGE_OPERATORS = /gte.*gt.*lte.*lt/;
+const FILTER_SCHEMA_CAPABILITIES = /GET \/v1\/schema/;
 
 const NORMAL_SURFACE_BYTE_BUDGET = 24 * 1024;
 
@@ -284,6 +289,26 @@ test("filter is object-shaped for query_records, aggregate, and search", async (
     assert.ok(filterSchema, `${toolName} must have a filter property`);
     // filter must be typed as object (record/additionalProperties), not a string
     assert.notEqual(filterSchema.type, "string", `${toolName} filter must not be type:string (should be object)`);
+  }
+});
+
+test("compact filter descriptions retain typed encoding and schema-first guidance", async () => {
+  const { client, server } = await connectClient();
+  try {
+    const result = await client.listTools();
+    const byName = Object.fromEntries(result.tools.map((t) => [t.name, t]));
+
+    for (const toolName of ["query_records", "aggregate", "search"]) {
+      const description = propertyDescription(byName[toolName]?.inputSchema.properties, "filter");
+      assert.match(description, TYPED_OBJECT_FILTER, `${toolName} filter must remain typed and object-shaped`);
+      assert.match(description, PRE_ENCODED_QUERY_STRING, `${toolName} filter must reject string-shaped guidance`);
+      assert.match(description, FILTER_BRACKET_ENCODING, `${toolName} filter must teach RS encoding`);
+      assert.match(description, FILTER_RANGE_OPERATORS, `${toolName} filter must list range operators`);
+      assert.match(description, FILTER_SCHEMA_CAPABILITIES, `${toolName} filter must point to schema capabilities`);
+    }
+  } finally {
+    await client.close();
+    await server.close();
   }
 });
 

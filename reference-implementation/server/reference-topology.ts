@@ -118,9 +118,9 @@ export function resolveReferenceBrowserOrigin({
   env = process.env,
 }: ResolveReferenceBrowserOriginOptions = {}): string {
   return stripTrailingSlash(
-    readTrimmedValue(explicitOrigin) ||
+    readTrimmedValue(requestOrigin) ||
+      readTrimmedValue(explicitOrigin) ||
       readTrimmedValue(env.PDPP_REFERENCE_ORIGIN) ||
-      readTrimmedValue(requestOrigin) ||
       DEFAULT_REFERENCE_BROWSER_ORIGIN
   );
 }

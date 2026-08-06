@@ -75,3 +75,14 @@ test("reference topology resolves composed public urls from the browser origin",
 test("reference browser origin falls back to the default local web origin", () => {
   assert.equal(resolveReferenceBrowserOrigin({ env: {} }), DEFAULT_REFERENCE_BROWSER_ORIGIN);
 });
+
+test("reference browser origin uses the browser-visible request origin before container configuration", () => {
+  assert.equal(
+    resolveReferenceBrowserOrigin({
+      env: { PDPP_REFERENCE_ORIGIN: "http://localhost:3000" },
+      explicitOrigin: "http://localhost:3000",
+      requestOrigin: "http://localhost:3012",
+    }),
+    "http://localhost:3012"
+  );
+});

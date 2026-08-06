@@ -58,7 +58,7 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
           { href: dashboardRoutes.section.records, label: "Sources" },
           { label: "Add source" },
         ]}
-        description="Add source accounts that populate this PDPP instance. AI app and agent access is configured separately under Connect AI apps."
+        description="Add source accounts that populate this PDPP instance. App and agent access is configured separately under Connect apps."
         title="Add source"
       />
       <SourceSetupCatalog

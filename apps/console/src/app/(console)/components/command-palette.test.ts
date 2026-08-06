@@ -202,7 +202,7 @@ test("live Recordroom shell navigation uses the owner nouns (Sources, Syncs, Aud
   assert.match(src, NAV_ITEM_RE("Overview", "/"));
   assert.match(src, NAV_ITEM_RE("Explore", "/explore"));
   assert.match(src, NAV_GROUP_RE("Collection", ["Sources", "Syncs", "Schedules"]));
-  assert.match(src, NAV_GROUP_RE("Sharing", ["Connect AI apps", "Grants", "Audit"]));
+  assert.match(src, NAV_GROUP_RE("Sharing", ["Connect apps", "Grants", "Audit"]));
   assert.match(src, NAV_GROUP_RE("Server", ["Notifications", "Deployment", "Device exporters", "Event subscriptions"]));
   assert.doesNotMatch(src, NAV_LABEL_STANDING_RE, "Standing must not ship as owner-facing nav");
   assert.doesNotMatch(src, NAV_LABEL_JUMP_RE, "Jump is command-palette chrome, not primary nav");

@@ -20,7 +20,7 @@
   "dependencies": {
     "@base-ui/react": "^1.6.0",
     "@demodesk/neko": "1.6.32",
-    "@opendatalabs/remote-surface": "^1.5.1",
+    "@opendatalabs/remote-surface": "^1.5.2",
     "@pdpp/brand": "workspace:*",
     "@pdpp/brand-react": "workspace:*",
     "@pdpp/display": "workspace:*",
