@@ -1175,9 +1175,11 @@ async function runInBrowser(args: {
   } finally {
     await finalizeDiagnostics();
     if (page) {
-      for (const assistanceRequestId of openBrowserSurfaceAssistanceIds) {
-        await unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId });
-      }
+      await Promise.all(
+        [...openBrowserSurfaceAssistanceIds].map((assistanceRequestId) =>
+          unregisterBrowserInteractionTarget({ interactionId: assistanceRequestId })
+        )
+      );
       openBrowserSurfaceAssistanceIds.clear();
     }
     if (shouldCloseBrowserPageAfterRun(browser, runSucceeded)) {
