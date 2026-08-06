@@ -12,7 +12,11 @@ import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import {
+  extractSlackCredentials,
   formatSlackdumpMissingError,
+  normalizeSlackCookie,
+  normalizeSlackToken,
+  normalizeSlackWorkspace,
   runSlackdump,
   SLACK_RETRYABLE_FAILURE_RE,
   slackdumpProgressChanged,
@@ -22,6 +26,45 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
 const SLACK_MANIFEST = join(PACKAGE_ROOT, "manifests", "slack.json");
+const VALID_SLACK_TOKEN = "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+test("Slack credential normalization preserves URL-encoded d-cookie bytes", () => {
+  const encodedCookie = "xoxd-session-a%2Bb%2Fc%3D%3D";
+  const rawCookie = "xoxd-session-a+b/c==";
+  const opaqueToken = "xoxc-enterprise/session.v2+opaque==";
+  const opaqueCookie = "xoxd-enterprise/session.v2+opaque==?&!";
+
+  assert.equal(normalizeSlackCookie(`  d=${encodedCookie}  `), encodedCookie);
+  assert.equal(normalizeSlackCookie(rawCookie), rawCookie);
+  assert.equal(normalizeSlackToken(`  ${VALID_SLACK_TOKEN}  `), VALID_SLACK_TOKEN);
+  assert.equal(normalizeSlackToken(`  ${opaqueToken}  `), opaqueToken);
+  assert.equal(normalizeSlackCookie(opaqueCookie), opaqueCookie);
+  assert.equal(normalizeSlackWorkspace("  MyTeam  "), "myteam");
+
+  assert.deepEqual(
+    extractSlackCredentials({
+      SLACK_WORKSPACE: "  myteam  ",
+      SLACK_TOKEN: `  ${opaqueToken}  `,
+      SLACK_COOKIE: `d=${opaqueCookie}`,
+    }),
+    { workspace: "myteam", token: opaqueToken, cookie: opaqueCookie }
+  );
+});
+
+test("Slack credential normalization rejects empty, control, malformed, and oversized values", () => {
+  assert.throws(() => normalizeSlackToken(" "), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackToken("xoxp-not-a-client-token"), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackToken("xoxc-valid\u0000opaque"), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackToken(`xoxc-${"a".repeat(4092)}`), /slack_token_invalid/);
+  assert.throws(() => normalizeSlackCookie("d= "), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackCookie("xoxd-session-%2"), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackCookie("xoxd-valid\u0001opaque"), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackCookie(`xoxd-${"a".repeat(4092)}`), /slack_cookie_invalid/);
+  assert.throws(() => normalizeSlackWorkspace("../outside"), /slack_workspace_invalid/);
+  assert.throws(() => extractSlackCredentials({ SLACK_WORKSPACE: "myteam", SLACK_TOKEN: "", SLACK_COOKIE: "" }), {
+    message: "slack_credentials_missing",
+  });
+});
 
 function createSlackArchiveSchema(db: DatabaseSync): void {
   db.exec(`
@@ -113,6 +156,50 @@ test("runSlackdump: maps ENOENT to actionable missing-binary guidance", async ()
     } else {
       process.env.SLACKDUMP_BIN = prior;
     }
+  }
+});
+
+test("runSlackdump: redacts session credentials from child failure output", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-redaction-"));
+  const fakeSlackdump = join(tmpDir, "fake-slackdump.mjs");
+  const token = VALID_SLACK_TOKEN;
+  const cookie = "xoxd-session-secret%2Bvalue";
+  const priorBin = process.env.SLACKDUMP_BIN;
+
+  await writeFile(
+    fakeSlackdump,
+    `#!/usr/bin/env node
+process.stderr.write("token=" + process.env.SLACK_TOKEN + " cookie=" + process.env.SLACK_COOKIE);
+process.stdout.write("stdout-token=" + process.env.SLACK_TOKEN);
+process.exit(7);
+`,
+    "utf8"
+  );
+  await chmod(fakeSlackdump, 0o755);
+  process.env.SLACKDUMP_BIN = fakeSlackdump;
+
+  try {
+    await assert.rejects(
+      runSlackdump(["workspace", "new"], {
+        env: { ...process.env, SLACK_TOKEN: token, SLACK_COOKIE: cookie },
+        timeoutMs: 1000,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /slackdump_exit_7/);
+        assert.doesNotMatch(error.message, new RegExp(token));
+        assert.doesNotMatch(error.message, new RegExp(cookie));
+        assert.match(error.message, /\[REDACTED\]/);
+        return true;
+      }
+    );
+  } finally {
+    if (priorBin === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = priorBin;
+    }
+    await rm(tmpDir, { recursive: true, force: true });
   }
 });
 
@@ -309,6 +396,33 @@ test("slack manifest declares no unsupported-in-mode streams (all four gap strea
   }
 });
 
+test("slack manifest explains the xoxc token and d-cookie fields with the official manual", async () => {
+  const manifest = JSON.parse(await readFile(SLACK_MANIFEST, "utf8")) as {
+    setup?: {
+      credential_capture?: {
+        description?: string;
+        fields?: Array<{ help_text?: string; help_url?: string; label?: string; name?: string }>;
+      };
+    };
+  };
+  const setup = manifest.setup?.credential_capture;
+  const token = setup?.fields?.find((field) => field.name === "slack_token");
+  const cookie = setup?.fields?.find((field) => field.name === "slack_cookie");
+  assert.match(setup?.description ?? "", /not an OAuth app token/);
+  assert.match(token?.label ?? "", /web-client session token/);
+  assert.match(token?.help_text ?? "", /localConfig_v2/);
+  assert.match(cookie?.label ?? "", /d cookie value/);
+  assert.match(cookie?.help_text ?? "", /cookie named exactly d/);
+  assert.match(cookie?.help_text ?? "", /not d=/);
+  assert.match(cookie?.help_text ?? "", /%2F.*%2B/);
+  assert.equal(token?.help_url, cookie?.help_url);
+  assert.match(
+    token?.help_url ?? "",
+    /github\.com\/rusq\/slackdump\/blob\/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7\/doc\/login-manual\.md/
+  );
+  assert.doesNotMatch(token?.help_url ?? "", /wiki\/How-to-get-your-Slack-credentials/);
+});
+
 test("slack connector reports DONE.records_emitted from runtime-counted RECORDs", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-counter-"));
   try {
@@ -354,8 +468,8 @@ test("slack connector reports DONE.records_emitted from runtime-counted RECORDs"
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -441,8 +555,8 @@ test("slack connector counts channel-scoped message RECORDs in DONE.records_emit
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -488,8 +602,8 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -565,8 +679,8 @@ test("slack connector heals a missing prior channel from an existing scoped arch
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -638,8 +752,8 @@ test("slack connector does not emit a missing-partition diagnostic when prior ch
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -692,8 +806,8 @@ test("slack connector uses per-channel message cursors with legacy global fallba
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -777,8 +891,8 @@ test("slack connector uses an isolated scoped archive for targeted channel backf
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {
@@ -839,8 +953,8 @@ test("slack connector emits scoped archive rows even when they are older than th
       env: {
         HOME: homeDir,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
-        SLACK_COOKIE: "d=fake",
-        SLACK_TOKEN: "xoxc-fake",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
       },
       start: {

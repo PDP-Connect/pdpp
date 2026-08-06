@@ -14,6 +14,7 @@ import {
   StaticSecretValidationError,
 } from "../../../lib/ref-client.ts";
 import { buildStaticSecretPayload, collectStaticSecretSetupFields } from "./static-secret-payload.ts";
+import { FirstSyncStartError, runIdAfterCapture } from "./static-secret-start.ts";
 
 function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
@@ -70,41 +71,10 @@ function statusHref(connectionId: string, runId: string | null, identity?: strin
   return suffix ? `${base}?${suffix}` : base;
 }
 
-interface AutoResumeResult {
-  confirming_run: { run_id?: string } | null;
-  status?: string | null;
-}
-
-interface StaticSecretCaptureResult {
-  auto_resume?: AutoResumeResult | null;
-}
-
-function autoResumeRunId(capture: StaticSecretCaptureResult): string | null {
-  const runId = capture.auto_resume?.confirming_run?.run_id;
-  return typeof runId === "string" && runId.length > 0 ? runId : null;
-}
-
-function shouldStartRunAfterCapture(capture: StaticSecretCaptureResult): boolean {
-  const autoResume = capture.auto_resume;
-  return autoResume === null || autoResume === undefined || autoResume.status === "no_satisfied_action";
-}
-
-async function runIdAfterCapture(connectionId: string, capture: StaticSecretCaptureResult): Promise<string | null> {
-  const autoRunId = autoResumeRunId(capture);
-  if (autoRunId) {
-    return autoRunId;
-  }
-  if (!shouldStartRunAfterCapture(capture)) {
-    return null;
-  }
-  const started = (await runConnectionNow(connectionId)) as {
-    run_id?: string;
-    trace_id?: string;
-  };
-  return started.run_id ?? null;
-}
-
 function errorMessage(err: unknown): string {
+  if (err instanceof FirstSyncStartError) {
+    return "The credential was captured, but the first sync could not start. Check the credential and submit again.";
+  }
   return err instanceof Error ? err.message : "Static-secret setup failed.";
 }
 
@@ -143,7 +113,7 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
       credentialKind: setup.credential_kind,
       secret: payload.secret,
     });
-    const runId = await runIdAfterCapture(connectionId, captured);
+    const runId = await runIdAfterCapture(connectionId, captured, runConnectionNow);
     revalidatePath("/sources");
     // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     target = statusHref(connectionId, runId, captured.identity?.account_identity ?? null);
@@ -151,7 +121,7 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
     if (err instanceof StaticSecretValidationError) {
       target = formRetryHrefWithConnectionId(connectorId, connectionId, err.message, setupFields);
     } else {
-      target = pageHrefWithConnectionId(connectorId, connectionId, { error: errorMessage(err) });
+      target = formRetryHrefWithConnectionId(connectorId, connectionId, errorMessage(err), setupFields);
     }
   }
   redirect(target);
@@ -209,7 +179,7 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       credentialKind: setup.credential_kind,
       secret: payload.secret,
     });
-    const runId = await runIdAfterCapture(draft.connection_id, captured);
+    const runId = await runIdAfterCapture(draft.connection_id, captured, runConnectionNow);
     revalidatePath("/sources");
     // Land on the durable setup-status surface, not a transient form notice. The
     // status page reads the connection's projected setup_state and, for a
@@ -223,10 +193,10 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       // and their non-secret context preserved, so they can fix and resubmit.
       target = formRetryHref(connectorId, err.message, setupFields, displayName);
     } else if (draftConnectionId) {
-      // The draft exists but a later step (capture/run) failed for a non-
-      // validation reason; the owner can see and repair it on its durable status
-      // surface, so the submitted account is never invisible.
-      target = statusHref(draftConnectionId, null);
+      // A draft with captured material but no confirmed run must not land on
+      // first_sync_pending: that state has no run to observe or refresh. Keep
+      // the owner on the repair form with non-secret context preserved.
+      target = formRetryHrefWithConnectionId(connectorId, draftConnectionId, errorMessage(err), setupFields);
     } else {
       target = pageHref(connectorId, formErrorParams(errorMessage(err), displayName));
     }
