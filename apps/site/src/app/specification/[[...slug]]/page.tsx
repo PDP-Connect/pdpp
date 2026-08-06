@@ -39,7 +39,7 @@ export default async function Page({ params }: DocsPageProps) {
     notFound();
   }
 
-  const MDX = page.data.body;
+  const { body: MDX, toc } = await page.data.load();
   const markdownUrl = getPageMarkdownUrl(page).url;
   const githubPath = page.path;
   const firstSlug = page.slugs[0] || "";
@@ -65,7 +65,7 @@ export default async function Page({ params }: DocsPageProps) {
       // the width the rail unmounts at, it is the only way to reach the
       // headings. `toc` is still passed because the popover reads it.
       tableOfContent={{ enabled: false }}
-      toc={page.data.toc}
+      toc={toc}
     >
       <div className="pdpp-docs-hero">
         <div className="pdpp-docs-hero__content">

@@ -3,7 +3,7 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-// biome-ignore lint/correctness/noUnresolvedImports: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
+// biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve fumadocs-mdx's exported ./next subpath; Node & the production build resolve it
 import { createMDX } from "fumadocs-mdx/next";
 import { collectAllowedDevOrigins } from "./scripts/dev-origins.ts";
 

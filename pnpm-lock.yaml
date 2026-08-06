@@ -175,6 +175,9 @@ importers:
       '@demodesk/neko':
         specifier: 1.6.32
         version: 1.6.32
+      '@fumadocs/mdx-remote':
+        specifier: ^1.4.0
+        version: 1.5.1(@types/mdx@2.0.14)(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(react@19.2.8)
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
@@ -1218,6 +1221,19 @@ packages:
       react: ^19.2.0
       react-dom: ^19.2.0
     peerDependenciesMeta:
+      '@types/react':
+        optional: true
+
+  '@fumadocs/mdx-remote@1.5.1':
+    resolution: {integrity: sha512-5PaW5QYUWkudLHo7FqI/S3aDe3fOmG8SrCTPm8HKcLCh7XyqQmG/9m942Y80qoSDDnCp1VAa9DDtBOcILPsSxA==}
+    peerDependencies:
+      '@types/mdx': '*'
+      '@types/react': '*'
+      fumadocs-core: ^15.0.0 || ^16.0.0
+      react: 18.x.x || 19.x.x
+    peerDependenciesMeta:
+      '@types/mdx':
+        optional: true
       '@types/react':
         optional: true
 
@@ -7210,6 +7226,20 @@ snapshots:
       react-dom: 19.2.8(react@19.2.8)
     optionalDependencies:
       '@types/react': 19.2.18
+
+  '@fumadocs/mdx-remote@1.5.1(@types/mdx@2.0.14)(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(react@19.2.8)':
+    dependencies:
+      '@mdx-js/mdx': 3.1.1
+      fumadocs-core: 16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+      react: 19.2.8
+      unified: 11.0.5
+      vfile: 6.0.3
+      yaml: 2.9.0
+    optionalDependencies:
+      '@types/mdx': 2.0.14
+      '@types/react': 19.2.18
+    transitivePeerDependencies:
+      - supports-color
 
   '@fumadocs/tailwind@0.1.1(tailwindcss@4.3.3)':
     optionalDependencies:

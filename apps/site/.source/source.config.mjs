@@ -80,6 +80,11 @@ function remarkNoteAsides() {
 var docs = defineDocs({
   dir: "content/docs",
   docs: {
+    // Webpack and Turbopack eagerly compile every MDX module in development.
+    // spec-core.md is large enough that this exhausts the Node heap before the
+    // specification route can render. Dynamic mode keeps frontmatter eager for
+    // the page tree while compiling document bodies on demand at runtime.
+    dynamic: true,
     postprocess: {
       includeProcessedMarkdown: true
     },
