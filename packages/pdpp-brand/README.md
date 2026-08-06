@@ -199,7 +199,7 @@ Editorial (`--pdpp-concept-*`) and docs Fumadocs overrides stay in
 top of `apps/site/src/app/globals.css`):
 
 - brand → sandbox / operator-ui / ThemeProvider
-- editorial → marketing (`.pdpp-concept` BEM; home uses `.pdpp-page`, not TW)
+- editorial → marketing (`.pdpp-concept`; page chrome is `container max-w-page` on `PdppConceptPage`)
 - docs.css → bridge tax (fumadocs chrome remapped to concept under
   `[data-pdpp-doc-theme]`)
 
