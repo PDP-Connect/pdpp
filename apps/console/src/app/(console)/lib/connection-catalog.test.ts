@@ -26,12 +26,15 @@ import {
   localCollectorUnprovenEntries,
   manualUploadConnectEntries,
   manualUploadPendingEntries,
+  ownerCatalogManifests,
+  providerAuthConnectEntries,
   staticSecretConnectEntries,
   unsupportedNetworkEntries,
 } from "./connection-catalog.ts";
 import {
   sourceSetupAction,
   sourceSetupContext,
+  sourceSetupAvailability,
   sourceSetupGuidance,
   sourceSetupSecondaryAction,
   sourceSetupStatus,
@@ -39,11 +42,13 @@ import {
 
 const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
-const SECURE_BROWSER_SESSION_RE = /secure browser session/i;
+const SECURE_BROWSER_RE = /secure browser/i;
 const SAVE_SIGN_IN_DETAILS_RE = /sign-in details/i;
 const DATA_PORTABILITY_SEPARATE_RE = /separate from Google Maps Timeline Import/;
 const TIMELINE_API_DISTINCTION_RE = /not exposed by Google's documented Data Portability API/i;
 const TIMELINE_NO_SIGN_IN_RE = /no Google account sign-in is used/i;
+const GOOGLE_DEPLOYMENT_BLOCKER_RE = /GOOGLE_DATAPORTABILITY_CLIENT_ID/;
+const PROVIDER_BROWSER_GUIDANCE_RE = /provider's browser/;
 
 function canonicalKeyFromManifestId(connectorId: string): string {
   if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
@@ -99,6 +104,16 @@ test("catalog covers every committed manifest exactly once", async () => {
   assert.equal(keys.size, catalog.length, "catalog keys must be unique");
 });
 
+test("owner catalog excludes manifests that are not publicly listed", async () => {
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(ownerCatalogManifests(manifests));
+  assert.equal(
+    catalog.some((entry) => entry.connectorKey === "strava"),
+    false
+  );
+  assert.ok(catalog.some((entry) => entry.connectorKey === "google-maps-data-portability"));
+});
+
 test("catalog is sorted by display name for a stable picker", async () => {
   const catalog = buildConnectorCatalog(await loadCommittedManifests());
   const names = catalog.map((e) => e.displayName);
@@ -137,7 +152,7 @@ test("heb is cataloged as one browser-bound account setup with optional stored c
   assert.equal(sourceSetupAction(heb)?.href, "/connect/browser-session/heb");
   assert.equal(sourceSetupAction(heb)?.label, "Connect account");
   assert.equal(sourceSetupSecondaryAction(heb), null);
-  assert.match(sourceSetupGuidance(heb), SECURE_BROWSER_SESSION_RE);
+  assert.match(sourceSetupGuidance(heb), SECURE_BROWSER_RE);
   assert.match(sourceSetupGuidance(heb), SAVE_SIGN_IN_DETAILS_RE);
   assert.deepEqual(browserCollectorEntries(catalog), []);
 });
@@ -404,6 +419,8 @@ test("provider-authorization deployment blockers are separate from unsupported n
   );
   assert.deepEqual(deploymentBlockedEntries(catalog), [entry]);
   assert.deepEqual(unsupportedNetworkEntries(catalog), []);
+  assert.equal(sourceSetupAction(entry), null);
+  assert.equal(sourceSetupAvailability(entry), "requires_server_setup");
   assert.equal(entry.enrollmentKey, undefined);
 });
 
@@ -423,6 +440,7 @@ test("Google Maps Data Portability is the API-backed provider-auth source, not T
     ["GOOGLE_DATAPORTABILITY_CLIENT_ID", "GOOGLE_DATAPORTABILITY_CLIENT_SECRET", "GOOGLE_DATAPORTABILITY_REDIRECT_URI"]
   );
   assert.equal(sourceSetupAction(entry), null, "provider settings must not link to diagnostics as a setup CTA");
+  assert.match(sourceSetupGuidance(entry), GOOGLE_DEPLOYMENT_BLOCKER_RE);
   assert.match(sourceSetupContext(entry) ?? "", DATA_PORTABILITY_SEPARATE_RE);
   assert.ok(entry.externalDocs.length >= 1, "provider-auth manifest documentation should remain available");
   assert.equal(entry.enrollmentKey, undefined);
@@ -434,6 +452,23 @@ test("Google Maps Timeline keeps its import/API distinction visible in the catal
   assert.ok(entry, "google-maps must be in the committed catalog");
   assert.match(sourceSetupContext(entry) ?? "", TIMELINE_API_DISTINCTION_RE);
   assert.match(sourceSetupContext(entry) ?? "", TIMELINE_NO_SIGN_IN_RE);
+});
+
+test("configured Google provider readiness exposes the existing owner authorization action", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests(), ["google-maps-data-portability"]);
+  const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps-data-portability");
+  assert.ok(entry, "google-maps-data-portability must be in the committed catalog");
+  assert.equal(entry.deploymentReadiness.state, "ready");
+  assert.equal(entry.nextStepKind, "open_provider_auth");
+  assert.equal(entry.supportState, "supported");
+  assert.equal(sourceSetupStatus(entry).label, "Authorize account");
+  assert.match(sourceSetupGuidance(entry), PROVIDER_BROWSER_GUIDANCE_RE);
+  assert.deepEqual(sourceSetupAction(entry), {
+    href: "/connect/provider-auth/google-maps-data-portability",
+    label: "Authorize account",
+  });
+  assert.equal(sourceSetupAvailability(entry), "available_now");
+  assert.deepEqual(providerAuthConnectEntries(catalog), [entry]);
 });
 
 test("claude-code manifest slug maps to the claude_code enrollment key", async () => {
@@ -467,6 +502,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
     manualUploadConnectEntries(catalog),
     manualUploadPendingEntries(catalog),
     deploymentBlockedEntries(catalog),
+    providerAuthConnectEntries(catalog),
     unsupportedNetworkEntries(catalog),
   ];
   const total = groups.reduce((sum, g) => sum + g.length, 0);

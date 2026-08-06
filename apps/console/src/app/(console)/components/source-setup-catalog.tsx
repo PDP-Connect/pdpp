@@ -4,7 +4,11 @@
 import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
-import type { ConnectorAcquisitionPath, ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
+import {
+  type ConnectorAcquisitionPath,
+  type ConnectorCatalogEntry,
+  isReadyProviderAuthorizationEntry,
+} from "../lib/connection-catalog.ts";
 import type { RefCountState } from "../lib/ref-client.ts";
 import {
   sourceSetupAction,
@@ -119,6 +123,9 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
 function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: number): string {
   if (entry.modality === "browser_bound" && entry.setupModality === "static_secret") {
     return "Connect in a secure browser; interactive sign-in is valid, with optional saved details for repair.";
+  }
+  if (isReadyProviderAuthorizationEntry(entry)) {
+    return "Owner-mediated provider authorization.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
@@ -324,6 +331,9 @@ function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEnt
                 <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
                 <SourceSetupContext entry={entry} />
               </div>
+              <p className="pdpp-caption text-muted-foreground" data-testid="server-setup-prerequisites">
+                {sourceSetupGuidance(entry)}
+              </p>
               {entry.externalDocs.length > 0 ? (
                 <div className="flex flex-wrap gap-x-3 gap-y-1">
                   <span className="pdpp-caption text-muted-foreground">Provider documentation:</span>

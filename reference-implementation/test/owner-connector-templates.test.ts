@@ -73,8 +73,20 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-async function withServer(fn: (ctx: { asUrl: string; rsUrl: string }) => Promise<void>): Promise<void> {
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", ownerAuthPassword: "", quiet: true, rsPort: 0 });
+async function withServer(
+  fn: (ctx: { asUrl: string; rsUrl: string }) => Promise<void>,
+  options: { configuredProviderAuthConnectorKeys?: readonly string[] } = {}
+): Promise<void> {
+  const server = await startServer({
+    asPort: 0,
+    ...(options.configuredProviderAuthConnectorKeys === undefined
+      ? {}
+      : { configuredProviderAuthConnectorKeys: options.configuredProviderAuthConnectorKeys }),
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   try {
@@ -272,6 +284,33 @@ test("owner-agent bearer lists connector templates with related connection summa
     // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
     assert.match(String(codexInitiate.url), /\/v1\/owner\/connections\/intents$/);
   });
+});
+
+test("owner-template readiness reflects configured provider authorization", async () => {
+  await withServer(
+    async ({ asUrl, rsUrl }) => {
+      const manifest = await registerConnector(asUrl, loadManifest("google_maps_data_portability"));
+      const connectorKey = canonicalConnectorKey(manifest.connector_id);
+      assert.equal(connectorKey, "google-maps-data-portability");
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const google = byConnector(body, "google-maps-data-portability");
+      const setupPlan = asRecord(google.setup_plan);
+      const deploymentReadiness = asRecord(setupPlan.deployment_readiness);
+      assert.equal(deploymentReadiness.state, "ready");
+      assert.equal(setupPlan.next_step_kind, "open_provider_auth");
+      assert.equal(setupPlan.support_state, "supported");
+      const initiate = actionByFamily(google, "initiate_connection");
+      assert.equal(initiate.method, "POST");
+      assert.equal(initiate.status, "supported");
+    },
+    { configuredProviderAuthConnectorKeys: ["google-maps-data-portability"] }
+  );
 });
 
 test("GET /v1/owner/control advertises list_connector_templates with the template route", async () => {
