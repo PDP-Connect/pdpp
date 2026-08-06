@@ -12,9 +12,9 @@ import { cn } from "@/lib/utils.ts";
 export function PdppFrontDoor() {
   return (
     // Outer frame — all interior rules are full-bleed to this edge / the col divider
-    <div className="border border-rule">
+    <div className="border-2">
       {/* Brand lockup — full across */}
-      <div className="flex flex-col gap-5 border-rule border-b p-5 pt-4">
+      <div className="flex flex-col gap-5 border-b p-5 pt-4">
         <div className="flex h-12 min-w-0 flex-wrap items-center gap-5">
           <WordmarkIcon className="block h-full w-auto shrink-0" />
           <hr className="h-full w-px bg-ink-soft" />
@@ -34,7 +34,7 @@ export function PdppFrontDoor() {
       */}
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-stretch max-[1200px]:grid-cols-[minmax(0,1fr)]">
         {/* LHS */}
-        <div className="flex min-h-0 min-w-0 flex-col border-rule border-r max-[1200px]:border-r-0 max-[1200px]:border-b">
+        <div className="flex min-h-0 min-w-0 flex-col border-r max-[1200px]:border-r-0 max-[1200px]:border-b">
           <div className="flex max-w-measure flex-col gap-5 p-5 pt-4">
             <Text intent="deck">An open protocol for scoped access to personal data.</Text>
             <Text className="opacity-60" intent="deck">
@@ -64,7 +64,7 @@ export function PdppFrontDoor() {
 
           <div
             className={cn(
-              "mt-auto border-rule border-t p-5",
+              "mt-auto border-t p-5",
               "flex flex-wrap items-center gap-3",
               "max-[460px]:flex-col max-[460px]:items-stretch"
             )}
@@ -107,7 +107,7 @@ export function PdppFrontDoor() {
 
         {/* RHS — caption above the viz so the LHS CTA foot isn't mirrored */}
         <div className="flex min-h-0 flex-col">
-          <div className="border-rule border-b p-5 text-center">
+          <div className="border-b p-5 text-center">
             <Text
               align="center"
               caps
