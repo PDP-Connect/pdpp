@@ -34,7 +34,7 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
         // <720px: stack — PdppRail unsticks / becomes ruled strip
         "max-[720px]:grid-cols-[minmax(0,1fr)] max-[720px]:gap-x-0",
         // Short pages (home / 404): trim doc bottom pad
-        home && "[&_[data-slot=pdpp-concept-doc]]:pb-5!",
+        home && "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5!",
         className
       )}
       data-slot="pdpp-concept-page"

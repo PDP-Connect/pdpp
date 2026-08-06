@@ -11,7 +11,7 @@ import { cva } from "class-variance-authority";
  * Shared class fragments that appear 2+ times stay as consts — CVA accepts
  * ClassValue arrays; do not flatten with .join(" ").
  */
-const labelUpper = "font-sans font-medium uppercase leading-none tracking-[0.08em]";
+const labelUpper = "font-sans uppercase leading-none tracking-[0.08em]";
 
 export const textVariants = cva(["[&_strong]:font-medium"], {
   variants: {
@@ -35,14 +35,14 @@ export const textVariants = cva(["[&_strong]:font-medium"], {
       caption: "text-pretty text-small italic",
       eyebrow: ["whitespace-nowrap text-eyebrow", labelUpper],
       lede: "text-pretty text-lede",
-      deck: "text-balance font-semibold text-deck",
+      deck: "text-pretty text-deck",
       note: "text-pretty text-note",
       callout: ["max-w-measure text-pretty text-ink text-note", "my-6 border-teal border-l-2 bg-teal-wash px-5 py-4"],
       stamp: ["whitespace-nowrap text-stamp", labelUpper, "[font-variant-numeric:tabular-nums]"],
-      heading: "text-balance font-semibold text-heading",
-      title: "text-balance font-semibold text-title",
-      display: "text-balance font-semibold text-display",
-      numeral: "font-light text-numeral [font-variant-numeric:tabular-nums_lining-nums]",
+      heading: "text-balance text-heading",
+      title: "text-balance text-title",
+      display: "text-balance text-display",
+      numeral: "text-numeral [font-variant-numeric:tabular-nums_lining-nums]",
     },
     align: {
       center: "text-center",
@@ -140,6 +140,18 @@ export const textVariants = cva(["[&_strong]:font-medium"], {
       color: "ink",
       intent: "stamp",
     },
+    // Mono stamp = status line (not the bordered sans chip): tighter tracking, beat stamp's font-sans
+    {
+      className: "font-mono tracking-[0.04em]",
+      intent: "stamp",
+      mono: true,
+    },
+    // Mono stamp = status line (not the bordered sans chip): tighter tracking, beat stamp's font-sans
+    {
+      className: "font-mono tracking-[0.04em]",
+      intent: "stamp",
+      mono: true,
+    },
     {
       className: [
         "[&_svg:not([class*=size-]):not([data-slot=spinner])]:size-[1.1em]",
@@ -168,8 +180,7 @@ export const textVariants = cva(["[&_strong]:font-medium"], {
     color: "ink",
     intent: "body",
     optical: "auto",
-    weight: "normal",
-  },
+  }
 });
 
 /** Section index numeral on intent="title" — used by Text, not a cva variant. */

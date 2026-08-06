@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
+import { Button } from "@/components/pdpp-concept/button.tsx";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
 import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { PdppConceptMasthead } from "@/components/pdpp-concept/masthead.tsx";
@@ -17,18 +18,18 @@ export default function NotFound() {
       <PdppConceptMasthead />
 
       <PdppConceptPage home>
-        <PdppConceptDoc className="pdpp-frontdoor">
+        <PdppConceptDoc>
           <h1>Page not found</h1>
-          <p className="pdpp-frontdoor__definition">
+          <p className="m-0! mb-4! text-[20px] leading-[1.5]">
             There is no page at this address. It may have moved, or the link may be out of date.
           </p>
-          <div className="pdpp-frontdoor__actions">
-            <Link className="pdpp-cta pdpp-cta--primary" href="/">
+          <div className="mt-7 flex flex-wrap items-center gap-x-4 gap-y-3 max-[460px]:flex-col max-[460px]:items-stretch max-[460px]:**:data-[slot=pdpp-concept-button]:justify-center">
+            <Button nativeButton={false} render={<Link href="/" />} variant="primary">
               Go to the front door
-            </Link>
-            <Link className="pdpp-cta pdpp-cta--secondary" href="/specification">
+            </Button>
+            <Button nativeButton={false} render={<Link href="/specification" />} variant="secondary">
               Read the specification
-            </Link>
+            </Button>
           </div>
         </PdppConceptDoc>
       </PdppConceptPage>

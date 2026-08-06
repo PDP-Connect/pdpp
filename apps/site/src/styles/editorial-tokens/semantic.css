@@ -76,6 +76,7 @@
   --text-deck: clamp(21px, 1.15rem + 0.7vw, 25px);
   --text-deck--line-height: 1.3;
   --text-deck--letter-spacing: 0;
+  --text-deck--font-weight: 600;
 
   --text-title: clamp(24px, 1.25rem + 1vw, 28px);
   --text-title--line-height: 1.3;

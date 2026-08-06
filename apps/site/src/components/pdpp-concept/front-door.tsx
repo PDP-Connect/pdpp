@@ -11,16 +11,10 @@ import { cn } from "@/lib/utils.ts";
 
 export function PdppFrontDoor() {
   return (
-    <div
-      className={cn(
-        "flex flex-col gap-7 pt-[clamp(32px,1.5rem+2.4vw,56px)]",
-        // "[border-bottom:var(--pdpp-concept-rule)]",
-        // Rhythm on the stack, not mb-* on each Text — zero .pdpp-concept p bottom margin
-        "[&_[data-slot=pdpp-concept-text]]:mb-0!"
-      )}
-    >
-      <div className="space-y-5">
-        {/* Brand lockup — full across; title shares the mark's line */}
+    // Outer frame — all interior rules are full-bleed to this edge / the col divider
+    <div className="border border-rule">
+      {/* Brand lockup — full across */}
+      <div className="flex flex-col gap-5 border-rule border-b p-5 pt-4">
         <div className="flex h-12 min-w-0 flex-wrap items-center gap-5">
           <WordmarkIcon className="block h-full w-auto shrink-0" />
           <hr className="h-full w-px bg-ink-soft" />
@@ -28,27 +22,25 @@ export function PdppFrontDoor() {
             Personal Data Portability Protocol
           </Text>
         </div>
-        <hr className="mb-2" />
-        <Text className="tracking-[0.04em]" color="soft" intent="stamp" mono weight="normal">
+        <Text color="soft" intent="stamp" mono weight="normal">
           {SPEC_STATUS_STAMP}
         </Text>
       </div>
 
-      {/* Pitch + figure — same 1 / 0.85 grid as before; collapses under 1200px */}
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-start gap-12 max-[1200px]:block">
-        <div className="flex min-w-0 max-w-measure flex-col gap-7">
-          <div className="space-y-5">
+      {/*
+        Grid cells carry the rules (border-r / border-t), not padded inners —
+        so every rule runs edge-to-edge and T-junctions meet. Measure stays on
+        the copy stack only; never on the column shell (that inset the rules).
+      */}
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-stretch max-[1200px]:grid-cols-[minmax(0,1fr)]">
+        {/* LHS */}
+        <div className="flex min-h-0 min-w-0 flex-col border-rule border-r max-[1200px]:border-r-0 max-[1200px]:border-b">
+          <div className="flex max-w-measure flex-col gap-5 p-5 pt-4">
             <Text intent="deck">An open protocol for scoped access to personal data.</Text>
-            <Text intent="lede">
+            <Text className="opacity-60" intent="deck">
               A grant is how one person approves one application to read chosen records and fields, and a resource
               server enforces it on every request.
             </Text>
-            <Text color="soft" intent="lede">
-              Ninety days of sleep scores, the artists you played, your own conversations.
-            </Text>
-          </div>
-
-          <div className="space-y-3">
             <Text color="soft" intent="body">
               It profiles{" "}
               <a href="https://oauth.net/2/" rel="noopener noreferrer" target="_blank">
@@ -70,20 +62,67 @@ export function PdppFrontDoor() {
             </Text>
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-3 max-[460px]:flex-col max-[460px]:items-stretch max-[460px]:[&_[data-slot=pdpp-concept-button]]:justify-center">
-            <Button nativeButton={false} render={<Link href="/specification" />} variant="primary">
-              Read the specification
+          <div
+            className={cn(
+              "mt-auto border-rule border-t p-5",
+              "flex flex-wrap items-center gap-3",
+              "max-[460px]:flex-col max-[460px]:items-stretch"
+            )}
+          >
+            <Button
+              className="gap-2.5 rounded-[3px] px-4 py-3 font-normal"
+              nativeButton={false}
+              render={<Link href="/specification" />}
+              variant="primary"
+            >
+              <span>Read the standard</span>
+              <span aria-hidden="true" className="opacity-60">
+                →
+              </span>
             </Button>
-            <Button nativeButton={false} render={<Link href="/self-host" />} variant="secondary">
-              Self-host it
+            <Button
+              className="gap-2.5 rounded-[3px] border-ink-faint px-4 py-3 font-normal text-ink!"
+              nativeButton={false}
+              render={<Link href="/self-host" />}
+              variant="secondary"
+            >
+              <span>Implement PDPP</span>
+              <span aria-hidden="true" className="text-ink-faint">
+                →
+              </span>
             </Button>
-            <Button nativeButton={false} render={<Link href="/participate" />} variant="quiet">
-              Participate
+            <Button
+              className="min-w-0 flex-1 justify-between gap-2.5 rounded-[3px] border-ink-faint px-4 py-3 font-normal text-ink!"
+              nativeButton={false}
+              render={<Link href="/participate" />}
+              variant="secondary"
+            >
+              <span>Join the project</span>
+              <span aria-hidden="true" className="text-ink-faint">
+                →
+              </span>
             </Button>
           </div>
         </div>
 
-        <PdppHeroWater />
+        {/* RHS — caption above the viz so the LHS CTA foot isn't mirrored */}
+        <div className="flex min-h-0 flex-col">
+          <div className="border-rule border-b p-5 text-center">
+            <Text
+              align="center"
+              caps
+              className="whitespace-normal! mx-auto max-w-[36ch]"
+              color="ink"
+              intent="stamp"
+              mono
+            >
+              Sleep scores · artists played · your conversations
+            </Text>
+          </div>
+          <div className="min-h-0 flex-1 p-5">
+            <PdppHeroWater />
+          </div>
+        </div>
       </div>
     </div>
   );

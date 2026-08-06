@@ -128,7 +128,7 @@ export function PdppConceptMasthead() {
       >
         Skip to content
       </a>
-      <header className="sticky top-0 z-20 border-b bg-paper">
+      <header className={cn("sticky top-0 z-20 bg-paper", pathname !== "/" && "border-b")}>
         <div
           className={cn(
             // Page measure + named container for the label stand-down
@@ -140,15 +140,19 @@ export function PdppConceptMasthead() {
           )}
         >
           <div className="flex min-w-0 flex-nowrap items-baseline gap-3.5">
-            {pathname !== "/" && (
-              <Link
-                aria-label="PDPP, home"
-                className={cn("inline-flex items-center gap-3 hover:text-teal!", "md:translate-y-[0.25em]")}
-                href="/"
-              >
-                <WordmarkIcon />
-              </Link>
-            )}
+            <Link
+              aria-label="PDPP, home"
+              className={cn(
+                "inline-flex items-center gap-3 hover:text-teal!",
+                // align
+                "md:translate-y-[0.25em]",
+                // hide on home but retain layout space
+                pathname === "/" && "opacity-0"
+              )}
+              href="/"
+            >
+              <WordmarkIcon />
+            </Link>
           </div>
           <button
             aria-controls="pdpp-primary-nav"
