@@ -64,8 +64,8 @@ importers:
         specifier: 1.6.32
         version: 1.6.32
       '@opendatalabs/remote-surface':
-        specifier: ^1.5.1
-        version: 1.5.1
+        specifier: ^1.5.2
+        version: 1.5.2
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
@@ -1983,6 +1983,10 @@ packages:
 
   '@opendatalabs/remote-surface@1.5.1':
     resolution: {integrity: sha512-+10LoDTMs4khfq6MMeksjJik6jHveAAbbbuWSAtDNIDTUoklgIuu1nope6CIrmgTFsU79QHTOVhmQw7bR+TXdg==}
+    engines: {node: '>=24'}
+
+  '@opendatalabs/remote-surface@1.5.2':
+    resolution: {integrity: sha512-C7fOmIV6HP0vVclWJZr4us0ZqBhw4zZU/ikPjoChiNW/VlFXl5TrBWsK9V8f/Es99vaul4Edh3981eruln1PYw==}
     engines: {node: '>=24'}
 
   '@pinojs/redact@0.4.0':
@@ -8131,6 +8135,11 @@ snapshots:
       '@octokit/openapi-types': 27.0.0
 
   '@opendatalabs/remote-surface@1.5.1':
+    dependencies:
+      transformation-matrix: 3.1.0
+    optional: true
+
+  '@opendatalabs/remote-surface@1.5.2':
     dependencies:
       transformation-matrix: 3.1.0
 

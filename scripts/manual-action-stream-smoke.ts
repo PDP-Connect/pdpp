@@ -1225,23 +1225,24 @@ async function streamCanvasViewport(page: PatchrightPage): Promise<RemoteViewpor
   return viewport;
 }
 
-async function assertDirectCdpRemoteCopy(
+async function assertDirectCdpClipboardRoundTrip(
   page: PatchrightPage,
   clipboardResponses: ClipboardResponseEvidence[]
 ): Promise<void> {
   const remoteViewport = await streamCanvasViewport(page);
   const target = strictVisualInputTarget(remoteViewport);
-  const token = `pdpp-copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const copyToken = `pdpp-copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const pasteToken = `pdpp-paste-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   await clickInsideStream(page, target.clickPoint, remoteViewport);
   await page.keyboard.press("Control+A");
-  await page.keyboard.type(token, { delay: 8 });
+  await page.keyboard.type(copyToken, { delay: 8 });
   await page.keyboard.press("Control+A");
   await page.keyboard.press("Control+C");
 
   try {
     await waitFor(
-      () => page.evaluate(async (expected) => (await navigator.clipboard.readText()) === expected, token),
+      () => page.evaluate(async (expected) => (await navigator.clipboard.readText()) === expected, copyToken),
       "direct-CDP remote selection did not reach the host clipboard"
     );
   } catch {
@@ -1250,6 +1251,28 @@ async function assertDirectCdpRemoteCopy(
       .catch((error: unknown) => `read failed: ${error instanceof Error ? error.message : String(error)}`);
     const diagnostics = { localClipboard, responses: clipboardResponses };
     fail(`direct-CDP remote selection did not reach the host clipboard (${JSON.stringify(diagnostics)})`);
+  }
+
+  await page.evaluate(async (text) => await navigator.clipboard.writeText(text), pasteToken);
+  await clickInsideStream(page, target.clickPoint, remoteViewport);
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Control+V");
+  const verificationSentinel = `pdpp-unverified-${Date.now().toString(36)}`;
+  await page.evaluate(async (text) => await navigator.clipboard.writeText(text), verificationSentinel);
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Control+C");
+  try {
+    await waitFor(
+      () => page.evaluate(async (expected) => (await navigator.clipboard.readText()) === expected, pasteToken),
+      "host clipboard text did not reach the direct-CDP remote input"
+    );
+  } catch {
+    const localClipboard = await page
+      .evaluate(async () => await navigator.clipboard.readText())
+      .catch((error: unknown) => `read failed: ${error instanceof Error ? error.message : String(error)}`);
+    const diagnostics = { localClipboard, responses: clipboardResponses };
+    fail(`host clipboard text did not reach the direct-CDP remote input (${JSON.stringify(diagnostics)})`);
   }
 }
 
@@ -1544,7 +1567,7 @@ async function run() {
     );
 
     if (smokeBackend() === "cdp") {
-      await assertDirectCdpRemoteCopy(page, clipboardResponses);
+      await assertDirectCdpClipboardRoundTrip(page, clipboardResponses);
       process.stdout.write(`PASS manual-action stream smoke ${JSON.stringify({ backend: "cdp", mobile, url })}\n`);
       return;
     }
