@@ -1112,6 +1112,10 @@ export function registerStreamingRoutes({
     const priorLifecycle = presentationLifecycleFor(runId, interactionId);
     if (priorLifecycle && priorLifecycle.browser_session_id !== session.browser_session_id) {
       await terminalizePresentation(priorLifecycle, {
+        // The direct-CDP target is owned by the active interaction, not by
+        // this bearer/session. Keep it available for the replacement viewer;
+        // the replacement mint has already fenced the old bearer above.
+        cleanupTarget: () => Promise.resolve(),
         invalidateBearer: false,
         reason: "stream_session_superseded",
       });
@@ -1367,7 +1371,11 @@ export function registerStreamingRoutes({
 
   async function terminalizePresentation(
     lifecycle: PresentationLifecycle,
-    { invalidateBearer, reason }: { invalidateBearer: boolean; reason?: string }
+    {
+      invalidateBearer,
+      cleanupTarget = () => forceUnregisterStreamingTargetForInteraction(lifecycle.run_id, lifecycle.interaction_id),
+      reason,
+    }: { cleanupTarget?: () => Promise<void>; invalidateBearer: boolean; reason?: string }
   ): Promise<void> {
     if (lifecycle.terminalization) {
       return await lifecycle.terminalization;
@@ -1427,7 +1435,7 @@ export function registerStreamingRoutes({
         restoreError.cause = err;
         throw restoreError;
       } finally {
-        await forceUnregisterStreamingTargetForInteraction(lifecycle.run_id, lifecycle.interaction_id);
+        await cleanupTarget();
       }
     })();
     lifecycle.terminalization = terminalization;
