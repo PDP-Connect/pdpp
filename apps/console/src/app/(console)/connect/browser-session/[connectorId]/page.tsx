@@ -134,8 +134,8 @@ function UnavailableSetupCard({ displayName }: { displayName: string }) {
     <div className="rounded-xl border border-border/70 bg-card/60 p-5 shadow-sm">
       <h2 className="pdpp-title text-foreground">Adding a new {displayName} source is not available here</h2>
       <p className="pdpp-body mt-3 text-muted-foreground">
-        Browser-backed sources need a packaged self-service flow before this route can create a new account. Open an
-        existing source to reconnect it, or return to Add source to see what this dashboard can add now.
+        This console can reconnect an existing source, but it cannot add a new one yet. Return to Sources to choose an
+        available setup path.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         <Link className={buttonVariants({ size: "sm", variant: "default" })} href="/sources">
@@ -179,9 +179,10 @@ export default async function BrowserSessionConnectPage({
   const displayName = formatConnectorKeyForDisplay(connectorId);
   const connectionName = connectionNameFieldContract(displayName);
   const pageTitle = repairMode ? `Reconnect ${displayName}` : `Connect ${displayName}`;
+  const primaryActionLabel = repairMode ? `Reconnect ${displayName}` : "Connect account";
   const setupDescription = supportedBrowserCollector
     ? browserFormContract.setupDescription
-    : `This dashboard can repair an existing ${displayName} source, but it will not create a new browser-backed source from this generic page.`;
+    : `This dashboard can repair an existing ${displayName} source, but it cannot create a new source from this page.`;
   const setupPanel = supportedBrowserCollector ? (
     <div className="space-y-4">
       <div className="rounded-xl border border-border/70 bg-card/60 p-5 shadow-sm">
@@ -212,7 +213,7 @@ export default async function BrowserSessionConnectPage({
               className={buttonVariants({ className: "w-full justify-center", size: "lg", variant: "default" })}
               type="submit"
             >
-              Connect account
+              {primaryActionLabel}
             </button>
           </div>
         </form>
@@ -261,12 +262,12 @@ export default async function BrowserSessionConnectPage({
             <h2 className="pdpp-title text-foreground">How this works</h2>
             <ol className="pdpp-body mt-3 list-inside list-decimal space-y-2 text-muted-foreground">
               <li>
-                Click <strong className="text-foreground">Start session</strong> below. PDPP opens a secure browser
-                panel.
+                Select <strong className="text-foreground">{primaryActionLabel}</strong> below. PDPP opens a secure
+                browser panel.
               </li>
               <li>
-                Log in to <strong className="text-foreground">{displayName}</strong> in that browser, exactly as you
-                would on your own machine. PDPP stores the browser session state needed for this source.{" "}
+                Sign in to <strong className="text-foreground">{displayName}</strong> in that browser. PDPP stores the
+                browser session state needed for this source.{" "}
                 {browserFormContract.repairLoginDescription}
               </li>
               <li>Once login is detected, the browser closes and collection resumes automatically.</li>
@@ -298,7 +299,7 @@ export default async function BrowserSessionConnectPage({
               className={buttonVariants({ className: "w-full justify-center", size: "lg", variant: "default" })}
               type="submit"
             >
-              Reconnect {displayName}
+              {primaryActionLabel}
             </button>
           </form>
         ) : null}
@@ -306,8 +307,8 @@ export default async function BrowserSessionConnectPage({
         {/* Fallback guidance for when the browser panel cannot start. */}
         <div className="rounded-md border border-border/50 bg-muted/20 px-4 py-3">
           <p className="pdpp-caption text-muted-foreground">
-            <strong className="text-foreground">Browser not launching?</strong> Try again, or return to Sources and
-            retry from this source. If PDPP cannot start the secure browser, it will show the reason before any data is
+            <strong className="text-foreground">Browser did not open?</strong> Try again, or return to Sources and retry
+            from this source. If PDPP cannot start the secure browser, it will show the reason before any data is
             changed.
           </p>
         </div>

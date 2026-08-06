@@ -32,6 +32,9 @@ const PAGE_DISPLAY_NAME_FIELD_RE = /name=\{connectionName\.name\}/;
 const PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE = /credentials\.title/;
 const PAGE_MANIFEST_CREDENTIAL_FIELDS_RE = /credentials\.fields\.map/;
 const PAGE_FORM_CONTRACT_RE = /browserSessionFormContract\(storedCredentialSetup\)/;
+const PAGE_PRIMARY_ACTION_LABEL_RE =
+  /const primaryActionLabel = repairMode \? `Reconnect \$\{displayName\}` : "Connect account";/;
+const PAGE_HOW_IT_WORKS_ACTION_RE = /Select <strong className="text-foreground">\{primaryActionLabel\}<\/strong> below/;
 const PAGE_EXISTING_SOURCE_LINK_RE = /Choose an existing source/;
 const START_ROUTE_POST_RE = /export async function POST/;
 const START_ROUTE_AUTH_RE = /await requireDashboardAccess\(pagePath\(connectorId\)\)/;
@@ -86,6 +89,8 @@ test("browser-session setup page keeps the new-account form and reconnect escape
   assert.match(src, PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE);
   assert.match(src, PAGE_MANIFEST_CREDENTIAL_FIELDS_RE);
   assert.match(src, PAGE_FORM_CONTRACT_RE);
+  assert.match(src, PAGE_PRIMARY_ACTION_LABEL_RE);
+  assert.match(src, PAGE_HOW_IT_WORKS_ACTION_RE);
   assert.doesNotMatch(src, PAGE_CONNECTION_ID_FIELD_RE);
 });
 

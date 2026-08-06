@@ -14,7 +14,7 @@ import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 export default function RecordsLoading() {
   return (
     <RecordroomShellWithPalette>
-      <ListLoadingSkeleton label="connections" rows={6} />
+      <ListLoadingSkeleton label="Sources" rows={6} />
     </RecordroomShellWithPalette>
   );
 }

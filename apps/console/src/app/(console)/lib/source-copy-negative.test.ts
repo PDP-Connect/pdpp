@@ -191,9 +191,9 @@ test("the agreed add-account labels are exactly the realignment-plan vocabulary"
   assert.ok(labels.length > 0, "projection must produce at least one label");
   const AGREED = new Set([
     "Add another account",
-    "Add path not packaged",
+    "Adding another account is not available yet",
     "Server setup required to add another account",
-    "Add path not available here",
+    "Adding another account is not available here",
   ]);
   for (const label of labels) {
     assertCleanCopy(label, "addAccountSupport label");

@@ -101,13 +101,13 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
       };
     case "first_sync_running":
       return {
-        detail: "The import file is captured and the import is in progress. This page updates as it finishes.",
+        detail: "The import file is captured and the import is running. It will continue automatically.",
         headline: "Import running",
         tone: "pending",
       };
     case "first_sync_pending":
       return {
-        detail: "The import file is captured and the import is queued. This page updates as it runs.",
+        detail: "The import file is captured and the import is queued. It will start automatically.",
         headline: "Import starting",
         tone: "pending",
       };
@@ -130,7 +130,7 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
       return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        detail: "This connection is being set up. This page updates as the setup progresses.",
+        detail: "This connection is being set up. Setup will continue automatically.",
         headline: "Setting up",
         tone: "pending",
       };
@@ -143,14 +143,13 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
       return describeActiveConnectionState(status);
     case "first_sync_running":
       return {
-        detail:
-          "The provider credential is captured and the first sync is in progress. This page updates as it finishes.",
+        detail: "The provider credential is captured and the first sync is running. It will continue automatically.",
         headline: "First sync running",
         tone: "pending",
       };
     case "first_sync_pending":
       return {
-        detail: "The provider credential is captured and the first sync is queued. This page updates as it runs.",
+        detail: "The provider credential is captured and the first sync is queued. It will start automatically.",
         headline: "First sync starting",
         tone: "pending",
       };
@@ -173,7 +172,7 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
       return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        detail: "This connection is being set up. This page updates as the setup progresses.",
+        detail: "This connection is being set up. Setup will continue automatically.",
         headline: "Setting up",
         tone: "pending",
       };
@@ -191,19 +190,19 @@ function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescr
       return describeActiveConnectionState(status);
     case "first_sync_running":
       return {
-        detail: "Login is complete and the first sync is in progress. This page updates as it finishes.",
+        detail: "Login is complete and the first sync is running. It will continue automatically.",
         headline: "First sync running",
         tone: "pending",
       };
     case "first_sync_pending":
       return {
-        detail: "Login is complete and the first sync is queued. This page updates as it runs.",
+        detail: "Login is complete and the first sync is queued. It will start automatically.",
         headline: "First sync starting",
         tone: "pending",
       };
     case "awaiting_browser_login":
       return {
-        detail: "Continue in the secure browser to finish signing in. This page updates once login completes.",
+        detail: "Continue in the secure browser to finish signing in. The first sync starts after login.",
         headline: "Sign-in needed",
         tone: "pending",
       };
@@ -220,7 +219,7 @@ function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescr
       return { detail: "This connection has been revoked.", headline: "Connection revoked", tone: "failed" };
     default:
       return {
-        detail: "This connection is being set up. This page updates as the setup progresses.",
+        detail: "This connection is being set up. Setup will continue automatically.",
         headline: "Setting up",
         tone: "pending",
       };

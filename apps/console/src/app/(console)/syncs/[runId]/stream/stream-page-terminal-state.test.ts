@@ -23,8 +23,10 @@ const UNAVAILABLE_STREAM_POLLER_RE =
 const PREPARING_BROWSER_SURFACE_GATE_RE =
   /hasActiveBrowserSurface\(envelope\.events\)[\s\S]{0,120}<PreparingBrowserSurface/;
 const PREPARING_BROWSER_SURFACE_COPY_RE = /Preparing the secure browser\./;
-const EXTERNAL_APPROVAL_COPY_RE = /Approve the prompt outside PDPP\./;
+const EXTERNAL_APPROVAL_COPY_RE = /Approve the request with the provider\./;
 const EXTERNAL_APPROVAL_WAITING_COPY_RE = /No browser controls are\s+waiting/;
+const OPTIONAL_RUN_DETAILS_COPY_RE = /View run details \(optional\)/;
+const LEGACY_RUN_TIMELINE_CTA_RE = /Open run timeline/;
 const POLLER_TIMELINE_PROBE_RE = /fetch\(`\/_ref\/runs\/\$\{encodeURIComponent\(runId\)\}\/timeline`/;
 const POLLER_STREAM_READY_RE = /getCurrentBrowserSurfaceAssistance\(timelineEventsFrom\(body\)\) !== null/;
 const POLLER_HARD_RELOAD_RE = /window\.location\.reload\(\)/;
@@ -92,6 +94,13 @@ test("stream page does not render resolved copy solely because assistance disapp
   assert.match(pageSource, PREPARING_BROWSER_SURFACE_COPY_RE);
   assert.match(pageSource, CONTINUING_SURFACE_RE);
   assert.match(pageSource, CONTINUING_POLLER_RE);
+});
+
+test("automatic waits keep run details visibly optional", () => {
+  assert.match(pageSource, OPTIONAL_RUN_DETAILS_COPY_RE);
+  assert.match(streamViewerSource, OPTIONAL_RUN_DETAILS_COPY_RE);
+  assert.doesNotMatch(pageSource, LEGACY_RUN_TIMELINE_CTA_RE);
+  assert.doesNotMatch(streamViewerSource, LEGACY_RUN_TIMELINE_CTA_RE);
 });
 
 test("external provider approval does not render as a browser-session repair", () => {

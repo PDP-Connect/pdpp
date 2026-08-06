@@ -167,9 +167,7 @@ function RelationshipsBlock({
           ))}
         </div>
       ) : (
-        <p className="rr-stand-empty">
-          No grant is out. Nothing is shared — only you and what you've given a token read this server.
-        </p>
+        <p className="rr-stand-empty">No grants are active. No connected app can read this instance yet.</p>
       )}
     </section>
   );

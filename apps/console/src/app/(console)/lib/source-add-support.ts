@@ -46,8 +46,8 @@ export interface SourceAddSupport {
 
 const SUPPORT_LABELS: Record<AddAccountSupport, string> = {
   deployment_prerequisite: "Server setup required to add another account",
-  not_self_service: "Add path not available here",
-  packaged_path_pending: "Add path not packaged",
+  not_self_service: "Adding another account is not available here",
+  packaged_path_pending: "Adding another account is not available yet",
   self_service: "Add another account",
 };
 

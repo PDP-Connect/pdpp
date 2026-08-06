@@ -23,7 +23,7 @@ const CONNECT_BROWSER_SESSION_ROUTE_RE = /\/connect\/browser-session\/amazon/;
 const STATIC_SECRET_ROUTE_RE = /\/connect\/static-secret\/ynab/;
 const DEVICE_EXPORTER_ROUTE_RE = /\/device-exporters\?connector=/;
 const MANUAL_UPLOAD_ROUTE_RE = /\/connect\/manual-upload\/google-maps/;
-const PACKAGED_PATH_PENDING_RE = /^Add path not packaged$/;
+const PACKAGED_PATH_PENDING_RE = /^Adding another account is not available yet$/;
 const DEMOTION_COPY_RE = /not self-service|not supported|track only|developer proof/i;
 const DEV_JARGON_RE = /pnpm --dir|packages\/|monorepo|env var|connector_instance_id|PDPP_/;
 
