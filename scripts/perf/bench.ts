@@ -146,7 +146,7 @@ export const PAGE_TARGETS = [
   { route: "/explore", marker: 'aria-label="Search or filter"' },
   { route: "/syncs", marker: '<h1 class="rr-sync__title">Syncs</h1>' },
   { route: "/grants", marker: '<h1 class="pdpp-heading break-words text-foreground">Grants</h1>' },
-  { route: "/connect", marker: '<h1 class="pdpp-heading break-words text-foreground">Connect Apps</h1>' },
+  { route: "/connect", marker: '<h1 class="pdpp-heading break-words text-foreground">Connect apps</h1>' },
   { route: "/search", marker: '<h1 class="pdpp-heading break-words text-foreground">Jump to artifact</h1>' },
 ] as const;
 
