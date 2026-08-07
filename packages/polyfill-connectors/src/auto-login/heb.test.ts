@@ -1103,6 +1103,38 @@ test("ensureHebSession times out on a stable unknown post-submit page", async ()
   });
 });
 
+test("ensureHebSession recognizes authenticated evidence that appears after the old eight-second window", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: SIGNIN_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 9500,
+          html: LIVE_HTML,
+          kind: "live",
+          url: ORDERS_URL,
+        },
+      ],
+      url: SIGNIN_URL,
+      view: "login",
+    });
+    const harness = makeInteractionHarness();
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(harness.requests.length, 0);
+    assert.equal(state.submitClicks, 1);
+    assert.equal(state.live, true);
+    assert.ok(state.nowMs >= 9500);
+  });
+});
+
 test("ensureHebSession re-resolves a remounted OTP form after a delayed owner response", async () => {
   await withHebCredentials(async () => {
     const page = makePage({

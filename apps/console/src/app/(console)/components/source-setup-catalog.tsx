@@ -344,7 +344,7 @@ function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEnt
                       target="_blank"
                       title="Opens in a new tab"
                     >
-                      {doc.label}
+                      {doc.label} (opens in a new tab)
                     </a>
                   ))}
                 </div>
