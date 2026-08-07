@@ -9,9 +9,6 @@
     "bindings": {
       "filesystem": {
         "required": true
-      },
-      "local_device": {
-        "required": true
       }
     }
   },

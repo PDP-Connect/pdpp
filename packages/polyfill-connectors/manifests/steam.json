@@ -71,6 +71,7 @@
         "detail": "Public profile data: username, avatar, personalization state, account creation date, region."
       },
       "semantics": "mutable_state",
+      "primary_key": ["steamid"],
       "required": false,
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "scheduled_window",
@@ -141,6 +142,7 @@
         "detail": "List of games in your Steam library: name, total playtime, platform playtimes, last-played timestamp (where available), community stats availability."
       },
       "semantics": "mutable_state",
+      "primary_key": ["id"],
       "required": false,
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "scheduled_window",
@@ -207,6 +209,7 @@
         "detail": "Games played in the last 2 weeks: name, 2-week and total playtime, platform playtimes, last-played timestamp."
       },
       "semantics": "mutable_state",
+      "primary_key": ["id"],
       "required": false,
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "scheduled_window",
@@ -267,6 +270,7 @@
         "detail": "Steam friends: friend steamid, relationship type, friend-since timestamp."
       },
       "semantics": "mutable_state",
+      "primary_key": ["id"],
       "required": false,
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "scheduled_window",
@@ -308,6 +312,7 @@
         "detail": "Account level, calculated from badges, achievements, and playtime."
       },
       "semantics": "mutable_state",
+      "primary_key": ["id"],
       "required": false,
       "coverage_strategy": "singleton_presence",
       "freshness_strategy": "scheduled_window",
