@@ -91,6 +91,10 @@ export {
 } from "./table.tsx";
 // ─── Tag ──────────────────────────────────────────────────────────
 export { Tag } from "./tag.tsx";
+export type { TextColor, TextProps, TextSize } from "./text.tsx";
+export { Text } from "./text.tsx";
+// ─── Text (shared typographic primitive) ──────────────────────────
+export { textVariants } from "./text-variants.ts";
 // ─── Timestamp ────────────────────────────────────────────────────
 export type {
   IcTimestampProps,

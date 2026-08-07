@@ -1,0 +1,821 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * PDPP public-site editorial / marketing component register.
+ *
+ * Runtime tokens and Tailwind bridge live in tokens/. This file owns concept
+ * shell @apply, selection, and remaining BEM selectors.
+ *
+ * DELIBERATELY separate from @pdpp/brand's oklch product-UI tokens — bolting
+ * this vocabulary onto the shared package would corrupt it for apps/console.
+ * This register nests under [data-surface="concept"]; it does not replace brand at :root.
+ * The specification surface bridges Fumadocs chrome onto these tokens under
+ * [data-pdpp-doc-theme].
+ *
+ * Not specification.css (Fumadocs shell) or ProsePage markdown typography.
+ *
+ * MIGRATION STATUS (concept routes /self-host, /participate, /):
+ *   DONE — page shell (PdppConceptPage, PdppConceptDoc, PdppRail, PdppConceptSection),
+ *          type (Text + text-variants + tokens/semantic.css), chrome (masthead, footer,
+ *          front door, buttons). Layout and spacing live on components + TW utilities.
+ *   REMAINING BEM here — delete a block only when no call site references it:
+ *          .pdpp-cmd* (command-tabs.tsx / self-host),
+ *          .pdpp-channels, .pdpp-ruled-list, .pdpp-updates (participate),
+ *          .pdpp-features, .pdpp-impl-table (self-host),
+ *          .pdpp-terminal (terminal.tsx),
+ *          .pdpp-doc scoping + base h2/h3/p (raw markdown / legacy prose),
+ *          .pdpp-note (MDX remark asides — spec + concept),
+ *          data-selection-ground (teal-deep ::selection override).
+ *   INTENTION — shrink this file toward shell hooks + shared MDX primitives; each
+ *          widget above becomes a pdpp-concept component with TW before its BEM is removed.
+ *
+ * SHARED CHROME WITH /specification (why this file loads on the spec route):
+ *   specification/layout.tsx imports concept/index.css (tokens + this register)
+ *   before specification.css. SpecificationShell wraps fumadocs in PdppConceptShell,
+ *   so spec shares masthead, footer, palette/type tokens (tokens/semantic.css),
+ *   and [data-surface="concept"] surface defaults from below — not a second skin.
+ *   Layout keys (--spacing-rail, --spacing-gutter, max-w-page) also feed spec
+ *   (specification.css sets --fd-sidebar-width: var(--spacing-rail), etc.).
+ *   Spec prose/tables/headings: specification.css (.pdpp-docs-body) — not .pdpp-doc.
+ *   From this register spec still uses: ::selection, .pdpp-note (MDX asides;
+ *   specification.css overrides in-body), data-selection-ground hook,
+ *   .pdpp-eyebrow / .pdpp-caption. Spec does NOT use concept-page BEM
+ *   (.pdpp-cmd, .pdpp-channels, .pdpp-features, .pdpp-impl-table, …).
+ */
+
+/* ─── Document surface ────────────────────────────────────────────────────
+   Frame on PdppConceptShell; palette + type rebinds live in tokens/semantic.css. */
+
+[data-surface="concept"] {
+  @apply bg-background font-serif text-body text-foreground oldstyle-nums;
+}
+
+/* Teal fill on light grounds; wash on teal-deep (data-selection-ground="teal-deep"). */
+[data-surface="concept"] ::selection {
+  color: var(--pdpp-concept-paper);
+  background: var(--pdpp-concept-teal);
+}
+[data-surface="concept"] [data-selection-ground="teal-deep"] ::selection {
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-teal-wash);
+}
+
+/* Page-level scrollbar only — not terminal/table overflow-x bars. */
+html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+/* ─── Layout: document track ─────────────────────────────────────────────
+   Page chrome (container / max-w-page / rail grid / short-page flex) lives on
+   PdppConceptPage. Track pad lives on PdppConceptDoc. Rail: hidden <lg, sticky
+   side nav lg+. Hero type: PdppFrontDoor + Text. */
+
+@media (max-width: 720px) {
+  .pdpp-ruled-list__item {
+    grid-template-columns: 2em 1fr;
+  }
+}
+
+/* ─── Document type ──────────────────────────────────────────────────────────
+   DEFAULTS FOR RAW MARKDOWN HEADINGS, NOT THE OWNER OF HEADING METRICS. These
+   are bare element selectors, so they match every <h2>/<h3> on the surface —
+   including the ones `Text as="h2"` renders. This file is imported UNLAYERED
+   (see index.css) and unlayered CSS beats every layered rule regardless of
+   specificity, so before they were wrapped here they silently overrode the
+   whole `Text` ladder: a `<Text size="title" as="h2">` on /self-host and every
+   markdown h2 under /specification alike resolved 28px serif 600 from this
+   block, not from the rung. `@layer base` restores the intended cascade —
+   Tailwind utilities (layer `utilities`, so `Text`'s CVA classes) win, while
+   fumadocs-generated markdown headings, which carry no classes, still land on
+   a sane concept default. Layer ORDER is declared once by brand's
+   `@import "tailwindcss"` (theme, base, components, utilities) in site.css.
+
+   Consequence for anyone editing here: a value in this block can no longer
+   override a component. If a heading needs different metrics, change the rung
+   in tokens/semantic.css or the variant — not this block. */
+@layer base {
+  /* [data-surface="concept"] h1 {
+    margin: 0 0 8px;
+    font-family: var(--font-serif);
+    font-size: 44px;
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+  } */
+  [data-surface="concept"] h2 {
+    margin: 0 0 16px;
+    font-family: var(--font-serif);
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  [data-surface="concept"] h3 {
+    margin: 0 0 8px;
+    font-family: var(--font-serif);
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.45;
+  }
+  /* Kept in the same layer as the base sizes so the mobile step still wins on
+     source order; hoisting it out would put it above them in the cascade. */
+  @media (max-width: 720px) {
+    [data-surface="concept"] h1 {
+      font-size: 34px;
+    }
+    [data-surface="concept"] h2 {
+      font-size: 24px;
+    }
+  }
+}
+/* Prose article rhythm for raw <p> only — not <Text data-slot>. Composed
+   stacks own spacing with gap; no mb-0! hammer needed on Text trees. */
+.pdpp-doc p:not([data-slot="pdpp-concept-text"]) {
+  margin: 0 0 16px;
+}
+.pdpp-doc p:not([data-slot="pdpp-concept-text"]):last-child {
+  margin-bottom: 0;
+}
+.pdpp-note {
+  padding: 16px 20px;
+  margin: 24px 0;
+  font-size: 16px;
+  background: var(--pdpp-concept-teal-wash);
+  border-left: 2px solid var(--pdpp-concept-teal);
+}
+.pdpp-note p:last-child {
+  margin-bottom: 0;
+}
+/* .pdpp-doc itself no longer caps at --measure (see .pdpp-doc, above), so the
+   cap moves onto the elements that are actually prose. Headings are included
+   because the concept includes them: an uncapped h1/h2 runs the full 870px
+   track and breaks the descending title/lede/body rhythm. */
+.pdpp-doc h1,
+.pdpp-doc h2,
+.pdpp-doc h3,
+.pdpp-doc h4,
+.pdpp-doc p,
+.pdpp-doc li,
+.pdpp-doc blockquote,
+.pdpp-doc .pdpp-note {
+  max-width: var(--container-measure);
+}
+.pdpp-caption {
+  margin-top: 16px;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-eyebrow {
+  margin-bottom: 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--pdpp-concept-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ─── Ruled list ─────────────────────────────────────────────────────────── */
+.pdpp-ruled-list {
+  margin: 24px 0 0;
+  border-top: 1px solid var(--border);
+}
+.pdpp-ruled-list__item {
+  display: grid;
+  grid-template-columns: 3.2em 1fr auto;
+  gap: 20px;
+  align-items: baseline;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+/* Separator, not a terminator — see .pdpp-features li:last-child. */
+.pdpp-ruled-list__item:last-child {
+  border-bottom: none;
+}
+.pdpp-ruled-list__body h3 {
+  margin-bottom: 4px;
+}
+.pdpp-ruled-list__body p {
+  margin: 0;
+  font-size: 16px;
+  color: var(--pdpp-concept-ink-soft);
+}
+
+/* ─── Terminal block ─────────────────────────────────────────────────────── */
+.pdpp-terminal {
+  padding: 24px 28px;
+  margin: 28px 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.7;
+  /* --pdpp-concept-onteal-deep, not -paper: the terminal keeps its teal-deep
+     ground in both color schemes (see --pdpp-concept-onteal-deep* above). */
+  color: var(--pdpp-concept-onteal-deep);
+  background: var(--pdpp-concept-teal-deep);
+  border: 1px solid var(--pdpp-concept-teal-deep);
+  box-shadow: 1px 1px 0
+    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+}
+.pdpp-terminal__label {
+  display: block;
+  margin-bottom: 12px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.pdpp-terminal pre {
+  margin: 0;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+/* ─── Code ───────────────────────────────────────────────────────────────── */
+[data-surface="concept"] code {
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+  background: var(--pdpp-concept-paper-deep);
+  border-radius: 2px;
+}
+/* The rule above styles INLINE code in prose (a light chip on paper). Inside the
+   dark terminal block that chip is paper-on-paper — the command rendered as
+   invisible white bars on the teal ground. A code element in a pre is a code
+   BLOCK: it inherits the terminal's own colour and carries no chip. */
+[data-surface="concept"] .pdpp-terminal pre code {
+  padding: 0;
+  font-size: 1em;
+  color: inherit;
+  background: none;
+  border-radius: 0;
+}
+
+/* ─── Tables ─────────────────────────────────────────────────────────────── */
+.pdpp-doc table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 24px 0;
+  overflow-x: auto;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  border-collapse: collapse;
+}
+.pdpp-doc th,
+.pdpp-doc td {
+  padding: 10px 14px 10px 0;
+  line-height: 1.45;
+  vertical-align: top;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.pdpp-doc thead th {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--pdpp-concept-ink-faint);
+}
+
+.pdpp-impl-table {
+  table-layout: fixed;
+}
+.pdpp-impl-table th:nth-child(1),
+.pdpp-impl-table td:nth-child(1) {
+  width: 26%;
+}
+.pdpp-impl-table th:nth-child(2),
+.pdpp-impl-table td:nth-child(2) {
+  width: 34%;
+}
+.pdpp-impl-table th:nth-child(3),
+.pdpp-impl-table td:nth-child(3) {
+  width: 25%;
+}
+.pdpp-impl-table th:nth-child(4),
+.pdpp-impl-table td:nth-child(4) {
+  width: 15%;
+  padding-right: 0;
+}
+.pdpp-impl-table td:first-child {
+  font-family: var(--font-serif);
+  font-weight: 600;
+}
+.pdpp-impl-table td:nth-child(4) a {
+  white-space: nowrap;
+}
+
+/* ─── Dated updates list ─────────────────────────────────────────────────── */
+.pdpp-updates {
+  padding: 0;
+  margin: 20px 0 0;
+  list-style: none;
+}
+.pdpp-updates li {
+  display: grid;
+  grid-template-columns: min(8.5em, 34%) minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 0;
+  font-size: 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.pdpp-updates li:first-child {
+  border-top: 1px solid var(--border-subtle);
+}
+/* Separator, not a terminator — see .pdpp-features li:last-child. */
+.pdpp-updates li:last-child {
+  border-bottom: none;
+}
+.pdpp-updates time {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--pdpp-concept-ink-faint);
+  letter-spacing: 0.04em;
+}
+
+/* ─── Sticky footer ──────────────────────────────────────────────────────────
+   Short pages (the front door especially) otherwise float the footer mid-
+   viewport with dead ground beneath it. PdppConceptShell is a flex column at
+   least one viewport tall so main absorbs the slack and the footer lands on
+   the fold's bottom edge. Pages longer than the viewport are unaffected. */
+
+/* ─── Channels (Participate) ─────────────────────────────────────────────────
+   Bordered targets, not prose rows. Whole row is the hit area, 44px minimum. */
+/* FLEX, NOT AUTO-FIT GRID. `repeat(auto-fit, minmax(220px, 1fr))` forces every
+   channel to the same track width, so three pills need 3 x 220px + gaps inside
+   the prose measure; the measure is narrower than that, and the third pill wrapped
+   to a second row at every width the owner looked at (reported 2026-08-05: "the
+   CTAs under Get Involved overflow to a second row"). These are pills whose width
+   is their label, not cells in a table — flex-wrap sizes each to content, so all
+   three fit one row wherever the row is wide enough, and they still wrap
+   gracefully when it is not. Matches the concept's own .channels. */
+.pdpp-channels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 28px 0 20px;
+}
+.pdpp-channel {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  padding: 12px 16px;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--pdpp-concept-ink);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+.pdpp-channel:hover,
+.pdpp-channel:focus-visible {
+  color: var(--pdpp-concept-teal);
+  background: var(--pdpp-concept-teal-wash);
+  border-color: var(--pdpp-concept-teal);
+}
+.pdpp-channel__icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.pdpp-channel__label {
+  flex: 1 1 auto;
+}
+.pdpp-channel__arrow {
+  flex: none;
+  color: var(--pdpp-concept-ink-faint);
+}
+.pdpp-channel:hover .pdpp-channel__arrow,
+.pdpp-channel:focus-visible .pdpp-channel__arrow {
+  color: var(--pdpp-concept-teal);
+}
+/* Full-size pills need ~685px combined and wrap to a second row anywhere
+   the doc column falls short of that — true in the stacked mobile layout
+   below 720px (doc 655-675px at 700-720px) AND below lg where the rail is
+   hidden (full-width doc). The concept has this
+   same wrap throughout 700-1023px, so it is not a PR-introduced regression,
+   but the owner asked for one row at every width from 700 to 1920
+   regardless). Tightened here, not by shrinking the doc column's own
+   measure: padding, gap and font-size drop and the decorative (aria-hidden)
+   arrow is dropped, freeing enough width for all three to fit one row down
+   to the narrowest point measured (436px at 721px). Reverts to full size at
+   1024px, where the doc column is wide enough on its own. */
+@media (min-width: 700px) and (max-width: 1023px) {
+  .pdpp-channels {
+    gap: 6px;
+  }
+  .pdpp-channel {
+    gap: 5px;
+    padding: 8px 5px;
+    font-size: 11.5px;
+  }
+  .pdpp-channel__arrow {
+    display: none;
+  }
+}
+
+/* ─── Terminal head (copy button) ────────────────────────────────────────── */
+.pdpp-terminal__head {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.pdpp-terminal__head .pdpp-terminal__label {
+  margin-bottom: 0;
+}
+/* Sits inside .pdpp-terminal, whose teal-deep ground is fixed in both color
+   schemes — same --onteal-deep-wash pinning as .pdpp-terminal__label above. */
+.pdpp-copy-btn {
+  flex: none;
+  padding: 3px 10px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 35%, transparent);
+  border-radius: 2px;
+}
+.pdpp-copy-btn:hover,
+.pdpp-copy-btn:focus-visible {
+  color: white;
+  border-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-onteal-deep-wash) 70%,
+    transparent
+  );
+}
+
+/* ─── Feature list (Self-Host) ───────────────────────────────────────────── */
+.pdpp-features {
+  padding: 0;
+  margin: 24px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--border-subtle);
+}
+.pdpp-features li {
+  padding: 14px 0;
+  color: var(--pdpp-concept-ink);
+  border-bottom: 1px solid var(--border-subtle);
+}
+/* The list opens on its own border-top, so each item's border-bottom is a
+   SEPARATOR between items. On the last item there is nothing below to
+   separate, and the section that follows draws its own rule — two lines a few
+   pixels apart. Owner-reported 2026-08-05: "within them, we should not have a
+   rule at the end of the last item." */
+.pdpp-features li:last-child {
+  border-bottom: none;
+}
+.pdpp-features strong {
+  margin-right: 10px;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--pdpp-concept-ink);
+}
+.pdpp-config-table code {
+  font-size: 13px;
+}
+
+/* Plain ruled list: no numerals, no right-hand arrow column. */
+.pdpp-ruled-list--plain .pdpp-ruled-list__item {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pdpp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
+}
+
+/* Both marks get identical treatment so the footer's SOURCE and COMMUNITY
+   columns read as siblings at matching optical size. */
+.pdpp-icon-github,
+.pdpp-icon-discord {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+/* ─── Command tabs ───────────────────────────────────────────────────────────
+   Adapted from the opencode.ai install block: one bordered panel, plain-text
+   tabs above a thin rule, one command below, nothing else. Translated to paper
+   and teal rather than their dark ground — the pattern is the restraint and the
+   hierarchy, not the colour. */
+.pdpp-cmd {
+  margin: 32px 0 8px;
+  background: var(--pdpp-concept-paper);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+/* The command panel is not prose and should not sit at the 68ch prose measure —
+   a shell line is as long as it is. It breaks out to the full column so the
+   command can breathe, while the text around it keeps its measure.
+   Declared AFTER the base rule it overrides: a (0,2,0) selector before a
+   (0,1,0) one is descending specificity. */
+.pdpp-doc > .pdpp-cmd {
+  max-inline-size: none;
+  width: 100%;
+}
+.pdpp-cmd__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+/* Plain text, not buttons: no fill, no border, no pill. The active one is ink
+   with an underline inset to the label width; the rest recede. */
+.pdpp-cmd__tab {
+  padding: 10px 12px 9px;
+  margin-bottom: -1px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--pdpp-concept-ink-faint);
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+}
+.pdpp-cmd__tab:hover {
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-cmd__tab[aria-selected="true"] {
+  color: var(--pdpp-concept-ink);
+  border-bottom-color: var(--pdpp-concept-teal);
+}
+.pdpp-cmd__tab:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: -2px;
+  border-radius: 2px;
+}
+/* THE COMMAND SITS ON THE CONCEPT'S TERMINAL GROUND, not on paper. Rendered as
+   a white panel with grey text, the single most important element on the page
+   read as an empty box (owner, 2026-08-05: "very flat; it is just empty and
+   white" against "a nice dark green style on the Docker stuff"). These are the
+   concept's own .terminal values — teal-deep ground, --pdpp-concept-onteal-deep
+   ink, 24px/28px padding, the 1px offset shadow — reused rather than re-picked,
+   so the panel matches the terminal blocks already on this page. The tabs above
+   stay on paper: they are chrome around the command, not the command. */
+.pdpp-cmd__panel {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  width: 100%;
+  padding: 24px 28px;
+  color: var(--pdpp-concept-onteal-deep);
+  text-align: left;
+  background: var(--pdpp-concept-teal-deep);
+  border: 0;
+}
+/* The whole panel is the copy target, per opencode: a 16px icon is a poor hit
+   area for the single most important action on the page. The ghost label is
+   affordance only — `aria-hidden`, because the button already has a label. */
+.pdpp-cmd__panel--copyable {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+/* The focus ring is on-teal too: a teal ring on a teal-deep ground is invisible. */
+.pdpp-cmd__panel--copyable:focus-visible {
+  outline: 2px solid var(--pdpp-concept-onteal-deep);
+  outline-offset: -2px;
+}
+.pdpp-cmd__line {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.75;
+  /* Boilerplate recedes so the emphasised token can land — but on the teal-deep
+     ground, so the recessive tone is the on-teal soft token (7.84:1), not the
+     paper-ground ink-faint that was illegible there. */
+  color: var(--pdpp-concept-onteal-deep-soft);
+  /* No hanging indent. A negative text-indent pulls the FIRST line left (it is
+     defined on the first line, not on continuations), which made `mkdir` sit
+     outside the block and read as if it were not part of the command. Every
+     line therefore starts flush, and a wrapped fragment is distinguished by
+     being mid-token rather than by inset. */
+  overflow-wrap: anywhere;
+  /* `pre-wrap` with an indent on continuation lines. Plain `pre` clipped the
+     compose URL — the emphasised token the eye is supposed to land on — behind
+     the panel edge, which defeats the emphasis entirely. Wrapping only ever
+     breaks at existing whitespace, and the hanging indent keeps a wrapped
+     fragment visibly subordinate to the line it belongs to rather than
+     reading as a new command. */
+  white-space: pre-wrap;
+}
+.pdpp-cmd__line code {
+  padding: 0;
+  font-size: 1em;
+  color: inherit;
+  background: none;
+  border-radius: 0;
+}
+/* The one token that says WHAT you are running: full-strength on-teal ink
+   (10.85:1) against the soft boilerplate around it. */
+.pdpp-cmd__em {
+  font-weight: 600;
+  color: var(--pdpp-concept-onteal-deep);
+}
+/* On the teal-deep ground, so it takes the concept's own .terminal .copy-btn
+   treatment (on-teal ink, a 35%-strength on-teal hairline) rather than the
+   paper-ground ink/rule pair, which was invisible against the dark panel. */
+.pdpp-cmd__copy {
+  flex: none;
+  padding: 5px 12px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--pdpp-concept-onteal-deep-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  background: none;
+  border: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-onteal-deep) 35%, transparent);
+  border-radius: 2px;
+}
+/* ROW 3. The outcome choices, inside the panel's frame and above the rule so
+   they read as properties of the command rather than page furniture. */
+.pdpp-cmd__config {
+  padding: 14px 20px 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+/* A real <fieldset>/<legend>: the grouping and its name are then carried by
+   the element itself rather than by ARIA bolted onto a div. Both need their
+   UA styling reset — a fieldset ships a border and a legend breaks flow. */
+.pdpp-cmd__choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.pdpp-cmd__choice + .pdpp-cmd__choice {
+  margin-top: 10px;
+}
+.pdpp-cmd__choice-label {
+  float: left;
+  flex: none;
+  min-width: 54px;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 26px;
+  color: var(--pdpp-concept-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+/* Both choices are binary and share one shape, so "off" is always a named
+   alternative rather than an unchecked box whose meaning the reader infers. */
+.pdpp-cmd__seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pdpp-cmd__seg-btn {
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 5px 11px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--pdpp-concept-ink-faint);
+  cursor: pointer;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.pdpp-cmd__seg-btn:hover {
+  color: var(--pdpp-concept-ink-soft);
+}
+.pdpp-cmd__seg-btn[aria-pressed="true"] {
+  color: var(--pdpp-concept-ink);
+  border-color: var(--pdpp-concept-teal);
+  box-shadow: inset 0 0 0 1px var(--pdpp-concept-teal);
+}
+.pdpp-cmd__seg-btn:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: 1px;
+}
+/* RESERVED, NOT REVEALED. The slot always occupies its height; only visibility
+   changes. Animating height (or mounting on demand) would push the command and
+   the rest of the page down at the exact moment the reader is reading it —
+   PyTorch's install matrix freezes its geometry for the same reason. */
+.pdpp-cmd__reveal {
+  visibility: hidden;
+  margin-top: 10px;
+}
+.pdpp-cmd__reveal.is-shown {
+  visibility: visible;
+}
+/* The hint is the only part allowed to change the block's height. The input row
+   above it is what must not move, because it sits between the two segmented
+   controls; a sentence appearing below the last control pushes nothing the
+   reader is currently looking at. */
+.pdpp-cmd__url {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+}
+.pdpp-cmd__url > span {
+  flex: none;
+  min-width: 54px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--pdpp-concept-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.pdpp-cmd__url input {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 5px 9px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--pdpp-concept-ink);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.pdpp-cmd__url input:focus-visible {
+  outline: 2px solid var(--pdpp-concept-teal);
+  outline-offset: 1px;
+}
+.pdpp-cmd__hint {
+  margin: 6px 0 0 70px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--pdpp-concept-ink-faint);
+}
+/* Shown instead of a command when the selected combination has no working
+   artifact. Same box as the command so the absence is deliberate, not a gap. */
+.pdpp-cmd__blocked {
+  padding: 2px 0;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--pdpp-concept-ink-soft);
+}
+@media (max-width: 560px) {
+  .pdpp-cmd__panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pdpp-cmd__copy {
+    align-self: flex-start;
+  }
+  /* The label column collapses on narrow screens, so the hint loses the
+     indent that tethered it to the input above. */
+  .pdpp-cmd__hint {
+    margin-left: 0;
+  }
+}
+.pdpp-cmd__panel--copyable:hover .pdpp-cmd__copy,
+.pdpp-cmd__panel--copyable:focus-visible .pdpp-cmd__copy,
+.pdpp-cmd__copy:hover,
+.pdpp-cmd__copy:focus-visible {
+  color: var(--pdpp-concept-onteal-deep);
+  border-color: var(--pdpp-concept-onteal-deep);
+}
+.pdpp-cmd__reveal:not(.is-shown) .pdpp-cmd__hint {
+  display: none;
+}
+/* The landing-page instance: the same component, the default command, and no
+   configuration. A reader on the front door wants to see that one line exists,
+   not to configure it — the Self-Host page is where the choices live. */
+.pdpp-cmd--compact {
+  margin: 24px 0 0;
+}
+.pdpp-cmd--compact .pdpp-cmd__config {
+  display: none;
+}

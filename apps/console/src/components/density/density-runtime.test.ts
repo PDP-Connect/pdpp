@@ -10,9 +10,10 @@ import { buildDensityCookie, DENSITY_KEY, normalizeDensity } from "./density-sta
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PROVIDER_FILE = `${HERE}density-provider.tsx`;
 const LAYOUT_FILE = `${HERE}../../app/layout.tsx`;
-const BRAND_UTILITIES_FILE = `${HERE}../../../../../packages/pdpp-brand/utilities.css`;
-const BRAND_BASE_FILE = `${HERE}../../../../../packages/pdpp-brand/base.css`;
-const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/tokens/primitive.css`;
+const BRAND_UTILITIES_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/utilities.css`;
+const BRAND_BASE_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/base.css`;
+const BRAND_SEMANTIC_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/semantic.css`;
+const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/primitive.css`;
 
 const NEXT_HEADERS_IMPORT_RE = /from "next\/headers"/;
 const LAYOUT_NORMALIZES_DENSITY_RE = /normalizeDensity\(cookieStore\.get\(DENSITY_KEY\)\?\.value\)/;
@@ -23,9 +24,11 @@ const DOCUMENT_COOKIE_RE = /document\.cookie/;
 const DOCUMENT_DATASET_RE = /document\.documentElement\.dataset\.density = density/;
 const BUILD_COOKIE_RE = /buildDensityCookie\(next, secure\)/;
 const LOCAL_STORAGE_RE = /localStorage/;
-const ROW_UTILITY_RE = /@utility\s+pdpp-data-list-row\s*\{\s*padding-block:\s*var\(--data-list-row-padding-block\)/;
-const ROW_DEFAULT_RE = /--data-list-row-padding-block:\s*0\.5rem/;
-const ROW_COMPACT_RE = /html\[data-density="compact"\]\s*\{\s*--data-list-row-padding-block:\s*0\.3125rem/;
+const ROW_UTILITY_RE = /@utility\s+pdpp-data-list-row\s*\{\s*padding-block:\s*var\(--spacing-data-list-row\)/;
+const ROW_DEFAULT_RE = /--spacing-data-list-row:\s*0\.5rem/;
+const ROW_COMPACT_RE = /html\[data-density="compact"\]\s*\{\s*--spacing-data-list-row:\s*0\.3125rem/;
+const NUMERIC_SEMANTIC_RE = /--font-variant-numeric:\s*tabular-nums lining-nums/;
+const NUMERIC_PRIMITIVE_ABSENT_RE = /--numeric:/;
 
 test("density normalization accepts compact and defaults to comfortable", () => {
   assert.equal(DENSITY_KEY, "pdpp-density");
@@ -65,13 +68,17 @@ test("density provider uses cookies as the only persisted source of truth", asyn
 });
 
 test("brand CSS owns data-list row density via token + utility", async () => {
-  const [utilities, base, primitive] = await Promise.all([
+  const [utilities, base, semantic, primitive] = await Promise.all([
     readFile(BRAND_UTILITIES_FILE, "utf8"),
     readFile(BRAND_BASE_FILE, "utf8"),
+    readFile(BRAND_SEMANTIC_FILE, "utf8"),
     readFile(BRAND_PRIMITIVE_FILE, "utf8"),
   ]);
 
-  assert.match(primitive, ROW_DEFAULT_RE);
+  assert.match(semantic, ROW_DEFAULT_RE);
+  assert.match(semantic, NUMERIC_SEMANTIC_RE);
+  assert.doesNotMatch(primitive, NUMERIC_PRIMITIVE_ABSENT_RE);
+  assert.doesNotMatch(primitive, ROW_DEFAULT_RE);
   assert.match(base, ROW_COMPACT_RE);
   assert.match(utilities, ROW_UTILITY_RE);
 });

@@ -13,7 +13,7 @@
 // uses) and produces more polished SVG output than mermaid.js's default theme.
 // It renders synchronously, so no async/Suspense dance is needed. Colors are
 // passed as concrete hex values derived from this site's brand tokens
-// (packages/pdpp-brand/base.css --background/--foreground/--primary/--muted/
+// (packages/pdpp-brand/styles/base.css --background/--foreground/--primary/--muted/
 // --border, oklch converted to hex) so the diagram matches the site's palette
 // in both themes rather than using one of the library's bundled theme presets.
 "use client";
@@ -22,7 +22,7 @@ import { useTheme } from "@pdpp/operator-ui/components/theme/theme-provider";
 import { type DiagramColors, renderMermaidSVG } from "beautiful-mermaid";
 import { useEffect, useState } from "react";
 
-// Hex equivalents of packages/pdpp-brand/base.css design tokens (:root and
+// Hex equivalents of packages/pdpp-brand/styles/base.css design tokens (:root and
 // html.dark), converted from oklch. Keep in sync if those tokens change.
 const LIGHT_COLORS: DiagramColors = {
   bg: "#fcfcfa",

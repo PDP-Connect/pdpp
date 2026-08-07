@@ -45,7 +45,7 @@ export function PdppTerminal({ command, label }: { command: string; label: strin
   }
 
   return (
-    <figure aria-label={label} className="pdpp-terminal">
+    <figure aria-label={label} className="pdpp-terminal" data-selection-ground="teal-deep">
       <div className="pdpp-terminal__head">
         <span className="pdpp-terminal__label">{label}</span>
         <button aria-label="Copy the command to the clipboard" className="pdpp-copy-btn" onClick={copy} type="button">

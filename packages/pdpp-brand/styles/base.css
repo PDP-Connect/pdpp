@@ -1,0 +1,107 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Document defaults and element resets. Keep this in `@layer base` so
+ * utilities can override element rules (unlayered CSS beats every layer).
+ * Do not restate Tailwind preflight (box-sizing, a color, code mono, etc.).
+ */
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    @apply border-border outline-ring/50;
+  }
+
+  ::selection {
+    @apply bg-accent/70 text-background;
+  }
+
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    @apply border-border;
+  }
+
+  html {
+    scrollbar-gutter: stable;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    @apply min-h-dvh bg-background text-foreground antialiased;
+  }
+
+  /* Density preference sets the shared row-padding token; utilities only read it. */
+  html[data-density="compact"] {
+    --spacing-data-list-row: 0.3125rem;
+  }
+
+  body {
+    @apply h-full min-h-dvh font-sans text-body font-normal;
+  }
+
+  html > body[data-scroll-locked] {
+    --removed-body-scroll-bar-size: 0 !important;
+    margin-right: 0 !important;
+  }
+
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
+  /* Hard stop for non-token animations/transitions. Duration tokens are already
+     zeroed in tokens/motion.css; this covers keyframes and ad-hoc transitions. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Keyframes stay unlayered — @keyframes are not cascade-layer participants. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -19,3 +19,16 @@ export function baseOptions(): BaseLayoutProps {
     },
   };
 }
+
+/** Spec layout: masthead owns search + theme; rail front matter owns GitHub. */
+export function specDocsOptions(): BaseLayoutProps {
+  return {
+    nav: {
+      title: null,
+      url: "/",
+    },
+    themeSwitch: {
+      enabled: false,
+    },
+  };
+}

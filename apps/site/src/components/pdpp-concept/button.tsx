@@ -7,15 +7,15 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils.ts";
 
 /*
- * Editorial CTAs built from the Base UI primitive and concept tokens
- * (ink/paper/teal). Kept under pdpp-concept, not @/components/ui
- * (that re-exports operator brand). `!` beats `.pdpp-concept a` color/underline.
+ * Editorial CTAs built from the Base UI primitive and shadcn semantic tokens.
+ * Kept under pdpp-concept, not @/components/ui (that re-exports operator brand).
+ * `!` beats [data-surface="concept"] a color/underline.
  */
 const buttonVariants = cva(
   [
     "box-border inline-flex cursor-pointer select-none items-center justify-center",
     "min-h-11 px-5 py-[13px]",
-    "rounded-[2px] border border-teal",
+    "rounded-[2px] border border-primary",
     "no-underline! font-medium font-sans text-small leading-none",
     "outline-none transition-[background-color,color,border-color] duration-150 ease-out",
     "focus-visible:outline-none",
@@ -28,19 +28,24 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary: [
-          "bg-teal text-paper!",
-          "hover:border-teal-deep hover:bg-teal-deep hover:text-onteal-deep!",
-          "focus-visible:border-teal-deep focus-visible:bg-teal-deep focus-visible:text-onteal-deep!",
+          "bg-primary text-primary-foreground!",
+          "hover:border-primary-emphasis hover:bg-primary-emphasis hover:text-on-primary-emphasis!",
+          "focus-visible:border-primary-emphasis focus-visible:bg-primary-emphasis focus-visible:text-on-primary-emphasis!",
         ],
         secondary: [
-          "bg-transparent text-teal!",
-          "hover:bg-teal-wash hover:text-teal-deep!",
-          "focus-visible:bg-teal-wash focus-visible:text-teal-deep!",
+          "bg-transparent text-primary!",
+          "hover:bg-primary-wash hover:text-primary-emphasis!",
+          "focus-visible:bg-primary-wash focus-visible:text-primary-emphasis!",
         ],
         quiet: [
-          "border-transparent px-1 text-ink-soft!",
-          "hover:text-teal-deep! hover:underline hover:underline-offset-[3px]",
-          "focus-visible:text-teal-deep! focus-visible:underline focus-visible:underline-offset-[3px]",
+          "border-transparent px-1 text-muted-foreground!",
+          "hover:text-primary-emphasis! hover:underline hover:underline-offset-[3px]",
+          "focus-visible:text-primary-emphasis! focus-visible:underline focus-visible:underline-offset-[3px]",
+        ],
+        footer: [
+          "border-on-primary-emphasis/30 bg-transparent text-on-primary-emphasis!",
+          "hover:border-on-primary-emphasis hover:bg-on-primary-emphasis/10 hover:text-white!",
+          "focus-visible:border-on-primary-emphasis focus-visible:bg-on-primary-emphasis/10 focus-visible:text-white!",
         ],
       },
     },

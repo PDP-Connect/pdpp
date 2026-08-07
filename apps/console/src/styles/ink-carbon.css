@@ -59,14 +59,14 @@
 :root {
   /* Preserve the Console's established Ink Carbon typography while the
      legacy .pdpp-* classes resolve through the shared semantic token API. */
-  --text-display-lg--font-weight: 700;
-  --text-display-lg--line-height: 1.04;
-  --text-display-lg--letter-spacing: -0.028em;
+  --text-hero--font-weight: 700;
+  --text-hero--line-height: 1.04;
+  --text-hero--letter-spacing: -0.028em;
   --text-display--font-weight: 700;
   --text-display--letter-spacing: -0.022em;
   --text-heading--font-weight: 700;
   --text-heading--letter-spacing: -0.012em;
-  --text-body-lg--line-height: 1.6;
+  --text-lede--line-height: 1.6;
   --text-eyebrow: 0.67rem;
   --text-eyebrow--font-weight: 500;
 

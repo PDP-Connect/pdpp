@@ -1,0 +1,256 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * PDPP runtime theme values. These unnamespaced variables are the shared source
+ * for plain CSS, shadcn-compatible consumers, and light/dark overrides.
+ * semantic.css exposes them through Tailwind's utility namespaces.
+ */
+
+:root {
+  /* ─── Geometry ─────────────────────────────────────────────────────────── */
+  --radius: 9px;
+  --radius-control: var(--radius);
+  --spacing: 4px;
+  --spacing-inset: 15px;
+
+  /* ─── Canvas, text, and controls ───────────────────────────────────────── */
+  --background: oklch(0.99 0.002 95);
+  --foreground: oklch(0.13 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.13 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.13 0 0);
+  --primary: oklch(0.58 0.172 253.7);
+  --primary-foreground: oklch(0.99 0 0);
+  --primary-emphasis: oklch(0.48 0.172 253.7);
+  --primary-on-wash: oklch(0.48 0.172 253.7);
+  --on-primary-emphasis: oklch(0.99 0 0);
+  --on-primary-emphasis-soft: oklch(0.88 0.02 253.7);
+  --on-primary-emphasis-label: oklch(0.72 0.08 253.7);
+  --on-primary-emphasis-wash: var(--primary-wash);
+  /* Brand accent alias — same runtime value as primary; keep a distinct name
+     for chrome utilities (border-shadow-brand) that mean "brand", not "CTA". */
+  --brand: var(--primary);
+  --secondary: oklch(0.96 0 0);
+  --secondary-foreground: oklch(0.2 0 0);
+  --muted: oklch(0.96 0 0);
+  --muted-foreground: oklch(0.5 0 0);
+  --foreground-faint: oklch(0.58 0 0);
+  --accent: oklch(0.96 0 0);
+  --accent-foreground: oklch(0.2 0 0);
+  --destructive: oklch(0.55 0.2 27);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.94 0 0);
+  /* biome-ignore format: multiline color-mix breaks the CSS language service */
+  --border-subtle: color-mix(in oklab, var(--foreground) 10%, var(--background));
+  --input: oklch(0.91 0 0);
+  --ring: oklch(0.58 0.172 253.7);
+
+  /* ─── Surfaces and elevation ──────────────────────────────────────────────
+     Resting layers use fill and border steps; only overlays use a shadow. */
+  --surface-tint: oklch(1 0 0);
+  --surface-page: var(--background);
+  --surface-card: var(--card);
+  --surface-raised: oklch(0.975 0.003 95);
+  --surface-overlay: var(--popover);
+  --border-strong: oklch(0.9 0 0);
+  --data-list-divider: oklch(0.94 0 0);
+  --scrollbar-thumb: oklch(0 0 0 / 0.12);
+  --scrollbar-thumb-hover: oklch(0 0 0 / 0.2);
+  --stage-dot: oklch(0 0 0 / 0.06);
+  --border-shadow-ring: oklch(0 0 0 / 0.06);
+  --border-shadow-ring-hover: oklch(0 0 0 / 0.08);
+  --border-shadow-lift:
+    0 1px 2px -1px oklch(0 0 0 / 0.06), 0 2px 3px 0 oklch(0 0 0 / 0.04);
+  --border-shadow-lift-hover:
+    0 1px 2px -1px oklch(0 0 0 / 0.08), 0 2px 3px 0 oklch(0 0 0 / 0.06);
+  --raised-shadow:
+    0 4px 12px -4px oklch(0 0 0 / 0.12), 0 2px 4px -2px oklch(0 0 0 / 0.08);
+  --overlay-shadow:
+    0 8px 24px -8px oklch(0 0 0 / 0.18), 0 2px 6px -2px oklch(0 0 0 / 0.1);
+  /* Double-ring focus: inner matches canvas so the outer ring stays crisp on
+     any surface. References --ring/--background so it theme-flips for free. */
+  --focus-shadow:
+    0 0 0 2px var(--background),
+    0 0 0 4px color-mix(in oklab, var(--ring) 45%, transparent);
+
+  /* ─── Feedback ──────────────────────────────────────────────────────────── */
+  --success: oklch(0.52 0.15 150);
+  --warning: oklch(0.62 0.15 70);
+  --success-badge-foreground: oklch(0.33 0.12 150);
+  --warning-badge-foreground: oklch(0.35 0.12 70);
+  --danger-badge-foreground: oklch(0.42 0.18 27);
+  /* Informational cyan, distinct from protocol blue. */
+  --edu-fg: oklch(0.52 0.07 210);
+
+  --success-wash: oklch(0.52 0.15 150 / 0.1);
+  --success-wash-strong: oklch(0.52 0.15 150 / 0.15);
+  --primary-wash: oklch(0.58 0.172 253.7 / 0.06);
+  --warning-wash: oklch(0.62 0.15 70 / 0.1);
+
+  /* ─── Status surfaces ─────────────────────────────────────────────────────
+     success healthy · progress active · warning needs attention · danger failed
+     neutral unknown · disabled offline
+     Rings stay transparent in light; dark steps them in so badges scan on
+     charcoal. Kept outside the theme bridge — presentation hook, not a
+     Tailwind utility. */
+  --status-success-bg: oklch(0.52 0.15 150 / 0.08);
+  --status-success-fg: oklch(0.3 0.12 150);
+  --status-success-ring: transparent;
+  --status-progress-bg: oklch(0.58 0.172 253.7 / 0.07);
+  --status-progress-fg: oklch(0.4 0.14 253.7);
+  --status-warning-bg: oklch(0.62 0.15 70 / 0.09);
+  --status-warning-fg: oklch(0.38 0.12 70);
+  --status-warning-ring: transparent;
+  --status-danger-bg: oklch(0.55 0.2 27 / 0.08);
+  --status-danger-fg: oklch(0.38 0.16 27);
+  --status-danger-ring: transparent;
+  --status-neutral-bg: oklch(0.94 0 0);
+  --status-neutral-fg: oklch(0.42 0 0);
+  --status-neutral-ring: transparent;
+  --status-disabled-bg: oklch(0.96 0 0);
+  --status-disabled-fg: oklch(0.58 0 0);
+
+  /* Callouts */
+  --callout-info-bg: oklch(0.58 0.172 253.7 / 0.06);
+  --callout-info-fg: oklch(0.35 0.14 253.7);
+  --callout-info-border: oklch(0.58 0.172 253.7 / 0.22);
+
+  --callout-warning-bg: oklch(0.62 0.15 70 / 0.08);
+  --callout-warning-fg: oklch(0.38 0.12 70);
+  --callout-warning-border: oklch(0.62 0.15 70 / 0.3);
+
+  /* ─── Human authorship accent ───────────────────────────────────────────── */
+  --human: oklch(0.52 0.09 45);
+  --human-wash: oklch(0.52 0.09 45 / 0.07);
+
+  /* ─── Authorship trust ────────────────────────────────────────────────────
+     protocol: enforced · manifest: owner-authored · client: untrusted claim */
+  --authorship-protocol-fg: oklch(0.4 0.14 253.7);
+  --authorship-protocol-accent: oklch(0.58 0.172 253.7);
+  --authorship-protocol-border: oklch(0.58 0.172 253.7 / 0.3);
+  --authorship-protocol-wash: oklch(0.58 0.172 253.7 / 0.06);
+
+  --authorship-manifest-fg: oklch(0.46 0.1 45);
+  --authorship-manifest-accent: oklch(0.52 0.12 45);
+  --authorship-manifest-border: oklch(0.52 0.12 45 / 0.35);
+  --authorship-manifest-wash: oklch(0.52 0.12 45 / 0.06);
+
+  --authorship-client-fg: oklch(0.5 0 0);
+  --authorship-client-accent: oklch(0.62 0 0);
+  --authorship-client-border: oklch(0.72 0 0);
+  --authorship-client-wash: oklch(0.62 0 0 / 0.05);
+}
+
+/* ─── Dark theme overrides ───────────────────────────────────────────────── */
+[data-theme="dark"] {
+  --background: oklch(0.16 0.005 260);
+  --foreground: oklch(0.96 0.005 260);
+  --card: oklch(0.2 0.006 260);
+  --card-foreground: oklch(0.96 0.005 260);
+  --popover: oklch(0.2 0.006 260);
+  --popover-foreground: oklch(0.96 0.005 260);
+
+  --primary: oklch(0.72 0.16 253.7);
+  --primary-foreground: oklch(0.14 0.01 260);
+  --primary-emphasis: oklch(0.62 0.16 253.7);
+  --primary-on-wash: oklch(0.82 0.14 253.7);
+  --on-primary-emphasis: oklch(0.96 0.005 260);
+  --on-primary-emphasis-soft: oklch(0.78 0.02 260);
+  --on-primary-emphasis-label: oklch(0.62 0.04 260);
+  --on-primary-emphasis-wash: var(--primary-wash);
+  --secondary: oklch(0.26 0.006 260);
+  --secondary-foreground: oklch(0.96 0.005 260);
+  --muted: oklch(0.24 0.006 260);
+  --muted-foreground: oklch(0.7 0.01 260);
+  --foreground-faint: oklch(0.62 0.01 260);
+  --accent: oklch(0.26 0.006 260);
+  --accent-foreground: oklch(0.96 0.005 260);
+
+  --destructive: oklch(0.7 0.18 25);
+  --destructive-foreground: oklch(0.14 0.01 260);
+
+  --border: oklch(0.28 0.006 260);
+  --input: oklch(0.32 0.006 260);
+  --ring: oklch(0.72 0.16 253.7);
+
+  --success: oklch(0.74 0.16 152);
+  --warning: oklch(0.8 0.15 75);
+  --success-badge-foreground: var(--success);
+  --warning-badge-foreground: var(--warning);
+  --danger-badge-foreground: var(--destructive);
+  --edu-fg: oklch(0.78 0.06 210);
+
+  --success-wash: oklch(0.74 0.16 152 / 0.16);
+  --success-wash-strong: oklch(0.74 0.16 152 / 0.22);
+  --primary-wash: oklch(0.72 0.16 253.7 / 0.12);
+  --warning-wash: oklch(0.8 0.15 75 / 0.14);
+
+  --status-success-bg: oklch(0.74 0.16 152 / 0.14);
+  --status-success-fg: oklch(0.82 0.14 152);
+  --status-success-ring: color-mix(in oklab, var(--success) 30%, transparent);
+  --status-progress-bg: oklch(0.72 0.16 253.7 / 0.13);
+  --status-progress-fg: oklch(0.82 0.14 253.7);
+  --status-warning-bg: oklch(0.8 0.15 75 / 0.14);
+  --status-warning-fg: oklch(0.86 0.13 75);
+  --status-warning-ring: color-mix(in oklab, var(--warning) 30%, transparent);
+  --status-danger-bg: oklch(0.7 0.18 25 / 0.15);
+  --status-danger-fg: oklch(0.82 0.16 25);
+  --status-danger-ring: color-mix(
+    in oklab,
+    var(--destructive) 32%,
+    transparent
+  );
+  --status-neutral-bg: oklch(0.24 0.006 260);
+  --status-neutral-fg: oklch(0.72 0.01 260);
+  --status-neutral-ring: var(--border-strong);
+  --status-disabled-bg: oklch(0.22 0.005 260);
+  --status-disabled-fg: oklch(0.55 0.008 260);
+  --callout-info-bg: oklch(0.72 0.16 253.7 / 0.1);
+  --callout-info-fg: oklch(0.82 0.14 253.7);
+  --callout-info-border: oklch(0.72 0.16 253.7 / 0.28);
+  --callout-warning-bg: oklch(0.8 0.15 75 / 0.12);
+  --callout-warning-fg: oklch(0.86 0.13 75);
+  --callout-warning-border: oklch(0.8 0.15 75 / 0.32);
+
+  --human: oklch(0.75 0.14 45);
+  --human-wash: oklch(0.75 0.14 45 / 0.1);
+
+  --authorship-protocol-fg: oklch(0.82 0.14 253.7);
+  --authorship-protocol-accent: oklch(0.72 0.16 253.7);
+  --authorship-protocol-border: oklch(0.72 0.16 253.7 / 0.4);
+  --authorship-protocol-wash: oklch(0.72 0.16 253.7 / 0.12);
+
+  --authorship-manifest-fg: oklch(0.82 0.12 45);
+  --authorship-manifest-accent: oklch(0.75 0.14 45);
+  --authorship-manifest-border: oklch(0.75 0.14 45 / 0.4);
+  --authorship-manifest-wash: oklch(0.75 0.14 45 / 0.12);
+
+  --authorship-client-fg: oklch(0.7 0.01 260);
+  --authorship-client-accent: oklch(0.62 0.008 260);
+  --authorship-client-border: oklch(0.45 0.006 260);
+  --authorship-client-wash: oklch(0.7 0.01 260 / 0.07);
+
+  --surface-tint: oklch(0.1 0.005 260);
+
+  --surface-page: oklch(0.16 0.005 260);
+  --surface-card: oklch(0.2 0.006 260);
+  --surface-raised: oklch(0.235 0.006 260);
+  --surface-overlay: oklch(0.275 0.006 260);
+  --border-strong: oklch(0.34 0.006 260);
+  --data-list-divider: oklch(0.4 0.006 260);
+  --scrollbar-thumb: oklch(1 0 0 / 0.14);
+  --scrollbar-thumb-hover: oklch(1 0 0 / 0.24);
+  --stage-dot: oklch(1 0 0 / 0.07);
+  --border-shadow-ring: oklch(1 0 0 / 0.1);
+  --border-shadow-ring-hover: oklch(1 0 0 / 0.16);
+  --border-shadow-lift:
+    0 1px 2px -1px oklch(0 0 0 / 0.4), 0 2px 3px 0 oklch(0 0 0 / 0.28);
+  --border-shadow-lift-hover:
+    0 1px 2px -1px oklch(0 0 0 / 0.5), 0 2px 3px 0 oklch(0 0 0 / 0.36);
+  --raised-shadow:
+    0 6px 16px -6px oklch(0 0 0 / 0.45), 0 3px 6px -3px oklch(0 0 0 / 0.32);
+  --overlay-shadow:
+    0 10px 28px -10px oklch(0 0 0 / 0.55), 0 3px 8px -3px oklch(0 0 0 / 0.4);
+}

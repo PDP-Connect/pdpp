@@ -3,23 +3,13 @@
 
 import { brandMono, brandSans, brandSerif } from "@pdpp/brand/fonts";
 import { LAUNCH_COLORS } from "@pdpp/brand/launch-colors";
-import { ThemeProvider } from "@pdpp/operator-ui/components/theme/theme-provider";
 import type { Metadata } from "next";
-import { PdppRootProvider } from "@/components/pdpp-concept/search-hotkeys.tsx";
-import { SITE_ORIGIN } from "@/components/pdpp-concept/site-facts.ts";
-import { TooltipProvider } from "@/components/ui/tooltip.tsx";
+import { SITE_DESCRIPTION, SITE_ORIGIN, SITE_TITLE } from "@/components/pdpp-concept/site-facts.ts";
+import { SiteProviders } from "@/components/site/site-providers.tsx";
 import { cn } from "@/lib/utils.ts";
-import "./globals.css";
-
-const SITE_TITLE = "PDPP: Personal Data Portability Protocol";
-const SITE_DESCRIPTION =
-  "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.";
+import "@/styles/site.css";
 
 export const metadata: Metadata = {
-  // The home route's own canonical. Every other route sets its own
-  // `alternates.canonical` and inherits nothing from here (SEO/GEO standard
-  // MUST #1.2: one intended absolute canonical URL per page).
-  alternates: { canonical: "/" },
   description: SITE_DESCRIPTION,
   // A filled teal tile with the mark's first glyph knocked out in paper.
   // The wordmark is 365x160, so the whole thing renders as an unreadable
@@ -35,7 +25,6 @@ export const metadata: Metadata = {
     description: SITE_DESCRIPTION,
     title: SITE_TITLE,
     type: "website",
-    url: "/",
   },
   title: SITE_TITLE,
   twitter: {
@@ -65,11 +54,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       suppressHydrationWarning
     >
       <body>
-        <ThemeProvider>
-          <PdppRootProvider>
-            <TooltipProvider>{children}</TooltipProvider>
-          </PdppRootProvider>
-        </ThemeProvider>
+        <SiteProviders>{children}</SiteProviders>
       </body>
     </html>
   );
