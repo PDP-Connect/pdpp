@@ -134,8 +134,7 @@ function ClientIdentityList({
   if (!identities.length) {
     return (
       <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
-        No stable client identities yet. Create one when a local MCP client supports an explicit URL-shaped{" "}
-        <code className="font-mono">client_id</code>.
+        No client identities yet.
       </p>
     );
   }
@@ -318,7 +317,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
             Deployment readiness
           </Link>
         }
-        breadcrumbs={[{ href: "/", label: "Dashboard" }, { label: "Connect apps" }]}
+        breadcrumbs={[{ href: "/", label: "Overview" }, { label: "Connect apps" }]}
         description="Give apps and local agents grant-scoped read access to data already in this instance. To add or manage the data sources that populate it, go to Sources."
         title="Connect apps"
       />
@@ -328,10 +327,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
         {notice ? <InlineNotice kind="notice" message={notice} /> : null}
       </div>
 
-      <Section
-        description="Use these when an app or local agent needs read access to records already collected in this PDPP instance."
-        title="Connect apps"
-      >
+      <Section description="Copy one of these into the app or agent you are setting up." title="Setup commands">
         <ul className="divide-y divide-border/70 border-border/70 border-y">
           {primaryEntries.map((entry) => (
             <CopyRow key={entry.title} {...entry} />
@@ -386,8 +382,8 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       >
         <p className="pdpp-caption text-callout-info-fg/80">
           Claude, ChatGPT, Codex, Claude Code, and third-party MCP clients should use the scoped OAuth flow at{" "}
-          <code className="font-mono">/mcp</code>. Headless MCP setup still returns a scoped client token, not an owner
-          bearer. Trusted local owner automation is a separate flow.
+          <code className="font-mono">/mcp</code>. Headless MCP setup still returns a scoped client token. Trusted local
+          owner automation is a separate flow.
         </p>
       </Callout>
     </RecordroomShellWithPalette>

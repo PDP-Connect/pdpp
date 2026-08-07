@@ -138,7 +138,7 @@ function UnavailableSetupCard({ displayName }: { displayName: string }) {
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         <Link className={buttonVariants({ size: "sm", variant: "default" })} href="/sources">
-          Open sources
+          Open Sources
         </Link>
         <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources/add">
           Add source
@@ -226,7 +226,7 @@ export default async function BrowserSessionConnectPage({
       <PageHeader
         actions={
           <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
-            Back to sources
+            Back to Sources
           </Link>
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: pageTitle }]}

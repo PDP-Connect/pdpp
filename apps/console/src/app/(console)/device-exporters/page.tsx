@@ -85,7 +85,7 @@ export default async function DeviceExportersPage({
         <PageHeader
           breadcrumbs={addConnectionBreadcrumbs}
           count={`${devices.length}`}
-          description="Reference-experimental diagnostics for local collector agents. The device or host supervisor decides when local collectors run; the server owns enrollment, ingestion, state, health, and advisory freshness/run signals."
+          description="Reference-experimental diagnostics for local collector agents. The host supervisor decides when a collector runs; the server owns enrollment, ingestion, and health."
           meta={
             <>
               <MetaPill label="surface" tone="protocol" value="reference-experimental" />
@@ -102,7 +102,7 @@ export default async function DeviceExportersPage({
         </Section>
 
         <Section
-          description="Server-side registration, ingestion, health, diagnostics, and per-connection source identity. Run cadence remains local-supervisor owned."
+          description="Registration, ingestion, health, and per-connection source identity for each enrolled device."
           title="Enrolled devices"
         >
           {devices.length === 0 ? (

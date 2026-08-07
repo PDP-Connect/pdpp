@@ -328,8 +328,8 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
         {/* Ineligibility reason: stale enabled row + manifest policy changed */}
         {ineligibilityReason && (
           <p className="pdpp-caption text-amber-700 dark:text-amber-400">
-            <strong>Not running automatically.</strong> {ineligibilityReason} Manual run remains available; pause or
-            delete this schedule to reflect operator intent.
+            <strong>Manual runs only.</strong> {ineligibilityReason} You can still sync this source by hand; pause or
+            delete the schedule to match.
           </p>
         )}
 

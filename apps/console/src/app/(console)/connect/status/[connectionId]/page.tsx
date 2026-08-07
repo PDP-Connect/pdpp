@@ -548,8 +548,7 @@ function CoverageReceiptCard({ receipt }: { receipt: ImportReceipt }) {
       <p className="pdpp-eyebrow text-muted-foreground">Coverage preview</p>
       <h2 className="pdpp-section-title mt-1">What PDPP found</h2>
       <p className="pdpp-caption mt-1 text-muted-foreground">
-        This receipt combines parser validation with committed acquisition-batch counts. Repeating the same file returns
-        this receipt instead of creating another import.
+        Repeating the same file returns this receipt instead of creating another import.
       </p>
       <dl className="mt-4 grid gap-2">
         {receiptRows(receipt).map((row) => (
@@ -605,7 +604,7 @@ export default async function ConnectionSetupStatusPage({
           </Link>
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: "Setup status" }]}
-        description="This is the durable status for the account or import you just submitted. Bookmark or revisit it any time."
+        description="Durable status for the account or import you just submitted. Bookmark it and come back any time."
         title={title}
       />
 

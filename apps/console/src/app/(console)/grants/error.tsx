@@ -11,7 +11,7 @@ export default function GrantsError(props: { error: Error & { digest?: string };
       {...props}
       backHref="/grants"
       backLabel="Back to grants"
-      description="The grants view ran into an error while reading from your reference deployment. Your grants and approvals are unaffected — this is a read failure, not a change. Try again, or check your reference deployment status."
+      description="Reading from your reference deployment failed. Your grants and approvals are unchanged. Try again, or check your deployment status."
       title="Couldn't load your grants"
     />
   );

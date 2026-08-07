@@ -146,8 +146,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
             ))}
           </DataList>
           <p className="pdpp-caption mt-2 text-muted-foreground">
-            These dashboard shortcut buttons work in open local-dev mode. If placeholder owner auth is enabled, sign in
-            at{" "}
+            These buttons work in open local-dev mode. If placeholder owner auth is enabled, sign in at{" "}
             <a className="underline-offset-2 hover:underline" href={ownerLoginUrl}>
               owner access
             </a>{" "}

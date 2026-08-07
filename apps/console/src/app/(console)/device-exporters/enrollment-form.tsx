@@ -40,7 +40,7 @@ export function EnrollmentForm({
 
   return (
     <Callout
-      description="Creates a short-lived reference-experimental enrollment code for a local exporter agent. This is not a PDPP Core/Profile protocol control."
+      description="Creates a short-lived enrollment code for a local exporter agent. Reference-experimental surface, outside the PDPP Core/Profile protocol."
       surface="human"
       title="Create enrollment code"
     >
@@ -78,10 +78,10 @@ export function EnrollmentForm({
             <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the host that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
               Run this <code className="font-mono">@pdpp/local-collector</code> command on the host with Claude Code or
-              Codex data. It uses the npx-launched <code className="font-mono">pdpp-local-collector</code> binary; no
-              PDPP source checkout is required. The JSON response returns <code className="font-mono">device_id</code>,{" "}
-              <code className="font-mono">device_token</code>, and <code className="font-mono">source_instance_id</code>{" "}
-              &mdash; persist all three without logging the token.
+              Codex data. It runs straight from npx. The response returns{" "}
+              <code className="font-mono">device_id</code>, <code className="font-mono">device_token</code>, and{" "}
+              <code className="font-mono">source_instance_id</code> &mdash; persist all three, and keep the token out of
+              logs.
             </p>
             <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
               <code

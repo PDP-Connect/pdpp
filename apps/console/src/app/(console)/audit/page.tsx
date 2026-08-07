@@ -485,7 +485,7 @@ function TracesEmptyState({ hasFilters }: { hasFilters: boolean }) {
           margin: "0 0 6px",
         }}
       >
-        {hasFilters ? "No matching traces" : "No traces yet"}
+        {hasFilters ? "No matching audit events" : "No audit events yet"}
       </p>
       <p
         style={{

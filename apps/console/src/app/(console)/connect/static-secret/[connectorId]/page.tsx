@@ -77,7 +77,7 @@ export default async function StaticSecretConnectPage({
   const pageTitle = isReplaceMode ? `Reconnect ${setup.display_name}` : `Add ${setup.display_name}`;
   const pageDescription = isReplaceMode
     ? "Enter the credential this connection should use. Records, history, and schedule stay attached to the same connection."
-    : "Seal the provider secret from this owner session and start the first sync. The account keeps its own connection identity and credentials.";
+    : "Store the provider credential from this owner session and start the first sync. The account keeps its own connection identity and credentials.";
   const backHref =
     isReplaceMode && pageParams.connectionId ? `/sources/${encodeURIComponent(pageParams.connectionId)}` : "/sources";
   const backLabel = isReplaceMode ? "Back to connection" : "Back to connections";
@@ -164,8 +164,8 @@ export default async function StaticSecretConnectPage({
             ))}
             {setup.validation === "synchronous" ? (
               <p className="pdpp-caption text-muted-foreground">
-                The credential is checked with the provider when you submit. If it is valid, the account is confirmed
-                before the first sync starts; if not, you stay on this form with your details preserved.
+                The credential is checked with the provider when you submit. A valid one confirms the account and starts
+                the first sync; otherwise you stay on this form with your details preserved.
               </p>
             ) : null}
             <div>
@@ -182,7 +182,7 @@ export default async function StaticSecretConnectPage({
       {isReplaceMode ? (
         <Callout
           className="mt-5"
-          description="Reconnect uses the submitted credential for this connection. It does not change collected records, schedule, or history."
+          description="Reconnect uses the submitted credential for this connection."
           surface="human"
           title="This keeps the same connection"
         />
@@ -191,11 +191,10 @@ export default async function StaticSecretConnectPage({
           className="mt-5"
           description="Submit the form again for a second mailbox or account. Each submission creates a separate connection with its own stored credential."
           surface="human"
-          title="Add another account without changing deployment settings"
+          title="Add another account any time"
         >
           <p className="pdpp-caption text-muted-foreground">
-            The deployment only needs an instance-level credential key provider. Account credentials are captured here
-            for one connection at a time.
+            Deployment settings stay as they are — the instance-level credential key provider covers every account.
           </p>
         </Callout>
       )}

@@ -180,7 +180,7 @@ export default async function GrantPackageDetailPage({
 
       {hasLineage && cumulative ? (
         <Section
-          description={`Reference-experimental. This client holds ${cumulative.active_child_count} active child grant(s) across ${cumulative.package_count} linked package(s) (incremental add-source lineage). Each child grant remains independently revocable; the link carries no source authority.`}
+          description={`Reference-experimental. This client holds ${cumulative.active_child_count} active child grant(s) across ${cumulative.package_count} linked package(s). Each child grant remains independently revocable; the link carries no source authority.`}
           title="Cumulative client access"
         >
           <DataList>
