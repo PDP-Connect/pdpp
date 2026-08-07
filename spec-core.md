@@ -53,6 +53,7 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | Airbyte / Singer | PDPP borrows the RECORD/STATE checkpoint pattern for incremental sync. This record and state-checkpoint lineage informs the Collection Profile companion specification; it appears here for reader orientation and is informative for Core. |
 | [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj) | PDPP implements data minimization through stream and field selection. It also carries machine-readable purpose declarations (`purpose_code`) that support consent display, local policy, and implementation-defined audit or transparency mechanisms, with an explicit protocol-level consent rule for `ai_training`. The internal version history required for incremental sync may support implementations that choose to expose historical access features to users. Whether such exposure is required is outside the scope of this specification. This alignment is informative only and is not a required v0.1 capability. |
 | [DMA](https://eur-lex.europa.eu/eli/reg/2022/1925/oj) | The `continuous` access mode enables ongoing portability aligned with the DMA's requirements. Article 6(9) requires effective portability with continuous and real-time access to the end user's data; PDPP's continuous grants and incremental sync map to that requirement. This alignment is informative only and is not a required v0.1 capability. |
+| [EU Data Act](https://eur-lex.europa.eu/eli/reg/2023/2854/oj) (Regulation 2023/2854) | The Data Act's Article 5(1) flow, where a user directs a data holder to make data available to a third party, is the same triangle as PDPP's owner, source, and client. Article 2(12) defines the user as a natural or legal person, matching PDPP's subject-neutral owner. It applies from 12 September 2025, requires access by design for connected products placed on the market after 12 September 2026, and names no protocol. |
 
 **Note:** The PDPP Collection Profile is one fulfillment mechanism. A conformance test suite for this specification is planned but is not defined in v0.1 (see Section 9).
 
@@ -67,6 +68,8 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | **User** | The person whose data is being accessed. Owns the data, approves grants, may revoke. |
 | **Client** | An application or AI agent requesting user data. Identified by `client_id`. In OAuth terms, this is the client. |
 | **Data Source** | Any external system from which a user's data originates: a consumer platform, a SaaS application, a device, a local archive, a financial institution, or other system. |
+
+The owner is the authenticated subject whose records the source holds. Typically this is a person; the protocol itself is subject-neutral, and an organization that authenticates as the account holder participates identically.
 
 ### Protocol roles
 
@@ -226,6 +229,8 @@ This design ensures that a client authorized for fields A and B cannot infer tha
 ```
 
 Tombstones use the same `object: "record"` envelope as regular response records, with `deleted: true`. The `id` field is the canonical key string (see RECORD envelope, Compound key encoding below). Both `deleted_at` and `emitted_at` are required on tombstone objects. No `data` field is present on tombstones.
+
+A tombstone signals that a record left the stream. For subset or derived streams this means membership removal; it does not assert that the source record was deleted.
 
 `deleted_at` represents the time the record was deleted in the source system, if known; otherwise the time the RS processed the deletion directive. If the source system deletion time is unknown, the RS SHOULD use the `emitted_at` value of the delete directive as `deleted_at`.
 
