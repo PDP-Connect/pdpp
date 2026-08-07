@@ -282,6 +282,80 @@ test("runCollectorConnector reports null completeness when no coverage diagnosti
   }
 });
 
+test("runCollectorConnector.onMessage observes every protocol message in emission order without altering the result", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => { let b = ""; process.stdin.on("data", (c) => { b += c; if (b.includes("\\n")) r(); }); });
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-2", data: { id: "m-2" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: { fetched_at: new Date().toISOString() } }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 2 }) + "\\n");
+      `,
+    });
+
+    const observed: string[] = [];
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-onmessage",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      onMessage: (message) => observed.push(message.type),
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-onmessage",
+    });
+
+    assert.deepEqual(observed, ["RECORD", "RECORD", "STATE", "DONE"]);
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.recordsQueued, 2);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector.onMessage errors are swallowed and never break the run", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => { let b = ""; process.stdin.on("data", (c) => { b += c; if (b.includes("\\n")) r(); }); });
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 1 }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-onmessage-throws",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      onMessage: () => {
+        throw new Error("reporter bug");
+      },
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-onmessage-throws",
+    });
+
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.recordsQueued, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector rejects failed terminal DONE, preserves records, and leaves a durable recovery gap", async () => {
   const harness = await startCollectorHarness({ priorState: {} });
   try {
