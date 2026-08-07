@@ -4,4 +4,6 @@
 
 export const conceptColorSchemeNames = ["plum", "moss", "azure"] as const;
 
-export const defaultConceptColorSchemeName = "azure" as const;
+export const primitiveConceptColorSchemeName = "azure" as const;
+
+export const defaultConceptColorSchemeName: null = null;

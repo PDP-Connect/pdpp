@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/popover.tsx";
 import { cn } from "@/lib/utils.ts";
 import { Button } from "./button.tsx";
-import { conceptColorSchemeNames, defaultConceptColorSchemeName } from "./generated-color-scheme-names.ts";
+import { conceptColorSchemeNames, primitiveConceptColorSchemeName } from "./generated-color-scheme-names.ts";
 
 const SCHEME_QUERY_KEY = "scheme";
 const SCHEME_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
@@ -55,14 +55,13 @@ export function ColorSchemeMenu() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedScheme = searchParams.get(SCHEME_QUERY_KEY);
-  // The default scheme is the unqualified `:root` block in generated-schemes.css,
-  // so it is reached by removing the attribute rather than by setting it.
-  const activeScheme = isSchemeName(requestedScheme) ? requestedScheme : defaultConceptColorSchemeName;
+  // primitive.css holds the default palette; clear the attribute to use it.
+  const activeScheme = isSchemeName(requestedScheme) ? requestedScheme : primitiveConceptColorSchemeName;
 
   useEffect(() => {
     const root = document.documentElement;
 
-    if (activeScheme === defaultConceptColorSchemeName) {
+    if (activeScheme === primitiveConceptColorSchemeName) {
       delete root.dataset.pdppConceptScheme;
     } else {
       root.dataset.pdppConceptScheme = activeScheme;
@@ -77,7 +76,7 @@ export function ColorSchemeMenu() {
     const href = buildConceptSchemeHref(
       pathname,
       searchParams.toString(),
-      scheme === defaultConceptColorSchemeName ? null : scheme
+      scheme === primitiveConceptColorSchemeName ? null : scheme
     );
     router.replace(href, { scroll: false });
   }

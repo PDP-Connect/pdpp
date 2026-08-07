@@ -4,44 +4,46 @@
  * Runtime concept palette values (theme-flipping). semantic.css owns layout
  * @theme keys and palette/type rebinds under [data-surface="concept"].
  *
- * The original teal below is no longer what ships: generated-schemes.css is
- * imported after this file and re-declares these same keys unqualified for
- * `defaultConceptSchemeName` (design-book/concept-colors.mts, currently azure).
- * Set that constant to null to hand the default back to the values here.
+ * Default scheme: azure (design-book/concept-colors.mts). Three anchors
+ * (paper, ink, accent) expand to the 14 tokens below via resolveConceptScheme;
+ * values match `pnpm colors:generate` output for azure. Archived teal default:
+ * primitive.legacy.css. Named ?scheme= overrides load from generated-schemes.css.
  *
- * ink-faint (#6e6b62) clears WCAG AA at 4.92:1 on paper; prior #8a867c was 3.35:1.
- * teal-on-wash stays dark on light wash; flips light on dark wash (not teal-deep).
- * onteal-deep* are pinned light-mode values; teal-deep grounds do not flip with paper/ink.
+ * onteal-deep* are pinned for teal-deep grounds; they flip per scheme in generated CSS.
  * color-mix() stays single-line (formatter disabled on this file).
  * No comments inside :root / [data-theme] below — TW IntelliSense false `{ expected` cascade.
  */
 
 :root {
-  --pdpp-concept-paper: #f5f6f6;
-  --pdpp-concept-paper-deep: #ebeded;
-  --pdpp-concept-paper-panel: #dce8e4;
-  --pdpp-concept-ink: #1a1a17;
-  --pdpp-concept-ink-soft: #57544c;
-  --pdpp-concept-ink-faint: #6e6b62;
-  --pdpp-concept-teal: #0e5a54;
-  --pdpp-concept-teal-deep: #0a3f3b;
-  --pdpp-concept-teal-wash: #e7efed;
-  --pdpp-concept-teal-on-wash: #0a3f3b;
-  --pdpp-concept-onteal-deep: #f5f6f6;
-  --pdpp-concept-onteal-deep-soft: #cbd5d4;
-  --pdpp-concept-onteal-deep-label: #8fa9a6;
-  --pdpp-concept-onteal-deep-wash: #e7efed;
+  --pdpp-concept-paper: oklch(0.97 0.001 245);
+  --pdpp-concept-paper-deep: #e5e6e7;
+  --pdpp-concept-paper-panel: #dbe0e5;
+  --pdpp-concept-ink: oklch(0.22 0.006 245);
+  --pdpp-concept-ink-soft: #4e5052;
+  --pdpp-concept-ink-faint: #67696b;
+  --pdpp-concept-teal: oklch(0.42 0.07 245);
+  --pdpp-concept-teal-deep: #253d53;
+  --pdpp-concept-teal-wash: #e4e7ea;
+  --pdpp-concept-teal-on-wash: #181b1d;
+  --pdpp-concept-onteal-deep: #f4f5f6;
+  --pdpp-concept-onteal-deep-soft: #ccd1d7;
+  --pdpp-concept-onteal-deep-label: #99a3ae;
+  --pdpp-concept-onteal-deep-wash: #e2e5e8;
 }
 
 [data-theme="dark"] {
-  --pdpp-concept-paper: #17181a;
-  --pdpp-concept-paper-deep: #1e2022;
-  --pdpp-concept-paper-panel: #12211e;
-  --pdpp-concept-ink: #eceeed;
-  --pdpp-concept-ink-soft: #b3b6b3;
-  --pdpp-concept-ink-faint: #85887f;
-  --pdpp-concept-teal: #4bb3a6;
-  --pdpp-concept-teal-deep: #0a3f3b;
-  --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
-  --pdpp-concept-teal-on-wash: #a8e0d6;
+  --pdpp-concept-paper: oklch(0.21 0.004 245);
+  --pdpp-concept-paper-deep: #212324;
+  --pdpp-concept-paper-panel: #20272d;
+  --pdpp-concept-ink: oklch(0.95 0.003 245);
+  --pdpp-concept-ink-soft: #aaacae;
+  --pdpp-concept-ink-faint: #8f9192;
+  --pdpp-concept-teal: oklch(0.7 0.1 245);
+  --pdpp-concept-teal-deep: #98bde1;
+  --pdpp-concept-teal-wash: #1d2227;
+  --pdpp-concept-teal-on-wash: #edeff0;
+  --pdpp-concept-onteal-deep: #17181a;
+  --pdpp-concept-onteal-deep-soft: #2c3138;
+  --pdpp-concept-onteal-deep-label: #495765;
+  --pdpp-concept-onteal-deep-wash: #202327;
 }

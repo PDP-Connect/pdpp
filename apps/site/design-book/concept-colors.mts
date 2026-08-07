@@ -18,14 +18,18 @@ interface ConceptSchemeAnchors {
 }
 
 /**
- * The scheme rendered when no `?scheme=` is set. The generator emits it a
- * second time under bare `:root` / `[data-theme="dark"]`, and `tokens/index.css`
- * imports the generated file after `primitive.css`, so those blocks win on
- * source order and the default needs no attribute on <html> (no first-paint
- * flash). Set to `null` to hand the default back to `primitive.css`'s teal,
- * which stays in place underneath either way.
+ * Scheme baked into `primitive.css` (resolved 14-token palette). When no
+ * `?scheme=` is set, the menu clears `data-pdpp-concept-scheme` so primitive
+ * values apply.
  */
-export const defaultConceptSchemeName: string | null = "azure";
+export const primitiveConceptSchemeName = "azure" as const;
+
+/**
+ * When non-null, the generator also emits that scheme unqualified at the top of
+ * generated-schemes.css (duplicate of primitive). `null` — primitive.css is the
+ * sole default; generated file only holds attributed ?scheme= overrides.
+ */
+export const defaultConceptSchemeName: string | null = null;
 
 /**
  * Add experimental schemes here. Generated CSS is inert until the matching
