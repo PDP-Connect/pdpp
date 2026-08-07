@@ -652,9 +652,9 @@ test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mappi
 });
 test("keeps the setup-binding promotion PostgreSQL skip title in the exact receipt mapping", () => {
   assert.deepEqual(
-    ["Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path"].filter(
-      (name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)
-    ),
+    [
+      "Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
     ["Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path"]
   );
 });
