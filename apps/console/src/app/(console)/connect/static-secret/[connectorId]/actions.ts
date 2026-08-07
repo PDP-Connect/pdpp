@@ -112,11 +112,13 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
       connectionId,
       credentialKind: setup.credential_kind,
       secret: payload.secret,
+      setupFields,
     });
-    const runId = await runIdAfterCapture(connectionId, captured, runConnectionNow);
+    const capturedConnectionId = captured.connection_id;
+    const runId = await runIdAfterCapture(capturedConnectionId, captured, runConnectionNow);
     revalidatePath("/sources");
     // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
-    target = statusHref(connectionId, runId, captured.identity?.account_identity ?? null);
+    target = statusHref(capturedConnectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       target = formRetryHrefWithConnectionId(connectorId, connectionId, err.message, setupFields);
@@ -140,11 +142,18 @@ function formRetryHrefWithConnectionId(
   connectorId: string,
   connectionId: string,
   error: string,
-  setupFields: Record<string, string>
+  setupFields: Record<string, string>,
+  options: { displayName?: string | null; draftRetry?: boolean } = {}
 ): string {
-  const params: Record<string, string> = { error };
+  const params: Record<string, string> = {
+    ...(options.draftRetry ? { draft_retry: "1" } : {}),
+    error,
+  };
   for (const [name, value] of Object.entries(setupFields)) {
     params[`field_${name}`] = value;
+  }
+  if (options.displayName) {
+    params.display_name = options.displayName;
   }
   return pageHrefWithConnectionId(connectorId, connectionId, params);
 }
@@ -178,25 +187,36 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       connectionId: draft.connection_id,
       credentialKind: setup.credential_kind,
       secret: payload.secret,
+      setupFields,
     });
-    const runId = await runIdAfterCapture(draft.connection_id, captured, runConnectionNow);
+    const capturedConnectionId = captured.connection_id;
+    const runId = await runIdAfterCapture(capturedConnectionId, captured, runConnectionNow);
     revalidatePath("/sources");
     // Land on the durable setup-status surface, not a transient form notice. The
     // status page reads the connection's projected setup_state and, for a
     // synchronous-probe connector, surfaces the echoed account identity.
     // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
-    target = statusHref(draft.connection_id, runId, captured.identity?.account_identity ?? null);
+    target = statusHref(capturedConnectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       // Synchronous validation rejected the credential — nothing was stored, no
-      // run started. Keep the owner on the form with the provider-named reason
-      // and their non-secret context preserved, so they can fix and resubmit.
-      target = formRetryHref(connectorId, err.message, setupFields, displayName);
+      // run started. Keep the owner on the same resumable draft with the
+      // provider-named reason and non-secret context. The secret is never
+      // round-tripped.
+      target = draftConnectionId
+        ? formRetryHrefWithConnectionId(connectorId, draftConnectionId, err.message, setupFields, {
+            displayName,
+            draftRetry: true,
+          })
+        : formRetryHref(connectorId, err.message, setupFields, displayName);
     } else if (draftConnectionId) {
       // A draft with captured material but no confirmed run must not land on
       // first_sync_pending: that state has no run to observe or refresh. Keep
       // the owner on the repair form with non-secret context preserved.
-      target = formRetryHrefWithConnectionId(connectorId, draftConnectionId, errorMessage(err), setupFields);
+      target = formRetryHrefWithConnectionId(connectorId, draftConnectionId, errorMessage(err), setupFields, {
+        displayName,
+        draftRetry: true,
+      });
     } else {
       target = pageHref(connectorId, formErrorParams(errorMessage(err), displayName));
     }

@@ -189,11 +189,13 @@ async function seedInstance({
   connectorId,
   ownerSubjectId = OWNER_SUBJECT_ID,
   displayName,
+  setupFields = {},
 }: {
   connectorInstanceId: string;
   connectorId: string;
   ownerSubjectId?: string;
   displayName?: string;
+  setupFields?: Record<string, string>;
 }): Promise<void> {
   const store = createSqliteConnectorInstanceStore();
   await store.upsert({
@@ -202,7 +204,7 @@ async function seedInstance({
     createdAt: NOW,
     displayName: displayName ?? connectorInstanceId,
     ownerSubjectId,
-    sourceBinding: { account_hint: connectorInstanceId },
+    sourceBinding: { account_hint: connectorInstanceId, kind: "static_secret", setup_fields: setupFields },
     sourceBindingKey: connectorInstanceId,
     sourceKind: "account",
     status: "active",
@@ -313,8 +315,16 @@ test("capture is per-connection and rotation preserves the connection id", async
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, "gmail");
-      await seedInstance({ connectorId: "gmail", connectorInstanceId: "cin_gmail_personal" });
-      await seedInstance({ connectorId: "gmail", connectorInstanceId: "cin_gmail_work" });
+      await seedInstance({
+        connectorId: "gmail",
+        connectorInstanceId: "cin_gmail_personal",
+        setupFields: { account_email: "personal@example.com" },
+      });
+      await seedInstance({
+        connectorId: "gmail",
+        connectorInstanceId: "cin_gmail_work",
+        setupFields: { account_email: "work@example.com" },
+      });
       const cookie = await login(asUrl);
 
       const first = await captureCredential(asUrl, cookie, "cin_gmail_personal", PERSONAL_SECRET);
