@@ -210,6 +210,11 @@ import {
   configuredGoogleDataPortabilityProviderAuthConnectorKeys,
   createGoogleDataPortabilityProviderAuthExchanger,
 } from "./provider-auth/google-data-portability.ts";
+import {
+  configuredGoogleOwnerAccountProviderAuthConnectorKeys,
+  createGoogleOwnerAccountProviderAuthExchanger,
+  GOOGLE_OWNER_ACCOUNT_CONNECTOR_KEYS,
+} from "./provider-auth/google-oauth-account.ts";
 import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
 import {
   aggregateRecordsAcrossBindings,
@@ -1147,6 +1152,7 @@ function generateReferenceSecret(prefix: string, bytes = 24) {
 const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
   ["claude-code", { displayName: "Claude Code", entryName: "claude_code.json" }],
   ["codex", { displayName: "OpenAI Codex CLI", entryName: "codex.json" }],
+  ["google-takeout", { displayName: "Google Takeout", entryName: "google_takeout.json" }],
   ["imessage", { displayName: "iMessage (macOS)", entryName: "imessage.json" }],
 ]);
 
@@ -1936,6 +1942,51 @@ function buildControllerManualUploadRunEnvResolver() {
     }
     return { [binding.import_dir_env_var as string]: binding.import_dir as string };
   };
+}
+
+/**
+ * Compose the Google Data Portability and Google owner-account (Calendar,
+ * Contacts) exchangers into one `ProviderAuthExchanger` that dispatches by
+ * `connectorId`, so both can be mounted simultaneously without either
+ * provider-auth route knowing there's more than one provider behind it.
+ * Each underlying exchanger is built (deployment-config-gated) only when its
+ * own required env is present; the family is not represented at all when
+ * neither is configured, matching the pre-existing single-exchanger-or-null
+ * pattern this replaces.
+ */
+function buildCompositeProviderAuthExchanger(
+  credentialStoreFactory: () => ReturnType<typeof createRequestConnectorInstanceCredentialStore>
+): ProviderAuthExchanger | null {
+  const dataPortabilityKeys = configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
+  const ownerAccountKeys = configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env);
+  const dataPortabilityExchanger =
+    dataPortabilityKeys.length > 0
+      ? createGoogleDataPortabilityProviderAuthExchanger({ credentialStoreFactory })
+      : null;
+  const ownerAccountExchanger =
+    ownerAccountKeys.length > 0 ? createGoogleOwnerAccountProviderAuthExchanger({ credentialStoreFactory }) : null;
+  if (!(dataPortabilityExchanger || ownerAccountExchanger)) {
+    return null;
+  }
+  function resolve(connectorId: string): ProviderAuthExchanger {
+    if (dataPortabilityExchanger && dataPortabilityKeys.includes(connectorId)) {
+      return dataPortabilityExchanger as unknown as ProviderAuthExchanger;
+    }
+    if (ownerAccountExchanger && GOOGLE_OWNER_ACCOUNT_CONNECTOR_KEYS.includes(connectorId)) {
+      return ownerAccountExchanger as unknown as ProviderAuthExchanger;
+    }
+    throw new Error(`No provider-auth exchanger is configured for connector '${connectorId}'.`);
+  }
+  return {
+    exchangeCode: (args: Parameters<ProviderAuthExchanger["exchangeCode"]>[0]) =>
+      resolve(args.connectorId).exchangeCode(args),
+    initiateAuthorization: (args: Parameters<ProviderAuthExchanger["initiateAuthorization"]>[0]) =>
+      resolve(args.connectorId).initiateAuthorization(args),
+    runInventoryOrTest: (args: Parameters<ProviderAuthExchanger["runInventoryOrTest"]>[0]) =>
+      resolve(args.connectorId).runInventoryOrTest(args),
+    storeTokens: (args: Parameters<ProviderAuthExchanger["storeTokens"]>[0]) =>
+      resolve(args.connectorId).storeTokens(args),
+  } as unknown as ProviderAuthExchanger;
 }
 
 function buildControllerProviderAuthRunEnvResolver() {
@@ -5197,14 +5248,12 @@ export function buildAsApp(opts: ServerOpts = {}) {
   // The in-process pending-auth store is scoped to this RS process instance and
   // survives only for the PENDING_AUTH_TTL_SECONDS window (10 minutes).
   const pendingAuthStore = createInProcessPendingAuthStore();
-  const defaultProviderAuthConnectorKeys = configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
+  const defaultProviderAuthConnectorKeys = [
+    ...configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env),
+    ...configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env),
+  ];
   const providerAuthExchanger =
-    opts.providerAuthExchanger ??
-    (defaultProviderAuthConnectorKeys.length > 0
-      ? createGoogleDataPortabilityProviderAuthExchanger({
-          credentialStoreFactory: createRequestConnectorInstanceCredentialStore,
-        })
-      : null);
+    opts.providerAuthExchanger ?? buildCompositeProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
   const providerAuthCtx = {
     canonicalConnectorKey,
     // Connector keys for which provider-app deployment config is in place.
@@ -6931,14 +6980,12 @@ export async function startServer(opts: ServerOpts = {}) {
   // may inject their own via `opts.staticSecretCredentialProber`.
   const staticSecretCredentialProber = opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
   const configuredProviderAuthConnectorKeys =
-    opts.configuredProviderAuthConnectorKeys ?? configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
+    opts.configuredProviderAuthConnectorKeys ?? [
+      ...configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env),
+      ...configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env),
+    ];
   const providerAuthExchanger =
-    opts.providerAuthExchanger ??
-    (configuredProviderAuthConnectorKeys.includes("google-maps-data-portability")
-      ? createGoogleDataPortabilityProviderAuthExchanger({
-          credentialStoreFactory: createRequestConnectorInstanceCredentialStore,
-        })
-      : null);
+    opts.providerAuthExchanger ?? buildCompositeProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
 
   const asApp = buildAsApp({
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,

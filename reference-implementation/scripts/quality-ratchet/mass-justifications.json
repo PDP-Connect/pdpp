@@ -185,9 +185,14 @@
     "date": "2026-07-27"
   },
   "server/stores/provider-auth-run-credentials.ts": {
-    "allowed_mass": 3,
-    "reason": "Auth/store leaf TypeScript migration (2026-07-27): provider-auth run injection keeps its connector/source gate and validates recovered JSON bundles before mapping environment fields. The typed JSON parse rethrow preserves code, identity, and SyntaxError cause without a suppression.",
-    "date": "2026-07-27"
+    "allowed_mass": 5,
+    "reason": "Auth/store leaf TypeScript migration (2026-07-27): provider-auth run injection keeps its connector/source gate and validates recovered JSON bundles before mapping environment fields. The typed JSON parse rethrow preserves code, identity, and SyntaxError cause without a suppression. Shared Google OAuth owner-account adapter (2026-08-07): resolveProviderAuthRunEnv now dispatches across two independent Google provider-auth families (Data Portability's pre-resolved access token vs the owner-account refresh-token bundle) instead of a single hardcoded connector short-circuit. The added isDataPortability/isOwnerAccount predicates and the branch selecting which bundle-to-env mapper to apply are the minimum dispatch surface that keeps the two families' env-var mappings from colliding; collapsing them would either re-couple the two provider-auth adapters or silently apply the wrong mapping. Proven by provider-auth-run-credentials-gating.test.ts (Data Portability path regression-proven unaffected) and google-owner-account-provider-auth.test.ts's dedicated run-env tests for both new connectors plus a cross-dispatch non-interference case.",
+    "date": "2026-08-07"
+  },
+  "server/provider-auth/google-oauth-account.ts": {
+    "allowed_mass": 1,
+    "reason": "New file (2026-08-07, shared Google OAuth owner-account provider-auth adapter for Calendar/Contacts): a sibling ProviderAuthExchanger implementation to google-data-portability.ts, deliberately independent (no shared imports, no shared env-var namespace) per owner review. The single measured mass point is the connector-allowlist assertion (assertConnector) mirroring the proven Data Portability adapter's own gating pattern. Proven by google-owner-account-provider-auth.test.ts (12 tests: scope isolation, allowlist rejection, full exchange/inventory/store flow with userinfo-derived identity, fail-closed on missing refresh_token/identity, run-env mapping, cross-dispatch non-interference, and one route-level integration test) and google-provider-auth-composite-dispatch.test.ts (2 tests proving the real production wiring dispatches correctly with both Google provider-auth families configured simultaneously).",
+    "date": "2026-08-07"
   },
   "server/stores/run-history-writer.ts": {
     "allowed_mass": 19,

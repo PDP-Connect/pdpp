@@ -321,6 +321,9 @@ export function createGoogleDataPortabilityProviderAuthExchanger({
     },
 
     async storeTokens({ connectorInstanceId, ownerSubjectId, tokens, now }) {
+      // connectorId intentionally unused: assertConnector already gated this
+      // exchanger to google-maps-data-portability during exchangeCode/
+      // runInventoryOrTest, and this bundle shape has no connector branching.
       const snapshot = accessByToken.get(tokens.accessToken);
       if (!snapshot) {
         throw new GoogleDataPortabilityProviderAuthError(

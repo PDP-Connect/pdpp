@@ -432,23 +432,19 @@ test("requested-connector reachability: Steam/Jellyfin/Apple Contacts/GroupMe ne
   );
 });
 
-test("requested-connector reachability: Google Takeout Photos is honestly import-pending, not local-collector-unproven", async () => {
+test("requested-connector reachability: Google Takeout is bundled into @pdpp/local-collector, not manual-upload or unproven", async () => {
+  // Google Takeout Photos reads an already-extracted GOOGLE_TAKEOUT_DIR on the
+  // local filesystem — exactly the local-collector shape (runs on the machine
+  // that has the extracted archive), not a browser-upload connector. It is
+  // bundled into @pdpp/local-collector's SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
+  // so it must classify as the proven, actionable local-collector disposition.
   const manifests = await loadCommittedManifests();
   const catalog = buildConnectorCatalog(manifests);
   const entry = catalog.find((e) => e.connectorKey === "google-takeout");
   assert.ok(entry, "google-takeout must be in the catalog");
-  assert.equal(entry.setupModality, "manual_or_upload");
-  assert.equal(entry.disposition, "manual_upload_pending");
+  assert.equal(entry.setupModality, "local_collector");
+  assert.equal(entry.disposition, "local_collector_enroll");
   assert.notEqual(entry.disposition, "local_collector_unproven");
-  // Either the CTA targets the generic manual-upload route, or there is no
-  // CTA at all paired with honest guidance — never a dead link.
-  const action = sourceSetupAction(entry);
-  if (action) {
-    assert.equal(action.href, "/connect/manual-upload/google-takeout");
-  } else {
-    assert.notEqual(sourceSetupGuidance(entry), "This dashboard cannot add this source yet.");
-    assert.match(sourceSetupGuidance(entry), /file import is not available/i);
-  }
 });
 
 test("requested-connector reachability: Google Calendar/Contacts show honest non-dead-end guidance, no rejecting CTA", async () => {
@@ -464,12 +460,27 @@ test("requested-connector reachability: Google Calendar/Contacts show honest non
         entry.disposition === "provider_auth_deployment_blocked" || entry.disposition === "provider_auth_proof_gated",
         `${key}: expected a provider-auth gated disposition, got '${entry.disposition}'`
       );
-      // No CTA — a route that would reject the connector (assertConnector in
-      // google-data-portability.ts only accepts google-maps-data-portability).
-      assert.equal(sourceSetupAction(entry), null, `${key}: must not offer a CTA into an adapter that will reject it`);
+      // No CTA yet — a real shared Google owner-account adapter now exists
+      // and is route-tested (reference-implementation/test/google-owner-account-provider-auth.test.ts,
+      // google-provider-auth-composite-dispatch.test.ts), but google-calendar/
+      // google-contacts are deliberately NOT in
+      // PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS yet — promotion to a
+      // live CTA is a separate commit once proven against a real account, per
+      // repo convention (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS's precedent).
+      assert.equal(
+        sourceSetupAction(entry),
+        null,
+        `${key}: must not offer a CTA before the adapter is promoted to live-proven`
+      );
       const guidance = sourceSetupGuidance(entry);
       assert.notEqual(guidance, "This dashboard cannot add this source yet.", `${key}: must not be silently generic`);
       assert.ok(guidance.length > 0, `${key}: guidance must be non-empty`);
+      if (entry.disposition === "provider_auth_proof_gated") {
+        // Copy must be accurate: the flow is code-complete/tested, not "not
+        // shipped" — and must not claim a live account was tested.
+        assert.match(guidance, /live validation/i);
+        assert.doesNotMatch(guidance, /does not yet ship/i);
+      }
     }
   }
 });

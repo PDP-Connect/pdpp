@@ -107,6 +107,7 @@ export interface ProviderAuthExchanger {
    * considered consumed (the exchanger is responsible for encrypted storage).
    */
   storeTokens: (args: {
+    connectorId: string;
     connectorInstanceId: string;
     ownerSubjectId: string;
     tokens: ProviderAuthTokens;
@@ -327,7 +328,13 @@ async function activateConnectorInstanceForAccount(
     updatedAt: now,
   };
   const draftInstance = await store.upsert({ ...sharedRecord, status: "draft" });
-  await exchanger.storeTokens({ connectorInstanceId: draftInstance.connectorInstanceId, now, ownerSubjectId, tokens });
+  await exchanger.storeTokens({
+    connectorId,
+    connectorInstanceId: draftInstance.connectorInstanceId,
+    now,
+    ownerSubjectId,
+    tokens,
+  });
   return store.upsert({ ...sharedRecord, status: "active" });
 }
 

@@ -221,6 +221,7 @@ test("Google exchanger exchanges code, inventories access type, and stores seale
   assert.doesNotMatch(JSON.stringify(accounts), /ya29|refresh-token/);
 
   await exchanger.storeTokens({
+    connectorId: GOOGLE_MAPS_DATA_PORTABILITY_CONNECTOR_KEY,
     connectorInstanceId: "cin_google",
     now: "2026-06-11T00:00:00.000Z",
     ownerSubjectId: "owner_local",
