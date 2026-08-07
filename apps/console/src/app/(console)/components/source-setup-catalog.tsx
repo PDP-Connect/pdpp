@@ -4,7 +4,7 @@
 import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
-import { type ConnectorAcquisitionPath, type ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
+import type { ConnectorAcquisitionPath, ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
 import type { RefCountState } from "../lib/ref-client.ts";
 import {
   sourceSetupAction,
