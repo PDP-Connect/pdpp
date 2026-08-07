@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
@@ -26,16 +26,20 @@ import {
   getBundledConnector,
   inspectLocalOutboxStatus,
   inspectLocalReferenceRoute,
+  normalizeConnectorId,
   parseArgs,
   parseCollectorProfileEnv,
   pruneSentOutboxRows,
   readLocalOutboxDeadLetterErrorSummary,
   recoverLocalCollector,
+  removeLocalCollectorProfile,
   resolveInspectionOptions,
   resolveLocalCollectorPackageVersion,
+  resolveRunProfileOptions,
   retryLocalOutboxDeadLetters,
   scopedDefaultQueuePath,
   summarizeRunResultForCli,
+  writeLocalCollectorProfile,
 } from "../bin/pdpp-local-collector.ts";
 // Use a tsx-loader-style import indirectly: the runner module is .ts, so
 // these tests exercise the same path the bin uses. Node 22+ supports
@@ -862,6 +866,183 @@ test("local collector status resolves the matching source-instance profile queue
   }
 });
 
+test("normalizeConnectorId lowercases and folds hyphens to underscores", () => {
+  assert.equal(normalizeConnectorId("claude-code"), "claude_code");
+  assert.equal(normalizeConnectorId("CLAUDE_CODE"), "claude_code");
+  assert.equal(normalizeConnectorId("  Claude-Code  "), "claude_code");
+  assert.equal(normalizeConnectorId("codex"), "codex");
+});
+
+test("writeLocalCollectorProfile writes a profile .env that findLocalCollectorProfiles resolves back", () => {
+  const profileDir = tempDirSync();
+  const path = writeLocalCollectorProfile({
+    baseUrl: "https://pdpp.example.com",
+    connectorId: "claude_code",
+    deviceId: "device-42",
+    deviceToken: "token-42",
+    name: "claude_code",
+    profileDir,
+    sourceInstanceId: "dsrc_setup",
+  });
+  assert.equal(path, join(profileDir, "claude_code.env"));
+  assert.equal(existsSync(path), true);
+
+  const lookup = findLocalCollectorProfiles({ profileDir, sourceInstanceId: "dsrc_setup" });
+  assert.equal(lookup.matches.length, 1);
+  const [profile] = lookup.matches;
+  assert.ok(profile, "expected exactly one matching profile");
+  assert.equal(profile.env.PDPP_REFERENCE_BASE_URL, "https://pdpp.example.com");
+  assert.equal(profile.env.PDPP_COLLECTOR_CONNECTOR, "claude_code");
+  assert.equal(profile.env.PDPP_LOCAL_DEVICE_ID, "device-42");
+  assert.equal(profile.env.PDPP_LOCAL_DEVICE_TOKEN, "token-42");
+  assert.equal(profile.source_instance_id, "dsrc_setup");
+});
+
+test("writeLocalCollectorProfile restricts directory and file permissions to the owner (POSIX)", {
+  skip: process.platform === "win32",
+}, () => {
+  const profileDir = tempDirSync();
+  const path = writeLocalCollectorProfile({
+    baseUrl: "https://pdpp.example.com",
+    connectorId: "codex",
+    deviceId: "device-1",
+    deviceToken: "token-1",
+    name: "codex",
+    profileDir,
+    sourceInstanceId: "dsrc_perm",
+  });
+  // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
+  const fileMode = statSync(path).mode & 0o777;
+  // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
+  const dirMode = statSync(profileDir).mode & 0o777;
+  assert.equal(fileMode, 0o600);
+  assert.equal(dirMode, 0o700);
+});
+
+test("writeLocalCollectorProfile round-trips a base URL containing special characters", () => {
+  const profileDir = tempDirSync();
+  writeLocalCollectorProfile({
+    baseUrl: 'https://pdpp.example.com/path?x="y"&z=\\',
+    connectorId: "claude_code",
+    deviceId: "device-1",
+    deviceToken: "token-1",
+    name: "claude_code",
+    profileDir,
+    sourceInstanceId: "dsrc_escape",
+  });
+  const lookup = findLocalCollectorProfiles({ profileDir, sourceInstanceId: "dsrc_escape" });
+  const [profile] = lookup.matches;
+  assert.ok(profile, "expected exactly one matching profile");
+  assert.equal(profile.env.PDPP_REFERENCE_BASE_URL, 'https://pdpp.example.com/path?x="y"&z=\\');
+});
+
+test("removeLocalCollectorProfile deletes an existing profile and is idempotent on a missing one", () => {
+  const profileDir = tempDirSync();
+  writeLocalCollectorProfile({
+    baseUrl: "https://pdpp.example.com",
+    connectorId: "claude_code",
+    deviceId: "device-1",
+    deviceToken: "token-1",
+    name: "claude_code",
+    profileDir,
+    sourceInstanceId: "dsrc_remove",
+  });
+  const first = removeLocalCollectorProfile({ name: "claude_code", profileDir });
+  assert.equal(first.removed, true);
+  assert.equal(existsSync(first.path), false);
+
+  const second = removeLocalCollectorProfile({ name: "claude_code", profileDir });
+  assert.equal(second.removed, false);
+});
+
+test("run without --queue fills device-id/device-token/connector from a matching profile", () => {
+  const profileDir = tempDirSync();
+  writeLocalCollectorProfile({
+    baseUrl: "https://pdpp.example.com",
+    connectorId: "claude_code",
+    deviceId: "device-from-profile",
+    deviceToken: "token-from-profile",
+    name: "claude_code",
+    profileDir,
+    sourceInstanceId: "dsrc_run_profile",
+  });
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    const options = parseArgs(["run", "--connection-id", "dsrc_run_profile"]);
+    const resolved = resolveRunProfileOptions(options);
+    assert.equal(resolved.deviceId, "device-from-profile");
+    assert.equal(resolved.deviceToken, "token-from-profile");
+    assert.equal(resolved.connector, "claude_code");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+});
+
+test("run with device-id/device-token/connector supplied via flags never consults the profile dir (automation compatibility)", () => {
+  // Regression guard: existing automation supplies device-id/device-token/
+  // connector entirely via flags or PDPP_LOCAL_DEVICE_ID/PDPP_LOCAL_DEVICE_TOKEN
+  // env vars with no profile file ever written on disk. `run` must keep
+  // working exactly as before — never refuse just because no profile matches.
+  const profileDir = tempDirSync(); // deliberately empty — no profile written
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    const options = parseArgs([
+      "run",
+      "--connection-id",
+      "dsrc_no_profile",
+      "--device-id",
+      "device-1",
+      "--device-token",
+      "token-1",
+      "--connector",
+      "claude_code",
+    ]);
+    const resolved = resolveRunProfileOptions(options);
+    assert.equal(resolved.deviceId, "device-1");
+    assert.equal(resolved.deviceToken, "token-1");
+    assert.equal(resolved.connector, "claude_code");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+});
+
+test("logout removes the named profile and reports removed:false when absent", () => {
+  const profileDir = tempDirSync();
+  writeLocalCollectorProfile({
+    baseUrl: "https://pdpp.example.com",
+    connectorId: "claude_code",
+    deviceId: "device-1",
+    deviceToken: "token-1",
+    name: "claude_code",
+    profileDir,
+    sourceInstanceId: "dsrc_logout",
+  });
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    const first = removeLocalCollectorProfile({ name: "claude_code" });
+    assert.equal(first.removed, true);
+    const second = removeLocalCollectorProfile({ name: "claude_code" });
+    assert.equal(second.removed, false);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+});
+
 test("local collector recover dry-run loads the matching source-instance profile queue", async () => {
   const profileDir = await tempDir();
   const queuePath = await tempOutboxPath();
@@ -1468,6 +1649,43 @@ test("pdpp-local-collector run --connector claude_code resolves to the bundled d
   assert.deepEqual([...spec.args], [...BUNDLED_CONNECTORS.claude_code.args]);
   assert.deepEqual([...spec.streams].sort(), [...BUNDLED_CONNECTORS.claude_code.streams].sort());
   assert.equal(spec.runtime_requirements.bindings.filesystem?.required, true);
+});
+
+test("pdpp-local-collector run --connector claude-code (hyphen) normalizes to the bundled claude_code entrypoint", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "claude-code",
+    "--device-id",
+    "device-1",
+    "--device-token",
+    "token-1",
+    "--connection-id",
+    "src-claude",
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.equal(spec.connector_id, "claude_code");
+  assert.equal(spec.command, BUNDLED_CONNECTORS.claude_code.command);
+});
+
+test("pdpp-local-collector run --connector CLAUDE_CODE (uppercase) normalizes to the bundled claude_code entrypoint", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "CLAUDE_CODE",
+    "--device-id",
+    "device-1",
+    "--device-token",
+    "token-1",
+    "--connection-id",
+    "src-claude",
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.equal(spec.connector_id, "claude_code");
 });
 
 test("pdpp-local-collector run reads connector id from PDPP_COLLECTOR_CONNECTOR", () => {
@@ -2330,7 +2548,6 @@ test("compact CLI dry-run reports reclaimable bytes without mutating the file", 
 test("compact CLI --apply on a drained outbox backs up then shrinks the file", async () => {
   const path = await tempOutboxPath();
   seedAndPruneForCompact(path, 1500);
-  const { statSync } = await import("node:fs");
   const sizeBefore = statSync(path).size;
 
   const opts = parseArgs(["compact", "--queue", path, "--connection-id", "src-1", "--apply"]);
@@ -2358,7 +2575,6 @@ test("compact CLI --apply REFUSES when unsent rows exist and no --force, leaving
   } finally {
     outbox.close();
   }
-  const { statSync } = await import("node:fs");
   const sizeBefore = statSync(path).size;
 
   const opts = parseArgs(["compact", "--queue", path, "--connection-id", "src-1", "--apply"]);
@@ -2387,7 +2603,6 @@ test("compact CLI --apply --force compacts even with unsent rows, preserving the
   } finally {
     outbox.close();
   }
-  const { statSync } = await import("node:fs");
   const sizeBefore = statSync(path).size;
 
   const opts = parseArgs(["compact", "--queue", path, "--connection-id", "src-1", "--apply", "--force"]);
@@ -2508,6 +2723,10 @@ async function tempOutboxPath() {
 
 function tempDir() {
   return mkdtemp(join(tmpdir(), "pdpp-local-collector-test-"));
+}
+
+function tempDirSync(): string {
+  return mkdtempSync(join(tmpdir(), "pdpp-local-collector-test-"));
 }
 
 /**
