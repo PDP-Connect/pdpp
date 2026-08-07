@@ -15,8 +15,9 @@ import {
   staticSecretCredentialCaptureFromManifest,
 } from "../connection-setup-plan.ts";
 import {
-  assertStaticSecretActiveIdentityCanClaim,
+  assertStaticSecretActiveCredentialReplacementAllowed,
   isStaticSecretBindingUniqueConflict,
+  isStaticSecretPipelineBinding,
   parseStaticSecretSetupFields,
   staticSecretBindingRecord,
   staticSecretIdentityClaim,
@@ -124,6 +125,10 @@ interface ConnectorInstanceCredentialStore {
     secret: string;
     now: string;
   }) => Promise<CredentialMetadata> | CredentialMetadata;
+  // Non-secret, key-derived fingerprint of a candidate plaintext — used to
+  // prove "is this the exact same credential already stored" without
+  // sealing/persisting anything. See connector-instance-credential-store.ts.
+  fingerprintCandidate: (secret: string) => string | null;
   getMetadata: (connectorInstanceId: string) => Promise<CredentialMetadata | null> | CredentialMetadata | null;
 }
 
@@ -546,9 +551,9 @@ async function claimProbedStaticSecretIdentity(
   input: {
     connectorId: string;
     connectorInstanceId: string;
-    identityFieldName?: string;
     ownerSubjectId: string;
     probedIdentity: string;
+    secret: string;
     setupFields?: Record<string, string>;
   }
 ): Promise<ClaimedStaticSecretIdentity> {
@@ -556,12 +561,18 @@ async function claimProbedStaticSecretIdentity(
   const { identity, sourceBindingKey } = staticSecretIdentityClaim(input);
   const current = await currentInstanceOrThrow(store, input.connectorInstanceId);
   const binding = currentBindingOrThrow(current);
-  assertStaticSecretActiveIdentityCanClaim({
-    identity,
-    identityFieldName: input.identityFieldName,
-    sourceBinding: current.sourceBinding,
-    status: current.status,
-  });
+  if (current.status === "active" && isStaticSecretPipelineBinding(current.sourceBinding)) {
+    const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
+    const existingCredential = await credentialStore.getMetadata(input.connectorInstanceId);
+    assertStaticSecretActiveCredentialReplacementAllowed({
+      existingCredentialFingerprint: existingCredential?.fingerprint ?? null,
+      hasExistingCredential: existingCredential !== null,
+      newSecretFingerprint: credentialStore.fingerprintCandidate(input.secret),
+      probedIdentity: identity,
+      sourceBinding: current.sourceBinding,
+      status: current.status,
+    });
+  }
   binding.verified_identity = identity;
   if (input.setupFields) {
     binding.setup_fields = input.setupFields;
@@ -588,6 +599,38 @@ async function claimProbedStaticSecretIdentity(
     }
     return resolveIdentityBindingConflict(ctx, store, current, sourceBindingKey, err, input);
   }
+}
+
+// Guards a credential replacement when there is no probed identity to claim
+// (no-probe connector, or a probe that self-reported skipped). The active-
+// connection fail-closed rule still applies here — this is the primary
+// reproduction path for PR #84's P1: a connection that reached `active`
+// through first-sync with no probe ever running has no durable identity
+// signal on its binding, and nothing about that absence licenses a silent
+// credential swap.
+//
+// Deliberately never passes anything derived from `setup_fields` as identity
+// proof here: those are owner-typed, non-secret, and trivially resubmittable
+// by an attacker alongside a stolen secret. With no probe, the only channel
+// this route can offer is the credential fingerprint.
+async function assertActiveReplacementAllowedWithoutProbe(
+  ctx: MountRefStaticSecretCredentialsContext,
+  input: { connectorInstanceId: string; secret: string }
+): Promise<void> {
+  const store = requireConnectorInstanceStore(ctx);
+  const current = await currentInstanceOrThrow(store, input.connectorInstanceId);
+  if (current.status !== "active" || !isStaticSecretPipelineBinding(current.sourceBinding)) {
+    return;
+  }
+  const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
+  const existingCredential = await credentialStore.getMetadata(input.connectorInstanceId);
+  assertStaticSecretActiveCredentialReplacementAllowed({
+    existingCredentialFingerprint: existingCredential?.fingerprint ?? null,
+    hasExistingCredential: existingCredential !== null,
+    newSecretFingerprint: credentialStore.fingerprintCandidate(input.secret),
+    sourceBinding: current.sourceBinding,
+    status: current.status,
+  });
 }
 
 // Runs the synchronous credential probe when one is configured. Returns the
@@ -845,23 +888,14 @@ async function runStaticSecretCredentialCapture(
   if (probeOutcome === null) {
     return;
   }
-  let responseNamespace = namespace;
-  let deduplicated = false;
   const { probedIdentity } = probeOutcome;
-  if (probedIdentity) {
-    const identityFieldName = contract.fields.find((field) => field.identity && !field.secret)?.name;
-    const claim = await claimProbedStaticSecretIdentity(ctx, {
-      connectorId: namespace.connectorId,
-      connectorInstanceId: namespace.connectorInstanceId,
-      ...(identityFieldName ? { identityFieldName } : {}),
-      ownerSubjectId,
-      probedIdentity: probedIdentity.identity,
-      ...(submittedSetupFields ? { setupFields: submittedSetupFields } : {}),
-    });
-    const { deduplicated: claimWasDeduplicated, instance } = claim;
-    deduplicated = claimWasDeduplicated;
-    responseNamespace = { ...namespace, connectorInstanceId: instance.connectorInstanceId };
-  }
+  const { deduplicated, responseNamespace } = await claimOrGuardReplacement(ctx, {
+    namespace,
+    ownerSubjectId,
+    probedIdentity,
+    secret,
+    ...(submittedSetupFields ? { submittedSetupFields } : {}),
+  });
   await storeAndRespond(ctx, req, res, {
     credentialKind,
     ...(deduplicated ? { deduplicated: true } : {}),
@@ -870,6 +904,43 @@ async function runStaticSecretCredentialCapture(
     probedIdentity,
     secret,
   });
+}
+
+// After a probe either names an identity or is skipped, either claims that
+// identity (existing behavior) or — with no probed identity to claim — still
+// runs the active-replacement guard. An active connection with no durable,
+// provider-verified identity is never silently retargetable just because
+// nothing on record contradicts the new secret; owner-typed `setup_fields`
+// are never consulted as proof here (see assertActiveReplacementAllowedWithoutProbe).
+async function claimOrGuardReplacement(
+  ctx: MountRefStaticSecretCredentialsContext,
+  input: {
+    namespace: ConnectorNamespace;
+    ownerSubjectId: string;
+    probedIdentity: { detail: string | null; identity: string } | null;
+    secret: string;
+    submittedSetupFields?: Record<string, string>;
+  }
+): Promise<{ deduplicated: boolean; responseNamespace: ConnectorNamespace }> {
+  if (input.probedIdentity) {
+    const claim = await claimProbedStaticSecretIdentity(ctx, {
+      connectorId: input.namespace.connectorId,
+      connectorInstanceId: input.namespace.connectorInstanceId,
+      ownerSubjectId: input.ownerSubjectId,
+      probedIdentity: input.probedIdentity.identity,
+      secret: input.secret,
+      ...(input.submittedSetupFields ? { setupFields: input.submittedSetupFields } : {}),
+    });
+    return {
+      deduplicated: claim.deduplicated,
+      responseNamespace: { ...input.namespace, connectorInstanceId: claim.instance.connectorInstanceId },
+    };
+  }
+  await assertActiveReplacementAllowedWithoutProbe(ctx, {
+    connectorInstanceId: input.namespace.connectorInstanceId,
+    secret: input.secret,
+  });
+  return { deduplicated: false, responseNamespace: input.namespace };
 }
 
 async function handleStaticSecretCredentialCapture(
