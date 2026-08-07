@@ -72,10 +72,56 @@ export function pdppLocalCollectorEnrollCommand(args: {
 }
 
 /**
+ * Render the public `@pdpp/local-collector setup` command for a freshly
+ * minted enrollment code and a specific connector id. This is the guided,
+ * one-command onboarding path: it exchanges the code, saves device
+ * credentials to a local profile file (never printed/logged), and runs a
+ * bounded `--sample` proof pass so the operator sees real evidence the
+ * pairing works before deciding to collect the full source. This is the
+ * PRIMARY path the dashboard should render — it replaces the old two-step
+ * `enroll` (prints JSON) + hand-copy-into-env-vars `run` flow, which is a
+ * discoverability/legibility tax for a first-time operator, not a security
+ * requirement (the device token still never appears in dashboard-rendered
+ * text either way).
+ */
+export function pdppLocalCollectorSetupCommand(args: {
+  baseUrl: string;
+  code: string;
+  connectorId: string;
+  deviceLabel?: string | null | undefined;
+  sample?: number | undefined;
+}): string {
+  const parts = [
+    "npx",
+    "-y",
+    localCollectorPackageSpecifier,
+    "setup",
+    "--base-url",
+    args.baseUrl,
+    "--code",
+    args.code,
+    "--connector",
+    args.connectorId,
+  ];
+  const label = args.deviceLabel?.trim();
+  if (label) {
+    parts.push("--device-label", JSON.stringify(label));
+  }
+  if (args.sample) {
+    parts.push("--sample", String(args.sample));
+  }
+  return parts.join(" ");
+}
+
+/**
  * Render the public `@pdpp/local-collector` run command. The device id, device
  * token, and source instance id come from a prior enrollment response and are
  * passed as env vars so the dashboard never embeds secrets in generated
  * commands.
+ *
+ * Kept as the LOW-LEVEL alternative for operators who used `enroll` directly
+ * or manage credentials themselves; {@link pdppLocalCollectorSetupCommand} is
+ * the primary onboarding command the dashboard renders.
  */
 export function pdppLocalCollectorRunCommand(args: { baseUrl: string; connectorId: string }): string {
   return [
