@@ -37,6 +37,7 @@ import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import {
   buildDetailCoverageMessage,
   buildDetailGap,
+  describeUnexpectedFailure,
   type DetailCoverageMessage,
   type DetailGapMessage,
   type DetailGapStartEntry,
@@ -2021,7 +2022,9 @@ function attachmentBackfillCandidateCost(meta: FetchMessageObject): number {
 }
 
 function boundedHydrationError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
+  // Attachment downloads go over IMAP too, so the same generic
+  // "Command failed" applies here — keep the server's reason, then bound it.
+  const raw = describeUnexpectedFailure(err);
   return raw.slice(0, HYDRATION_ERROR_MAX_CHARS);
 }
 
@@ -2762,7 +2765,13 @@ async function main(): Promise<void> {
 // Named (not inline) so its own internal `emit(...).catch(...)` isn't a
 // promise chain nested inside another chain's callback.
 function handleMainRejection(e: unknown): void {
-  const msg = e instanceof Error ? e.message : String(e);
+  // imapflow raises a bare `new Error("Command failed")` for EVERY IMAP NO/BAD
+  // response and puts the server's actual explanation on side fields. Reading
+  // `.message` alone made a revoked app password, a rate limit, and IMAP being
+  // disabled all arrive as the same contentless string. This path emits DONE
+  // directly, so it has to do that extraction itself rather than inheriting the
+  // runtime's.
+  const msg = describeUnexpectedFailure(e);
   const retryable = RETRYABLE_ERROR_RE.test(msg);
   const trace = e instanceof Error ? (e.stack ?? msg) : msg;
   process.stderr.write(`[gmail] main rejected: ${trace}\n`);
