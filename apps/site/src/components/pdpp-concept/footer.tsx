@@ -1,10 +1,11 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import Link from "next/link";
 import { Suspense } from "react";
 import { cn } from "@/lib/utils.ts";
 import { ColorSchemeMenu } from "./color-scheme-menu.tsx";
-import { DiscordIcon, GithubIcon } from "./icons.tsx";
+import { DiscordIcon, GithubIcon, WordmarkIcon } from "./icons.tsx";
 import { DISCORD_INVITE_URL, GITHUB_REPO_URL, SITE_LICENSES } from "./site-facts.ts";
 import { Text } from "./text.tsx";
 
@@ -16,19 +17,11 @@ const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");
 // per-page props, so there is no seam where they can diverge again.
 //
 // Column order and content are load-bearing:
-//   LICENSE     — all three licenses LINKED and LABELLED by the artifact they
-//                 cover, specification text FIRST (explicit owner instruction).
-//   SOURCE      — the repository, with the GitHub mark.
-//   COMMUNITY   — Discord. Named for the category, not the product: LICENSE /
-//                 SOURCE / GOVERNANCE all name a kind of information, and the
-//                 link text underneath already says "Discord". COMMUNITY is
-//                 also the dominant convention (Docusaurus's default footer
-//                 scaffold, reused by vercel.com) and absorbs a forum or a
-//                 mailing list later without a rename.
-//   GOVERNANCE  — the LFDT lab line.
+//   BRAND       — wordmark + protocol name.
+//   LICENSE     — licenses (spec first) + governance.
+//   COMMUNITY   — Discord and the GitHub repository (SOURCE folded in here).
 //
-// Four columns exactly, on all four pages. A fifth was tried during the concept
-// pass and reverted: it wrapped to a second row at 1280px.
+// Three columns on all pages.
 //
 // Type via Text; column rhythm via flex gap (footer is outside .pdpp-doc —
 // no prose p margin to zero).
@@ -59,83 +52,98 @@ export function PdppConceptFooter() {
         className={cn(
           // Same measure as masthead / PdppConceptPage
           "container max-w-page",
-          // Stack by default; four-col row from 721px (concept surface omits md: theme)
+          // Stack by default; three-col row from 721px (concept surface omits md: theme)
           "flex flex-col gap-6 py-8",
           "min-[721px]:flex-row min-[721px]:flex-wrap min-[721px]:justify-between min-[721px]:gap-x-16 min-[721px]:gap-y-8 min-[721px]:pt-10 min-[721px]:pb-24"
         )}
       >
-        <div className={cn(colClassName, "max-w-[40ch] tabular-nums")}>
-          <Text color="onAccentLabel" size="stamp" weight="normal">
-            License
-          </Text>
-          <dl className="m-0 flex flex-col gap-0.5 tabular-nums">
-            {SITE_LICENSES.map((row) => (
-              <div className="flex gap-1.5 whitespace-nowrap" key={row.artifact}>
-                <dt className="m-0 opacity-75">{row.artifact}:</dt>
-                <dd className="m-0">
-                  <a className={footerLinkClassName} href={row.href} rel="noopener noreferrer" target="_blank">
-                    {row.spdx}
-                  </a>
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-
         <div className={colClassName}>
-          <Text color="onAccentLabel" size="stamp" weight="normal">
-            Source
-          </Text>
-          <Text
-            as="a"
-            className={footerLinkClassName}
-            color="onAccent"
-            href={GITHUB_REPO_URL}
-            rel="noopener noreferrer"
-            size="inherit"
-            target="_blank"
-            withIcon
+          <Link
+            aria-label="PDPP, home"
+            className="text-on-primary-emphasis hover:text-white! focus-visible:text-white!"
+            href="/"
           >
-            <GithubIcon />
-            {githubDisplayText}
+            <WordmarkIcon />
+          </Link>
+          <Text color="onAccentLabel" size="stamp" weight="normal">
+            personal data portabilty protocol
           </Text>
         </div>
 
-        <div className={colClassName}>
-          <Text color="onAccentLabel" size="stamp" weight="normal">
-            Community
-          </Text>
-          <Text
-            as="a"
-            className={footerLinkClassName}
-            color="onAccent"
-            href={DISCORD_INVITE_URL}
-            rel="noopener noreferrer"
-            size="inherit"
-            target="_blank"
-            withIcon
-          >
-            <DiscordIcon />
-            #pdp-connect on LFDT Discord
-          </Text>
+        <div className={cn(colClassName, "max-w-[40ch] gap-6 tabular-nums")}>
+          <div className="flex flex-col gap-1.5">
+            <Text color="onAccentLabel" size="stamp" weight="normal">
+              License
+            </Text>
+            <dl className="m-0 flex flex-col gap-0.5 tabular-nums">
+              {SITE_LICENSES.map((row) => (
+                <div className="flex gap-1.5 whitespace-nowrap" key={row.artifact}>
+                  <dt className="m-0 opacity-75">{row.artifact}:</dt>
+                  <dd className="m-0">
+                    <a className={footerLinkClassName} href={row.href} rel="noopener noreferrer" target="_blank">
+                      {row.spdx}
+                    </a>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Text color="onAccentLabel" size="stamp" weight="normal">
+              Governance
+            </Text>
+            <Text color="onAccentSoft" size="inherit">
+              PDP-Connect is an{" "}
+              <a
+                className={footerLinkClassName}
+                href="https://www.lfdecentralizedtrust.org/"
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                LF Decentralized Trust
+              </a>{" "}
+              Lab.
+            </Text>
+          </div>
         </div>
 
-        <div className={colClassName}>
-          <Text color="onAccentLabel" size="stamp" weight="normal">
-            Governance
-          </Text>
-          <Text color="onAccentSoft" size="inherit">
-            PDP-Connect is an{" "}
-            <a
+        <div className={cn(colClassName, "gap-6")}>
+          <div className="flex flex-col gap-1.5">
+            <Text color="onAccentLabel" size="stamp" weight="normal">
+              Community
+            </Text>
+            <Text
+              as="a"
               className={footerLinkClassName}
-              href="https://www.lfdecentralizedtrust.org/"
+              color="onAccent"
+              href={DISCORD_INVITE_URL}
               rel="noopener noreferrer"
+              size="inherit"
               target="_blank"
+              withIcon
             >
-              LF Decentralized Trust
-            </a>{" "}
-            Lab.
-          </Text>
+              <DiscordIcon />
+              #pdp-connect on LFDT Discord
+            </Text>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Text color="onAccentLabel" size="stamp" weight="normal">
+              Source
+            </Text>
+            <Text
+              as="a"
+              className={footerLinkClassName}
+              color="onAccent"
+              href={GITHUB_REPO_URL}
+              rel="noopener noreferrer"
+              size="inherit"
+              target="_blank"
+              withIcon
+            >
+              <GithubIcon />
+              {githubDisplayText}
+            </Text>
+          </div>
         </div>
 
         <div className="flex w-full justify-end">
