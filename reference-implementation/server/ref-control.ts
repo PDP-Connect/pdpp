@@ -2066,8 +2066,29 @@ function isOwnerCancelledRun(run: ConnectorRunSummary | null): boolean {
   return run?.status === "cancelled" && OWNER_CANCEL_TERMINAL_REASONS.has(reason);
 }
 
+/**
+ * A `status: "skipped"` row (`runtime/scheduler/pre-run-gate.ts`'s
+ * `buildUnresolvedAttentionSkip`/`buildNotReadySkip`/etc.) is scheduler
+ * bookkeeping, not a connector execution result — the run never dispatched,
+ * never contacted the provider, and its `error`/`failure_reason` text (e.g.
+ * `"attention_unresolved: credential_rejected (...)"`) is a restatement of
+ * whatever ALREADY blocked the run, not new evidence about the credential.
+ * Without this exclusion, that text becomes `reasonCode`
+ * (`projectConnectorSummaryConnectionHealth`), text-matches
+ * `isDefinitiveStoredCredentialRejectionReason`, and re-derives the exact
+ * same blocking condition that produced the skip — a self-perpetuating loop
+ * that persists even after the live credential is captured, present, and
+ * unrejected, because every tick re-poisons `run_history` with the same
+ * skip text (owner-reported: a working 48k-record Gmail connection stuck
+ * skipping forever on a stale `credential_rejected` derived from its own
+ * prior skip, with zero rows in `connector_attention_records`).
+ */
+function isSchedulerSkippedRun(run: ConnectorRunSummary | null): boolean {
+  return run?.status === "skipped";
+}
+
 function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSummary | null {
-  return isOwnerCancelledRun(run) ? null : run;
+  return isOwnerCancelledRun(run) || isSchedulerSkippedRun(run) ? null : run;
 }
 
 /**

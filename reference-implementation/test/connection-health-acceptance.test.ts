@@ -1439,6 +1439,39 @@ test("§10-C control: a genuine 401/403 auth failure still drives a credential p
   assert.equal(credentialCondition.remediation?.action, "refresh_credentials");
 });
 
+test("stale skip regression: a scheduler-generated attention-skip's own error text must not manufacture a credential_rejected condition for a present, unrejected credential", () => {
+  // Reproduces the live-DB defect: a scheduler `attention_unresolved` skip
+  // (runtime/scheduler/pre-run-gate.ts's buildUnresolvedAttentionSkip) never
+  // dispatches the connector — it carries no genuine provider evidence, only
+  // a restatement of whatever already blocked the run. Before the fix, this
+  // skip's own `failure_reason` text became `reasonCode`
+  // (server/ref-control.ts's `firstReasonCode`), text-matched
+  // `isDefinitiveStoredCredentialRejectionReason`, and re-derived the exact
+  // blocking condition that produced the skip — forever, even though the
+  // live credential row is present and unrejected and there is no
+  // corresponding row in `connector_attention_records`.
+  const skip = failedRun({
+    event_count: 0,
+    failure_reason:
+      "attention_unresolved: credential_rejected (owner_action:cin_test:reauth:stored_credential:credential_present_and_unrejected:credential_rejected)",
+    run_id: "run_skip",
+    status: "skipped",
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    credential: { capable: true, present: true, rejected: false },
+    freshness: FRESH,
+    lastRun: skip,
+    lastSuccessfulRun: succeededRun(),
+    schedule: { enabled: true },
+  });
+  const credentialCondition = snap.conditions?.find((c) => c.type === "CredentialsValid" && c.status === "false");
+  assert.equal(
+    credentialCondition,
+    undefined,
+    "a scheduler skip's own inherited error text must not be read as fresh credential-rejection evidence"
+  );
+});
+
 // ─── Per-Stream Evidence Carry-Forward: proof-age freshness anchor ─────────
 //
 // design.md "Connection Rollup Honesty" / "Per-Stream Evidence Carry-Forward":
