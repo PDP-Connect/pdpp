@@ -69,8 +69,9 @@
       "rationale": "Google Data Portability API exports require a deployment-level Google OAuth/Data Portability application plus owner authorization. Timeline points and segments are not documented Data Portability resources, so this source is separate from Google Maps Timeline Import."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "listed": false,
+      "status": "needs_human_auth",
+      "proof_gate": "Archive download and Maps resource group parsing not yet implemented. Currently only archive job metadata (control plane) is available."
     }
   },
   "external_docs": [
