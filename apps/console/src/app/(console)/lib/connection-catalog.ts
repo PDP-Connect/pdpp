@@ -304,13 +304,12 @@ export function buildConnectorCatalog(
     if (!manifest.connector_id) {
       continue;
     }
-    // Prefer the manifest's own `connector_key` (e.g. "apple_photos") over a
-    // blind canonicalization of `connector_id`'s registry-URL slug (which
-    // can differ — e.g. ".../connectors/apple-photos" canonicalizes to
-    // "apple-photos", a hyphenated form that never matches
-    // SUPPORTED_LOCAL_COLLECTOR_CONNECTORS' underscore form). Falls back to
-    // canonicalConnectorKey(connector_id) when connector_key is absent, the
-    // same precedence buildConnectionSetupPlan itself uses internally.
+    // Prefer the manifest's own `connector_key` over a blind canonicalization
+    // of `connector_id`'s registry-URL slug — they usually agree, but a
+    // manifest is free to declare a `connector_key` the slug canonicalizer
+    // wouldn't derive on its own. Falls back to canonicalConnectorKey
+    // (connector_id) when connector_key is absent, the same precedence
+    // buildConnectionSetupPlan itself uses internally.
     const connectorKey = connectorKeyFromManifest(manifest, manifest.connector_id) ?? "unknown";
     const plan = buildConnectionSetupPlan({ connectorKey, configuredProviderAuthConnectorKeys, manifest });
     const setupCopy = setupCopyFromManifest(manifest);

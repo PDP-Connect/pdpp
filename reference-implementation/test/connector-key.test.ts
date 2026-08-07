@@ -84,13 +84,60 @@ test("canonicalConnectorKey maps legacy snake_case local aliases to canonical hy
   assert.deepEqual(legacyLocalAliasMap(), {
     claude_code: "claude-code",
     codex: "codex",
+    google_takeout: "google-takeout",
+    apple_photos: "apple-photos",
+    google_messages: "google-messages",
   });
   assert.equal(canonicalConnectorKey("claude_code"), "claude-code");
   assert.equal(canonicalConnectorKey("codex"), "codex");
+  assert.equal(canonicalConnectorKey("google_takeout"), "google-takeout");
+  assert.equal(canonicalConnectorKey("apple_photos"), "apple-photos");
+  assert.equal(canonicalConnectorKey("google_messages"), "google-messages");
   assert.equal(isLegacyLocalAlias("claude_code"), true);
   assert.equal(isLegacyLocalAlias("codex"), true);
+  assert.equal(isLegacyLocalAlias("google_takeout"), true);
+  assert.equal(isLegacyLocalAlias("apple_photos"), true);
+  assert.equal(isLegacyLocalAlias("google_messages"), true);
   assert.equal(isLegacyLocalAlias("gmail"), false);
   assert.equal(isLegacyLocalAlias(""), false);
+});
+
+test("bundled local-collector connector ids all resolve to a canonical key the manifest catalog also resolves (alias/canonical equivalence)", async () => {
+  // Discriminator for the enrollment-boundary identity bug this branch fixed:
+  // every id LOCAL_COLLECTOR_DEFINITIONS bundles (what --connector actually
+  // receives, and what the enrollment-codes route's raw connector_id param
+  // carries) must canonicalize to the SAME key the connector's own manifest
+  // declares as connector_key — proving the enrollment boundary and the
+  // manifest catalog agree, not just that each individually parses. A
+  // connector whose bundle id and manifest key differ without an alias here
+  // reproduces the "no registered manifest declares a 'filesystem' or
+  // 'browser' binding" 400 the google_takeout enroll smoke hit.
+  const { LOCAL_COLLECTOR_DEFINITIONS } = await import(
+    "../../packages/polyfill-connectors/src/collector-registry.ts"
+  );
+  for (const definition of LOCAL_COLLECTOR_DEFINITIONS) {
+    const manifestPath = new URL(
+      `../../packages/polyfill-connectors/manifests/${definition.entry}.json`,
+      import.meta.url
+    );
+    const manifestText = readFileSync(fileURLToPath(manifestPath), "utf8");
+    const manifest = JSON.parse(manifestText) as { connector_key?: string; connector_id?: string };
+    const manifestCanonicalKey = manifest.connector_key ?? canonicalConnectorKey(manifest.connector_id);
+    const bundleIdCanonicalKey = canonicalConnectorKey(definition.connector_id);
+    assert.ok(
+      manifestCanonicalKey,
+      `${definition.connector_id}: manifest must declare a resolvable connector_key/connector_id`
+    );
+    assert.ok(
+      bundleIdCanonicalKey,
+      `${definition.connector_id}: bundle connector_id must canonicalize (add a LEGACY_LOCAL_ALIASES entry if it uses a directory-name id distinct from its manifest's connector_key)`
+    );
+    assert.equal(
+      bundleIdCanonicalKey,
+      manifestCanonicalKey,
+      `${definition.connector_id}: bundled connector_id canonicalizes to '${bundleIdCanonicalKey}' but the manifest's own key is '${manifestCanonicalKey}' — the enrollment boundary and the manifest catalog would disagree`
+    );
+  }
 });
 
 test("canonicalConnectorKey accepts URL-shaped first-party ids", () => {

@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/apple-photos",
-  "connector_key": "apple_photos",
+  "connector_key": "apple-photos",
   "manifest_uri": "https://registry.pdpp.org/connectors/apple-photos",
   "version": "0.1.0",
   "display_name": "Apple Photos",

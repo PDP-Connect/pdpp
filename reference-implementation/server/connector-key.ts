@@ -57,6 +57,7 @@ const FIRST_PARTY_CONNECTOR_KEYS = Object.freeze([
   "anthropic",
   "apple-health",
   "apple_contacts",
+  "apple-photos",
   "chase",
   "chatgpt",
   "claude-code",
@@ -69,6 +70,7 @@ const FIRST_PARTY_CONNECTOR_KEYS = Object.freeze([
   "google-maps",
   "google-maps-data-portability",
   "google-takeout",
+  "google-messages",
   "groupme",
   "heb",
   "ical",
@@ -113,12 +115,33 @@ const NATIVE_CONNECTOR_KEY_SET = new Set(NATIVE_CONNECTOR_KEYS);
 // here keeps the mapping under one allowlist so the migration plan, the
 // hosted-MCP picker, and the manifest reconciler agree on the canonical key.
 //
+// `google_takeout` is here for the same reason: the published
+// `@pdpp/local-collector` bundle and LOCAL_COLLECTOR_DEFINITIONS key every
+// bundled connector by its directory name — necessarily snake_case, since
+// npm package/module paths cannot contain a bare hyphen segment ambiguity
+// the same way — while the connector's own manifest (`google_takeout.json`)
+// declares the hyphenated canonical key `google-takeout`. Without this
+// alias, `POST /_ref/device-exporters/enrollment-codes` (called with the
+// bundle's own connector id, `google_takeout`, from `pdpp-local-collector
+// setup`/the enrollment form) fails catalog lookup with "no registered
+// manifest declares a 'filesystem' or 'browser' binding" even though the
+// manifest is registered under its hyphenated key.
+//
+// `apple_photos`/`google_messages` are here for the same reason: their
+// manifests declare canonical keys `apple-photos`/`google-messages` (the
+// registry-URL slug form, matching every other first-party manifest's
+// invariant of connector_key == connector_id slug), while the bundle's
+// directory-name id stays snake_case.
+//
 // Source of truth for the historical alias set:
 //   reference-implementation/server/auth.js
 //     `LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES`
 const LEGACY_LOCAL_ALIASES = Object.freeze({
   claude_code: "claude-code",
   codex: "codex",
+  google_takeout: "google-takeout",
+  apple_photos: "apple-photos",
+  google_messages: "google-messages",
 });
 
 const LEGACY_LOCAL_ALIAS_SET = new Set(Object.keys(LEGACY_LOCAL_ALIASES));

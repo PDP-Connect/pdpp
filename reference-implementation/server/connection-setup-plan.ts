@@ -365,6 +365,8 @@ export function connectorKeyFromManifest(manifest: ConnectorManifestLike, fallba
 const HYPHENATED_CANONICAL_KEY_ALIASES: Readonly<Record<string, string>> = {
   "claude-code": "claude_code",
   "google-takeout": "google_takeout",
+  "apple-photos": "apple_photos",
+  "google-messages": "google_messages",
 };
 
 export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {

@@ -1,7 +1,7 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/google-messages",
-  "connector_key": "google_messages",
+  "connector_key": "google-messages",
   "manifest_uri": "https://registry.pdpp.org/connectors/google-messages",
   "version": "0.1.0",
   "display_name": "Google Messages (via gmcli)",

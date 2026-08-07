@@ -494,12 +494,16 @@ test("Apple Photos and Google Messages are supported local_collector_enroll conn
   // Real device/account proof (a macOS Photos.app export; a gmcli-paired
   // Android device) remains separately unverified — this test only asserts
   // the SETUP PATH is reachable, not that live collection has been proven.
-  for (const connectorId of ["apple_photos", "google_messages"]) {
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ["apple_photos", "apple-photos"],
+    ["google_messages", "google-messages"],
+  ];
+  for (const [connectorId, connectorKey] of cases) {
     const shippedManifest =
       // biome-ignore lint/performance/noAwaitInLoops: sequential fixture loads over a fixed short list read clearer than Promise.all here.
       (await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } }))
         .default;
-    const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
+    const plan = buildConnectionSetupPlan({ connectorKey, manifest: shippedManifest });
     assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
     assert.equal(plan.catalogDisposition, "local_collector_enroll", `${connectorId}: catalogDisposition`);
     assert.equal(plan.nextStepKind, "enroll_local_collector", `${connectorId}: nextStepKind`);

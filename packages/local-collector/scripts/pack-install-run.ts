@@ -891,7 +891,7 @@ async function runFixtureBackedGoogleTakeoutEnrollRunSmoke({
   const takeoutDir = await prepareGoogleTakeoutFixture();
   try {
     const codeResp = await postJson(`${baseUrl}/_ref/device-exporters/enrollment-codes`, {
-      connector_id: "google-takeout",
+      connector_id: "google_takeout",
       local_binding_name: "pack-install-run-laptop",
     });
     assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
@@ -931,14 +931,14 @@ async function runFixtureBackedGoogleTakeoutEnrollRunSmoke({
     );
     const runOutput = JSON.parse(runResult.stdout) as RunOutput;
     assert.equal(runOutput.done?.status, "succeeded");
-    assert.ok((runOutput.recordsQueued ?? 0) > 0);
+    assert.ok((runOutput.recordsQueued ?? 0) > 0, `google_takeout connector did not queue any records: ${runResult.stdout}`);
     assert.ok((runOutput.sentBatches ?? 0) > 0);
 
     // biome-ignore lint/suspicious/noExplicitAny: The test reads the dynamically imported reference database.
     const persisted = (getDb() as any)
       .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
       .get("google-takeout", enrollment.connector_instance_id);
-    assert.ok(persisted.n > 0);
+    assert.ok(persisted.n > 0, `expected at least one persisted google_takeout record; got ${persisted.n}`);
     log(`Google Takeout fixture-backed enroll/run smoke PASS: ${persisted.n} record(s) persisted at ingest.`);
   } finally {
     await closeServer(server);
@@ -1091,7 +1091,7 @@ async function runApplePhotosSampleSmoke({
     // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const persisted = (getDb() as any)
       .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
-      .get("apple_photos", enrollment.connector_instance_id);
+      .get("apple-photos", enrollment.connector_instance_id);
     assert.equal(
       persisted.n,
       APPLE_PHOTOS_FIXTURE_FILE_COUNT,
@@ -1278,7 +1278,7 @@ async function runGoogleMessagesSampleSmoke({
     // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const persisted = (getDb() as any)
       .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
-      .get("google_messages", enrollment.connector_instance_id);
+      .get("google-messages", enrollment.connector_instance_id);
     assert.equal(
       persisted.n,
       GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT,
