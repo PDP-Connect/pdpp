@@ -14,6 +14,7 @@ import {
   closeBrowserPage,
   composeNormalizedTerminalError,
   decorateBrowserManualAction,
+  describeUnexpectedFailure,
   emitDetailCoverage,
   emitDetailGap,
   type InteractionRequest,
@@ -1241,4 +1242,54 @@ test("ChatGPT's real normalizeChatGptTerminalError (which destructures only mess
   });
   assert.equal(result.code, "browser_surface_attach_exhausted");
   assert.match(result.message, /runtime_exception/, "ChatGPT's own message wrapping is preserved");
+});
+
+// ─── describeUnexpectedFailure: an unclassified throw's own .message can be ─
+// contentless while the real explanation sits on a side field ──────────────
+//
+// Regression for a live-DB gmail run (run_1786142622018_1) that reached
+// connector_error_json as {"message":"Command failed","retryable":false} with
+// zero further detail. imapflow (the gmail connector's IMAP client) throws
+// `new Error('Command failed')` for every IMAP NO/BAD server response
+// (imap-flow.js's settleRequest) and puts the actual explanation on
+// `.responseText` (the server's own error text) and `.executedCommand` (the
+// IMAP command line, password arguments already redacted by imapflow's own
+// isLogging compiler). The generic `run().catch` in this file used to read
+// only `.message`, discarding both. See docs/inbox/report-gmail-command-failed.md.
+
+test("describeUnexpectedFailure folds an imapflow-shaped error's responseText and executedCommand into the message", () => {
+  const err = new Error("Command failed") as Error & { executedCommand?: string; responseText?: string };
+  err.responseText = "[AUTHENTICATIONFAILED] Invalid credentials (Failure)";
+  err.executedCommand = 'A2 LOGIN "user@gmail.com" "(* value hidden *)"';
+  const message = describeUnexpectedFailure(err);
+  assert.match(message, /Command failed/);
+  assert.match(
+    message,
+    /AUTHENTICATIONFAILED/,
+    "the server's own explanation must survive, not just the generic message"
+  );
+  assert.match(message, /A2 LOGIN/, "the executed command must survive for diagnosis");
+  assert.match(
+    message,
+    /value hidden/,
+    "sanity: the fixture's password arg is already imapflow-redacted upstream, not re-exposed here"
+  );
+});
+
+test("describeUnexpectedFailure is a no-op passthrough for a plain Error with no known side fields", () => {
+  const message = describeUnexpectedFailure(new Error("ECONNRESET"));
+  assert.equal(message, "ECONNRESET");
+});
+
+test("describeUnexpectedFailure stringifies a non-Error throw exactly as the old inline ternary did", () => {
+  assert.equal(describeUnexpectedFailure("raw string throw"), "raw string throw");
+  assert.equal(describeUnexpectedFailure(42), "42");
+});
+
+test("describeUnexpectedFailure bounds a pathological responseText so it cannot bloat the terminal row", () => {
+  const err = new Error("Command failed") as Error & { responseText?: string };
+  err.responseText = "x".repeat(5000);
+  const message = describeUnexpectedFailure(err);
+  assert.ok(message.length <= 301, `expected bounded length, got ${message.length}`);
+  assert.match(message, /…$/);
 });

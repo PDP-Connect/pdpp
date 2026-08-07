@@ -366,6 +366,59 @@ export function composeNormalizedTerminalError({
   return code && !normalized.code ? { ...normalized, code } : normalized;
 }
 
+const UNEXPECTED_FAILURE_DETAIL_MAX = 300;
+
+/**
+ * Known third-party error shapes that carry their real diagnostic detail on
+ * SIDE FIELDS rather than in `.message` — e.g. imapflow's protocol errors
+ * (`new Error('Command failed')`, imap-flow.js's `settleRequest`) always use
+ * the same generic message and put the server's actual NO/BAD explanation on
+ * `.responseText`, with the IMAP command that triggered it on
+ * `.executedCommand`. `run().catch` below used to read only `.message`,
+ * so every IMAP auth/throttle/quota rejection reached the owner as the
+ * indistinguishable, contentless "Command failed" (see docs/inbox/
+ * report-gmail-command-failed.md). `executedCommand` is safe to surface:
+ * imapflow's compiler is built with `isLogging: true` for this exact field,
+ * which replaces any field marked `sensitive` (LOGIN's password argument)
+ * with the literal string `(* value hidden *)` before it ever reaches this
+ * object -- see imap-flow.js's settleRequest and commands/login.js.
+ */
+function extractKnownErrorDetail(err: Error): string | null {
+  const withDetail = err as Error & {
+    executedCommand?: unknown;
+    responseText?: unknown;
+  };
+  const parts: string[] = [];
+  if (typeof withDetail.responseText === "string" && withDetail.responseText.length > 0) {
+    parts.push(`server: ${withDetail.responseText}`);
+  }
+  if (typeof withDetail.executedCommand === "string" && withDetail.executedCommand.length > 0) {
+    parts.push(`command: ${withDetail.executedCommand}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : null;
+}
+
+/**
+ * Builds the message an UNEXPECTED (non-`TerminalError`) throw carries into
+ * `DONE.error.message` -- an unexpected throw's own `.message` alone is
+ * sometimes a generic, contentless string (imapflow's `'Command failed'`
+ * for every IMAP NO/BAD response) while the real explanation sits on a
+ * side field the generic catch previously never looked at. Bounded so a
+ * pathological response body can't bloat the terminal DB row; must never
+ * include credential material (see `extractKnownErrorDetail`'s doc comment
+ * on why `executedCommand` is already redacted at the source).
+ */
+export function describeUnexpectedFailure(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return String(err);
+  }
+  const detail = extractKnownErrorDetail(err);
+  const combined = detail ? `${err.message} (${detail})` : err.message;
+  return combined.length > UNEXPECTED_FAILURE_DETAIL_MAX
+    ? `${combined.slice(0, UNEXPECTED_FAILURE_DETAIL_MAX)}…`
+    : combined;
+}
+
 /** Returns true if the scope's time_range excludes this record's date value. */
 function isOutsideTimeRange(timeRange: { since?: string; until?: string }, dateValue: unknown): boolean {
   if (typeof dateValue !== "string" || !dateValue) {
@@ -844,7 +897,7 @@ export function runConnector(config: RunConnectorConfig): void {
       emitFailed(err.message, err.retryable, undefined, err.code);
       return;
     }
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeUnexpectedFailure(err);
     emitFailed(message, retryablePattern.test(message));
   });
 
