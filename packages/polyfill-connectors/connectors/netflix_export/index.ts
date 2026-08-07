@@ -16,14 +16,94 @@
  * diffed locally against prior state for new/deleted records.
  */
 
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CollectContext } from "../../src/connector-runtime.ts";
 import { runConnector } from "../../src/connector-runtime.ts";
-import { buildViewingActivityRecord, parseCSVFile, resolveViewingActivityFile } from "./parsers.ts";
+import {
+  buildViewingActivityRecord,
+  extractViewingActivityArtifact,
+  parseCSVContentForValidation,
+  parseCSVFile,
+  resolveViewingActivityFile,
+} from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { NetflixExportState, StreamTimestampState } from "./types.ts";
+
+const UPLOADED_ARTIFACT_RE = /\.(csv|zip)$/i;
+
+/**
+ * Find an owner-uploaded artifact (raw ViewingActivity.csv or the official
+ * Netflix export zip) written flat into the import dir by the manual-upload
+ * route. Falls back to null so callers can try the legacy pre-extracted
+ * CONTENT_INTERACTION/ViewingActivity.csv directory layout.
+ */
+function findUploadedArtifact(importDir: string): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(importDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && UPLOADED_ARTIFACT_RE.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return null;
+  }
+  return entries[0] ?? null;
+}
+
+interface LoadedRows {
+  malformedCount: number;
+  rows: Record<string, string | undefined>[];
+}
+
+interface LoadRowsSkip {
+  message: string;
+  reason: "archive_security_violation" | "csv_parse_error" | "records_not_found";
+}
+
+async function loadUploadedArtifactRows(
+  canonicalImportDir: string,
+  uploadedFileName: string
+): Promise<LoadedRows | LoadRowsSkip> {
+  const uploadedBytes = await readFile(join(canonicalImportDir, uploadedFileName)).catch((): Buffer => Buffer.alloc(0));
+  const artifact = extractViewingActivityArtifact(uploadedFileName, uploadedBytes);
+  if (!artifact) {
+    return {
+      reason: "csv_parse_error",
+      message: `Uploaded file '${uploadedFileName}' does not contain a recognizable ViewingActivity.csv (expected a raw CSV export or the official Netflix getmyinfo zip archive).`,
+    };
+  }
+  const parseResult = parseCSVContentForValidation(artifact.csvText);
+  if (parseResult.error) {
+    return { reason: "csv_parse_error", message: parseResult.error };
+  }
+  return parseResult;
+}
+
+async function loadLegacyDirectoryRows(canonicalImportDir: string): Promise<LoadedRows | LoadRowsSkip> {
+  const fileResult = resolveViewingActivityFile(canonicalImportDir);
+  if (fileResult.error) {
+    return { reason: "archive_security_violation", message: fileResult.error };
+  }
+  if (!fileResult.path) {
+    return {
+      reason: "records_not_found",
+      message:
+        "Netflix export ViewingActivity.csv was not found in the configured import directory (expected: CONTENT_INTERACTION/ViewingActivity.csv, or an uploaded ViewingActivity.csv/.zip)",
+    };
+  }
+  const parseResult = await parseCSVFile(fileResult.path);
+  if (parseResult.error) {
+    return { reason: "csv_parse_error", message: parseResult.error };
+  }
+  return parseResult;
+}
+
+function isLoadRowsSkip(result: LoadedRows | LoadRowsSkip): result is LoadRowsSkip {
+  return "reason" in result;
+}
 
 async function collectViewingActivity(
   ctx: CollectContext,
@@ -46,40 +126,17 @@ async function collectViewingActivity(
     return;
   }
 
-  const fileResult = resolveViewingActivityFile(canonicalImportDir);
-  if (fileResult.error) {
-    await emit({
-      type: "SKIP_RESULT",
-      stream,
-      reason: "archive_security_violation",
-      message: fileResult.error,
-    });
+  const uploadedFileName = findUploadedArtifact(canonicalImportDir);
+  const loaded = uploadedFileName
+    ? await loadUploadedArtifactRows(canonicalImportDir, uploadedFileName)
+    : await loadLegacyDirectoryRows(canonicalImportDir);
+
+  if (isLoadRowsSkip(loaded)) {
+    await emit({ type: "SKIP_RESULT", stream, reason: loaded.reason, message: loaded.message });
     return;
   }
 
-  if (!fileResult.path) {
-    await emit({
-      type: "SKIP_RESULT",
-      stream,
-      reason: "records_not_found",
-      message:
-        "Netflix export ViewingActivity.csv was not found in the configured import directory (expected: CONTENT_INTERACTION/ViewingActivity.csv)",
-    });
-    return;
-  }
-
-  const parseResult = await parseCSVFile(fileResult.path);
-  if (parseResult.error) {
-    await emit({
-      type: "SKIP_RESULT",
-      stream,
-      reason: "csv_parse_error",
-      message: parseResult.error,
-    });
-    return;
-  }
-
-  const { rows, malformedCount } = parseResult;
+  const { rows, malformedCount } = loaded;
 
   if (malformedCount > 0) {
     await emit({

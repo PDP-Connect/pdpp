@@ -9,10 +9,21 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join, sep } from "node:path";
+import { hasZipLocalFileSignature, readZipEntries, zipBasename } from "../../src/bounded-zip-archive.ts";
 import type { ViewingActivityCSVRow, ViewingActivityRecord } from "./types.ts";
 
+// The manifest's manual-upload max_file_bytes is set to this same value: the
+// parser will never usefully read a larger ViewingActivity.csv anyway, so a
+// looser upload cap would just accept files certain to be rejected later.
+// Limitation: Netflix's official getmyinfo archive can bundle many other
+// CSVs (ratings, search history, etc.) beyond viewing activity, so a real
+// full-archive upload could exceed this cap even when ViewingActivity.csv
+// itself is small — see the manifest's large_file_fallback guidance.
 const MAX_CSV_BYTES = 50 * 1024 * 1024;
 const MAX_ROWS = 100_000;
+const ZIP_EXT_RE = /\.zip$/i;
+const CSV_EXT_RE = /\.csv$/i;
+const VIEWING_ACTIVITY_ENTRY_RE = /viewingactivity\.csv$/i;
 
 // Length of sha256-derived record IDs — 24 hex chars = 96 bits of entropy.
 const RECORD_ID_HASH_LENGTH = 24;
@@ -192,6 +203,17 @@ function checkFileSize(
     };
   }
   return null;
+}
+
+export function parseCSVContentForValidation(content: string): {
+  rows: Record<string, string | undefined>[];
+  malformedCount: number;
+  error?: string;
+} {
+  if (Buffer.byteLength(content, "utf8") > MAX_CSV_BYTES) {
+    return { rows: [], malformedCount: 0, error: `CSV file exceeds maximum size (${MAX_CSV_BYTES})` };
+  }
+  return parseCSVContent(content);
 }
 
 function parseCSVContent(content: string): {
@@ -382,4 +404,53 @@ export function findViewingActivityFiles(importDir: string): string[] {
 
   walkDir(importDir, 0);
   return found;
+}
+
+// ─── Uploaded-artifact extraction (browser Add Source / manual-upload path) ──
+//
+// The manual-upload route writes the raw uploaded file flat into the import
+// dir (no server-side unzip). A raw ViewingActivity.csv is accepted directly;
+// Netflix's official "getmyinfo" archive is a zip, so we search its entries
+// (via the shared bounded zip reader used by other manual-upload connectors)
+// for a *ViewingActivity.csv file at any depth.
+
+export type NetflixExportArtifactFormat = "viewing_activity_csv" | "viewing_activity_zip";
+
+export interface ExtractedNetflixExportArtifact {
+  csvText: string;
+  format: NetflixExportArtifactFormat;
+  sourceEntryName: string;
+}
+
+/**
+ * Extract ViewingActivity.csv text from an uploaded artifact: either the CSV
+ * file directly, or Netflix's official export zip. Returns null if neither
+ * shape is recognized.
+ */
+export function extractViewingActivityArtifact(
+  filename: string,
+  input: Buffer | Uint8Array | string
+): ExtractedNetflixExportArtifact | null {
+  const bytes = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
+
+  if (ZIP_EXT_RE.test(filename) || hasZipLocalFileSignature(bytes)) {
+    const entries = readZipEntries(bytes);
+    const match = entries.find((entry) => VIEWING_ACTIVITY_ENTRY_RE.test(zipBasename(entry.name)));
+    if (!match) {
+      return null;
+    }
+    let csvText: string;
+    try {
+      csvText = match.data().toString("utf8");
+    } catch {
+      return null;
+    }
+    return { csvText, format: "viewing_activity_zip", sourceEntryName: match.name };
+  }
+
+  if (CSV_EXT_RE.test(filename)) {
+    return { csvText: bytes.toString("utf8"), format: "viewing_activity_csv", sourceEntryName: filename };
+  }
+
+  return null;
 }

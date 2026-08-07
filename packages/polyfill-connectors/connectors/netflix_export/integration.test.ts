@@ -8,9 +8,155 @@
 
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import { findViewingActivityFiles, parseCSVFile, resolveViewingActivityFile, validateArchivePath } from "./parsers.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = resolve(__dirname, "../..");
+const NETFLIX_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "netflix_export", "index.ts");
+
+function zipHeader(signature: number, size: number): Buffer {
+  const header = Buffer.alloc(size);
+  header.writeUInt32LE(signature, 0);
+  return header;
+}
+
+function makeStoredZip(entries: readonly { name: string; data: string | Buffer }[]): Buffer {
+  const chunks: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, "utf8");
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data, "utf8");
+    const local = zipHeader(0x04_03_4b_50, 30);
+    local.writeUInt16LE(0x08_00, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(0, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    chunks.push(local, name, data);
+
+    const directory = zipHeader(0x02_01_4b_50, 46);
+    directory.writeUInt16LE(20, 4);
+    directory.writeUInt16LE(20, 6);
+    directory.writeUInt16LE(0x08_00, 8);
+    directory.writeUInt16LE(0, 10);
+    directory.writeUInt32LE(0, 16);
+    directory.writeUInt32LE(data.length, 20);
+    directory.writeUInt32LE(data.length, 24);
+    directory.writeUInt16LE(name.length, 28);
+    directory.writeUInt32LE(offset, 42);
+    central.push(directory, name);
+    offset += local.length + name.length + data.length;
+  }
+  const centralStart = offset;
+  const centralBytes = Buffer.concat(central);
+  const end = zipHeader(0x06_05_4b_50, 22);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBytes.length, 12);
+  end.writeUInt32LE(centralStart, 16);
+  return Buffer.concat([...chunks, centralBytes, end]);
+}
+
+function records(messages: EmittedMessage[], stream: string): Record<string, unknown>[] {
+  return messages
+    .filter((message) => message.type === "RECORD" && message.stream === stream)
+    .map((message) => (message as { data: Record<string, unknown> }).data);
+}
+
+async function runNetflixImport(importRoot: string): Promise<{ messages: EmittedMessage[] }> {
+  const result = await runConnectorProtocolSubprocess({
+    cwd: PACKAGE_ROOT,
+    entrypoint: NETFLIX_ENTRYPOINT,
+    env: {
+      NETFLIX_EXPORT_DIR: importRoot,
+      PDPP_OWNER_TOKEN: "",
+      PDPP_RS_URL: "",
+      RS_URL: "",
+      TZ: "America/Chicago",
+    },
+    start: {
+      scope: { streams: [{ name: "viewing_activity" }] },
+      type: "START",
+    },
+  });
+  return { messages: result.messages };
+}
+
+const VIEWING_ACTIVITY_CSV = `Title,Watched at,Device type,Watch duration,Profile name
+"The Crown","2024-01-15 10:30:00","TV","85%","Main"
+"Stranger Things","2024-01-14 15:45:00","Phone","92%","Secondary"`;
+
+test("Netflix connector emits records from a raw ViewingActivity.csv uploaded flat into the import dir (Add Source path)", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-upload-csv-"));
+  try {
+    // Mirrors the manual-upload route's on-disk contract: the uploaded file
+    // is written flat as join(importDir, fileName) — no server-side unzip,
+    // no nested CONTENT_INTERACTION/ subdirectory.
+    await writeFile(join(importRoot, "ViewingActivity.csv"), VIEWING_ACTIVITY_CSV, "utf8");
+
+    const { messages } = await runNetflixImport(importRoot);
+    const emitted = records(messages, "viewing_activity");
+    assert.equal(emitted.length, 2);
+    assert.ok(emitted.some((r) => r.title === "The Crown"));
+
+    const done = messages.at(-1);
+    assert.equal(done?.type, "DONE");
+    if (done?.type === "DONE") {
+      assert.equal(done.status, "succeeded");
+      assert.equal(done.records_emitted, 2);
+    }
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("Netflix connector emits records from the official getmyinfo zip archive uploaded flat into the import dir", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-upload-zip-"));
+  try {
+    const zip = makeStoredZip([
+      { name: "CONTENT_INTERACTION/ViewingActivity.csv", data: VIEWING_ACTIVITY_CSV },
+      { name: "IDENTIFIERS/Devices.csv", data: "Device Type\nTV\n" },
+    ]);
+    await writeFile(join(importRoot, "netflix-report.zip"), zip);
+
+    const { messages } = await runNetflixImport(importRoot);
+    const emitted = records(messages, "viewing_activity");
+    assert.equal(emitted.length, 2);
+
+    const done = messages.at(-1);
+    assert.equal(done?.type, "DONE");
+    if (done?.type === "DONE") {
+      assert.equal(done.status, "succeeded");
+      assert.equal(done.records_emitted, 2);
+    }
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("Netflix connector still honors the legacy pre-extracted CONTENT_INTERACTION directory layout", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-legacy-dir-"));
+  try {
+    const contentDir = join(importRoot, "CONTENT_INTERACTION");
+    mkdirSync(contentDir);
+    writeFileSync(join(contentDir, "ViewingActivity.csv"), VIEWING_ACTIVITY_CSV, "utf8");
+
+    const { messages } = await runNetflixImport(importRoot);
+    const emitted = records(messages, "viewing_activity");
+    assert.equal(emitted.length, 2);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
 
 test("parseCSVFile reads and parses a complete CSV fixture", async () => {
   const csvContent = `Title,Watched at,Device type,Watch duration,Profile name

@@ -15,6 +15,44 @@
       }
     }
   },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "Netflix viewing activity export",
+      "description": "Request your Netflix viewing activity from netflix.com/account/getmyinfo (up to 30 days to prepare), then upload ViewingActivity.csv or the full export .zip here.",
+      "acquisition_methods": [
+        {
+          "label": "Request your export from Netflix",
+          "platform": "web",
+          "posture": "primary",
+          "detail": "Go to netflix.com/account/getmyinfo and request an export. Netflix emails you when it's ready (up to 30 days).",
+          "help_url": "https://www.netflix.com/account/getmyinfo"
+        },
+        {
+          "label": "Upload the export archive or CSV",
+          "platform": "web",
+          "posture": "primary",
+          "detail": "Upload the .zip Netflix sends you directly, or extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv.",
+          "help_url": "https://www.netflix.com/account/getmyinfo"
+        }
+      ],
+      "accepted_file_extensions": [".csv", ".zip"],
+      "import_dir_env_var": "NETFLIX_EXPORT_DIR",
+      "help_url": "https://www.netflix.com/account/getmyinfo",
+      "help_text": "Netflix does not expose viewing history through an account API or OAuth grant. This source imports the owner-requested official export.",
+      "large_file_fallback": "The full Netflix export archive can include many CSVs beyond viewing history; if the .zip exceeds the upload limit, extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv, or use the server import-folder handoff.",
+      "validation": {
+        "kind": "netflix_viewing_activity",
+        "max_file_bytes": 52428800
+      },
+      "validation_expectations": [
+        "Detected ViewingActivity.csv, either standalone or inside the official export zip",
+        "Estimated viewing activity record count",
+        "Detected watched-at date range",
+        "Duplicate, empty, unsupported, or too-large file status"
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
@@ -26,8 +64,8 @@
       "rationale": "Netflix official export (getmyinfo) requires manual download from netflix.com/account/getmyinfo. The export takes up to 30 days and must be extracted locally. No automated refresh path exists."
     },
     "public_listing": {
-      "listed": false,
-      "status": "unproven"
+      "listed": true,
+      "status": "needs_human_auth"
     }
   },
   "streams": [

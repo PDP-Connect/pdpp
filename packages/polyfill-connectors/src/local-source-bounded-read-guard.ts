@@ -103,6 +103,21 @@ export const BOUNDED_READ_EXCEPTIONS: readonly BoundedReadException[] = [
     lineIncludes: "const content = await readFile(fileName).catch((): Buffer => Buffer.alloc(0));",
     reason: "Reads one WhatsApp chat export file. Keep reviewed until large-export line streaming is implemented.",
   },
+  {
+    connector: "netflix_export",
+    file: "index.ts",
+    pattern: "readFile",
+    lineIncludes: 'import { readFile } from "node:fs/promises";',
+    reason: "Imports readFile for the reviewed single-artifact uploaded-export read below.",
+  },
+  {
+    connector: "netflix_export",
+    file: "index.ts",
+    pattern: "readFile",
+    lineIncludes: "const uploadedBytes = await readFile(join(canonicalImportDir, uploadedFileName)).catch",
+    reason:
+      "Reads one owner-uploaded artifact (ViewingActivity.csv or the getmyinfo zip), already bounded by the manifest's max_file_bytes cap on upload and MAX_CSV_BYTES on the extracted CSV.",
+  },
 ];
 
 interface PatternMatcher {

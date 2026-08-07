@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { validateGoogleMapsTimelineArtifact } from "../connectors/google_maps/validation.ts";
+import { validateNetflixExportArtifact } from "../connectors/netflix_export/validation.ts";
 import { validateWhatsAppChatExportArtifact } from "../connectors/whatsapp/validation.ts";
 
 export type ManualUploadValidationResult =
   | ReturnType<typeof validateGoogleMapsTimelineArtifact>
+  | ReturnType<typeof validateNetflixExportArtifact>
   | ReturnType<typeof validateWhatsAppChatExportArtifact>;
 
 export interface ManualUploadValidationOptions {
@@ -24,6 +26,12 @@ export function validateManualUploadArtifactByKind(
   }
   if (kind === "whatsapp_chat_export") {
     return validateWhatsAppChatExportArtifact(input, {
+      fileName: options.fileName ?? null,
+      maxFileBytes,
+    });
+  }
+  if (kind === "netflix_viewing_activity") {
+    return validateNetflixExportArtifact(input, {
       fileName: options.fileName ?? null,
       maxFileBytes,
     });
