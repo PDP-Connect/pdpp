@@ -9,7 +9,13 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { hasZipLocalFileSignature, readZipEntries, zipBasename } from "../../src/bounded-zip-archive.ts";
+import {
+  hasZipLocalFileSignature,
+  readZipEntries,
+  ZipPolicyViolationError,
+  type ZipReadPolicy,
+  zipBasename,
+} from "../../src/bounded-zip-archive.ts";
 import type { ViewingActivityCSVRow, ViewingActivityRecord } from "./types.ts";
 
 // The manifest's manual-upload max_file_bytes is set to this same value: the
@@ -23,6 +29,24 @@ const MAX_CSV_BYTES = 50 * 1024 * 1024;
 const MAX_ROWS = 100_000;
 const ZIP_EXT_RE = /\.zip$/i;
 const CSV_EXT_RE = /\.csv$/i;
+
+// Decompression-bomb gate for the getmyinfo zip archive: Netflix's real
+// export can legitimately contain dozens of CSV files (ratings, search
+// history, devices, etc.) whose combined declared size can exceed
+// MAX_CSV_BYTES even though we only ever read ONE of them
+// (ViewingActivity.csv). So the total-archive bound is generous (10x
+// MAX_CSV_BYTES, comfortably above a real multi-CSV export) while the
+// per-entry bound is pinned to MAX_CSV_BYTES — no single entry we might
+// inflate can ever exceed the size the CSV parser accepts anyway. A single
+// oversized entry or a many-small-bomb archive is rejected before (or
+// during, via zlib's own maxOutputLength) inflation; see
+// bounded-zip-archive.ts for how the bound is enforced inside inflateRawSync
+// itself, not just as a post-inflate length check.
+const NETFLIX_ZIP_POLICY: ZipReadPolicy = {
+  maxEntries: 5000,
+  maxEntryUncompressedBytes: MAX_CSV_BYTES,
+  maxTotalUncompressedBytes: MAX_CSV_BYTES * 10,
+};
 const VIEWING_ACTIVITY_ENTRY_RE = /viewingactivity\.csv$/i;
 
 // Length of sha256-derived record IDs — 24 hex chars = 96 bits of entropy.
@@ -423,34 +447,102 @@ export interface ExtractedNetflixExportArtifact {
 }
 
 /**
+ * Why an artifact extraction failed, distinguishing "this archive is too
+ * large to safely process" (a real, valid Netflix export the owner should be
+ * told to shrink or use a fallback for) from "this isn't a recognizable
+ * Netflix export at all" (corrupt, wrong file type, or missing
+ * ViewingActivity.csv). Callers (validation.ts, index.ts) MUST preserve this
+ * distinction in what they report — collapsing both into one generic
+ * "unsupported" status hides an actionable, honest signal from the owner.
+ */
+export type NetflixExportExtractionFailureCode =
+  | "entry_too_large"
+  | "no_viewing_activity_entry"
+  | "too_many_entries"
+  | "total_too_large"
+  | "unsupported_shape";
+
+export interface NetflixExportExtractionFailure {
+  readonly code: NetflixExportExtractionFailureCode;
+  readonly message: string;
+}
+
+export type NetflixExportExtractionResult =
+  | ({ ok: true } & ExtractedNetflixExportArtifact)
+  | ({ ok: false } & NetflixExportExtractionFailure);
+
+const ZIP_POLICY_CODE_TO_EXTRACTION_CODE: Record<
+  InstanceType<typeof ZipPolicyViolationError>["code"],
+  NetflixExportExtractionFailureCode
+> = {
+  entry_too_large: "entry_too_large",
+  too_many_entries: "too_many_entries",
+  total_too_large: "total_too_large",
+};
+
+/**
  * Extract ViewingActivity.csv text from an uploaded artifact: either the CSV
- * file directly, or Netflix's official export zip. Returns null if neither
- * shape is recognized.
+ * file directly, or Netflix's official export zip. Returns a discriminated
+ * result rather than null so callers can distinguish an oversized-but-real
+ * export (`entry_too_large`/`total_too_large`/`too_many_entries` — a
+ * decompression-bomb-policy rejection) from a genuinely unrecognized/corrupt
+ * artifact (`unsupported_shape`/`no_viewing_activity_entry`).
  */
 export function extractViewingActivityArtifact(
   filename: string,
   input: Buffer | Uint8Array | string
-): ExtractedNetflixExportArtifact | null {
+): NetflixExportExtractionResult {
   const bytes = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
 
   if (ZIP_EXT_RE.test(filename) || hasZipLocalFileSignature(bytes)) {
-    const entries = readZipEntries(bytes);
+    let entries: ReturnType<typeof readZipEntries>;
+    try {
+      entries = readZipEntries(bytes, NETFLIX_ZIP_POLICY);
+    } catch (err) {
+      if (err instanceof ZipPolicyViolationError) {
+        return {
+          ok: false,
+          code: ZIP_POLICY_CODE_TO_EXTRACTION_CODE[err.code],
+          message: err.message,
+        };
+      }
+      return { ok: false, code: "unsupported_shape", message: "The uploaded zip could not be read." };
+    }
     const match = entries.find((entry) => VIEWING_ACTIVITY_ENTRY_RE.test(zipBasename(entry.name)));
     if (!match) {
-      return null;
+      return {
+        ok: false,
+        code: "no_viewing_activity_entry",
+        message: "No ViewingActivity.csv entry was found in the uploaded zip archive.",
+      };
     }
     let csvText: string;
     try {
       csvText = match.data().toString("utf8");
-    } catch {
-      return null;
+    } catch (err) {
+      if (err instanceof ZipPolicyViolationError) {
+        return {
+          ok: false,
+          code: ZIP_POLICY_CODE_TO_EXTRACTION_CODE[err.code],
+          message: err.message,
+        };
+      }
+      return {
+        ok: false,
+        code: "unsupported_shape",
+        message: "The ViewingActivity.csv entry in the uploaded zip could not be extracted.",
+      };
     }
-    return { csvText, format: "viewing_activity_zip", sourceEntryName: match.name };
+    return { ok: true, csvText, format: "viewing_activity_zip", sourceEntryName: match.name };
   }
 
   if (CSV_EXT_RE.test(filename)) {
-    return { csvText: bytes.toString("utf8"), format: "viewing_activity_csv", sourceEntryName: filename };
+    return { ok: true, csvText: bytes.toString("utf8"), format: "viewing_activity_csv", sourceEntryName: filename };
   }
 
-  return null;
+  return {
+    ok: false,
+    code: "unsupported_shape",
+    message: "Choose ViewingActivity.csv, or the .zip archive from netflix.com/account/getmyinfo.",
+  };
 }

@@ -60,7 +60,7 @@ interface LoadedRows {
 
 interface LoadRowsSkip {
   message: string;
-  reason: "archive_security_violation" | "csv_parse_error" | "records_not_found";
+  reason: "archive_security_violation" | "csv_parse_error" | "records_not_found" | "import_exceeds_bounded_read_policy";
 }
 
 async function loadUploadedArtifactRows(
@@ -69,10 +69,20 @@ async function loadUploadedArtifactRows(
 ): Promise<LoadedRows | LoadRowsSkip> {
   const uploadedBytes = await readFile(join(canonicalImportDir, uploadedFileName)).catch((): Buffer => Buffer.alloc(0));
   const artifact = extractViewingActivityArtifact(uploadedFileName, uploadedBytes);
-  if (!artifact) {
+  if (!artifact.ok) {
+    // entry_too_large / total_too_large / too_many_entries: a real (or
+    // plausibly real) export that tripped the decompression-bomb policy —
+    // distinct SKIP_RESULT reason so this never reads as "not a Netflix
+    // export" when it actually is one, just too large to safely process.
+    const isSizePolicyRejection =
+      artifact.code === "entry_too_large" ||
+      artifact.code === "total_too_large" ||
+      artifact.code === "too_many_entries";
     return {
-      reason: "csv_parse_error",
-      message: `Uploaded file '${uploadedFileName}' does not contain a recognizable ViewingActivity.csv (expected a raw CSV export or the official Netflix getmyinfo zip archive).`,
+      reason: isSizePolicyRejection ? "import_exceeds_bounded_read_policy" : "csv_parse_error",
+      message: isSizePolicyRejection
+        ? `Uploaded file '${uploadedFileName}' exceeds the safe read policy: ${artifact.message}`
+        : `Uploaded file '${uploadedFileName}' does not contain a recognizable ViewingActivity.csv (expected a raw CSV export or the official Netflix getmyinfo zip archive).`,
     };
   }
   const parseResult = parseCSVContentForValidation(artifact.csvText);

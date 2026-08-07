@@ -34,7 +34,7 @@ function remediationFor(status: NetflixExportValidationStatus): string | null {
     case "empty":
       return "This looks like a Netflix viewing activity export, but it does not contain importable rows.";
     case "too_large":
-      return "This export is larger than the upload limit. Use the import-folder handoff for large archives.";
+      return "This is a real Netflix export, but it (or the ViewingActivity.csv inside it) is larger than PDPP can safely process from a browser upload. Extract the archive yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv, or use the server import-folder handoff.";
     case "unsupported":
       return "Choose ViewingActivity.csv, or the .zip archive from netflix.com/account/getmyinfo. Other Netflix export files are not supported.";
     case "valid":
@@ -62,8 +62,19 @@ export function validateNetflixExportArtifact(
   }
 
   const artifact = extractViewingActivityArtifact(options.fileName ?? "ViewingActivity.csv", bytes);
-  if (!artifact) {
-    return { ...base, remediation: remediationFor("unsupported"), status: "unsupported" };
+  if (!artifact.ok) {
+    // entry_too_large / total_too_large / too_many_entries mean this IS a
+    // real (or plausibly real) export that tripped the decompression-bomb
+    // policy — report too_large, not unsupported, so the owner gets
+    // actionable guidance instead of being told their real export is
+    // unrecognized. no_viewing_activity_entry / unsupported_shape mean the
+    // artifact genuinely isn't (or doesn't contain) a Netflix export.
+    const isSizePolicyRejection =
+      artifact.code === "entry_too_large" ||
+      artifact.code === "total_too_large" ||
+      artifact.code === "too_many_entries";
+    const status: NetflixExportValidationStatus = isSizePolicyRejection ? "too_large" : "unsupported";
+    return { ...base, remediation: remediationFor(status), status };
   }
 
   const { rows } = parseCSVContentForValidation(artifact.csvText);

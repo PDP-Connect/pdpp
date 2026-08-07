@@ -121,3 +121,15 @@ test("validateWhatsAppChatExportArtifact rejects unsupported and too-large artif
   const tooLarge = validateWhatsAppChatExportArtifact(VALID_EXPORT, { maxFileBytes: 4 });
   assert.equal(tooLarge.status, "too_large");
 });
+
+test("a zip declaring far more entries than the policy allows classifies as too_large, NOT unsupported", () => {
+  // A real export zip whose entry count trips the decompression-bomb
+  // maxEntries policy is a different situation from a file that isn't a
+  // WhatsApp export at all — the owner-facing status must say so.
+  const entries = Array.from({ length: 25_000 }, (_, i) => ({ data: "x", name: `media-${i}.jpg` }));
+  const zip = makeStoredZip(entries);
+  const validation = validateWhatsAppChatExportArtifact(zip, { fileName: "WhatsApp Chat.zip" });
+
+  assert.equal(validation.status, "too_large");
+  assert.notEqual(validation.status, "unsupported");
+});

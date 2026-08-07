@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { extractWhatsAppChatArtifact, parseWhatsAppChatFile } from "./parsers.ts";
+import { extractWhatsAppChatArtifact, parseWhatsAppChatFile, WhatsAppZipPolicyRejection } from "./parsers.ts";
 
 export type WhatsAppChatExportValidationStatus = "valid" | "duplicate" | "empty" | "unsupported" | "too_large";
 
@@ -102,7 +102,19 @@ export function validateWhatsAppChatExportArtifact(
     return { ...base, remediation: remediationFor("too_large"), status: "too_large" };
   }
 
-  const artifact = extractWhatsAppChatArtifact(options.fileName ?? "WhatsApp Chat.txt", bytes);
+  let artifact: ReturnType<typeof extractWhatsAppChatArtifact>;
+  try {
+    artifact = extractWhatsAppChatArtifact(options.fileName ?? "WhatsApp Chat.txt", bytes);
+  } catch (err) {
+    if (err instanceof WhatsAppZipPolicyRejection) {
+      // A real (or plausibly real) export that tripped the decompression-bomb
+      // policy — report too_large, not unsupported, so the owner gets
+      // actionable guidance instead of being told their real export is
+      // unrecognized.
+      return { ...base, remediation: remediationFor("too_large"), status: "too_large" };
+    }
+    throw err;
+  }
   if (!artifact) {
     return { ...base, remediation: remediationFor("unsupported"), status: "unsupported" };
   }

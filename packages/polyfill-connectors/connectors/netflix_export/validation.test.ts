@@ -113,3 +113,27 @@ test("validateNetflixExportArtifact rejects files exceeding the size limit", () 
   const tooLarge = validateNetflixExportArtifact(VALID_CSV, { fileName: "ViewingActivity.csv", maxFileBytes: 4 });
   assert.equal(tooLarge.status, "too_large");
 });
+
+test("a zip whose ViewingActivity.csv entry trips the decompression-bomb policy classifies as too_large, NOT unsupported", () => {
+  // A real (well-formed, honestly-labeled) Netflix export zip whose
+  // ViewingActivity.csv entry is bigger than MAX_CSV_BYTES. This is a
+  // genuine Netflix export the parser simply can't safely process — the
+  // user-facing status must distinguish this from "not a Netflix export at
+  // all" (unsupported), since the remediation and owner-facing meaning are
+  // different: "shrink or use the fallback" vs "wrong file."
+  const oversizedCsv = Buffer.alloc(60 * 1024 * 1024, 65); // 60 MiB, over the 50 MiB MAX_CSV_BYTES cap
+  const zip = makeStoredZip([{ name: "CONTENT_INTERACTION/ViewingActivity.csv", data: oversizedCsv }]);
+  const validation = validateNetflixExportArtifact(zip, { fileName: "netflix-report.zip" });
+
+  assert.equal(validation.status, "too_large");
+  assert.notEqual(validation.status, "unsupported");
+  assert.match(validation.remediation ?? "", /real Netflix export|too large to safely process/i);
+});
+
+test("a zip declaring far more entries than the policy allows classifies as too_large, NOT unsupported", () => {
+  const entries = Array.from({ length: 6000 }, (_, i) => ({ data: "x", name: `file-${i}.csv` }));
+  const zip = makeStoredZip(entries);
+  const validation = validateNetflixExportArtifact(zip, { fileName: "netflix-report.zip" });
+
+  assert.equal(validation.status, "too_large");
+});

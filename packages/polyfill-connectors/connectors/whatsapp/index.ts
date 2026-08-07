@@ -31,7 +31,13 @@ import {
   type ReferenceBlobRef,
   runtimeBlobUploadAvailable,
 } from "../../src/reference-blob-uploader.ts";
-import { extractWhatsAppChatArtifact, nowIso, type ParsedWhatsAppChat, parseWhatsAppChatFile } from "./parsers.ts";
+import {
+  extractWhatsAppChatArtifact,
+  nowIso,
+  type ParsedWhatsAppChat,
+  parseWhatsAppChatFile,
+  WhatsAppZipPolicyRejection,
+} from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 
 // ─── Fingerprinted record emission ───────────────────────────────────────────
@@ -233,7 +239,21 @@ async function parseExportFile(
     });
     return null;
   }
-  const artifact = extractWhatsAppChatArtifact(basename(fileName), content);
+  let artifact: ReturnType<typeof extractWhatsAppChatArtifact>;
+  try {
+    artifact = extractWhatsAppChatArtifact(basename(fileName), content);
+  } catch (err) {
+    if (err instanceof WhatsAppZipPolicyRejection) {
+      await emit({
+        message: `Skipped WhatsApp export ${exportOrdinal} of ${exportTotal}: exceeds the safe archive read policy (${err.message}).`,
+        reason: "import_exceeds_bounded_read_policy",
+        stream: skipStream,
+        type: "SKIP_RESULT",
+      });
+      return null;
+    }
+    throw err;
+  }
   if (!artifact) {
     await emit({
       message: `Skipped WhatsApp export ${exportOrdinal} of ${exportTotal}: not a supported chat export.`,
@@ -251,6 +271,14 @@ async function parseExportFile(
       total: exportTotal,
     }
   );
+  if (artifact.skippedMediaCount > 0) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "attachments",
+      reason: "media_exceeds_bounded_read_policy",
+      message: `${artifact.skippedMediaCount} media file(s) in WhatsApp export ${exportOrdinal} of ${exportTotal} exceeded the archive read policy and were not imported.`,
+    });
+  }
   return { ...parsed, attachments: artifact.mediaFiles };
 }
 

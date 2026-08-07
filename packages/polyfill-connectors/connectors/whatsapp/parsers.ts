@@ -2,7 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { hasZipLocalFileSignature, readZipEntries, zipBasename } from "../../src/bounded-zip-archive.ts";
+import {
+  hasZipLocalFileSignature,
+  readZipEntries,
+  ZipPolicyViolationError,
+  type ZipReadPolicy,
+  zipBasename,
+} from "../../src/bounded-zip-archive.ts";
+
+// Bounds match the manifest's max_file_bytes (1 GiB, see manifests/whatsapp.json) —
+// a real "with media" export can legitimately contain many attachments, so
+// entry count and total size are generous, but no single entry (nor the
+// archive as a whole) can inflate past the upload's own declared ceiling.
+// This is the decompression-bomb gate for WhatsApp zip exports: see
+// bounded-zip-archive.ts for how maxEntryUncompressedBytes bounds inflation
+// itself, not just a post-hoc length check.
+const WHATSAPP_ZIP_POLICY: ZipReadPolicy = {
+  maxEntries: 20_000,
+  maxEntryUncompressedBytes: 1024 * 1024 * 1024,
+  maxTotalUncompressedBytes: 1024 * 1024 * 1024,
+};
 
 export interface ParsedWhatsAppMessage {
   author: string;
@@ -167,6 +186,15 @@ export interface ExtractedWhatsAppChatArtifact {
   format: WhatsAppChatArtifactFormat;
   mediaFileCount: number;
   mediaFiles: ParsedWhatsAppAttachment[];
+  /**
+   * Media entries present in the zip's central directory but withheld from
+   * mediaFiles because extracting them would violate WHATSAPP_ZIP_POLICY
+   * (oversized, or the shared decompression budget was exhausted). Nonzero
+   * means real attachment coverage is missing from this parse — the caller
+   * MUST surface this (see index.ts), not treat mediaFiles.length as the
+   * true attachment count.
+   */
+  skippedMediaCount: number;
   text: string;
 }
 
@@ -178,39 +206,104 @@ function isProbablyMediaEntry(name: string): boolean {
   return !TXT_EXT_RE.test(clean);
 }
 
+/**
+ * Thrown instead of returning null when the zip archive itself (not a media
+ * entry inside it) violates WHATSAPP_ZIP_POLICY — e.g. too many entries, or
+ * the shared decompression budget is exhausted before any chat text can even
+ * be located. Distinguishes "this is a real export that's too large to
+ * safely process" from extractWhatsAppChatArtifact returning null, which
+ * means "this isn't a recognizable WhatsApp export at all." Callers
+ * (validation.ts) MUST preserve this distinction — collapsing both into
+ * "unsupported" hides an actionable signal from the owner.
+ */
+export class WhatsAppZipPolicyRejection extends Error {
+  readonly code: InstanceType<typeof ZipPolicyViolationError>["code"];
+  constructor(cause: InstanceType<typeof ZipPolicyViolationError>) {
+    super(cause.message, { cause });
+    this.name = "WhatsAppZipPolicyRejection";
+    this.code = cause.code;
+  }
+}
+
+function extractMediaFiles(entries: ReturnType<typeof readZipEntries>): {
+  mediaFiles: ParsedWhatsAppAttachment[];
+  skippedMediaCount: number;
+} {
+  const mediaFiles: ParsedWhatsAppAttachment[] = [];
+  let skippedMediaCount = 0;
+  for (const entry of entries.filter((e) => isProbablyMediaEntry(e.name))) {
+    try {
+      mediaFiles.push({ bytes: entry.data(), filename: basename(entry.name) });
+    } catch {
+      // Oversized (policy violation) or corrupt media entry: excluded from
+      // this parse. skippedMediaCount carries this forward so the caller
+      // can surface a real coverage gap instead of silently under-reporting.
+      skippedMediaCount += 1;
+    }
+  }
+  return { mediaFiles, skippedMediaCount };
+}
+
+function findChatTextEntry(
+  entries: ReturnType<typeof readZipEntries>,
+  mediaFiles: ParsedWhatsAppAttachment[],
+  skippedMediaCount: number
+): ExtractedWhatsAppChatArtifact | null {
+  const textEntries = entries.filter((entry) => TXT_EXT_RE.test(entry.name));
+  for (const entry of textEntries) {
+    let text: string;
+    try {
+      text = entry.data().toString("utf8");
+    } catch {
+      continue;
+    }
+    if (looksLikeWhatsAppChatExport(text)) {
+      return {
+        chatFileName: basename(entry.name),
+        format: "whatsapp_chat_export_zip",
+        mediaFileCount: mediaFiles.length,
+        mediaFiles,
+        skippedMediaCount,
+        text,
+      };
+    }
+  }
+  return null;
+}
+
+function extractFromZip(bytes: Buffer): ExtractedWhatsAppChatArtifact | null {
+  let entries: ReturnType<typeof readZipEntries>;
+  try {
+    entries = readZipEntries(bytes, WHATSAPP_ZIP_POLICY);
+  } catch (err) {
+    if (err instanceof ZipPolicyViolationError) {
+      // biome-ignore lint/style/useErrorCause: cause IS passed — WhatsAppZipPolicyRejection's constructor forwards it via super(cause.message, { cause }); the linter doesn't see through the wrapper class.
+      throw new WhatsAppZipPolicyRejection(err);
+    }
+    return null;
+  }
+  const { mediaFiles, skippedMediaCount } = extractMediaFiles(entries);
+  return findChatTextEntry(entries, mediaFiles, skippedMediaCount);
+}
+
 export function extractWhatsAppChatArtifact(
   filename: string,
   input: Buffer | Uint8Array | string
 ): ExtractedWhatsAppChatArtifact | null {
   const bytes = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
   if (ZIP_EXT_RE.test(filename) || hasZipLocalFileSignature(bytes)) {
-    const entries = readZipEntries(bytes);
-    const textEntries = entries.filter((entry) => TXT_EXT_RE.test(entry.name));
-    const mediaFiles = entries
-      .filter((entry) => isProbablyMediaEntry(entry.name))
-      .map((entry) => ({ bytes: entry.data(), filename: basename(entry.name) }));
-    for (const entry of textEntries) {
-      let text: string;
-      try {
-        text = entry.data().toString("utf8");
-      } catch {
-        continue;
-      }
-      if (looksLikeWhatsAppChatExport(text)) {
-        return {
-          chatFileName: basename(entry.name),
-          format: "whatsapp_chat_export_zip",
-          mediaFileCount: mediaFiles.length,
-          mediaFiles,
-          text,
-        };
-      }
-    }
-    return null;
+    return extractFromZip(bytes);
   }
   const text = bytes.toString("utf8");
   return looksLikeWhatsAppChatExport(text)
-    ? { chatFileName: filename, format: "whatsapp_chat_export", mediaFileCount: 0, mediaFiles: [], text }
+    ? {
+        chatFileName: filename,
+        format: "whatsapp_chat_export",
+        mediaFileCount: 0,
+        mediaFiles: [],
+        skippedMediaCount: 0,
+        text,
+      }
     : null;
 }
 
