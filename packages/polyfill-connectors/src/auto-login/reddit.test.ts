@@ -25,11 +25,14 @@ function makeContext(cookies: BrowserCookie[] = []): BrowserContext {
 }
 
 function makePageWithoutLoginInputs(): Page {
-  const emptyLocator: Pick<Locator, "count" | "first"> = {
+  // Mirrors real Playwright: `waitFor` rejects on timeout when the element
+  // never attaches (never resolves `undefined` the way a stubbed no-op would).
+  const emptyLocator: Pick<Locator, "count" | "first" | "waitFor"> = {
     count: (): Promise<number> => Promise.resolve(0),
     first(): Locator {
       return emptyLocator as Locator;
     },
+    waitFor: (): Promise<void> => Promise.reject(new Error("Timeout waiting for locator")),
   };
   const fake: Pick<Page, "goto" | "locator"> = {
     goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
@@ -43,7 +46,7 @@ function makePageWithoutLoginInputs(): Page {
 }
 
 function makeLocator({ count = 1, visible = true }: { count?: number; visible?: boolean } = {}): Locator {
-  const fake: Pick<Locator, "click" | "count" | "fill" | "first" | "isVisible"> = {
+  const fake: Pick<Locator, "click" | "count" | "fill" | "first" | "isVisible" | "waitFor"> = {
     click: (): Promise<void> => Promise.resolve(),
     count: (): Promise<number> => Promise.resolve(count),
     fill: (_value: string): Promise<void> => Promise.resolve(),
@@ -53,8 +56,46 @@ function makeLocator({ count = 1, visible = true }: { count?: number; visible?: 
     isVisible(): Promise<boolean> {
       return Promise.resolve(visible);
     },
+    waitFor(): Promise<void> {
+      return count > 0 ? Promise.resolve() : Promise.reject(new Error("Timeout waiting for locator"));
+    },
   };
   return fake as Locator;
+}
+
+/** Models the login input attaching to the DOM after a render delay. */
+function makeDelayedAttachLocator({ attachesAfterMs }: { attachesAfterMs: number }): {
+  fillCalls: string[];
+  locator: Locator;
+} {
+  const start = Date.now();
+  const fillCalls: string[] = [];
+  const attached = (): boolean => Date.now() - start >= attachesAfterMs;
+  const fake: Pick<Locator, "click" | "count" | "fill" | "first" | "isVisible" | "waitFor"> = {
+    click: (): Promise<void> => Promise.resolve(),
+    count: (): Promise<number> => Promise.resolve(attached() ? 1 : 0),
+    fill: (value: string): Promise<void> => {
+      fillCalls.push(value);
+      return Promise.resolve();
+    },
+    first(): Locator {
+      return fake as Locator;
+    },
+    isVisible(): Promise<boolean> {
+      return Promise.resolve(attached());
+    },
+    async waitFor(options?: Parameters<Locator["waitFor"]>[0]): Promise<void> {
+      const timeout = options?.timeout ?? 30_000;
+      const deadline = Date.now() + timeout;
+      while (!attached()) {
+        if (Date.now() >= deadline) {
+          throw new Error("Timeout waiting for locator to be attached");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    },
+  };
+  return { fillCalls, locator: fake as Locator };
 }
 
 function makePageWithHiddenOtp(): Page {
@@ -231,6 +272,62 @@ test("ensureRedditSession emits manual_action when login inputs are blocked", as
     assert.equal(requests[0]?.kind, "manual_action");
     assert.ok(requests[0]?.request_id?.startsWith("int_"));
     assert.match(requests[0]?.message ?? "", /Cloudflare challenge/u);
+  });
+});
+
+test("ensureRedditSession waits past a slow client-side render instead of treating it as blocked", async () => {
+  await withRedditCredentials(async () => {
+    const requests: InteractionRequest[] = [];
+    const { fillCalls, locator: username } = makeDelayedAttachLocator({ attachesAfterMs: 150 });
+    const password = makeLocator();
+    const submit = makeLocator();
+    const empty = makeLocator({ count: 0, visible: false });
+    const page: Pick<Page, "getByRole" | "goto" | "locator" | "waitForLoadState" | "waitForTimeout"> = {
+      getByRole(_role: Parameters<Page["getByRole"]>[0], _options?: Parameters<Page["getByRole"]>[1]): Locator {
+        return submit;
+      },
+      goto(_url: string, _options?: Parameters<Page["goto"]>[1]): ReturnType<Page["goto"]> {
+        return Promise.resolve(null);
+      },
+      locator(selector: string, _options?: Parameters<Page["locator"]>[1]): Locator {
+        if (selector.includes("username")) {
+          return username;
+        }
+        if (selector.includes("password")) {
+          return password;
+        }
+        return empty;
+      },
+      waitForLoadState(): ReturnType<Page["waitForLoadState"]> {
+        return Promise.resolve();
+      },
+      waitForTimeout(): ReturnType<Page["waitForTimeout"]> {
+        return Promise.resolve();
+      },
+    };
+
+    // The run doesn't reach a live session in this fixture (no cookie
+    // machinery wired up) — the assertion is about the fill, not the outcome.
+    await assert.rejects(
+      ensureRedditSession({
+        context: makeContext(),
+        page: page as Page,
+        sendInteraction(req: InteractionRequest): Promise<InteractionResponse> {
+          requests.push(req);
+          return Promise.resolve({
+            request_id: req.request_id ?? "test_interaction",
+            status: "success",
+            type: "INTERACTION_RESPONSE",
+          });
+        },
+      })
+    );
+
+    // The pre-fix `count()` snapshot would have read 0 at t=0 and handed off
+    // to the operator without ever calling fill(); the correct behavior is
+    // to wait past the render delay and fill the real value.
+    assert.deepEqual(fillCalls, ["test-user"]);
+    assert.equal(requests.length, 0, "must not hand off to the operator for a field that arrives within budget");
   });
 });
 
