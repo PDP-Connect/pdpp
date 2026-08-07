@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
+import { isActiveConnectorRunSummaryStatus } from "./connector-run-summary-status.ts";
 import type { FormattedNextAction } from "./next-action.ts";
 import type {
   RefActionRemediation,
@@ -258,10 +259,14 @@ export function deriveRenderedSourceStatus(
   verdict: RefRenderedVerdict | null | undefined,
   revoked: boolean,
   pending = false,
-  terminalSetupDisposition: RefTerminalSetupDisposition | null = null
+  terminalSetupDisposition: RefTerminalSetupDisposition | null = null,
+  running = false
 ): SourceStatusFlag {
   if (revoked) {
     return { dot: "⊘", freshnessNote: null, kind: "revoked", label: "Revoked", tone: "muted" };
+  }
+  if (running) {
+    return { dot: "◌", freshnessNote: null, kind: "pending", label: "Syncing", tone: "muted" };
   }
   if (terminalSetupDisposition) {
     return {
@@ -652,6 +657,7 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
   const revoked = isRevokedConnector(connector);
   const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
   const pending = !revoked && isSetupInProgressConnector(connector) && terminalSetupDisposition === null;
+  const running = connector.last_run !== null && isActiveConnectorRunSummaryStatus(connector.last_run.status);
   const primaryAction = pending ? null : primaryRequiredAction(connector.rendered_verdict);
   const primaryVerdictAction = formatPrimaryVerdictAction(
     connector.rendered_verdict,
@@ -668,7 +674,13 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
     ownerActionCue: ownerActionCueFromVerdictAction(primaryVerdictAction),
     primaryAction,
     primaryVerdictAction,
-    renderedStatus: deriveRenderedSourceStatus(connector.rendered_verdict, revoked, pending, terminalSetupDisposition),
+    renderedStatus: deriveRenderedSourceStatus(
+      connector.rendered_verdict,
+      revoked,
+      pending,
+      terminalSetupDisposition,
+      running
+    ),
     revoked,
     routeId,
     work: sourceWorkItemFromConnector(connector),

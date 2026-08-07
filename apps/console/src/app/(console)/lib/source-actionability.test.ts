@@ -11,6 +11,7 @@ import type {
   RefRequiredAction,
 } from "./ref-client.ts";
 import {
+  deriveRenderedSourceStatus,
   hasPrimaryOwnerLocalDeviceRemediation,
   isSetupInProgressConnector,
   primaryOwnerActionRemediation,
@@ -280,6 +281,22 @@ test("source actionability routes a Syncing pill (active run over stale/owner-re
 
   assert.equal(actionability.work?.group, "working");
   assert.equal(actionability.work?.statusLabel, "is working");
+});
+
+test("source status names an active run instead of showing an unknown freshness verdict", () => {
+  const flag = deriveRenderedSourceStatus(
+    verdict({
+      annotations: [{ kind: "freshness", text: "Freshness has not been measured yet." }],
+      pill: { label: "Checking", tone: "grey" },
+    }),
+    false,
+    false,
+    null,
+    true
+  );
+  assert.equal(flag.kind, "pending");
+  assert.equal(flag.freshnessNote, null);
+  assert.equal(flag.label, "Syncing");
 });
 
 test("source actionability keeps a Degraded pill (no wired owner action) in systemIssue", () => {
