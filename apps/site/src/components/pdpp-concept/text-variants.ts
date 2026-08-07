@@ -69,10 +69,10 @@ export const conceptTextVariants = cva("", {
 /* Section index numeral on size="title" — concept chrome, not a cva variant. */
 export const sectionIndexNumeralClassName = [
   "me-3",
-  "font-mono text-[0.9em] font-normal tracking-[0.04em] text-primary",
+  "font-mono text-[0.85em] font-normal tracking-[0.04em] text-primary",
   "tabular-nums lining-nums",
   "select-none",
-  "min-[1000px]:absolute min-[1000px]:top-[0.1em] min-[1000px]:right-[calc(100%+0.6em)] min-[1000px]:me-0 min-[1000px]:align-baseline",
+  "min-[1000px]:absolute min-[1000px]:top-[0.15em] min-[1000px]:right-[calc(100%+0.6em)] min-[1000px]:me-0 min-[1000px]:align-baseline",
 ];
 
 export function isConceptOnlyColor(color: string | null | undefined): color is ConceptOnlyColor {

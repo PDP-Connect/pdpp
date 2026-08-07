@@ -10,7 +10,7 @@ const SITE_ROOT = fileURLToPath(new URL("../src/", import.meta.url));
 
 /** Token-ownership probes — hoisted so the regexes compile once per module. */
 const BACKGROUND_REBIND_RE = /--background: var\(--pdpp-concept-paper\)/;
-const CONTAINER_PAGE_VALUE_RE = /--container-page: 1240px/;
+const CONTAINER_PAGE_VALUE_RE = /--container-page: 1080px/;
 const CONTAINER_PAGE_RE = /--container-page/;
 const CONCEPT_MAX_RE = /--pdpp-concept-max/;
 const CONCEPT_SERIF_RE = /--pdpp-concept-serif/;

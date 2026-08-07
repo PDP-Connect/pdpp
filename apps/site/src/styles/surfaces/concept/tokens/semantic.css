@@ -21,14 +21,19 @@
  * Editorial values differ from brand's product values by intent, not by
  * accident: fluid clamp() rungs and a looser 1.65 body leading. Concept-only
  * Text packaging (deck, stamp chip, callout) lives in pdpp-concept/text-variants.ts.
+ *
+ * FLUID CLAMPS (layout @theme + type rungs below): linear 375px→1240px viewport,
+ * 16px root — clamp(min, calc(intercept_rem + slope_vw * 1vw), max) with
+ * slope_vw = (max−min)/8.65 and intercept_rem = (min−slope_vw×3.75)/16.
  */
 
 @theme {
-  --container-page: 1240px;
+  --container-page: 1080px;
   --container-measure: 68ch;
-  --spacing-pad: clamp(20px, calc(-0.5263rem + 3.9474vw), 32px);
-  --spacing-gutter: clamp(40px, calc(1.2692rem + 1.9231vw), 48px);
-  --spacing-rail: clamp(200px, calc(6.3462rem + 12.5vw), 276px);
+
+  --spacing-pad: clamp(20px, calc(0.9249rem + 1.3873vw), 32px);
+  --spacing-gutter: clamp(40px, calc(2.2832rem + 0.9249vw), 48px);
+  --spacing-rail: clamp(180px, calc(9.6243rem + 6.9364vw), 240px);
   --spacing-section-gap: 96px;
 }
 
@@ -87,7 +92,7 @@
   --text-title--letter-spacing: 0;
   --text-title--font-weight: 600;
 
-  --text-display: clamp(32px, calc(1.7561rem + 1.0405vw), 41px);
+  --text-display: clamp(29px, calc(1.6228rem + 0.8092vw), 36px);
   --text-display--line-height: 1.15;
   --text-display--letter-spacing: -0.01em;
   --text-display--font-weight: 600;
