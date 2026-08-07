@@ -46,8 +46,8 @@ export class CollectorCustomCommandRefusedError extends Error {
 /** Thrown when an operator invokes the bin with an unrecognized subcommand. */
 export class CollectorUsageError extends Error {
   readonly exitCode: number;
-  constructor(message: string, options: { exitCode?: number } = {}) {
-    super(message);
+  constructor(message: string, options: { cause?: unknown; exitCode?: number } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "CollectorUsageError";
     this.exitCode = options.exitCode ?? 64;
   }
