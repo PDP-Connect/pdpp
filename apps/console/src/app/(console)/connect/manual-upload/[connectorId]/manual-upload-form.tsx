@@ -687,8 +687,7 @@ export function ManualUploadForm({
         </div>
       ) : (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          Choose whether this file starts a new source or belongs with one you already created. PDPP can suggest a label
-          from the file, but the choice stays yours.
+          Choose whether this file starts a new source or belongs with one you already created.
         </div>
       )}
       {targetConnectionId ? null : (
@@ -771,8 +770,8 @@ export function ManualUploadForm({
       </label>
       {hasValidator ? (
         <div className="pdpp-caption rounded-md border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. If a file does not
-          pass, nothing from that file is imported.
+          PDPP validates before committing anything: {setup.validation_expectations.join(", ")}. Only files that pass
+          are imported.
         </div>
       ) : null}
       {state.ok === false && state.message ? (

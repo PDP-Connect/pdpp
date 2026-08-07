@@ -49,7 +49,7 @@ export default async function GrantPackagesIndex() {
   return (
     <RecordroomShellWithPalette>
       <PageHeader
-        description="Hosted-MCP multi-source consent ceremonies issued one package per approval. Each package wraps one or more source-bounded child grants and a single bearer-token lifecycle. Revoke from the detail page to cascade across every child."
+        description="One package per hosted-MCP approval. Each wraps one or more source-bounded child grants and a single bearer-token lifecycle."
         title="Grant packages"
       />
       <Section title={`Packages (${items.length})`}>

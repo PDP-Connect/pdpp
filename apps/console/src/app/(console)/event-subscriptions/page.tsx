@@ -262,7 +262,7 @@ export default async function EventSubscriptionsPage({ searchParams }: { searchP
       <RecordroomShellWithPalette>
         <PageHeader
           count={`${list.data.length}`}
-          description="Webhook-style event subscriptions registered by clients against owner-issued grants. Operator surface is read-only with one safety-valve disable; rotate and replay remain client-owned."
+          description="Webhook-style event subscriptions registered by clients against owner-issued grants. This surface reads them and can disable one; rotate and replay stay with the client."
           title="Client event subscriptions"
         />
 

@@ -61,7 +61,7 @@ export default async function SchedulesPage({ searchParams }: { searchParams?: P
     <RecordroomShellWithPalette>
       <SchedulesPoller enabled={hasActiveRun} />
       <SchedulesView
-        description="Set automatic refresh cadences for your connectors. High-friction connectors (banks, browser-based) should be kept manual or low-frequency."
+        description="Set automatic refresh cadences for your connectors. Keep high-friction ones (banks, browser-based) manual or infrequent."
         renderRow={(summary) => (
           <ScheduleRow
             key={summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id}
@@ -71,7 +71,7 @@ export default async function SchedulesPage({ searchParams }: { searchParams?: P
         )}
         scheduledEmptyHint="Use the buttons below to add a schedule to any connector."
         summaries={[...summaries]}
-        unscheduledDescription="These connectors have no automatic schedule. Use 'Set schedule' to add one, or sync manually from the Records page."
+        unscheduledDescription="These connectors run only when you ask. Use 'Set schedule' to add a cadence, or sync manually from the Records page."
       />
       <ConnectorSummaryPager
         basePath={SCHEDULES_PATH}

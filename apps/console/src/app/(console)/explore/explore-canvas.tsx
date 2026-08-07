@@ -2373,9 +2373,9 @@ function ZeroResultsRouting({
   let descriptionText: string;
   if (loadedCount > 0) {
     const plural = loadedCount === 1 ? "" : "s";
-    descriptionText = `${loadedCount.toLocaleString()} record${plural} loaded — none passed the current filters`;
+    descriptionText = `${loadedCount.toLocaleString()} record${plural} loaded before the active filters ran.`;
   } else if (hasFilters) {
-    descriptionText = "The active filters returned nothing. Try a different combination.";
+    descriptionText = "The active filters returned nothing.";
   } else {
     descriptionText = "There are no records to show here yet.";
   }

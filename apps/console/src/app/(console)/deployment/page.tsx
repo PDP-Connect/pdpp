@@ -93,7 +93,7 @@ export default async function DeploymentPage() {
           </Link>
         }
         beforeDiagnostics={<DeploymentReadinessPanel inputs={extractReadinessInputs(report)} />}
-        breadcrumbs={[{ href: "/", label: "Dashboard" }, { label: "Deployment" }]}
+        breadcrumbs={[{ href: "/", label: "Overview" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         report={report}
         retainedBytes={retainedBytes}

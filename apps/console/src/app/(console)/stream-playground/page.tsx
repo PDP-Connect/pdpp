@@ -35,8 +35,8 @@ const PLAYGROUND_CONNECTOR = {
 };
 
 const PLAYGROUND_MESSAGE =
-  "Click the button below to open the playground browser. " +
-  "Inside, click, type, scroll, paste — every input modality is logged on the page so you can see it land.";
+  "Open the playground browser below. " +
+  "Inside, click, type, scroll, and paste — each input is logged on the page so you can see it land.";
 
 type PlaygroundBackend = "cdp" | "neko" | "neko-remote-cdp";
 

@@ -528,7 +528,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
         }
         breadcrumbs={[{ href: "/deployment", label: "Deployment" }, { label: "Tokens" }]}
         description="Set up trusted local owner automation without pasting bearer material. Manual owner bearers stay available below for debugging."
-        title="Owner-agent access"
+        title="Owner tokens"
       />
 
       <OwnerAgentOnboardingCard entrypoint={entrypoint} />

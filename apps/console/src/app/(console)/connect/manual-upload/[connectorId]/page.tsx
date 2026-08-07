@@ -121,7 +121,7 @@ export default async function ManualUploadConnectPage({
           </Link>
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: `Import ${setup.display_name}` }]}
-        description="Bring your exported data in. Pick the supported file you have. PDPP validates it before anything is committed, then imports it and shows a durable coverage receipt you can revisit."
+        description="Pick a supported export file. PDPP validates it, imports it, and gives you a coverage receipt you can revisit."
         title={targetConnectionId ? `Import another ${setup.display_name} file` : `Import ${setup.display_name}`}
       />
 

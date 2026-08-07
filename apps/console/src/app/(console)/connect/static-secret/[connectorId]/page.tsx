@@ -237,8 +237,8 @@ export default async function StaticSecretConnectPage({
             ))}
             {setup.validation === "synchronous" ? (
               <p className="pdpp-caption text-muted-foreground">
-                The credential is checked with the provider when you submit. If it is valid, the account is confirmed
-                before the first sync starts; if not, you stay on this form with your details preserved.
+                The credential is checked with the provider when you submit. A valid one confirms the account and starts
+                the first sync; otherwise you stay on this form with your details preserved.
               </p>
             ) : null}
             <div>

@@ -134,8 +134,7 @@ function ClientIdentityList({
   if (!identities.length) {
     return (
       <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">
-        No stable client identities yet. Create one when a local MCP client supports an explicit URL-shaped{" "}
-        <code className="font-mono">client_id</code>.
+        No client identities yet.
       </p>
     );
   }
@@ -318,7 +317,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
             Deployment readiness
           </Link>
         }
-        breadcrumbs={[{ href: "/", label: "Dashboard" }, { label: "Connect apps" }]}
+        breadcrumbs={[{ href: "/", label: "Overview" }, { label: "Connect apps" }]}
         description="Give apps and local clients grant-scoped read access to data already in this instance. To add or manage data sources, go to Sources."
         title="Connect apps"
       />

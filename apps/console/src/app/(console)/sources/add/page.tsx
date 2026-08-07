@@ -54,7 +54,7 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
     <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
-          { href: dashboardRoutes.section.overview, label: "Dashboard" },
+          { href: dashboardRoutes.section.overview, label: "Overview" },
           { href: dashboardRoutes.section.records, label: "Sources" },
           { label: "Add source" },
         ]}

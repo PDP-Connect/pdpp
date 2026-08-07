@@ -47,8 +47,8 @@ export default function ExploreError({ error, reset }: { error: Error & { digest
       </h1>
       <p className="pdpp-body max-w-prose text-muted-foreground">
         {interrupted
-          ? "The load was interrupted — usually from switching away while records were still loading. Your data is safe and unchanged. Reload to pick up where it left off."
-          : "Explore hit an unexpected error while loading your records. Your data is safe — this is a display failure, not a change. Reload to try again."}
+          ? "The load was interrupted, usually by switching away while records were still loading. Your records are safe and unchanged."
+          : "Explore hit an unexpected error while loading your records. Your records are safe and unchanged; only this view failed."}
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">

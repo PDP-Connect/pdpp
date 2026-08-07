@@ -59,12 +59,12 @@ export default async function NotificationsPage() {
               reconnects, syncs waiting on you, and other events where this instance needs your attention.
             </p>
             <p>
-              <strong className="text-foreground">No record content.</strong> Notification payloads stay non-secret and
-              route you back to the owner-authenticated console for details.
+              <strong className="text-foreground">Headline only.</strong> Payloads stay non-secret and route you back to
+              the owner-authenticated console for the details.
             </p>
             <p>
-              <strong className="text-foreground">Per device.</strong> Installing the PWA adds an app icon; it does not
-              subscribe this browser until you enable this device here.
+              <strong className="text-foreground">Per device.</strong> Installing the PWA adds an app icon; this browser
+              starts receiving alerts once you enable it here.
             </p>
           </div>
         </Section>
