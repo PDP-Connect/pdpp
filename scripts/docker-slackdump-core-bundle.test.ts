@@ -1,11 +1,13 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Integration test: verify default core Docker image includes slackdump v4.4.2.
-// Builds the core target once, then inspects the image for proof of bundled slackdump.
+// Integration test: verify core Docker image includes slackdump v4.4.2.
+// Accepts an explicitly provided image tag (from CI) or builds locally for dev.
 //
 // Rationale: Slack connector is declared as "background_safe" only if slackdump
 // is present. This test ensures the default deployment image actually includes it.
+// Uses structural assertions (Go/toolchain/build-deps absence) rather than
+// brittle absolute size bounds, which are host/architecture-sensitive.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -13,7 +15,9 @@ import { test } from "node:test";
 
 const DOCKER_CMD = "docker";
 const DOCKERFILE_PATH = "./Dockerfile";
-const CORE_IMAGE_TAG = "pdpp:test-core-slackdump";
+// Accept image tag from ENV (set by CI) or build locally for dev
+const CORE_IMAGE_TAG = process.env.PDPP_CORE_IMAGE_TAG || "pdpp:test-core-slackdump";
+const CI_PROVIDED_IMAGE = !!process.env.PDPP_CORE_IMAGE_TAG;
 
 // Check Docker availability before running.
 function isDockerAvailable(): boolean {
@@ -27,25 +31,28 @@ function isDockerAvailable(): boolean {
 
 const skipIfNoDocker = isDockerAvailable() ? test : test.skip;
 
-skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
-  t.diagnostic("Building core Docker image (single build, then multiple inspections)...");
-
-  // Build the core image once. This is the actual production image.
-  try {
-    execFileSync(DOCKER_CMD, [
-      "build",
-      "--target",
-      "core",
-      "-t",
-      CORE_IMAGE_TAG,
-      "-f",
-      DOCKERFILE_PATH,
-      ".",
-    ]);
-    t.diagnostic("core image built successfully");
-  } catch (err) {
-    t.diagnostic(`Build failed: ${err}`);
-    throw err;
+skipIfNoDocker("Inspect core image: slackdump bundling, license, and builder bloat", async (t) => {
+  if (!CI_PROVIDED_IMAGE) {
+    t.diagnostic("Building core Docker image locally (not in CI)...");
+    // Only build locally for dev; CI provides pre-built image via load: true
+    try {
+      execFileSync(DOCKER_CMD, [
+        "build",
+        "--target",
+        "core",
+        "-t",
+        CORE_IMAGE_TAG,
+        "-f",
+        DOCKERFILE_PATH,
+        ".",
+      ]);
+      t.diagnostic("core image built successfully");
+    } catch (err) {
+      t.diagnostic(`Build failed: ${err}`);
+      throw err;
+    }
+  } else {
+    t.diagnostic(`Using CI-provided image: ${CORE_IMAGE_TAG}`);
   }
 
   // Sequential assertions: all must complete before parent test finishes
@@ -136,8 +143,11 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
     }
   });
 
-  // Test 5: No Go toolchain in final image (builder-specific tool)
-  await t.test("Go toolchain not present in final image", () => {
+  // Test 5: Builder-stage isolation check: Go toolchain absent
+  // Rationale: slackdump-builder stage includes Go compiler (~600MB). If COPY --from
+  // is missing or misconfigured, Go would leak into final image. Absence of Go
+  // toolchain verifies builder-stage isolation is correct.
+  await t.test("Go toolchain not present (builder-stage isolation verified)", () => {
     try {
       try {
         execFileSync(DOCKER_CMD, [
@@ -147,22 +157,20 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
           "which",
           "go",
         ]);
-        // If go is found, that's a failure (builder bloat)
-        throw new Error("go toolchain found in final image (builder bloat detected)");
+        throw new Error("go toolchain found in final image (builder-stage isolation failed)");
       } catch (err) {
-        // Expected: go should NOT be found
-        if (err.message.includes("builder bloat")) throw err;
-        // Good: go not found, as expected
+        if (err.message.includes("builder-stage isolation")) throw err;
+        // Expected: go not found
       }
 
-      t.diagnostic("✓ Go toolchain (builder-only) not present in final image");
+      t.diagnostic("✓ Go toolchain absent (builder-stage isolation verified)");
     } catch (err) {
-      throw new Error(`Builder bloat check failed: ${err}`);
+      throw new Error(`Builder isolation check failed: ${err}`);
     }
   });
 
-  // Test 6: Record measured image size for evidence
-  await t.test("Record image size for delta measurement", () => {
+  // Test 6: Record measured image size for evidence (informational only, not a gate)
+  await t.test("Record image size for evidence", () => {
     try {
       const sizeOutput = execFileSync(DOCKER_CMD, [
         "image",
@@ -175,7 +183,7 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
       const sizeMB = sizeBytes / (1024 * 1024);
 
       t.diagnostic(`✓ Measured image size: ${sizeMB.toFixed(1)}MB`);
-      t.diagnostic("  Evidence: delta tracks slackdump binary bundle cost");
+      t.diagnostic("  (Structural bloat checks passed; size is informational only)");
     } catch (err) {
       throw new Error(`Image size measurement failed: ${err}`);
     }

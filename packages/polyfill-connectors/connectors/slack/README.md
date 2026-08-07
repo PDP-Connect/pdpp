@@ -162,5 +162,5 @@ Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK
 Slackdump resolution:
 
 - Host runs: put `slackdump` on `PATH` or set `SLACKDUMP_BIN` to the binary path.
-- Docker runs: the stock PDPP reference image does not bundle AGPL-3.0 `slackdump`. Build a derived image that installs it, or mount the binary into the container and set `SLACKDUMP_BIN` to that in-container path.
+- Docker runs: `core`, `core-browser`, `railway-core`, and `platform-core` images ship `slackdump` v4.4.2 (AGPL-3.0) bundled by default at `/usr/local/bin/slackdump`. To override, set `SLACKDUMP_BIN` to an alternative executable path or mount it as described in the reference-implementation README.
 - Missing binary failures are reported before credentials are printed; do not paste Slack tokens into logs.
