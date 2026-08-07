@@ -213,7 +213,14 @@ export async function ensureRedditSession({
   await captureLoginState(capture, page, "reddit-login-page");
 
   const userIn = page.locator(USERNAME_SELECTOR).first();
-  if (!(await userIn.count().catch(() => 0))) {
+  // `count()` is a one-shot DOM snapshot with no wait; on Reddit's
+  // client-rendered login page it can read 0 before the field has painted.
+  // `waitFor` gives the render a real, bounded chance instead.
+  const usernameAppeared = await userIn
+    .waitFor({ state: "attached", timeout: 10_000 })
+    .then((): true => true)
+    .catch((): false => false);
+  if (!usernameAppeared) {
     // Cloudflare challenge, shadow DOM change, or redirect loop — hand off.
     // Earn the diagnosis via the shared detector instead of guessing "possible
     // Cloudflare challenge" from absence of inputs alone.
