@@ -342,6 +342,7 @@ function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEnt
                       key={`${entry.connectorKey}:${doc.url}`}
                       rel="noreferrer"
                       target="_blank"
+                      title="Opens in a new tab"
                     >
                       {doc.label}
                     </a>

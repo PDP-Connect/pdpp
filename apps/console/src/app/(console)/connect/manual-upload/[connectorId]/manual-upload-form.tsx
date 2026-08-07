@@ -762,7 +762,7 @@ export function ManualUploadForm({
                 rel="noreferrer"
                 target="_blank"
               >
-                Export instructions
+                Export instructions in a new tab
               </a>
             </>
           ) : null}

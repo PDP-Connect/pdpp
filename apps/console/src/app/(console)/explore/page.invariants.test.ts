@@ -260,6 +260,12 @@ const FEED_PENDING_DIM_RE =
 const TYPEAHEAD_VIEWPORT_CLAMP_RE =
   /\.rr-x-typeahead \{(?=[\s\S]*?left: 0;)(?=[\s\S]*?right: 0;)(?=[\s\S]*?max-width: 100vw;)(?=[\s\S]*?max-height: min\(280px, 60vh\);)(?=[\s\S]*?overflow-y: auto;)[\s\S]*?\}/;
 
+// Mobile: the options popover (operator-syntax legend) becomes a full-width sheet,
+// same as the date popover, so it doesn't overflow when the trigger wraps near the
+// left edge. The override turns off the absolute right:0 anchor and spans full width.
+const OPTIONS_VIEWPORT_CLAMP_RE =
+  /\.rr-x-options__body \{(?=[\s\S]*?right: 0;)(?=[\s\S]*?left: 0;)(?=[\s\S]*?width: auto;)(?=[\s\S]*?max-width: none;)[\s\S]*?\}/;
+
 // (#7) Motion communicates model state and is reduced-motion gated with a static
 // fallback. The shared reveal (Upcoming body / burst expand / day-group mount):
 //  - base rule = STATIC visible fallback (opacity:1; transform:none) OUTSIDE any
@@ -737,6 +743,14 @@ test("Slice 5 (#6): the operators/typeahead popover stays within the viewport (p
     css,
     TYPEAHEAD_VIEWPORT_CLAMP_RE,
     "the typeahead must be left:0/right:0 anchored to the input AND clamped by max-width:100vw + max-height:min(280px,60vh) + overflow-y:auto so it never runs off-screen"
+  );
+  // Mobile override: the options popover (operator-syntax legend) also becomes a
+  // full-width sheet to match DateChip's mobile pattern, preventing leftward overflow
+  // when the trigger wraps near the left edge on narrow screens.
+  assert.match(
+    css,
+    OPTIONS_VIEWPORT_CLAMP_RE,
+    "the options popover must have a mobile override with right:0 + left:0 + width:auto + max-width:none to become a full-width sheet and prevent overflow"
   );
 });
 

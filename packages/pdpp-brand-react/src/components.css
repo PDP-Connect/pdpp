@@ -4662,6 +4662,15 @@ a.rr-x-row {
     width: auto;
     max-width: none;
   }
+  /* Mobile: the Options popover (operator-syntax legend) also becomes a full-width
+     sheet, same as DateChip. Without this override, right:0 on a left-positioned
+     trigger near the wrap boundary grows leftward past x=0, overflowing the viewport. */
+  .rr-x-options__body {
+    right: 0;
+    left: 0;
+    width: auto;
+    max-width: none;
+  }
   .rr-x-datechip__preset {
     /* Comfortable touch targets in the sheet. */
     min-height: 40px;
