@@ -31,14 +31,16 @@ export function PdppFrontDoor() {
       </div>
 
       {/*
-        Grid cells carry the rules (border-r / border-t), not padded inners —
-        so every rule runs edge-to-edge and T-junctions meet. Measure stays on
-        the copy stack only; never on the column shell (that inset the rules).
+        Two columns on lg+, stacked below. The only rule left is the lockup's
+        border-b above — the interior rules and the box frame are gone, so
+        nothing here needs to keep T-junctions meeting. The copy column takes
+        its width from the grid track rather than a measure cap: at the 1080px
+        page the 1fr track already lands inside the prose measure.
       */}
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)] items-stretch max-lg:grid-cols-[minmax(0,1fr)]">
         {/* LHS */}
         <div className="flex min-h-0 min-w-0 flex-col">
-          <div className="flex max-w-measure flex-col gap-5 pt-4 pb-5">
+          <div className="flex flex-col gap-5 pt-4 pb-5">
             {/* The h1 for `/`. The wordmark above is an image and the lockup's
                 status stamp is chrome, so this line is the page's only heading. */}
             <Text as="h1" size="title" weight="medium">
@@ -112,13 +114,10 @@ export function PdppFrontDoor() {
           </div>
         </div>
 
-        {/* RHS — fills the column on lg+; stacks under LHS below lg */}
+        {/* RHS — fixed viz height at every width; stacks under LHS below lg */}
         <div className="flex min-h-0 min-w-0 flex-col">
-          <div className="flex min-h-0 min-w-0 flex-1 p-5 max-lg:flex-none">
-            <div
-              aria-hidden="true"
-              className="pointer-events-none min-h-0 w-full min-w-0 max-lg:h-[clamp(260px,36vh,380px)] lg:h-full lg:min-h-[clamp(260px,36vh,380px)]"
-            >
+          <div className="min-h-0 flex-1 p-5 max-lg:px-0">
+            <div aria-hidden="true" className="pointer-events-none h-[clamp(260px,36vh,380px)] w-full min-w-0">
               <PdppHeroWaterStill />
             </div>
           </div>
