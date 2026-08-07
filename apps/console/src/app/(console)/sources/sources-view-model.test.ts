@@ -825,7 +825,7 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
 
   assert.equal(views[0]?.displayName, "Amazon · account 1");
   assert.equal(views[1]?.displayName, "Amazon · account 2");
-  assert.equal(views[0]?.accountLine, "Unnamed source · 100 records · 2 streams");
+  assert.equal(views[0]?.accountLine, "Amazon source · 100 records · 2 streams");
   assert.equal(views[2]?.displayName, "Amazon - Personal");
   assert.equal(views[2]?.accountLine, "100 records · 2 streams");
   assert.equal(views[2]?.listKind, null);
@@ -1142,4 +1142,37 @@ test("toSourceInstanceView: the passport 'records' row never fabricates a number
 test("toSourceInstanceView: the passport 'records' row preserves the exact prior always-numeric rendering when total_records_state is omitted", () => {
   const view = toSourceInstanceView(summary({ total_records: 42, total_records_state: undefined }));
   assert.equal(passportField(view, "records"), "42");
+});
+
+test("toSourceInstanceView: accountLine uses connector-derived fallback when display_name is a fallback", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Gmail",
+      connector_id: "gmail",
+      display_name: "Gmail",
+    })
+  );
+  assert.equal(view.accountLine, "Gmail source · 100 records · 2 streams");
+});
+
+test("toSourceInstanceView: accountLine uses Amazon fallback correctly", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
+      display_name: "Amazon",
+    })
+  );
+  assert.equal(view.accountLine, "Amazon source · 100 records · 2 streams");
+});
+
+test("toSourceInstanceView: accountLine preserves owned name (no fallback)", () => {
+  const view = toSourceInstanceView(
+    summary({
+      connector_display_name: "Gmail",
+      connector_id: "gmail",
+      display_name: "Work Gmail",
+    })
+  );
+  assert.equal(view.accountLine, "100 records · 2 streams");
 });

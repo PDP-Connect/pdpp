@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants } from "@pdpp/brand-react";
+import { deriveSourceDisplayNameFallback } from "@pdpp/display";
 import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -605,6 +606,17 @@ function ImportProgressCard({ phases }: { phases: readonly ImportPhase[] }) {
   );
 }
 
+function deriveSetupStatusDisplayName(status: ConnectionSetupStatus): string {
+  if (status.display_name) {
+    return status.display_name;
+  }
+  return deriveSourceDisplayNameFallback({
+    connectorId: status.connector_id,
+    displayName: null,
+    name: null,
+  });
+}
+
 function CoverageReceiptCard({ receipt }: { receipt: ImportReceipt }) {
   const warning = formatWarnings(receipt.warnings);
   return (
@@ -654,9 +666,10 @@ export default async function ConnectionSetupStatusPage({
   const accountIdentity = status.account_identity ?? pageParams.identity ?? null;
   const described = describeState(status);
   const importPhases = importPhaseProgress(status);
+  const displayName = deriveSetupStatusDisplayName(status);
   const title = accountIdentity
-    ? `${status.display_name ?? status.connector_id} · ${accountIdentity}`
-    : (status.display_name ?? status.connector_id);
+    ? `${displayName} · ${accountIdentity}`
+    : displayName;
   const refreshQuery = pageParams.run_id ? `?${new URLSearchParams({ run_id: pageParams.run_id }).toString()}` : "";
   const refreshHref = `/connect/status/${encodeURIComponent(connectionId)}${refreshQuery}`;
 
