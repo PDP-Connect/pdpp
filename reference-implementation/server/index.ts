@@ -362,6 +362,7 @@ import {
   mountRefDeviceExporterLocalCollectorGaps,
   mountRefDeviceExporterLocalCollectorGapsRecovered,
   mountRefDeviceExporterRevoke,
+  mountRefDeviceExporterSelfRevoke,
   mountRefDeviceExporterSourceInstanceStateGet,
   mountRefDeviceExporterSourceInstanceStatePut,
   mountRefDeviceExporterSourceInstances,
@@ -5305,6 +5306,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
   mountRefDeviceExporterRevoke(
     app,
     refDeviceExportersContext as unknown as Parameters<typeof mountRefDeviceExporterRevoke>[1]
+  );
+  mountRefDeviceExporterSelfRevoke(
+    app,
+    refDeviceExportersContext as unknown as Parameters<typeof mountRefDeviceExporterSelfRevoke>[1]
   );
   mountRefDeviceExporterHeartbeat(
     app,

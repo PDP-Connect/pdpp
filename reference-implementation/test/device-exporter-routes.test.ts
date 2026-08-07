@@ -1511,6 +1511,115 @@ test("device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
   });
 });
 
+test("self-revoke lets a device close its own credential using only its own bearer token", async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "self-revoke-laptop");
+
+    const selfRevokeResp = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders(device.device_token)
+    );
+    assert.equal(selfRevokeResp.status, 200);
+    const body = bodyOf(selfRevokeResp);
+    assert.equal(body.object, "device_exporter_revocation");
+    assert.equal(body.device_id, device.device_id);
+    assert.ok(typeof body.revoked_at === "string" && Number.isFinite(Date.parse(body.revoked_at as string)));
+
+    const heartbeatAfterRevoke = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/heartbeat`,
+      { source_instances: [{ source_instance_id: device.source_instance_id }] },
+      authHeaders(device.device_token)
+    );
+    assert.equal(heartbeatAfterRevoke.status, 401, "the revoked credential must not authenticate any further request");
+  });
+});
+
+test("self-revoke rejects an owner session and any other unauthenticated caller", async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "self-revoke-no-owner");
+
+    const missingAuth = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      PROTOCOL_HEADERS
+    );
+    assert.equal(missingAuth.status, 401);
+    assert.equal(errorCode(missingAuth), "authentication_error");
+
+    getDb()
+      .prepare(
+        `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+       VALUES(?, NULL, ?, NULL, 'owner', ?)`
+      )
+      .run("owner-token-for-self-revoke-test", "owner_ref", "2999-01-01T00:00:00.000Z");
+    const ownerTokenRejected = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders("owner-token-for-self-revoke-test")
+    );
+    assert.equal(
+      ownerTokenRejected.status,
+      403,
+      "an owner/client bearer token is not a valid device exporter credential"
+    );
+    assert.equal(errorCode(ownerTokenRejected), "permission_error");
+  });
+});
+
+test("self-revoke is scoped to the authenticated device: a device cannot revoke a different device", async () => {
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, "self-revoke-victim");
+    const second = await enrollDevice(asUrl, "self-revoke-attacker");
+
+    const crossDeviceRevoke = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/self-revoke`,
+      {},
+      authHeaders(second.device_token)
+    );
+    assert.equal(
+      crossDeviceRevoke.status,
+      403,
+      "a device credential must never be able to revoke a different device by URL id"
+    );
+    assert.equal(errorCode(crossDeviceRevoke), "permission_error");
+
+    // The victim device's credential must still be live — the cross-device
+    // attempt above must not have revoked it as a side effect.
+    const heartbeatStillWorks = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      { source_instances: [{ source_instance_id: first.source_instance_id }] },
+      authHeaders(first.device_token)
+    );
+    assert.equal(heartbeatStillWorks.status, 200);
+  });
+});
+
+test("self-revoke retried after the credential is already revoked fails closed with 401, not a crash", async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, "self-revoke-retry");
+
+    const first = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders(device.device_token)
+    );
+    assert.equal(first.status, 200);
+
+    // A retry with the same (now-revoked) token cannot re-authenticate — the
+    // device-credential middleware itself rejects a revoked credential before
+    // the route body runs. This 401 is the exact signal `logout` on the CLI
+    // side treats as "already revoked" and proceeds to delete local state.
+    const retry = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/self-revoke`,
+      {},
+      authHeaders(device.device_token)
+    );
+    assert.equal(retry.status, 401);
+    assert.equal(errorCode(retry), "authentication_error");
+  });
+});
+
 test("two claude-code source homes ingest the same connector-local key without overwriting each other", async () => {
   // complete-local-agent-collectors task 3.4 (Claude Code half). Two Claude
   // Code source homes for the same owner legitimately share connector-local
