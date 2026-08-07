@@ -1,4 +1,9 @@
 {
+  "runtime/index.ts": {
+    "allowed_mass": 422,
+    "reason": "Owner-run cancellation terminalization fix (2026-08-07): after the proven queue-drain repro, the runtime must clear buffered child messages, abort the active ingest transport, and let cancellation win over a queued DONE while preserving the already-started ingest. The queue-drop/in-flight-preservation oracle in test/runtime-cancel-queue.test.ts distinguishes cooperative and SIGTERM-ignoring children by requiring no ingest after abort, at least one ingest before abort, and sub-1.5s terminalization; runtime-cancel-run.test.ts separately proves pre-cancel records remain durable and staged state is not committed. The terminalStopRequested extraction lowers the measured mass from 428 to 422; further decomposition would split the queue-drop, transport-cancel, child-close ordering invariant across shallow helpers.",
+    "date": "2026-08-07"
+  },
   "server/routes/run-interaction.ts": {
     "allowed_mass": 29,
     "reason": "Direct-CDP terminal-barrier closure (2026-08-05): run-final cleanup must invoke the presentation terminal barrier for every run, including direct-CDP runs without a managed n.eko lease, before clearing the run nonce. The added hook is the single lifecycle seam that prevents a connector finalization path from skipping target purge; extracting it would obscure the required ordering.",
