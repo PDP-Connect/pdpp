@@ -501,8 +501,16 @@ test("duplicate captures for one probed identity converge across random drafts",
         count: number;
       };
       assert.equal(credentialCount.count, 1, "one verified identity must have one credential row");
-      const secondInstance = await createSqliteConnectorInstanceStore().get(secondId);
-      assert.equal(secondInstance?.status, "revoked", "the losing draft is retired without creating an active fork");
+      const winnerId = requireString(captured.body.connection_id, "converged winner connection id");
+      const loserId = winnerId === firstId ? secondId : firstId;
+      assert.ok(
+        [firstId, secondId].includes(winnerId),
+        "the converged connection id must be one of the two racing drafts"
+      );
+      const winnerInstance = await createSqliteConnectorInstanceStore().get(winnerId);
+      assert.notEqual(winnerInstance?.status, "revoked", "the winning draft must remain active for the identity");
+      const loserInstance = await createSqliteConnectorInstanceStore().get(loserId);
+      assert.equal(loserInstance?.status, "revoked", "the losing draft is retired without creating an active fork");
     });
   });
 });
