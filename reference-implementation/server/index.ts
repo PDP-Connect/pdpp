@@ -308,7 +308,11 @@ import {
   mountRefSchedules,
   mountRefSearch,
 } from "./routes/ref-admin.ts";
-import { mountRefBrowserEnrollmentShell } from "./routes/ref-browser-enrollment-shell.ts";
+import {
+  type BrowserEnrollmentShellSourceBinding,
+  mountRefBrowserEnrollmentShell,
+  promoteBrowserEnrollmentShellBinding,
+} from "./routes/ref-browser-enrollment-shell.ts";
 import {
   mountRefConnectionDelete,
   mountRefConnectionDetail,
@@ -373,7 +377,11 @@ import {
   mountRefGrantPackagesList,
   mountRefGrantPackagesRevoke,
 } from "./routes/ref-grants.ts";
-import { mountRefManualUploadDraftConnection } from "./routes/ref-manual-upload-draft-connection.ts";
+import {
+  type ManualUploadDraftSourceBinding,
+  mountRefManualUploadDraftConnection,
+  promoteManualUploadDraftBinding,
+} from "./routes/ref-manual-upload-draft-connection.ts";
 import {
   createInProcessPendingAuthStore,
   mountRefProviderAuthCallback,
@@ -384,7 +392,11 @@ import { mountRefRunStatus } from "./routes/ref-run-status.ts";
 import { mountRefGrants, mountRefRuns, mountRefTraces } from "./routes/ref-spine-correlations.ts";
 import { mountRefGrantTimeline, mountRefRunTimeline, mountRefTraceTimeline } from "./routes/ref-spine-timelines.ts";
 import { mountRefStaticSecretCredentialCapture } from "./routes/ref-static-secret-credentials.ts";
-import { mountRefStaticSecretDraftConnection } from "./routes/ref-static-secret-draft-connection.ts";
+import {
+  mountRefStaticSecretDraftConnection,
+  promoteStaticSecretDraftBinding,
+  type StaticSecretDraftSourceBinding,
+} from "./routes/ref-static-secret-draft-connection.ts";
 import { mountRefStaticSecretSetupStatus } from "./routes/ref-static-secret-setup-status.ts";
 import {
   mountAsAuthorizationServerMetadata,
@@ -2460,6 +2472,33 @@ async function resolveRegisteredConnectorManifest(connectorId: string) {
   }
   return manifest;
 }
+
+// Every temporary setup binding kind that must promote to a durable sibling
+// kind on first successful ingest (see `activateDraftConnection` below).
+// Keyed by the CURRENT (setup) binding kind; each builder is pure and
+// returns the durable replacement binding. Adding a new setup-binding kind
+// means adding one entry here — the ingest-activation wiring itself never
+// needs to change.
+const SETUP_BINDING_PROMOTIONS: Record<
+  string,
+  (currentBinding: Record<string, unknown>, now: string) => Record<string, unknown>
+> = {
+  browser_enrollment_shell: (binding, now) =>
+    promoteBrowserEnrollmentShellBinding(
+      binding as unknown as BrowserEnrollmentShellSourceBinding,
+      now
+    ) as unknown as Record<string, unknown>,
+  manual_upload_draft: (binding, now) =>
+    promoteManualUploadDraftBinding(binding as unknown as ManualUploadDraftSourceBinding, now) as unknown as Record<
+      string,
+      unknown
+    >,
+  static_secret_draft: (binding, now) =>
+    promoteStaticSecretDraftBinding(binding as unknown as StaticSecretDraftSourceBinding, now) as unknown as Record<
+      string,
+      unknown
+    >,
+};
 
 function createActivationScheduleAttacher(controller: unknown) {
   return async (
@@ -5608,11 +5647,41 @@ function buildRsApp(opts: ServerOpts = {}) {
   // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
   // (registered after) share the same context object.
   const rsMutationContext = {
-    // First-ingest activation for static-secret drafts: flip draft → active
-    // once a record lands. No-op on a non-draft row. See
+    // First-ingest activation for every temporary setup binding
+    // (browser_enrollment_shell, static_secret_draft, manual_upload_draft):
+    // flip draft → active once a record lands. No-op on a non-draft row. See
     // add-static-secret-owner-session-connect-path design Decision 5.
+    //
+    // A plain status flip is NOT enough on its own: RETIRED_SETUP_SHELL_
+    // BINDING_KINDS hides any REVOKED row still carrying one of these three
+    // binding kinds from every owner-visible read surface — correct for
+    // setup residue that was abandoned/never completed, but wrong for a
+    // connection that genuinely finished setup and later gets revoked
+    // (TTL sweep for the browser shell; explicit owner revoke for the other
+    // two, which have no TTL sweep). `SETUP_BINDING_PROMOTIONS` below routes
+    // each kind through `promoteSetupBinding`, which atomically rewrites the
+    // binding to its durable sibling kind (exempt from
+    // RETIRED_SETUP_SHELL_BINDING_KINDS by construction) alongside the
+    // status flip, preserving whatever setup-specific durable metadata that
+    // kind's builder carries forward. Any other binding kind (plain
+    // `account`, etc.) falls through to the pre-existing plain activation.
     activateDraftConnection: async (connectorInstanceId: string) => {
-      const instance = await createRequestConnectorInstanceStore().activateDraft(connectorInstanceId);
+      const store = createRequestConnectorInstanceStore();
+      const current = await store.get(connectorInstanceId);
+      const bindingKind =
+        current?.sourceBinding && typeof current.sourceBinding === "object"
+          ? (current.sourceBinding as { kind?: unknown }).kind
+          : null;
+      const promotion = typeof bindingKind === "string" ? SETUP_BINDING_PROMOTIONS[bindingKind] : undefined;
+      const now = new Date().toISOString();
+      const instance =
+        current?.status === "draft" && promotion
+          ? await store.promoteSetupBinding(connectorInstanceId, {
+              fromKind: bindingKind as string,
+              sourceBinding: promotion(current.sourceBinding as Record<string, unknown>, now),
+              updatedAt: now,
+            })
+          : await store.activateDraft(connectorInstanceId);
       return await attachActivationScheduleForConnection(instance);
     },
     buildMutationContext,

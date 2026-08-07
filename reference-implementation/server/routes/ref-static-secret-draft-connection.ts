@@ -80,6 +80,41 @@ interface ConnectorInstanceStore {
   }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
+// The binding `createDraftConnection` below writes at draft-creation time.
+export interface StaticSecretDraftSourceBinding {
+  readonly kind: "static_secret_draft";
+  readonly setup_fields: Record<string, string>;
+}
+
+// Durable binding a static-secret draft promotes to once it proves a
+// successful first ingest (see `promoteBrowserEnrollmentShellBinding` in
+// ref-browser-enrollment-shell.ts for the sibling browser case this mirrors).
+// The captured credential itself is never embedded here — it lives in the
+// separate connector-instance-credential-store, keyed by
+// connectorInstanceId — so `setup_fields` (the non-secret manifest-declared
+// fields, e.g. host/mailbox) is the only setup-specific durable metadata
+// this binding needs to carry forward; it is read on every credential probe
+// and run, not just at setup.
+export interface StaticSecretDurableSourceBinding {
+  readonly kind: "static_secret";
+  readonly promoted_at: string;
+  readonly promoted_from: "static_secret_draft";
+  readonly setup_fields: Record<string, string>;
+}
+
+// Pure — no I/O.
+export function promoteStaticSecretDraftBinding(
+  draftBinding: StaticSecretDraftSourceBinding,
+  now: string
+): StaticSecretDurableSourceBinding {
+  return {
+    kind: "static_secret",
+    promoted_at: now,
+    promoted_from: "static_secret_draft",
+    setup_fields: draftBinding.setup_fields,
+  };
+}
+
 interface ParsedDisplayName {
   readonly displayName: string | null;
   readonly ok: true;
