@@ -23,39 +23,48 @@ Distribution:
   See openspec/changes/publish-pdpp-local-collector/design.md.
 
 Usage:
+  ${PDPP_CLI_BIN_NAME} collector setup   --base-url <url> --code <one-time-code>
+                          --connector <id> [--sample <n>]
+  ${PDPP_CLI_BIN_NAME} collector run     --connection-id <id> [--connector <id>]
+                          [--sample <n>] [--quiet]
+  ${PDPP_CLI_BIN_NAME} collector connectors
+  ${PDPP_CLI_BIN_NAME} collector logout  --connector <id>
   ${PDPP_CLI_BIN_NAME} collector advertise
   ${PDPP_CLI_BIN_NAME} collector enroll  --base-url <url> --code <one-time-code>
                           [--device-label <label>]
-  ${PDPP_CLI_BIN_NAME} collector run     --base-url <url> --connector <id>
-                          --device-id <id> --device-token <token>
-                          --connection-id <id>
-                          [--streams a,b,c]
-                          [--backfill-streams attachments]
-                          [--run-id <id>]
 
-Suggested operator flow:
-  1. Start the reference deployment somewhere reachable (e.g. Docker on a
-     server) so it has a base URL such as http://server.local:7662.
-  2. Confirm runtime capabilities with:
-       ${PDPP_CLI_BIN_NAME} collector advertise
+Guided flow (recommended):
+  1. Mint an enrollment code from the dashboard, then on the host with
+     Claude/Codex data run:
+       ${PDPP_CLI_BIN_NAME} collector setup --base-url <url> --code <code> \\
+         --connector claude_code --sample 20
      (@pdpp/cli pdpp shim, resolving @pdpp/local-collector)
+     This exchanges the code, saves device credentials to a local profile
+     file (0600 permissions; no env vars to copy by hand), and runs a
+     bounded 20-record proof pass so you can verify the pairing works
+     before collecting the full source.
+  2. Collect the full source:
+       ${PDPP_CLI_BIN_NAME} collector run --connection-id <connection_id>
+     (@pdpp/cli pdpp shim, resolving @pdpp/local-collector)
+     Device credentials and the connector id are read automatically from
+     the profile setup wrote. Live progress prints to stderr as records
+     are found (see "pdpp-local-collector --help" for --quiet/--sample).
+
+Manual / scriptable flow (unchanged, still supported):
+  1. Confirm runtime capabilities with:
+       ${PDPP_CLI_BIN_NAME} collector advertise
      The collector advertises network, filesystem, local_device
      and reports collector_protocol_version.
-  3. Mint an enrollment code from the dashboard or "pdpp ref" tooling,
-     then on the host with Claude/Codex data run:
+  2. Exchange a code directly (prints raw JSON, no profile written):
        ${PDPP_CLI_BIN_NAME} collector enroll --base-url <url> --code <code>
-     (@pdpp/cli pdpp shim, resolving @pdpp/local-collector)
      The JSON response returns device_id, device_token, and
-     source_instance_id (the connection id for this local binding) —
-     persist all three to a secrets store. You will pass them back as
-     flags/env vars in step 4.
-  4. Run a connector with:
+     source_instance_id (the connection id for this local binding).
+  3. Run a connector with credentials passed explicitly:
        PDPP_LOCAL_DEVICE_ID=<device_id> \\
        PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\
        PDPP_CONNECTION_ID=<connection_id> \\
          ${PDPP_CLI_BIN_NAME} collector run --base-url <url> \\
            --connector claude_code
-     (@pdpp/cli pdpp shim, resolving @pdpp/local-collector)
      Connectors that need bindings the collector does not advertise fail
      before spawn with "runtime_capability_mismatch".
 
@@ -68,7 +77,7 @@ Notes:
   PDPP_RUN_ID. PDPP_SOURCE_INSTANCE_ID remains a compatibility alias.
 `;
 
-const SUBCOMMANDS = new Set(["advertise", "enroll", "run"]);
+const SUBCOMMANDS = new Set(["advertise", "connectors", "enroll", "logout", "run", "setup"]);
 
 export interface CollectorIo {
   stderr: NodeJS.WritableStream;
