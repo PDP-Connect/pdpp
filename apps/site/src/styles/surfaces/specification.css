@@ -76,7 +76,9 @@
   gap: 0;
   width: 100%;
   max-width: none;
-  padding-top: 1.25rem;
+  /* Fumadocs #nd-page ships py-6 / md:pt-8 / xl:pt-14 — zero so hero top
+     matches PdppConceptDoc pt (see .pdpp-docs-hero__content below). */
+  padding-top: 0 !important;
   margin-inline: 0;
 }
 
@@ -91,7 +93,6 @@
 @media (min-width: 1280px) {
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
     --pdpp-docs-gutter: 2rem;
-    padding-top: 0;
   }
 }
 
@@ -129,7 +130,22 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-hero__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   padding: 0;
+  /* Match PdppConceptDoc vertical start (concept-page.tsx). */
+  padding-top: calc(var(--spacing-section-gap) / 3);
+}
+
+@media (min-width: 1024px) {
+  [data-pdpp-doc-theme] .pdpp-docs-hero__content {
+    padding-top: calc(var(--spacing-section-gap) / 1.5);
+  }
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-hero__content [data-slot="pdpp-concept-text"] {
+  margin: 0;
 }
 
 @media (min-width: 768px) {
@@ -143,15 +159,6 @@
   font-family: var(--font-serif);
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-title {
-  margin-top: 0.35rem;
-  margin-bottom: 0.65rem;
-  font-family: var(--font-serif);
-  font-weight: 600;
-  color: var(--pdpp-concept-ink);
-  letter-spacing: -0.01em;
-}
-
 [data-pdpp-doc-theme] .pdpp-docs-description {
   max-width: 56ch;
   margin-bottom: 0;
@@ -159,11 +166,6 @@
   font-size: clamp(0.96rem, 1.8vw, 1.05rem);
   line-height: 1.7;
   color: var(--pdpp-concept-ink-soft);
-}
-
-[data-pdpp-doc-theme] .pdpp-eyebrow {
-  font-family: var(--font-sans);
-  color: var(--pdpp-concept-ink-faint);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-actions {
