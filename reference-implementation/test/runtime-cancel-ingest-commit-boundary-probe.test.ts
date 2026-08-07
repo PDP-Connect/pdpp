@@ -118,6 +118,21 @@ function freshDb(t: TestContext): void {
   });
 }
 
+function seedActiveConnection(connectorId: string, connectorInstanceId: string): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare("INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, '{}', ?)")
+    .run(connectorId, now);
+  getDb()
+    .prepare(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at
+       ) VALUES (?, 'owner', ?, 'HTTP wire-through probe', 'active', 'account', ?, '{}', ?, ?)`
+    )
+    .run(connectorInstanceId, connectorId, connectorInstanceId, now, now);
+}
+
 function startRunSqlite(runId: string, connectorId: string, connectorInstanceId: string): void {
   writeSqliteRunHistoryForSpineEvent({
     connectorId,
@@ -347,6 +362,7 @@ test("HTTP wire-through: POST /v1/ingest/:stream's ?run_id= query param reaches 
   const connectorId = "http-wire-through-probe";
   const connectorInstanceId = "cin_http_wire_through_probe";
   const runId = "run_http_wire_through_probe";
+  seedActiveConnection(connectorId, connectorInstanceId);
   startRunSqlite(runId, connectorId, connectorInstanceId);
   cancelRunSqlite(runId, connectorId, connectorInstanceId);
 
