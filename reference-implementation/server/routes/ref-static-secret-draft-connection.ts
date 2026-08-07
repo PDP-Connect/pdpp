@@ -86,15 +86,9 @@ export interface StaticSecretDraftSourceBinding {
   readonly setup_fields: Record<string, string>;
 }
 
-// Durable binding a static-secret draft promotes to once it proves a
-// successful first ingest (see `promoteBrowserEnrollmentShellBinding` in
-// ref-browser-enrollment-shell.ts for the sibling browser case this mirrors).
-// The captured credential itself is never embedded here — it lives in the
-// separate connector-instance-credential-store, keyed by
-// connectorInstanceId — so `setup_fields` (the non-secret manifest-declared
-// fields, e.g. host/mailbox) is the only setup-specific durable metadata
-// this binding needs to carry forward; it is read on every credential probe
-// and run, not just at setup.
+// The credential itself lives in connector-instance-credential-store, never
+// in this binding; setup_fields (non-secret manifest fields) is read on
+// every credential probe and run, so it must survive promotion.
 export interface StaticSecretDurableSourceBinding {
   readonly kind: "static_secret";
   readonly promoted_at: string;

@@ -1514,36 +1514,11 @@ export function createSqliteConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
-    // Promotes ANY temporary setup binding (browser_enrollment_shell,
-    // static_secret_draft, manual_upload_draft — the members of
-    // RETIRED_SETUP_SHELL_BINDING_KINDS) to its durable sibling kind
-    // (browser_collector, static_secret, manual_upload respectively) once
-    // the caller's own success authority proves a real connection: verified
-    // session/identity capture, or first accepted ingest. Generic across all
-    // three because the underlying defect is generic: `activateDraft` only
-    // ever flips status, never the binding kind, so a connection that
-    // genuinely completed setup stays permanently tagged as `*_draft`/
-    // `*_shell` — and RETIRED_SETUP_SHELL_BINDING_KINDS then hides it from
-    // every owner-visible read surface the moment it is later revoked
-    // (TTL sweep for the browser case; explicit owner revoke for the other
-    // two, which have no TTL sweep), even though it holds real retained
-    // data. `browser-enrollment-shell-retirement.ts` already documents the
-    // browser case's half of this contract ("the durable completion signal
-    // is the source-binding kind moving away from `browser_enrollment_shell`,
-    // not the status alone") — nothing previously implemented it for any of
-    // the three kinds.
-    //
-    // The UPDATE's WHERE guards on the CURRENT binding kind still being
-    // `fromKind`, so this is idempotent and safe under a concurrent second
-    // caller (a second call finds the row already promoted and is a no-op)
-    // and never touches a row that was abandoned/revoked/re-typed by
-    // something else in between. connector_instance_id, owner_subject_id,
-    // source_kind, and source_binding_key are NEVER written here — those
-    // form the row's identity tuple (`makeConnectorInstanceId`) and must
-    // survive promotion unchanged. Callers own preserving whatever
-    // setup-specific durable metadata (e.g. manual-upload's `import_dir`,
-    // static-secret's `setup_fields`) the new binding shape still needs for
-    // future runs — this method just performs the guarded write.
+    // Promotes a temporary setup binding to its durable sibling kind.
+    // Guarded by `status = 'draft' AND binding.kind = fromKind`: a
+    // concurrent revoke racing this UPDATE loses safely (no row change,
+    // `promoted: false`). Never writes the identity tuple
+    // (connector_instance_id/owner_subject_id/source_kind/source_binding_key).
     promoteSetupBinding(
       connectorInstanceId: string,
       {
@@ -1551,7 +1526,8 @@ export function createSqliteConnectorInstanceStore() {
         sourceBinding,
         updatedAt,
       }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
-    ): ConnectorInstance | null {
+    ): { instance: ConnectorInstance | null; promoted: boolean } {
+      let promoted = false;
       writeTransaction(() => {
         const result = exec(referenceQueries.connectorInstancesPromoteSetupBinding, [
           stableJson(sourceBinding),
@@ -1560,14 +1536,15 @@ export function createSqliteConnectorInstanceStore() {
           connectorInstanceId,
           fromKind,
         ]);
-        if (result.changes) {
+        promoted = Boolean(result.changes);
+        if (promoted) {
           exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
             `connector instance promoted from ${fromKind}`,
             connectorInstanceId,
           ]);
         }
       });
-      return this.get(connectorInstanceId);
+      return { instance: this.get(connectorInstanceId), promoted };
     },
 
     resolveActiveByConnector(ownerSubjectId: string, connectorId: string): ConnectorInstance {
@@ -2237,11 +2214,9 @@ export function createPostgresConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
-    // Postgres mirror of the SQLite arm above — see its doc comment for the
-    // full rationale. Same guard (WHERE the CURRENT binding kind is still
-    // `fromKind`), same identity-preserving contract
-    // (connector_instance_id/owner_subject_id/source_kind/source_binding_key
-    // are never written here), same idempotent-under-concurrency behavior.
+    // Postgres mirror of the SQLite arm above — same `status = 'draft' AND
+    // binding.kind = fromKind` guard, same `promoted` result, same
+    // identity-preserving contract.
     async promoteSetupBinding(
       connectorInstanceId: string,
       {
@@ -2249,17 +2224,20 @@ export function createPostgresConnectorInstanceStore() {
         sourceBinding,
         updatedAt,
       }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
-    ): Promise<ConnectorInstance | null> {
+    ): Promise<{ instance: ConnectorInstance | null; promoted: boolean }> {
+      let promoted = false;
       await withPostgresTransaction(
         async (client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null }> }) => {
           const result = await client.query(
             `UPDATE connector_instances
              SET source_binding_json = $1::jsonb, status = $2, updated_at = $3
              WHERE connector_instance_id = $4
+               AND status = 'draft'
                AND source_binding_json->>'kind' = $5`,
             [stableJson(sourceBinding), "active", updatedAt, connectorInstanceId, fromKind]
           );
-          if (result.rowCount) {
+          promoted = Boolean(result.rowCount);
+          if (promoted) {
             await client.query(
               `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
               [`connector instance promoted from ${fromKind}`, connectorInstanceId]
@@ -2267,7 +2245,7 @@ export function createPostgresConnectorInstanceStore() {
           }
         }
       );
-      return await this.get(connectorInstanceId);
+      return { instance: await this.get(connectorInstanceId), promoted };
     },
 
     async resolveActiveByConnector(ownerSubjectId: string, connectorId: string): Promise<ConnectorInstance> {

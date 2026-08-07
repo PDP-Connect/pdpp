@@ -87,9 +87,9 @@ interface ConnectorInstanceStore {
   }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
-// The two `sourceBinding` shapes `createManualUploadDraftConnection` and
-// `validateAndStageArtifact` write below — `staged_upload`/`import_validation`/
-// `uploaded_file_name` are optional because each writer only sets a subset.
+// Written by both createManualUploadDraftConnection and
+// validateAndStageArtifact below; each sets a different subset of the
+// optional fields.
 export interface ManualUploadDraftSourceBinding {
   readonly acquisition_method: "owner_artifact";
   readonly import_dir: string;
@@ -100,14 +100,9 @@ export interface ManualUploadDraftSourceBinding {
   readonly uploaded_file_name?: string;
 }
 
-// Durable binding a manual-upload draft promotes to once it proves a
-// successful first ingest (see `promoteBrowserEnrollmentShellBinding` in
-// ref-browser-enrollment-shell.ts for the sibling browser case this mirrors).
-// `import_dir`/`import_dir_env_var` are NOT setup-only residue — the manual-
-// upload run-env resolver (connection-scoped-run-env.ts,
-// buildControllerManualUploadRunEnvResolver in index.ts) reads them on EVERY
-// run, so they must survive promotion unchanged, unlike the browser case's
-// enrollment_expires_at (which is genuinely setup-only and is dropped).
+// import_dir/import_dir_env_var are read on every run (connection-scoped-run-env.ts,
+// buildControllerManualUploadRunEnvResolver), not just at setup — they must
+// survive promotion.
 export interface ManualUploadDurableSourceBinding {
   readonly acquisition_method: "owner_artifact";
   readonly import_dir: string;
@@ -119,9 +114,8 @@ export interface ManualUploadDurableSourceBinding {
   readonly uploaded_file_name?: string;
 }
 
-// Pure — no I/O. `staged_upload` deliberately does not carry over: it only
-// ever meant "no file has been staged yet," which is no longer true once a
-// connection has ingested real records.
+// Pure — no I/O. `staged_upload` does not carry over: it meant "no file
+// staged yet," no longer true once records have ingested.
 export function promoteManualUploadDraftBinding(
   draftBinding: ManualUploadDraftSourceBinding,
   now: string

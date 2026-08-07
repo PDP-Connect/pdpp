@@ -227,6 +227,7 @@ const SETUP_KIND_BY_BINDING_KIND: Partial<Record<string, ConnectionSetupKind>> =
   browser_enrollment_shell: "browser_session",
   manual_upload: "manual_upload",
   manual_upload_draft: "manual_upload",
+  static_secret: "static_secret",
   static_secret_draft: "static_secret",
 };
 
@@ -252,7 +253,9 @@ function nonCredentialSetupMaterial(setupKind: ConnectionSetupKind): SetupStatus
   return UNKNOWN_SETUP_MATERIAL;
 }
 
-function setupKindForConnection(sourceBinding: unknown, manifest: ConnectorManifestLike): ConnectionSetupKind {
+// Exported for direct unit coverage of the binding-kind -> setup-kind
+// mapping, isolated from the manifest-fallback branch below.
+export function setupKindForConnection(sourceBinding: unknown, manifest: ConnectorManifestLike): ConnectionSetupKind {
   const kind = bindingKind(sourceBinding);
   const bindingSetupKind = SETUP_KIND_BY_BINDING_KIND[kind ?? ""];
   if (bindingSetupKind) {

@@ -743,6 +743,11 @@ test("setup status flips to active once first ingest accepts records", async () 
       assert.equal(active.body.setup_state, "active");
       assert.equal(active.body.health_state, "healthy");
       assert.equal(active.body.pending, false);
+      // Promotion (server/index.ts SETUP_BINDING_PROMOTIONS) moved the
+      // binding from static_secret_draft to static_secret on this same
+      // ingest; setup_kind must resolve from the promoted binding, not
+      // fall through to the manifest-only legacy classifier.
+      assert.equal(active.body.setup_kind, "static_secret");
 
       const rotated = await capture(asUrl, cookie, connectionId);
       assert.equal(rotated.status, 200, rotated.text);
@@ -870,6 +875,9 @@ test("manual/upload setup status shows committed acquisition-batch counts after 
     assert.equal(active.status, 200, active.text);
     assert.equal(active.body.status, "active");
     assert.equal(active.body.setup_state, "active");
+    // Promotion moved the binding from manual_upload_draft to manual_upload
+    // on this ingest; setup_kind must resolve from the promoted binding.
+    assert.equal(active.body.setup_kind, "manual_upload");
     assert.equal(subObject(active.body, "import_receipt").status, "committed");
     assert.equal(subObject(active.body, "import_receipt").parsed_count, 1);
     assert.equal(subObject(active.body, "import_receipt").accepted_count, 1);
