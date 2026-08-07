@@ -168,23 +168,27 @@ function identityFieldName(manifest: ConnectorManifestLike): string | null {
   return field?.name ?? null;
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Manifest streams are an untrusted normalization boundary; each guard is required to fail closed before facts can authorize verified-empty.
+function setupStatusManifestStreamFromUnknown(value: unknown): SetupStatusManifestStream | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const stream = value as { readonly name?: unknown; readonly required?: unknown };
+  if (typeof stream.name !== "string" || stream.name.length === 0) {
+    return null;
+  }
+  return { name: stream.name, required: stream.required !== false };
+}
+
+function isSetupStatusManifestStream(value: SetupStatusManifestStream | null): value is SetupStatusManifestStream {
+  return value !== null;
+}
+
 function manifestStreamsForSetupStatus(manifest: ConnectorManifestLike): readonly SetupStatusManifestStream[] {
   const { streams } = manifest as { readonly streams?: unknown };
   if (!Array.isArray(streams)) {
     return [];
   }
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The callback repeats the same fail-closed guards for each untrusted manifest stream value.
-  return streams.flatMap((value) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return [];
-    }
-    const stream = value as { readonly name?: unknown; readonly required?: unknown };
-    if (typeof stream.name !== "string" || stream.name.length === 0) {
-      return [];
-    }
-    return [{ name: stream.name, required: stream.required !== false }];
-  });
+  return streams.map(setupStatusManifestStreamFromUnknown).filter(isSetupStatusManifestStream);
 }
 
 // Pull the non-secret setup fields out of the draft's source binding. The draft
@@ -407,25 +411,35 @@ const TERMINAL_FAILURE = new Set([
   "surface_failed",
 ]);
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Count presence is a durable compatibility discriminator; legacy defaults cannot be allowed to erase an omitted runtime count.
+function historyYieldCountsPresent(facts: Record<string, unknown> | null | undefined): boolean {
+  if (facts === null || facts === undefined) {
+    return true;
+  }
+  return Object.hasOwn(facts, "records_emitted") || Object.hasOwn(facts, "reported_records_emitted");
+}
+
+function historyYieldCount(
+  facts: Record<string, unknown> | null | undefined,
+  key: string,
+  fallback: number | null | undefined
+): number | null {
+  return asFiniteNumberOrNull(facts?.[key]) ?? asFiniteNumberOrNull(fallback);
+}
+
 function runYieldFromHistory(history: ProductRunHistoryRecord): {
   readonly recordsEmitted: number | null;
   readonly reportedRecordsEmitted: number | null;
   readonly present: boolean;
 } {
   const facts = history.factsJson;
-  const present =
-    facts === null || facts === undefined
-      ? true
-      : Object.hasOwn(facts, "records_emitted") || Object.hasOwn(facts, "reported_records_emitted");
+  const present = historyYieldCountsPresent(facts);
   if (!present) {
     return { present: false, recordsEmitted: null, reportedRecordsEmitted: null };
   }
   return {
-    present: true,
-    recordsEmitted: asFiniteNumberOrNull(facts?.records_emitted) ?? asFiniteNumberOrNull(history.recordsEmitted),
-    reportedRecordsEmitted:
-      asFiniteNumberOrNull(facts?.reported_records_emitted) ?? asFiniteNumberOrNull(history.reportedRecordsEmitted),
+    present,
+    recordsEmitted: historyYieldCount(facts, "records_emitted", history.recordsEmitted),
+    reportedRecordsEmitted: historyYieldCount(facts, "reported_records_emitted", history.reportedRecordsEmitted),
   };
 }
 
@@ -434,7 +448,37 @@ function runYieldFromHistory(history: ProductRunHistoryRecord): {
 //   - otherwise, read the exact requested run or the latest product run-history
 //     row for this connection. There is intentionally no global run-id lookup:
 //     run ids are not connection identity.
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This is the route's single run-evidence authority: active state, exact composite identity, latest connection history, running suppression, failure mapping, and canonical facts must remain ordered.
+function lookupRunHistory(
+  ctx: MountRefStaticSecretSetupStatusContext,
+  connectorInstanceId: string,
+  requestedRunId: string | null
+) {
+  if (requestedRunId) {
+    return ctx.getProductRunHistoryForConnectionRunId?.(connectorInstanceId, requestedRunId);
+  }
+  return ctx.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId);
+}
+
+function historyFailureReason(history: ProductRunHistoryRecord): string {
+  return history.failureReason ?? history.error ?? history.terminalReason ?? history.status;
+}
+
+function setupStatusRunFromHistory(history: ProductRunHistoryRecord, requestedRunId: string | null): SetupStatusRun {
+  const failed = TERMINAL_FAILURE.has(history.status);
+  const yieldCounts = runYieldFromHistory(history);
+  return {
+    collectionFacts: readCollectionFactsFromTerminalData(history.factsJson ?? null),
+    failureReason: failed ? historyFailureReason(history) : null,
+    finishedAt: history.completedAt,
+    recordsEmitted: yieldCounts.recordsEmitted,
+    reportedRecordsEmitted: yieldCounts.reportedRecordsEmitted,
+    runId: history.runId ?? requestedRunId,
+    startedAt: history.startedAt,
+    status: failed ? "failed" : history.status,
+    yieldCountsPresent: yieldCounts.present,
+  };
+}
+
 async function resolveRunEvidence(
   ctx: MountRefStaticSecretSetupStatusContext,
   store: ConnectorInstanceStore,
@@ -448,30 +492,13 @@ async function resolveRunEvidence(
       lastRun: null,
     };
   }
-  const history = requestedRunId
-    ? await ctx.getProductRunHistoryForConnectionRunId?.(connectorInstanceId, requestedRunId)
-    : await ctx.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId);
+  const history = await lookupRunHistory(ctx, connectorInstanceId, requestedRunId);
   if (!history || history.status === "running") {
     return { activeRun: null, lastRun: null };
   }
-  const failed = TERMINAL_FAILURE.has(history.status);
-  const yieldCounts = runYieldFromHistory(history);
-  const facts = readCollectionFactsFromTerminalData(history.factsJson ?? null);
   return {
     activeRun: null,
-    lastRun: {
-      collectionFacts: facts,
-      failureReason: failed
-        ? (history.failureReason ?? history.error ?? history.terminalReason ?? history.status)
-        : null,
-      finishedAt: history.completedAt,
-      recordsEmitted: yieldCounts.recordsEmitted,
-      reportedRecordsEmitted: yieldCounts.reportedRecordsEmitted,
-      runId: history.runId ?? requestedRunId,
-      startedAt: history.startedAt,
-      status: failed ? "failed" : history.status,
-      yieldCountsPresent: yieldCounts.present,
-    },
+    lastRun: setupStatusRunFromHistory(history, requestedRunId),
   };
 }
 

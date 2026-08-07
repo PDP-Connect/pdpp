@@ -278,6 +278,12 @@ const TRANSITIONAL_SETUP_STATES = new Set<StaticSecretSetupState>([
   "first_sync_pending",
   "first_sync_running",
 ]);
+const TERMINAL_DRAFT_STATE_BY_DISPOSITION: Record<SetupTerminalDisposition, StaticSecretSetupState> = {
+  unverified_missing_counts: "first_sync_unverified_missing_counts",
+  unverified_zero: "first_sync_unverified_zero",
+  verified_empty: "first_sync_verified_empty",
+};
+const TRUSTED_EMPTY_CHECKPOINTS = new Set(["committed", "disabled"]);
 
 function runIsFailure(run: SetupStatusRun | null): boolean {
   return run !== null && typeof run.status === "string" && TERMINAL_FAILURE_STATUSES.has(run.status);
@@ -287,6 +293,10 @@ function runIsRunning(run: SetupStatusRun | null): boolean {
   return run !== null && typeof run.status === "string" && RUNNING_STATUSES.has(run.status);
 }
 
+function runIsTerminalSuccess(run: SetupStatusRun | null): boolean {
+  return run !== null && typeof run.status === "string" && TERMINAL_SUCCESS_STATUSES.has(run.status);
+}
+
 function terminalDraftState(
   run: SetupStatusRun | null,
   disposition: SetupTerminalDisposition | null
@@ -294,56 +304,95 @@ function terminalDraftState(
   if (runIsFailure(run)) {
     return "first_sync_failed";
   }
-  if (run !== null && typeof run.status === "string" && TERMINAL_SUCCESS_STATUSES.has(run.status)) {
-    switch (disposition) {
-      case "verified_empty":
-        return "first_sync_verified_empty";
-      case "unverified_missing_counts":
-        return "first_sync_unverified_missing_counts";
-      case "unverified_zero":
-        return "first_sync_unverified_zero";
-      default:
-        return null;
-    }
+  if (!runIsTerminalSuccess(run) || disposition === null) {
+    return null;
   }
-  return null;
+  return TERMINAL_DRAFT_STATE_BY_DISPOSITION[disposition];
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This fail-closed fact validator keeps stream coverage, duplicate detection, required-stream presence, and checkpoint/gap trust in one canonical empty-result gate.
+function manifestStreamNames(manifestStreams: readonly SetupStatusManifestStream[]): Set<string> {
+  return new Set(manifestStreams.map((stream) => stream.name).filter((name) => name.length > 0));
+}
+
+function indexSetupFactsByStream(
+  facts: readonly SetupStatusCollectionFact[],
+  knownManifestStreamNames: ReadonlySet<string>
+): Map<string, SetupStatusCollectionFact> | null {
+  const factByStream = new Map<string, SetupStatusCollectionFact>();
+  for (const fact of facts) {
+    if (!knownManifestStreamNames.has(fact.stream) || factByStream.has(fact.stream)) {
+      return null;
+    }
+    factByStream.set(fact.stream, fact);
+  }
+  return factByStream;
+}
+
+function hasRequiredManifestFacts(
+  manifestStreams: readonly SetupStatusManifestStream[],
+  factByStream: ReadonlyMap<string, SetupStatusCollectionFact>
+): boolean {
+  for (const stream of manifestStreams) {
+    if (stream.required !== false && stream.name.length > 0 && !factByStream.has(stream.name)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isCoveredEmpty(covered: number | null | undefined): boolean {
+  return covered === undefined || covered === null || covered === 0;
+}
+
+function isTrustedEmptyFact(fact: SetupStatusCollectionFact): boolean {
+  if (fact.considered !== 0) {
+    return false;
+  }
+  if (!isCoveredEmpty(fact.covered)) {
+    return false;
+  }
+  if (fact.pending_detail_gaps !== 0) {
+    return false;
+  }
+  if (fact.skipped !== null) {
+    return false;
+  }
+  return TRUSTED_EMPTY_CHECKPOINTS.has(fact.checkpoint ?? "");
+}
+
 function hasTrustedEmptyStreamFacts(
   collectionFacts: SetupStatusCollectionFacts | null | undefined,
   manifestStreams: readonly SetupStatusManifestStream[]
 ): boolean {
   const facts = collectionFacts?.streams ?? [];
-  if (facts.length === 0 || manifestStreams.length === 0) {
+  const names = manifestStreamNames(manifestStreams);
+  if (facts.length === 0 || names.size === 0) {
     return false;
   }
-  const manifestStreamNames = new Set(manifestStreams.map((stream) => stream.name).filter((name) => name.length > 0));
-  if (manifestStreamNames.size === 0) {
+  const factByStream = indexSetupFactsByStream(facts, names);
+  if (factByStream === null) {
     return false;
   }
-  const factByStream = new Map<string, SetupStatusCollectionFact>();
-  for (const fact of facts) {
-    if (!manifestStreamNames.has(fact.stream) || factByStream.has(fact.stream)) {
-      return false;
-    }
-    factByStream.set(fact.stream, fact);
+  return hasRequiredManifestFacts(manifestStreams, factByStream) && facts.every(isTrustedEmptyFact);
+}
+
+function isTerminalSuccessStatus(status: string | null): boolean {
+  return typeof status === "string" && TERMINAL_SUCCESS_STATUSES.has(status);
+}
+
+function observedYieldCount(input: {
+  readonly recordsEmitted?: number | null | undefined;
+  readonly reportedRecordsEmitted?: number | null | undefined;
+  readonly yieldCountsPresent?: boolean | undefined;
+}): number | null {
+  if (input.yieldCountsPresent === false) {
+    return null;
   }
-  const requiredStreamNames = manifestStreams
-    .filter((stream) => stream.required !== false)
-    .map((stream) => stream.name)
-    .filter((name, index, names) => name.length > 0 && names.indexOf(name) === index);
-  if (requiredStreamNames.some((stream) => !factByStream.has(stream))) {
-    return false;
-  }
-  return facts.every(
-    (fact) =>
-      fact.considered === 0 &&
-      (fact.covered === undefined || fact.covered === null || fact.covered === 0) &&
-      fact.pending_detail_gaps === 0 &&
-      fact.skipped === null &&
-      (fact.checkpoint === "committed" || fact.checkpoint === "disabled")
-  );
+  return input.recordsEmitted ?? input.reportedRecordsEmitted ?? null;
+}
+
+function unverifiedDispositionForCount(observedCount: number | null): SetupTerminalDisposition {
+  return observedCount === 0 ? "unverified_zero" : "unverified_missing_counts";
 }
 
 export function classifyTerminalSetupDisposition(input: {
@@ -354,18 +403,13 @@ export function classifyTerminalSetupDisposition(input: {
   readonly status: string | null;
   readonly yieldCountsPresent?: boolean | undefined;
 }): SetupTerminalDisposition | null {
-  if (!(typeof input.status === "string" && TERMINAL_SUCCESS_STATUSES.has(input.status))) {
+  if (!isTerminalSuccessStatus(input.status)) {
     return null;
   }
   if (hasTrustedEmptyStreamFacts(input.collectionFacts, input.manifestStreams ?? [])) {
     return "verified_empty";
   }
-  const observedCount =
-    input.yieldCountsPresent !== false &&
-    (input.recordsEmitted !== null && input.recordsEmitted !== undefined
-      ? input.recordsEmitted
-      : input.reportedRecordsEmitted);
-  return observedCount === 0 ? "unverified_zero" : "unverified_missing_counts";
+  return unverifiedDispositionForCount(observedYieldCount(input));
 }
 
 export function isTransitionalSetupState(state: StaticSecretSetupState): boolean {
@@ -420,6 +464,11 @@ const AWAITING_MATERIAL_STATE: Record<ConnectionSetupKind, StaticSecretSetupStat
   static_secret: "awaiting_credential",
   unknown: "awaiting_credential",
 };
+const FIXED_SETUP_STATE_BY_INSTANCE_STATUS: Partial<Record<string, StaticSecretSetupState>> = {
+  active: "active",
+  paused: "paused",
+  revoked: "revoked",
+};
 
 // The no-material draft state before any first-sync run evidence exists. A
 // browser-session connection has no stored credential — its owner action is
@@ -446,14 +495,9 @@ function deriveSetupState(
 ): StaticSecretSetupState {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const status = input.instance.status;
-  if (status === "active") {
-    return "active";
-  }
-  if (status === "paused") {
-    return "paused";
-  }
-  if (status === "revoked") {
-    return "revoked";
+  const fixedState = FIXED_SETUP_STATE_BY_INSTANCE_STATUS[status];
+  if (fixedState) {
+    return fixedState;
   }
   if (status !== "draft") {
     return "unknown";
@@ -470,13 +514,10 @@ function deriveSetupState(
   }
   // No in-flight run. Terminal run evidence is authoritative for the draft.
   const terminalState = terminalDraftState(input.lastRun, terminalSetupDisposition);
-  if (terminalState) {
-    return terminalState;
-  }
   // Credential/browser-login material present (or run evidence exists for a
   // browser session), run queued or just-submitted but not yet running and
   // not yet failed: the first sync is pending.
-  return "first_sync_pending";
+  return terminalState ?? "first_sync_pending";
 }
 
 function defaultSetupMaterial(
@@ -562,7 +603,42 @@ function terminalSetupDispositionForInput(input: ProjectConnectionSetupStatusInp
   });
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This owner-copy boundary deliberately keeps failed, silent-zero, and missing-count remediation distinct so every surface receives an honest action.
+const SETUP_ERROR_REASON_BY_DISPOSITION: Partial<Record<SetupTerminalDisposition, string>> = {
+  unverified_missing_counts: "first_sync_unverified_missing_counts",
+  unverified_zero: "first_sync_unverified_zero",
+};
+const SETUP_ERROR_REMEDIATION_BY_DISPOSITION: Partial<Record<SetupTerminalDisposition, string>> = {
+  unverified_missing_counts:
+    "Review the connection before retrying; the first sync did not leave durable count evidence.",
+  unverified_zero: "Review the connection and retry the first sync if you expected records.",
+};
+
+function setupErrorReason(
+  input: ProjectConnectionSetupStatusInput,
+  run: SetupStatusRun | null,
+  setupState: StaticSecretSetupState,
+  terminalSetupDisposition: SetupTerminalDisposition | null
+): string | null {
+  if (setupState === "first_sync_failed") {
+    return run?.failureReason ?? input.lastRun?.failureReason ?? "first_sync_failed";
+  }
+  return terminalSetupDisposition === null
+    ? null
+    : (SETUP_ERROR_REASON_BY_DISPOSITION[terminalSetupDisposition] ?? null);
+}
+
+function setupErrorRemediation(
+  reason: string,
+  setupKind: ConnectionSetupKind,
+  terminalSetupDisposition: SetupTerminalDisposition | null
+): string {
+  const dispositionRemediation =
+    terminalSetupDisposition === null
+      ? null
+      : (SETUP_ERROR_REMEDIATION_BY_DISPOSITION[terminalSetupDisposition] ?? null);
+  return dispositionRemediation ?? remediationForReason(reason, setupKind);
+}
+
 function projectSetupLastError(
   input: ProjectConnectionSetupStatusInput,
   run: SetupStatusRun | null,
@@ -570,54 +646,84 @@ function projectSetupLastError(
   setupState: StaticSecretSetupState,
   terminalSetupDisposition: SetupTerminalDisposition | null
 ): ConnectionSetupStatus["last_error"] {
-  const failed = setupState === "first_sync_failed";
-  let reason: string | null = null;
-  if (failed) {
-    reason = run?.failureReason ?? input.lastRun?.failureReason ?? "first_sync_failed";
-  } else if (terminalSetupDisposition === "unverified_missing_counts") {
-    reason = "first_sync_unverified_missing_counts";
-  } else if (terminalSetupDisposition === "unverified_zero") {
-    reason = "first_sync_unverified_zero";
-  }
+  const reason = setupErrorReason(input, run, setupState, terminalSetupDisposition);
   if (reason === null) {
     return null;
   }
-
-  let remediation: string;
-  if (terminalSetupDisposition === "unverified_missing_counts") {
-    remediation = "Review the connection before retrying; the first sync did not leave durable count evidence.";
-  } else if (terminalSetupDisposition === "unverified_zero") {
-    remediation = "Review the connection and retry the first sync if you expected records.";
-  } else {
-    remediation = remediationForReason(reason, setupKind);
-  }
-  return { reason, remediation };
+  return { reason, remediation: setupErrorRemediation(reason, setupKind, terminalSetupDisposition) };
 }
 
-export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatusInput): ConnectionSetupStatus {
+function setupRunIsRunning(activeRun: SetupStatusRun | null, lastRun: SetupStatusRun | null): boolean {
+  return runIsRunning(activeRun) || (activeRun === null && runIsRunning(lastRun));
+}
+
+function projectSetupRun(run: SetupStatusRun | null): ConnectionSetupStatus["run"] {
+  if (run === null) {
+    return null;
+  }
+  return {
+    finished_at: run.finishedAt ?? null,
+    records_emitted: nullable(run.recordsEmitted),
+    reported_records_emitted: nullable(run.reportedRecordsEmitted),
+    run_id: run.runId,
+    started_at: run.startedAt ?? null,
+    status: run.status,
+  };
+}
+
+function projectSetupCredential(credential: SetupStatusCredentialMetadata | null): ConnectionSetupStatus["credential"] {
+  return {
+    captured_at: credential?.capturedAt ?? null,
+    credential_kind: credential?.credentialKind ?? null,
+    present: credential?.present === true,
+    rotated_at: credential?.rotatedAt ?? null,
+  };
+}
+
+function projectSetupMaterial(material: SetupStatusMaterialMetadata): ConnectionSetupStatus["setup_material"] {
+  return {
+    captured_at: material.capturedAt ?? null,
+    kind: material.kind,
+    label: material.label,
+    present: material.present,
+  };
+}
+
+interface SetupStatusProjection {
+  readonly lastError: ConnectionSetupStatus["last_error"];
+  readonly material: SetupStatusMaterialMetadata;
+  readonly run: SetupStatusRun | null;
+  readonly running: boolean;
+  readonly setupKind: ConnectionSetupKind;
+  readonly setupState: StaticSecretSetupState;
+  readonly terminalSetupDisposition: SetupTerminalDisposition | null;
+}
+
+function buildSetupStatusProjection(input: ProjectConnectionSetupStatusInput): SetupStatusProjection {
   const setupKind = input.setupKind ?? "static_secret";
   const material = input.setupMaterial ?? defaultSetupMaterial(setupKind, input.credential);
   const hasSetupMaterial = material.present === true;
   // A run is "running" when the active-run table holds it OR the last-run
   // summary still reports a non-terminal status (covers the window between
   // submit and the active-run row landing).
-  const running = runIsRunning(input.activeRun) || (input.activeRun === null && runIsRunning(input.lastRun));
+  const running = setupRunIsRunning(input.activeRun, input.lastRun);
   const terminalSetupDisposition = terminalSetupDispositionForInput(input);
   const setupState = deriveSetupState(input, setupKind, hasSetupMaterial, running, terminalSetupDisposition);
   const run = input.activeRun ?? input.lastRun ?? null;
   const lastError = projectSetupLastError(input, run, setupKind, setupState, terminalSetupDisposition);
+  return { lastError, material, run, running, setupKind, setupState, terminalSetupDisposition };
+}
+
+export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatusInput): ConnectionSetupStatus {
+  const { lastError, material, run, running, setupKind, setupState, terminalSetupDisposition } =
+    buildSetupStatusProjection(input);
 
   return {
     account_identity: accountIdentity(input),
     connection_id: input.instance.connectorInstanceId,
     connector_id: input.instance.connectorId,
     created_at: input.instance.createdAt,
-    credential: {
-      captured_at: input.credential?.capturedAt ?? null,
-      credential_kind: input.credential?.credentialKind ?? null,
-      present: input.credential?.present === true,
-      rotated_at: input.credential?.rotatedAt ?? null,
-    },
+    credential: projectSetupCredential(input.credential),
     display_name: input.instance.displayName,
     health_state: SETUP_STATE_HEALTH[setupState],
     import_receipt: projectImportReceipt(setupKind, input.importReceipt),
@@ -628,24 +734,10 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
     // terminal; otherwise every owner surface can remain indefinitely pending
     // after the run has already failed.
     pending: isTransitionalSetupState(setupState),
-    run: run
-      ? {
-          finished_at: run.finishedAt ?? null,
-          records_emitted: nullable(run.recordsEmitted),
-          reported_records_emitted: nullable(run.reportedRecordsEmitted),
-          run_id: run.runId,
-          started_at: run.startedAt ?? null,
-          status: run.status,
-        }
-      : null,
+    run: projectSetupRun(run),
     running,
     setup_kind: setupKind,
-    setup_material: {
-      captured_at: material.capturedAt ?? null,
-      kind: material.kind,
-      label: material.label,
-      present: material.present,
-    },
+    setup_material: projectSetupMaterial(material),
     setup_state: setupState,
     status: input.instance.status,
     terminal_setup_disposition: terminalSetupDisposition,
