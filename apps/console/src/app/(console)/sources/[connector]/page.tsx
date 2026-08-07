@@ -716,20 +716,6 @@ function ConnectorPageView({
 
       {revoked ? <RevokedConnectionSection connectorId={connectorId} revokedAt={overview.revokedAt ?? null} /> : null}
 
-      <ConnectionDiagnostics
-        connectionHealth={connectionHealth}
-        connectionId={connectorInstanceId ?? connectionId}
-        connectorId={connectorId}
-        localDeviceProgress={overview.localDeviceProgress ?? null}
-        now={now}
-        providerOrigin={providerOrigin}
-        renderedVerdict={connectionRenderedVerdict}
-        schedule={schedule}
-        scheduleError={scheduleError}
-        sourceInstances={sourceInstances}
-        sourceInstancesError={sourceInstancesError}
-      />
-
       <AcquisitionCoverageSection
         connectionId={connectorInstanceId ?? connectionId}
         coverage={overview.acquisitionCoverage ?? null}
@@ -793,6 +779,24 @@ function ConnectorPageView({
       </Section>
 
       <RecentRunsSection autoPausedBanner={autoPausedBanner} connectorId={connectorId} recentRuns={recentRuns} />
+
+      {/* Diagnostics is operator-debug detail. It sat first, above the
+          streams and runs an owner actually opens this page for, so the
+          page led with its least-wanted content. It now follows them. */}
+      <ConnectionDiagnostics
+        connectionHealth={connectionHealth}
+        connectionId={connectorInstanceId ?? connectionId}
+        connectorId={connectorId}
+        localDeviceProgress={overview.localDeviceProgress ?? null}
+        now={now}
+        providerOrigin={providerOrigin}
+        renderedVerdict={connectionRenderedVerdict}
+        schedule={schedule}
+        scheduleError={scheduleError}
+        sourceInstances={sourceInstances}
+        sourceInstancesError={sourceInstancesError}
+      />
+
 
       <ConnectionDangerZone
         connectionId={connectorInstanceId ?? connectionId}
