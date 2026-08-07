@@ -130,6 +130,7 @@ const CHASE_DOWNLOAD_ROUTE_RE = /downloadAccountTransactions|confirmDownloadAcco
 const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched the date range you chose/iu;
 const CHASE_QFX_FILE_TYPE_COMBOBOX_NAME_RE = /file type/i;
 const CHASE_QFX_ACTIVITY_COMBOBOX_NAME_RE = /activity/i;
+const CHASE_QFX_DOWNLOAD_BUTTON_NAME_RE = /download/i;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
 export const CHASE_CURRENT_ACTIVITY_ROW_SELECTOR =
@@ -443,6 +444,39 @@ async function clickFileTypeControl(page: Page): Promise<void> {
   }
 }
 
+/**
+ * Click the QFX Download button. `mds-button` is a custom element — its
+ * label and interactive target live in shadow DOM, so a host-element CSS
+ * click (`mds-button#download`) is only as reliable as the host's own
+ * click-forwarding. Mirror the two-tier strategy already used for the
+ * Activity/File Type controls: CSS id first, then the semantic role
+ * locator (`getByRole` pierces shadow DOM), so a host element that resolves
+ * but does not forward the click to its shadow-DOM button still finds the
+ * button via its accessible role.
+ */
+export async function clickDownloadButton(page: Page): Promise<void> {
+  try {
+    await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
+  } catch (selectorErr) {
+    try {
+      await page
+        .getByRole("button", {
+          name: CHASE_QFX_DOWNLOAD_BUTTON_NAME_RE,
+        })
+        .first()
+        .click({ timeout: CLICK_TIMEOUT_MS });
+    } catch (semanticErr) {
+      throw new Error(
+        `download_button_unavailable: selector=mds-button#download: ${truncate(
+          errMessage(selectorErr),
+          ERROR_MESSAGE_SLICE
+        )}; role=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
+      );
+    }
+  }
+}
+
 function isLikelyQfxResponseBody(body: Buffer, headers: Record<string, string>): boolean {
   if (body.length === 0) {
     return false;
@@ -740,7 +774,7 @@ async function downloadQfx(
   const qfxResponseQueue = attachQfxResponseQueue(page);
   await qfxResponseQueue.ready;
   try {
-    await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
+    await clickDownloadButton(page);
   } catch (err) {
     await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-download-click-failed`);
     downloadQueue.detach();
