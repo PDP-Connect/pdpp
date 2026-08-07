@@ -220,6 +220,53 @@ async function maybeRecordAcquisitionProvenance(
   });
 }
 
+function batchOutcomeError(outcome: unknown): string | null {
+  if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) {
+    return "ingest batch returned a malformed record outcome";
+  }
+  const result = outcome as { accepted?: unknown; error?: unknown };
+  if (typeof result.error === "string") {
+    return result.error;
+  }
+  return result.accepted === true ? null : "ingest batch returned a rejected record without an error";
+}
+
+async function settleBatchIngestOutcomes(
+  ctx: MountRsMutationContext,
+  namespace: ConnectorNamespaceLike,
+  stream: string,
+  records: readonly Record<string, unknown>[],
+  outcomes: readonly unknown[],
+  resolveAcquisitionBatch: (() => Promise<AcquisitionBatchLike | null>) | null
+): Promise<readonly (string | null)[]> {
+  const errors: Array<string | null> = new Array(records.length).fill(null);
+  for (const [index, outcome] of outcomes.entries()) {
+    const outcomeError = batchOutcomeError(outcome);
+    if (outcomeError) {
+      errors[index] = outcomeError;
+      continue;
+    }
+    if (!resolveAcquisitionBatch) {
+      continue;
+    }
+    try {
+      // Provenance is intentionally serialized in input order, matching the
+      // single-record route after each record's durable/index phase.
+      // biome-ignore lint/performance/noAwaitInLoops: Acquisition provenance ordering is part of the per-record mutation contract.
+      await maybeRecordAcquisitionProvenance(
+        ctx,
+        namespace,
+        await resolveAcquisitionBatch(),
+        stream,
+        records[index] as Record<string, unknown>
+      );
+    } catch (err) {
+      errors[index] = err instanceof Error ? err.message : String(err);
+    }
+  }
+  return errors;
+}
+
 interface TokenInfo {
   readonly client_id?: string | null;
   readonly grant?: GrantLike | null;
@@ -355,6 +402,8 @@ export interface MountRsMutationContext {
   // Capability: error handler for untyped errors
   readonly handleError: (res: RouteResponse, err: unknown) => void;
   readonly ingestRecord: (target: StorageTargetLike, record: unknown) => Promise<unknown>;
+  /** Optional common-path batch capability; hosts without it use the ordered fallback. */
+  readonly ingestRecords?: (target: StorageTargetLike, records: readonly unknown[]) => Promise<readonly unknown[]>;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -1009,6 +1058,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
       // target; the connector-only path stays active-only. `allowStatuses` is
       // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
       const draftAdmission = (cin: string | null) => (cin ? { allowStatuses: ["active", "draft"] as const } : {});
+      const { ingestRecords } = ctx;
       const dependencies: RecordsIngestDependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
@@ -1044,6 +1094,49 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           }
           return result;
         },
+        ...(ingestRecords
+          ? {
+              ingestRecords: async (
+                cid: string,
+                cin: string | null,
+                records: readonly Record<string, unknown>[]
+              ): Promise<readonly (string | null)[]> => {
+                const namespace =
+                  storageNamespace ??
+                  (await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                    ...draftAdmission(cin),
+                    connectorInstanceId: cin,
+                  }));
+                const outcomes = await ingestRecords(ctx.storageTargetForConnectorNamespace(namespace), records);
+                if (outcomes.length !== records.length) {
+                  throw new Error(`ingestRecords returned ${outcomes.length} results for ${records.length} records`);
+                }
+                // biome-ignore lint/suspicious/noUnnecessaryConditions: Express route params are nullable at runtime even though the local adapter type narrows them.
+                const streamName = req.params.stream ?? "";
+                const getLatestAcquisitionBatch = ctx.getLatestAcquisitionBatchForConnection;
+                const connectorInstanceIdForBatch = namespace.connectorInstanceId;
+                const resolveAcquisitionBatch =
+                  getLatestAcquisitionBatch && connectorInstanceIdForBatch
+                    ? () => {
+                        if (!acquisitionBatchPromise) {
+                          acquisitionBatchPromise = Promise.resolve(
+                            getLatestAcquisitionBatch(connectorInstanceIdForBatch) ?? null
+                          );
+                        }
+                        return acquisitionBatchPromise;
+                      }
+                    : null;
+                return await settleBatchIngestOutcomes(
+                  ctx,
+                  namespace,
+                  streamName,
+                  records,
+                  outcomes,
+                  resolveAcquisitionBatch
+                );
+              },
+            }
+          : {}),
       };
       let output: RecordsIngestOutput;
       try {

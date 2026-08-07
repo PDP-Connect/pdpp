@@ -27,6 +27,7 @@ import {
 } from "../operations/rs-records-ingest/index.ts";
 
 const REGEXP_1 = /store down/;
+const DERIVED_INDEX_ERROR_REGEXP = /derived index failed/;
 
 function defaultDeps(overrides: Partial<RecordsIngestDependencies> = {}): RecordsIngestDependencies {
   return {
@@ -93,6 +94,44 @@ test("rs.records.ingest invokes ingestRecord sequentially in line order", async 
     })
   );
   assert.deepEqual(seen, ["r1", "r2", "r3"]);
+});
+
+test("rs.records.ingest uses the bounded batch capability for distinct stream shapes", async () => {
+  const results = await Promise.all(
+    ["messages", "timeline_points"].map(async (streamName) => {
+      let batchCalls = 0;
+      let received: Record<string, unknown>[] = [];
+      const out = await executeRecordsIngest(
+        defaultInput({
+          body: '{"id":"r1"}\nNOT_JSON\n{"id":"r3"}',
+          streamName,
+        }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw new Error("ordered fallback should not run when batch capability is present");
+          },
+          ingestRecords: (_connectorId, _connectorInstanceId, records) => {
+            batchCalls += 1;
+            received = [...records];
+            return [null, "derived index failed"];
+          },
+        })
+      );
+
+      return { batchCalls, out, received, streamName };
+    })
+  );
+  for (const { batchCalls, out, received, streamName } of results) {
+    assert.equal(batchCalls, 1, `${streamName} should use one common-path batch call`);
+    assert.deepEqual(
+      received.map((record) => record.stream),
+      [streamName, streamName]
+    );
+    assert.equal(out.envelope.records_accepted, 1);
+    assert.equal(out.envelope.records_rejected, 2);
+    assert.equal(out.envelope.errors.length, 2);
+    assert.match(out.envelope.errors[1] ?? "", DERIVED_INDEX_ERROR_REGEXP);
+  }
 });
 
 test("rs.records.ingest forwards { ...record, stream } to the dependency", async () => {
