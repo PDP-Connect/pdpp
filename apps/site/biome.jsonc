@@ -123,6 +123,13 @@
       }
     },
     {
+      // Concept primitive tokens: keep color-mix/font stacks single-line for TW LS.
+      // Biome wraps them multiline on save; comments inside :root also trip false
+      // `{ expected` squiggles — notes live in the file header only (AGENTS.md).
+      "includes": ["src/styles/surfaces/concept/tokens/primitive.css"],
+      "formatter": { "enabled": false }
+    },
+    {
       // noJsxPropsBind policy waiver — NOT a blanket style exemption.
       //
       // This app has no React.memo, memoized child, or props-identity-
