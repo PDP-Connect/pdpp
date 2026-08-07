@@ -653,7 +653,6 @@ function ConnectorPageView({
             activeRunHref={activeRunHref}
             browserSessionRepairHref={browserSessionRepairHref}
             connectionId={connectorInstanceId}
-            connectionLabelSeed={connectionLabelSeed}
             connectorId={connectorId}
             credentialUpdateHref={credentialUpdateHref}
             displayName={displayName}
@@ -662,7 +661,6 @@ function ConnectorPageView({
             }
             manualUploadHref={manualUploadHref}
             primaryAction={primaryAction}
-            renameSelector={renameSelector}
             renderedAction={connectionPrimaryAction}
             revoked={revoked}
             running={running}
@@ -695,7 +693,17 @@ function ConnectorPageView({
             providerId={manifest.provider_id ?? null}
           />
         }
-        title={displayName}
+        title={
+          <span className="inline-flex items-center gap-2">
+            {displayName}
+            <RenameConnection
+              connectionId={renameSelector}
+              currentLabel={connectionLabelSeed}
+              displayName={displayName}
+              typeName={formatConnectorKeyForDisplay(connectorId)}
+            />
+          </span>
+        }
       />
 
       {streakDots.length > 0 ? <StreakStrip dots={streakDots} /> : null}
@@ -793,14 +801,12 @@ function ConnectorHeaderActions({
   activeRunHref,
   browserSessionRepairHref,
   connectionId,
-  connectionLabelSeed,
   connectorId,
   credentialUpdateHref,
   displayName,
   hasStaticSecretCredentialUpdate,
   manualUploadHref,
   primaryAction,
-  renameSelector,
   renderedAction,
   revoked,
   running,
@@ -810,14 +816,12 @@ function ConnectorHeaderActions({
   activeRunHref: string | null;
   browserSessionRepairHref: string | null;
   connectionId: string | null;
-  connectionLabelSeed: string;
   connectorId: string;
   credentialUpdateHref: string | null;
   displayName: string;
   hasStaticSecretCredentialUpdate: boolean;
   manualUploadHref: string | null;
   primaryAction: PrimaryRowAction;
-  renameSelector: string;
   renderedAction: RefRequiredAction | null;
   revoked: boolean;
   running: boolean;
@@ -825,7 +829,7 @@ function ConnectorHeaderActions({
   syncIdleLabel: string;
 }) {
   return (
-    <>
+    <div className="flex flex-wrap items-start gap-2">
       {activeRunHref ? (
         <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={activeRunHref} prefetch={false}>
           Active sync →
@@ -861,12 +865,7 @@ function ConnectorHeaderActions({
         storedCredentialUpdateHref={storedCredentialUpdateHref}
         syncIdleLabel={syncIdleLabel}
       />
-      <RenameConnection
-        connectionId={renameSelector}
-        currentLabel={connectionLabelSeed}
-        typeName={formatConnectorKeyForDisplay(connectorId)}
-      />
-    </>
+    </div>
   );
 }
 

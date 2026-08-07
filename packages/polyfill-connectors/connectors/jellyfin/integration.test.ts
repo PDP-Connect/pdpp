@@ -99,8 +99,17 @@ class FakeJellyfinServer {
           return;
         }
 
+        // Jellyfin serves its REST API at the root, NOT under /api/ — a request
+        // path with that prefix indicates the connector regressed to hitting a
+        // URL shape that doesn't exist on a real Jellyfin server (404).
+        if (path.startsWith("/api/")) {
+          res.writeHead(404);
+          res.end("Not found");
+          return;
+        }
+
         // Auth probe
-        if (path === "/api/System/Info") {
+        if (path === "/System/Info") {
           if (!headers["x-emby-token"]) {
             res.writeHead(401);
             res.end("Unauthorized");
@@ -118,7 +127,7 @@ class FakeJellyfinServer {
         }
 
         // User endpoint
-        if (path === "/api/Users/Me") {
+        if (path === "/Users/Me") {
           if (!headers["x-emby-token"]) {
             res.writeHead(401);
             res.end("Unauthorized");
@@ -135,7 +144,7 @@ class FakeJellyfinServer {
         }
 
         // Libraries endpoint
-        if (path === "/api/Users/test-user-123/Views") {
+        if (path === "/Users/test-user-123/Views") {
           if (!headers["x-emby-token"]) {
             res.writeHead(401);
             res.end("Unauthorized");
@@ -151,7 +160,7 @@ class FakeJellyfinServer {
         }
 
         // Items endpoints with pagination
-        if (path.includes("/api/Users/test-user-123/Items")) {
+        if (path.includes("/Users/test-user-123/Items")) {
           if (!headers["x-emby-token"]) {
             res.writeHead(401);
             res.end("Unauthorized");
@@ -298,6 +307,15 @@ test("e2e: header auth (X-Emby-Token) and no query param credentials", async () 
       assert(!req.path.includes("test-secret-key"), `Request should not expose secret: ${req.path}`);
     }
 
+    // Regression guard: Jellyfin serves its REST API at the root, not under
+    // /api/. A prior version of this connector prefixed every request path
+    // with /api/, which 404s against a real server; the fake server above
+    // only serves the real (unprefixed) paths, so this also fails naturally
+    // if the prefix regresses — this assertion makes the failure legible.
+    for (const req of requests) {
+      assert(!req.path.startsWith("/api/"), `Request path must not be prefixed with /api/: ${req.path}`);
+    }
+
     // Assert X-Emby-Token header is present
     const authHeader = requests.find((r) => r.headers["x-emby-token"]);
     assert.ok(authHeader, "At least one request should have X-Emby-Token header");
@@ -435,6 +453,66 @@ test("adversarial: oversized Content-Length is rejected before body read", async
     assert.ok(threwError, "Should reject oversized Content-Length");
   } finally {
     await server.stop();
+  }
+});
+
+test("e2e: subpath-hosted server (base URL with a path segment) is reachable", async () => {
+  // Jellyfin is commonly reverse-proxied under a subpath (e.g. https://host/jellyfin/).
+  // Request paths are joined onto the base with new URL(path, base); a leading-slash
+  // path (e.g. "/Users/Me") would resolve against the host root and silently drop
+  // the "/jellyfin" prefix. This server only answers under /jellyfin/, so the test
+  // fails if that prefix gets dropped during path construction.
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const path = req.url || "";
+
+    if (!path.startsWith("/jellyfin/")) {
+      res.writeHead(404);
+      res.end("Not found");
+      return;
+    }
+
+    const subpath = path.slice("/jellyfin".length);
+
+    if (subpath === "/System/Info") {
+      res.writeHead(200);
+      res.end(JSON.stringify({ Id: "test", ServerName: "Test", Version: "10.11.11" }));
+      return;
+    }
+    if (subpath === "/Users/Me") {
+      res.writeHead(200);
+      res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
+      return;
+    }
+    if (subpath === "/Users/user-123/Views") {
+      res.writeHead(200);
+      res.end(JSON.stringify({ Items: [{ Id: "lib1", Name: "Movies" }] }));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end("Not found");
+  });
+
+  const baseUrl: string = await new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address() as any;
+      resolve(`http://127.0.0.1:${address.port}/jellyfin`);
+    });
+    server.on("error", reject);
+  });
+
+  try {
+    const { ctx, records } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await collect(ctx);
+
+    const libraryRecords = records.filter((r) => r.stream === "libraries");
+    assert.equal(libraryRecords.length, 1, "Should reach the subpath-hosted server and emit 1 library");
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
   }
 });
 

@@ -14,9 +14,11 @@
 import {
   Band,
   BandCell,
+  buttonVariants,
   Caption,
   Endorse,
   IcButton,
+  IcSelect,
   IcTimestamp,
   KV,
   KVRow,
@@ -28,6 +30,7 @@ import {
 } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
+import { formatCoverageAxis } from "../lib/connection-evidence.ts";
 import { SOURCE_WORK_GROUP_COPY } from "../lib/source-actionability.ts";
 import {
   type DuplicateSyncGroup,
@@ -41,7 +44,41 @@ import {
   type SyncsViewModel,
 } from "./syncs-model.ts";
 
-const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1.2fr) minmax(0,0.9fr)";
+/** One filterable/pageable option for the recent-syncs status control. */
+interface RecentSyncsStatusOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * Pagination + filter state for the recent-syncs list, computed server-side in
+ * `page.tsx` from the real `_ref/runs` response (`has_more`/`next_cursor`) and
+ * the current search params. Passed in rather than fetched here so this view
+ * stays a pure server component (no client hydration for a GET form).
+ */
+export interface RecentSyncsPaging {
+  hasMore: boolean;
+  isPaged: boolean;
+  nextCursor: string | undefined;
+  params: Readonly<Record<string, string | undefined>>;
+  statusOptions: readonly RecentSyncsStatusOption[];
+}
+
+const RECENT_SYNCS_PATH = "/syncs";
+const RECENT_SYNCS_PAGER_OWNED_KEYS = new Set(["run_cursor"]);
+
+function recentSyncsHref(
+  params: Readonly<Record<string, string | undefined>>,
+  overrides: Record<string, string | undefined>
+): string {
+  const merged: Record<string, string | undefined> = { ...params, ...overrides };
+  const qs = Object.entries(merged)
+    .flatMap(([k, v]) => (v === undefined || v === "" ? [] : [`${encodeURIComponent(k)}=${encodeURIComponent(v)}`]))
+    .join("&");
+  return qs ? `${RECENT_SYNCS_PATH}?${qs}` : RECENT_SYNCS_PATH;
+}
+
+const SYNC_COLS = "minmax(0,1.4fr) minmax(0,1.2fr)";
 
 const RESET_NOTE = "Nothing already saved is ever lost — a held connection only pauses new arrivals.";
 
@@ -307,12 +344,117 @@ function RecentSyncRow({ entry }: { entry: RecentSyncEntry }) {
   );
 }
 
-function RecentSyncsSection({ entries }: { entries: readonly RecentSyncEntry[] }) {
+/**
+ * GET-submitted status filter for recent syncs. A plain server form: no client
+ * state on this page, matching the "no useState" invariant — the select's own
+ * module owns the minimal client interactivity, same pattern as `/audit`.
+ * Every option here is a real `_ref/runs` status value (see `RUN_STATUS_FILTER_OPTIONS`
+ * in `page.tsx`); this never offers a filter the server can't honestly apply.
+ */
+function RecentSyncsFilterForm({ paging }: { paging: RecentSyncsPaging }) {
+  const status = paging.params.status ?? "";
+  const hasFilter = status !== "";
+  return (
+    <form
+      action={RECENT_SYNCS_PATH}
+      className="rr-sync__recent-filters"
+      method="get"
+      style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 8 }}
+    >
+      {paging.params.connector_id ? (
+        <input name="connector_id" type="hidden" value={paging.params.connector_id} />
+      ) : null}
+      <IcSelect
+        aria-label="Filter recent syncs by outcome"
+        defaultValue={status}
+        name="status"
+        options={paging.statusOptions}
+        style={{ minWidth: 160 }}
+      />
+      <IcButton size="sm" type="submit" variant="ghost">
+        Apply
+      </IcButton>
+      {hasFilter ? (
+        <a
+          className={buttonVariants({ size: "sm", variant: "ghost" })}
+          href={recentSyncsHref(paging.params, { status: undefined })}
+        >
+          Clear filter
+        </a>
+      ) : null}
+    </form>
+  );
+}
+
+function RecentSyncsPager({ paging }: { paging: RecentSyncsPaging }) {
+  if (!(paging.hasMore || paging.isPaged)) {
+    return null;
+  }
+  const restOfParams = Object.fromEntries(
+    Object.entries(paging.params).filter(([key]) => !RECENT_SYNCS_PAGER_OWNED_KEYS.has(key))
+  );
+  return (
+    <nav aria-label="Recent syncs pagination" className="rr-sync__recent-pager" style={{ display: "flex", gap: 12 }}>
+      {paging.isPaged ? (
+        <a
+          className={buttonVariants({ size: "sm", variant: "ghost" })}
+          href={recentSyncsHref(restOfParams, { run_cursor: undefined })}
+        >
+          Restart from newest
+        </a>
+      ) : null}
+      {paging.hasMore && paging.nextCursor ? (
+        <a
+          className={buttonVariants({ size: "sm", variant: "ghost" })}
+          href={recentSyncsHref(paging.params, { run_cursor: paging.nextCursor })}
+        >
+          Older syncs →
+        </a>
+      ) : null}
+    </nav>
+  );
+}
+
+function RecentSyncsSection({ entries, paging }: { entries: readonly RecentSyncEntry[]; paging: RecentSyncsPaging }) {
+  const hasFilter = Boolean(paging.params.status);
   return (
     <section className="rr-sync__recent" data-testid="syncs-recent-list">
       <div className="rr-sync__section-head">
         <h2 className="rr-sync__section-title">Recent syncs</h2>
-        <Caption>Open one to see what it collected and what it did.</Caption>
+        <Caption>Open one to see what it collected.</Caption>
+      </div>
+      <RecentSyncsFilterForm paging={paging} />
+      {entries.length > 0 ? (
+        <>
+          <Table cols={RECENT_COLS}>
+            <TableHeaderRow>
+              <TableHeader>source</TableHeader>
+              <TableHeader>outcome</TableHeader>
+              <TableHeader>records</TableHeader>
+              <TableHeader numeric>when</TableHeader>
+            </TableHeaderRow>
+            {entries.map((entry) => (
+              <RecentSyncRow entry={entry} key={entry.runId} />
+            ))}
+          </Table>
+          <RecentSyncsPager paging={paging} />
+        </>
+      ) : (
+        <div className="rr-sync__empty">
+          <Caption>{hasFilter ? "No syncs match this filter." : "Syncs appear here once a source runs."}</Caption>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Seeded-demo rendering: no filter form or pager, since the demo has no live runs feed to page against. */
+function RecentSyncsSectionDemo({ entries }: { entries: readonly RecentSyncEntry[] }) {
+  return (
+    <section className="rr-sync__recent" data-testid="syncs-recent-list">
+      <div className="rr-sync__section-head">
+        <h2 className="rr-sync__section-title">Recent syncs</h2>
+        <Caption>Open one to see what it collected.</Caption>
       </div>
       {entries.length > 0 ? (
         <Table cols={RECENT_COLS}>
@@ -360,14 +502,19 @@ function formatCollectedThisRun(row: SyncRow): string | null {
   return "no change";
 }
 
-// The coverage condition is shown only when it adds information: "complete" is
-// the expected baseline and "unknown" is noise, so both are suppressed. Single
-// source of truth shared by the collapsed cell and the expanded KV detail.
+/**
+ * The coverage condition is shown only when it adds information: "complete" is
+ * the expected baseline and "unknown" is noise, so both are suppressed.
+ * Otherwise this renders the SAME owner-facing wording as the source detail
+ * page and connection diagnostics (`formatCoverageAxis`'s humanized `value`,
+ * e.g. "won't backfill" / "retryable gap") — never the raw internal axis key
+ * (e.g. "terminal_gap"), and never a second, competing translation of it.
+ */
 function coverageSuffix(condition: string | null): string {
   if (!condition || condition === "complete" || condition === "unknown") {
     return "";
   }
-  return ` · ${condition}`;
+  return ` · ${formatCoverageAxis(condition).value}`;
 }
 
 function SyncTableRow({ row }: { row: SyncRow }) {
@@ -382,15 +529,11 @@ function SyncTableRow({ row }: { row: SyncRow }) {
         className={["pdpp-table__row", "rr-sync-row", row.failed ? "is-failed" : null].filter(Boolean).join(" ")}
       >
         <TableCell className="rr-sync-row__stream">{row.stream}</TableCell>
-        <TableCell className="rr-sync-row__cadence">{row.cadence}</TableCell>
         <TableCell className={deltaClass}>
           {collectedText === null ? <span className="rr-sync-row__empty">—</span> : <span>{collectedText}</span>}
           {coverageSuffix(row.coverageCondition) ? (
             <span className="rr-sync-row__coverage">{coverageSuffix(row.coverageCondition)}</span>
           ) : null}
-        </TableCell>
-        <TableCell className="rr-sync-row__next" numeric>
-          {row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}
         </TableCell>
       </summary>
       <div className="rr-sync-detail">
@@ -399,8 +542,6 @@ function SyncTableRow({ row }: { row: SyncRow }) {
             {collectedText ?? "—"}
             {coverageSuffix(row.coverageCondition)}
           </KVRow>
-          <KVRow k="cadence">{row.cadence}</KVRow>
-          <KVRow k="next">{row.nextAt ? <IcTimestamp mode="relative" value={row.nextAt} /> : row.next}</KVRow>
         </KV>
         <Link className="rr-link rr-sync-detail__browse" href={row.browseHref} prefetch={false}>
           browse this stream →
@@ -437,6 +578,20 @@ function SyncGroupLastRun({
   );
 }
 
+/**
+ * The connection's schedule — cadence and next-due. One pair per connection
+ * (every stream shares the same schedule), so it renders once here instead of
+ * repeating on every stream row below.
+ */
+function SyncGroupSchedule({ cadence, next, nextAt }: { cadence: string; next: string; nextAt: string | null }) {
+  return (
+    <div className="rr-sync-group__schedule">
+      <span className="rr-sync-group__cadence">{cadence}</span>
+      <span className="rr-sync-group__next">next {nextAt ? <IcTimestamp mode="relative" value={nextAt} /> : next}</span>
+    </div>
+  );
+}
+
 function SyncGroupBlock({ group }: { group: SyncGroup }) {
   const healthy = group.health === "ok";
   const activeRunHref = group.activeRunId ? `/syncs/${encodeURIComponent(group.activeRunId)}` : null;
@@ -462,6 +617,7 @@ function SyncGroupBlock({ group }: { group: SyncGroup }) {
           lastRunAt={group.lastRunAt}
           rhythm={group.lastRunRhythm}
         />
+        <SyncGroupSchedule cadence={group.cadence} next={group.next} nextAt={group.nextAt} />
         {activeRunHref ? (
           <Link className="rr-link rr-sync-group__active" href={activeRunHref} prefetch={false}>
             Active sync →
@@ -471,9 +627,7 @@ function SyncGroupBlock({ group }: { group: SyncGroup }) {
       <Table cols={SYNC_COLS}>
         <TableHeaderRow>
           <TableHeader>stream</TableHeader>
-          <TableHeader>cadence</TableHeader>
           <TableHeader>collected (last run)</TableHeader>
-          <TableHeader numeric>next</TableHeader>
         </TableHeaderRow>
         {group.streams.map((row) => {
           const key = `${group.connectionId}:${row.stream}`;
@@ -486,7 +640,16 @@ function SyncGroupBlock({ group }: { group: SyncGroup }) {
 
 // ─── The view ─────────────────────────────────────────────────────────────────
 
-export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; seeded?: boolean }) {
+export function SyncsView({
+  model,
+  recentSyncsPaging,
+  seeded = false,
+}: {
+  model: SyncsViewModel;
+  /** Absent only for the seeded `?demo=` render, which has no live runs feed to page. */
+  recentSyncsPaging?: RecentSyncsPaging;
+  seeded?: boolean;
+}) {
   return (
     <div className="rr-sync">
       <header className="rr-sync__masthead">
@@ -513,12 +676,16 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
         </div>
       ) : null}
 
-      <RecentSyncsSection entries={model.recentSyncs} />
+      {recentSyncsPaging ? (
+        <RecentSyncsSection entries={model.recentSyncs} paging={recentSyncsPaging} />
+      ) : (
+        <RecentSyncsSectionDemo entries={model.recentSyncs} />
+      )}
 
       <section className="rr-sync__streams">
         <div className="rr-sync__section-head">
           <h2 className="rr-sync__section-title">Streams by source</h2>
-          <Caption>Cadence and last result for every stream each source collects.</Caption>
+          <Caption>Each source's schedule and what every stream collected last time.</Caption>
         </div>
         {model.groups.length > 0 ? (
           <div className="rr-sync__groups">

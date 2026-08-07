@@ -213,14 +213,24 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
   );
 }
 
+/**
+ * "Anything wrong" — a count, not a repeated list. The Syncs page (see
+ * `hrefs.runs` / `dashboardRoutes.section.runs`) already lists every one of
+ * these items as its own attention cards, one click away; showing the same
+ * rows again here duplicated Syncs (and the hero above already carries the
+ * aggregate signal for a non-healthy fleet). The Overview's job is just to
+ * say something needs a look and point at where the detail already lives.
+ */
 function AttentionBlock({
   sections,
   fleetHealth,
   healthySourceCount,
+  syncsHref,
 }: {
   sections: StandingData["sourceWorkSections"];
   fleetHealth: StandingData["fleetHealth"];
   healthySourceCount: StandingData["healthySourceCount"];
+  syncsHref: string;
 }) {
   const rowCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
   return (
@@ -234,20 +244,14 @@ function AttentionBlock({
       {rowCount > 0 ? (
         <div className="rr-attn" data-row-count={rowCount}>
           {sections.map((section) => (
-            <div className={["rr-attn__section", `is-${section.tone}`].join(" ")} key={section.id}>
-              <div className="rr-attn__section-head">
-                <h3 className="rr-attn__section-title">{section.title}</h3>
-                <span className="rr-attn__section-count">{section.countLabel}</span>
-              </div>
-              {section.rows.map((a) => (
-                <a className={["rr-attn__row", `is-${section.tone}`].join(" ")} href={a.href} key={a.id}>
-                  <span className="rr-attn__what">{a.what}</span>
-                  <span className="rr-rel__meta">look →</span>
-                  <span className="rr-attn__why">{a.why}</span>
-                </a>
-              ))}
+            <div className={["rr-attn__section-summary", `is-${section.tone}`].join(" ")} key={section.id}>
+              <span className="rr-attn__section-title">{section.title}</span>
+              <span className="rr-attn__section-count">{section.countLabel}</span>
             </div>
           ))}
+          <a className="rr-link rr-attn__syncs-link" href={syncsHref}>
+            Review in Syncs →
+          </a>
         </div>
       ) : (
         <div className="rr-allclear">
@@ -285,6 +289,8 @@ export interface StandingOverviewProps {
   /** Optional banner above the view (e.g. seeded-demo notice). */
   notice?: string;
   notificationsHref: string;
+  /** Where "Review in Syncs →" points — the one place attention items are listed in full. */
+  syncsHref: string;
   tokensHref: string;
   tracesHref: string;
 }
@@ -293,6 +299,7 @@ export function StandingOverview({
   data,
   grantsHref,
   notificationsHref,
+  syncsHref,
   tokensHref,
   tracesHref,
   notice,
@@ -318,6 +325,7 @@ export function StandingOverview({
         fleetHealth={data.fleetHealth}
         healthySourceCount={data.healthySourceCount}
         sections={data.sourceWorkSections}
+        syncsHref={syncsHref}
       />
       <NotificationsBlock href={notificationsHref} />
     </div>

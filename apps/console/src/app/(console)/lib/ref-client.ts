@@ -91,6 +91,15 @@ export interface RunStatusEnvelope {
     origin: string | null;
     reason: string | null;
   } | null;
+  /**
+   * Raw `known_gaps` off the run's window-independent terminal event (same
+   * source the timeline route reads, but resolved via the `LIMIT 1`
+   * terminal-event query instead of a paginated window). `undefined` when
+   * the run has no terminal event yet. Callers normalize via
+   * `run-gaps.ts#extractKnownGapsFromEventData`.
+   */
+  known_gaps?: unknown;
+  known_gaps_summary?: unknown;
   links: { timeline: string };
   object: "run_status";
   run_id?: string | null;
@@ -194,6 +203,8 @@ function normalizeRunStatus(raw: unknown): RunStatusEnvelope {
     connector_id?: unknown;
     connector_instance_id?: unknown;
     failure?: unknown;
+    known_gaps?: unknown;
+    known_gaps_summary?: unknown;
     links?: unknown;
     object?: unknown;
     run_id?: unknown;
@@ -208,6 +219,8 @@ function normalizeRunStatus(raw: unknown): RunStatusEnvelope {
     connector_id: typeof r.connector_id === "string" ? r.connector_id : null,
     connector_instance_id: typeof r.connector_instance_id === "string" ? r.connector_instance_id : null,
     failure: normalizeRunFailure(r.failure),
+    known_gaps: r.known_gaps,
+    known_gaps_summary: r.known_gaps_summary,
     links: normalizeRunLinks(r.links),
     object: "run_status",
     run_id: typeof r.run_id === "string" ? r.run_id : "",

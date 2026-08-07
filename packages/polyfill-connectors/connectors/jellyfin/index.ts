@@ -62,6 +62,11 @@ const httpGovernor = createConnectorHttpGovernor({
 
 /**
  * Validate base URL: reject userinfo, allow http only for loopback.
+ * Normalizes the pathname to end with '/' so relative request paths
+ * (see jellyfinRequest) resolve against it via new URL(path, base) without
+ * discarding a subpath — e.g. a base of "https://host/jellyfin" (no trailing
+ * slash) would otherwise have "jellyfin" treated as a filename and dropped
+ * when joined, silently routing subpath-hosted instances to the wrong host root.
  */
 function validateBaseUrl(urlStr: string): URL {
   const url = new URL(urlStr);
@@ -77,6 +82,10 @@ function validateBaseUrl(urlStr: string): URL {
 
   if (!["http:", "https:"].includes(url.protocol)) {
     throw new Error("jellyfin_base_url_unsafe_scheme");
+  }
+
+  if (!url.pathname.endsWith("/")) {
+    url.pathname = `${url.pathname}/`;
   }
 
   return url;
@@ -303,7 +312,7 @@ interface JellyfinConn {
 async function resolveUserId(baseUrl: string, apiKey: string): Promise<string> {
   const fallbackUserId = "00000000000000000000000000000000";
   try {
-    const userResp = await jellyfinRequest<Record<string, unknown>>(baseUrl, "/api/Users/Me", apiKey);
+    const userResp = await jellyfinRequest<Record<string, unknown>>(baseUrl, "Users/Me", apiKey);
     return (userResp.Id as string) ?? fallbackUserId;
   } catch {
     // Fallback to default admin user if /Users/Me fails
@@ -314,7 +323,7 @@ async function resolveUserId(baseUrl: string, apiKey: string): Promise<string> {
 async function fetchLibraries(conn: JellyfinConn): Promise<Record<string, unknown>[]> {
   const viewsResp = await jellyfinRequest<{ Items?: unknown[] }>(
     conn.baseUrl,
-    `/api/Users/${conn.userId}/Views`,
+    `Users/${conn.userId}/Views`,
     conn.apiKey
   );
   const validatedViews = validateViewsResponse(viewsResp);
@@ -371,7 +380,7 @@ async function collectItemsForLibrary(
       throw new Error(`jellyfin_max_pages_exceeded: library ${libraryId} exceeded ${MAX_PAGES_PER_STREAM} pages`);
     }
 
-    const itemsPath = `/api/Users/${conn.userId}/Items?ParentId=${libraryId}&StartIndex=${startIndex}&Limit=${pageSize}`;
+    const itemsPath = `Users/${conn.userId}/Items?ParentId=${libraryId}&StartIndex=${startIndex}&Limit=${pageSize}`;
     const itemsResp = await jellyfinRequest<{ Items?: unknown[]; TotalRecordCount?: unknown }>(
       conn.baseUrl,
       itemsPath,
@@ -487,7 +496,7 @@ async function collect(ctx: CollectContext): Promise<void> {
   try {
     // Auth probe: GET /System/Info
     await progress("Probing Jellyfin server");
-    const sysInfo = await jellyfinRequest(baseUrl, "/api/System/Info", apiKey);
+    const sysInfo = await jellyfinRequest(baseUrl, "System/Info", apiKey);
     validateSystemInfo(sysInfo);
     await progress("Connected to Jellyfin server");
 

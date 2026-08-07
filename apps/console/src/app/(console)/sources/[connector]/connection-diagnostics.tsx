@@ -29,6 +29,7 @@ import type {
   RefLocalDeviceProgress,
   RefRenderedVerdict,
   RefSchedule,
+  RefSuppressedSignal,
 } from "../../lib/ref-client.ts";
 import {
   deriveRenderedSourceStatus,
@@ -129,7 +130,7 @@ export function ConnectionDiagnostics({
       : null;
   return (
     <Section
-      description="Derived from the connection projection, scheduler, and device-exporter readings. Anything unmeasured reads as unknown."
+      description="Technical detail for troubleshooting. Anything not measured yet shows as unknown, never a guess."
       title="Diagnostics"
     >
       {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
@@ -141,13 +142,13 @@ export function ConnectionDiagnostics({
         open={hasDeviceLocalRemediation || undefined}
       >
         <summary className="pdpp-body flex cursor-pointer items-center justify-between px-3 py-3 hover:bg-muted/40">
-          <span className="font-medium">Projection, schedule, sources</span>
+          <span className="font-medium">More detail</span>
           <span className="pdpp-caption text-muted-foreground group-open:hidden">Expand</span>
           <span className="pdpp-caption hidden text-muted-foreground group-open:inline">Collapse</span>
         </summary>
 
         <div className="flex flex-col gap-5 px-3 py-4">
-          <DiagnosticsBlock title="Projected state">
+          <DiagnosticsBlock title="Current state">
             <ProjectedStateDiagnostics
               connectionHealth={connectionHealth}
               connectionId={connectionId}
@@ -165,11 +166,11 @@ export function ConnectionDiagnostics({
             <CollectionRateDiagnostics connectionHealth={connectionHealth} />
           </DiagnosticsBlock>
 
-          <DiagnosticsBlock title="Schedule & backoff">
+          <DiagnosticsBlock title="Schedule">
             <ScheduleDiagnostics schedule={schedule} scheduleError={scheduleError} />
           </DiagnosticsBlock>
 
-          <DiagnosticsBlock title="Source instances">
+          <DiagnosticsBlock title="Devices">
             <SourceInstancesDiagnostics sourceInstances={sourceInstances} sourceInstancesError={sourceInstancesError} />
           </DiagnosticsBlock>
         </div>
@@ -293,6 +294,14 @@ function RecoveryPanel({ model }: { model: RecoveryPanelViewModel }) {
   );
 }
 
+/** Owner-facing labels for the suppressed-signal kind enum. */
+const SUPPRESSED_SIGNAL_KIND_LABELS: Readonly<Record<RefSuppressedSignal["kind"], string>> = Object.freeze({
+  cooldown: "Waiting to retry",
+  drain: "Uploading in the background",
+  runtime_fault: "A system error",
+  syncing: "Currently syncing",
+});
+
 function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: RefRenderedVerdict | null }) {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const suppressed = renderedVerdict?.detail.suppressed ?? [];
@@ -300,7 +309,7 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
     return null;
   }
   return (
-    <DiagnosticsBlock title="Hidden from the summary">
+    <DiagnosticsBlock title="Other things noticed, not shown above">
       <ul
         className="pdpp-caption flex flex-col gap-1 text-muted-foreground"
         data-testid="diagnostics-suppressed-evidence"
@@ -311,7 +320,8 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
             data-suppressed-kind={signal.kind}
             key={`${signal.kind}:${signal.detail_field}`}
           >
-            <span className="text-foreground">{signal.kind.replaceAll("_", " ")}</span>: {signal.reason}
+            <span className="text-foreground">{SUPPRESSED_SIGNAL_KIND_LABELS[signal.kind] ?? "Noted"}</span>:{" "}
+            {signal.reason}
           </li>
         ))}
       </ul>
@@ -543,7 +553,7 @@ function ProjectedStateDiagnostics({
           data-testid="diagnostics-dominant-condition"
           title={dominantCondition.title}
         >
-          Dominant condition: <span className="text-foreground">{dominantCondition.label}</span>
+          What's happening: <span className="text-foreground">{dominantCondition.label}</span>
         </p>
       ) : null}
       {axisChips.length > 0 ? (
@@ -555,7 +565,7 @@ function ProjectedStateDiagnostics({
               key={c.label}
               title={c.title}
             >
-              {c.label}
+              <span className="opacity-60">{c.dimension}:</span> {c.value}
             </li>
           ))}
         </ul>
@@ -566,7 +576,7 @@ function ProjectedStateDiagnostics({
           data-testid="diagnostics-projection-unreliable"
           title={projection.detail}
         >
-          Projection unreliable: {projection.reasons.join(", ")}.
+          Can't fully verify current state: {projection.reasons.join(", ")}.
         </p>
       ) : null}
       {outboxRemediation ? (

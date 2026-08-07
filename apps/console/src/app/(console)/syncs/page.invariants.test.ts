@@ -42,8 +42,11 @@ const PENDING_SETUP_FOLDED_RE = /section === "needsOwner" \? \[\.\.\.model\.pend
 const STANDALONE_PENDING_SECTION_RE =
   /model\.pendingSetupCards\.length > 0 \? \(\s*<section className="rr-sync__fix-section"/;
 const FAILURE_CARD_SOURCE_WORK_RE = /card\.work\?\.group \?\? "other"[\s\S]{0,80}data-source-work=/;
-const SYNCS_OVERVIEW_LIST_RUNS_RE = /listRuns\(\{\s*limit:\s*SYNCS_OVERVIEW_RUN_LIMIT\s*\}\)/;
-const RECENT_LIST_RENDER_RE = /<RecentSyncsSection entries=\{model\.recentSyncs\} \/>/;
+// The runs fetch is now a real cursor page (`run_cursor`/`status`/`connector_id`),
+// so the invariant is "the bounded per-page limit constant is used", not the old
+// literal `listRuns({ limit: SYNCS_OVERVIEW_RUN_LIMIT })` call shape.
+const SYNCS_OVERVIEW_LIST_RUNS_RE = /limit:\s*SYNCS_OVERVIEW_RUN_LIMIT/;
+const RECENT_LIST_RENDER_RE = /<RecentSyncsSection entries=\{model\.recentSyncs\} paging=\{recentSyncsPaging\} \/>/;
 const RECENT_ROW_HREF_RE = /href=\{entry\.href\}/;
 const RECENT_ROW_PREFETCH_FALSE_RE = /href=\{entry\.href\}\s+prefetch=\{false\}/;
 
@@ -129,4 +132,58 @@ test("syncs first-paint run feed is bounded to the overview budget", async () =>
   assert.ok(limitMatch, "runs page must name its first-paint run feed limit");
   assert.ok(Number(limitMatch[1]) <= 25, "syncs overview must not hydrate a deep run history before first paint");
   assert.match(src, SYNCS_OVERVIEW_LIST_RUNS_RE, "syncs overview must use the bounded first-paint run feed limit");
+});
+
+const RUN_CURSOR_QUERY_RE = /cursor:\s*params\.run_cursor \|\| undefined/;
+const RUN_STATUS_QUERY_RE = /status:\s*params\.status \|\| undefined/;
+const NO_UNBOUNDED_LIST_RUNS_RE = /\blistRuns\(\s*\)/;
+const RECENT_FILTER_FORM_RE = /<form\s+action=\{RECENT_SYNCS_PATH\}[\s\S]{0,120}method="get"/;
+const RECENT_FILTER_STATUS_SELECT_RE = /name="status"[\s\S]{0,80}options=\{paging\.statusOptions\}/;
+const RECENT_PAGER_NEXT_HREF_RE = /run_cursor:\s*paging\.nextCursor/;
+
+test("recent syncs run feed pages by cursor and filters by a real server-side status, never an unbounded fetch", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+
+  assert.match(src, RUN_CURSOR_QUERY_RE, "the runs query must forward the run_cursor search param to listRuns");
+  assert.match(src, RUN_STATUS_QUERY_RE, "the status filter must forward params.status verbatim to listRuns");
+  assert.doesNotMatch(src, NO_UNBOUNDED_LIST_RUNS_RE, "listRuns must never be called with no bound at all");
+});
+
+test("recent syncs filter form is a plain GET form with no client hydration on the view", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(src, RECENT_FILTER_FORM_RE, "the status filter must be a server-rendered GET form");
+  assert.match(
+    src,
+    RECENT_FILTER_STATUS_SELECT_RE,
+    "the status select must only offer the real server-supplied options"
+  );
+  assert.doesNotMatch(src, USE_CLIENT_RE, "adding the filter form must not turn the view into a client component");
+  assert.doesNotMatch(src, USE_STATE_RE, "the filter form must submit via native GET, not client state");
+});
+
+test("recent syncs pager links to the next cursor the server returned, never a fabricated offset", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(src, RECENT_PAGER_NEXT_HREF_RE, "the older-syncs link must carry the real next_cursor from the server");
+});
+
+const COVERAGE_HUMANIZER_IMPORT_RE = /formatCoverageAxis[\s\S]{0,40}from "\.\.\/lib\/connection-evidence\.ts"/;
+const COVERAGE_HUMANIZER_CALL_RE = /formatCoverageAxis\(condition\)\.value/;
+const RAW_COVERAGE_INTERPOLATION_RE = /`\s*·\s*\$\{condition\}`/;
+
+test("stream coverage never leaks the raw internal axis key (e.g. terminal_gap) — it goes through the shared humanizer", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(src, COVERAGE_HUMANIZER_IMPORT_RE, "coverage copy must reuse the shared formatCoverageAxis humanizer");
+  assert.match(
+    src,
+    COVERAGE_HUMANIZER_CALL_RE,
+    "the coverage suffix must render formatCoverageAxis's owner-facing value"
+  );
+  assert.doesNotMatch(
+    src,
+    RAW_COVERAGE_INTERPOLATION_RE,
+    "the raw coverage_condition value (e.g. terminal_gap, retryable_gap) must never be interpolated directly into copy"
+  );
 });

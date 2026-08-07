@@ -222,6 +222,7 @@ export default async function DashboardPage({
         grantsHref={HREFS.grants}
         notice={notice}
         notificationsHref={HREFS.notifications}
+        syncsHref={HREFS.runs}
         tokensHref={HREFS.deploymentTokens}
         tracesHref={HREFS.traces}
       />

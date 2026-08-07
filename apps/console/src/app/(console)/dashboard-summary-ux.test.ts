@@ -17,8 +17,16 @@ const SHARED_SOURCE_WORK_INPUT = /sourceWork: sourceWorkFromConnectors\(connecto
 const SHARED_SOURCE_WORK_AUTHORITY = /function activeSourceWork[\s\S]*return input\.sourceWork/;
 const SERVER_FLEET_VERDICT_HERO_PRECEDENCE =
   /function computeHero\(input: StandingInputs\)[\s\S]*overviewLoadIssues\.length > 0[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero/;
+// Overview renders one summary line per section (title + count), not the
+// individual attention rows underneath it — those are Syncs's job (see
+// `feedback: remove Overview/Syncs CTA duplication`). This guards the
+// intent both ways: sectioned counts must render, and per-row detail
+// (`section.rows.map`) must NOT reappear here — that duplication is exactly
+// what the owner asked to remove.
 const SOURCE_WORK_SECTIONS_RENDERED =
-  /data-row-count=\{rowCount\}[\s\S]*sections\.map\(\(section\)[\s\S]*section\.rows\.map\(\(a\)/;
+  /data-row-count=\{rowCount\}[\s\S]*sections\.map\(\(section\)[\s\S]*rr-attn__section-count/;
+const SOURCE_WORK_ROWS_NOT_REPEATED_RE = /section\.rows\.map\(\(a\)/;
+const SOURCE_WORK_SYNCS_LINK_RE = /href=\{syncsHref\}/;
 const NOTIFICATIONS_BLOCK_RENDERED =
   /function NotificationsBlock\([\s\S]*<h2 className="rr-stand-block__title">Notifications<\/h2>[\s\S]*href=\{href\}/;
 const OVERVIEW_PASSES_NOTIFICATIONS_HREF = /notificationsHref=\{HREFS\.notifications\}/;
@@ -46,10 +54,16 @@ test("Standing Overview uses source work for detail while the server fleet verdi
   assert.match(src, SERVER_FLEET_VERDICT_HERO_PRECEDENCE);
 });
 
-test("Standing Overview renders sectioned shared source-work rows", async () => {
+test("Standing Overview renders sectioned shared source-work counts, and links to Syncs instead of repeating rows", async () => {
   const src = await readFile(OVERVIEW_FILE, "utf8");
 
   assert.match(src, SOURCE_WORK_SECTIONS_RENDERED);
+  assert.doesNotMatch(
+    src,
+    SOURCE_WORK_ROWS_NOT_REPEATED_RE,
+    "Overview must not re-render every attention row — that duplicates Syncs, which already lists them"
+  );
+  assert.match(src, SOURCE_WORK_SYNCS_LINK_RE, "Overview must link into Syncs for the full attention list");
 });
 
 test("Standing Overview links to notification setup as a first-class utility", async () => {

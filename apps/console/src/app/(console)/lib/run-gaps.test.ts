@@ -8,6 +8,7 @@ import {
   classifyKnownGaps,
   connectorHasPartialCoverageFromReport,
   connectorHasPartialCoverageHint,
+  extractKnownGapsFromEventData,
   extractTerminalKnownGaps,
   formatRecoveryHint,
   type KnownGap,
@@ -221,6 +222,27 @@ test("extractTerminalKnownGaps preserves diagnostics on known gaps", () => {
   const result = extractTerminalKnownGaps([terminal]);
   assert.ok(result.gaps[0]);
   assert.deepEqual(result.gaps[0].diagnostics, diagnostics);
+});
+
+test("extractKnownGapsFromEventData reads the same fields as extractTerminalKnownGaps, off any object carrying them", () => {
+  // This is the window-independent read path: `RunStatusEnvelope` carries
+  // `known_gaps` / `known_gaps_summary` as top-level fields (not nested
+  // under `data`), resolved via the run-status route's own `LIMIT 1`
+  // terminal-event query — independent of which timeline page loaded.
+  const runStatusShaped = {
+    known_gaps: [{ kind: "stream_skipped", reason: "manifest_stream_unresolved", stream: "messages" }],
+    known_gaps_summary: { by_reason: { manifest_stream_unresolved: 1 }, count: 1, truncated: false },
+  };
+
+  const result = extractKnownGapsFromEventData(runStatusShaped);
+
+  assert.equal(result.gaps[0]?.reason, "manifest_stream_unresolved");
+  assert.equal(result.summary?.count, 1);
+});
+
+test("extractKnownGapsFromEventData tolerates null/undefined (run not terminal, or lookup unresolved)", () => {
+  assert.deepEqual(extractKnownGapsFromEventData(null), { gaps: [], summary: null });
+  assert.deepEqual(extractKnownGapsFromEventData(undefined), { gaps: [], summary: null });
 });
 
 // Direct consumption of the server-projected Collection Report.

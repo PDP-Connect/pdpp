@@ -127,6 +127,10 @@ interface GetSteamLevelResponse {
   response: { player_level?: number };
 }
 
+interface ResolveVanityUrlResponse {
+  response: { message?: string; steamid?: string; success: number };
+}
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────
 
 type ProgressFn = (
@@ -205,6 +209,34 @@ async function steamApiRequest<T>(
     }
     throw error;
   }
+}
+
+// A 64-bit SteamID is always a 17-digit number starting with 7656119. Anything
+// else (a vanity name from steamcommunity.com/id/<name>) needs ResolveVanityURL.
+const STEAM_ID64_PATTERN = /^7656119\d{10}$/;
+
+export function isSteamId64(value: string): boolean {
+  return STEAM_ID64_PATTERN.test(value.trim());
+}
+
+/**
+ * Accepts either a numeric SteamID64 (returned as-is) or a vanity profile
+ * name from steamcommunity.com/id/<name> (resolved via ResolveVanityURL).
+ * Owners without a custom vanity URL never see /id/<name> in their profile
+ * link, so this removes the need to explain the difference in setup copy.
+ */
+async function resolveSteamId(apiKey: string, rawSteamId: string): Promise<string> {
+  const trimmed = rawSteamId.trim();
+  if (isSteamId64(trimmed)) {
+    return trimmed;
+  }
+  const res = await steamApiRequest<ResolveVanityUrlResponse>("/ISteamUser/ResolveVanityURL/v0001", apiKey, {
+    vanityurl: trimmed,
+  });
+  if (res.response.success === 1 && res.response.steamid) {
+    return res.response.steamid;
+  }
+  throw new Error(`steam_vanity_url_not_found: could not resolve "${trimmed}" to a SteamID`);
 }
 
 // ─── Record builders ───────────────────────────────────────────────────────
@@ -327,7 +359,7 @@ async function collectOwnedGames(
   const gamesRes = await steamApiRequest<GetOwnedGamesResponse>(
     "/IPlayerService/GetOwnedGames/v0001",
     apiKey,
-    { steamid, include_appinfo: true, include_played_free_games: true },
+    { steamid, include_appinfo: true, include_played_free_games: true, skip_unvetted_apps: false },
     deps.progress,
     { stream: "owned_games" }
   );
@@ -482,10 +514,11 @@ if (isMainModule(import.meta.url)) {
         throw new Error("steam_auth_failed");
       }
 
-      const steamid = credentials.STEAM_USER_ID;
-      if (!steamid) {
+      const rawSteamId = credentials.STEAM_USER_ID;
+      if (!rawSteamId) {
         throw new Error("steam_user_id_required: STEAM_USER_ID credential required");
       }
+      const steamid = await resolveSteamId(apiKey, rawSteamId);
 
       const newState: Record<string, unknown> = JSON.parse(JSON.stringify(state));
       const deps: StreamDeps = { emit, emitRecord, progress };

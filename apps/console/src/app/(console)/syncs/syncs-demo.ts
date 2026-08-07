@@ -25,13 +25,11 @@ const OK_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "ok"];
 const FAIL_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "fail"];
 const COOLING_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "ok"];
 
-function row(partial: Partial<SyncRow> & Pick<SyncRow, "stream" | "cadence" | "browseHref">): SyncRow {
+function row(partial: Partial<SyncRow> & Pick<SyncRow, "stream" | "browseHref">): SyncRow {
   return {
     collectedThisRun: null,
     coverageCondition: null,
     failed: false,
-    next: "—",
-    nextAt: null,
     streamSkipped: false,
     ...partial,
   };
@@ -106,6 +104,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
   groups: [
     {
       activeRunId: null,
+      cadence: "daily",
       connectionId: "cin_nh_e3391c",
       connectorId: "northstar_hr",
       health: "ok",
@@ -114,23 +113,19 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "18 s",
       lastRunRhythm: OK_RHYTHM,
       name: "Northstar HR",
+      next: "Jun 14 · 06:00Z",
+      nextAt: "2026-06-14T06:00:00Z",
       streams: [
         row({
           browseHref: "/explore?connection=cin_nh_e3391c&stream=pay_statements",
-          cadence: "with payroll",
           collectedThisRun: 2,
           coverageCondition: "complete",
-          next: "Jun 14 · 06:00Z",
-          nextAt: "2026-06-14T06:00:00Z",
           stream: "pay_statements",
         }),
         row({
           browseHref: "/explore?connection=cin_nh_e3391c&stream=employment",
-          cadence: "daily",
           collectedThisRun: 0,
           coverageCondition: "complete",
-          next: "Jun 14 · 06:00Z",
-          nextAt: "2026-06-14T06:00:00Z",
           stream: "employment",
         }),
       ],
@@ -138,6 +133,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
     {
       activeRunId: null,
+      cadence: "daily",
       connectionId: "cin_cg_91a0fe",
       connectorId: "chatgpt",
       health: "failing",
@@ -146,14 +142,13 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "41 s",
       lastRunRhythm: COOLING_RHYTHM,
       name: "ChatGPT — personal",
+      next: "2026-06-13T09:00:00Z",
+      nextAt: "2026-06-13T09:00:00Z",
       streams: [
         row({
           browseHref: "/explore?connection=cin_cg_91a0fe&stream=conversations",
-          cadence: "daily",
           collectedThisRun: 34,
           coverageCondition: "partial",
-          next: "2026-06-13T09:00:00Z",
-          nextAt: "2026-06-13T09:00:00Z",
           stream: "conversations",
         }),
       ],
@@ -161,6 +156,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
     {
       activeRunId: null,
+      cadence: "daily",
       connectionId: "cin_fm_206b11",
       connectorId: "first_meridian",
       health: "failing",
@@ -169,19 +165,17 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "2 s",
       lastRunRhythm: FAIL_RHYTHM,
       name: "First Meridian — checking",
+      next: "held",
+      nextAt: null,
       streams: [
         row({
           browseHref: "/explore?connection=cin_fm_206b11&stream=transactions",
-          cadence: "daily",
           failed: true,
-          next: "held",
           stream: "transactions",
         }),
         row({
           browseHref: "/explore?connection=cin_fm_206b11&stream=balances",
-          cadence: "daily",
           failed: true,
-          next: "held",
           stream: "balances",
         }),
       ],
@@ -189,6 +183,7 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
     },
     {
       activeRunId: null,
+      cadence: "every 15 min",
       connectionId: "cin_gm_410c2b",
       connectorId: "gmail",
       health: "ok",
@@ -197,14 +192,13 @@ export const DEMO_SYNCS_MODEL: SyncsViewModel = {
       lastRunDuration: "6 s",
       lastRunRhythm: OK_RHYTHM,
       name: "Gmail — personal",
+      next: "2026-06-13T05:45:00Z",
+      nextAt: "2026-06-13T05:45:00Z",
       streams: [
         row({
           browseHref: "/explore?connection=cin_gm_410c2b&stream=messages",
-          cadence: "every 15 min",
           collectedThisRun: 38,
           coverageCondition: "complete",
-          next: "2026-06-13T05:45:00Z",
-          nextAt: "2026-06-13T05:45:00Z",
           stream: "messages",
         }),
       ],

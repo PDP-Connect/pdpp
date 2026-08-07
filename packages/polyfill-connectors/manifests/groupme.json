@@ -28,7 +28,7 @@
           "secret": true,
           "autocomplete": "off",
           "help_url": "https://dev.groupme.com/applications",
-          "help_text": "Create an access token in the GroupMe developer applications console. This grants access to your GroupMe account data via the GroupMe API v3.",
+          "help_text": "Register an app (Callback URL must be a valid HTTPS URL, e.g. https://localhost — it's never called), then click \"Access Token\" in the dev console header and copy that value.",
           "env": ["GROUPME_ACCESS_TOKEN"]
         }
       ]

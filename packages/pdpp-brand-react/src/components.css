@@ -1870,6 +1870,36 @@
   color: var(--muted-foreground);
 }
 
+/* Anything wrong — Overview's collapsed summary line (count only; full rows live on Syncs) */
+.rr-attn__section-summary {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 0 8px 12px;
+  border-bottom: 1px solid var(--border);
+  box-shadow: inset 2px 0 0 var(--warning);
+}
+.rr-attn__section-summary.is-owner {
+  box-shadow: inset 3px 0 0 var(--destructive);
+}
+.rr-attn__section-summary.is-review {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.rr-attn__section-summary.is-system {
+  box-shadow: inset 3px 0 0 var(--muted-foreground);
+}
+.rr-attn__section-summary.is-muted {
+  box-shadow: inset 3px 0 0 var(--border);
+}
+.rr-attn__section-summary:last-of-type {
+  border-bottom: 0;
+}
+.rr-attn__syncs-link {
+  margin-top: 2px;
+  font-size: 0.78rem;
+}
+
 /* All clear */
 .rr-allclear {
   display: flex;

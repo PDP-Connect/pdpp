@@ -76,25 +76,25 @@ class TestServer {
         const path = req.url || "";
 
         // Auth endpoints
-        if (path === "/api/System/Info") {
+        if (path === "/System/Info") {
           res.writeHead(200);
           res.end(JSON.stringify({ Id: "test", ServerName: "Test", Version: "10.11.11" }));
           return;
         }
 
-        if (path === "/api/Users/Me") {
+        if (path === "/Users/Me") {
           res.writeHead(200);
           res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
           return;
         }
 
-        if (path === "/api/Users/user-123/Views") {
+        if (path === "/Users/user-123/Views") {
           res.writeHead(200);
           res.end(JSON.stringify({ Items: [{ Id: "lib1", Name: "Lib1" }] }));
           return;
         }
 
-        if (path.includes("/api/Users/user-123/Items")) {
+        if (path.includes("/Users/user-123/Items")) {
           if (this.responseMode === "oversized_no_length") {
             // Send large body WITHOUT Content-Length header
             // Streaming reader must catch it, not Content-Length check
@@ -222,25 +222,25 @@ test("mutation: max-pages guard is testable with injected config", async () => {
         this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
           const path = req.url || "";
 
-          if (path === "/api/System/Info") {
+          if (path === "/System/Info") {
             res.writeHead(200);
             res.end(JSON.stringify({ Id: "test", ServerName: "Test", Version: "10.11.11" }));
             return;
           }
 
-          if (path === "/api/Users/Me") {
+          if (path === "/Users/Me") {
             res.writeHead(200);
             res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
             return;
           }
 
-          if (path === "/api/Users/user-123/Views") {
+          if (path === "/Users/user-123/Views") {
             res.writeHead(200);
             res.end(JSON.stringify({ Items: [{ Id: "lib1", Name: "Lib1" }] }));
             return;
           }
 
-          if (path.includes("/api/Users/user-123/Items")) {
+          if (path.includes("/Users/user-123/Items")) {
             // Empty items but claim 1 million total (forces pagination loop)
             res.writeHead(200);
             res.end(JSON.stringify({ Items: [], TotalRecordCount: 1_000_000 }));

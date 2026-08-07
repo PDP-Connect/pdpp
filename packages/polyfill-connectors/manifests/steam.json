@@ -26,8 +26,8 @@
           "type": "text",
           "required": true,
           "secret": false,
-          "help_url": "https://steamcommunity.com/",
-          "help_text": "Your Steam ID (the long number from your profile URL or steam://userid/XXXXX). Click your profile name in Steam and copy the number after 'profiles/'.",
+          "help_url": "https://steamcommunity.com/my/profile",
+          "help_text": "Your Steam ID or profile name. Go to https://steamcommunity.com/my/profile while logged in — use the number after 'profiles/', or if the URL instead shows '/id/<name>', paste that name.",
           "env": ["STEAM_USER_ID"]
         },
         {
@@ -37,8 +37,8 @@
           "required": true,
           "secret": true,
           "autocomplete": "off",
-          "help_url": "https://partner.steamgames.com/doc/webapi_overview/auth",
-          "help_text": "Generate a free Web API key at https://steamcommunity.com/dev/apikey, then paste it here.",
+          "help_url": "https://steamcommunity.com/dev/apikey",
+          "help_text": "Generate a free Web API key, then paste it here.",
           "env": ["STEAM_API_KEY"]
         }
       ]

@@ -103,6 +103,25 @@ export function resolvePartialCoverageCue({
   return connectorHasPartialCoverageHint({ lastRunKnownGaps, totalRecords });
 }
 
+/**
+ * Normalize a `known_gaps` / `known_gaps_summary` pair. Shared by the
+ * page-scanned extractor below (fed a terminal event's `data` payload) and
+ * by the window-independent run-status projection (`RunStatusEnvelope`,
+ * which carries the same two fields off the runtime's `LIMIT 1`
+ * terminal-event query instead of the paginated timeline).
+ */
+export function extractKnownGapsFromEventData(
+  data: { known_gaps?: unknown; known_gaps_summary?: unknown } | null | undefined
+): {
+  gaps: KnownGap[];
+  summary: KnownGapSummary | null;
+} {
+  return {
+    gaps: normalizeKnownGaps(data?.known_gaps),
+    summary: normalizeKnownGapSummary(data?.known_gaps_summary),
+  };
+}
+
 export function extractTerminalKnownGaps(events: readonly SpineEvent[]): {
   gaps: KnownGap[];
   summary: KnownGapSummary | null;
@@ -117,8 +136,7 @@ export function extractTerminalKnownGaps(events: readonly SpineEvent[]): {
       continue;
     }
     return {
-      gaps: normalizeKnownGaps(event.data?.known_gaps),
-      summary: normalizeKnownGapSummary(event.data?.known_gaps_summary),
+      ...extractKnownGapsFromEventData(event.data),
       terminalEvent: event,
     };
   }

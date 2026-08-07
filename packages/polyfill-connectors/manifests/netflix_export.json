@@ -64,8 +64,9 @@
       "rationale": "Netflix official export (getmyinfo) requires manual download from netflix.com/account/getmyinfo. The export takes up to 30 days and must be extracted locally. No automated refresh path exists."
     },
     "public_listing": {
-      "listed": true,
-      "status": "needs_human_auth"
+      "listed": false,
+      "status": "unproven",
+      "proof_gate": "Import-only (CSV/zip upload); no collection path (API, OAuth, or browser capture) is implemented, so it stays out of the default picker until a real collection path lands or the owner explicitly opts in."
     }
   },
   "streams": [

@@ -674,7 +674,7 @@ test("a failing connection holds its next and marks rows failed", () => {
   const [group] = model.groups;
   assert.equal(group?.health, "failing");
   assert.equal(group?.streams[0]?.failed, true);
-  assert.equal(group?.streams[0]?.next, "held");
+  assert.equal(group?.next, "held");
   assert.equal(group?.lastRunDelta, "sync failed");
 });
 
@@ -717,7 +717,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
     false,
     "row failure style follows the actual last run, not the current verdict"
   );
-  assert.equal(group?.streams[0]?.next, "held", "the current verdict still blocks future collection");
+  assert.equal(group?.next, "held", "the current verdict still blocks future collection");
   assert.deepEqual(group?.lastRunRhythm, ["ok"], "rhythm agrees with the successful last run");
 });
 
@@ -1732,4 +1732,20 @@ test("recent syncs never fabricate a record count when the feed omits one", () =
   });
 
   assert.equal(model.recentSyncs[0]?.eventCount, null);
+});
+
+test("recent syncs render every run the caller passes in — no hidden re-truncation of an already-paginated page", () => {
+  // The runs feed is now fetched as a real bounded cursor page by page.tsx
+  // (listRuns({ cursor, limit, status })); buildRecentSyncs must not silently
+  // re-slice that page down to a smaller number, or a page 2/3/etc render
+  // would show fewer rows than the server actually returned.
+  const manyRuns = Array.from({ length: 25 }, (_, i) =>
+    run({ connection_id: "cin_a", last_at: `2026-06-13T04:${String(i).padStart(2, "0")}:00Z`, run_id: `run_${i}` })
+  );
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: manyRuns,
+  });
+
+  assert.equal(model.recentSyncs.length, 25);
 });

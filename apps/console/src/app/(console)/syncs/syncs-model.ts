@@ -55,8 +55,6 @@ export type SyncGroupHealth = "ok" | "failing";
 export interface SyncRow {
   /** Deep link to browse this stream's records for this connection. */
   browseHref: string;
-  /** Human cadence phrase, e.g. "every 15 min" / "daily" / "manual". */
-  cadence: string;
   /**
    * Per-stream collected count from the last run's collection_report entry.
    * Null when the reference does not emit collection_report (pre-Tranche C
@@ -70,10 +68,6 @@ export interface SyncRow {
   coverageCondition: string | null;
   /** True when the last run for this stream failed (held cursor). */
   failed: boolean;
-  /** Next-due phrase or ISO; "held" when the connection is paused/holding. */
-  next: string;
-  /** Next-due ISO timestamp when one is scheduled, else null. */
-  nextAt: string | null;
   /** Stream name (the record stream this row tracks). */
   stream: string;
   /**
@@ -90,6 +84,13 @@ export interface SyncGroup {
    * `schedule.active_run_id` when present, otherwise the active last-run id.
    */
   activeRunId: string | null;
+  /**
+   * Human cadence phrase, e.g. "every 15 min" / "daily" / "manual". This is a
+   * connection-level schedule fact — it was previously copied identically onto
+   * every stream row (all streams in a connection share one schedule), which
+   * read as repeated noise. Shown once in the group header instead.
+   */
+  cadence: string;
   /** Durable connection identity (`connection_id`). */
   connectionId: string;
   /** Connector key, for the browse link. */
@@ -120,6 +121,13 @@ export interface SyncGroup {
   lastRunRhythm: SyncRhythmTick[];
   /** Connection display name. */
   name: string;
+  /**
+   * Next-due phrase or ISO; "held" when the connection is paused/holding. Like
+   * `cadence`, this is a connection-level schedule fact — see `cadence`'s doc.
+   */
+  next: string;
+  /** Next-due ISO timestamp when one is scheduled, else null. */
+  nextAt: string | null;
   /** The per-stream rows. */
   streams: SyncRow[];
   /** Total stream count for this connection. */
@@ -271,12 +279,6 @@ const FAILED_RUN_STATUSES = new Set(["failed", "rejected", "cancelled", "error"]
 const NEUTRAL_TERMINAL_RUN_STATUSES = new Set(["deferred"]);
 const DUPLICATE_SYNC_GROUP_MIN_UNNAMED = 3;
 const RECENT_RUN_LIMIT = 7;
-/**
- * How many runs the recent-syncs list shows. The page fetches at most
- * `SYNCS_OVERVIEW_RUN_LIMIT` (25) runs for first paint, so this stays under
- * that ceiling and the list never implies a deeper history than was fetched.
- */
-const RECENT_SYNC_LIST_LIMIT = 20;
 
 /**
  * Reduce a run status to a Rhythm tick. Partial (`succeeded_with_gaps`) counts
@@ -441,10 +443,18 @@ export function describeRecentSyncOutcome(outcome: RecentSyncOutcome): string {
  * Names are resolved against the connector page that the caller already
  * fetched. A run whose connection is absent from that page keeps its connector
  * key as the label — no display name is invented for it.
+ *
+ * `input.runs` is expected to already be ONE bounded, server-paginated page
+ * (the page fetches it via `listRuns({ cursor, limit, status })` and threads a
+ * cursor pager below the list — see `syncs/page.tsx`). This function dedupes
+ * and sorts that page; it does not re-truncate it. An optional `limit` exists
+ * only for callers (tests, the seeded demo) that want a defensive cap smaller
+ * than the page they pass in — it must never be used to imply a deeper history
+ * was fetched than actually was.
  */
 export function buildRecentSyncs(input: {
   connectors: readonly RefConnectorSummary[];
-  limit: number;
+  limit?: number;
   runs: readonly RunSummary[];
 }): RecentSyncEntry[] {
   const byConnection = new Map<string, RefConnectorSummary>();
@@ -483,7 +493,8 @@ export function buildRecentSyncs(input: {
     });
   }
 
-  return entries.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, input.limit);
+  const sorted = entries.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  return input.limit === undefined ? sorted : sorted.slice(0, input.limit);
 }
 
 /**
@@ -623,24 +634,22 @@ function describeNext(input: { schedule: RefSchedule | null | undefined; failing
 /**
  * Build the per-connection sync rows. Each declared stream becomes one row.
  *
- * Connection-level run facts (delta, duration, lastAt, rhythm) have moved to
- * SyncGroup so they render once in the group header rather than being repeated
- * identically on every stream row. Per-stream facts come from the
+ * Connection-level facts (delta, duration, lastAt, rhythm, cadence, next) all
+ * live on SyncGroup so they render once in the group header rather than being
+ * repeated identically on every stream row — a schedule is one cadence/next-due
+ * pair per connection, not per stream. Per-stream facts come from the
  * collection_report the reference already emits (Tranche C). When
  * collection_report is absent (older reference instances), per-stream fields
  * are null/false — never the connection total.
  */
-function buildSyncRows(input: {
-  connector: RefConnectorSummary;
-  connectionRuns: readonly RunSummary[];
-  failing: boolean;
-}): { rows: SyncRow[]; lastFailed: boolean; lastRun: RunSummary | null } {
-  const { connector, connectionRuns, failing } = input;
-  const { schedule } = connector;
-  const cadence = describeCadence(schedule);
+function buildSyncRows(input: { connector: RefConnectorSummary; connectionRuns: readonly RunSummary[] }): {
+  rows: SyncRow[];
+  lastFailed: boolean;
+  lastRun: RunSummary | null;
+} {
+  const { connector, connectionRuns } = input;
   const lastRun = connectionRuns.find((r) => isTerminalRunStatus(r.status)) ?? connectionRuns[0] ?? null;
   const lastFailed = lastRun ? FAILED_RUN_STATUSES.has(lastRun.status) : false;
-  const { next, nextAt } = describeNext({ failing, schedule });
 
   // Index collection_report by stream name for O(1) per-row lookup.
   const reportByStream: Map<string, RefCollectionReportEntry> = indexCollectionReportByStream(
@@ -652,7 +661,6 @@ function buildSyncRows(input: {
     const reportEntry = reportByStream.get(stream) ?? null;
     return {
       browseHref: browseStreamHref(connector.connection_id, stream),
-      cadence,
       // Per-stream facts from collection_report. Null when absent (honest
       // empty state for pre-Tranche-C references).
       collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
@@ -662,8 +670,6 @@ function buildSyncRows(input: {
       // has its own collection_report entry, that per-stream truth governs
       // its display, so the connection-level failure must not override it.
       failed: lastFailed && reportEntry === null,
-      next,
-      nextAt,
       stream,
       streamSkipped: reportEntry !== null && reportEntry.skipped !== null,
     };
@@ -869,7 +875,7 @@ function projectSyncProjection(input: {
   const renderedHealth = connector.rendered_verdict ? renderedStatusGroupHealth(actionability.renderedStatus) : null;
   const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
   const connectionRuns = connectionRunHistory({ connector, runs });
-  const { rows, lastFailed, lastRun } = buildSyncRows({ connectionRuns, connector, failing });
+  const { rows, lastFailed, lastRun } = buildSyncRows({ connectionRuns, connector });
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const lastAt = lastRun?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
   const lastAtMs = lastAt ? Date.parse(lastAt) : 0;
@@ -878,6 +884,8 @@ function projectSyncProjection(input: {
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
   const lastRunDuration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
   const lastRunRhythm = deriveConnectionRhythm(connectionRuns);
+  const cadence = describeCadence(connector.schedule);
+  const { next, nextAt } = describeNext({ failing, schedule: connector.schedule });
 
   return {
     connector,
@@ -888,6 +896,7 @@ function projectSyncProjection(input: {
         (connector.last_run && isActiveConnectorRunSummaryStatus(connector.last_run.status)
           ? connector.last_run.run_id
           : null),
+      cadence,
       connectionId: connector.connection_id,
       connectorId: connector.connector_id,
       health: failing ? "failing" : "ok",
@@ -896,6 +905,8 @@ function projectSyncProjection(input: {
       lastRunDuration,
       lastRunRhythm,
       name: connector.display_name,
+      next,
+      nextAt,
       streams: rows,
       totalStreamCount: rows.length,
     },
@@ -961,7 +972,6 @@ export function buildSyncsViewModel(input: {
   const band = buildHealthBand({ failureCards, groups: allGroups, pendingSetupWork, projections: ordered });
   const recentSyncs = buildRecentSyncs({
     connectors: input.connectors,
-    limit: RECENT_SYNC_LIST_LIMIT,
     runs: input.runs,
   });
   return {

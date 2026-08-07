@@ -159,7 +159,7 @@ export function SyncNowButton({
   }, [connectionId, connectorId, force, router, syncToastScopeId]);
 
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className="relative inline-flex">
       <IcButton
         aria-label={`${buttonLabel} for ${displayName}`}
         disabled={busy}
@@ -173,7 +173,7 @@ export function SyncNowButton({
       {toast ? (
         <span
           aria-live="polite"
-          className={`pdpp-caption max-w-[18rem] text-right ${syncToastToneClass(toast.tone)}`}
+          className={`pdpp-caption absolute top-full right-0 z-10 mt-1 w-max max-w-[18rem] text-right ${syncToastToneClass(toast.tone)}`}
           data-toast-tone={toast.tone}
           role="status"
         >

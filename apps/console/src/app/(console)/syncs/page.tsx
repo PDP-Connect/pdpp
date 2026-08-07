@@ -14,6 +14,13 @@
  * The route, its `?peek=` deep-link redirect, and the `listRuns` fetch are
  * preserved (a held invariant: the peek redirect must run before any fetch and
  * the page must never pull an inline run timeline).
+ *
+ * Recent syncs is a real cursor-paginated view over the runs feed (`run_cursor`),
+ * with an honest server-side `status` filter — `_ref/runs` applies `status` as a
+ * real (if bounded-window) post-aggregate filter, so every returned row's status
+ * genuinely matches; see `listRuns`'s `ListQuery.status`. There is no sort param
+ * on `_ref/runs`, so the list is never presented as sortable — it stays
+ * newest-first, the one order the feed actually guarantees.
  */
 
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
@@ -44,12 +51,32 @@ interface Params {
   page_cursor?: string;
   peek?: string;
   q?: string;
+  run_cursor?: string;
   status?: string;
   [key: string]: string | undefined;
 }
 
 function fetchSyncsConnectorsPage(pageState: ReturnType<typeof parseConnectorSummaryPageState>) {
   return loadConnectorSummaryPage(pageState, (opts) => listConnectorSummaries(opts));
+}
+
+/** Real, honest run-status filter options — every value `_ref/runs` actually recognises. */
+const RUN_STATUS_FILTER_OPTIONS = [
+  { label: "any outcome", value: "" },
+  { label: "succeeded", value: "succeeded" },
+  { label: "succeeded with gaps", value: "succeeded_with_gaps" },
+  { label: "failed", value: "failed" },
+  { label: "cancelled", value: "cancelled" },
+  { label: "in progress", value: "in_progress" },
+] as const;
+
+function runListQuery(params: Params) {
+  return {
+    connector_id: params.connector_id || undefined,
+    cursor: params.run_cursor || undefined,
+    limit: SYNCS_OVERVIEW_RUN_LIMIT,
+    status: params.status || undefined,
+  };
 }
 
 function isLiveRun(run: RunSummary): boolean {
@@ -79,7 +106,7 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   let connectorsPage: Awaited<ReturnType<typeof fetchSyncsConnectorsPage>>;
   try {
     [runsResult, connectorsPage] = await Promise.all([
-      listRuns({ limit: SYNCS_OVERVIEW_RUN_LIMIT }),
+      listRuns(runListQuery(params)),
       fetchSyncsConnectorsPage(pageState),
     ]);
   } catch (err) {
@@ -111,7 +138,16 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
   return (
     <RecordroomShellWithPalette>
       <LivePoller enabled={liveRunCount > 0} />
-      <SyncsView model={model} />
+      <SyncsView
+        model={model}
+        recentSyncsPaging={{
+          hasMore: runsResult.has_more,
+          isPaged: Boolean(params.run_cursor),
+          nextCursor: runsResult.next_cursor,
+          params,
+          statusOptions: RUN_STATUS_FILTER_OPTIONS,
+        }}
+      />
       <ConnectorSummaryPager
         basePath={SYNCS_PATH}
         currentParams={params}

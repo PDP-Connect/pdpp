@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifySteamHttpResponse, STEAM_RETRYABLE_PATTERN } from "./index.ts";
+import { classifySteamHttpResponse, isSteamId64, STEAM_RETRYABLE_PATTERN } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 // ─── Schema validation tests ───────────────────────────────────────────────
@@ -339,4 +339,33 @@ test("STEAM_RETRYABLE_PATTERN - does not match generic bounded HTTP errors", () 
 
 test("STEAM_RETRYABLE_PATTERN - does not match unrelated application errors", () => {
   assert.doesNotMatch("steam_user_id_required: STEAM_USER_ID credential required", STEAM_RETRYABLE_PATTERN);
+});
+
+test("STEAM_RETRYABLE_PATTERN - does not match a failed vanity URL resolution (terminal, not retried)", () => {
+  assert.doesNotMatch(
+    'steam_vanity_url_not_found: could not resolve "nosuchvanity" to a SteamID',
+    STEAM_RETRYABLE_PATTERN
+  );
+});
+
+// ─── isSteamId64: gates numeric-vs-vanity dispatch for resolveSteamId ──────
+
+test("isSteamId64 - accepts a real 17-digit SteamID64", () => {
+  assert.equal(isSteamId64("76561198012345678"), true);
+});
+
+test("isSteamId64 - rejects a vanity profile name", () => {
+  assert.equal(isSteamId64("gaben"), false);
+});
+
+test("isSteamId64 - rejects a numeric string of the wrong length", () => {
+  assert.equal(isSteamId64("12345"), false);
+});
+
+test("isSteamId64 - rejects a numeric-looking vanity name not starting with the SteamID64 universe prefix", () => {
+  assert.equal(isSteamId64("11111111111111111"), false);
+});
+
+test("isSteamId64 - tolerates surrounding whitespace", () => {
+  assert.equal(isSteamId64("  76561198012345678  "), true);
 });

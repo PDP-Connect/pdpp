@@ -36,7 +36,7 @@
           "required": true,
           "secret": true,
           "autocomplete": "off",
-          "help_text": "Generate a new API key in your Jellyfin instance's admin dashboard under 'Plugins' > 'My Plugins' or 'Users'.",
+          "help_text": "Generate a new API key in your Jellyfin instance's admin dashboard under Dashboard > Advanced > API Keys (path: /web/#/dashboard/keys on your server).",
           "env": ["JELLYFIN_API_KEY"]
         }
       ]

@@ -28,7 +28,7 @@
           "secret": true,
           "autocomplete": "off",
           "help_url": "https://github.com/settings/tokens",
-          "help_text": "Create a token in GitHub developer settings, then paste it here.",
+          "help_text": "Create a token in GitHub developer settings with repo and gist scopes (needed for private repos and gists), then paste it here.",
           "env": ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]
         }
       ]

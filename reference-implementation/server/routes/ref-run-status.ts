@@ -107,6 +107,15 @@ export interface RunStatusBody {
   readonly connector_id: string | null;
   readonly connector_instance_id: string | null;
   readonly failure: RunStatusFailureSummary | null;
+  /**
+   * Passthrough of the terminal event's raw `known_gaps` / `known_gaps_summary`
+   * payload — same fields the timeline route serves off the same event, but
+   * resolved here via the window-independent `LIMIT 1` terminal-event query.
+   * Absent when the run has no terminal event yet. The console normalizes
+   * these via `run-gaps.ts#extractKnownGapsFromEventData`.
+   */
+  readonly known_gaps?: unknown;
+  readonly known_gaps_summary?: unknown;
   readonly links: { readonly timeline: string };
   readonly object: "run_status";
   readonly run_id: string;
@@ -199,6 +208,8 @@ export function buildTerminalRunStatusBody(
     // it is only known while the controller's flight state owns the run.
     connector_instance_id: null,
     failure: buildFailureSummary(terminal),
+    known_gaps: terminal.data?.known_gaps,
+    known_gaps_summary: terminal.data?.known_gaps_summary,
     links: timelineLink(runId),
     object: "run_status",
     run_id: runId,
