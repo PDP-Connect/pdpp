@@ -31,6 +31,7 @@ import {
   classifyHebDetailFailure,
   type EmitDeps,
   emitOrderItemsCoverage,
+  emitOrdersCoverage,
   fetchOrderDetail,
   HEB_HYDRATION_WAIT_MAX_MS,
   HEB_HYDRATION_WAIT_MIN_MS,
@@ -38,7 +39,9 @@ import {
   HEB_REPAIR_RETRY_DELAY_MIN_MS,
   hebAllowsInteractiveAuthRepair,
   newOrderItemsCoverage,
+  newOrdersCoverage,
   type OrderItemsCoverage,
+  type OrdersCoverage,
   processListOrder,
   type RepairDeps,
   type RunFlags,
@@ -87,6 +90,7 @@ function makeRecordingDeps(overrides: Partial<EmitDeps> = {}): RecordingDeps {
     emitRecord: harness.emitRecord,
     emittedAt: "2026-07-14T12:00:00.000Z",
     orderItemsCoverage: undefined,
+    ordersCoverage: undefined,
     ordersFingerprintCursor: undefined,
     progress: (): Promise<void> => Promise.resolve(),
     sendInteraction: noopSendInteraction,
@@ -284,6 +288,129 @@ test("emitOrderItemsCoverage: a skipped order counts toward covered (it's a poli
   assert.equal(msg.considered, 2);
   assert.equal(msg.covered, 2, "hydrated + optional_skip both count as covered");
   assert.equal(msg.gap_keys, undefined);
+});
+
+// ─── orders list-stream coverage evidence ─────────────────────────────────
+//
+// The manifest declares `orders` coverage_strategy: checkpoint_window, but
+// prior to this fix the connector never emitted DETAIL_COVERAGE for the
+// `orders` stream itself — only for `order_items` (the detail child), the
+// same gap class documented in design-notes/heb-connector-manifest-design-
+// 2026-07-14.md as affecting heb (pre-redesign), doordash, and wholefoods.
+// A run scoped to `orders` only (wantsItems: false — H-E-B usage is often
+// genuinely light) left the orders list stream permanently unmeasured even
+// though real orders were being collected.
+
+test("processListOrder: a normal order counts as considered+covered in ordersCoverage", async () => {
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, emitted } = makeRecordingDeps({ ordersCoverage });
+  const listOrder = makeListOrder({ orderId: "HEB1000000001" });
+
+  await processListOrder(makePageStub({ content: NO_DETAIL_HTML }), deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(ordersCoverage.considered, ["HEB1000000001"]);
+  assert.deepEqual(ordersCoverage.covered, ["HEB1000000001"]);
+  assert.deepEqual(ordersCoverage.dateDropped, []);
+  assert.ok(
+    emitted.some((r) => r.stream === "orders"),
+    "the orders record itself still emits"
+  );
+});
+
+test("processListOrder: records orders coverage even when order_items is out of scope (wantsItems: false)", async () => {
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, emitted } = makeRecordingDeps({ ordersCoverage, wantsItems: false, wantsOrders: true });
+  const listOrder = makeListOrder({ orderId: "HEB1000000001" });
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(
+    ordersCoverage.considered,
+    ["HEB1000000001"],
+    "orders coverage does not depend on order_items scope"
+  );
+  assert.deepEqual(ordersCoverage.covered, ["HEB1000000001"]);
+  assert.ok(emitted.some((r) => r.stream === "orders"));
+  assert.ok(
+    !emitted.some((r) => r.stream === "order_items"),
+    "order_items stays out of scope and never touches the browser"
+  );
+});
+
+test("processListOrder: nothing recorded in ordersCoverage when orders is out of scope (wantsOrders: false)", async () => {
+  const ordersCoverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage, wantsOrders: false, wantsItems: true });
+  const listOrder = makeListOrder({ orderId: "HEB1000000001" });
+
+  await processListOrder(makePageStub({ content: NO_DETAIL_HTML }), deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(ordersCoverage.considered, [], "orders out of scope means no orders-coverage accounting at all");
+  assert.deepEqual(ordersCoverage.covered, []);
+});
+
+test("processListOrder: a malformed order date is considered but not covered in ordersCoverage", async () => {
+  const ordersCoverage = newOrdersCoverage();
+  const { deps } = makeRecordingDeps({ ordersCoverage });
+  const listOrder = makeListOrder({ orderDateRaw: "not a real date" });
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), listOrder);
+
+  assert.deepEqual(ordersCoverage.considered, ["HEB1000000001"], "the list scan still enumerated this order");
+  assert.deepEqual(ordersCoverage.covered, [], "no accounting decision was made for its orders record");
+  assert.deepEqual(ordersCoverage.dateDropped, ["HEB1000000001"]);
+});
+
+test("emitOrdersCoverage: reports considered/covered self-referentially on the orders stream", async () => {
+  const { deps, protocolMessages } = makeRecordingDeps();
+  const coverage: OrdersCoverage = { considered: ["a", "b"], covered: ["a", "b"], dateDropped: [] };
+  await emitOrdersCoverage(deps, coverage);
+
+  const msg = findDetailCoverage(protocolMessages);
+  assert.ok(msg, "expected a DETAIL_COVERAGE message");
+  assert.equal(msg.stream, "orders", "orders reports on itself — no separate detail-hydration phase");
+  assert.equal(msg.state_stream, "orders");
+  assert.deepEqual(msg.required_keys, []);
+  assert.deepEqual(msg.hydrated_keys, []);
+  assert.equal(msg.considered, 2);
+  assert.equal(msg.covered, 2);
+});
+
+test("emitOrdersCoverage: a steady-state run with zero considered orders still emits considered 0 / covered 0", async () => {
+  // H-E-B usage is genuinely light (the residual-evidence audit found live
+  // accounts with as few as 2 orders); a run with nothing new to consider
+  // must still read as measured, not unknown.
+  const { deps, protocolMessages } = makeRecordingDeps();
+  await emitOrdersCoverage(deps, newOrdersCoverage());
+
+  const msg = findDetailCoverage(protocolMessages);
+  assert.ok(msg, "a zero-considered run still emits DETAIL_COVERAGE");
+  assert.equal(msg.stream, "orders");
+  assert.equal(msg.considered, 0);
+  assert.equal(msg.covered, 0);
+});
+
+test("collect-path regression guard: orders scoped alone (order_items out of scope) still emits an orders DETAIL_COVERAGE", async () => {
+  // Regression guard for the real production gap: a run requesting only
+  // `orders` (no order_items) must still measure and report orders coverage.
+  // Drives processListOrder directly (the exported entry point collect()
+  // calls per order) followed by emitOrdersCoverage, matching the exact
+  // sequence collect() runs.
+  const ordersCoverage = newOrdersCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ ordersCoverage, wantsItems: false, wantsOrders: true });
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "HEB1000000001" }));
+  await processListOrder(NEVER_CALLED_PAGE, deps, makeRunFlags(), makeListOrder({ orderId: "HEB1000000002" }));
+  await emitOrdersCoverage(deps, ordersCoverage);
+
+  const coverageMessages = protocolMessages.filter((m): m is DetailCoverage => m.type === "DETAIL_COVERAGE");
+  const ordersMsg = coverageMessages.find((m) => m.stream === "orders");
+  assert.ok(ordersMsg, "orders-scoped-only run must still emit an orders DETAIL_COVERAGE");
+  assert.equal(ordersMsg?.considered, 2);
+  assert.equal(ordersMsg?.covered, 2);
+  assert.ok(
+    !coverageMessages.some((m) => m.stream === "order_items"),
+    "order_items coverage is out of scope and must not appear"
+  );
 });
 
 // ─── #4: mid-run logout via password-form response (not just URL) ────────

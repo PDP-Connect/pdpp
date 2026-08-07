@@ -96,6 +96,21 @@ function browserSurfaceConfigured(): boolean {
   if (process.env.PDPP_NEKO_MANAGED_CONNECTORS?.trim()) {
     return true;
   }
+  // Managed in-image browser: the browser-capable Core image sets
+  // PDPP_RUNTIME_BROWSER=1 and the supervisor (deploy/railway/core-supervisor.ts)
+  // starts Xvfb and stamps DISPLAY into this server process's own env before
+  // spawning it — not just into connector-child env, so process.env.DISPLAY is
+  // directly observable here. This MUST stay identical to the
+  // `managedDisplayAvailable` predicate in
+  // packages/polyfill-connectors/src/browser-launch.ts (which the actual
+  // browser launch gates on) — that module can't be imported here (it isn't in
+  // @pdpp/polyfill-connectors's package exports, and the dependency direction
+  // between the two packages runs the other way), so the two checks are kept
+  // in sync by hand. Changing one without the other reintroduces the exact
+  // disagreement this comment exists to prevent.
+  if (process.env.PDPP_RUNTIME_BROWSER === "1" && process.env.DISPLAY?.trim()) {
+    return true;
+  }
   // Explicit opt-in for unmanaged/bring-your-own browser setups.
   if (process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES === "1") {
     return true;

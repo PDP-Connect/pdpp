@@ -80,6 +80,14 @@ test("apple_contacts integration: discovers, syncs via sync-collection, and emit
     const friends = groups.find((g) => g.name === "Friends");
     assert.ok(friends);
     assert.equal((friends.member_uids as string[]).length, 2);
+
+    // contact_groups is a required, full_inventory stream — it must prove
+    // its own coverage (not just emit records), otherwise it can never reach
+    // `complete` regardless of how much real data it collected.
+    const groupsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contact_groups");
+    assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE", "contact_groups must emit DETAIL_COVERAGE");
+    assert.equal(groupsCoverage.considered, 2);
+    assert.equal(groupsCoverage.covered, 2);
   } finally {
     await server.close();
   }

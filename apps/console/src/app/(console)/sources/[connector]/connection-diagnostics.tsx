@@ -320,8 +320,7 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
             data-suppressed-kind={signal.kind}
             key={`${signal.kind}:${signal.detail_field}`}
           >
-            <span className="text-foreground">{SUPPRESSED_SIGNAL_KIND_LABELS[signal.kind] ?? "Noted"}</span>:{" "}
-            {signal.reason}
+            <span className="text-foreground">{SUPPRESSED_SIGNAL_KIND_LABELS[signal.kind] ?? "Noted"}</span>
           </li>
         ))}
       </ul>

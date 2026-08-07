@@ -7,7 +7,7 @@ import { Callout, PageHeader, Section } from "@pdpp/operator-ui/components/primi
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type CimdClientDocument, listCimdClientDocuments } from "../lib/ref-client.ts";
 import { createCimdClientIdentityAction, deleteCimdClientIdentityAction } from "./actions.ts";

@@ -83,6 +83,7 @@ function baseInputs(over: Partial<StandingInputs> = {}): StandingInputs {
     fleetHealth: null,
     grants: [],
     hrefs: HREFS,
+    notificationsSetup: "not_configured",
     now: NOW,
     overviewLoadIssues: [],
     pendingApprovals: [],
@@ -1227,7 +1228,9 @@ test("overview counts healthy sources without adding them to the attention group
 });
 
 test("overview with partial source data does not claim an exact healthy-source count", () => {
-  const data = buildStandingData(baseInputs({ overviewLoadIssues: ["source_status_incomplete_fleet"], sourceCount: 3 }));
+  const data = buildStandingData(
+    baseInputs({ overviewLoadIssues: ["source_status_incomplete_fleet"], sourceCount: 3 })
+  );
   assert.equal(data.healthySourceCount, null);
 });
 
@@ -1959,4 +1962,15 @@ test("revoked grants are excluded from relationships", () => {
   };
   const data = buildStandingData(baseInputs({ grants: [revoked] }));
   assert.equal(data.relationships.length, 0);
+});
+
+// NotificationsBlock used to render identical "set up alerts" copy regardless
+// of whether push notifications were already configured on this deployment —
+// the only Overview block with no data-driven state (2026-08-07 IA audit,
+// finding 5). notificationsSetup carries the honest tri-state signal through.
+test("notificationsSetup passes through buildStandingData verbatim, honoring the unknown/configured/not_configured tri-state", () => {
+  for (const setup of ["configured", "not_configured", "unknown"] as const) {
+    const data = buildStandingData(baseInputs({ notificationsSetup: setup }));
+    assert.equal(data.notificationsSetup, setup);
+  }
 });

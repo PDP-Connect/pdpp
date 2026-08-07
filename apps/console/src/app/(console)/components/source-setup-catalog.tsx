@@ -316,12 +316,13 @@ function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEnt
   return (
     <details className="rounded-sm border border-border/80 bg-muted/20 p-3" data-testid="server-setup-summary">
       <summary className="pdpp-caption cursor-pointer text-muted-foreground">
-        Server settings needed before setup ({entries.length})
+        {entries.length} source{entries.length === 1 ? "" : "s"} waiting on server settings
       </summary>
       <div className="mt-3 grid gap-3">
         <p className="pdpp-caption text-muted-foreground">
-          These sources need provider app settings on the instance before an account can be added. This dashboard shows
-          the missing requirements but does not edit provider applications here.
+          Each source below lists the exact settings it is waiting on. Set them as environment variables where this
+          instance runs (e.g. in <code className="pdpp-caption">.env.local</code> at the deployment root), then restart
+          the server — the source becomes available here automatically once its settings are present.
         </p>
         <ul className="grid gap-2">
           {entries.map((entry) => (

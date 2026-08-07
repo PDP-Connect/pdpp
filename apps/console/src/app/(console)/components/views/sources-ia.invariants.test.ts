@@ -36,7 +36,13 @@ const RECORDS_ADD_PAGE_FILE = `${HERE}../../sources/add/page.tsx`;
 const ROUTES_FILE = fileURLToPath(
   new URL("../../../../../../../packages/operator-ui/src/components/views/routes.ts", import.meta.url)
 );
-const SHELL_FILE = `${HERE}../shell.tsx`;
+// The live sidebar shell — `components/shell.tsx` (DashboardShell) was dead
+// code (2026-08-07 IA audit finding 1.7/1.5: zero content-page importers,
+// verified by grep) and has been deleted. `RecordroomShell`'s NAV_GROUPS is
+// the real, rendered nav every page uses.
+const SHELL_FILE = fileURLToPath(
+  new URL("../../../../../../../packages/pdpp-brand-react/src/shell-frame.tsx", import.meta.url)
+);
 const CONNECT_PAGE_FILE = `${HERE}../../connect/page.tsx`;
 const SOURCE_SETUP_CATALOG_FILE = `${HERE}../source-setup-catalog.tsx`;
 const ADD_SUPPORT_FILE = `${HERE}../../lib/source-add-support.ts`;
@@ -103,16 +109,21 @@ const SOURCE_ACQUISITION_PATHS_RE = /data-testid="source-acquisition-paths"/;
 const SOURCE_ACQUISITION_PATH_RE = /data-testid="source-acquisition-path"/;
 const OTHER_COVERAGE_PATHS_RE = /Other ways to add data/;
 const UNAVAILABLE_GROUP_RE = /Sources not available from this page/;
-const SERVER_SETUP_GROUP_RE = /Server settings needed before setup/;
+const SERVER_SETUP_GROUP_RE = /waiting on server settings/;
 const SERVER_SETUP_SUMMARY_RE = /data-testid="server-setup-summary"/;
+// The owner's reported dead end: told he was blocked, offered no path. Pin
+// that the summary always says WHERE to act (env vars + .env.local), never
+// just that this dashboard can't do it.
+const SERVER_SETUP_HAS_PATH_RE = /environment variables[\s\S]{0,200}\.env\.local/;
+const SERVER_SETUP_NOT_A_DEAD_END_RE = /does not edit provider applications here/;
 const IMPORT_OPTIONS_DISCLOSURE_RE = /Show import options/;
 const GENERIC_WHY_THIS_RE = /Why this, and what to expect/;
 const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
   /\b(Amazon|Gmail|GitHub|Slack|ChatGPT|Chase|Notion|Spotify)\b|app password|personal access token/i;
 const FORBIDDEN_DEV_STRINGS_RE =
   /pnpm --dir|packages\/[a-z]|PDPP monorepo checkout|env var per account|pdpp owner-agent connectors|connector_instance_id|source_instance_id|device_token/;
-const NAV_SOURCES_RE = /label: "Sources", match: \(a\) => a === "records"/;
-const NAV_CONNECT_APPS_RE = /label: "Connect apps", match: \(a\) => a === "connect"/;
+const NAV_SOURCES_RE = /\{ label: "Sources", href: "\/sources" \}/;
+const NAV_CONNECT_APPS_RE = /\{ label: "Connect apps", href: "\/connect" \}/;
 const CONNECT_PAGE_TITLE_RE = /title="Connect apps"/;
 const CONNECT_PAGE_DESCRIPTION_RE = /grant-scoped read access[\s\S]*?go to Sources/;
 
@@ -155,6 +166,12 @@ test("Sources owns the add-source catalog route", async () => {
   assert.match(catalog, UNAVAILABLE_GROUP_RE);
   assert.match(catalog, SERVER_SETUP_GROUP_RE);
   assert.match(catalog, SERVER_SETUP_SUMMARY_RE);
+  assert.match(catalog, SERVER_SETUP_HAS_PATH_RE, "the server-setup summary must say where to configure the settings");
+  assert.doesNotMatch(
+    catalog,
+    SERVER_SETUP_NOT_A_DEAD_END_RE,
+    "the server-setup summary must not tell the owner this dashboard cannot help without also giving a path"
+  );
   assert.doesNotMatch(catalog, GENERIC_WHY_THIS_RE);
 });
 

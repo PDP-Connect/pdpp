@@ -327,12 +327,28 @@ function deriveAuthLine(
   return "session / stored credential";
 }
 
+// Known run-status vocabulary (mirrors syncs-model.ts's HEALTHY/FAILED/NEUTRAL
+// sets). A real label for the statuses this reference actually emits; anything
+// outside this set falls back to the underscore-to-space substitution rather
+// than guessing a translation for a status this map has never seen.
+const RUN_STATUS_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  cancelled: "cancelled",
+  completed: "succeeded",
+  deferred: "deferred",
+  error: "failed",
+  failed: "failed",
+  rejected: "rejected",
+  succeeded: "succeeded",
+  succeeded_with_gaps: "succeeded with gaps",
+  success: "succeeded",
+});
+
 /** Format a run summary as a short "status · when" line. */
 function formatLastRun(run: RefConnectorRunSummary | null): string | null {
   if (!run) {
     return null;
   }
-  const status = run.status.replace(/_/g, " ");
+  const status = RUN_STATUS_LABELS[run.status] ?? run.status.replace(/_/g, " ");
   // `last_at` is the most recent event timestamp on the run summary.
   return `${status} · ${run.last_at}`;
 }

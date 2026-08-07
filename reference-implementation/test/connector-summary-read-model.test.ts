@@ -310,6 +310,47 @@ test("rebuild derives durable identity + count evidence from canonical state", (
     assert.equal(row.last_error, null);
   }));
 
+test("stale retained-size projection reports total_retained_bytes as null, never a fabricated 0", () =>
+  withTempDb(async () => {
+    seedInstanceSqlite({ connectorId: "gmail", connectorInstanceId: "cin_gmail_stale" });
+    seedRetainedSizeStreamSqlite({
+      computedAt: "2026-06-17T13:30:00.000Z",
+      connectorId: "gmail",
+      connectorInstanceId: "cin_gmail_stale",
+      recordCount: 1,
+      stream: "messages",
+    });
+    seedRecordSqlite({
+      connectorId: "gmail",
+      connectorInstanceId: "cin_gmail_stale",
+      emittedAt: "2026-06-17T12:30:00.000Z",
+      recordKey: "msg_1",
+      stream: "messages",
+    });
+    // Deliberately do NOT seed retained_size_connection: the connection has
+    // real records but its retained-size byte projection has never
+    // converged (or is dirty) — the exact shape the owner saw as a
+    // fabricated "0 B" in live UAT.
+
+    const rows = await rebuildConnectorSummaryEvidence();
+    assert.equal(rows.length, 1);
+    // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+    const row = rows[0];
+    assert.ok(row, "rebuild must materialize a row for the seeded connection");
+    assert.equal(row.total_records, 1);
+    assert.equal(row.retained_bytes, null);
+    assert.equal(row.retained_bytes_evidence.state, "stale");
+    assert.equal(
+      row.total_retained_bytes,
+      null,
+      "an unknown/stale retained-size projection must render as unknown, never a fabricated 0 B"
+    );
+
+    const fetched = await getConnectorSummaryEvidence("cin_gmail_stale");
+    assert.ok(fetched, "getConnectorSummaryEvidence must return the same row");
+    assert.equal(fetched.total_retained_bytes, null);
+  }));
+
 test("rebuild keeps connections with zero records as honest empty evidence", () =>
   withTempDb(async () => {
     seedInstanceSqlite({ connectorId: "notion", connectorInstanceId: "cin_empty", displayName: "Notion" });

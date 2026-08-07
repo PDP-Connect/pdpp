@@ -209,7 +209,7 @@ async function emitAddressBookRecordIfRequested(args: {
  * from collect() to keep the top-level function's branching bounded — this
  * is the whole per-book unit of work in one place.
  */
-async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{ covered: boolean }> {
+async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{ covered: boolean; groupsEmitted: number }> {
   const {
     book,
     bookCursor,
@@ -288,9 +288,11 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{ cove
     });
   }
 
+  let groupsEmitted = 0;
   if (requested.has("contact_groups")) {
     for (const group of deriveGroups(book.url, seenCards)) {
       await emitRecord("contact_groups", group);
+      groupsEmitted += 1;
     }
   }
 
@@ -303,7 +305,7 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{ cove
   newState.contacts = contactsState;
   await emit({ type: "STATE", stream: "contacts", cursor: newState.contacts });
 
-  return { covered: bookCovered };
+  return { covered: bookCovered, groupsEmitted };
 }
 
 if (isMainModule(import.meta.url)) {
@@ -355,10 +357,12 @@ if (isMainModule(import.meta.url)) {
 
       let considered = 0;
       let covered = 0;
+      let groupsConsidered = 0;
+      let groupsCovered = 0;
 
       for (const book of books) {
         considered += 1;
-        const { covered: bookCovered } = await collectAddressBook({
+        const { covered: bookCovered, groupsEmitted } = await collectAddressBook({
           book,
           bookCursor,
           authHeader,
@@ -374,6 +378,25 @@ if (isMainModule(import.meta.url)) {
         if (bookCovered) {
           covered += 1;
         }
+        // deriveGroups has no drop/filter path: every derived group is
+        // unconditionally emitted, so considered === covered === the exact
+        // count emitted for this book (including a genuine zero-group book).
+        groupsConsidered += groupsEmitted;
+        groupsCovered += groupsEmitted;
+      }
+
+      if (requested.has("contact_groups")) {
+        await emitDetailCoverage(
+          { emit },
+          {
+            stream: "contact_groups",
+            stateStream: "contact_groups",
+            requiredKeys: [],
+            hydratedKeys: [],
+            considered: groupsConsidered,
+            covered: groupsCovered,
+          }
+        );
       }
 
       if (requested.has("address_books")) {

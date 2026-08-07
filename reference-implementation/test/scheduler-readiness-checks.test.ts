@@ -12,6 +12,7 @@
  *   - slackdump binary probe (SLACKDUMP_BIN) fails -> missing-tool reason
  *   - browser binding required but no surface configured -> not ready
  *   - browser opt-in env (PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES=1) -> ready
+ *   - managed in-image browser (PDPP_RUNTIME_BROWSER=1 + DISPLAY set) -> ready
  *   - first-party local-source (codex / claude-code) path missing -> not ready
  *   - filesystem binding not required -> local-source check is skipped
  *
@@ -41,6 +42,8 @@ const BROWSER_ENV_KEYS = [
   "PDPP_NEKO_CDP_HTTP_URL",
   "PDPP_NEKO_MANAGED_CONNECTORS",
   "PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES",
+  "PDPP_RUNTIME_BROWSER",
+  "DISPLAY",
 ];
 
 const LOCAL_SOURCE_ENV_KEYS = [
@@ -167,6 +170,26 @@ test("defaultReadinessChecker accepts a required browser binding when a remote C
   withEnv({ PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://127.0.0.1:9222" }, async () => {
     const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: true } } }));
     assert.deepEqual(result, { ready: true });
+  }));
+
+test("defaultReadinessChecker accepts a required browser binding on a browser-capable Core image (PDPP_RUNTIME_BROWSER=1 + DISPLAY)", () =>
+  withEnv({ DISPLAY: ":99", PDPP_RUNTIME_BROWSER: "1" }, async () => {
+    const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: true } } }));
+    assert.deepEqual(result, { ready: true });
+  }));
+
+test("defaultReadinessChecker fails closed when PDPP_RUNTIME_BROWSER=1 but no DISPLAY is set", () =>
+  withEnv({ PDPP_RUNTIME_BROWSER: "1" }, async () => {
+    const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: true } } }));
+    assert.equal(result.ready, false);
+    assertReasonMatches(result.reason, TOP_LEVEL_REGEX_1);
+  }));
+
+test('defaultReadinessChecker fails closed when DISPLAY is set but PDPP_RUNTIME_BROWSER is not "1"', () =>
+  withEnv({ DISPLAY: ":99" }, async () => {
+    const result = await defaultReadinessChecker(schedule("gmail", { bindings: { browser: { required: true } } }));
+    assert.equal(result.ready, false);
+    assertReasonMatches(result.reason, TOP_LEVEL_REGEX_1);
   }));
 
 test("defaultReadinessChecker ignores a browser binding that is not required", () =>

@@ -8,7 +8,7 @@ import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import { Callout, DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import { isBrowserBoundConnector, isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";

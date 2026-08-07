@@ -10,7 +10,7 @@ import { declaredRolesFromCapabilities } from "@pdpp/operator-ui/explore/explore
 import { notFound } from "next/navigation";
 import { RecordInspector } from "@/app/(console)/components/record-inspector.tsx";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../../../components/shell.tsx";
+import { ServerUnreachable } from "../../../../components/server-unreachable.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../../lib/owner-token.ts";
 import {

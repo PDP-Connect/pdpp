@@ -234,6 +234,11 @@ export interface StandingData {
   healthySourceCount: number | null;
   hero: StandingHero;
   lately: LatelyView[];
+  /** Whether ANY web-push subscription is registered on this deployment — the
+   *  only server-derivable signal (per-browser enablement is client-only
+   *  state, see web-push-settings.tsx). `"unknown"` when the read failed;
+   *  must never default to "not configured" on a load failure. */
+  notificationsSetup: "configured" | "not_configured" | "unknown";
   overviewIssues: AttentionRowView[];
   relationships: RelationshipView[];
   sourceIssues: AttentionRowView[];
@@ -270,6 +275,8 @@ export interface StandingInputs {
   grants: GrantSummary[];
   /** href builders (bound to dashboardRoutes by the page). */
   hrefs: StandingHrefs;
+  /** See StandingData.notificationsSetup. */
+  notificationsSetup: "configured" | "not_configured" | "unknown";
   /** Relative-time formatter (injected so the view-model stays clock-pure). */
   now: Date;
   /**
@@ -278,13 +285,13 @@ export interface StandingInputs {
    */
   overviewLoadIssues: string[];
   pendingApprovals: PendingApproval[];
+  /** Exact number of configured sources in the complete overview page. */
+  sourceCount?: number;
   /**
    * Connections with material source issues that do NOT ask the owner to do
    * anything. These must still suppress "everything is syncing" all-clears.
    */
   sourceIssues: SourceIssueConnection[];
-  /** Exact number of configured sources in the complete overview page. */
-  sourceCount?: number;
   /**
    * Mutually-exclusive owner-console source work. This is the actionability
    * model the Overview renders; legacy arrays remain only for compatibility
@@ -1103,16 +1110,21 @@ export function computeHero(input: StandingInputs): StandingHero {
   if (input.pendingApprovals.length > 0) {
     return buildDecideHero(input.pendingApprovals, input.hrefs);
   }
+  // A source that needs the owner outranks a totals refresh. Totals catching up
+  // is a few-minute self-resolving delay with nothing to do about it; a source
+  // that stopped collecting is work only the owner can clear. Ordering these the
+  // other way spent the one hero slot on the transient state and buried the
+  // actionable one.
+  const fleetHealthHero = input.fleetHealth ? buildFleetHealthHero(input.fleetHealth, input.hrefs) : null;
+  if (fleetHealthHero) {
+    return fleetHealthHero;
+  }
   const projectionState = input.summary?.projection?.state;
   if (projectionState === "stale" || projectionState === "failed") {
     return buildStaleHero(input.summary, input.hrefs);
   }
   if (input.overviewLoadIssues.length > 0) {
     return buildPartialDataHero(input.overviewLoadIssues, input.hrefs);
-  }
-  const fleetHealthHero = input.fleetHealth ? buildFleetHealthHero(input.fleetHealth, input.hrefs) : null;
-  if (fleetHealthHero) {
-    return fleetHealthHero;
   }
   return buildCalmHero(input);
 }
@@ -1138,6 +1150,7 @@ export function buildStandingData(input: StandingInputs): StandingData {
     healthySourceCount,
     hero: computeHero(input),
     lately: toLately(input.traces, input.now),
+    notificationsSetup: input.notificationsSetup,
     overviewIssues,
     relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),

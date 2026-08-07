@@ -141,12 +141,13 @@ function verdictPresentation(verdict: Verdict): { label: string; body: string; t
         label: "Some checks still running",
         toneClass: "border-border/80 bg-muted/40 text-foreground",
       };
-    default:
-      return {
-        body: "Browser-side probes have not returned yet.",
-        label: "Some checks still running",
-        toneClass: "border-border/80 bg-muted/40 text-foreground",
-      };
+    default: {
+      // Verdict is a closed 4-value union with every member handled above;
+      // this exists only so a future new verdict value fails loudly instead
+      // of silently falling through the old identical "unknown" default.
+      const _exhaustive: never = verdict;
+      throw new Error(`Unhandled deployment-readiness verdict ${_exhaustive}`);
+    }
   }
 }
 

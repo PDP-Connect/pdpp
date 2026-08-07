@@ -8,7 +8,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { LivePoller } from "../../../components/live-poller.tsx";
-import { type ConnectionSetupStatus, getConnectionSetupStatus, RefNotFoundError } from "../../../lib/ref-client.ts";
+import {
+  type ConnectionSetupStatus,
+  getConnectionSetupStatus,
+  RefNotFoundError,
+  type StaticSecretSetupStateValue,
+} from "../../../lib/ref-client.ts";
 import { setupHref, sourceDetailHref, sourceRecordsHref } from "./connect-status-links.ts";
 
 export const dynamic = "force-dynamic";
@@ -291,6 +296,47 @@ function describeState(status: ConnectionSetupStatus): StatusDescription {
     return describeBrowserSessionState(status);
   }
   return describeConnectionState(status);
+}
+
+/**
+ * Human label for the raw `setup_state` enum, for the "Setup state" technical
+ * detail row below the humanized headline/detail above it. Every other line
+ * on this page is translated prose; this one used to print the raw
+ * snake_case value verbatim.
+ */
+function describeSetupState(setupState: StaticSecretSetupStateValue): string {
+  switch (setupState) {
+    case "active":
+      return "Active";
+    case "awaiting_browser_login":
+      return "Awaiting browser login";
+    case "awaiting_credential":
+      return "Awaiting credential";
+    case "first_sync_failed":
+      return "First sync failed";
+    case "first_sync_pending":
+      return "First sync pending";
+    case "first_sync_running":
+      return "First sync running";
+    case "first_sync_unverified_missing_counts":
+      return "First sync finished, coverage unverified";
+    case "first_sync_unverified_zero":
+      return "First sync finished with no records, unverified";
+    case "first_sync_verified_empty":
+      return "First sync verified empty";
+    case "first_sync_zero_yield":
+      return "First sync finished with no records";
+    case "paused":
+      return "Paused";
+    case "revoked":
+      return "Revoked";
+    case "unknown":
+      return "Unknown";
+    default: {
+      const _exhaustive: never = setupState;
+      throw new Error(`Unhandled setup state ${_exhaustive}`);
+    }
+  }
 }
 
 function retryLabel(status: ConnectionSetupStatus): string {
@@ -664,12 +710,8 @@ export default async function ConnectionSetupStatusPage({
             <dd className="pdpp-caption font-mono">{status.connection_id}</dd>
           </div>
           <div className="flex justify-between gap-4">
-            <dt className="pdpp-caption text-muted-foreground">Status</dt>
-            <dd className="pdpp-caption">{status.status}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
             <dt className="pdpp-caption text-muted-foreground">Setup state</dt>
-            <dd className="pdpp-caption">{status.setup_state}</dd>
+            <dd className="pdpp-caption">{describeSetupState(status.setup_state)}</dd>
           </div>
           <div className="flex justify-between gap-4">
             <dt className="pdpp-caption text-muted-foreground">{status.setup_material.label}</dt>

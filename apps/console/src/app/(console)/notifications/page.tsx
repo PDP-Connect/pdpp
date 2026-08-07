@@ -5,7 +5,7 @@ import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import type { Metadata } from "next";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { WebPushSettings } from "@/app/(console)/components/web-push-settings.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { getWebPushConfig, listWebPushSubscriptions } from "../lib/ref-client.ts";
 

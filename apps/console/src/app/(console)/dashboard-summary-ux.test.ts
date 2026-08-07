@@ -15,8 +15,14 @@ const TEST_FILE = `${HERE}components/views/standing-view-model.test.ts`;
 const STANDING_OVERVIEW_RENDER = /<StandingOverview\b/;
 const SHARED_SOURCE_WORK_INPUT = /sourceWork: sourceWorkFromConnectors\(connectors\)/;
 const SHARED_SOURCE_WORK_AUTHORITY = /function activeSourceWork[\s\S]*return input\.sourceWork/;
+// The fleet verdict owns the hero, and now outranks the stale/partial-read
+// states as well: totals catching up is a self-resolving delay with no owner
+// action, while a source that stopped collecting is work only the owner can
+// clear. Ordering those the other way spent the single hero slot on the
+// transient state. This pins fleet health AHEAD of both projection staleness
+// and overviewLoadIssues.
 const SERVER_FLEET_VERDICT_HERO_PRECEDENCE =
-  /function computeHero\(input: StandingInputs\)[\s\S]*overviewLoadIssues\.length > 0[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero/;
+  /function computeHero\(input: StandingInputs\)[\s\S]*const fleetHealthHero = input\.fleetHealth \? buildFleetHealthHero\(input\.fleetHealth, input\.hrefs\) : null;[\s\S]*if \(fleetHealthHero\)[\s\S]*return fleetHealthHero[\s\S]*projectionState === "stale"[\s\S]*overviewLoadIssues\.length > 0/;
 // Overview renders one summary line per section (title + count), not the
 // individual attention rows underneath it — those are Syncs's job (see
 // `feedback: remove Overview/Syncs CTA duplication`). This guards the

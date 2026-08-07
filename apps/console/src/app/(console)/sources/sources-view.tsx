@@ -360,25 +360,17 @@ function InstanceListItem({
         {inner}
       </Link>
       {/*
-       * Desktop (>800px): the row body SELECTS (drives the right-column
-       * passport in place); a SEPARATE "Open →" link navigates to the
-       * connection detail page. Two distinct outcomes, so navigation is no
-       * longer split by CSS breakpoint — the same pattern the Explore feed
-       * uses (rr-x-row-wrap--desktop: row body peeks, a sibling Open link
-       * routes). Hidden on mobile via CSS, where the row Link above is the
-       * single affordance.
+       * Desktop (>800px): the row body SELECTS, driving the right-column
+       * passport in place. The link to the full detail page lives IN that
+       * passport, next to the identity it belongs to — a second "Open" column
+       * beside every row repeated the same destination once per row and read
+       * as a stray column. Hidden on mobile via CSS, where the row Link above
+       * is the single affordance.
        */}
       <div className="rr-s-item-wrap rr-s-item-wrap--desktop">
         <button aria-pressed={selected} className={`${cls} rr-s-item--desktop`} onClick={onSelect} type="button">
           {inner}
         </button>
-        <Link
-          aria-label={`Open ${instance.displayName} source details`}
-          className="rr-s-item-open"
-          href={instance.detailHref}
-        >
-          Open →
-        </Link>
       </div>
     </>
   );

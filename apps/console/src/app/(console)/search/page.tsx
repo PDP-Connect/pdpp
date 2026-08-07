@@ -6,7 +6,7 @@ import { type SearchData, SearchView } from "@pdpp/operator-ui/components/views/
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type GrantSummary, type RunSummary, refSearch, type TraceSummary } from "../lib/ref-client.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";

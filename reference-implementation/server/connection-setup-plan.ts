@@ -50,6 +50,14 @@ export type ConnectorCatalogDisposition =
   | "api_network_unsupported"
   | "unknown_unsupported";
 
+export interface DeploymentConfigKeyLike {
+  readonly key: string;
+  readonly label?: string | null;
+  readonly secret?: boolean | null;
+}
+
+export type DeploymentConfigDeclarationLike = readonly (string | DeploymentConfigKeyLike)[];
+
 export interface ConnectorManifestLike {
   readonly capabilities?: {
     readonly auth?: {
@@ -57,7 +65,13 @@ export interface ConnectorManifestLike {
       readonly mode?: string | null;
       readonly type?: string | null;
       readonly required?: readonly string[] | null;
-      readonly deployment_config?: readonly string[] | null;
+      readonly deployment_config?: DeploymentConfigDeclarationLike | null;
+      readonly connection_config?: readonly string[] | null;
+      readonly scopes?: readonly string[] | null;
+      readonly exchanger_kind?: string | null;
+      readonly authorization_url?: string | null;
+      readonly token_url?: string | null;
+      readonly userinfo_url?: string | null;
     } | null;
   } | null;
   readonly connector_id?: string | null;
@@ -90,7 +104,7 @@ export interface ConnectorManifestLike {
       readonly validation_expectations?: readonly string[] | null;
     } | null;
     readonly modality?: string | null;
-    readonly deployment_config?: readonly string[] | null;
+    readonly deployment_config?: DeploymentConfigDeclarationLike | null;
   } | null;
   readonly version?: string | null;
 }
@@ -609,16 +623,30 @@ export function classifyConnectorSetupModality(
   return connectorModality;
 }
 
+// Accepts both the legacy bare-string-array shape and the enriched
+// {key,label,secret} object shape declared by DeploymentConfigDeclarationLike,
+// normalizing either to a plain key-string array.
+function deploymentConfigKeyStrings(declaration: DeploymentConfigDeclarationLike | null | undefined): readonly string[] {
+  if (!Array.isArray(declaration)) {
+    return [];
+  }
+  return declaration
+    .map((entry) => (typeof entry === "string" ? entry : entry?.key))
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
 function deploymentConfigKeysFromManifest(manifest: ConnectorManifestLike | null): readonly string[] {
-  const setupKeys = manifest?.setup?.deployment_config;
-  if (Array.isArray(setupKeys) && setupKeys.length > 0) {
-    return setupKeys.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const setupKeys = deploymentConfigKeyStrings(manifest?.setup?.deployment_config);
+  if (setupKeys.length > 0) {
+    return setupKeys;
   }
-  const authKeys = manifest?.capabilities?.auth?.deployment_config ?? manifest?.capabilities?.auth?.required;
-  if (Array.isArray(authKeys) && authKeys.length > 0) {
-    return authKeys.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const authDeploymentKeys = deploymentConfigKeyStrings(manifest?.capabilities?.auth?.deployment_config);
+  if (authDeploymentKeys.length > 0) {
+    return authDeploymentKeys;
   }
-  return [];
+  return (manifest?.capabilities?.auth?.required ?? []).filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0
+  );
 }
 
 function buildDeploymentReadiness(args: {

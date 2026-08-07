@@ -6,7 +6,7 @@ import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, PageHeader } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {

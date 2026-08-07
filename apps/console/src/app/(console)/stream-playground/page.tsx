@@ -17,7 +17,7 @@
  */
 import type { Viewport } from "next";
 import { notFound } from "next/navigation";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "../lib/owner-token.ts";
 import { StreamSurface } from "../syncs/[runId]/stream/stream-viewer.tsx";
 

@@ -9,7 +9,7 @@ import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/com
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type GrantSummary,
@@ -19,6 +19,7 @@ import {
   listPendingApprovals,
   type PendingApproval,
 } from "../lib/ref-client.ts";
+import { clientCaption, technicalClientCaption } from "./client-caption.ts";
 import { approvePendingApprovalAction, denyPendingApprovalAction } from "./pending-actions.ts";
 
 export const dynamic = "force-dynamic";
@@ -43,37 +44,6 @@ function listHref(params: Params, overrides: Partial<Params> = {}): string {
     )
     .join("&");
   return qs ? `/grants?${qs}` : "/grants";
-}
-
-const TECHNICAL_CLIENT_ID_RE = /^cli_[a-z0-9]+$/i;
-const WWW_PREFIX_RE = /^www\./;
-
-function looksLikeTechnicalClientId(value: string): boolean {
-  return TECHNICAL_CLIENT_ID_RE.test(value);
-}
-
-function clientOriginCaption(value: string): string | null {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.replace(WWW_PREFIX_RE, "");
-    return host ? `client ${host}` : null;
-  } catch {
-    return null;
-  }
-}
-
-function grantClientCaption(grant: GrantSummary): string | null {
-  const name = grant.client?.client_name?.trim();
-  if (name) {
-    return `client ${name}`;
-  }
-  const clientId = grant.client_id?.trim();
-  if (!clientId) {
-    return null;
-  }
-  return (
-    clientOriginCaption(clientId) ?? (looksLikeTechnicalClientId(clientId) ? "registered client" : `client ${clientId}`)
-  );
 }
 
 export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
@@ -223,7 +193,7 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
           <StatusBadge status={approval.kind} />
         </div>
         <div className="pdpp-caption mt-1 break-words text-muted-foreground">
-          client {approval.client_id ?? "—"}
+          {technicalClientCaption(approval.client_id) ?? "client —"}
           {approval.grant_preview?.source ? ` · source ${formatSourceForDisplay(approval.grant_preview.source)}` : ""}
           {previewStreams.length ? ` · streams ${previewStreams.join(", ")}` : ""}
         </div>
@@ -254,7 +224,7 @@ function GrantRow({
   peeked: boolean;
 }) {
   const packageHref = grant.grant_package_id ? `/grants/packages/${encodeURIComponent(grant.grant_package_id)}` : null;
-  const clientCaption = grantClientCaption(grant);
+  const grantClientCaption = clientCaption(grant);
 
   // Shared row content rendered inside both the mobile and desktop links.
   const rowContent = (
@@ -265,12 +235,12 @@ function GrantRow({
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="truncate font-medium text-foreground">{grantRowLabel(grant)}</span>
           <StatusBadge status={grant.status} vocabulary={GRANT_LIFECYCLE_VOCABULARY} />
-          {clientCaption ? (
+          {grantClientCaption ? (
             <span
               className="pdpp-caption max-w-[20ch] truncate text-muted-foreground"
               title={grant.client_id ?? undefined}
             >
-              {clientCaption}
+              {grantClientCaption}
             </span>
           ) : null}
         </div>

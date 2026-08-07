@@ -10,8 +10,9 @@ import { useEffect } from "react";
  * Dashboard error boundary (App Router convention).
  *
  * Self-contained on purpose: it must not import server-only modules. The
- * dashboard `<DashboardShell>` transitively pulls in `lib/owner-token.ts`,
- * which is `server-only`; importing it here would break the client build.
+ * dashboard shell (`RecordroomShellWithPalette`) transitively pulls in
+ * `lib/owner-token.ts`, which is `server-only`; importing it here would break
+ * the client build.
  * Stripe/Linear-style empty state lives below; the user can retry or sign
  * back in. See https://nextjs.org/docs/app/getting-started/error-handling.
  */

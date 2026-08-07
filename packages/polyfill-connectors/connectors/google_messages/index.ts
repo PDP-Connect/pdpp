@@ -94,7 +94,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { runConnector } from "../../src/connector-runtime.ts";
+import { emitDetailCoverage, runConnector } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import type { CoverageRecord } from "../../src/local-source-inventory.ts";
 import type { GmcliResult } from "./fixtures.ts";
@@ -542,6 +542,26 @@ function runConnectorGuarded(): void {
         await emitRecord("messages", { ...message });
       }
       await progress(`Google Messages phase=emit pass=emit done messages=${String(parsed.length)}`);
+
+      // `messages` is this connector's only required stream and previously
+      // never proved its own coverage, leaving it permanently unmeasured
+      // even on a fully successful run. gmcli's per-conversation query
+      // already gives an exact enumerated count (`parsed.length`) every
+      // run — every fetched message is unconditionally emitted above, so
+      // considered === covered. A truncated run's SKIP_RESULT (emitted
+      // above) already outranks this in the coverage precedence order, so
+      // this always-emit is safe even when the fetch was bounded.
+      await emitDetailCoverage(
+        { emit },
+        {
+          stream: "messages",
+          stateStream: "messages",
+          requiredKeys: [],
+          hydratedKeys: [],
+          considered: parsed.length,
+          covered: parsed.length,
+        }
+      );
     },
   });
 }

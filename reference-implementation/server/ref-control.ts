@@ -5847,7 +5847,7 @@ export interface ConnectorSummaryEvidenceRow {
     readonly reason_code: string | null;
   };
   readonly total_records: number;
-  readonly total_retained_bytes: number;
+  readonly total_retained_bytes: number | null;
 }
 
 /**

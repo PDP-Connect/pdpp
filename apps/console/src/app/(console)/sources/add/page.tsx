@@ -5,7 +5,7 @@ import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { existingSourcesByConnectorCatalog } from "../../components/existing-sources-by-connector.ts";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import { type ExistingSourceSetupLink, SourceSetupCatalog } from "../../components/source-setup-catalog.tsx";
 import { buildOwnerConnectorCatalog, type ConnectorCatalogEntry } from "../../lib/connection-catalog.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";

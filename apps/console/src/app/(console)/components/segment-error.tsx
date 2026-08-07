@@ -22,8 +22,8 @@ import { useEffect } from "react";
  * Self-contained on purpose (mirrors `dashboard/error.tsx` and
  * `records/error.tsx`): a `"use client"` boundary must not import server-only
  * modules, and the dashboard shell transitively pulls in `lib/owner-token.ts`
- * (`server-only`). So this renders a plain shell-free panel rather than
- * `DashboardShell`. See https://nextjs.org/docs/app/getting-started/error-handling.
+ * (`server-only`). So this renders a plain shell-free panel rather than the
+ * dashboard shell. See https://nextjs.org/docs/app/getting-started/error-handling.
  */
 export function SegmentError({
   error,

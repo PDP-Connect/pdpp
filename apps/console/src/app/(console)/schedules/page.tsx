@@ -10,7 +10,7 @@ import {
   loadConnectorSummaryPage,
 } from "../components/connector-summary-page.tsx";
 import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { listConnectorSummaries } from "../lib/ref-client.ts";
 import { ScheduleRow } from "./schedule-row.tsx";

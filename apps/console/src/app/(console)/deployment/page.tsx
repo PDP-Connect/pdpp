@@ -12,7 +12,7 @@ import { loadConnectorSummaryPage } from "../components/connector-summary-page.t
 import { DeploymentReadinessPanel } from "../components/deployment-readiness-panel.tsx";
 import { extractReadinessInputs } from "../components/deployment-readiness-rows.ts";
 import { LivePoller } from "../components/live-poller.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeploymentDiagnostics,

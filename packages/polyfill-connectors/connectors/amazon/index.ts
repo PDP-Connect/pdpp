@@ -504,6 +504,33 @@ export function newOrderItemsCoverage(): OrderItemsCoverage {
   return { gap: [], hydrated: [], optionalSkip: [], required: [] };
 }
 
+/**
+ * Per-run, `orders` list-stream coverage accumulator — a distinct denominator
+ * from `OrderItemsCoverage` (that one tracks the `order_items` detail-page
+ * enrichment; this one tracks the `orders` list stream itself, so
+ * `orders`/`checkpoint_window` can report honest evidence even on a run that
+ * skips order_items entirely).
+ *
+ * Every list-page order the year loop reaches `emitOrderAndItems` for is
+ * "considered" (the denominator), whether or not `wantsOrders` is in scope —
+ * the list scan enumerated it. An order is "covered" once the connector made
+ * a real accounting decision for its `orders` record: either it emitted, or
+ * the per-order fingerprint cursor deliberately suppressed a byte-identical
+ * re-scrape (still a real decision, not a drop). An order whose date never
+ * parses never reaches `emitOrderAndItems`, so it is recorded separately as
+ * `dateDropped` — considered, but not covered, since no accounting decision
+ * was made for it.
+ */
+export interface OrdersCoverage {
+  considered: string[];
+  covered: string[];
+  dateDropped: string[];
+}
+
+export function newOrdersCoverage(): OrdersCoverage {
+  return { considered: [], covered: [], dateDropped: [] };
+}
+
 /** The detail-hydration outcome for one considered order. */
 export type DetailOutcome = "hydrated" | "gap" | "skipped";
 
@@ -792,6 +819,29 @@ export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItem
   });
 }
 
+/**
+ * Emit the run-level `orders` DETAIL_COVERAGE once after the year loop, using
+ * the shared `emitDetailCoverage` helper self-referentially (`stream` and
+ * `stateStream` both `"orders"` — there is no separate detail-hydration phase
+ * for the list stream itself, so `requiredKeys`/`hydratedKeys` stay empty and
+ * the denominator/numerator live entirely in `considered`/`covered`, mirroring
+ * the pattern used for USAA's `inbox_messages` and GitHub's `declareListConsidered`
+ * streams). Always emits when the caller invokes it (orders in scope) —
+ * including a zero-considered steady-state run — for the same reason
+ * `emitOrderItemsCoverage` always emits: a completed sweep that considered
+ * zero orders is a real measured zero, not silence.
+ */
+export async function emitOrdersCoverage(deps: EmitDeps, coverage: OrdersCoverage): Promise<void> {
+  await emitDetailCoverage(deps, {
+    stream: "orders",
+    stateStream: "orders",
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered: coverage.considered.length,
+    covered: coverage.covered.length,
+  });
+}
+
 /** Per-run dependencies threaded through processListOrder → emitOrderAndItems. */
 export interface EmitDeps {
   capture: CaptureDep;
@@ -817,6 +867,12 @@ export interface EmitDeps {
    *  processListOrder records each considered order's detail outcome here and
    *  collect() emits one DETAIL_COVERAGE after the year loop. */
   orderItemsCoverage?: OrderItemsCoverage | undefined;
+  /** Run-level `orders` list-stream coverage accumulator. Optional so legacy
+   *  callers/tests that only exercise emit ordering can omit it; when present,
+   *  processListOrder records each considered order's list-accounting outcome
+   *  here and collect() emits one self-referential DETAIL_COVERAGE after the
+   *  year loop. */
+  ordersCoverage?: OrdersCoverage | undefined;
   /** Per-order fingerprint cursor (excludes the run-clock `fetched_at`).
    *  Shared across all years for the whole orders stream because order ids
    *  are globally unique. Optional so legacy callers/tests emit
@@ -864,6 +920,14 @@ export async function emitOrderAndItems(
     const orderRecord = buildOrderRecord(listOrder, detail, orderDate, deps.emittedAt);
     if (!deps.ordersFingerprintCursor || deps.ordersFingerprintCursor.shouldEmit(orderRecord)) {
       await deps.emitRecord("orders", orderRecord);
+    }
+    // A fingerprint-suppressed re-scrape and a fresh emit are both a real
+    // accounting decision for this order's `orders` record, so both count as
+    // covered — only a date that never parses (handled below, before this
+    // function is reached) is considered-but-not-covered.
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.covered.push(listOrder.orderId);
     }
   }
   if (deps.wantsItems) {
@@ -1099,7 +1163,14 @@ export async function processListOrder(
   if (!orderDate) {
     // A list row whose date does not parse never reaches the detail lane, so it
     // is not counted toward order-item coverage; runYear already accounts for
-    // it via the bounded per-year drop SKIP_RESULT.
+    // it via the bounded per-year drop SKIP_RESULT. It was still enumerated by
+    // the list scan, so the `orders` coverage denominator must not silently
+    // drop it: considered, but not covered (no accounting decision was made
+    // for its `orders` record).
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.dateDropped.push(listOrder.orderId);
+    }
     return false;
   }
   // The current (and previous) year is re-listed on every run — orders are
@@ -1124,6 +1195,13 @@ export async function processListOrder(
     // status_detail nulled) even though nothing actually changed.
     if (deps.orderItemsCoverage) {
       recordDetailOutcome(deps.orderItemsCoverage, listOrder.orderId, "hydrated");
+    }
+    // The list scan still enumerated this order and the fingerprint match is
+    // itself a real accounting decision (list surface unchanged since a prior
+    // durable emit) — considered and covered, even though nothing re-emits.
+    if (deps.ordersCoverage) {
+      deps.ordersCoverage.considered.push(listOrder.orderId);
+      deps.ordersCoverage.covered.push(listOrder.orderId);
     }
     return true;
   }
@@ -1465,6 +1543,9 @@ if (isMainModule(import.meta.url)) {
       // `order_items` stream is in scope. When it is not requested, the
       // accumulator stays undefined and processListOrder records nothing.
       const orderItemsCoverage = wantsItems ? newOrderItemsCoverage() : undefined;
+      // `orders` list-stream coverage is only meaningful when `orders` itself
+      // is in scope — mirrors the `wantsItems`-gated accumulator above.
+      const ordersCoverage = wantsOrders ? newOrdersCoverage() : undefined;
       const deps: EmitDeps = {
         capture,
         emit,
@@ -1472,6 +1553,7 @@ if (isMainModule(import.meta.url)) {
         emittedAt,
         hydratedOrders,
         orderItemsCoverage,
+        ordersCoverage,
         ordersFingerprintCursor,
         progress,
         skipDetail: process.env.PDPP_AMAZON_SKIP_DETAIL === "1",
@@ -1534,6 +1616,12 @@ if (isMainModule(import.meta.url)) {
       // order_items is out of scope or no order was considered.
       if (orderItemsCoverage) {
         await emitOrderItemsCoverage(deps, orderItemsCoverage);
+      }
+      // Same honesty posture as order_items: emit once the year sweep
+      // completes, including the zero-considered steady-state case, so the
+      // `orders` list stream is never left permanently unmeasured.
+      if (ordersCoverage) {
+        await emitOrdersCoverage(deps, ordersCoverage);
       }
     },
   });

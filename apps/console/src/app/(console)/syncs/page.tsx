@@ -33,7 +33,7 @@ import {
 } from "../components/connector-summary-page.tsx";
 import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
 import { LivePoller } from "../components/live-poller.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type ListResponse, listConnectorSummaries, listRuns, type RunSummary } from "../lib/ref-client.ts";
 import { DEMO_SYNCS_MODEL } from "./syncs-demo.ts";

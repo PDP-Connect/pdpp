@@ -15,8 +15,6 @@
  * The palette is wired to the live console clean routes (`basePath=""`,
  * `mode="live"`, Sources/Syncs/Audit segments) so ⌘K/Jump navigates to the
  * canonical top-level routes rather than the legacy dashboard prefix.
- * Sandbox routes continue to use `DashboardShell` which has its own
- * `CommandPaletteProvider` bound to `/sandbox`.
  */
 
 import { CONSOLE_BASE_PATH, CONSOLE_SEGMENTS } from "@pdpp/operator-ui/components/views/routes";

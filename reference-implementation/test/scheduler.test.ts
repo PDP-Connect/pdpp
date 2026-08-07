@@ -4025,6 +4025,8 @@ test("scheduler default readiness checker does not treat browser bindings as rea
   const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
   const previousNekoCdpUrl = process.env.PDPP_NEKO_CDP_HTTP_URL;
   const previousNekoManaged = process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+  const previousRuntimeBrowser = process.env.PDPP_RUNTIME_BROWSER;
+  const previousDisplay = process.env.DISPLAY;
   const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -4035,6 +4037,11 @@ test("scheduler default readiness checker does not treat browser bindings as rea
     delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
     delete process.env.PDPP_NEKO_CDP_HTTP_URL;
     delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
+    // A genuinely-unconfigured deployment has neither signal set — clear
+    // both so this test's intent (not-ready) holds even when run on a
+    // host with an ambient DISPLAY (e.g. a developer desktop).
+    delete process.env.PDPP_RUNTIME_BROWSER;
+    delete process.env.DISPLAY;
     const registerResp = await fetchJson(`${asUrl}/connectors`, {
       body: JSON.stringify(manifest),
       headers: { "Content-Type": "application/json" },
@@ -4093,6 +4100,16 @@ test("scheduler default readiness checker does not treat browser bindings as rea
       delete process.env.PDPP_NEKO_MANAGED_CONNECTORS;
     } else {
       process.env.PDPP_NEKO_MANAGED_CONNECTORS = previousNekoManaged;
+    }
+    if (previousRuntimeBrowser === undefined) {
+      delete process.env.PDPP_RUNTIME_BROWSER;
+    } else {
+      process.env.PDPP_RUNTIME_BROWSER = previousRuntimeBrowser;
+    }
+    if (previousDisplay === undefined) {
+      delete process.env.DISPLAY;
+    } else {
+      process.env.DISPLAY = previousDisplay;
     }
     await closeServer(server);
     rmSync(tmpDir, { force: true, recursive: true });

@@ -827,7 +827,7 @@ export function shapeEvidenceRow(row: Row) {
     stream_records: parseEvidenceJson(row.stream_records_json, []),
     terminal_facts: shapeTerminalFacts(row),
     total_records: Number(row.total_records || 0),
-    total_retained_bytes: Number(row.total_retained_bytes || 0),
+    total_retained_bytes: retainedBytesState === "current" ? Number(row.total_retained_bytes || 0) : null,
   };
 }
 

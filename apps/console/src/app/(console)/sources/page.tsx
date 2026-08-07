@@ -34,7 +34,7 @@ import {
   loadConnectorSummaryPage,
 } from "../components/connector-summary-page.tsx";
 import { isPagedRequest, parseConnectorSummaryPageState } from "../components/connector-summary-pager.ts";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";

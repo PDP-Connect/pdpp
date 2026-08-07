@@ -32,6 +32,16 @@ function skips(messages: readonly EmittedMessage[]): Extract<EmittedMessage, { t
   return messages.filter((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
 }
 
+function detailCoverage(
+  messages: readonly EmittedMessage[],
+  stream: string
+): Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> | undefined {
+  return messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === stream
+  );
+}
+
 function runGoogleMessages(streams: string[], env: Record<string, string>, opts: { allowFailedDone?: boolean } = {}) {
   return runConnectorProtocolSubprocess({
     cwd: PACKAGE_ROOT,
@@ -67,6 +77,14 @@ test("healthy run emits messages + coverage_diagnostics=collected", async () => 
   assert.equal(coverage[0]?.store, "gmcli_archive");
   assert.equal(coverage[0]?.stream, "messages");
   assert.equal(coverage[0]?.status, "collected");
+
+  // `messages` is the connector's only required stream — it must prove its
+  // own coverage on a normal successful run, or it can never reach
+  // `complete` regardless of how much real data it collected.
+  const messagesCoverage = detailCoverage(result.messages, "messages");
+  assert.ok(messagesCoverage, "messages must emit DETAIL_COVERAGE");
+  assert.equal(messagesCoverage.considered, 2);
+  assert.equal(messagesCoverage.covered, 2);
 });
 
 test("empty archive: zero messages, coverage still collected", async () => {
@@ -77,6 +95,12 @@ test("empty archive: zero messages, coverage still collected", async () => {
   assert.equal(records(result.messages, "messages").length, 0);
   const coverage = records(result.messages, "coverage_diagnostics");
   assert.equal(coverage[0]?.status, "collected");
+
+  // A genuine zero-message archive is still a measured zero, not silence.
+  const messagesCoverage = detailCoverage(result.messages, "messages");
+  assert.ok(messagesCoverage, "messages must emit DETAIL_COVERAGE even for a zero-considered run");
+  assert.equal(messagesCoverage.considered, 0);
+  assert.equal(messagesCoverage.covered, 0);
 });
 
 test("missing gmcli binary: SKIP_RESULT reason gmcli_not_installed, coverage=missing, zero records, clean run", async () => {

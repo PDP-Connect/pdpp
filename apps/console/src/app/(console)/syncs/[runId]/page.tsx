@@ -4,10 +4,11 @@
 import { Callout, MetaPill, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   getRunStatus,
@@ -32,6 +33,15 @@ import {
 } from "../../lib/run-gaps.ts";
 import { CancelRunControl } from "./cancel-run-control.tsx";
 import { RunInteractionForm } from "./interaction-form.tsx";
+import {
+  describeAssistanceOwnerAction,
+  describeAssistanceProgressPosture,
+  describeAssistanceResponseContract,
+  describeCheckpointStatLabel,
+  describeInteractionStatLabel,
+  describeProgressStatLabel,
+  describeTerminalRunStatus,
+} from "./run-detail-labels.ts";
 import { RunDetailPoller } from "./run-detail-poller.tsx";
 import {
   isRunActive,
@@ -159,11 +169,20 @@ export default async function RunDetailPage({
       <ConnectorStderrTailSection failure={failure} />
     </>
   );
+  // The connector name is the owner's route back to the thing this run belongs
+  // to. Rendered as inert text it was a dead end: from a run there was no way
+  // to reach its source at all — not via the breadcrumb, not here.
   const description = (
     <>
       {connectorId ? (
         <>
-          connector <span className="font-mono text-foreground">{connectorId}</span>
+          connector{" "}
+          <Link
+            className="font-mono text-foreground underline underline-offset-2"
+            href={`/sources/${encodeURIComponent(connectorId)}`}
+          >
+            {connectorId}
+          </Link>
           {" · "}
         </>
       ) : null}
@@ -184,7 +203,15 @@ export default async function RunDetailPage({
       <RunDetailPoller enabled={active} />
       <TimelineDetailView
         beforeTimelineContent={beforeTimeline}
-        breadcrumbs={[{ href: dashboardRoutes.section.runs, label: "Syncs" }, { label: "Sync" }]}
+        breadcrumbs={
+          connectorId
+            ? [
+                { href: dashboardRoutes.section.runs, label: "Syncs" },
+                { href: `/sources/${encodeURIComponent(connectorId)}`, label: connectorId },
+                { label: "Sync" },
+              ]
+            : [{ href: dashboardRoutes.section.runs, label: "Syncs" }, { label: "Sync" }]
+        }
         cliCommand={`pdpp ref run timeline ${runId}`}
         description={description}
         envelope={envelope}
@@ -244,7 +271,9 @@ function CurrentAssistanceSection({
         <dd>{currentAssistance.message}</dd>
         <dt className="text-muted-foreground">state</dt>
         <dd>
-          {currentAssistance.progressPosture} · {currentAssistance.ownerAction} · {currentAssistance.responseContract}
+          {describeAssistanceProgressPosture(currentAssistance.progressPosture)} ·{" "}
+          {describeAssistanceOwnerAction(currentAssistance.ownerAction)} ·{" "}
+          {describeAssistanceResponseContract(currentAssistance.responseContract)}
         </dd>
         <dt className="text-muted-foreground">kind</dt>
         <dd>{currentAssistance.kind}</dd>
@@ -838,7 +867,7 @@ function getRunStateValue({
   terminalStatus: TerminalRunStatus;
 }): string | null {
   if (!active) {
-    return terminalStatus;
+    return terminalStatus ? describeTerminalRunStatus(terminalStatus) : null;
   }
   if (!currentAssistance) {
     return "running";
@@ -857,9 +886,9 @@ function summarizeCheckpoints(events: SpineEvent[]): [string, string][] {
   const advanced = events.filter((e) => e.event_type === "run.state_advanced").length;
   const commitFailed = events.filter((e) => e.event_type === "run.state_commit_failed").length;
   return [
-    ["staged", String(staged)],
-    ["advanced", String(advanced)],
-    ["commit_failed", String(commitFailed)],
+    [describeCheckpointStatLabel("staged"), String(staged)],
+    [describeCheckpointStatLabel("advanced"), String(advanced)],
+    [describeCheckpointStatLabel("commit_failed"), String(commitFailed)],
   ];
 }
 
@@ -868,11 +897,11 @@ function summarizeProgress(events: SpineEvent[]): [string, string][] {
   const skipped = events.filter((e) => e.event_type === "run.stream_skipped").length;
   const last = progressEvents.at(-1);
   return [
-    ["reports", String(progressEvents.length)],
-    ["last_message", String(last?.data?.message ?? "—")],
-    ["last_count", String(last?.data?.count ?? "—")],
-    ["last_total", String(last?.data?.total ?? "—")],
-    ["skipped", String(skipped)],
+    [describeProgressStatLabel("reports"), String(progressEvents.length)],
+    [describeProgressStatLabel("last_message"), String(last?.data?.message ?? "—")],
+    [describeProgressStatLabel("last_count"), String(last?.data?.count ?? "—")],
+    [describeProgressStatLabel("last_total"), String(last?.data?.total ?? "—")],
+    [describeProgressStatLabel("skipped"), String(skipped)],
   ];
 }
 
@@ -880,8 +909,8 @@ function summarizeInteractions(events: SpineEvent[]): [string, string][] {
   const required = events.filter((e) => e.event_type === "run.interaction_required").length;
   const completed = events.filter((e) => e.event_type === "run.interaction_completed").length;
   return [
-    ["required", String(required)],
-    ["completed", String(completed)],
+    [describeInteractionStatLabel("required"), String(required)],
+    [describeInteractionStatLabel("completed"), String(completed)],
   ];
 }
 

@@ -22,6 +22,10 @@
   "capabilities": {
     "auth": {
       "kind": "oauth",
+      "exchanger_kind": "oauth2_generic",
+      "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+      "token_url": "https://oauth2.googleapis.com/token",
+      "userinfo_url": "https://www.googleapis.com/oauth2/v2/userinfo",
       "deployment_config": [
         "GOOGLE_OAUTH_CLIENT_ID",
         "GOOGLE_OAUTH_CLIENT_SECRET"

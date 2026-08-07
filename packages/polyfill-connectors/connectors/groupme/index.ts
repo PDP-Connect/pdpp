@@ -756,6 +756,37 @@ if (isMainModule(import.meta.url)) {
           direct_chat_messages: directChatMessageCursor.toState(),
         } as GroupMeUnifiedState,
       });
+      // The unified emit above only ever proves coverage for the "groups"
+      // stream (the runtime keys committed-checkpoint state off the STATE
+      // message's own `stream` field, not its cursor payload contents), so
+      // group_messages/direct_messages/direct_chat_messages were structurally
+      // unable to ever reach `complete` even after collecting real data. Each
+      // stream is independently gated above (no manifest `profiles` bundle
+      // requires "groups" alongside them), so a state_stream inheritance
+      // mapping to "groups" would still leave a groups-less run gapped —
+      // emit each stream's own checkpoint directly instead, using the same
+      // per-stream cursor state already computed above.
+      if (requested.has("group_messages")) {
+        await emit({
+          type: "STATE",
+          stream: "group_messages",
+          cursor: { group_messages: groupMessageCursor.toState() },
+        });
+      }
+      if (requested.has("direct_messages")) {
+        await emit({
+          type: "STATE",
+          stream: "direct_messages",
+          cursor: { direct_messages: directChatCursor.toState() },
+        });
+      }
+      if (requested.has("direct_chat_messages")) {
+        await emit({
+          type: "STATE",
+          stream: "direct_chat_messages",
+          cursor: { direct_chat_messages: directChatMessageCursor.toState() },
+        });
+      }
     },
   });
 }

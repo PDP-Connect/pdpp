@@ -4,7 +4,7 @@
 import { buttonVariants } from "@pdpp/brand-react";
 import type { Viewport } from "next";
 import { notFound } from "next/navigation";
-import { ServerUnreachable } from "../../../components/shell.tsx";
+import { ServerUnreachable } from "../../../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   getRunStatus,

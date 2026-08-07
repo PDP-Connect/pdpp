@@ -19,9 +19,10 @@ import { GRANT_LIFECYCLE_VOCABULARY } from "@pdpp/operator-ui/components/status-
 import type { Metadata } from "next";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../../components/shell.tsx";
+import { ServerUnreachable } from "../../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { type GrantPackageSummary, type ListResponse, listGrantPackages } from "../../lib/ref-client.ts";
+import { technicalClientCaption } from "../client-caption.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -88,7 +89,8 @@ function PackageRow({ pkg }: { pkg: GrantPackageSummary }) {
       </div>
       <div className="pdpp-caption mt-1 text-muted-foreground">
         {memberLabel}
-        {" · "}client {pkg.client_id}
+        {" · "}
+        {technicalClientCaption(pkg.client_id) ?? "client —"}
         {" · subject "}
         {pkg.subject_id}
       </div>

@@ -20,7 +20,7 @@
  */
 
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import { runConnector } from "../../src/connector-runtime.ts";
+import { type EmittedMessage, emitDetailCoverage, runConnector } from "../../src/connector-runtime.ts";
 import { spotifyPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -175,6 +175,7 @@ async function paginate<T>(
 
 async function collectPlaylists(
   token: string,
+  emit: (msg: EmittedMessage) => Promise<void>,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
   progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
@@ -193,6 +194,20 @@ async function collectPlaylists(
       description: p.description ?? null,
     });
   }
+  // `playlists` is a full_inventory list with no drop/filter path: the page
+  // scan enumerates every playlist, so considered === covered === the exact
+  // count fetched, every run (including a genuine zero-playlist account).
+  await emitDetailCoverage(
+    { emit },
+    {
+      stream: "playlists",
+      stateStream: "playlists",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: items.length,
+      covered: items.length,
+    }
+  );
 }
 
 interface SavedTracksState {
@@ -242,12 +257,14 @@ async function collectSavedTracks(
 
 async function collectTopArtists(
   token: string,
+  emit: (msg: EmittedMessage) => Promise<void>,
   emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>,
   progress: (message: string, extra?: ProgressExtra) => Promise<void>
 ): Promise<void> {
   await progress("Fetching top artists", { stream: "top_artists", phase: "start" });
   const ranges = ["short_term", "medium_term", "long_term"] as const;
   let totalSeen = 0;
+  let emittedCount = 0;
   for (let i = 0; i < ranges.length; i += 1) {
     const range = ranges[i];
     const pageExtra = {
@@ -284,8 +301,23 @@ async function collectTopArtists(
         followers: a.followers?.total ?? null,
         time_range: range,
       });
+      emittedCount += 1;
     }
   }
+  // `top_artists` fans out across 3 fixed time-range windows with no
+  // drop/filter path: every item Spotify returns is unconditionally emitted,
+  // so considered === covered === the exact count emitted across all windows.
+  await emitDetailCoverage(
+    { emit },
+    {
+      stream: "top_artists",
+      stateStream: "top_artists",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: emittedCount,
+      covered: emittedCount,
+    }
+  );
 }
 
 interface RecentlyPlayedState {
@@ -359,7 +391,7 @@ runConnector({
     }
 
     if (requested.has("playlists")) {
-      await collectPlaylists(token, emitRecord, progress);
+      await collectPlaylists(token, emit, emitRecord, progress);
     }
 
     if (requested.has("saved_tracks")) {
@@ -367,7 +399,7 @@ runConnector({
     }
 
     if (requested.has("top_artists")) {
-      await collectTopArtists(token, emitRecord, progress);
+      await collectTopArtists(token, emit, emitRecord, progress);
     }
 
     if (requested.has("recently_played")) {

@@ -37,11 +37,14 @@ import {
   type GrantSummary,
   getFleetHealthVerdict,
   getGrantPackageCount,
+  type ListResponse,
   listOwnerIssuedClients,
+  listWebPushSubscriptions,
   type OwnerIssuedClient,
   type PendingApproval,
   type RefConnectorSummary,
   type TraceSummary,
+  type WebPushSubscriptionSummary,
 } from "./lib/ref-client.ts";
 import { sourceWorkFromConnectors } from "./lib/source-actionability.ts";
 
@@ -116,40 +119,49 @@ async function loadOverviewConnectors(): Promise<{
 
 async function loadStandingInputs(): Promise<StandingInputs> {
   const ds = liveDashboardDataSource;
-  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsResult, packageCountRes] = await Promise.all([
-    safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
-    safeRead("grants", () => ds.listGrants({ limit: 12 }), {
-      data: [] as GrantSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("traces", () => ds.listTraces({ limit: 6 }), {
-      data: [] as TraceSummary[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("pending_approvals", () => ds.listPendingApprovals(), {
-      data: [] as PendingApproval[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    safeRead("owner_tokens", () => listOwnerIssuedClients(), {
-      data: [] as OwnerIssuedClient[],
-      has_more: false,
-      object: "list" as const,
-    }),
-    // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
-    // ONE bounded page; see loadOverviewConnectors for the `complete` signal.
-    safeRead("source_status", () => loadOverviewConnectors(), {
-      complete: true,
-      connectors: [] as RefConnectorSummary[],
-      fleetHealth: null,
-    }),
-    // Authoritative grant-package count so the overview badge need not page the
-    // full grants/packages list. Fails soft to a null count, which makes the
-    // view-model fall back to the loaded-grants floor.
-    safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
-  ]);
+  const [summary, grantsRes, tracesRes, pendingRes, clientsRes, connectorsResult, packageCountRes, webPushRes] =
+    await Promise.all([
+      safeRead("dataset_summary", () => ds.getDatasetSummary(), null),
+      safeRead("grants", () => ds.listGrants({ limit: 12 }), {
+        data: [] as GrantSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("traces", () => ds.listTraces({ limit: 6 }), {
+        data: [] as TraceSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("pending_approvals", () => ds.listPendingApprovals(), {
+        data: [] as PendingApproval[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      safeRead("owner_tokens", () => listOwnerIssuedClients(), {
+        data: [] as OwnerIssuedClient[],
+        has_more: false,
+        object: "list" as const,
+      }),
+      // The SINGLE source of attention truth — same `_ref/connectors` family `/runs` uses.
+      // ONE bounded page; see loadOverviewConnectors for the `complete` signal.
+      safeRead("source_status", () => loadOverviewConnectors(), {
+        complete: true,
+        connectors: [] as RefConnectorSummary[],
+        fleetHealth: null,
+      }),
+      // Authoritative grant-package count so the overview badge need not page the
+      // full grants/packages list. Fails soft to a null count, which makes the
+      // view-model fall back to the loaded-grants floor.
+      safeRead<{ count: number | null }>("grant_package_count", () => getGrantPackageCount(), { count: null }),
+      // Deployment-wide "is any device enrolled" signal for the Notifications
+      // overview block. Per-browser enablement is client-only state (see
+      // web-push-settings.tsx); this is the coarser server-derivable proxy.
+      safeRead("web_push_subscriptions", () => listWebPushSubscriptions(), {
+        data: [] as WebPushSubscriptionSummary[],
+        has_more: false,
+        object: "list" as const,
+      }),
+    ]);
   // The complete page is the exact inventory used to project its optional
   // verdict.  If it is not complete (or an older reference omitted the
   // optional field), take the explicit full-fleet path instead.
@@ -167,6 +179,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
   }
 
   const { connectors } = connectorsResult.value;
+  const notificationsSetup: StandingInputs["notificationsSetup"] = webPushSetupState(webPushRes);
   return {
     advisoryOwnerActions: advisoryOwnerActionsFromConnectors(connectors),
     attentionConnections: attentionConnectionsFromConnectors(connectors),
@@ -177,6 +190,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     grantPackageCount: packageCountRes.value.count,
     grants: grantsRes.value.data,
     hrefs: HREFS,
+    notificationsSetup,
     now: new Date(),
     overviewLoadIssues,
     pendingApprovals: pendingRes.value.data,
@@ -186,6 +200,16 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     summary: summary.value,
     traces: tracesRes.value.data,
   };
+}
+
+/** See StandingData.notificationsSetup — a failed read must stay "unknown", never default to "not_configured". */
+function webPushSetupState(
+  webPushRes: SafeRead<ListResponse<WebPushSubscriptionSummary>>
+): "configured" | "not_configured" | "unknown" {
+  if (webPushRes.issue !== null) {
+    return "unknown";
+  }
+  return webPushRes.value.data.length > 0 ? "configured" : "not_configured";
 }
 
 function stripScheme(url: string): string {

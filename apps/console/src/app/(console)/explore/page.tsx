@@ -39,7 +39,7 @@
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
-import { ServerUnreachable } from "../components/shell.tsx";
+import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";

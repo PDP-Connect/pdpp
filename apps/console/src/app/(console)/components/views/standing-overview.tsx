@@ -266,19 +266,24 @@ function AttentionBlock({
   );
 }
 
-function NotificationsBlock({ href }: { href: string }) {
+const NOTIFICATIONS_SETUP_COPY: Readonly<Record<StandingData["notificationsSetup"], string>> = {
+  configured:
+    "At least one device is enrolled for alerts on source reconnects, syncs waiting on you, and other owner-action events.",
+  not_configured:
+    "No device is enrolled yet. Enable browser or installed-app alerts for source reconnects, syncs waiting on you, and other owner-action events.",
+  unknown: "Could not check whether any device is enrolled for alerts right now.",
+};
+
+function NotificationsBlock({ href, setup }: { href: string; setup: StandingData["notificationsSetup"] }) {
   return (
     <section className="rr-stand-block">
       <div className="rr-stand-block__head">
         <h2 className="rr-stand-block__title">Notifications</h2>
         <a className="rr-link" href={href}>
-          setup →
+          {setup === "configured" ? "manage →" : "setup →"}
         </a>
       </div>
-      <p className="rr-stand-empty">
-        Enable browser or installed-app alerts for source reconnects, syncs waiting on you, and other owner-action
-        events.
-      </p>
+      <p className="rr-stand-empty">{NOTIFICATIONS_SETUP_COPY[setup]}</p>
     </section>
   );
 }
@@ -327,7 +332,7 @@ export function StandingOverview({
         sections={data.sourceWorkSections}
         syncsHref={syncsHref}
       />
-      <NotificationsBlock href={notificationsHref} />
+      <NotificationsBlock href={notificationsHref} setup={data.notificationsSetup} />
     </div>
   );
 }
