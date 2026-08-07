@@ -15,10 +15,10 @@ interface PdppConceptDocHeaderProps {
 export function PdppConceptDocHeader({ className, lede, title }: PdppConceptDocHeaderProps) {
   return (
     <div className={cn("flex flex-col gap-2", className)} data-slot="pdpp-concept-doc-header">
-      <Text as="h1" intent="display">
+      <Text as="h1" size="display">
         {title}
       </Text>
-      <Text intent="lede">{lede}</Text>
+      <Text size="lede">{lede}</Text>
     </div>
   );
 }

@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { findNeighbour } from "fumadocs-core/page-tree";
-import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/layouts/docs/page";
+import { DocsBody, DocsDescription, DocsPage } from "fumadocs-ui/layouts/docs/page";
 import { createRelativeLink } from "fumadocs-ui/mdx";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
 import { getMDXComponents } from "@/components/mdx.tsx";
 import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
+import { Text } from "@/components/pdpp-concept/text.tsx";
 import { getPageMarkdownUrl, source } from "@/lib/docs-source.ts";
 
 interface DocsPageProps {
@@ -42,8 +43,6 @@ export default async function Page({ params }: DocsPageProps) {
   const { body: MDX, toc } = await page.data.load();
   const markdownUrl = getPageMarkdownUrl(page).url;
   const githubPath = page.path;
-  const firstSlug = page.slugs[0] || "";
-  const sectionLabel = firstSlug.startsWith("reference-implementation") ? "Reference Implementation" : "Protocol Spec";
 
   // fumadocs-ui's own Footer computes previous/next by matching usePathname()
   // against the flattened tree client-side — at the root slug the browser URL
@@ -69,8 +68,9 @@ export default async function Page({ params }: DocsPageProps) {
     >
       <div className="pdpp-docs-hero">
         <div className="pdpp-docs-hero__content">
-          <div className="pdpp-eyebrow">{sectionLabel}</div>
-          <DocsTitle className="pdpp-display pdpp-docs-title">{page.data.title}</DocsTitle>
+          <Text as="h1" size="display">
+            {page.data.title}
+          </Text>
           {page.data.description && (
             <DocsDescription className="pdpp-docs-description">{page.data.description}</DocsDescription>
           )}

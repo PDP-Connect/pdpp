@@ -21,8 +21,8 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 // packages/operator-ui so that both apps share one source of truth.
 const PROVIDER_FILE = `${HERE}../../../../../packages/operator-ui/src/components/theme/theme-provider.tsx`;
 const LAYOUT_FILE = `${HERE}../../app/layout.tsx`;
-const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/tokens/primitive.css`;
-const BRAND_INDEX_FILE = `${HERE}../../../../../packages/pdpp-brand/index.css`;
+const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/primitive.css`;
+const BRAND_INDEX_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/index.css`;
 const STATUS_BADGE_CSS_FILE = `${HERE}../../../../../packages/operator-ui/src/components/status-badge.css`;
 
 const NEXT_THEMES_IMPORT = /from "next-themes"/;

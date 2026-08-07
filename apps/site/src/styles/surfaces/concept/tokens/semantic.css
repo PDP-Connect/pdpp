@@ -1,0 +1,104 @@
+/* Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Tailwind bridge for the concept register. primitive.css owns runtime palette
+ * (--pdpp-concept-* + dark). This file owns layout @theme keys (static chrome)
+ * and palette/type rebinds under [data-surface="concept"] — never parallel
+ * palette @theme aliases.
+ *
+ * Layout (page width, rail, pad, …) is NOT runtime — declare values directly
+ * in @theme below, not as --pdpp-concept-* primitives. No comments inside
+ * @theme / [data-surface="concept"] blocks — TW IntelliSense false `{ expected`
+ * cascade; notes in this header only.
+ *
+ * Shared `Text` colors use brand/shadcn utils (text-foreground, text-primary, …).
+ * Legacy ink/paper/teal TW classes remain in compat-palette.css until migrated.
+ *
+ * TYPE: the ladder is DECLARED once, in @pdpp/brand tokens/semantic.css —
+ * eyebrow · small · body · lede · heading · title · display · hero. This
+ * surface only rebinds those variables under [data-surface="concept"].
+ *
+ * Editorial values differ from brand's product values by intent, not by
+ * accident: fluid clamp() rungs and a looser 1.65 body leading. Concept-only
+ * Text packaging (deck, stamp chip, callout) lives in pdpp-concept/text-variants.ts.
+ *
+ * FLUID CLAMPS (layout @theme + type rungs below): linear 375px→1240px viewport,
+ * 16px root — clamp(min, calc(intercept_rem + slope_vw * 1vw), max) with
+ * slope_vw = (max−min)/8.65 and intercept_rem = (min−slope_vw×3.75)/16.
+ */
+
+@theme {
+  --container-page: 1080px;
+  --container-measure: 68ch;
+
+  --spacing-pad: clamp(20px, calc(0.9249rem + 1.3873vw), 32px);
+  --spacing-gutter: clamp(40px, calc(2.2832rem + 0.9249vw), 48px);
+  --spacing-rail: clamp(180px, calc(9.6243rem + 6.9364vw), 240px);
+  --spacing-section-gap: 96px;
+}
+
+/* Primitives → shadcn runtime vars + editorial type VALUES.
+   Rung names/utilities are declared in brand @theme; this surface only
+   rebinds values so product defaults stay outside concept pages. */
+[data-surface="concept"] {
+  --background: var(--pdpp-concept-paper);
+  --foreground: var(--pdpp-concept-ink);
+  --muted-foreground: var(--pdpp-concept-ink-soft);
+  --foreground-faint: var(--pdpp-concept-ink-faint);
+  --card: var(--pdpp-concept-paper-deep);
+  --card-foreground: var(--pdpp-concept-ink);
+  --secondary: var(--pdpp-concept-paper-panel);
+  --secondary-foreground: var(--pdpp-concept-ink);
+  --primary: var(--pdpp-concept-teal);
+  --primary-foreground: var(--pdpp-concept-onteal-deep);
+  --primary-emphasis: var(--pdpp-concept-teal-deep);
+  --primary-wash: var(--pdpp-concept-teal-wash);
+  --primary-on-wash: var(--pdpp-concept-teal-on-wash);
+  --on-primary-emphasis: var(--pdpp-concept-onteal-deep);
+  --on-primary-emphasis-soft: var(--pdpp-concept-onteal-deep-soft);
+  --on-primary-emphasis-label: var(--pdpp-concept-onteal-deep-label);
+  --on-primary-emphasis-wash: var(--pdpp-concept-onteal-deep-wash);
+  --border: color-mix(in srgb, var(--foreground) 18%, var(--background));
+  --border-subtle: color-mix(in srgb, var(--foreground) 10%, var(--background));
+  --ring: var(--pdpp-concept-teal);
+
+  --text-eyebrow: 11px;
+  --text-eyebrow--line-height: 1.3;
+  --text-eyebrow--letter-spacing: 0.08em;
+  --text-eyebrow--font-weight: 500;
+
+  --text-small: 14px;
+  --text-small--line-height: 1.5;
+  --text-small--letter-spacing: 0;
+  --text-small--font-weight: 400;
+
+  --text-body: 15px;
+  --text-body--line-height: 1.6;
+  --text-body--letter-spacing: 0;
+  --text-body--font-weight: 400;
+
+  --text-lede: clamp(17px, calc(1.0083rem + 0.2312vw), 19px);
+  --text-lede--line-height: 1.5;
+  --text-lede--letter-spacing: 0;
+  --text-lede--font-weight: 400;
+
+  --text-heading: clamp(18px, calc(1.0708rem + 0.2312vw), 20px);
+  --text-heading--line-height: 1.45;
+  --text-heading--letter-spacing: 0;
+  --text-heading--font-weight: 600;
+
+  --text-title: clamp(23px, calc(1.3291rem + 0.4624vw), 27px);
+  --text-title--line-height: 1.3;
+  --text-title--letter-spacing: 0;
+  --text-title--font-weight: 600;
+
+  --text-display: clamp(29px, calc(1.6228rem + 0.8092vw), 36px);
+  --text-display--line-height: 1.15;
+  --text-display--letter-spacing: -0.01em;
+  --text-display--font-weight: 600;
+
+  --text-hero: clamp(56px, calc(2.4162rem + 4.6243vw), 96px);
+  --text-hero--line-height: 0.85;
+  --text-hero--letter-spacing: 0;
+  --text-hero--font-weight: 300;
+}

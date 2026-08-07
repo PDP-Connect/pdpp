@@ -682,10 +682,10 @@
   letter-spacing: 0.04em;
 }
 
-/* ─── Surface wrappers — owned by @pdpp/brand/components.css ─────────
+/* ─── Surface wrappers — owned by packages/pdpp-brand/styles/components.css ─────────
    Keep class aliases here for call sites that still use .pdpp-surface-*. */
 .pdpp-surface-human {
-  /* Same recipe as [data-surface="human"] in @pdpp/brand/components.css */
+  /* Same recipe as [data-surface="human"] in packages/pdpp-brand/styles/components.css */
   background-color: color-mix(in oklab, var(--card) 95%, var(--human));
   border: 1px solid var(--border);
 }
@@ -695,7 +695,7 @@
 }
 
 /* Protocol-data compatibility classes. The shared .pdpp-* typography aliases
-   live in @pdpp/brand/typography.css. */
+   live in packages/pdpp-brand/styles/typography.css. */
 .pdpp-typed {
   font-family: var(--font-mono);
   font-size: 0.8125rem;

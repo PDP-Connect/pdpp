@@ -1,42 +1,104 @@
-# Styling in apps (Tailwind, shadcn, brand, editorial)
+# Styling in apps (Tailwind, shadcn, brand, concept)
 
 How UI is built in this repo. Read this before inventing helpers or picking a palette.
 
+## Site ownership
+
+The site has three presentation boundaries:
+
+1. `apps/site/src/app/layout.tsx` owns the HTML document, metadata, shared fonts, providers, and the
+   `styles/site.css` entrypoint. It does not own route chrome.
+2. The concept route-group layout owns the concept shell, masthead, and footer for `/`, `/self-host`, and `/participate`.
+   The root `not-found` route is explicit and composes the same shell.
+3. The `/specification` layout owns the Fumadocs shell and specification surface while reusing the shared site chrome.
+
+Styles follow those boundaries:
+
+- `styles/site.css` composes site-wide package and surface styles.
+- `styles/surfaces/concept/index.css` composes the concept surface.
+- `styles/surfaces/concept/components.css` owns remaining concept selectors.
+- `styles/surfaces/concept/tokens/**` owns concept runtime values, Tailwind theme mappings, and utilities.
+- `styles/surfaces/specification.css` owns Fumadocs/specification overrides.
+- `components/docs/prose-page.css` is imported by `ProsePage` and owns only its rendered Markdown rules.
+
+The ownership split preserves current visual behavior. Shared footer and chrome should be structurally consistent across
+concept routes, specification, and the root 404.
+
 ## Direction: off `pdpp-*` BEM → Tailwind + JSX composition
 
-We are **migrating** marketing/concept UI off hand-rolled `.pdpp-*` BEM in `editorial.css` toward:
+We are **migrating** marketing/concept UI off hand-rolled `.pdpp-*` BEM in
+`styles/surfaces/concept/components.css` toward:
 
-1. **Token utilities** — brand (`bg-background`, …) or editorial-tokens (`text-ink`, `max-w-page`, `container` + remap, …)
+1. **Token utilities** — brand (`bg-background`, …) or concept tokens (`text-ink`, `max-w-page`, `container` + remap, …)
 2. **Composition** — small JSX comps that own layout (`PdppConceptPage`, `PdppFrontDoor`, …), not new BEM blocks in CSS
 
 **Do (site concept work):**
 
-- Put chrome in a component (`PdppConceptPage` = `container max-w-page` + grid/rail/`home`). Callers compose; they do not sprinkle `pdpp-page` / `pdpp-frontdoor__*`.
-- Prefer TW + editorial-tokens. Extend `apps/site/src/styles/editorial-tokens/` when a token is missing — do not invent parallel BEM.
-- Delete the matching `.pdpp-*` rule from `editorial.css` when the call site no longer needs it (same PR if the class is dead).
+- Put page structure in a component (`PdppConceptPage` = `container max-w-page` + grid/rail/`home`). The route-group
+  shell owns shared chrome; route callers do not sprinkle `pdpp-page` / `pdpp-frontdoor__*`.
+- Prefer TW + concept tokens. Extend `apps/site/src/styles/surfaces/concept/tokens/` when a token is missing — do not
+  invent parallel BEM.
+- Delete the matching `.pdpp-*` rule from `styles/surfaces/concept/components.css` when the call site no longer needs it
+  (same PR if the class is dead).
 
 **Do not:**
 
 - Add new `.pdpp-frontdoor__*` / layout BEM for work that can be a util or a local comp.
-- “Fix” layout by growing `editorial.css` when a JSX wrapper + `cn(...)` would do.
-- Merge editorial into `@pdpp/brand` or style concept pages with brand `bg-background` / `text-muted-foreground` when `text-ink` / `bg-paper` exist.
+- “Fix” layout by growing `components.css` when a JSX wrapper + `cn(...)` would do.
+- Merge editorial into `@pdpp/brand`. Concept chrome keeps `text-ink` / `bg-paper`; shared `Text` colors use brand names that the surface remaps.
 
 **Still BEM for now** (specificity / cascade hooks — migrate deliberately, don’t ghost-delete):
 
 - `.pdpp-concept` surface (type, links, paper)
 - `.pdpp-doc` prose/table/cmd scoping
 - `.pdpp-cta*` (beats `.pdpp-concept a`)
-- footer / rail sticky chrome until those comps own it (masthead → `masthead.tsx`)
+- rail sticky behavior until its component owns it
 
-Site agent notes: [`apps/site/AGENTS.md`](../../apps/site/AGENTS.md). Cascade: [`apps/site/src/app/globals.css`](../../apps/site/src/app/globals.css). Brand package: [`packages/pdpp-brand/README.md`](../../packages/pdpp-brand/README.md). Visual language (console/operator, not concept): [ink-carbon/](./ink-carbon/).
+Site agent notes: [`apps/site/AGENTS.md`](../../apps/site/AGENTS.md). Site composition:
+[`apps/site/src/styles/site.css`](../../apps/site/src/styles/site.css). Brand package:
+[`packages/pdpp-brand/README.md`](../../packages/pdpp-brand/README.md). Visual language (console/operator, not concept):
+[ink-carbon/](./ink-carbon/).
 
 ## Surfaces → systems
 
 | Surface | App / package | Style system |
 | --- | --- | --- |
 | Operator console, sandbox, shared product UI | `apps/console`, `@pdpp/operator-ui`, site `/sandbox` | **Brand** — `@pdpp/brand` + TW |
-| Public marketing / concept | site `/`, `/self-host`, `/participate`, masthead/footer | **Editorial** — migrating: comps + `editorial-tokens`; leftover BEM in `editorial.css` |
-| Spec docs chrome | site `/specification` | Both — fumadocs + `docs.css` under `[data-pdpp-doc-theme]` |
+| Public marketing / concept | site `/`, `/self-host`, `/participate`, root 404 | **Concept** — route shell + components + concept tokens |
+| Spec docs chrome | site `/specification` | Both — Fumadocs + `styles/surfaces/specification.css` under `[data-pdpp-doc-theme]` |
+
+### Specification ↔ concept theme parity (TODO)
+
+`/specification` reuses `PdppConceptShell` (masthead, footer, `[data-surface="concept"]`
+tokens) but **does not inherit concept prose styling**. Spec body copy is
+`.pdpp-docs-body` in `styles/surfaces/specification.css`, not `.pdpp-doc` in
+`styles/surfaces/concept/components.css`. Fumadocs owns the DOM (Shiki
+`figure.shiki`, tables, Cards, prev/next, mobile drawer, Copy/Open actions);
+concept pages use JSX + `.pdpp-terminal` for code blocks.
+
+**Current shape:** `specification.css` is scoped entirely to
+`[data-pdpp-doc-theme]` — the former unscoped operator register was removed.
+Shiki blocks mirror `.pdpp-terminal` metrics; inline `code` mirrors
+`[data-surface="concept"] code`. Remaining gaps are called out below.
+
+**Direction (address later):** spec should **maximize concept theme reuse** so
+it matches `/`, `/self-host`, `/participate` — not maintain a parallel prose
+skin. Concrete targets:
+
+| Area | Today | Should align with |
+| --- | --- | --- |
+| Code blocks (Shiki) | Metrics mirror `.pdpp-terminal`; colours duplicated in `specification.css` | Shared `@utility` / class so spec and concept cannot drift |
+| Copy Markdown / Open | Fumadocs buttons; only `border-radius` squared | `.pdpp-copy-btn` |
+| Tables | Bordered box | `.pdpp-doc table` open ruled rows |
+| h2/h3 metrics | Local clamps in `specification.css` | Concept type ladder / `Text` rungs |
+| Mobile sidebar / TOC popover | Fumadocs defaults | Concept rail register |
+
+**Layout bridge (done):** `--fd-layout-width: 100%` on `#nd-docs-layout` inside
+`container max-w-page`; `--fd-sidebar-width: var(--spacing-rail)`. Fumadocs does
+not read `--container-page` — the wrapper + `--fd-layout-width` are the bridge.
+
+Do not add more one-off `[data-pdpp-doc-theme]` prose rules without checking
+whether `.pdpp-doc` / concept tokens already own the behavior.
 
 ## Format mechanically (Biome / Ultracite)
 
@@ -48,20 +110,21 @@ Site agent notes: [`apps/site/AGENTS.md`](../../apps/site/AGENTS.md). Cascade: [
 
 ```ts
 // Brand (source of truth for brand @theme scales):
-// packages/pdpp-brand/tw-merge.ts → @pdpp/brand/tw-merge
+// packages/pdpp-brand/lib/tw-merge.ts → @pdpp/brand/tw-merge
 
 // Console / operator-ui: thin wrapper around brand cn (keep @/lib/utils for shadcn).
-// Site: editorial theme keys + withPdppBrand — apps/site/src/lib/utils.ts
+// Site: concept theme keys + withPdppBrand — apps/site/src/lib/utils.ts
 ```
 
 shadcn → `"utils": "@/lib/utils"`. Use `cn` for conditional / merged classes. Do not hand-roll `filter(Boolean).join`.
 
 Brand `cn` / `withPdppBrand` registers custom `--text-*` / `--spacing-*` /
-`--container-*` / `--radius-*` from brand `tokens/semantic.css`. Site extends
-that with editorial-tokens only (`stamp`, `pad`, `page`, …). Custom `--color-*`
-names need no listing. Unlisted `text-stamp` is treated as a **colour**, so
-`text-teal` deletes it. Keep the brand + site lists in step with those `@theme`
-files.
+`--container-*` / `--radius-*` from brand `styles/tokens/semantic.css` — including the
+whole eight-rung type ladder (`eyebrow` … `hero`) now that `@pdpp/brand-react`'s `Text`
+owns it. Site extends that with layout keys only (`pad`, `page`, …). Custom
+`--color-*` names need no listing. An unlisted `text-eyebrow` is treated as a
+**colour**, so a later `text-ink` would delete it. Keep the brand + site lists
+in step with those `@theme` files.
 
 ```tsx
 // good
@@ -104,47 +167,107 @@ Rules of thumb:
 
 - Theme via CSS `@theme`, not a JS config.
 - Product: `@pdpp/brand` (`tokens/primitive.css` → `semantic.css` `@theme`). Brand `@utility container` uses `--container-content` + `--spacing-inset`.
-- Concept: `apps/site/src/styles/editorial-tokens/` after `editorial.css` in site globals. Short names (`text-ink`, `max-w-page`, …). Under `.pdpp-concept`, `--spacing-inset` is remapped to concept pad so `container` + `max-w-page` is the page chrome.
+- Concept: `apps/site/src/styles/surfaces/concept/tokens/` is composed by the concept surface. It provides short names
+  (`text-ink`, `max-w-page`, …). Under `[data-surface="concept"]`, `--spacing-inset` is remapped to concept pad so `container` +
+  `max-w-page` is the page chrome.
 - Prefer token utils over arbitrary values; arbitrary OK when no token exists.
-- Cross-package TW: `@source` (see site `globals.css` for `@pdpp/operator-ui`).
+- Cross-package TW: `@source` is declared by `styles/site.css` for `@pdpp/operator-ui` and `@pdpp/brand-react`.
 
 ### Editorial type stack (concept)
 
-One ladder. Three layers — do not invent a parallel scale or a second `@theme` type block.
+One ladder. Shared `Text` speaks **brand/shadcn** utils; the concept surface rebinds the values.
 
 ```
-primitive.css          →  --pdpp-concept-* runtime (ink, paper, fonts, pad, …)
+brand styles/tokens/semantic.css  →  declares rungs + --color-foreground / muted / primary / …
        ↓
-semantic.css @theme    →  TW utilities (text-ink, text-body, text-display, …)
+brand-react/text-variants.ts  →  size= / color= → those TW utils (voice only on size)
        ↓
-text-variants.ts       →  Text intents (body, lede, display, …) compose those utils
+[data-surface="concept"]      →  --foreground ← ink, --primary ← teal, … (tokens/semantic.css)
+       ↓                          + type VALUES rebound (concept tokens/semantic.css)
        ↓
-text.tsx               →  <Text intent="lede" color="soft">
+pdpp-concept/text.tsx         →  facade: defaults, concept-only colors/sizes, sectionIndex
 ```
+
+Never put a palette name (`ink`, `teal`, `paper`) in the shared table. Ink is a concept *value*, not the shared *name*.
 
 | Layer | Path | Owns |
 | --- | --- | --- |
-| **Primitives** | [`editorial-tokens/primitive.css`](../../apps/site/src/styles/editorial-tokens/primitive.css) | Raw `--pdpp-concept-*` values (+ dark). Keep in sync with the live block in [`editorial.css`](../../apps/site/src/styles/editorial.css). |
-| **Semantic** | [`editorial-tokens/semantic.css`](../../apps/site/src/styles/editorial-tokens/semantic.css) | `@theme` only: colors, measure/spacing, **one** type ladder (`--text-stamp` … `--text-numeral`). Responsive rungs use `clamp` (display/title/lede/deck/numeral). One 15px size: `--text-small`. No comments inside `@theme { }` (TW IntelliSense bug). |
-| **Text variants** | [`pdpp-concept/text-variants.ts`](../../apps/site/src/components/pdpp-concept/text-variants.ts) + [`text.tsx`](../../apps/site/src/components/pdpp-concept/text.tsx) | CVA intents/colors over semantic utils. Treatment (italic caption, sans eyebrow) lives here — not a new size token. |
+| **Brand semantic** | [`pdpp-brand/styles/tokens/semantic.css`](../../packages/pdpp-brand/styles/tokens/semantic.css) | shadcn/brand `@theme` (`--color-foreground`, …). Shared `Text` contract. **Sole declaration site for the eight type rungs** (`eyebrow` · `small` · `body` · `lede` · `heading` · `title` · `display` · `hero`), each setting the full quadruple. |
+| **Concept primitives** | [`tokens/primitive.css`](../../apps/site/src/styles/surfaces/concept/tokens/primitive.css) | Runtime palette `--pdpp-concept-*` (+ dark) and BEM rule borders only. Not layout or fonts. No comments inside `:root`/`[data-theme]`; formatter disabled. |
+| **Concept semantic** | [`tokens/semantic.css`](../../apps/site/src/styles/surfaces/concept/tokens/semantic.css) | Layout `@theme` + `[data-surface="concept"]` palette/type rebind. Fonts: brand `--font-*` via `site.css` — BEM uses `var(--font-serif)` etc., not concept primitives. |
+| **Text variants** | [`brand-react/text-variants.ts`](../../packages/pdpp-brand-react/src/text-variants.ts) + [`text.tsx`](../../packages/pdpp-brand-react/src/text.tsx) | CVA over brand utils. No sectionIndex, no concept-only colors. |
+| **Concept facade** | [`pdpp-concept/text.tsx`](../../apps/site/src/components/pdpp-concept/text.tsx) + [`text-variants.ts`](../../apps/site/src/components/pdpp-concept/text-variants.ts) | Defaults, concept-only colors/sizes (CVA), section-index chrome. |
+
+#### Text ownership (read this before editing variants)
+
+**token owns metrics · CVA owns voice · packaging does not re-emit the rung.**
+
+| Concern | Owner | Do |
+| --- | --- | --- |
+| Size / lh / tracking / weight | `--text-{rung}` (+ `--text-{rung}--*`) | Rebind under the surface selector. Never hardcode `tracking-[…]` / `text-[11px]` on a size that has a rung. |
+| Voice (uppercase, nowrap, default family) | brand-react `size` | e.g. `eyebrow` = `text-eyebrow uppercase …` — no metrics. |
+| Color | `color=` axis only | Size ⊥ color. No compounds that remap `foreground` → muted for “label” sizes. Soft labels say `color="muted"`. |
+| Wrap policy | `wrap=` + size compounds gated on `wrap="normal"` | One axis — no boolean `balance` dupe. |
+| Surface packaging | concept facade | `stamp` / `callout` / `deck`, concept colors, `sectionIndex`. Stamp **maps** to brand `size="eyebrow"` and only adds chip extras (`tabular-nums`, default primary). |
+| Contextual token tweak | surface CVA or CSS | e.g. concept `text-variants` stamp compound variant `[--text-eyebrow--letter-spacing:0.04em]` — rebind the var on the host, don’t fight utilities. |
+
+**Anti-patterns (clankers hit these):**
+
+- Duplicating `text-eyebrow` + uppercase + tracking in concept because `stamp` “needs” them — map stamp → eyebrow instead.
+- Empty CVA variant stubs just so a compound can match — prefer a CSS var rebind or a facade `className` ternary.
+- `tracking-[0.08em]` (or any metric) in CVA when `--text-eyebrow--letter-spacing` already exists.
+- Size→color soft-defaults (`eyebrow`+`foreground` ⇒ muted). That lies about `color="foreground"`.
+- A second `@theme` type ladder on a surface (collides at `:root` with brand).
+- Palette words (`ink`, `teal`) in brand-react `text-variants.ts`.
+- Parallel props that emit the same class (`link` / `underline`) — keep **`link`** → `link-prose` in [`packages/pdpp-brand/styles/utilities.css`](../../packages/pdpp-brand/styles/utilities.css); there is no `underline` prop. Do not redeclare `link-prose` on a surface.
+
+**Shared colors** (prop → brand util → concept value via remap):
+
+| `color=` | Utility | Concept binds |
+| --- | --- | --- |
+| `foreground` (default) | `text-foreground` | `--pdpp-concept-ink` |
+| `muted` | `text-muted-foreground` | `--pdpp-concept-ink-soft` |
+| `primary` | `text-primary` | `--pdpp-concept-teal` |
+| `background` | `text-background` | `--pdpp-concept-paper` |
+
+**Concept-only colors** (facade → semantic util): `subtle` → `text-foreground-faint`; `accentStrong` → `text-primary-emphasis`; `onWash` → `text-primary-on-wash`; `onAccent*` → `text-on-primary-emphasis*`.
+
+**Color vocabulary:** primitives stay `--pdpp-concept-*` in `primitive.css`. `[data-surface="concept"]` in `tokens/semantic.css` rebinds them to shadcn runtime vars (`--foreground`, `--primary`, …). JSX and CVA use shadcn utilities only (`text-foreground`, `bg-primary-emphasis`, …). Legacy `text-ink` / `bg-paper` / `text-teal` utilities live in `compat-palette.css` as aliases → semantic slots (not → primitives); delete each alias when grep is clean.
+
+**Shared sizes** = ladder 1:1 (`eyebrow` … `hero`). **Concept-only sizes** (facade): `stamp` → brand `eyebrow` + chip extras; `callout`; `deck` (title + normal weight).
 
 **Rules:**
 
-- New type size? Add the token in `semantic.css`, then the intent in `text-variants.ts`. Values come from `editorial.css` Document type (or replace that BEM in the same change).
-- Do not copy a second ladder from Vana/brand. Brand’s product `--text-*` on this app is overridden by editorial `semantic.css` (loads after brand in site globals).
-- Call sites: `<Text intent="…" />` or the matching `text-*` utility — not `text-[20px]` when a rung exists.
-- `editorial.css` still owns leftover BEM type until call sites move; delete dead rules when unused.
+- New type size? Add the rung to **brand** `styles/tokens/semantic.css` (the only declaration site — a second `@theme` with the same rung name collides at `:root` and resolves by import order), set the full quadruple on it, add the name to `pdpp-brand/lib/tw-merge.ts`, then add the size in `brand-react/text-variants.ts`. A surface supplies its own value by rebinding the variable under its selector. If the new size only re-weights or re-colours an existing rung, it is treatment — reuse that rung and add no token.
+- Tailwind must scan the package: `styles/site.css` declares `@source` for `@pdpp/brand-react`.
+- Concept chrome may still use `text-ink` / `bg-paper` / `text-teal`. Shared `Text` colors use brand names.
+- Call sites: `<Text size="…" />` or the matching `text-*` utility — not `text-[20px]` when a rung exists.
+- `styles/surfaces/concept/components.css` owns leftover BEM type until call sites move; delete dead rules when unused.
+
+#### Enforcement (tests)
+
+The eight-rung ladder is a **brand contract**. Enforce it once; do not copy the same assertion into concept tests.
+
+| Test file | Owns | Does not own |
+| --- | --- | --- |
+| [`packages/pdpp-brand-react/src/text.test.ts`](../../packages/pdpp-brand-react/src/text.test.ts) | `textVariants.size` ↔ `--text-{rung}:` in [`pdpp-brand/styles/tokens/semantic.css`](../../packages/pdpp-brand/styles/tokens/semantic.css) (1:1, each size emits `text-{rung}`) | Concept packaging, concept color utils, surface value rebinding |
+| [`apps/site/src/components/pdpp-concept/text.test.ts`](../../apps/site/src/components/pdpp-concept/text.test.ts) | Facade behavior — smart quotes default, `sectionIndex` chrome, structural hosts (`li`/`pre`), icon truncation | The ladder list (concept has no `body`/`heading`/… in its CVA table) |
+| [`apps/site/scripts/site-surface-ownership.test.ts`](../../apps/site/scripts/site-surface-ownership.test.ts) | Route/surface CSS entrypoint ownership | Type rung names (future site CSS test could live here if needed) |
+
+**Why concept `text.test.ts` is not a duplicate:** `pdpp-concept/text-variants.ts` only declares packaging (`stamp` → brand `eyebrow`; `callout`/`deck` compose existing `text-body`/`text-title`). Editorial rung **values** are rebound in [`concept/tokens/semantic.css`](../../apps/site/src/styles/surfaces/concept/tokens/semantic.css) under `[data-surface="concept"]` — same mechanism as color remapping, not a second `size` axis.
+
+**When you add a rung:** update brand `semantic.css` + `tw-merge.ts` + `brand-react/text-variants.ts`. The brand test fails if any step is missed. Surfaces only rebind `--text-{rung}*` under their selector.
 
 ### CVA (class-variance-authority)
 
-Canonical: [`text-variants.ts`](../../apps/site/src/components/pdpp-concept/text-variants.ts). Same rules for concept buttons and any other site CVA.
+Canonical: [`text-variants.ts`](../../packages/pdpp-brand-react/src/text-variants.ts). Same rules for concept buttons and any other site CVA.
 
 - Pass the config **inline** to `cva(...)`. Extracting the whole config object widens `defaultVariants` string literals → `string` and breaks `VariantProps`.
-- Shared class fragments used **2+ times** stay as consts (e.g. `labelUpper` for eyebrow+stamp). Do **not** flatten them into duplicated long strings.
-- One-shot strings stay inline in the variant — do not invent a const for a single use.
+- Shared class fragments used **2+ times** stay as consts. Do **not** flatten them into duplicated long strings. Do not invent a const for a one-shot string.
 - CVA accepts `ClassValue` arrays. Prefer `["a", "b", shared]` over `.join(" ")`. Joining duplicates classes, fights Biome `useSortedClasses`, and violates `cn`-only above.
-- Compound variants use `className` (not `class`).
+- Compound variants use `className` (not `class`). Prefer compounds for orthogonal interactions (wrap×size, icon×size) — not for smuggling metrics that belong on tokens.
 - Do not rewrite structure to chase IDE red — confirm with `pnpm exec biome check <file>` + `tsc`. Biome LSP often shows stale parse cascades while CLI is clean. Fix real `useSortedClasses` via biome `--write`, not by smushing arrays.
+- **Biome `noUnresolvedImports` + CVA:** Biome false-positives on packages that ship an `exports` map (`class-variance-authority`, `clsx`, `tailwind-merge`) even when tsc / pnpm / Next resolve them. Do **not** sprinkle `biome-ignore` on imports. Waive at the package `biome.jsonc` (`src/**` override) — same pattern as `apps/site` / `apps/console`; see [`packages/pdpp-brand-react/biome.jsonc`](../../packages/pdpp-brand-react/biome.jsonc). Upstream: [biome#9143](https://github.com/biomejs/biome/issues/9143), [biome#6464](https://github.com/biomejs/biome/issues/6464). Drop the override when Biome’s resolver stops lying.
 
 ### Migrating editorial type (BEM → `Text`)
 
@@ -152,19 +275,21 @@ Canonical worked example: [`PdppFrontDoor`](../../apps/site/src/components/pdpp-
 
 **Method — same PR, in order:**
 
-1. **Read the BEM block** in `editorial.css` — type only (size, lh, color, weight). Layout (grid, pad, max-width, flex) stays on the JSX wrapper.
-2. **Confirm the token exists** in `semantic.css` (or add it from the BEM values; use `clamp` for old `@media` steps).
-3. **Confirm the intent exists** in `text-variants.ts` (or add it — treatment like italic/mono/sans lives here, not as a second size).
-4. **Swap the call site** to `<Text as="…" intent="…" color="…" />`.
-5. **Delete dead BEM** from `editorial.css` when nothing references the class.
+1. **Read the BEM block** in `styles/surfaces/concept/components.css` — type only (size, lh, color, weight). Layout (grid, pad, max-width, flex) stays on the JSX wrapper.
+2. **Confirm the token exists** in `tokens/semantic.css` (or add it from the BEM values; use `clamp` for old `@media`
+   steps).
+3. **Confirm the size exists** in `brand-react/text-variants.ts` (or add it — treatment like italic/mono/sans lives on other axes, not as a second size).
+4. **Swap the call site** to `<Text as="…" size="…" color="…" />`.
+5. **Delete dead BEM** from `styles/surfaces/concept/components.css` when nothing references the class.
 
 **What goes where:**
 
 | Concern | Owner |
 | --- | --- |
-| Type size / lh / default color | `semantic.css` token → `text-variants` intent |
-| Voice (italic caption, mono stamp, sans eyebrow) | `text-variants` intent classes |
-| Color override | `<Text color="soft" />` |
+| Type size / lh / tracking / weight | `semantic.css` token (`text-*` util) |
+| Voice (eyebrow uppercase/sans) | shared `text-variants` size |
+| Color | `<Text color="muted" />` (axis only — size does not imply color) |
+| Concept packaging (stamp/callout/deck) | concept facade |
 | Vertical rhythm between copy blocks | **Parent** `flex flex-col gap-*` / nested stacks — not `mb-*!` on each `Text` (default) |
 | Measure (`max-w-[20ch]`) | `className` on the one element that needs it |
 | Grid, border, hero water, CTA row | Parent JSX — not `Text` |
@@ -183,34 +308,34 @@ className={cn("flex flex-col gap-7 …")}
 
 | Copy role | `Text` |
 | --- | --- |
-| Page title (`h1`) | `as="h1"` `intent="display"` |
-| Identity line | `intent="deck"` |
-| Definition | `intent="lede"` |
-| Amplification | `intent="body"` `color="soft"` |
-| Status stamp | `intent="stamp"` `mono` `color="soft"` (compound: mono stamp → `tracking-[0.04em]`) |
+| Page title (`h1`) | `as="h1"` `size="display"` |
+| Identity line | `size="deck"` |
+| Definition | `size="lede"` |
+| Amplification | `size="body"` `color="muted"` |
+| Status stamp | concept `size="stamp"` `family="mono"` (→ brand eyebrow + primary default; mono tightens tracking via CSS var) |
 
 CTAs stay `pdpp-cta*` until a `ConceptCta` owns that specificity.
 
 ```tsx
 <div className={cn("flex flex-col gap-7 pt-[clamp(32px,1.5rem+2.4vw,56px)]")}>
   <div className="flex flex-col gap-5">
-    <Text as="h1" className="max-w-[20ch]" intent="display">…</Text>
-    <Text intent="deck">…</Text>
-    <Text intent="lede">…</Text>
+    <Text as="h1" className="max-w-[20ch]" size="display">…</Text>
+    <Text size="deck">…</Text>
+    <Text size="lede">…</Text>
   </div>
   <div className="flex flex-col gap-3">
-    <Text color="soft" intent="body">…</Text>
-    <Text color="soft" intent="body">…</Text>
+    <Text color="muted" size="body">…</Text>
+    <Text color="muted" size="body">…</Text>
   </div>
   <div className="flex flex-wrap gap-x-4 gap-y-3">…CTAs…</div>
 </div>
 {/* sibling — mt-* OK when outside the copy stack */}
-<Text className="mt-7!" color="soft" intent="stamp" mono weight="normal">
+<Text className="mt-7!" color="muted" family="mono" size="stamp" weight="normal">
   {SPEC_STATUS_STAMP}
 </Text>
 ```
 
-Do not add a new `.pdpp-hero__*` block when an intent already covers the type. Do not leave the BEM rule after the call site moves.
+Do not add a new `.pdpp-hero__*` block when a size already covers the type. Do not leave the BEM rule after the call site moves.
 
 ## shadcn
 

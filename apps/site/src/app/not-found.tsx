@@ -4,19 +4,15 @@
 import Link from "next/link";
 import { Button } from "@/components/pdpp-concept/button.tsx";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
-import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
-import { PdppConceptMasthead } from "@/components/pdpp-concept/masthead.tsx";
+import { PdppConceptShell } from "@/components/pdpp-concept/concept-shell.tsx";
+import "@/styles/surfaces/concept/index.css";
 
-// The concept has no 404 (it is four static pages with no unmatched routes);
-// this app serves /docs/[[...slug]] and other dynamic routes, so a missing
-// page is reachable. Without this file Next.js renders its own generic
-// fallback — unstyled, no masthead, no footer — which breaks the document
-// register on the one page a mistyped or stale link is most likely to hit.
+// Unmatched routes sit outside the concept route group, so the root 404 owns
+// the concept presentation explicitly instead of falling back to Next.js's
+// generic, unstyled page.
 export default function NotFound() {
   return (
-    <div className="pdpp-concept">
-      <PdppConceptMasthead />
-
+    <PdppConceptShell>
       <PdppConceptPage home>
         <PdppConceptDoc>
           <h1>Page not found</h1>
@@ -33,8 +29,6 @@ export default function NotFound() {
           </div>
         </PdppConceptDoc>
       </PdppConceptPage>
-
-      <PdppConceptFooter />
-    </div>
+    </PdppConceptShell>
   );
 }

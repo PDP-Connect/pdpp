@@ -8,9 +8,10 @@ import { extendTailwindMerge } from "tailwind-merge";
 /**
  * Site cn = brand twMerge + editorial theme keys.
  *
- * Brand scales live in `@pdpp/brand/tw-merge`. Editorial-only keys
- * (`stamp`, `pad`, `page`, …) stay here — keep in step with
- * editorial-tokens/semantic.css.
+ * Brand scales live in `@pdpp/brand/tw-merge` — including the full `--text-*`
+ * ladder, which `@pdpp/brand-react`'s `Text` now owns. Only layout keys with
+ * no shared counterpart stay here; keep them in step with
+ * styles/surfaces/concept/tokens/semantic.css.
  *
  * @see https://github.com/dcastil/tailwind-merge/blob/main/docs/configuration.md
  */
@@ -20,7 +21,6 @@ const twMerge = extendTailwindMerge(
       theme: {
         container: ["page", "measure"],
         spacing: ["pad", "gutter", "rail", "section-gap"],
-        text: ["stamp", "small", "note", "lede", "deck", "numeral"],
       },
     },
   },

@@ -151,6 +151,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
           aria-label="Copy the command to the clipboard"
           aria-labelledby={`pdpp-cmd-tab-${method}`}
           className="pdpp-cmd__panel pdpp-cmd__panel--copyable"
+          data-selection-ground="teal-deep"
           id="pdpp-cmd-panel"
           onClick={copy}
           type="button"
@@ -165,7 +166,7 @@ export function PdppCommandBuilder({ compact = false }: { compact?: boolean }) {
           </span>
         </button>
       ) : (
-        <div className="pdpp-cmd__panel" id="pdpp-cmd-panel">
+        <div className="pdpp-cmd__panel" data-selection-ground="teal-deep" id="pdpp-cmd-panel">
           <p className="pdpp-cmd__blocked">
             {built.unavailable}{" "}
             {built.unavailableHref ? (

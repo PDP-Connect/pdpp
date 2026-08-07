@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const PAGE_PATH = new URL("../src/app/self-host/page.tsx", import.meta.url);
+const PAGE_PATH = new URL("../src/app/(concept)/self-host/page.tsx", import.meta.url);
 
 // Match JSX attribute patterns like value="http://localhost:..." or
 // href="http://localhost:..." but not string-fallback defaults in code like

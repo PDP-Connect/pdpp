@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * StatusBadge presentation — co-located with the component so tone ownership
- * lives next to StatusBadge, not in @pdpp/brand/utilities.css.
+ * lives next to StatusBadge, not in packages/pdpp-brand/styles/utilities.css.
  *
  * Unlayered (not @utility): `.pdpp-eyebrow { color: var(--muted-foreground) }`
  * is unlayered and beats @layer utilities. Base owns the composed presentation;
@@ -11,7 +11,7 @@
  * injects this after the app's brand stylesheet, so `.pdpp-status-badge` wins
  * color over `.pdpp-eyebrow` at equal specificity.
  *
- * Tokens (--status-*-fg/bg/ring) stay in @pdpp/brand/tokens/primitive.css.
+ * Tokens (--status-*-fg/bg/ring) stay in packages/pdpp-brand/styles/tokens/primitive.css.
  *
  * Later: StatusBadge probably belongs in @pdpp/brand-react (that package already
  * co-locates component CSS). Keep here until that move is intentional — don't
