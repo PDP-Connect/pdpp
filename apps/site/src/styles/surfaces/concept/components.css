@@ -26,7 +26,7 @@
  *          .pdpp-terminal (terminal.tsx),
  *          .pdpp-doc scoping + base h2/h3/p (raw markdown / legacy prose),
  *          .pdpp-note (MDX remark asides — spec + concept),
- *          .pdpp-footer (selection hook; footer markup is TW).
+ *          data-selection-ground (teal-deep ::selection override).
  *   INTENTION — shrink this file toward shell hooks + shared MDX primitives; each
  *          widget above becomes a pdpp-concept component with TW before its BEM is removed.
  *
@@ -39,7 +39,7 @@
  *   (specification.css sets --fd-sidebar-width: var(--spacing-rail), etc.).
  *   Spec prose/tables/headings: specification.css (.pdpp-docs-body) — not .pdpp-doc.
  *   From this register spec still uses: ::selection, .pdpp-note (MDX asides;
- *   specification.css overrides in-body), .pdpp-footer selection hook,
+ *   specification.css overrides in-body), data-selection-ground hook,
  *   .pdpp-eyebrow / .pdpp-caption. Spec does NOT use concept-page BEM
  *   (.pdpp-cmd, .pdpp-channels, .pdpp-features, .pdpp-impl-table, …).
  */
@@ -51,14 +51,12 @@
   @apply bg-background font-serif text-body text-foreground oldstyle-nums;
 }
 
-/* Teal fill on light grounds; wash on teal-deep (.pdpp-footer, .pdpp-terminal, .pdpp-cmd__panel). */
+/* Teal fill on light grounds; wash on teal-deep (data-selection-ground="teal-deep"). */
 [data-surface="concept"] ::selection {
   color: var(--pdpp-concept-paper);
   background: var(--pdpp-concept-teal);
 }
-[data-surface="concept"] .pdpp-footer ::selection,
-[data-surface="concept"] .pdpp-terminal ::selection,
-[data-surface="concept"] .pdpp-cmd__panel ::selection {
+[data-surface="concept"] [data-selection-ground="teal-deep"] ::selection {
   color: var(--pdpp-concept-ink);
   background: var(--pdpp-concept-teal-wash);
 }

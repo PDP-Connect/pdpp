@@ -26,7 +26,6 @@ const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");
 // Type via Text; column rhythm via flex gap (footer is outside .pdpp-doc —
 // no prose p margin to zero).
 // License rows stay a dl — leave .pdpp-doc table / .pdpp-impl-table alone.
-// `pdpp-footer` remains a ::selection cascade hook on teal-deep grounds.
 
 const footerLinkClassName = cn(
   "text-on-primary-emphasis! no-underline",
@@ -41,11 +40,12 @@ export function PdppConceptFooter() {
   return (
     <footer
       className={cn(
-        "pdpp-footer",
+        "relative",
         "mt-24 font-sans text-[13px] text-on-primary-emphasis-soft leading-[1.7]",
         "border-[color-mix(in_srgb,var(--primary)_55%,transparent)] border-t",
         "bg-primary-emphasis"
       )}
+      data-selection-ground="teal-deep"
       data-slot="pdpp-concept-footer"
     >
       <div
