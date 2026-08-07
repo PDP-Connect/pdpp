@@ -83,6 +83,7 @@ function ownerTemplate(
     connectorKey?: string;
     connectorModality?: string;
     disposition?: string;
+    enrollmentKey?: string | null;
     listingStatus?: string;
     nextStepKind?: string;
     ownerActionable?: boolean;
@@ -101,7 +102,7 @@ function ownerTemplate(
     setup_plan: {
       catalog_disposition: args.disposition ?? "provider_auth_connect",
       deployment_readiness: { blockers: [], guidance: null, state: "ready" },
-      enrollment_key: null,
+      enrollment_key: args.enrollmentKey ?? null,
       next_step_kind: args.nextStepKind ?? "open_provider_auth",
       owner_actionable: args.ownerActionable ?? true,
       proof_gate: args.proofGate ?? null,
@@ -565,6 +566,80 @@ test("owner catalog fails closed for local-only, listed-unproven, and proof-gate
   assert.equal(sourceSetupStatus(proofGatedEntry).label, "Not available here");
   assert.equal(sourceSetupAction(proofGatedEntry), null);
   assert.equal(sourceSetupAvailability(proofGatedEntry), "not_available_here");
+});
+
+test("owner catalog exposes browser owner-session actions without inventing an owner-agent REST action", () => {
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "chatgpt",
+        connectorModality: "browser_bound",
+        disposition: "static_secret_connect",
+        nextStepKind: "capture_static_secret",
+        ownerActionable: true,
+        proofGate: "static_secret_live_proof_missing",
+        setupModality: "static_secret",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "owner_mediated",
+        actionUrl: null,
+      }),
+      ownerTemplate({
+        connectorKey: "chase",
+        connectorModality: "browser_bound",
+        disposition: "browser_collector_manual",
+        enrollmentKey: "chase",
+        nextStepKind: "enroll_browser_collector",
+        ownerActionable: true,
+        proofGate: "browser_collector_live_proof_missing",
+        setupModality: "browser_bound",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "owner_mediated",
+        actionUrl: null,
+      }),
+      ownerTemplate({
+        connectorKey: "doordash",
+        connectorModality: "browser_bound",
+        disposition: "browser_bound_runbook",
+        nextStepKind: "manual_runbook",
+        ownerActionable: false,
+        proofGate: "browser_collector_live_proof_missing",
+        setupModality: "browser_bound",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "unsupported",
+        actionUrl: null,
+      }),
+    ]
+  );
+
+  const chatgpt = catalog.find((entry) => entry.connectorKey === "chatgpt");
+  assert.ok(chatgpt);
+  assert.equal(chatgpt.ownerActionable, true);
+  assert.equal(chatgpt.ownerActionMethod, null);
+  assert.equal(chatgpt.ownerActionUrl, null);
+  assert.equal(sourceSetupAvailability(chatgpt), "available_now");
+  assert.deepEqual(sourceSetupAction(chatgpt), {
+    href: "/connect/browser-session/chatgpt",
+    label: "Connect account",
+  });
+
+  const chase = catalog.find((entry) => entry.connectorKey === "chase");
+  assert.ok(chase);
+  assert.equal(chase.ownerActionable, true);
+  assert.equal(sourceSetupAvailability(chase), "available_now");
+  assert.deepEqual(sourceSetupAction(chase), {
+    href: "/connect/browser-session/chase",
+    label: "Connect account",
+  });
+
+  const doordash = catalog.find((entry) => entry.connectorKey === "doordash");
+  assert.ok(doordash);
+  assert.equal(doordash.ownerActionable, false);
+  assert.equal(sourceSetupAvailability(doordash), "not_available_here");
+  assert.equal(sourceSetupAction(doordash), null);
 });
 
 test("a supported owner action has an invariant actionable provider projection", () => {
