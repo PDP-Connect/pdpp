@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { listSpineEventsPage } from "../lib/spine.ts";
+import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { createSqliteConnectorInstanceCredentialStore } from "../server/stores/connector-instance-credential-store.ts";
 import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
@@ -30,6 +31,7 @@ const OWNER_PASSWORD = "static-secret-probe-owner-password";
 const OWNER_SUBJECT_ID = "owner_local";
 const TEST_KEY = "static-secret-probe-test-key";
 const GOOD_SECRET = "valid synthetic app password";
+const ALTERNATE_SECRET = "alternate synthetic app password";
 const BAD_SECRET = "rejected synthetic app password";
 const GOOD_PAT = "ghp_valid_synthetic_token";
 const GMAIL_ADDRESS = "the owner@example.com";
@@ -301,10 +303,15 @@ async function capture(
   cookie: string,
   connectionId: string,
   secret: string,
-  credentialKind: string
+  credentialKind: string,
+  setupFields?: Record<string, unknown>
 ): Promise<JsonResult> {
   return fetchJson(`${asUrl}/_ref/connections/${encodeURIComponent(connectionId)}/static-secret-credential`, {
-    body: JSON.stringify({ credential_kind: credentialKind, secret }),
+    body: JSON.stringify({
+      credential_kind: credentialKind,
+      secret,
+      ...(setupFields ? { setup_fields: setupFields } : {}),
+    }),
     headers: { Accept: "application/json", "Content-Type": "application/json", Cookie: cookie },
     method: "POST",
   });
@@ -371,8 +378,8 @@ test("a rejected probe returns a typed validation error and stores no credential
       const instanceStore = createSqliteConnectorInstanceStore();
       const instance = await instanceStore.get(connectionId);
       assert.ok(instance, "expected a connector instance for the draft");
-      assert.equal(instance.status, "revoked", "a rejected first-time draft must be retired");
-      assert.ok(instance.revokedAt, "retired draft should carry revokedAt");
+      assert.equal(instance.status, "draft", "a rejected first-time draft must remain resumable");
+      assert.equal(instance.revokedAt, null, "a resumable draft must not be tombstoned");
 
       // The probe was given the non-secret mailbox context, never echoed back.
       assert.equal(proberCalls.length, 1);
@@ -389,6 +396,140 @@ test("a rejected probe returns a typed validation error and stores no credential
       const failedData = failed.data as { error?: { code?: unknown } } | undefined;
       assert.equal(failedData?.error?.code, "gmail_credential_rejected");
       assert.ok(!JSON.stringify(failed).includes(BAD_SECRET), "audit must not contain the secret");
+    });
+  });
+});
+
+test("a corrected mailbox retry updates and reuses the rejected draft", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl, proberCalls }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "tim@opendatalabs.xzy" });
+      const connectionId = requireString(draft.body.connection_id, "draft.body.connection_id");
+
+      const rejected = await capture(asUrl, cookie, connectionId, BAD_SECRET, "app_password");
+      assert.equal(rejected.status, 400);
+
+      const retried = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password", {
+        account_email: "tim@opendatalabs.xyz",
+      });
+      assert.equal(retried.status, 201);
+      assert.equal(retried.body.connection_id, connectionId);
+      assert.equal(identityOf(retried.body).account_identity, "tim@opendatalabs.xyz");
+      assert.equal(proberCalls.at(-1)?.context?.setupFields?.account_email, "tim@opendatalabs.xyz");
+
+      const instance = await createSqliteConnectorInstanceStore().get(connectionId);
+      assert.ok(instance, "expected the original draft to remain present");
+      assert.equal(instance.status, "draft");
+      const binding = instance.sourceBinding as { kind?: string; setup_fields?: Record<string, string> };
+      assert.equal(binding.kind, "static_secret_draft");
+      assert.equal(binding.setup_fields?.account_email, "tim@opendatalabs.xyz");
+      const retryCount = getDb()
+        .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'gmail'")
+        .get() as { count: number };
+      assert.equal(retryCount.count, 1, "retry must not create a second connector instance");
+      assert.ok(await createSqliteConnectorInstanceCredentialStore().getMetadata(connectionId));
+    });
+  });
+});
+
+test("duplicate Gmail draft submissions converge while distinct identities remain separate", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const first = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const duplicate = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const personalId = requireString(first.body.connection_id, "personal connection id");
+      assert.equal(duplicate.body.connection_id, personalId);
+
+      const captured = await capture(asUrl, cookie, personalId, GOOD_SECRET, "app_password");
+      assert.equal(captured.status, 201);
+      const reloaded = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      assert.equal(reloaded.status, 200, "reloading setup after capture must reuse the pending verified connection");
+      assert.equal(reloaded.body.connection_id, personalId);
+      await createSqliteConnectorInstanceStore().activateDraft(personalId, { now: "2026-06-10T18:00:00.000Z" });
+      const activeReload = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      assert.equal(activeReload.status, 200, "a verified active identity must not receive a duplicate connection");
+      assert.equal(activeReload.body.connection_id, personalId);
+
+      const work = await createDraft(asUrl, cookie, "gmail", { account_email: "work@example.com" });
+      assert.notEqual(work.body.connection_id, personalId, "distinct identities must keep distinct connection ids");
+      const identityCount = getDb()
+        .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'gmail'")
+        .get() as { count: number };
+      assert.equal(identityCount.count, 2);
+      const activeCount = getDb()
+        .prepare("SELECT COUNT(*) AS count FROM connector_instances WHERE connector_id = 'gmail' AND status = 'active'")
+        .get() as { count: number };
+      assert.equal(activeCount.count, 1);
+    });
+  });
+});
+
+test("duplicate captures for one probed identity converge across random drafts", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "github");
+      const cookie = await login(asUrl);
+      const first = await createDraft(asUrl, cookie, "github", {});
+      const second = await createDraft(asUrl, cookie, "github", {});
+      const firstId = requireString(first.body.connection_id, "first github connection id");
+      const secondId = requireString(second.body.connection_id, "second github connection id");
+      assert.notEqual(
+        firstId,
+        secondId,
+        "GitHub has no owner-entered identity field, so drafts stay separate until probe"
+      );
+
+      const [captured, deduplicated] = await Promise.all([
+        capture(asUrl, cookie, firstId, GOOD_PAT, "personal_access_token"),
+        capture(asUrl, cookie, secondId, GOOD_PAT, "personal_access_token"),
+      ]);
+      assert.ok([201, 200].includes(captured.status), `unexpected first concurrent status: ${captured.status}`);
+      assert.ok(
+        [201, 200].includes(deduplicated.status),
+        `unexpected second concurrent status: ${deduplicated.status}`
+      );
+      assert.equal(captured.body.connection_id, deduplicated.body.connection_id);
+      assert.ok(
+        [captured, deduplicated].some((result) => result.body.deduplicated === true),
+        "one concurrent capture must report the deduplication"
+      );
+      const credentialCount = getDb().prepare("SELECT COUNT(*) AS count FROM connector_instance_credentials").get() as {
+        count: number;
+      };
+      assert.equal(credentialCount.count, 1, "one verified identity must have one credential row");
+      const secondInstance = await createSqliteConnectorInstanceStore().get(secondId);
+      assert.equal(secondInstance?.status, "revoked", "the losing draft is retired without creating an active fork");
+    });
+  });
+});
+
+test("an active verified connection refuses credential replacement for another identity", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const draft = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const connectionId = requireString(draft.body.connection_id, "personal connection id");
+      const captured = await capture(asUrl, cookie, connectionId, GOOD_SECRET, "app_password");
+      assert.equal(captured.status, 201);
+      const before = await createSqliteConnectorInstanceCredentialStore().getMetadata(connectionId);
+      assert.ok(before?.fingerprint);
+      await createSqliteConnectorInstanceStore().activateDraft(connectionId, { now: "2026-06-10T18:00:00.000Z" });
+
+      const retargeted = await capture(asUrl, cookie, connectionId, ALTERNATE_SECRET, "app_password", {
+        account_email: "work@example.com",
+      });
+      assert.equal(retargeted.status, 409);
+      assert.equal(errorOf(retargeted.body).code, "static_secret_identity_mismatch");
+      const after = await createSqliteConnectorInstanceCredentialStore().getMetadata(connectionId);
+      assert.equal(after?.fingerprint, before.fingerprint, "a rejected retarget must not rotate the credential");
+      const instance = await createSqliteConnectorInstanceStore().get(connectionId);
+      const binding = instance?.sourceBinding as { verified_identity?: string };
+      assert.equal(binding.verified_identity, "personal@example.com");
     });
   });
 });
@@ -457,7 +598,7 @@ test("github: a rejected token is refused and stores nothing", async () => {
       const instanceStore = createSqliteConnectorInstanceStore();
       const instance = await instanceStore.get(connectionId);
       assert.ok(instance, "expected a connector instance for the draft");
-      assert.equal(instance.status, "revoked", "a rejected github draft must be retired");
+      assert.equal(instance.status, "draft", "a rejected github draft must remain resumable");
     });
   });
 });

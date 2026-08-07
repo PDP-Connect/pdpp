@@ -1596,6 +1596,47 @@ export function createSqliteConnectorInstanceStore() {
       return this.get(connectorInstanceId);
     },
 
+    // Re-key one owner-session static-secret instance after a synchronous
+    // provider probe proves its account identity. The connector instance id
+    // is intentionally preserved: records, schedules, history, and callers
+    // all address that id. The existing binding unique constraint is the
+    // cross-request identity claim; a concurrent claim for the same verified
+    // identity raises the backend's normal unique-constraint error for the
+    // route to resolve to the winner.
+    updateStaticSecretBinding({
+      connectorInstanceId,
+      connectorId,
+      ownerSubjectId,
+      sourceBinding,
+      sourceBindingKey,
+      updatedAt,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      sourceBinding: Record<string, unknown>;
+      sourceBindingKey: string;
+      updatedAt: string;
+    }): ConnectorInstance | null {
+      writeTransaction(() => {
+        const result = exec(referenceQueries.connectorInstancesUpdateStaticSecretBinding, [
+          sourceBindingKey,
+          stableJson(sourceBinding),
+          updatedAt,
+          connectorInstanceId,
+          ownerSubjectId,
+          connectorId,
+        ]);
+        if (result.changes) {
+          exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+            "static-secret binding updated",
+            connectorInstanceId,
+          ]);
+        }
+      });
+      return this.get(connectorInstanceId);
+    },
+
     // Terminal-gate revision (2026-07-29): the status write and its
     // summary-evidence dirty marker commit in ONE transaction, matching
     // `deleteConnection`'s existing precedent for the same table. A marker
@@ -2296,6 +2337,49 @@ export function createPostgresConnectorInstanceStore() {
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
             ["connector instance display_name changed", connectorInstanceId]
           );
+        }
+      );
+      return await this.get(connectorInstanceId);
+    },
+
+    // Postgres mirror of the SQLite static-secret identity claim. The binding
+    // unique constraint is enforced by the database, not by a process-local
+    // read/then-write sequence, so concurrent owners/processes cannot both
+    // claim one verified identity.
+    async updateStaticSecretBinding({
+      connectorInstanceId,
+      connectorId,
+      ownerSubjectId,
+      sourceBinding,
+      sourceBindingKey,
+      updatedAt,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      sourceBinding: Record<string, unknown>;
+      sourceBindingKey: string;
+      updatedAt: string;
+    }): Promise<ConnectorInstance | null> {
+      await withPostgresTransaction(
+        async (client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null }> }) => {
+          const result = await client.query(
+            `UPDATE connector_instances
+             SET source_binding_key = $1,
+                 source_binding_json = $2::jsonb,
+                 updated_at = $3
+             WHERE connector_instance_id = $4
+               AND owner_subject_id = $5
+               AND connector_id = $6
+               AND status IN ('active', 'draft')`,
+            [sourceBindingKey, stableJson(sourceBinding), updatedAt, connectorInstanceId, ownerSubjectId, connectorId]
+          );
+          if (result.rowCount) {
+            await client.query(
+              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+              ["static-secret binding updated", connectorInstanceId]
+            );
+          }
         }
       );
       return await this.get(connectorInstanceId);

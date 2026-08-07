@@ -548,8 +548,8 @@ test("two drafts for one connector are two distinct connection_ids", async () =>
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, "gmail");
       const cookie = await login(asUrl);
-      const a = await createDraft(asUrl, cookie, "gmail");
-      const b = await createDraft(asUrl, cookie, "gmail");
+      const a = await createDraft(asUrl, cookie, "gmail", { account_email: "personal@example.com" });
+      const b = await createDraft(asUrl, cookie, "gmail", { account_email: "work@example.com" });
       assert.equal(a.status, 201);
       assert.equal(b.status, 201);
       assert.notEqual(a.body.connection_id, b.body.connection_id);

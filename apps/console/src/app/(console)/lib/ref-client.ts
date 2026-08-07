@@ -2051,7 +2051,7 @@ export interface StaticSecretDraftConnection {
     url: string;
   };
   object: "static_secret_draft_connection";
-  status: "draft";
+  status: "active" | "draft";
 }
 
 export interface StaticSecretCredentialCapture {
@@ -2075,6 +2075,7 @@ export interface StaticSecretCredentialCapture {
     rotated_at: string | null;
     status: string | null;
   };
+  deduplicated?: boolean;
   // Non-secret account identity from a synchronous credential probe ("Connected
   // as {identity}"). Null when the connector has no probe (first-sync path).
   identity: { account_identity: string; detail: string | null } | null;
@@ -2168,6 +2169,7 @@ export async function captureStaticSecretCredential(input: {
   connectionId: string;
   credentialKind: string;
   secret: string;
+  setupFields?: Record<string, string>;
 }): Promise<StaticSecretCredentialCapture> {
   try {
     return (await refFetch(
@@ -2177,6 +2179,7 @@ export async function captureStaticSecretCredential(input: {
         body: JSON.stringify({
           credential_kind: input.credentialKind,
           secret: input.secret,
+          ...(input.setupFields ? { setup_fields: input.setupFields } : {}),
         }),
         headers: { "content-type": "application/json" },
         method: "POST",
