@@ -187,6 +187,58 @@ test("Netflix connector rejects an unrecognized/mixed CSV header instead of gues
   }
 });
 
+test("Netflix connector resolves a mixed direct_history dataset using the one row that disambiguates it", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-mixed-date-order-"));
+  try {
+    const csvContent = `Title,Date
+"Ambiguous A",05/03/2024
+"Ambiguous B",07/02/2024
+"Disambiguator",25/12/2024`;
+    await writeFile(join(importRoot, "NetflixViewingHistory.csv"), csvContent, "utf8");
+
+    const { messages } = await runNetflixImport(importRoot);
+    const emitted = records(messages, "viewing_activity");
+    assert.equal(emitted.length, 3);
+    // 25/12 unambiguously proves DD/MM/YYYY for this dataset -> the
+    // ambiguous rows resolve the same way: 05/03 = March 5, 07/02 = Feb 7.
+    assert.ok(emitted.some((r) => r.watched_at === "2024-03-05T00:00:00.000Z"));
+    assert.ok(emitted.some((r) => r.watched_at === "2024-02-07T00:00:00.000Z"));
+    assert.ok(emitted.some((r) => r.watched_at === "2024-12-25T00:00:00.000Z"));
+
+    const done = messages.at(-1);
+    assert.equal(done?.type, "DONE");
+    if (done?.type === "DONE") {
+      assert.equal(done.status, "succeeded");
+      assert.equal(done.records_emitted, 3);
+    }
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("Netflix connector emits a typed coverage-gap SKIP_RESULT when every date in the dataset is ambiguous", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-all-ambiguous-"));
+  try {
+    const csvContent = `Title,Date
+"Ambiguous A",05/03/2024
+"Ambiguous B",07/02/2024
+"Ambiguous C",01/01/2024`;
+    await writeFile(join(importRoot, "NetflixViewingHistory.csv"), csvContent, "utf8");
+
+    const { messages } = await runNetflixImport(importRoot);
+    const emitted = records(messages, "viewing_activity");
+    assert.equal(emitted.length, 0, "no row should be silently guessed or dropped without a typed gap");
+
+    const skip = messages.find((m) => m.type === "SKIP_RESULT");
+    assert.ok(skip, "expected a SKIP_RESULT for the all-ambiguous dataset");
+    if (skip?.type === "SKIP_RESULT") {
+      assert.equal(skip.reason, "ambiguous_date_order");
+    }
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
 test("parseCSVFile reads and parses a complete direct_history CSV fixture", async () => {
   const csvContent = `Title,Date
 "The Crown",2024-01-15

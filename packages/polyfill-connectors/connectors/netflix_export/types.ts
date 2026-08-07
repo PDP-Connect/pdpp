@@ -25,6 +25,13 @@ export type ViewingActivityCSVRow = Record<string, string | undefined>;
  */
 export type ViewingActivitySourceSchema = "direct_history" | "full_export";
 
+/**
+ * Which field-ordering direct_history's ambiguous DD/MM vs MM/DD dates were
+ * resolved with, inferred once per uploaded dataset (see
+ * inferDirectHistoryDateOrder in parsers.ts) rather than guessed per row.
+ */
+export type DirectHistoryDateOrder = "DMY" | "MDY";
+
 export interface ViewingActivityRecord {
   country: string | null;
   device_type: string | null;
@@ -36,6 +43,8 @@ export interface ViewingActivityRecord {
   watched_at: string;
   /** "day": watched_at is midnight UTC of a calendar day only, no real time-of-day. "instant": watched_at is a real UTC timestamp. */
   watched_at_precision: "day" | "instant";
+  /** The original, unparsed date/timestamp string from the CSV, preserved verbatim for auditability. */
+  watched_at_raw: string;
   [key: string]: string | null | number;
 }
 

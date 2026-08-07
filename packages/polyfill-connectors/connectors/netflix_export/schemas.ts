@@ -20,6 +20,9 @@
  *     Date column — Netflix doesn't give us a time-of-day for that source).
  *   - `duration_seconds` is whole seconds from full_export's Duration
  *     (H:MM:SS) column, or null (direct_history never has a duration).
+ *   - `watched_at_raw` preserves the original, unparsed date/timestamp
+ *     string verbatim, for auditability of the (locale-dependent, for
+ *     direct_history) date-order inference in parsers.ts.
  *   - Text fields use `pdppSafeText` (no PII exposure in diagnostics).
  */
 
@@ -44,6 +47,7 @@ export const viewingActivitySchema = z.object({
   title: pdppSafeText.max(500).nullable(),
   watched_at: isoTimestampSchema,
   watched_at_precision: z.enum(["day", "instant"]),
+  watched_at_raw: pdppSafeText.max(100),
   device_type: pdppSafeText.max(100).nullable(),
   duration_seconds: durationSecondsSchema,
   profile_name: pdppSafeText.max(200).nullable(),

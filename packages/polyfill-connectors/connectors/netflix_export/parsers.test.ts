@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   detectViewingActivitySchema,
+  inferDirectHistoryDateOrder,
+  inferDirectHistoryDateOrderFromRows,
   parseCSVLine,
   parseDirectHistoryDate,
   parseFullExportDurationSeconds,
@@ -167,9 +169,39 @@ test("parseDirectHistoryDate handles unambiguous MM/DD/YYYY (day > 12)", () => {
   assert.equal(result, "2024-03-25T00:00:00.000Z");
 });
 
-test("parseDirectHistoryDate refuses to guess an ambiguous DD/MM vs MM/DD date", () => {
+test("parseDirectHistoryDate handles unambiguous DD.MM.YY with dot separator and 2-digit year", () => {
+  // A real observed export shape: dot separator, 2-digit year. 25 > 12 disambiguates as DMY.
+  const result = parseDirectHistoryDate("25.03.24");
+  assert.equal(result, "2024-03-25T00:00:00.000Z");
+});
+
+test("parseDirectHistoryDate expands 2-digit years using the 69/00 pivot", () => {
+  assert.equal(parseDirectHistoryDate("25.03.24"), "2024-03-25T00:00:00.000Z");
+  assert.equal(parseDirectHistoryDate("25.03.69"), "1969-03-25T00:00:00.000Z");
+  assert.equal(parseDirectHistoryDate("25.03.68"), "2068-03-25T00:00:00.000Z");
+});
+
+test("parseDirectHistoryDate refuses to guess an ambiguous DD/MM vs MM/DD date with no order supplied", () => {
   // 05/03/2024: both fields <= 12, genuinely ambiguous without locale context.
   assert.equal(parseDirectHistoryDate("05/03/2024"), null);
+  assert.equal(parseDirectHistoryDate("05/03/2024", null), null);
+});
+
+test("parseDirectHistoryDate applies a dataset-inferred order to an ambiguous row", () => {
+  // 05/03/2024 alone is ambiguous, but WITH an inferred order it resolves.
+  assert.equal(parseDirectHistoryDate("05/03/2024", "DMY"), "2024-03-05T00:00:00.000Z");
+  assert.equal(parseDirectHistoryDate("05/03/2024", "MDY"), "2024-05-03T00:00:00.000Z");
+});
+
+test("parseDirectHistoryDate self-evident rows ignore a supplied order that would contradict them", () => {
+  // 25/03/2024 is unambiguous (25 can't be a month) regardless of what
+  // dataset-level order is passed in — the row's own evidence wins.
+  assert.equal(parseDirectHistoryDate("25/03/2024", "MDY"), "2024-03-25T00:00:00.000Z");
+});
+
+test("parseDirectHistoryDate ISO dates parse regardless of supplied order", () => {
+  assert.equal(parseDirectHistoryDate("2024-01-15", "MDY"), "2024-01-15T00:00:00.000Z");
+  assert.equal(parseDirectHistoryDate("2024-01-15", null), "2024-01-15T00:00:00.000Z");
 });
 
 test("parseDirectHistoryDate rejects malformed or missing dates", () => {
@@ -178,6 +210,45 @@ test("parseDirectHistoryDate rejects malformed or missing dates", () => {
   assert.equal(parseDirectHistoryDate(undefined), null);
   assert.equal(parseDirectHistoryDate("2024-13-01"), null);
   assert.equal(parseDirectHistoryDate("2024-01-32"), null);
+});
+
+// ─── inferDirectHistoryDateOrder (dataset-level) ──────────────────────────
+
+test("inferDirectHistoryDateOrder finds DMY from a single unambiguous row (day > 12)", () => {
+  const order = inferDirectHistoryDateOrder(["05/03/2024", "25/03/2024", "01/01/2024"]);
+  assert.equal(order, "DMY");
+});
+
+test("inferDirectHistoryDateOrder finds MDY from a single unambiguous row (month field > 12)", () => {
+  const order = inferDirectHistoryDateOrder(["03/05/2024", "03/25/2024", "01/01/2024"]);
+  assert.equal(order, "MDY");
+});
+
+test("inferDirectHistoryDateOrder resolves a mixed dataset using the row that disambiguates it", () => {
+  // The file mostly has ambiguous dates, but ONE row (day 25) proves DMY for
+  // the whole dataset — every other ambiguous row should be read with that order.
+  const dates = ["05/03/2024", "07/02/2024", "25/03/2024", "01/01/2024"];
+  assert.equal(inferDirectHistoryDateOrder(dates), "DMY");
+});
+
+test("inferDirectHistoryDateOrder ignores ISO rows when inferring order (they don't inform DMY/MDY)", () => {
+  const order = inferDirectHistoryDateOrder(["2024-01-15", "2024-02-20", "25/03/2024"]);
+  assert.equal(order, "DMY");
+});
+
+test("inferDirectHistoryDateOrder returns null when every date in the dataset is genuinely ambiguous", () => {
+  const order = inferDirectHistoryDateOrder(["05/03/2024", "07/02/2024", "01/01/2024"]);
+  assert.equal(order, null);
+});
+
+test("inferDirectHistoryDateOrder returns null for an all-ISO dataset (no ambiguity to resolve)", () => {
+  const order = inferDirectHistoryDateOrder(["2024-01-15", "2024-02-20"]);
+  assert.equal(order, null);
+});
+
+test("inferDirectHistoryDateOrderFromRows works over parsed CSV row objects", () => {
+  const rows = [{ date: "05/03/2024" }, { date: "25/03/2024" }];
+  assert.equal(inferDirectHistoryDateOrderFromRows(rows), "DMY");
 });
 
 // ─── parseFullExportStartTime ─────────────────────────────────────────────

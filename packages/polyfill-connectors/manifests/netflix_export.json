@@ -96,6 +96,9 @@
             "type": "string",
             "enum": ["day", "instant"]
           },
+          "watched_at_raw": {
+            "type": "string"
+          },
           "device_type": {
             "type": ["string", "null"]
           },

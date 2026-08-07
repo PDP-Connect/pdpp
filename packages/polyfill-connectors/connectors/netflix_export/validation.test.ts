@@ -162,3 +162,49 @@ test("a zip declaring far more entries than the policy allows classifies as too_
 
   assert.equal(validation.status, "too_large");
 });
+
+// ─── dataset-level date order inference ────────────────────────────────────
+
+test("validateNetflixExportArtifact resolves a direct_history file where one row's day disambiguates the whole set", () => {
+  // Mostly ambiguous dates (05/03, 07/02), but one row (25/12) proves DD/MM
+  // for this dataset -- every ambiguous row should resolve using that order.
+  const csv = `Title,Date
+"Ambiguous A",05/03/2024
+"Ambiguous B",07/02/2024
+"Disambiguator",25/12/2024`;
+  const validation = validateNetflixExportArtifact(csv, { fileName: "NetflixViewingHistory.csv" });
+
+  assert.equal(validation.status, "valid");
+  assert.equal(validation.estimated_records, 3);
+  // 25/12/2024 unambiguously DMY -> whole dataset read as DD/MM/YYYY.
+  // "05/03" -> March 5th, "07/02" -> February 7th.
+  assert.equal(validation.date_range.start, "2024-02-07T00:00:00.000Z");
+  assert.equal(validation.date_range.end, "2024-12-25T00:00:00.000Z");
+});
+
+test("validateNetflixExportArtifact accepts DD.MM.YY dot-separated 2-digit-year dates", () => {
+  const csv = `Title,Date
+"The Crown",15.03.24
+"Stranger Things",25.03.24`;
+  const validation = validateNetflixExportArtifact(csv, { fileName: "NetflixViewingHistory.csv" });
+
+  assert.equal(validation.status, "valid");
+  assert.equal(validation.estimated_records, 2);
+});
+
+test("validateNetflixExportArtifact reports ambiguous_date_order (not empty, not valid) when the entire dataset is ambiguous", () => {
+  // Every date in this file has both fields <= 12 -- no row can disambiguate
+  // DD/MM vs MM/DD for the dataset, so this must be a distinct, actionable
+  // status, never silently guessed at nor reported as merely "empty".
+  const csv = `Title,Date
+"Ambiguous A",05/03/2024
+"Ambiguous B",07/02/2024
+"Ambiguous C",01/01/2024`;
+  const validation = validateNetflixExportArtifact(csv, { fileName: "NetflixViewingHistory.csv" });
+
+  assert.equal(validation.status, "ambiguous_date_order");
+  assert.notEqual(validation.status, "empty");
+  assert.notEqual(validation.status, "valid");
+  assert.equal(validation.detected_schema, "direct_history");
+  assert.match(validation.remediation ?? "", /ambiguous|day above 12/i);
+});

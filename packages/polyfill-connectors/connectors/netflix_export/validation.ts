@@ -6,11 +6,18 @@ import {
   buildViewingActivityRecord,
   detectViewingActivitySchema,
   extractViewingActivityArtifact,
+  inferDirectHistoryDateOrderFromRows,
   parseCSVContentForValidation,
 } from "./parsers.ts";
 import type { ViewingActivityRecord, ViewingActivitySourceSchema } from "./types.ts";
 
-export type NetflixExportValidationStatus = "valid" | "duplicate" | "empty" | "unsupported" | "too_large";
+export type NetflixExportValidationStatus =
+  | "valid"
+  | "duplicate"
+  | "empty"
+  | "unsupported"
+  | "too_large"
+  | "ambiguous_date_order";
 
 export interface NetflixExportValidationOptions {
   readonly existingFileHashes?: readonly string[];
@@ -43,6 +50,8 @@ function remediationFor(status: NetflixExportValidationStatus): string | null {
       return "This is a real Netflix export, but it (or the ViewingActivity.csv inside it) is larger than PDPP can safely process from a browser upload. Extract the archive yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv, or use the server import-folder handoff.";
     case "unsupported":
       return "Choose the CSV from Download all on netflix.com/viewingactivity, ViewingActivity.csv, or the .zip archive from netflix.com/account/getmyinfo. Other files are not supported.";
+    case "ambiguous_date_order":
+      return "Every date in this file is ambiguous between DD/MM and MM/DD order (no row's day exceeds 12), so PDPP can't tell which order Netflix used for your account's locale. Re-export a file that includes at least one date with a day above 12, or wait until your history includes one.";
     case "valid":
       return null;
     default:
@@ -92,9 +101,24 @@ export function validateNetflixExportArtifact(
     return { ...base, remediation: remediationFor("unsupported"), status: "unsupported" };
   }
 
+  const dateOrder = schema === "direct_history" ? inferDirectHistoryDateOrderFromRows(rows) : null;
   const records = rows
-    .map((row) => buildViewingActivityRecord(row, schema))
+    .map((row) => buildViewingActivityRecord(row, schema, dateOrder))
     .filter((rec): rec is ViewingActivityRecord => rec !== null);
+
+  if (schema === "direct_history" && !dateOrder && records.length === 0 && rows.some((row) => row.date)) {
+    // Every non-ISO date in the dataset is itself ambiguous (no row
+    // disambiguates DD/MM vs MM/DD) — the whole file failed to parse as a
+    // direct result, not because it's empty. Distinct, actionable status;
+    // never silently reported as "empty" or guessed at.
+    return {
+      ...base,
+      detected_schema: schema,
+      remediation: remediationFor("ambiguous_date_order"),
+      status: "ambiguous_date_order",
+    };
+  }
+
   const dateRange = minMax(records.map((rec) => rec.watched_at));
 
   let status: NetflixExportValidationStatus = "valid";

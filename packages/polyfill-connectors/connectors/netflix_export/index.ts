@@ -34,12 +34,18 @@ import {
   buildViewingActivityRecord,
   detectViewingActivitySchema,
   extractViewingActivityArtifact,
+  inferDirectHistoryDateOrderFromRows,
   parseCSVContentForValidation,
   parseCSVFile,
   resolveViewingActivityFile,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
-import type { NetflixExportState, StreamTimestampState, ViewingActivitySourceSchema } from "./types.ts";
+import type {
+  DirectHistoryDateOrder,
+  NetflixExportState,
+  StreamTimestampState,
+  ViewingActivitySourceSchema,
+} from "./types.ts";
 
 const UPLOADED_ARTIFACT_RE = /\.(csv|zip)$/i;
 
@@ -75,7 +81,8 @@ interface LoadRowsSkip {
     | "csv_parse_error"
     | "records_not_found"
     | "import_exceeds_bounded_read_policy"
-    | "unrecognized_csv_schema";
+    | "unrecognized_csv_schema"
+    | "ambiguous_date_order";
 }
 
 /**
@@ -151,6 +158,58 @@ function isLoadRowsSkip(result: LoadedRows | LoadRowsSkip): result is LoadRowsSk
   return "reason" in result;
 }
 
+/**
+ * True when at least one direct_history row's date is genuinely ambiguous
+ * without a dataset-inferred order (i.e. buildViewingActivityRecord with no
+ * order fails to parse it, but the date field itself is non-empty — so the
+ * row isn't simply missing a date, it's unresolvable field-order ambiguity).
+ * Used only after inferDirectHistoryDateOrderFromRows already found no
+ * disambiguating row, to distinguish "no ambiguous dates at all" (fine, the
+ * whole file might just be empty/malformed for unrelated reasons) from
+ * "genuinely all-ambiguous, needs a typed coverage gap."
+ */
+function hasAmbiguousDirectHistoryDates(rows: Record<string, string | undefined>[]): boolean {
+  return rows.some((row) => {
+    const dateRaw = row.date;
+    if (!dateRaw) {
+      return false;
+    }
+    return buildViewingActivityRecord(row, "direct_history", null) === null;
+  });
+}
+
+/**
+ * Resolve direct_history's dataset-level DD/MM-vs-MM/DD date order (see
+ * inferDirectHistoryDateOrderFromRows). Returns the inferred order, or a
+ * skip when the entire dataset is ambiguous — never guessed, never silently
+ * dropped. No-op (null order) for full_export, whose timestamps have no
+ * field-order ambiguity.
+ */
+function resolveDateOrder(
+  schema: ViewingActivitySourceSchema,
+  rows: Record<string, string | undefined>[]
+): { order: DirectHistoryDateOrder | null } | LoadRowsSkip {
+  if (schema !== "direct_history") {
+    return { order: null };
+  }
+  const order = inferDirectHistoryDateOrderFromRows(rows);
+  if (order || !hasAmbiguousDirectHistoryDates(rows)) {
+    return { order };
+  }
+  // Every non-ISO date in this dataset is itself ambiguous (no row's fields
+  // disambiguate DD/MM vs MM/DD). Never guess, never silently drop every
+  // row — surface a typed, actionable coverage gap instead.
+  return {
+    reason: "ambiguous_date_order",
+    message:
+      "Every date in this Netflix viewing history CSV is ambiguous between DD/MM and MM/DD order (no row's day or month exceeds 12), so the field order can't be inferred from this dataset. Re-export with unambiguous dates, or supply a file where at least one row's day is > 12.",
+  };
+}
+
+function isDateOrderSkip(result: { order: DirectHistoryDateOrder | null } | LoadRowsSkip): result is LoadRowsSkip {
+  return "reason" in result;
+}
+
 async function collectViewingActivity(
   ctx: CollectContext,
   importDir: string,
@@ -192,6 +251,13 @@ async function collectViewingActivity(
     });
   }
 
+  const dateOrderResult = resolveDateOrder(schema, rows);
+  if (isDateOrderSkip(dateOrderResult)) {
+    await emit({ type: "SKIP_RESULT", stream, reason: dateOrderResult.reason, message: dateOrderResult.message });
+    return;
+  }
+  const { order: dateOrder } = dateOrderResult;
+
   const since = streamState?.last_timestamp;
   let latest: string | undefined = since;
   let skippedCount = 0;
@@ -204,7 +270,7 @@ async function collectViewingActivity(
   });
 
   for (const row of rows) {
-    const rec = buildViewingActivityRecord(row, schema);
+    const rec = buildViewingActivityRecord(row, schema, dateOrder);
 
     // Skip rows that couldn't be parsed
     if (!rec) {

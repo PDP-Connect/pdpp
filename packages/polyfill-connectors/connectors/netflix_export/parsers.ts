@@ -16,7 +16,12 @@ import {
   type ZipReadPolicy,
   zipBasename,
 } from "../../src/bounded-zip-archive.ts";
-import type { ViewingActivityCSVRow, ViewingActivityRecord, ViewingActivitySourceSchema } from "./types.ts";
+import type {
+  DirectHistoryDateOrder,
+  ViewingActivityCSVRow,
+  ViewingActivityRecord,
+  ViewingActivitySourceSchema,
+} from "./types.ts";
 
 // The manifest's manual-upload max_file_bytes is set to this same value: the
 // parser will never usefully read a larger ViewingActivity.csv anyway, so a
@@ -354,19 +359,138 @@ function rowValue(row: ViewingActivityCSVRow, prefix: string): string | undefine
 }
 
 const ISO_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const SLASH_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
+// Netflix's own help center documents the immediate CSV but not its date
+// encoding; real-world exports have been observed with both "/" and "."
+// separators and both 2-digit and 4-digit years (e.g. "15/03/2024",
+// "15.03.24"). One regex, one separator class, either year length.
+const NUMERIC_DATE_RE = /^(\d{1,2})[./](\d{1,2})[./](\d{2}|\d{4})$/;
+
+function isoDayToUtcMidnight(year: number, month: number, day: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return null;
+  }
+  return date.toISOString();
+}
 
 /**
- * Parse a direct_history "Date" value into a calendar day. Netflix's direct
- * download uses locale-dependent date formats (observed: DD/MM/YYYY and
- * MM/DD/YYYY depending on account region) plus ISO YYYY-MM-DD. Only the
- * unambiguous forms are honestly supported: ISO (YYYY-MM-DD) and DD/MM/YYYY
- * with a day > 12 (which disambiguates the field order). An ambiguous
- * DD/MM/YYYY-vs-MM/DD/YYYY date (both fields <= 12) cannot be resolved
- * without knowing the account's locale, so it is rejected rather than
- * guessed — a wrong guess would silently corrupt the date.
+ * A 2-digit year is expanded per the common POSIX/strptime convention:
+ * 00-68 -> 2000-2068, 69-99 -> 1969-1999. Netflix accounts can't predate
+ * 1997 and this connector doesn't need to resolve genuinely century-boundary
+ * dates precisely — the convention just needs to be consistent and documented.
  */
-export function parseDirectHistoryDate(dateStr: string | undefined): string | null {
+function expandTwoDigitYear(yearStr: string): number {
+  if (yearStr.length === 4) {
+    return Number(yearStr);
+  }
+  const twoDigit = Number(yearStr);
+  return twoDigit < 69 ? 2000 + twoDigit : 1900 + twoDigit;
+}
+
+interface NumericDateComponents {
+  /** First numeric field as written (day or month, depending on order — not yet resolved). */
+  a: number;
+  /** Second numeric field as written. */
+  b: number;
+  year: number;
+}
+
+/**
+ * Split a direct_history "Date" value's two ambiguous numeric fields (day
+ * and month, order unknown) without committing to an ordering. Returns null
+ * for ISO dates (unambiguous, handled separately) or anything unparseable.
+ */
+function splitAmbiguousDateComponents(dateStr: string): NumericDateComponents | null {
+  const match = dateStr.match(NUMERIC_DATE_RE);
+  if (!match) {
+    return null;
+  }
+  const [, aRaw, bRaw, yearRaw] = match;
+  if (!(aRaw && bRaw && yearRaw)) {
+    return null;
+  }
+  return { a: Number(aRaw), b: Number(bRaw), year: expandTwoDigitYear(yearRaw) };
+}
+
+/**
+ * If a components pair is unambiguous on its own (one field > 12, so it
+ * can't be a month), returns which field order that implies. Returns null
+ * for a genuinely ambiguous pair (both fields <= 12) — that pair alone
+ * cannot disambiguate a dataset.
+ */
+function unambiguousOrderFor(components: NumericDateComponents): DirectHistoryDateOrder | null {
+  if (components.a > 12 && components.b <= 12) {
+    return "DMY"; // first field can't be a month -> it's the day
+  }
+  if (components.b > 12 && components.a <= 12) {
+    return "MDY"; // second field can't be a month -> first field is the month
+  }
+  return null;
+}
+
+/**
+ * Infer direct_history's date field ordering (DD/MM vs MM/DD — Netflix's own
+ * help center documents the immediate CSV but not its date encoding, so this
+ * is never assumed) from the dataset as a whole: scan every row's Date value
+ * for the first one that is unambiguous on its own (day or month > 12), and
+ * apply that SAME ordering to the entire file. This is a per-upload
+ * inference, not a per-row guess — a file mixing "15/03/2024" (unambiguous:
+ * DMY) and "05/03/2024" (ambiguous alone) resolves the ambiguous row using
+ * the order the unambiguous row already proved for this dataset.
+ *
+ * Returns null only when every non-ISO row in the dataset is itself
+ * ambiguous (no row has a field > 12) — callers must treat that as a real,
+ * actionable gap (surface a typed coverage-gap / validation outcome asking
+ * the owner to clarify date order), never silently guess or drop rows.
+ */
+export function inferDirectHistoryDateOrder(
+  dateStrings: readonly (string | undefined)[]
+): DirectHistoryDateOrder | null {
+  for (const raw of dateStrings) {
+    if (!raw) {
+      continue;
+    }
+    const trimmed = raw.trim();
+    if (ISO_DATE_ONLY_RE.test(trimmed)) {
+      continue; // ISO rows are unambiguous but don't inform DMY/MDY ordering.
+    }
+    const components = splitAmbiguousDateComponents(trimmed);
+    if (!components) {
+      continue;
+    }
+    const order = unambiguousOrderFor(components);
+    if (order) {
+      return order;
+    }
+  }
+  return null;
+}
+
+/**
+ * Convenience wrapper over inferDirectHistoryDateOrder for a batch of parsed
+ * CSV rows (what index.ts/validation.ts actually have on hand).
+ */
+export function inferDirectHistoryDateOrderFromRows(
+  rows: readonly ViewingActivityCSVRow[]
+): DirectHistoryDateOrder | null {
+  return inferDirectHistoryDateOrder(rows.map((row) => rowValue(row, "date")));
+}
+
+/**
+ * Parse a direct_history "Date" value into a calendar day, applying a
+ * dataset-inferred `order` (see inferDirectHistoryDateOrder) for
+ * non-ISO/ambiguous-alone rows. ISO (YYYY-MM-DD) always parses regardless of
+ * order — it has no field-order ambiguity. When `order` is null (the whole
+ * dataset was ambiguous) and this row itself is ambiguous, returns null
+ * rather than guessing.
+ */
+export function parseDirectHistoryDate(
+  dateStr: string | undefined,
+  order: DirectHistoryDateOrder | null = null
+): string | null {
   if (!dateStr) {
     return null;
   }
@@ -378,37 +502,21 @@ export function parseDirectHistoryDate(dateStr: string | undefined): string | nu
     return isoDayToUtcMidnight(Number(y), Number(m), Number(d));
   }
 
-  const slashMatch = trimmed.match(SLASH_DATE_RE);
-  if (slashMatch) {
-    const [, aRaw, bRaw, yRaw] = slashMatch;
-    const a = Number(aRaw);
-    const b = Number(bRaw);
-    const y = Number(yRaw);
-    if (a > 12 && b <= 12) {
-      // Unambiguous DD/MM/YYYY (first field can't be a month).
-      return isoDayToUtcMidnight(y, b, a);
-    }
-    if (b > 12 && a <= 12) {
-      // Unambiguous MM/DD/YYYY (second field can't be a month).
-      return isoDayToUtcMidnight(y, a, b);
-    }
-    // Both fields <= 12: genuinely ambiguous between DD/MM and MM/DD without
-    // locale context. Refuse to guess.
+  const components = splitAmbiguousDateComponents(trimmed);
+  if (!components) {
     return null;
   }
 
-  return null;
-}
+  const selfEvidentOrder = unambiguousOrderFor(components);
+  const effectiveOrder = selfEvidentOrder ?? order;
+  if (!effectiveOrder) {
+    // Ambiguous row, and no dataset-level order was established (or supplied).
+    return null;
+  }
 
-function isoDayToUtcMidnight(year: number, month: number, day: number): string | null {
-  if (month < 1 || month > 12 || day < 1 || day > 31) {
-    return null;
-  }
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
-    return null;
-  }
-  return date.toISOString();
+  return effectiveOrder === "DMY"
+    ? isoDayToUtcMidnight(components.year, components.b, components.a)
+    : isoDayToUtcMidnight(components.year, components.a, components.b);
 }
 
 const FULL_EXPORT_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
@@ -457,21 +565,30 @@ export function parseFullExportDurationSeconds(durationStr: string | undefined):
  * Build a viewing_activity record from a CSV row, dispatching on the
  * detected schema. Returns null for rows that don't carry a parseable
  * date/timestamp for their schema — caller is responsible for the
- * since-cursor filter.
+ * since-cursor filter. `dateOrder` is required for direct_history: the
+ * dataset-inferred DD/MM-vs-MM/DD ordering (see inferDirectHistoryDateOrder),
+ * applied consistently to every ambiguous row in the file rather than
+ * guessed per row. Ignored for full_export (its Start Time (UTC) column has
+ * no field-order ambiguity).
  */
 export function buildViewingActivityRecord(
   row: ViewingActivityCSVRow,
-  schema: ViewingActivitySourceSchema
+  schema: ViewingActivitySourceSchema,
+  dateOrder: DirectHistoryDateOrder | null = null
 ): ViewingActivityRecord | null {
   if (schema === "direct_history") {
-    return buildDirectHistoryRecord(row);
+    return buildDirectHistoryRecord(row, dateOrder);
   }
   return buildFullExportRecord(row);
 }
 
-function buildDirectHistoryRecord(row: ViewingActivityCSVRow): ViewingActivityRecord | null {
+function buildDirectHistoryRecord(
+  row: ViewingActivityCSVRow,
+  dateOrder: DirectHistoryDateOrder | null
+): ViewingActivityRecord | null {
   const title = rowValue(row, "title") ?? null;
-  const watchedAt = parseDirectHistoryDate(rowValue(row, "date"));
+  const dateRaw = rowValue(row, "date");
+  const watchedAt = parseDirectHistoryDate(dateRaw, dateOrder);
   if (!watchedAt) {
     return null;
   }
@@ -486,12 +603,14 @@ function buildDirectHistoryRecord(row: ViewingActivityCSVRow): ViewingActivityRe
     title,
     watched_at: watchedAt,
     watched_at_precision: "day",
+    watched_at_raw: dateRaw ?? "",
   };
 }
 
 function buildFullExportRecord(row: ViewingActivityCSVRow): ViewingActivityRecord | null {
   const title = rowValue(row, "title") ?? null;
-  const watchedAt = parseFullExportStartTime(rowValue(row, "start time"));
+  const startTimeRaw = rowValue(row, "start time");
+  const watchedAt = parseFullExportStartTime(startTimeRaw);
   if (!watchedAt) {
     return null;
   }
@@ -511,6 +630,7 @@ function buildFullExportRecord(row: ViewingActivityCSVRow): ViewingActivityRecor
     title,
     watched_at: watchedAt,
     watched_at_precision: "instant",
+    watched_at_raw: startTimeRaw ?? "",
   };
 }
 
