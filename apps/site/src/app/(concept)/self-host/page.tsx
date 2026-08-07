@@ -26,39 +26,10 @@ export const metadata: Metadata = {
   title: "Self-Host - PDPP",
 };
 
-// SELF-HOST. One dominant command, built from outcome-level choices, then the
-// things a reader needs after it is running. No env var, port, profile, service
-// or image name appears above Advanced.
-//
-// THE BUILDER ITSELF lives in `command-tabs.tsx` and its commands come from
-// `@/lib/self-host-command.ts`, which is a pure module so the capability test
-// can assert against the exact command a reader copies rather than regexing
-// this file's JSX.
-//
-// WHAT WAS VERIFIED BY EXECUTION 2026-08-05, and what that ruled out:
-//   KEPT   the Compose path as the durable/operator alternative. Fetched by
-//          URL into an empty directory and booted end to end: postgres
-//          healthy, reference healthy, web serving, `/` 307 -> /owner/login,
-//          AS metadata 200, and chromium-1217 present inside the RUNNING
-//          reference container. The public-origin and keyword-only variants
-//          were booted too.
-//   GATED  the single-container `docker run` tab on PR #79's publication (see
-//          `CORE_PUBLISHED` in self-host-command.ts). Core is proven
-//          browser-capable — the built-image friend gate passed at head
-//          5e158736a with native Patchright/Chromium, ChatGPT setup, MCP
-//          read, semantic search, and restart persistence — but #79 is open,
-//          not merged, and `ghcr.io/pdp-connect/pdpp/core:main` /
-//          `core-browser:main` both fail anonymous manifest inspect today
-//          (DENIED/403, vs. 200 for the already-published reference-browser).
-//          Showing that command now would tell a reader it works when the
-//          image does not exist; the gate flips it on with one edit once the
-//          tag resolves.
-//   DROPPED releases/latest/download/docker-compose.yml. 404s — every release
-//          v1.0.0 to v1.0.4 shipped zero assets.
-//
-// RAILWAY IS LAST because a template link cannot carry variable values (its
-// documented deploy-URL params are attribution only), so it cannot honour the
-// choices above and says so instead of discarding them silently.
+// Command builder: command-tabs.tsx → self-host-command.ts (see module doc + capability test).
+// `/self-host/coverage` exists (coverage/page.tsx + data.ts) but has no inbound site links yet —
+// reachable only by direct URL or `/reference/coverage` redirect. Orphan on purpose for now; delete
+// this note once wired into the page.
 const GITHUB_DOCKER_README = `${GITHUB_REPO_URL}/blob/main/deploy/docker/README.md`;
 const GITHUB_LOCAL_COLLECTOR = `${GITHUB_REPO_URL}/blob/main/docs/operator/local-collector-runbook.md`;
 
@@ -76,7 +47,7 @@ const features = [
     title: "MCP built in",
   },
   { body: <>Gmail, GitHub, Notion, Oura, YNAB, and more.</>, title: "33 sources" },
-  { body: <>Full text and semantic, on by default. Nothing to switch on.</>, title: "Search included" },
+  { body: <>Full text and semantic, on by default.</>, title: "Search included" },
   { body: <>Give a client read access to the fields you pick. Revoke it anytime.</>, title: "Scoped grants" },
   {
     // Browser support is included, not optional: 14 of the 33 connectors
