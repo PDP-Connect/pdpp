@@ -35,7 +35,7 @@
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 432000,
-      "interaction_posture": "none",
+      "interaction_posture": "manual_action_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": true,

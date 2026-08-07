@@ -254,9 +254,10 @@
                 "type": "string"
               },
               "size_bytes": {
-                "type": "number"
+                "type": "integer"
               }
-            }
+            },
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
           },
           "content_sha256": {
             "type": ["string", "null"]
