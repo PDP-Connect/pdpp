@@ -27,10 +27,12 @@ import {
   type ConnectionSetupKind,
   projectConnectionSetupStatus,
   type SetupStatusImportReceipt,
+  type SetupStatusManifestStream,
   type SetupStatusMaterialMetadata,
   type SetupStatusRun,
 } from "../../runtime/static-secret-setup-status.ts";
 import { type ConnectorManifestLike, staticSecretCredentialCaptureFromManifest } from "../connection-setup-plan.ts";
+import { readCollectionFactsFromTerminalData } from "../runtime-collection-facts.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 interface RouteRequest {
@@ -110,10 +112,18 @@ interface ConnectorNamespace {
   readonly connectorInstanceId: string;
 }
 
-interface RunTerminalEvent {
-  readonly data: Readonly<Record<string, unknown>> | null;
-  readonly occurred_at?: string | null;
-  readonly status: string | null;
+interface ProductRunHistoryRecord {
+  readonly completedAt: string | null;
+  readonly connectorInstanceId?: string | null;
+  readonly error?: string;
+  readonly factsJson?: Record<string, unknown> | null;
+  readonly failureReason?: string | null;
+  readonly recordsEmitted: number;
+  readonly reportedRecordsEmitted?: number | null;
+  readonly runId?: string | null;
+  readonly startedAt: string;
+  readonly status: string;
+  readonly terminalReason?: string | null;
 }
 
 export interface MountRefStaticSecretSetupStatusContext {
@@ -121,11 +131,15 @@ export interface MountRefStaticSecretSetupStatusContext {
   createRequestAcquisitionBatchStore: () => AcquisitionBatchStore;
   createRequestConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  /** Product run-history readers are both durable and connection-scoped. */
+  getLatestRunHistoryForProductByConnectionId?: (
+    connectorInstanceId: string
+  ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   getOwnerSubjectId: (req: unknown) => string;
-  // Bounded lookup of the run.start event timestamp, used to prove whether a
-  // terminal verification run belongs to the current credential rotation.
-  getRunStartedAt: (runId: string) => Promise<string | null>;
-  getRunTerminalEvent: (runId: string) => Promise<RunTerminalEvent | null> | RunTerminalEvent | null;
+  getProductRunHistoryForConnectionRunId?: (
+    connectorInstanceId: string,
+    runId: string
+  ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
@@ -152,6 +166,25 @@ function identityFieldName(manifest: ConnectorManifestLike): string | null {
   }
   const field = capture.fields.find((candidate) => candidate.identity && !candidate.secret);
   return field?.name ?? null;
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Manifest streams are an untrusted normalization boundary; each guard is required to fail closed before facts can authorize verified-empty.
+function manifestStreamsForSetupStatus(manifest: ConnectorManifestLike): readonly SetupStatusManifestStream[] {
+  const { streams } = manifest as { readonly streams?: unknown };
+  if (!Array.isArray(streams)) {
+    return [];
+  }
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The callback repeats the same fail-closed guards for each untrusted manifest stream value.
+  return streams.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return [];
+    }
+    const stream = value as { readonly name?: unknown; readonly required?: unknown };
+    if (typeof stream.name !== "string" || stream.name.length === 0) {
+      return [];
+    }
+    return [{ name: stream.name, required: stream.required !== false }];
+  });
 }
 
 // Pull the non-secret setup fields out of the draft's source binding. The draft
@@ -364,27 +397,44 @@ function importReceiptFromBatch(batch: AcquisitionBatch | null): SetupStatusImpo
   };
 }
 
-const TERMINAL_FAILURE = new Set(["failed", "cancelled", "abandoned"]);
+const TERMINAL_FAILURE = new Set([
+  "failed",
+  "cancelled",
+  "canceled",
+  "abandoned",
+  "errored",
+  "error",
+  "surface_failed",
+]);
 
-function hasTerminalStatus(event: RunTerminalEvent | null): event is RunTerminalEvent & { readonly status: string } {
-  return event !== null && typeof event.status === "string";
-}
-
-function runYieldFromTerminalData(data: Readonly<Record<string, unknown>> | null): {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Count presence is a durable compatibility discriminator; legacy defaults cannot be allowed to erase an omitted runtime count.
+function runYieldFromHistory(history: ProductRunHistoryRecord): {
   readonly recordsEmitted: number | null;
   readonly reportedRecordsEmitted: number | null;
+  readonly present: boolean;
 } {
+  const facts = history.factsJson;
+  const present =
+    facts === null || facts === undefined
+      ? true
+      : Object.hasOwn(facts, "records_emitted") || Object.hasOwn(facts, "reported_records_emitted");
+  if (!present) {
+    return { present: false, recordsEmitted: null, reportedRecordsEmitted: null };
+  }
   return {
-    recordsEmitted: asFiniteNumberOrNull(data?.records_emitted),
-    reportedRecordsEmitted: asFiniteNumberOrNull(data?.reported_records_emitted),
+    present: true,
+    recordsEmitted: asFiniteNumberOrNull(facts?.records_emitted) ?? asFiniteNumberOrNull(history.recordsEmitted),
+    reportedRecordsEmitted:
+      asFiniteNumberOrNull(facts?.reported_records_emitted) ?? asFiniteNumberOrNull(history.reportedRecordsEmitted),
   };
 }
 
 // Resolve the run evidence for the setup-status projection.
 //   - an in-flight run is the active-run row keyed on connector_instance_id;
-//   - otherwise, if a run id is known (in-flight earlier, or supplied by the
-//     owner surface that started the run), its terminal status answers whether
-//     the first sync failed.
+//   - otherwise, read the exact requested run or the latest product run-history
+//     row for this connection. There is intentionally no global run-id lookup:
+//     run ids are not connection identity.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This is the route's single run-evidence authority: active state, exact composite identity, latest connection history, running suppression, failure mapping, and canonical facts must remain ordered.
 async function resolveRunEvidence(
   ctx: MountRefStaticSecretSetupStatusContext,
   store: ConnectorInstanceStore,
@@ -398,26 +448,29 @@ async function resolveRunEvidence(
       lastRun: null,
     };
   }
-  if (!requestedRunId) {
+  const history = requestedRunId
+    ? await ctx.getProductRunHistoryForConnectionRunId?.(connectorInstanceId, requestedRunId)
+    : await ctx.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId);
+  if (!history || history.status === "running") {
     return { activeRun: null, lastRun: null };
   }
-  const terminal = await ctx.getRunTerminalEvent(requestedRunId);
-  if (!hasTerminalStatus(terminal)) {
-    return { activeRun: null, lastRun: null };
-  }
-  const failed = TERMINAL_FAILURE.has(terminal.status);
-  const startedAt = await ctx.getRunStartedAt(requestedRunId);
-  const yieldCounts = runYieldFromTerminalData(terminal.data);
+  const failed = TERMINAL_FAILURE.has(history.status);
+  const yieldCounts = runYieldFromHistory(history);
+  const facts = readCollectionFactsFromTerminalData(history.factsJson ?? null);
   return {
     activeRun: null,
     lastRun: {
-      failureReason: failed ? terminal.status : null,
-      finishedAt: asStringOrNull(terminal.occurred_at),
+      collectionFacts: facts,
+      failureReason: failed
+        ? (history.failureReason ?? history.error ?? history.terminalReason ?? history.status)
+        : null,
+      finishedAt: history.completedAt,
       recordsEmitted: yieldCounts.recordsEmitted,
       reportedRecordsEmitted: yieldCounts.reportedRecordsEmitted,
-      runId: requestedRunId,
-      startedAt,
-      status: failed ? "failed" : terminal.status,
+      runId: history.runId ?? requestedRunId,
+      startedAt: history.startedAt,
+      status: failed ? "failed" : history.status,
+      yieldCountsPresent: yieldCounts.present,
     },
   };
 }
@@ -519,6 +572,7 @@ function projectSetupStatus(
       updatedAt: instance.updatedAt ?? null,
     },
     lastRun,
+    manifestStreams: manifestStreamsForSetupStatus(manifest),
     setupKind,
     setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),
   });

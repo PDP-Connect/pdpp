@@ -36,7 +36,9 @@ import type { ConnectionHealthState } from "./connection-health.ts";
 //   awaiting_browser_login draft, browser/SSO login not completed   -> idle
 //   first_sync_running     setup material or browser login, run in flight -> idle (+ syncing activity)
 //   first_sync_pending     setup material or browser login, no run yet     -> idle
-//   first_sync_zero_yield  first run completed but accepted no records      -> idle
+//   first_sync_verified_empty first run proved every in-scope stream empty   -> needs_attention
+//   first_sync_unverified_zero first run observed zero without proof         -> needs_attention
+//   first_sync_unverified_missing_counts terminal run omitted yield counts   -> needs_attention
 //   first_sync_failed      last run failed, still a draft           -> needs_attention
 //   active                 first ingest accepted records           -> healthy
 //   paused                 owner-paused connection                  -> idle
@@ -51,6 +53,10 @@ export type StaticSecretSetupState =
   | "first_sync_failed"
   | "first_sync_pending"
   | "first_sync_running"
+  | "first_sync_unverified_missing_counts"
+  | "first_sync_unverified_zero"
+  | "first_sync_verified_empty"
+  /** @deprecated Kept for clients that still decode the pre-disposition state. */
   | "first_sync_zero_yield"
   | "paused"
   | "revoked"
@@ -63,6 +69,9 @@ const SETUP_STATE_HEALTH: Record<StaticSecretSetupState, ConnectionHealthState> 
   first_sync_failed: "needs_attention",
   first_sync_pending: "idle",
   first_sync_running: "idle",
+  first_sync_unverified_missing_counts: "needs_attention",
+  first_sync_unverified_zero: "needs_attention",
+  first_sync_verified_empty: "needs_attention",
   first_sync_zero_yield: "idle",
   paused: "idle",
   revoked: "idle",
@@ -118,6 +127,7 @@ export interface SetupStatusImportReceipt {
 // (started/in_progress/succeeded/failed/...). `failureReason` is the terminal
 // failure reason when the run failed.
 export interface SetupStatusRun {
+  readonly collectionFacts?: SetupStatusCollectionFacts | null;
   readonly failureReason?: string | null;
   readonly finishedAt?: string | null;
   readonly recordsEmitted?: number | null;
@@ -125,6 +135,28 @@ export interface SetupStatusRun {
   readonly runId: string | null;
   readonly startedAt?: string | null;
   readonly status: string | null;
+  /** False means the generalized writer preserved that the runtime omitted both counts. */
+  readonly yieldCountsPresent?: boolean;
+}
+
+export type SetupTerminalDisposition = "verified_empty" | "unverified_missing_counts" | "unverified_zero";
+
+export interface SetupStatusCollectionFact {
+  readonly checkpoint: string | null;
+  readonly considered: number | null;
+  readonly covered?: number | null;
+  readonly pending_detail_gaps: number;
+  readonly skipped: unknown;
+  readonly stream: string;
+}
+
+export interface SetupStatusCollectionFacts {
+  readonly streams: readonly SetupStatusCollectionFact[];
+}
+
+export interface SetupStatusManifestStream {
+  readonly name: string;
+  readonly required?: boolean;
 }
 
 export interface SetupStatusInstance {
@@ -144,6 +176,7 @@ export interface ProjectConnectionSetupStatusInput {
   // The currently in-flight run for this connection, if any
   // (`controller_active_runs` keyed on connector_instance_id).
   readonly activeRun: SetupStatusRun | null;
+  readonly collectionFacts?: SetupStatusCollectionFacts | null;
   readonly credential: SetupStatusCredentialMetadata | null;
   // The identity field name (a non-secret manifest setup field marked
   // `identity: true`), used to pull the account label out of `setupFields`.
@@ -154,6 +187,7 @@ export interface ProjectConnectionSetupStatusInput {
   // The most recent run for this connection (terminal or otherwise), if known.
   // Used to surface a failed first sync after the run leaves the active table.
   readonly lastRun: SetupStatusRun | null;
+  readonly manifestStreams?: readonly SetupStatusManifestStream[];
   readonly setupKind?: ConnectionSetupKind;
   readonly setupMaterial?: SetupStatusMaterialMetadata | null;
 }
@@ -231,6 +265,7 @@ export interface ConnectionSetupStatus {
   readonly setup_state: StaticSecretSetupState;
   // The real connector-instance status (draft/active/paused/revoked).
   readonly status: string;
+  readonly terminal_setup_disposition: SetupTerminalDisposition | null;
   readonly updated_at: string | null;
 }
 
@@ -252,21 +287,85 @@ function runIsRunning(run: SetupStatusRun | null): boolean {
   return run !== null && typeof run.status === "string" && RUNNING_STATUSES.has(run.status);
 }
 
-function runIsTerminalZeroYield(run: SetupStatusRun | null): boolean {
-  const recordsEmitted = run?.recordsEmitted ?? run?.reportedRecordsEmitted;
-  return (
-    run !== null && typeof run.status === "string" && TERMINAL_SUCCESS_STATUSES.has(run.status) && recordsEmitted === 0
-  );
-}
-
-function terminalDraftState(run: SetupStatusRun | null): StaticSecretSetupState | null {
+function terminalDraftState(
+  run: SetupStatusRun | null,
+  disposition: SetupTerminalDisposition | null
+): StaticSecretSetupState | null {
   if (runIsFailure(run)) {
     return "first_sync_failed";
   }
-  if (runIsTerminalZeroYield(run)) {
-    return "first_sync_zero_yield";
+  if (run !== null && typeof run.status === "string" && TERMINAL_SUCCESS_STATUSES.has(run.status)) {
+    switch (disposition) {
+      case "verified_empty":
+        return "first_sync_verified_empty";
+      case "unverified_missing_counts":
+        return "first_sync_unverified_missing_counts";
+      case "unverified_zero":
+        return "first_sync_unverified_zero";
+      default:
+        return null;
+    }
   }
   return null;
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This fail-closed fact validator keeps stream coverage, duplicate detection, required-stream presence, and checkpoint/gap trust in one canonical empty-result gate.
+function hasTrustedEmptyStreamFacts(
+  collectionFacts: SetupStatusCollectionFacts | null | undefined,
+  manifestStreams: readonly SetupStatusManifestStream[]
+): boolean {
+  const facts = collectionFacts?.streams ?? [];
+  if (facts.length === 0 || manifestStreams.length === 0) {
+    return false;
+  }
+  const manifestStreamNames = new Set(manifestStreams.map((stream) => stream.name).filter((name) => name.length > 0));
+  if (manifestStreamNames.size === 0) {
+    return false;
+  }
+  const factByStream = new Map<string, SetupStatusCollectionFact>();
+  for (const fact of facts) {
+    if (!manifestStreamNames.has(fact.stream) || factByStream.has(fact.stream)) {
+      return false;
+    }
+    factByStream.set(fact.stream, fact);
+  }
+  const requiredStreamNames = manifestStreams
+    .filter((stream) => stream.required !== false)
+    .map((stream) => stream.name)
+    .filter((name, index, names) => name.length > 0 && names.indexOf(name) === index);
+  if (requiredStreamNames.some((stream) => !factByStream.has(stream))) {
+    return false;
+  }
+  return facts.every(
+    (fact) =>
+      fact.considered === 0 &&
+      (fact.covered === undefined || fact.covered === null || fact.covered === 0) &&
+      fact.pending_detail_gaps === 0 &&
+      fact.skipped === null &&
+      (fact.checkpoint === "committed" || fact.checkpoint === "disabled")
+  );
+}
+
+export function classifyTerminalSetupDisposition(input: {
+  readonly collectionFacts?: SetupStatusCollectionFacts | null | undefined;
+  readonly manifestStreams?: readonly SetupStatusManifestStream[] | undefined;
+  readonly recordsEmitted?: number | null | undefined;
+  readonly reportedRecordsEmitted?: number | null | undefined;
+  readonly status: string | null;
+  readonly yieldCountsPresent?: boolean | undefined;
+}): SetupTerminalDisposition | null {
+  if (!(typeof input.status === "string" && TERMINAL_SUCCESS_STATUSES.has(input.status))) {
+    return null;
+  }
+  if (hasTrustedEmptyStreamFacts(input.collectionFacts, input.manifestStreams ?? [])) {
+    return "verified_empty";
+  }
+  const observedCount =
+    input.yieldCountsPresent !== false &&
+    (input.recordsEmitted !== null && input.recordsEmitted !== undefined
+      ? input.recordsEmitted
+      : input.reportedRecordsEmitted);
+  return observedCount === 0 ? "unverified_zero" : "unverified_missing_counts";
 }
 
 export function isTransitionalSetupState(state: StaticSecretSetupState): boolean {
@@ -342,7 +441,8 @@ function deriveSetupState(
   input: ProjectConnectionSetupStatusInput,
   setupKind: ConnectionSetupKind,
   hasSetupMaterial: boolean,
-  running: boolean
+  running: boolean,
+  terminalSetupDisposition: SetupTerminalDisposition | null
 ): StaticSecretSetupState {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const status = input.instance.status;
@@ -369,7 +469,7 @@ function deriveSetupState(
     return "first_sync_running";
   }
   // No in-flight run. Terminal run evidence is authoritative for the draft.
-  const terminalState = terminalDraftState(input.lastRun);
+  const terminalState = terminalDraftState(input.lastRun, terminalSetupDisposition);
   if (terminalState) {
     return terminalState;
   }
@@ -448,6 +548,52 @@ function projectImportReceipt(
   };
 }
 
+function terminalSetupDispositionForInput(input: ProjectConnectionSetupStatusInput): SetupTerminalDisposition | null {
+  if (input.instance.status !== "draft") {
+    return null;
+  }
+  return classifyTerminalSetupDisposition({
+    collectionFacts: input.lastRun?.collectionFacts ?? input.collectionFacts,
+    manifestStreams: input.manifestStreams,
+    recordsEmitted: input.lastRun?.recordsEmitted,
+    reportedRecordsEmitted: input.lastRun?.reportedRecordsEmitted,
+    status: input.lastRun?.status ?? null,
+    yieldCountsPresent: input.lastRun?.yieldCountsPresent,
+  });
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This owner-copy boundary deliberately keeps failed, silent-zero, and missing-count remediation distinct so every surface receives an honest action.
+function projectSetupLastError(
+  input: ProjectConnectionSetupStatusInput,
+  run: SetupStatusRun | null,
+  setupKind: ConnectionSetupKind,
+  setupState: StaticSecretSetupState,
+  terminalSetupDisposition: SetupTerminalDisposition | null
+): ConnectionSetupStatus["last_error"] {
+  const failed = setupState === "first_sync_failed";
+  let reason: string | null = null;
+  if (failed) {
+    reason = run?.failureReason ?? input.lastRun?.failureReason ?? "first_sync_failed";
+  } else if (terminalSetupDisposition === "unverified_missing_counts") {
+    reason = "first_sync_unverified_missing_counts";
+  } else if (terminalSetupDisposition === "unverified_zero") {
+    reason = "first_sync_unverified_zero";
+  }
+  if (reason === null) {
+    return null;
+  }
+
+  let remediation: string;
+  if (terminalSetupDisposition === "unverified_missing_counts") {
+    remediation = "Review the connection before retrying; the first sync did not leave durable count evidence.";
+  } else if (terminalSetupDisposition === "unverified_zero") {
+    remediation = "Review the connection and retry the first sync if you expected records.";
+  } else {
+    remediation = remediationForReason(reason, setupKind);
+  }
+  return { reason, remediation };
+}
+
 export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatusInput): ConnectionSetupStatus {
   const setupKind = input.setupKind ?? "static_secret";
   const material = input.setupMaterial ?? defaultSetupMaterial(setupKind, input.credential);
@@ -456,15 +602,10 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
   // summary still reports a non-terminal status (covers the window between
   // submit and the active-run row landing).
   const running = runIsRunning(input.activeRun) || (input.activeRun === null && runIsRunning(input.lastRun));
-  const setupState = deriveSetupState(input, setupKind, hasSetupMaterial, running);
+  const terminalSetupDisposition = terminalSetupDispositionForInput(input);
+  const setupState = deriveSetupState(input, setupKind, hasSetupMaterial, running, terminalSetupDisposition);
   const run = input.activeRun ?? input.lastRun ?? null;
-
-  const failed = setupState === "first_sync_failed";
-  const failureReason =
-    (failed ? (run?.failureReason ?? input.lastRun?.failureReason) : null) || (failed ? "first_sync_failed" : null);
-  const lastError = failureReason
-    ? { reason: failureReason, remediation: remediationForReason(failureReason, setupKind) }
-    : null;
+  const lastError = projectSetupLastError(input, run, setupKind, setupState, terminalSetupDisposition);
 
   return {
     account_identity: accountIdentity(input),
@@ -507,6 +648,7 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
     },
     setup_state: setupState,
     status: input.instance.status,
+    terminal_setup_disposition: terminalSetupDisposition,
     updated_at: input.instance.updatedAt,
   };
 }

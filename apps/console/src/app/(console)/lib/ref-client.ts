@@ -317,10 +317,15 @@ export interface RefConnectorRunSummary {
   first_at: string;
   known_gaps?: unknown[];
   last_at: string;
+  records_emitted?: number | null;
+  reported_records_emitted?: number | null;
   run_id: string;
   started_at: string;
   status: string;
+  yield_counts_present?: boolean;
 }
+
+export type RefTerminalSetupDisposition = "verified_empty" | "unverified_missing_counts" | "unverified_zero";
 
 export interface RefreshPolicy {
   assisted_after_owner_auth?: boolean;
@@ -676,6 +681,8 @@ export interface RefConnectorSummary {
    * the same reason as `manifest_declaration`.
    */
   terminal_facts?: RefTerminalFactsState | null;
+  /** Shared connection-scoped terminal setup disposition for a draft. */
+  terminal_setup_disposition?: RefTerminalSetupDisposition | null;
   total_records: number;
   /**
    * Orthogonal state for `total_records` (`reconcile-active-summary-evidence`
@@ -2201,6 +2208,10 @@ export type StaticSecretSetupStateValue =
   | "first_sync_failed"
   | "first_sync_pending"
   | "first_sync_running"
+  | "first_sync_unverified_missing_counts"
+  | "first_sync_unverified_zero"
+  | "first_sync_verified_empty"
+  /** @deprecated Kept for references that still emit the pre-disposition state. */
   | "first_sync_zero_yield"
   | "paused"
   | "revoked"
@@ -2270,6 +2281,7 @@ export interface ConnectionSetupStatus {
   };
   setup_state: StaticSecretSetupStateValue;
   status: string;
+  terminal_setup_disposition: RefTerminalSetupDisposition | null;
   updated_at: string | null;
 }
 

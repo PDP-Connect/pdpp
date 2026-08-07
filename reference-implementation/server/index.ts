@@ -5087,9 +5087,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
     createRequestAcquisitionBatchStore,
     createRequestConnectorInstanceCredentialStore,
     createRequestConnectorInstanceStore,
+    getLatestRunHistoryForProductByConnectionId: (connectorInstanceId: string) =>
+      getDefaultSchedulerStore().getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId) ?? null,
     getOwnerSubjectId,
-    getRunStartedAt: async (runId: string) => (await getRunStartedEvent(runId))?.occurred_at ?? null,
-    getRunTerminalEvent,
+    getProductRunHistoryForConnectionRunId: (connectorInstanceId: string, runId: string) =>
+      getDefaultSchedulerStore().getProductRunHistoryForConnectionRunId?.(connectorInstanceId, runId) ?? null,
     handleError,
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,

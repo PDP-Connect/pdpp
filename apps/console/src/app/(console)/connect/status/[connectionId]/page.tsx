@@ -100,7 +100,37 @@ function describeZeroYieldState(status: ConnectionSetupStatus): StatusDescriptio
   return { detail, headline: "No records collected", tone: "pending" };
 }
 
+function describeTerminalSetupDisposition(status: ConnectionSetupStatus): StatusDescription | null {
+  switch (status.terminal_setup_disposition) {
+    case "verified_empty":
+      return {
+        detail: "The first sync verified that this source has no records. Review the setup result before trying again.",
+        headline: "First sync verified empty",
+        tone: "pending",
+      };
+    case "unverified_missing_counts":
+      return {
+        detail: "The first sync completed without durable count evidence. Review the connection before retrying.",
+        headline: "Yield evidence missing",
+        tone: "pending",
+      };
+    case "unverified_zero":
+      return {
+        detail:
+          "The first sync returned zero records without proving the account was empty. Review the connection and retry if you expected data.",
+        headline: "No records confirmed",
+        tone: "pending",
+      };
+    default:
+      return null;
+  }
+}
+
 function describeImportState(status: ConnectionSetupStatus): StatusDescription {
+  const terminalDisposition = describeTerminalSetupDisposition(status);
+  if (terminalDisposition) {
+    return terminalDisposition;
+  }
   switch (status.setup_state) {
     case "active":
       return {
@@ -151,6 +181,10 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
 }
 
 function describeConnectionState(status: ConnectionSetupStatus): StatusDescription {
+  const terminalDisposition = describeTerminalSetupDisposition(status);
+  if (terminalDisposition) {
+    return terminalDisposition;
+  }
   switch (status.setup_state) {
     case "active":
       return describeActiveConnectionState(status);
@@ -200,6 +234,10 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
 // even before any material is captured; see `deriveSetupState`'s
 // browser_session handling in the RI runtime projection.
 function describeBrowserSessionState(status: ConnectionSetupStatus): StatusDescription {
+  const terminalDisposition = describeTerminalSetupDisposition(status);
+  if (terminalDisposition) {
+    return terminalDisposition;
+  }
   switch (status.setup_state) {
     case "active":
       return describeActiveConnectionState(status);
@@ -285,6 +323,16 @@ function sourceRecordsHref(status: ConnectionSetupStatus): string {
 }
 
 function retryLabel(status: ConnectionSetupStatus): string {
+  switch (status.terminal_setup_disposition) {
+    case "verified_empty":
+      return "Review setup result";
+    case "unverified_missing_counts":
+      return "Review setup";
+    case "unverified_zero":
+      break;
+    default:
+      break;
+  }
   if (status.setup_kind === "manual_upload") {
     return "Choose another file and retry";
   }
@@ -689,7 +737,10 @@ export default async function ConnectionSetupStatusPage({
           {described.tone === "failed" ||
           status.setup_state === "awaiting_credential" ||
           status.setup_state === "awaiting_browser_login" ||
-          status.setup_state === "first_sync_zero_yield" ? (
+          status.setup_state === "first_sync_zero_yield" ||
+          status.setup_state === "first_sync_verified_empty" ||
+          status.setup_state === "first_sync_unverified_zero" ||
+          status.setup_state === "first_sync_unverified_missing_counts" ? (
             <Link className={buttonVariants({ size: "sm", variant: "default" })} href={setupHref(status)}>
               {retryLabel(status)}
             </Link>

@@ -120,6 +120,10 @@ function toTerminalStatus(eventType: string, status: string): string {
 const FACTS_JSON_KEYS = [
   "collection_facts",
   "needs_input",
+  // Preserve presence separately from the schema's records_emitted DEFAULT 0.
+  // A missing runtime field is not evidence of zero yield.
+  "records_emitted",
+  "reported_records_emitted",
   "browser_surface_lease_id",
   "browser_surface_profile_key",
   "browser_surface_status",
