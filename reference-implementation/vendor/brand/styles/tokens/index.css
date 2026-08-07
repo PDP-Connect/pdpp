@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/* Ownership and authoring rules: ../README.md */
+/* Ownership and authoring rules: ../../README.md */
+
 
 @import "./primitive.css";
 @import "./semantic.css";

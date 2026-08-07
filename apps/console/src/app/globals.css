@@ -56,7 +56,7 @@
   .pdpp-num,
   [data-numeric],
   table {
-    font-variant-numeric: var(--numeric);
+    font-variant-numeric: var(--font-variant-numeric);
   }
   td,
   th {

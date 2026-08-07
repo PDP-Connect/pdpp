@@ -33,7 +33,7 @@
 
   /* Density preference sets the shared row-padding token; utilities only read it. */
   html[data-density="compact"] {
-    --data-list-row-padding-block: 0.3125rem;
+    --spacing-data-list-row: 0.3125rem;
   }
 
   body {

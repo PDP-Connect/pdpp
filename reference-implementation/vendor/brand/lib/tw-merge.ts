@@ -18,10 +18,12 @@ import { type Config, extendTailwindMerge, mergeConfigs } from "tailwind-merge";
  * @see https://github.com/dcastil/tailwind-merge/blob/main/docs/configuration.md
  */
 export const pdppBrandTheme = {
-  container: ["content"],
+  container: ["content", "measure"],
   radius: ["pill"],
   spacing: ["sidebar"],
-  text: ["eyebrow", "caption", "label", "body", "title", "body-lg", "heading", "display", "display-lg"],
+  // The eight type rungs, in ladder order. Exactly the `--text-*` names in
+  // tokens/semantic.css — one entry per rank, no treatment aliases.
+  text: ["eyebrow", "small", "body", "lede", "heading", "title", "display", "hero"],
 } as const;
 
 /** Compose into app-level `extendTailwindMerge(..., withPdppBrand)`. */

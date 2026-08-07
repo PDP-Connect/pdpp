@@ -2,11 +2,49 @@
  * Copyright The PDP-Connect Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * PDPP's Tailwind-facing semantic API. Keep semantic tokens in plain `@theme`
- * so generated utilities retain the semantic variable and scoped overrides.
- * `@theme inline` is reserved for Tailwind default-name remaps.
+ * PDPP's Tailwind-facing semantic API.
+ *
+ * SPLIT BY VALUE KIND — this file has two @theme blocks and the split is
+ * load-bearing. Which one a key belongs in is decided by its VALUE, not by
+ * what it names:
+ *
+ *   Literal value (`--text-heading: 20px`)  → plain @theme.
+ *     The utility emits `var(--text-heading)`, resolved at the element, so a
+ *     surface rebinding the rung under its own selector wins. `inline` would
+ *     bake 20px into the utility and the rebind would go dead.
+ *
+ *   var() indirection (`--color-primary: var(--primary)`) → @theme inline.
+ *     A custom property's var() is substituted at computed-value time ON THE
+ *     ELEMENT WHERE IT IS DECLARED. Tailwind emits plain @theme keys at :root,
+ *     so plain `--color-primary: var(--primary)` freezes to :root's --primary
+ *     and inherits that frozen colour downward — a surface rebinding --primary
+ *     on a nested element (apps/site `[data-surface="concept"]`, which sits on
+ *     a div, not <html>) is ignored. `inline` makes the utility emit
+ *     `var(--primary)` directly, resolved at the element, so the rebind lands.
+ *
+ * Regression this encodes: the whole concept surface rendered brand blue —
+ * every link, the footer, and the ?scheme= palette switcher — because the
+ * colour block below was plain @theme. Diagnosed 2026-08-07.
+ *
  * @see https://tailwindcss.com/docs/theme#theme-variable-namespaces
  * @see https://tailwindcss.com/docs/theme#referencing-other-variables
+ *
+ * TYPE LADDER — the single declaration site for every rung, brand and surface
+ * alike. Eight ranks, one name each:
+ *
+ *   eyebrow · small · body · lede · heading · title · display · hero
+ *
+ * Declared here so the utilities exist in every build; a surface supplies its
+ * own values by rebinding these variables under its own selector (see
+ * `[data-surface="concept"]` in apps/site concept tokens/semantic.css), never
+ * by declaring a second `@theme`. Two `@theme` blocks with overlapping rung
+ * names collide at `:root` and resolve by import order.
+ *
+ * Each rung sets the full quadruple (size + --line-height + --letter-spacing +
+ * --font-weight) so a surface rebinding one property never inherits a stale
+ * sibling. `textVariants.size` in brand-react maps 1:1 onto these names and
+ * `text.test.ts` enforces that; a size that only re-weights or re-colours an
+ * existing rung is treatment and belongs in a variant, not a new token.
  */
 
 @theme {
@@ -14,59 +52,72 @@
   --font-mono: var(--font-pdpp-mono), ui-monospace, monospace;
   --font-serif: var(--font-pdpp-serif), ui-serif, Georgia, serif;
   --font-eyebrow: var(--font-mono);
+  --font-variant-numeric: tabular-nums lining-nums;
 
   --text-eyebrow: 11.5px;
-  --text-eyebrow--line-height: normal;
+  --text-eyebrow--line-height: 1.3;
   --text-eyebrow--letter-spacing: 0.12em;
   --text-eyebrow--font-weight: 400;
 
-  --text-caption: 12px;
-  --text-caption--line-height: 1.5;
-  --text-caption--letter-spacing: 0;
-  --text-caption--font-weight: 400;
-
-  --text-label: 12px;
-  --text-label--line-height: 1.4;
-  --text-label--letter-spacing: 0;
-  --text-label--font-weight: 500;
+  --text-small: 12px;
+  --text-small--line-height: 1.5;
+  --text-small--letter-spacing: 0;
+  --text-small--font-weight: 400;
 
   --text-body: 14px;
   --text-body--line-height: 1.6;
   --text-body--letter-spacing: 0;
   --text-body--font-weight: 400;
 
-  --text-title: 14px;
-  --text-title--line-height: 1.4;
-  --text-title--letter-spacing: 0;
-  --text-title--font-weight: 600;
-
-  --text-body-lg: 18px;
-  --text-body-lg--line-height: 1.625;
-  --text-body-lg--letter-spacing: 0;
-  --text-body-lg--font-weight: 400;
+  --text-lede: 18px;
+  --text-lede--line-height: 1.625;
+  --text-lede--letter-spacing: 0;
+  --text-lede--font-weight: 400;
 
   --text-heading: 20px;
   --text-heading--line-height: 1.3;
   --text-heading--letter-spacing: -0.01em;
   --text-heading--font-weight: 600;
 
+  --text-title: 28px;
+  --text-title--line-height: 1.25;
+  --text-title--letter-spacing: -0.015em;
+  --text-title--font-weight: 600;
+
   --text-display: 40px;
   --text-display--line-height: 1.08;
   --text-display--letter-spacing: -0.025em;
   --text-display--font-weight: 600;
 
-  --text-display-lg: 60px;
-  --text-display-lg--line-height: 1.05;
-  --text-display-lg--letter-spacing: -0.03em;
-  --text-display-lg--font-weight: 600;
+  --text-hero: 60px;
+  --text-hero--line-height: 1.05;
+  --text-hero--letter-spacing: -0.03em;
+  --text-hero--font-weight: 600;
 
-  --spacing-sidebar: 240px;
   --radius-pill: 999px;
+  --spacing-sidebar: 240px;
+  --spacing-data-list-row: 0.5rem;
+  --container-content: 72rem;
+  --container-measure: 68ch;
+
   --shadow-raised: var(--raised-shadow);
   --shadow-overlay: var(--overlay-shadow);
   --shadow-focus: var(--focus-shadow);
-  --container-content: 72rem;
+}
 
+/* Every key below is a var() indirection onto a semantic token that a surface
+ * may rebind at a nested scope, so all of them must be `inline`. See the split
+ * rule in this file's header before moving a key across the boundary.
+ *
+ * `inline` still emits the variable at :root — it only changes what the
+ * generated utility references. That is `@theme reference`, which does not
+ * emit; do not confuse the two.
+ *
+ * --font-* and --shadow-* above are indirections too, but their referents
+ * (--font-pdpp-*, --raised-shadow, …) are only ever declared at :root, the
+ * same element Tailwind emits to, so plain and inline behave identically for
+ * them. Move a key down here the day a surface rebinds its referent. */
+@theme inline {
   --color-brand: var(--brand);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -80,17 +131,27 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-foreground-faint: var(--foreground-faint);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
-  --color-border-strong: var(--border-strong);
-  --color-data-list-divider: var(--data-list-divider);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+
+  --color-primary-emphasis: var(--primary-emphasis);
+  --color-primary-on-wash: var(--primary-on-wash);
+  --color-on-primary-emphasis: var(--on-primary-emphasis);
+  --color-on-primary-emphasis-soft: var(--on-primary-emphasis-soft);
+  --color-on-primary-emphasis-label: var(--on-primary-emphasis-label);
+  --color-on-primary-emphasis-wash: var(--on-primary-emphasis-wash);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+
+  --color-data-list-divider: var(--data-list-divider);
 
   --color-success-badge-foreground: var(--success-badge-foreground);
   --color-warning-badge-foreground: var(--warning-badge-foreground);

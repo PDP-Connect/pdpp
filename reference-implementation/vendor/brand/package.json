@@ -7,10 +7,10 @@
     "**/*.css"
   ],
   "exports": {
-    "./fonts": "./fonts.ts",
-    "./styles.css": "./index.css",
-    "./launch-colors": "./launch-colors.ts",
-    "./tw-merge": "./tw-merge.ts"
+    "./fonts": "./lib/fonts.ts",
+    "./styles.css": "./styles/index.css",
+    "./launch-colors": "./lib/launch-colors.ts",
+    "./tw-merge": "./lib/tw-merge.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",

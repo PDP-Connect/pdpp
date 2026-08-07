@@ -120,7 +120,7 @@ export function renderPdppMark({ size = 28, title = "PDPP" } = {}) {
 }
 
 // ─── Shared CSS ──────────────────────────────────────────────────────────────
-// Minimal PDPP subset derived from packages/pdpp-brand/base.css plus a tiny
+// Minimal PDPP subset derived from packages/pdpp-brand/styles/base.css plus a tiny
 // hosted-ui layer. No fontsource imports — these pages fall back to system UI
 // until font weights load from the website. Reference-only by design.
 
@@ -255,7 +255,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   color: var(--muted-foreground);
 }
 
-/* ─── Semantic surfaces (match @pdpp/brand/components.css) ──────────── */
+/* ─── Semantic surfaces (match /pdpp-brand/styles/components.css) ──────────── */
 [data-surface="human"] {
   border-top: 1px solid var(--border);
   border-right: 1px solid var(--border);

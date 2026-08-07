@@ -1,0 +1,109 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Compatibility type classes — still heavily used across console, operator-ui,
+ * site, and hosted-ui (especially `.pdpp-caption` / `.pdpp-eyebrow`).
+ *
+ * Prefer the Tailwind semantic text utilities from tokens/semantic.css instead:
+ * `text-eyebrow`, `text-small`, `text-body`, `text-lede`, `text-heading`,
+ * `text-title`, `text-display`, `text-hero`. Those already own
+ * size/weight/leading/tracking; these `.pdpp-*` wrappers mostly restate them
+ * and obscure that path. Keep for now; migrate call sites later, then delete.
+ *
+ * Class names here are frozen legacy spellings and no longer track rung names
+ * one-to-one — the ladder has one name per rank, so the classes that were only
+ * a weight or leading apart from a neighbour now resolve to a shared rung plus
+ * an explicit treatment. Those literals preserve the pre-consolidation
+ * rendering exactly; do not "tidy" them into the rung defaults:
+ *   .pdpp-title   = body rung  + 1.4 leading + 600  (was --text-title 14px)
+ *   .pdpp-label   = small rung + 1.4 leading + 500  (was --text-label 12px)
+ *   .pdpp-caption = small rung                      (was --text-caption)
+ *   .pdpp-body-lg = lede rung                       (was --text-body-lg)
+ *   .pdpp-eyebrow = eyebrow rung                     (legacy class name)
+ *   .pdpp-display-lg = hero rung                    (legacy class name)
+ *
+ * `@layer components` so color/spacing utilities can still override
+ * (e.g. StatusBadge over `.pdpp-eyebrow`).
+ */
+
+@layer components {
+  .pdpp-display-lg {
+    font-family: var(--font-sans);
+    font-size: var(--text-hero);
+    font-weight: var(--text-hero--font-weight);
+    line-height: var(--text-hero--line-height);
+    letter-spacing: var(--text-hero--letter-spacing);
+  }
+
+  .pdpp-display {
+    font-family: var(--font-sans);
+    font-size: var(--text-display);
+    font-weight: var(--text-display--font-weight);
+    line-height: var(--text-display--line-height);
+    letter-spacing: var(--text-display--letter-spacing);
+  }
+
+  .pdpp-heading {
+    font-family: var(--font-sans);
+    font-size: var(--text-heading);
+    font-weight: var(--text-heading--font-weight);
+    line-height: var(--text-heading--line-height);
+    letter-spacing: var(--text-heading--letter-spacing);
+  }
+
+  .pdpp-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: var(--text-body--letter-spacing);
+  }
+
+  .pdpp-body-lg {
+    font-family: var(--font-sans);
+    font-size: var(--text-lede);
+    font-weight: var(--text-lede--font-weight);
+    line-height: var(--text-lede--line-height);
+    letter-spacing: var(--text-lede--letter-spacing);
+  }
+
+  .pdpp-body {
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--text-body--font-weight);
+    line-height: var(--text-body--line-height);
+    letter-spacing: var(--text-body--letter-spacing);
+  }
+
+  .pdpp-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-small);
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: var(--text-small--letter-spacing);
+  }
+
+  .pdpp-caption {
+    font-family: var(--font-sans);
+    font-size: var(--text-small);
+    font-weight: var(--text-small--font-weight);
+    line-height: var(--text-small--line-height);
+    letter-spacing: var(--text-small--letter-spacing);
+  }
+
+  .pdpp-eyebrow {
+    font-family: var(--font-eyebrow);
+    font-size: var(--text-eyebrow);
+    font-weight: var(--text-eyebrow--font-weight);
+    line-height: var(--text-eyebrow--line-height);
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: var(--text-eyebrow--letter-spacing);
+  }
+
+  .pdpp-rules {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+}
