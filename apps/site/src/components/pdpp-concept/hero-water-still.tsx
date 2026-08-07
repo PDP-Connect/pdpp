@@ -8,7 +8,7 @@ const ROWS_PER_COLUMN = 17;
 const STREAM_ANIMATION_CLASS_NAMES = [
   "motion-safe:animate-[pdpp-water-drift_41s_linear_infinite]",
   "motion-safe:animate-[pdpp-water-drift_33s_linear_infinite]",
-  "motion-safe:animate-[pdpp-water-drift_27s_linear_infinite]",
+  "motion-safe:animate-[pdpp-water-drift_22s_linear_infinite]",
 ] as const;
 
 export function PdppHeroWaterStill() {
@@ -35,8 +35,8 @@ export function PdppHeroWaterStill() {
                   {Array.from({ length: ROWS_PER_COLUMN }, (_, rowIndex) => stream[rowIndex % stream.length]).map(
                     (row, rowIndex) => (
                       <div key={`${row?.[0]}-${rowIndex}`}>
-                        <span className="text-[rgba(14,90,84,0.78)]">{row?.[0]}</span>{" "}
-                        <span className="text-[rgba(26,26,23,0.92)]">{row?.[1]}</span>
+                        <span className="text-primary/80">{row?.[0]}</span>{" "}
+                        <span className="text-foreground/90">{row?.[1]}</span>
                       </div>
                     )
                   )}

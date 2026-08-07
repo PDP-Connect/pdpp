@@ -6,7 +6,7 @@
  * `@pdpp/brand-react` `text-variants.ts`. This table owns editorial packaging
  * that is not a portable type rung:
  *   - colors: foreground-faint / on-primary-emphasis labels
- *   - sizes: stamp chip, callout box, deck (title + normal weight)
+ *   - sizes: stamp chip, callout box, deck (title rung packaging)
  *   - section-index chrome (const below, not a cva variant)
  *
  * Stamp is packaging on the shared `eyebrow` rung — the facade maps
@@ -56,8 +56,8 @@ export const conceptTextVariants = cva("", {
         "max-w-measure text-pretty text-body text-foreground",
         "my-6 border-primary border-l-2 bg-primary-wash px-5 py-4",
       ],
-      // Title rung, normal weight — editorial identity line.
-      deck: "text-pretty font-normal text-title",
+      // Title rung metrics; weight from text-title token or caller `weight`.
+      deck: "text-pretty text-title",
     },
     /** Stamp default accent when caller left color at brand foreground/default. */
     stampAccent: {

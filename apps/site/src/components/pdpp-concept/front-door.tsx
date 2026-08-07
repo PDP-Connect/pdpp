@@ -3,45 +3,54 @@
 
 import Link from "next/link";
 import { Button } from "@/components/pdpp-concept/button.tsx";
-import { PdppHeroWater } from "@/components/pdpp-concept/hero-water.tsx";
 import { WordmarkIcon } from "@/components/pdpp-concept/icons.tsx";
-import { SPEC_STATUS_STAMP } from "@/components/pdpp-concept/spec-status.ts";
 import { Text } from "@/components/pdpp-concept/text.tsx";
 import { cn } from "@/lib/utils.ts";
+import { PdppHeroWaterStill } from "./hero-water-still.tsx";
+import { SPEC_STATUS_STAMP } from "./spec-status.ts";
 
 export function PdppFrontDoor() {
   return (
-    // Outer frame — all interior rules are full-bleed to this edge / the col divider
-    <div className="border-2">
+    // Outer frame — interior rules are full-bleed to the lockup edge / col divider
+    <div>
       {/* Brand lockup — full across */}
-      <div className="flex flex-col gap-5 border-b p-5 pt-4">
-        <div className="flex h-12 min-w-0 flex-wrap items-center gap-5">
-          <WordmarkIcon className="block h-full w-auto shrink-0" />
-          <hr className="h-full w-px bg-muted-foreground" />
-          <Text as="h1" className="min-w-0 text-[44px] leading-none" size="display" weight="medium">
-            Personal Data Portability Protocol
+      <div className="flex flex-col gap-5 border-primary border-b pb-3.5 lg:pb-5">
+        <div className="flex h-12 min-w-0 flex-wrap items-baseline justify-between gap-x-5 gap-y-3 text-primary max-md:h-auto max-md:flex-col max-md:items-start lg:pl-0.5">
+          <WordmarkIcon className="block h-full w-auto shrink-0 max-md:h-10" />
+          <Text
+            caps
+            className="translate-y-[-0.6em] max-md:translate-y-0"
+            color="primary"
+            family="mono"
+            size="body"
+            weight="normal"
+          >
+            {SPEC_STATUS_STAMP}
           </Text>
         </div>
-        <Text color="muted" family="mono" size="stamp" weight="normal">
-          {SPEC_STATUS_STAMP}
-        </Text>
       </div>
 
       {/*
-        Grid cells carry the rules (border-r / border-t), not padded inners —
-        so every rule runs edge-to-edge and T-junctions meet. Measure stays on
-        the copy stack only; never on the column shell (that inset the rules).
+        Two columns on lg+, stacked below. The only rule left is the lockup's
+        border-b above — the interior rules and the box frame are gone, so
+        nothing here needs to keep T-junctions meeting. The copy column takes
+        its width from the grid track rather than a measure cap: at the 1080px
+        page the 1fr track already lands inside the prose measure.
       */}
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] items-stretch max-[1200px]:grid-cols-[minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)] items-stretch max-lg:grid-cols-[minmax(0,1fr)]">
         {/* LHS */}
-        <div className="flex min-h-0 min-w-0 flex-col border-r max-[1200px]:border-r-0 max-[1200px]:border-b">
-          <div className="flex max-w-measure flex-col gap-5 p-5 pt-4">
-            <Text size="deck">An open protocol for scoped access to personal data.</Text>
-            <Text className="opacity-60" size="deck">
+        <div className="flex min-h-0 min-w-0 flex-col">
+          <div className="flex flex-col gap-5 pt-4 pb-5">
+            {/* The h1 for `/`. The wordmark above is an image and the lockup's
+                status stamp is chrome, so this line is the page's only heading. */}
+            <Text as="h1" size="title" weight="medium">
+              Personal Data Portability Protocol (PDPP) is an open protocol for scoped access to personal data.
+            </Text>
+            <Text className="opacity-60" size="title" weight="medium">
               A grant is how one person approves one application to read chosen records and fields, and a resource
               server enforces it on every request.
             </Text>
-            <Text color="muted" size="body">
+            <Text color="muted" size="body" wrap="balanced">
               It profiles{" "}
               <a href="https://oauth.net/2/" rel="noopener noreferrer" target="_blank">
                 OAuth 2.0
@@ -64,7 +73,7 @@ export function PdppFrontDoor() {
 
           <div
             className={cn(
-              "mt-auto border-t p-5",
+              "pt-5 pr-5",
               "flex flex-wrap items-center gap-3",
               "max-[460px]:flex-col max-[460px]:items-stretch"
             )}
@@ -92,7 +101,7 @@ export function PdppFrontDoor() {
               </span>
             </Button>
             <Button
-              className="min-w-0 flex-1 justify-between gap-2.5 rounded-[3px] border-border-subtle px-4 py-3 font-normal text-foreground!"
+              className="gap-2.5 rounded-[3px] border-border-subtle px-4 py-3 font-normal text-foreground!"
               nativeButton={false}
               render={<Link href="/participate" />}
               variant="secondary"
@@ -105,22 +114,12 @@ export function PdppFrontDoor() {
           </div>
         </div>
 
-        {/* RHS — caption above the viz so the LHS CTA foot isn't mirrored */}
-        <div className="flex min-h-0 flex-col">
-          <div className="border-b p-5 text-center">
-            <Text
-              align="center"
-              caps
-              className="whitespace-normal! mx-auto max-w-[36ch]"
-              color="foreground"
-              family="mono"
-              size="stamp"
-            >
-              Sleep scores · artists played · your conversations
-            </Text>
-          </div>
-          <div className="min-h-0 flex-1 p-5">
-            <PdppHeroWater />
+        {/* RHS — fixed viz height at every width; stacks under LHS below lg */}
+        <div className="flex min-h-0 min-w-0 flex-col">
+          <div className="min-h-0 flex-1 p-5 max-lg:px-0">
+            <div aria-hidden="true" className="pointer-events-none h-[clamp(260px,36vh,380px)] w-full min-w-0">
+              <PdppHeroWaterStill />
+            </div>
           </div>
         </div>
       </div>

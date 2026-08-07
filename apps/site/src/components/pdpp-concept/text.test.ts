@@ -73,6 +73,13 @@ test("stamp size rebinds eyebrow letter-spacing via concept cva", () => {
   assert.match(html, STAMP_EYEBROW_LETTER_SPACING_PATTERN);
 });
 
+test("deck size does not pin font-normal so weight prop applies", () => {
+  const html = renderToStaticMarkup(createElement(Text, { children: "Lead", size: "deck", weight: "semi" }));
+  const classes = classesFor(html, "p");
+  assert.ok(classes.has("font-semibold"));
+  assert.ok(!classes.has("font-normal"));
+});
+
 test("infers list and preformatted variants from the native host", () => {
   const listHtml = renderToStaticMarkup(createElement(Text, { as: "li", children: "List item" }));
   const preHtml = renderToStaticMarkup(createElement(Text, { as: "pre", children: "line one\nline two" }));
