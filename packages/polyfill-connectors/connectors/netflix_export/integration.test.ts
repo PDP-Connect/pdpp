@@ -91,22 +91,27 @@ async function runNetflixImport(importRoot: string): Promise<{ messages: Emitted
   return { messages: result.messages };
 }
 
-const VIEWING_ACTIVITY_CSV = `Title,Watched at,Device type,Watch duration,Profile name
-"The Crown","2024-01-15 10:30:00","TV","85%","Main"
-"Stranger Things","2024-01-14 15:45:00","Phone","92%","Secondary"`;
+const DIRECT_HISTORY_CSV = `Title,Date
+"The Crown",2024-01-15
+"Stranger Things",2024-01-14`;
 
-test("Netflix connector emits records from a raw ViewingActivity.csv uploaded flat into the import dir (Add Source path)", async () => {
+const FULL_EXPORT_CSV = `Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country
+"Main","2024-01-15 10:30:00","0:42:10","","The Crown","","TV","0:42:10","0:42:10","US"
+"Secondary","2024-01-14 15:45:00","0:50:22","","Stranger Things","","Phone","0:50:22","0:50:22","US"`;
+
+test("Netflix connector emits records from a raw direct_history CSV uploaded flat into the import dir (Add Source path)", async () => {
   const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-upload-csv-"));
   try {
     // Mirrors the manual-upload route's on-disk contract: the uploaded file
     // is written flat as join(importDir, fileName) — no server-side unzip,
     // no nested CONTENT_INTERACTION/ subdirectory.
-    await writeFile(join(importRoot, "ViewingActivity.csv"), VIEWING_ACTIVITY_CSV, "utf8");
+    await writeFile(join(importRoot, "NetflixViewingHistory.csv"), DIRECT_HISTORY_CSV, "utf8");
 
     const { messages } = await runNetflixImport(importRoot);
     const emitted = records(messages, "viewing_activity");
     assert.equal(emitted.length, 2);
     assert.ok(emitted.some((r) => r.title === "The Crown"));
+    assert.ok(emitted.every((r) => r.source_schema === "direct_history" && r.watched_at_precision === "day"));
 
     const done = messages.at(-1);
     assert.equal(done?.type, "DONE");
@@ -123,7 +128,7 @@ test("Netflix connector emits records from the official getmyinfo zip archive up
   const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-upload-zip-"));
   try {
     const zip = makeStoredZip([
-      { name: "CONTENT_INTERACTION/ViewingActivity.csv", data: VIEWING_ACTIVITY_CSV },
+      { name: "CONTENT_INTERACTION/ViewingActivity.csv", data: FULL_EXPORT_CSV },
       { name: "IDENTIFIERS/Devices.csv", data: "Device Type\nTV\n" },
     ]);
     await writeFile(join(importRoot, "netflix-report.zip"), zip);
@@ -131,6 +136,7 @@ test("Netflix connector emits records from the official getmyinfo zip archive up
     const { messages } = await runNetflixImport(importRoot);
     const emitted = records(messages, "viewing_activity");
     assert.equal(emitted.length, 2);
+    assert.ok(emitted.every((r) => r.source_schema === "full_export" && r.watched_at_precision === "instant"));
 
     const done = messages.at(-1);
     assert.equal(done?.type, "DONE");
@@ -148,7 +154,7 @@ test("Netflix connector still honors the legacy pre-extracted CONTENT_INTERACTIO
   try {
     const contentDir = join(importRoot, "CONTENT_INTERACTION");
     mkdirSync(contentDir);
-    writeFileSync(join(contentDir, "ViewingActivity.csv"), VIEWING_ACTIVITY_CSV, "utf8");
+    writeFileSync(join(contentDir, "ViewingActivity.csv"), FULL_EXPORT_CSV, "utf8");
 
     const { messages } = await runNetflixImport(importRoot);
     const emitted = records(messages, "viewing_activity");
@@ -158,10 +164,33 @@ test("Netflix connector still honors the legacy pre-extracted CONTENT_INTERACTIO
   }
 });
 
-test("parseCSVFile reads and parses a complete CSV fixture", async () => {
-  const csvContent = `Title,Watched at,Device type,Watch duration,Profile name
-"The Crown","2024-01-15","TV","85%","Main"
-"Stranger Things","2024-01-14","Phone","92%","Shared"`;
+test("Netflix connector rejects an unrecognized/mixed CSV header instead of guessing a schema", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-netflix-unknown-schema-"));
+  try {
+    await writeFile(
+      join(importRoot, "unknown.csv"),
+      "Title,Watched at,Device type,Watch duration,Profile name\n",
+      "utf8"
+    );
+
+    const { messages } = await runNetflixImport(importRoot);
+    const emitted = records(messages, "viewing_activity");
+    assert.equal(emitted.length, 0);
+
+    const skip = messages.find((m) => m.type === "SKIP_RESULT");
+    assert.ok(skip, "expected a SKIP_RESULT for the unrecognized header");
+    if (skip?.type === "SKIP_RESULT") {
+      assert.equal(skip.reason, "unrecognized_csv_schema");
+    }
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("parseCSVFile reads and parses a complete direct_history CSV fixture", async () => {
+  const csvContent = `Title,Date
+"The Crown",2024-01-15
+"Stranger Things",2024-01-14`;
 
   const tmpDir = "/tmp/netflix-test-basic";
   mkdirSync(tmpDir, { recursive: true });
@@ -180,10 +209,10 @@ test("parseCSVFile reads and parses a complete CSV fixture", async () => {
 });
 
 test("parseCSVFile detects malformed rows with unclosed quotes", async () => {
-  const csvContent = `Title,Watched at,Device type,Watch duration,Profile name
-"Incomplete Quote","2024-01-15","TV","85%","Main"
-"Unclosed Quote,2024-01-14,Phone,92%,Shared
-"Valid Row","2024-01-13","Laptop","50%","Main"`;
+  const csvContent = `Title,Date
+"Incomplete Quote",2024-01-15
+"Unclosed Quote,2024-01-14
+"Valid Row",2024-01-13`;
 
   const tmpDir = "/tmp/netflix-test-malformed";
   mkdirSync(tmpDir, { recursive: true });
@@ -215,7 +244,7 @@ test("parseCSVFile handles empty file", async () => {
 });
 
 test("parseCSVFile handles file with only headers", async () => {
-  const csvContent = "Title,Watched at,Device type,Watch duration,Profile name";
+  const csvContent = "Title,Date";
 
   const tmpDir = "/tmp/netflix-test-headers-only";
   mkdirSync(tmpDir, { recursive: true });
@@ -233,7 +262,7 @@ test("parseCSVFile handles file with only headers", async () => {
 });
 
 test("parseCSVFile handles multi-line quoted fields (RFC 4180)", async () => {
-  const csvContent = `Title,Watched at
+  const csvContent = `Title,Date
 "Multi
 Line Title","2024-01-15"
 "Normal","2024-01-14"`;
@@ -262,7 +291,11 @@ test("findViewingActivityFiles searches directory tree", () => {
     const subdir = join(tmpDir, "CONTENT_INTERACTION");
     mkdirSync(subdir);
     const csvPath = join(subdir, "ViewingActivity.csv");
-    writeFileSync(csvPath, "Title,Watched at\n", "utf8");
+    writeFileSync(
+      csvPath,
+      "Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country\n",
+      "utf8"
+    );
 
     const found = findViewingActivityFiles(tmpDir);
     assert.ok(found.some((p) => p.includes("ViewingActivity.csv")));
@@ -279,7 +312,11 @@ test("findViewingActivityFiles handles case-insensitive filename search", () => 
     const subdir = join(tmpDir, "content_interaction");
     mkdirSync(subdir);
     const csvPath = join(subdir, "viewingactivity.csv");
-    writeFileSync(csvPath, "Title,Watched at\n", "utf8");
+    writeFileSync(
+      csvPath,
+      "Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country\n",
+      "utf8"
+    );
 
     const found = findViewingActivityFiles(tmpDir);
     assert.ok(found.some((p) => p.toLowerCase().includes("viewingactivity.csv")));
@@ -321,7 +358,11 @@ test("resolveViewingActivityFile returns error on archive validation failure", (
     const contentDir = join(tmpDir, "CONTENT_INTERACTION");
     mkdirSync(contentDir);
     const csvPath = join(contentDir, "ViewingActivity.csv");
-    writeFileSync(csvPath, "Title,Watched at\n", "utf8");
+    writeFileSync(
+      csvPath,
+      "Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country\n",
+      "utf8"
+    );
 
     // This should succeed (normal case)
     const result = resolveViewingActivityFile(tmpDir);
@@ -345,9 +386,9 @@ test("connector subprocess integration: emits viewing_activity records", async (
     mkdirSync(contentDir);
     const csvPath = join(contentDir, "ViewingActivity.csv");
 
-    const csvContent = `Title,Watched at,Device type,Watch duration,Profile name
-"The Crown","2024-01-15 10:30:00","TV","85%","Main"
-"Stranger Things","2024-01-14 15:45:00","Phone","92%","Secondary"`;
+    const csvContent = `Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country
+"Main","2024-01-15 10:30:00","0:42:10","","The Crown","","TV","0:42:10","0:42:10","US"
+"Secondary","2024-01-14 15:45:00","0:50:22","","Stranger Things","","Phone","0:50:22","0:50:22","US"`;
 
     writeFileSync(csvPath, csvContent, "utf8");
 

@@ -19,34 +19,34 @@
     "modality": "manual_or_upload",
     "manual_or_upload": {
       "label": "Netflix viewing activity export",
-      "description": "Request your Netflix viewing activity from netflix.com/account/getmyinfo (up to 30 days to prepare), then upload ViewingActivity.csv or the full export .zip here.",
+      "description": "Download your viewing history instantly from netflix.com/viewingactivity (Download all), then upload the CSV here. If your account is inactive, use the full data export from netflix.com/account/getmyinfo instead (up to 30 days to prepare).",
       "acquisition_methods": [
         {
-          "label": "Request your export from Netflix",
+          "label": "Download your viewing history now",
           "platform": "web",
           "posture": "primary",
-          "detail": "Go to netflix.com/account/getmyinfo and request an export. Netflix emails you when it's ready (up to 30 days).",
-          "help_url": "https://www.netflix.com/account/getmyinfo"
+          "detail": "Go to netflix.com/viewingactivity (Account > Profiles > Viewing activity), select Download all at the bottom of the page, and upload the CSV here. Available immediately for each profile on an active account — titles and dates only.",
+          "help_url": "https://help.netflix.com/en/node/101917"
         },
         {
-          "label": "Upload the export archive or CSV",
+          "label": "Full account data export (inactive accounts, or full detail)",
           "platform": "web",
-          "posture": "primary",
-          "detail": "Upload the .zip Netflix sends you directly, or extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv.",
+          "posture": "secondary",
+          "detail": "If your account is inactive, or you want full detail (device, duration, per-session timestamps), request 'Download a copy of your personal information' at netflix.com/account/getmyinfo. Netflix emails you when it's ready — this can take up to 30 days. Upload the .zip directly, or extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv.",
           "help_url": "https://www.netflix.com/account/getmyinfo"
         }
       ],
       "accepted_file_extensions": [".csv", ".zip"],
       "import_dir_env_var": "NETFLIX_EXPORT_DIR",
-      "help_url": "https://www.netflix.com/account/getmyinfo",
-      "help_text": "Netflix does not expose viewing history through an account API or OAuth grant. This source imports the owner-requested official export.",
-      "large_file_fallback": "The full Netflix export archive can include many CSVs beyond viewing history; if the .zip exceeds the upload limit, extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv, or use the server import-folder handoff.",
+      "help_url": "https://help.netflix.com/en/node/101917",
+      "help_text": "Netflix does not expose viewing history through an account API or OAuth grant. This source imports an owner-downloaded CSV: either the instant per-profile Download all export, or the full account data export.",
+      "large_file_fallback": "The full Netflix data export archive can include many CSVs beyond viewing history; if the .zip exceeds the upload limit, extract it yourself and upload just CONTENT_INTERACTION/ViewingActivity.csv, or use the server import-folder handoff.",
       "validation": {
         "kind": "netflix_viewing_activity",
         "max_file_bytes": 52428800
       },
       "validation_expectations": [
-        "Detected ViewingActivity.csv, either standalone or inside the official export zip",
+        "Detected either the immediate Title,Date export or the full-export ViewingActivity.csv (standalone or inside the getmyinfo zip)",
         "Estimated viewing activity record count",
         "Detected watched-at date range",
         "Duplicate, empty, unsupported, or too-large file status"
@@ -72,10 +72,10 @@
     {
       "name": "viewing_activity",
       "required": false,
-      "description": "Netflix viewing activity from official export.",
+      "description": "Netflix viewing activity from either the immediate Download all export or the full data export.",
       "display": {
         "label": "Your Netflix viewing history",
-        "detail": "Titles watched with timestamp, device type, and watch duration percent. Parsed from ViewingActivity.csv in the Netflix export bundle."
+        "detail": "Titles watched, with date (day-only from the immediate export, full timestamp/device/duration from the full data export). watched_at_precision and source_schema say which source each record came from."
       },
       "semantics": "append_only",
       "schema": {
@@ -92,17 +92,33 @@
             "format": "date-time",
             "x_pdpp_role": "event-time"
           },
+          "watched_at_precision": {
+            "type": "string",
+            "enum": ["day", "instant"]
+          },
           "device_type": {
             "type": ["string", "null"]
           },
-          "watch_duration_percent": {
+          "duration_seconds": {
             "type": ["number", "null"]
           },
           "profile_name": {
             "type": ["string", "null"]
+          },
+          "country": {
+            "type": ["string", "null"]
+          },
+          "source_schema": {
+            "type": "string",
+            "enum": ["direct_history", "full_export"]
           }
         },
-        "required": ["id", "watched_at"]
+        "required": [
+          "id",
+          "watched_at",
+          "watched_at_precision",
+          "source_schema"
+        ]
       },
       "primary_key": ["id"],
       "cursor_field": "watched_at",

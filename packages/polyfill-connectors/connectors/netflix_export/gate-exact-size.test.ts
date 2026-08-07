@@ -10,11 +10,12 @@ test("parseCSVFile with file EXACTLY at 50 MiB", async () => {
   try {
     const csvPath = join(tmpDir, "exact.csv");
 
-    // Create a file that's EXACTLY 50 MiB (header is 17 bytes)
+    // Create a file that's EXACTLY 50 MiB (header "Title,Date\n" is 11 bytes)
     const FIFTY_MIB = 50 * 1024 * 1024;
+    const HEADER = "Title,Date\n";
     const fd = openSync(csvPath, "w");
-    writeSync(fd, "Title,Watched at\n");
-    writeSync(fd, "a".repeat(FIFTY_MIB - 17)); // Exactly 50 MiB total
+    writeSync(fd, HEADER);
+    writeSync(fd, "a".repeat(FIFTY_MIB - HEADER.length)); // Exactly 50 MiB total
     closeSync(fd);
 
     const result = await parseCSVFile(csvPath);
@@ -31,11 +32,12 @@ test("parseCSVFile with file 50 MiB + 1 byte", async () => {
   try {
     const csvPath = join(tmpDir, "over.csv");
 
-    // Create a file that's 50 MiB + 1 (header is 17 bytes)
+    // Create a file that's 50 MiB + 1 (header "Title,Date\n" is 11 bytes)
     const FIFTY_MIB_PLUS_ONE = 50 * 1024 * 1024 + 1;
+    const HEADER = "Title,Date\n";
     const fd = openSync(csvPath, "w");
-    writeSync(fd, "Title,Watched at\n");
-    writeSync(fd, "a".repeat(FIFTY_MIB_PLUS_ONE - 17)); // 50 MiB + 1
+    writeSync(fd, HEADER);
+    writeSync(fd, "a".repeat(FIFTY_MIB_PLUS_ONE - HEADER.length)); // 50 MiB + 1
     closeSync(fd);
 
     const result = await parseCSVFile(csvPath);

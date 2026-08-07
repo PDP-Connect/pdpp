@@ -9,7 +9,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseCSVLine, parseNetflixTimestamp, parseWatchDurationPercent } from "./parsers.ts";
+import {
+  detectViewingActivitySchema,
+  parseCSVLine,
+  parseDirectHistoryDate,
+  parseFullExportDurationSeconds,
+  parseFullExportStartTime,
+} from "./parsers.ts";
 
 test("parseCSVLine handles basic comma-separated fields", () => {
   const headers = ["title", "watched at", "device type", "watch duration", "profile name"];
@@ -111,65 +117,98 @@ test("parseCSVLine handles unquoted field at end", () => {
   assert.equal(result.device, "TV");
 });
 
-test("parseWatchDurationPercent handles integer percentages", () => {
-  assert.equal(parseWatchDurationPercent("50%"), 50);
-  assert.equal(parseWatchDurationPercent("0%"), 0);
-  assert.equal(parseWatchDurationPercent("100%"), 100);
+// ─── detectViewingActivitySchema ─────────────────────────────────────────
+
+test("detectViewingActivitySchema recognizes the direct_history header set (Title,Date)", () => {
+  assert.equal(detectViewingActivitySchema(["title", "date"]), "direct_history");
+  assert.equal(detectViewingActivitySchema(["Title", "Date"]), "direct_history");
 });
 
-test("parseWatchDurationPercent handles decimal percentages", () => {
-  assert.equal(parseWatchDurationPercent("50.5%"), 50.5);
-  assert.equal(parseWatchDurationPercent("99.99%"), 99.99);
+test("detectViewingActivitySchema recognizes the full_export header set", () => {
+  const headers = [
+    "Profile Name",
+    "Start Time (UTC)",
+    "Duration (H:MM:SS)",
+    "Attributes",
+    "Title",
+    "Supplemental Video Type",
+    "Device Type",
+    "Bookmark",
+    "Latest Bookmark",
+    "Country",
+  ];
+  assert.equal(detectViewingActivitySchema(headers), "full_export");
 });
 
-test("parseWatchDurationPercent handles numeric strings without %", () => {
-  assert.equal(parseWatchDurationPercent("75"), 75);
-  assert.equal(parseWatchDurationPercent("0"), 0);
-  assert.equal(parseWatchDurationPercent("100"), 100);
+test("detectViewingActivitySchema rejects an unrecognized or mixed header row", () => {
+  assert.equal(detectViewingActivitySchema(["title", "watched at", "device type"]), null);
+  assert.equal(detectViewingActivitySchema(["title"]), null);
+  assert.equal(detectViewingActivitySchema([]), null);
+  // Partial full_export headers (missing most columns) must not match either schema.
+  assert.equal(detectViewingActivitySchema(["title", "profile name"]), null);
 });
 
-test("parseWatchDurationPercent rejects values out of range", () => {
-  assert.equal(parseWatchDurationPercent("101%"), null);
-  assert.equal(parseWatchDurationPercent("-1%"), null);
-  assert.equal(parseWatchDurationPercent("150%"), null);
+// ─── parseDirectHistoryDate ───────────────────────────────────────────────
+
+test("parseDirectHistoryDate handles ISO YYYY-MM-DD", () => {
+  const result = parseDirectHistoryDate("2024-01-15");
+  assert.equal(result, "2024-01-15T00:00:00.000Z");
 });
 
-test("parseWatchDurationPercent rejects non-numeric strings", () => {
-  assert.equal(parseWatchDurationPercent("abc%"), null);
-  assert.equal(parseWatchDurationPercent("50 percent"), null);
-  assert.equal(parseWatchDurationPercent(""), null);
-  assert.equal(parseWatchDurationPercent(undefined), null);
+test("parseDirectHistoryDate handles unambiguous DD/MM/YYYY (day > 12)", () => {
+  // 25/03/2024 can only be DD/MM/YYYY since 25 can't be a month.
+  const result = parseDirectHistoryDate("25/03/2024");
+  assert.equal(result, "2024-03-25T00:00:00.000Z");
 });
 
-test("parseNetflixTimestamp handles YYYY-MM-DD format", () => {
-  const result = parseNetflixTimestamp("2024-01-15");
-  assert.ok(result);
-  assert.ok(result.startsWith("2024-01-15"));
-  assert.ok(result.includes("T"));
+test("parseDirectHistoryDate handles unambiguous MM/DD/YYYY (day > 12)", () => {
+  // 03/25/2024: second field (25) can't be a month, so it's MM/DD/YYYY.
+  const result = parseDirectHistoryDate("03/25/2024");
+  assert.equal(result, "2024-03-25T00:00:00.000Z");
 });
 
-test("parseNetflixTimestamp handles YYYY-MM-DD HH:MM:SS format", () => {
-  const result = parseNetflixTimestamp("2024-01-15 14:30:00");
-  assert.ok(result);
-  assert.ok(result.includes("2024-01-15"));
-  assert.ok(result.includes("T"));
+test("parseDirectHistoryDate refuses to guess an ambiguous DD/MM vs MM/DD date", () => {
+  // 05/03/2024: both fields <= 12, genuinely ambiguous without locale context.
+  assert.equal(parseDirectHistoryDate("05/03/2024"), null);
 });
 
-test("parseNetflixTimestamp handles ISO datetime strings", () => {
-  const result = parseNetflixTimestamp("2024-01-15T14:30:00Z");
-  assert.ok(result);
-  assert.ok(result.includes("2024-01-15"));
+test("parseDirectHistoryDate rejects malformed or missing dates", () => {
+  assert.equal(parseDirectHistoryDate("not-a-date"), null);
+  assert.equal(parseDirectHistoryDate(""), null);
+  assert.equal(parseDirectHistoryDate(undefined), null);
+  assert.equal(parseDirectHistoryDate("2024-13-01"), null);
+  assert.equal(parseDirectHistoryDate("2024-01-32"), null);
 });
 
-test("parseNetflixTimestamp rejects malformed dates", () => {
-  assert.equal(parseNetflixTimestamp("not-a-date"), null);
-  assert.equal(parseNetflixTimestamp("2024-13-01"), null); // invalid month
-  assert.equal(parseNetflixTimestamp("2024-01-32"), null); // invalid day
-  assert.equal(parseNetflixTimestamp(""), null);
-  assert.equal(parseNetflixTimestamp(undefined), null);
+// ─── parseFullExportStartTime ─────────────────────────────────────────────
+
+test("parseFullExportStartTime handles YYYY-MM-DD HH:MM:SS as real UTC instant", () => {
+  const result = parseFullExportStartTime("2024-01-15 14:30:00");
+  assert.equal(result, "2024-01-15T14:30:00.000Z");
 });
 
-test("parseNetflixTimestamp preserves date component", () => {
-  const result = parseNetflixTimestamp("2024-06-15");
-  assert.ok(result?.startsWith("2024-06-15"));
+test("parseFullExportStartTime handles a date-only value as UTC midnight", () => {
+  const result = parseFullExportStartTime("2024-01-15");
+  assert.equal(result, "2024-01-15T00:00:00.000Z");
+});
+
+test("parseFullExportStartTime rejects malformed or missing timestamps", () => {
+  assert.equal(parseFullExportStartTime("not-a-date"), null);
+  assert.equal(parseFullExportStartTime(""), null);
+  assert.equal(parseFullExportStartTime(undefined), null);
+});
+
+// ─── parseFullExportDurationSeconds ───────────────────────────────────────
+
+test("parseFullExportDurationSeconds parses H:MM:SS into whole seconds", () => {
+  assert.equal(parseFullExportDurationSeconds("0:42:10"), 2530);
+  assert.equal(parseFullExportDurationSeconds("1:00:00"), 3600);
+  assert.equal(parseFullExportDurationSeconds("0:00:05"), 5);
+});
+
+test("parseFullExportDurationSeconds rejects malformed or missing durations", () => {
+  assert.equal(parseFullExportDurationSeconds("85%"), null);
+  assert.equal(parseFullExportDurationSeconds("not-a-duration"), null);
+  assert.equal(parseFullExportDurationSeconds(""), null);
+  assert.equal(parseFullExportDurationSeconds(undefined), null);
 });

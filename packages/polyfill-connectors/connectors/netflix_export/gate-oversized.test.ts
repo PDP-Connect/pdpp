@@ -10,11 +10,12 @@ test("parseCSVFile rejects file exceeding 50 MiB limit", async () => {
   try {
     const csvPath = join(tmpDir, "oversized.csv");
 
-    // Create a file that's 50 MiB + 1 byte (header is 17 bytes)
+    // Create a file that's 50 MiB + 1 byte (header "Title,Date\n" is 11 bytes)
     const FIFTY_MIB = 50 * 1024 * 1024;
+    const HEADER = "Title,Date\n";
     const fd = openSync(csvPath, "w");
-    writeSync(fd, "Title,Watched at\n");
-    writeSync(fd, "a".repeat(FIFTY_MIB - 17 + 1)); // Pad to exceed limit by 1
+    writeSync(fd, HEADER);
+    writeSync(fd, "a".repeat(FIFTY_MIB - HEADER.length + 1)); // Pad to exceed limit by 1
     closeSync(fd);
 
     const result = await parseCSVFile(csvPath);

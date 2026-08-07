@@ -5,9 +5,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validateNetflixExportArtifact } from "./validation.ts";
 
-const VALID_CSV = `Title,Watched at,Device type,Watch duration,Profile name
-"The Crown","2024-01-15","TV","85%","Main"
-"Stranger Things","2024-01-14","Phone","92%","Shared"`;
+const VALID_DIRECT_HISTORY_CSV = `Title,Date
+"The Crown",2024-01-15
+"Stranger Things",2024-01-14`;
+
+const VALID_FULL_EXPORT_CSV = `Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country
+"Main","2024-01-15 20:14:03","0:42:10","","The Crown","","TV","0:42:10","0:42:10","US"
+"Shared","2024-01-14 19:00:00","0:50:22","","Stranger Things","","Phone","0:50:22","0:50:22","US"`;
 
 function zipHeader(signature: number, size: number): Buffer {
   const header = Buffer.alloc(size);
@@ -54,11 +58,12 @@ function makeStoredZip(entries: readonly { name: string; data: string | Buffer }
   return Buffer.concat([...chunks, centralBytes, end]);
 }
 
-test("validateNetflixExportArtifact accepts a raw ViewingActivity.csv upload", () => {
-  const validation = validateNetflixExportArtifact(VALID_CSV, { fileName: "ViewingActivity.csv" });
+test("validateNetflixExportArtifact accepts a raw direct_history CSV upload (immediate Download all)", () => {
+  const validation = validateNetflixExportArtifact(VALID_DIRECT_HISTORY_CSV, { fileName: "NetflixViewingHistory.csv" });
 
   assert.equal(validation.status, "valid");
   assert.equal(validation.detected_format, "viewing_activity_csv");
+  assert.equal(validation.detected_schema, "direct_history");
   assert.equal(validation.estimated_records, 2);
   assert.equal(validation.date_range.start, "2024-01-14T00:00:00.000Z");
   assert.equal(validation.date_range.end, "2024-01-15T00:00:00.000Z");
@@ -66,15 +71,25 @@ test("validateNetflixExportArtifact accepts a raw ViewingActivity.csv upload", (
   assert.equal(validation.remediation, null);
 });
 
+test("validateNetflixExportArtifact accepts a raw full_export ViewingActivity.csv upload", () => {
+  const validation = validateNetflixExportArtifact(VALID_FULL_EXPORT_CSV, { fileName: "ViewingActivity.csv" });
+
+  assert.equal(validation.status, "valid");
+  assert.equal(validation.detected_format, "viewing_activity_csv");
+  assert.equal(validation.detected_schema, "full_export");
+  assert.equal(validation.estimated_records, 2);
+});
+
 test("validateNetflixExportArtifact accepts the official Netflix export zip archive", () => {
   const zip = makeStoredZip([
-    { name: "CONTENT_INTERACTION/ViewingActivity.csv", data: VALID_CSV },
+    { name: "CONTENT_INTERACTION/ViewingActivity.csv", data: VALID_FULL_EXPORT_CSV },
     { name: "IDENTIFIERS/Devices.csv", data: "Device Type\nTV\n" },
   ]);
   const validation = validateNetflixExportArtifact(zip, { fileName: "netflix-report.zip" });
 
   assert.equal(validation.status, "valid");
   assert.equal(validation.detected_format, "viewing_activity_zip");
+  assert.equal(validation.detected_schema, "full_export");
   assert.equal(validation.estimated_records, 2);
 });
 
@@ -91,17 +106,24 @@ test("validateNetflixExportArtifact rejects an unrecognized file extension", () 
   assert.equal(validation.status, "unsupported");
 });
 
-test("validateNetflixExportArtifact reports empty for a headers-only CSV", () => {
+test("validateNetflixExportArtifact rejects a CSV with an unrecognized/mixed header row, never guessing a schema", () => {
   const validation = validateNetflixExportArtifact("Title,Watched at,Device type,Watch duration,Profile name", {
     fileName: "ViewingActivity.csv",
   });
+  assert.equal(validation.status, "unsupported");
+  assert.equal(validation.detected_schema, null);
+});
+
+test("validateNetflixExportArtifact reports empty for a headers-only direct_history CSV", () => {
+  const validation = validateNetflixExportArtifact("Title,Date", { fileName: "NetflixViewingHistory.csv" });
   assert.equal(validation.status, "empty");
+  assert.equal(validation.detected_schema, "direct_history");
 });
 
 test("validateNetflixExportArtifact identifies duplicate artifacts by hash", () => {
-  const first = validateNetflixExportArtifact(VALID_CSV, { fileName: "ViewingActivity.csv" });
-  const duplicate = validateNetflixExportArtifact(VALID_CSV, {
-    fileName: "ViewingActivity.csv",
+  const first = validateNetflixExportArtifact(VALID_DIRECT_HISTORY_CSV, { fileName: "NetflixViewingHistory.csv" });
+  const duplicate = validateNetflixExportArtifact(VALID_DIRECT_HISTORY_CSV, {
+    fileName: "NetflixViewingHistory.csv",
     existingFileHashes: [first.file_sha256],
   });
 
@@ -110,7 +132,10 @@ test("validateNetflixExportArtifact identifies duplicate artifacts by hash", () 
 });
 
 test("validateNetflixExportArtifact rejects files exceeding the size limit", () => {
-  const tooLarge = validateNetflixExportArtifact(VALID_CSV, { fileName: "ViewingActivity.csv", maxFileBytes: 4 });
+  const tooLarge = validateNetflixExportArtifact(VALID_DIRECT_HISTORY_CSV, {
+    fileName: "NetflixViewingHistory.csv",
+    maxFileBytes: 4,
+  });
   assert.equal(tooLarge.status, "too_large");
 });
 

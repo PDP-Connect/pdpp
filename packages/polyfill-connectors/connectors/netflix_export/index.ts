@@ -5,12 +5,20 @@
 /**
  * PDPP Netflix Export Connector (v0.1.0) — file-based.
  *
- * Auth: none. User goes to https://netflix.com/account/getmyinfo, requests an archive
- * (up to 30 days to prepare), downloads the ZIP, extracts it into NETFLIX_EXPORT_DIR
- * (defaults to ~/.pdpp/imports/netflix_export/).
+ * Auth: none. Two distinct owner-provided sources are supported, and
+ * neither is misread as the other (see parsers.ts detectViewingActivitySchema):
+ *
+ *   1. Immediate CSV — netflix.com/viewingactivity (Account > Profiles >
+ *      Viewing activity), "Download all". Produces a `Title,Date` CSV
+ *      instantly, per-profile, day-precision only.
+ *   2. Full export — netflix.com/account/getmyinfo (up to 30 days to
+ *      prepare; the account-wide fallback, e.g. for inactive accounts).
+ *      The .zip contains CONTENT_INTERACTION/ViewingActivity.csv with
+ *      Profile Name/Start Time (UTC)/Duration/Device Type/etc., full
+ *      instant-precision timestamps.
  *
  * Streams:
- *   - viewing_activity (CONTENT_INTERACTION/ViewingActivity.csv)
+ *   - viewing_activity
  *
  * Incremental: track latest timestamp per stream in state. Full snapshot export
  * diffed locally against prior state for new/deleted records.
@@ -24,13 +32,14 @@ import type { CollectContext } from "../../src/connector-runtime.ts";
 import { runConnector } from "../../src/connector-runtime.ts";
 import {
   buildViewingActivityRecord,
+  detectViewingActivitySchema,
   extractViewingActivityArtifact,
   parseCSVContentForValidation,
   parseCSVFile,
   resolveViewingActivityFile,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
-import type { NetflixExportState, StreamTimestampState } from "./types.ts";
+import type { NetflixExportState, StreamTimestampState, ViewingActivitySourceSchema } from "./types.ts";
 
 const UPLOADED_ARTIFACT_RE = /\.(csv|zip)$/i;
 
@@ -56,11 +65,38 @@ function findUploadedArtifact(importDir: string): string | null {
 interface LoadedRows {
   malformedCount: number;
   rows: Record<string, string | undefined>[];
+  schema: ViewingActivitySourceSchema;
 }
 
 interface LoadRowsSkip {
   message: string;
-  reason: "archive_security_violation" | "csv_parse_error" | "records_not_found" | "import_exceeds_bounded_read_policy";
+  reason:
+    | "archive_security_violation"
+    | "csv_parse_error"
+    | "records_not_found"
+    | "import_exceeds_bounded_read_policy"
+    | "unrecognized_csv_schema";
+}
+
+/**
+ * Detect which of Netflix's two CSV schemas a parse result's header row
+ * matches. Returns a skip when headers are missing/unrecognized/mixed —
+ * NEVER guesses at a schema, since silently misreading one shape as the
+ * other would corrupt watched_at precision and drop fields that don't exist.
+ */
+function classifyBySchema(parseResult: {
+  headers: string[];
+  rows: Record<string, string | undefined>[];
+  malformedCount: number;
+}): LoadedRows | LoadRowsSkip {
+  const schema = detectViewingActivitySchema(parseResult.headers);
+  if (!schema) {
+    return {
+      reason: "unrecognized_csv_schema",
+      message: `CSV header row does not match either known Netflix viewing-activity schema (direct "Title,Date" download, or the getmyinfo export's Profile Name/Start Time (UTC)/Duration/... columns). Found: ${parseResult.headers.join(", ") || "(empty)"}`,
+    };
+  }
+  return { malformedCount: parseResult.malformedCount, rows: parseResult.rows, schema };
 }
 
 async function loadUploadedArtifactRows(
@@ -89,7 +125,7 @@ async function loadUploadedArtifactRows(
   if (parseResult.error) {
     return { reason: "csv_parse_error", message: parseResult.error };
   }
-  return parseResult;
+  return classifyBySchema(parseResult);
 }
 
 async function loadLegacyDirectoryRows(canonicalImportDir: string): Promise<LoadedRows | LoadRowsSkip> {
@@ -108,7 +144,7 @@ async function loadLegacyDirectoryRows(canonicalImportDir: string): Promise<Load
   if (parseResult.error) {
     return { reason: "csv_parse_error", message: parseResult.error };
   }
-  return parseResult;
+  return classifyBySchema(parseResult);
 }
 
 function isLoadRowsSkip(result: LoadedRows | LoadRowsSkip): result is LoadRowsSkip {
@@ -146,7 +182,7 @@ async function collectViewingActivity(
     return;
   }
 
-  const { rows, malformedCount } = loaded;
+  const { rows, malformedCount, schema } = loaded;
 
   if (malformedCount > 0) {
     await emit({
@@ -164,11 +200,11 @@ async function collectViewingActivity(
   await emit({
     type: "PROGRESS",
     stream,
-    message: `Netflix phase=emit pass=emit stream=viewing_activity total_items=${rows.length} malformed=${malformedCount}`,
+    message: `Netflix phase=emit pass=emit stream=viewing_activity source_schema=${schema} total_items=${rows.length} malformed=${malformedCount}`,
   });
 
   for (const row of rows) {
-    const rec = buildViewingActivityRecord(row);
+    const rec = buildViewingActivityRecord(row, schema);
 
     // Skip rows that couldn't be parsed
     if (!rec) {

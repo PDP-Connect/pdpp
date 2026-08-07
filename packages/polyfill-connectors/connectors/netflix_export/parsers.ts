@@ -16,7 +16,7 @@ import {
   type ZipReadPolicy,
   zipBasename,
 } from "../../src/bounded-zip-archive.ts";
-import type { ViewingActivityCSVRow, ViewingActivityRecord } from "./types.ts";
+import type { ViewingActivityCSVRow, ViewingActivityRecord, ViewingActivitySourceSchema } from "./types.ts";
 
 // The manifest's manual-upload max_file_bytes is set to this same value: the
 // parser will never usefully read a larger ViewingActivity.csv anyway, so a
@@ -183,11 +183,14 @@ async function readFileBounded(filePath: string): Promise<string | null> {
   }
 }
 
-export async function parseCSVFile(
-  filePath: string
-): Promise<{ rows: Record<string, string | undefined>[]; malformedCount: number; error?: string }> {
+export async function parseCSVFile(filePath: string): Promise<{
+  headers: string[];
+  rows: Record<string, string | undefined>[];
+  malformedCount: number;
+  error?: string;
+}> {
   if (!existsSync(filePath)) {
-    return { rows: [], malformedCount: 0 };
+    return { headers: [], rows: [], malformedCount: 0 };
   }
 
   const sizeCheck = checkFileSize(filePath);
@@ -198,6 +201,7 @@ export async function parseCSVFile(
   const content = await readFileBounded(filePath);
   if (content === null) {
     return {
+      headers: [],
       rows: [],
       malformedCount: 0,
       error: `CSV file exceeds maximum size (${MAX_CSV_BYTES})`,
@@ -209,11 +213,12 @@ export async function parseCSVFile(
 
 function checkFileSize(
   filePath: string
-): { rows: Record<string, string | undefined>[]; malformedCount: number; error: string } | null {
+): { headers: string[]; rows: Record<string, string | undefined>[]; malformedCount: number; error: string } | null {
   try {
     const stat = statSync(filePath);
     if (stat.size > MAX_CSV_BYTES) {
       return {
+        headers: [],
         rows: [],
         malformedCount: 0,
         error: `CSV file exceeds maximum size (${stat.size} > ${MAX_CSV_BYTES})`,
@@ -221,6 +226,7 @@ function checkFileSize(
     }
   } catch (err) {
     return {
+      headers: [],
       rows: [],
       malformedCount: 0,
       error: `Failed to stat file: ${err instanceof Error ? err.message : String(err)}`,
@@ -230,24 +236,26 @@ function checkFileSize(
 }
 
 export function parseCSVContentForValidation(content: string): {
+  headers: string[];
   rows: Record<string, string | undefined>[];
   malformedCount: number;
   error?: string;
 } {
   if (Buffer.byteLength(content, "utf8") > MAX_CSV_BYTES) {
-    return { rows: [], malformedCount: 0, error: `CSV file exceeds maximum size (${MAX_CSV_BYTES})` };
+    return { headers: [], rows: [], malformedCount: 0, error: `CSV file exceeds maximum size (${MAX_CSV_BYTES})` };
   }
   return parseCSVContent(content);
 }
 
 function parseCSVContent(content: string): {
+  headers: string[];
   rows: Record<string, string | undefined>[];
   malformedCount: number;
   error?: string;
 } {
   const lines = content.split("\n");
   if (lines.length === 0 || !lines[0]) {
-    return { rows: [], malformedCount: 0 };
+    return { headers: [], rows: [], malformedCount: 0 };
   }
 
   const headers = parseHeaders(lines[0]);
@@ -265,7 +273,7 @@ function parseCSVContent(content: string): {
 
     if (hasBalancedQuotes(currentLine)) {
       if (rows.length >= MAX_ROWS) {
-        return { rows, malformedCount, error: `CSV exceeds maximum rows (${MAX_ROWS})` };
+        return { headers, rows, malformedCount, error: `CSV exceeds maximum rows (${MAX_ROWS})` };
       }
 
       if (isValidRow()) {
@@ -282,7 +290,7 @@ function parseCSVContent(content: string): {
     malformedCount += 1;
   }
 
-  return { rows, malformedCount };
+  return { headers, rows, malformedCount };
 }
 
 function parseHeaders(line: string): string[] {
@@ -293,81 +301,216 @@ function isValidRow(): boolean {
   return true;
 }
 
-const DURATION_PATTERN = /^(\d+(?:\.\d+)?)%?$/;
+// Netflix's immediate "Download all" button on netflix.com/viewingactivity
+// produces NetflixViewingHistory.csv with exactly these two headers.
+const DIRECT_HISTORY_HEADERS = ["title", "date"];
+// The official getmyinfo export's CONTENT_INTERACTION/ViewingActivity.csv
+// has this fixed header set (Netflix's documented data-dictionary columns).
+const FULL_EXPORT_HEADERS = [
+  "profile name",
+  "start time",
+  "duration",
+  "attributes",
+  "title",
+  "supplemental video type",
+  "device type",
+  "bookmark",
+  "latest bookmark",
+  "country",
+];
 
 /**
- * Parse watch duration string like "90%" into a number 0-100,
- * or null if malformed. Handles strings like "45%", "100%", etc.
+ * Detect which of Netflix's two distinct CSV schemas a parsed header row
+ * matches. Headers are matched by normalized substring (Netflix appends unit
+ * suffixes like "(UTC)"/"(H:MM:SS)" that we don't want to hard-code exact
+ * matches against), and BOTH schemas' full header sets must be present — a
+ * header row that's neither, or a mix of both, is rejected as unrecognized
+ * rather than guessed at.
  */
-export function parseWatchDurationPercent(durationStr: string | undefined): number | null {
-  if (!durationStr) {
-    return null;
-  }
+export function detectViewingActivitySchema(headers: string[]): ViewingActivitySourceSchema | null {
+  const normalized = headers.map((h) => h.trim().toLowerCase());
+  const hasAll = (required: string[]) =>
+    required.every((req) => normalized.some((h) => h === req || h.startsWith(`${req} `) || h.startsWith(`${req}(`)));
 
-  const match = durationStr.match(DURATION_PATTERN);
-  if (!match?.[1]) {
-    return null;
-  }
+  const isDirectHistory = hasAll(DIRECT_HISTORY_HEADERS) && normalized.length <= DIRECT_HISTORY_HEADERS.length + 1;
+  const isFullExport = hasAll(FULL_EXPORT_HEADERS);
 
-  const num = Number.parseFloat(match[1]);
-  if (Number.isNaN(num) || num < 0 || num > 100) {
-    return null;
+  if (isFullExport) {
+    return "full_export";
   }
-
-  return num;
+  if (isDirectHistory) {
+    return "direct_history";
+  }
+  return null;
 }
 
+function findHeaderKey(row: ViewingActivityCSVRow, prefix: string): string | undefined {
+  return Object.keys(row).find((k) => k === prefix || k.startsWith(`${prefix} `) || k.startsWith(`${prefix}(`));
+}
+
+function rowValue(row: ViewingActivityCSVRow, prefix: string): string | undefined {
+  const key = findHeaderKey(row, prefix);
+  return key ? (row[key] as string | undefined) : undefined;
+}
+
+const ISO_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const SLASH_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
+
 /**
- * Parse a Netflix timestamp string (expected format: "2024-01-15" or "2024-01-15 14:30:00").
- * Returns ISO-8601 datetime string or null if unparseable.
+ * Parse a direct_history "Date" value into a calendar day. Netflix's direct
+ * download uses locale-dependent date formats (observed: DD/MM/YYYY and
+ * MM/DD/YYYY depending on account region) plus ISO YYYY-MM-DD. Only the
+ * unambiguous forms are honestly supported: ISO (YYYY-MM-DD) and DD/MM/YYYY
+ * with a day > 12 (which disambiguates the field order). An ambiguous
+ * DD/MM/YYYY-vs-MM/DD/YYYY date (both fields <= 12) cannot be resolved
+ * without knowing the account's locale, so it is rejected rather than
+ * guessed — a wrong guess would silently corrupt the date.
  */
-export function parseNetflixTimestamp(tsStr: string | undefined): string | null {
+export function parseDirectHistoryDate(dateStr: string | undefined): string | null {
+  if (!dateStr) {
+    return null;
+  }
+  const trimmed = dateStr.trim();
+
+  const isoMatch = trimmed.match(ISO_DATE_ONLY_RE);
+  if (isoMatch) {
+    const [, y, m, d] = isoMatch;
+    return isoDayToUtcMidnight(Number(y), Number(m), Number(d));
+  }
+
+  const slashMatch = trimmed.match(SLASH_DATE_RE);
+  if (slashMatch) {
+    const [, aRaw, bRaw, yRaw] = slashMatch;
+    const a = Number(aRaw);
+    const b = Number(bRaw);
+    const y = Number(yRaw);
+    if (a > 12 && b <= 12) {
+      // Unambiguous DD/MM/YYYY (first field can't be a month).
+      return isoDayToUtcMidnight(y, b, a);
+    }
+    if (b > 12 && a <= 12) {
+      // Unambiguous MM/DD/YYYY (second field can't be a month).
+      return isoDayToUtcMidnight(y, a, b);
+    }
+    // Both fields <= 12: genuinely ambiguous between DD/MM and MM/DD without
+    // locale context. Refuse to guess.
+    return null;
+  }
+
+  return null;
+}
+
+function isoDayToUtcMidnight(year: number, month: number, day: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return null;
+  }
+  return date.toISOString();
+}
+
+const FULL_EXPORT_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
+
+/**
+ * Parse full_export's "Start Time (UTC)" — Netflix documents this column as
+ * already UTC, so no timezone conversion is applied; only ISO-8601-parseable
+ * forms are accepted (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS).
+ */
+export function parseFullExportStartTime(tsStr: string | undefined): string | null {
   if (!tsStr) {
     return null;
   }
-
-  try {
-    // Netflix typically uses YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format
-    const ts = new Date(tsStr);
-    if (Number.isNaN(ts.getTime())) {
-      return null;
-    }
-    return ts.toISOString();
-  } catch {
+  const trimmed = tsStr.trim();
+  if (!FULL_EXPORT_TIMESTAMP_RE.test(trimmed)) {
     return null;
   }
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  const withZ = normalized.length === 10 ? `${normalized}T00:00:00Z` : `${normalized}Z`;
+  const parsed = new Date(withZ);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+const DURATION_HMS_RE = /^(\d+):([0-5]\d):([0-5]\d)$/;
+
+/**
+ * Parse full_export's "Duration (H:MM:SS)" into whole seconds. Returns null
+ * for anything that doesn't match the documented H:MM:SS shape — no percent
+ * or fractional-guessing, since Netflix's own column is already a duration,
+ * not a completion percentage (the prior watch_duration_percent field was a
+ * fabricated shape not grounded in either real Netflix CSV schema).
+ */
+export function parseFullExportDurationSeconds(durationStr: string | undefined): number | null {
+  if (!durationStr) {
+    return null;
+  }
+  const match = DURATION_HMS_RE.exec(durationStr.trim());
+  if (!match) {
+    return null;
+  }
+  const [, h, m, s] = match;
+  return Number(h) * 3600 + Number(m) * 60 + Number(s);
 }
 
 /**
- * Build a viewing_activity record from a CSV row.
- * Caller is responsible for the since-cursor filter.
+ * Build a viewing_activity record from a CSV row, dispatching on the
+ * detected schema. Returns null for rows that don't carry a parseable
+ * date/timestamp for their schema — caller is responsible for the
+ * since-cursor filter.
  */
-export function buildViewingActivityRecord(row: ViewingActivityCSVRow): ViewingActivityRecord | null {
-  const title = (row.title as string | undefined) ?? null;
-  const watchedAtStr = row["watched at"] as string | undefined;
-  const watchedAt = parseNetflixTimestamp(watchedAtStr);
+export function buildViewingActivityRecord(
+  row: ViewingActivityCSVRow,
+  schema: ViewingActivitySourceSchema
+): ViewingActivityRecord | null {
+  if (schema === "direct_history") {
+    return buildDirectHistoryRecord(row);
+  }
+  return buildFullExportRecord(row);
+}
 
-  // Skip rows without a parseable timestamp
+function buildDirectHistoryRecord(row: ViewingActivityCSVRow): ViewingActivityRecord | null {
+  const title = rowValue(row, "title") ?? null;
+  const watchedAt = parseDirectHistoryDate(rowValue(row, "date"));
   if (!watchedAt) {
     return null;
   }
-
-  const deviceType = (row["device type"] as string | undefined) ?? null;
-  const durationStr = row["watch duration"] as string | undefined;
-  const watchDurationPercent = parseWatchDurationPercent(durationStr);
-  const profileName = (row["profile name"] as string | undefined) ?? null;
-
-  // Create deterministic ID from title, timestamp, device, profile, and duration
-  const idInput = [title, watchedAt, deviceType, profileName, watchDurationPercent].map((v) => String(v)).join("|");
-  const id = hashId(idInput);
-
+  const idInput = [title, watchedAt].map((v) => String(v)).join("|");
   return {
-    id,
+    country: null,
+    device_type: null,
+    duration_seconds: null,
+    id: hashId(idInput),
+    profile_name: null,
+    source_schema: "direct_history",
     title,
     watched_at: watchedAt,
+    watched_at_precision: "day",
+  };
+}
+
+function buildFullExportRecord(row: ViewingActivityCSVRow): ViewingActivityRecord | null {
+  const title = rowValue(row, "title") ?? null;
+  const watchedAt = parseFullExportStartTime(rowValue(row, "start time"));
+  if (!watchedAt) {
+    return null;
+  }
+  const deviceType = rowValue(row, "device type") ?? null;
+  const profileName = rowValue(row, "profile name") ?? null;
+  const durationSeconds = parseFullExportDurationSeconds(rowValue(row, "duration"));
+  const country = rowValue(row, "country") ?? null;
+
+  const idInput = [title, watchedAt, deviceType, profileName, durationSeconds].map((v) => String(v)).join("|");
+  return {
+    country,
     device_type: deviceType,
-    watch_duration_percent: watchDurationPercent,
+    duration_seconds: durationSeconds,
+    id: hashId(idInput),
     profile_name: profileName,
+    source_schema: "full_export",
+    title,
+    watched_at: watchedAt,
+    watched_at_precision: "instant",
   };
 }
 

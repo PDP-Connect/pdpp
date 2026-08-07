@@ -252,9 +252,9 @@ function makeStoredZip(entries: readonly { name: string; data: string | Buffer }
 
 const MANUAL_UPLOAD_DRAFT_BINDING_KEY_RE = /^manual_upload_draft_/;
 
-const VIEWING_ACTIVITY_CSV = `Title,Watched at,Device type,Watch duration,Profile name
-"The Crown","2024-01-15","TV","85%","Main"
-"Stranger Things","2024-01-14","Phone","92%","Shared"`;
+const VIEWING_ACTIVITY_CSV = `Profile Name,Start Time (UTC),Duration (H:MM:SS),Attributes,Title,Supplemental Video Type,Device Type,Bookmark,Latest Bookmark,Country
+"Main","2024-01-15 20:14:03","0:42:10","","The Crown","","TV","0:42:10","0:42:10","US"
+"Shared","2024-01-14 19:00:00","0:50:22","","Stranger Things","","Phone","0:50:22","0:50:22","US"`;
 
 test("Netflix Export is catalog-visible with the generic manual-upload disposition", async () => {
   await withServer(async ({ asUrl }) => {
@@ -355,5 +355,22 @@ test("Netflix Export upload with no recognizable ViewingActivity.csv is rejected
     const rejectedBody = rejected.body as { error?: { code?: string } };
     assert.equal(rejected.status, 400, rejected.text);
     assert.equal(rejectedBody.error?.code, "import_file_unsupported");
+  });
+});
+
+test("Netflix Export owner upload of the immediate direct_history CSV (Download all) creates a draft binding", async () => {
+  // The primary acquisition method per the manifest: netflix.com/viewingactivity
+  // "Download all" produces this Title,Date CSV instantly -- no 30-day wait.
+  await withServer(async ({ asUrl }) => {
+    await registerConnector(asUrl, "netflix_export");
+    const cookie = await login(asUrl);
+
+    const directHistoryCsv = `Title,Date\n"The Crown",2024-01-15\n"Stranger Things",2024-01-14`;
+    const created = await createDraft(asUrl, cookie, "netflix-export", "NetflixViewingHistory.csv", directHistoryCsv);
+    const createdBody = asBody(created.body);
+    assert.equal(created.status, 201, created.text);
+    assert.equal(createdBody.validation?.status, "valid");
+    assert.equal(createdBody.validation?.detected_format, "viewing_activity_csv");
+    assert.equal(createdBody.validation?.estimated_records, 2);
   });
 });
