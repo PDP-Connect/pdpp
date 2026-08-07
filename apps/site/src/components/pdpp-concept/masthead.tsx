@@ -39,9 +39,9 @@ function NavSearchTrigger() {
       aria-haspopup="dialog"
       className={cn(
         // Baseline row; type/color on Text children
-        "hit-area-overlay box-border inline-flex items-baseline gap-1.5",
+        "hit-area-overlay box-border inline-flex items-center gap-1.5",
         // Pill chrome grows around glyphs (no fixed height that lifts the line)
-        "cursor-pointer rounded-[3px] bg-card px-2 py-0.5",
+        "cursor-pointer rounded-[3px] bg-card/70 px-2 py-0.5",
         "border border-border",
         "text-muted-foreground hover:border-primary hover:text-primary focus-visible:border-primary focus-visible:text-primary"
       )}
@@ -56,9 +56,8 @@ function NavSearchTrigger() {
         as="kbd"
         className={cn(
           "rounded-[2px] bg-transparent px-1 text-[0.73em]",
-          "border border-border-subtle",
-          "max-[640px]:hidden",
-          "translate-y-[-0.1em]"
+          "border border-border/70",
+          "max-[640px]:hidden"
         )}
         color="subtle"
         family="mono"
@@ -161,7 +160,7 @@ export function PdppConceptMasthead() {
             aria-controls="pdpp-primary-nav"
             aria-expanded={mobileNavOpen}
             className={cn(
-              "absolute top-0 right-pad box-border hidden min-h-11 min-w-11 cursor-pointer",
+              "absolute top-2.5 right-pad box-border hidden min-h-11 min-w-11 cursor-pointer",
               "border border-border bg-transparent px-2.5 py-1.5",
               "text-muted-foreground hover:text-primary focus-visible:text-primary",
               "focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2",
