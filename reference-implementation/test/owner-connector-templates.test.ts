@@ -261,7 +261,7 @@ test("owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazonSetupPlan.support_state, "proof_gated");
     assert.equal(amazonSetupPlan.next_step_kind, "capture_static_secret");
     assert.equal(amazonSetupPlan.proof_gate, "static_secret_live_proof_missing");
-    assert.equal(amazonSetupPlan.owner_actionable, false);
+    assert.equal(amazonSetupPlan.owner_actionable, true);
     assert.equal(amazonSetupPlan.runbook_path, null);
     assert.equal(amazon.connection_count, 1);
     const amazonConnections = amazon.connections;
@@ -274,11 +274,11 @@ test("owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazonConnection.label_status, "owner_set");
 
     const amazonInitiate = actionByFamily(amazon, "initiate_connection");
-    assert.equal(amazonInitiate.status, "unsupported");
+    assert.equal(amazonInitiate.status, "owner_mediated");
     assert.equal(amazonInitiate.method, null);
     assert.equal(amazonInitiate.url, null);
     // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-    assert.match(String(amazonInitiate.reason), /static provider secret|static-secret/i);
+    assert.match(String(amazonInitiate.reason), /secure browser-session dashboard/i);
 
     const templates = asRecord(body).data;
     assert.ok(Array.isArray(templates));
@@ -296,6 +296,56 @@ test("owner-agent bearer lists connector templates with related connection summa
     assert.equal(doordashInitiate.status, "unsupported");
     assert.equal(doordashInitiate.method, null);
     assert.equal(doordashInitiate.url, null);
+  });
+});
+
+test("owner-template projection separates browser owner-session setup from owner-agent REST support", async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    await registerConnector(asUrl, loadManifest("chatgpt"));
+    const browserManualManifest = loadManifest("chase");
+    browserManualManifest.setup = undefined;
+    await registerConnector(asUrl, browserManualManifest);
+    const browserRunbookManifest = loadManifest("doordash");
+    browserRunbookManifest.capabilities = {
+      ...asRecord(browserRunbookManifest.capabilities),
+      public_listing: { listed: true, status: "proven" },
+    };
+    await registerConnector(asUrl, browserRunbookManifest);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+
+    const chatgpt = byConnector(body, "chatgpt");
+    const chatgptSetupPlan = asRecord(chatgpt.setup_plan);
+    assert.equal(chatgptSetupPlan.catalog_disposition, "static_secret_connect");
+    assert.equal(chatgptSetupPlan.owner_actionable, true);
+    const chatgptInitiate = actionByFamily(chatgpt, "initiate_connection");
+    assert.equal(chatgptInitiate.status, "owner_mediated");
+    assert.equal(chatgptInitiate.method, null);
+    assert.equal(chatgptInitiate.url, null);
+
+    const browserManual = byConnector(body, "chase");
+    const browserManualSetupPlan = asRecord(browserManual.setup_plan);
+    assert.equal(browserManualSetupPlan.catalog_disposition, "browser_collector_manual");
+    assert.equal(browserManualSetupPlan.next_step_kind, "enroll_browser_collector");
+    assert.equal(browserManualSetupPlan.owner_actionable, true);
+    const browserManualInitiate = actionByFamily(browserManual, "initiate_connection");
+    assert.equal(browserManualInitiate.status, "owner_mediated");
+    assert.equal(browserManualInitiate.method, null);
+    assert.equal(browserManualInitiate.url, null);
+
+    const browserRunbook = byConnector(body, "doordash");
+    const browserRunbookSetupPlan = asRecord(browserRunbook.setup_plan);
+    assert.equal(browserRunbookSetupPlan.catalog_disposition, "browser_bound_runbook");
+    assert.equal(browserRunbookSetupPlan.next_step_kind, "manual_runbook");
+    assert.equal(browserRunbookSetupPlan.owner_actionable, false);
+    const browserRunbookInitiate = actionByFamily(browserRunbook, "initiate_connection");
+    assert.equal(browserRunbookInitiate.status, "unsupported");
+    assert.equal(browserRunbookInitiate.method, null);
+    assert.equal(browserRunbookInitiate.url, null);
   });
 });
 

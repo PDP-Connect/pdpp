@@ -8,10 +8,11 @@
 // what registered connector implementations exist and which configured
 // connection instances currently belong to each template. Stateful work still
 // targets `connection_id` through `/v1/owner/connections`; adding a new
-// connection is exposed only as a typed intent when the server-owned planner
-// and proof/listing contract mark that action supported.
+// connection is exposed as a typed owner-agent intent only when the
+// server-owned planner and proof/listing contract mark that REST action
+// supported. Interactive browser setup remains owner-mediated in Console.
 
-import { buildConnectionSetupPlan } from "../connection-setup-plan.ts";
+import { buildConnectionSetupPlan, isSupportedBrowserCollectorConnector } from "../connection-setup-plan.ts";
 import type { OwnerAgentControlAction } from "../metadata.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
@@ -135,12 +136,18 @@ function projectConnectionSummary(
 }
 
 const ACTIONABLE_PUBLIC_LISTING_STATUSES = new Set(["proven", "needs_human_auth"]);
+// These are the dispositions with a supported owner-agent REST intent. Browser
+// setup is intentionally handled by the separate owner-session projection
+// below, because the REST intent route cannot launch interactive login.
 const ACTIONABLE_CATALOG_DISPOSITIONS = new Set([
   "local_collector_enroll",
   "manual_upload_connect",
   "provider_auth_connect",
   "static_secret_connect",
 ]);
+
+const OWNER_SESSION_BROWSER_ACTION_REASON =
+  "Connect this account from the owner's secure browser-session dashboard. Owner-agent REST does not launch interactive browser setup.";
 
 function isActionablePublicListing(manifest: ConnectorManifestLike): boolean {
   // `needs_human_auth` is an explicitly actionable listing state for sources
@@ -164,6 +171,31 @@ export function isSupportedOwnerActionPlan(plan: ReturnType<typeof buildConnecti
   );
 }
 
+/**
+ * Browser setup has a shipped owner-session route, but it is not an
+ * owner-agent REST primitive: the owner must complete interactive login in
+ * the secure browser. The planner's production-ready browser roster is the
+ * proof for browser-backed static-secret entries; the manual disposition is
+ * already the planner's proof-backed browser classification.
+ */
+export function isOwnerSessionBrowserActionPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  if (plan.connectorModality !== "browser_bound") {
+    return false;
+  }
+  if (plan.catalogDisposition === "browser_collector_manual") {
+    return plan.nextStepKind === "enroll_browser_collector" && typeof plan.enrollmentKey === "string";
+  }
+  return (
+    plan.catalogDisposition === "static_secret_connect" &&
+    plan.setupModality === "static_secret" &&
+    isSupportedBrowserCollectorConnector(plan.connectorKey)
+  );
+}
+
+function isOwnerActionablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  return isSupportedOwnerActionPlan(plan) || isOwnerSessionBrowserActionPlan(plan);
+}
+
 function buildTemplateSupportedActions(args: {
   manifest: ConnectorManifestLike;
   plan: ReturnType<typeof buildConnectionSetupPlan>;
@@ -178,6 +210,17 @@ function buildTemplateSupportedActions(args: {
         reason: `${args.plan.ownerAgentIntent.reason} Body: { connector_id, display_name? }.`,
         status: "supported",
         url: `${rs}/v1/owner/connections/intents`,
+      },
+    ];
+  }
+  if (isActionablePublicListing(args.manifest) && isOwnerSessionBrowserActionPlan(args.plan)) {
+    return [
+      {
+        family: "initiate_connection",
+        method: null,
+        reason: OWNER_SESSION_BROWSER_ACTION_REASON,
+        status: "owner_mediated",
+        url: null,
       },
     ];
   }
@@ -201,7 +244,10 @@ function projectSetupPlan(
     deployment_readiness: plan.deploymentReadiness,
     enrollment_key: plan.enrollmentKey ?? null,
     next_step_kind: plan.nextStepKind,
-    owner_actionable: isActionablePublicListing(manifest) && isSupportedOwnerActionPlan(plan),
+    // This is owner-facing actionability, not owner-agent REST support. A
+    // browser action is represented in supported_actions as owner_mediated
+    // with no method or URL because interactive setup stays in Console.
+    owner_actionable: isActionablePublicListing(manifest) && isOwnerActionablePlan(plan),
     proof_gate: plan.proofGate,
     runbook_path: plan.runbookPath,
     setup_modality: plan.setupModality,

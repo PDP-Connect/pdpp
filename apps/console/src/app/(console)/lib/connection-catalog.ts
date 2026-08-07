@@ -94,7 +94,9 @@ export interface CatalogManifestLike {
  * Server-owned capability projection returned by the owner-template route.
  * Local manifests are joined only for display/help/documentation fields; these
  * fields are the authority for registration, listing, setup capability, proof,
- * readiness, and owner action.
+ * readiness, and owner-facing action. An owner-mediated browser action has no
+ * owner-agent REST method or URL; `supported_actions` remains the authority
+ * for that separate API capability.
  */
 export interface OwnerConnectorTemplateLike {
   connector_key?: string | null;
@@ -110,6 +112,7 @@ export interface OwnerConnectorTemplateLike {
     deployment_readiness?: ConnectorSetupDeploymentReadiness | null;
     enrollment_key?: string | null;
     next_step_kind?: string | null;
+    /** True when an owner-facing setup path exists, including owner-mediated browser setup. */
     owner_actionable?: boolean | null;
     proof_gate?: string | null;
     runbook_path?: string | null;
@@ -195,11 +198,11 @@ export interface ConnectorCatalogEntry {
   modality: CatalogModality;
   /** The next owner step selected by the shared planner. */
   nextStepKind: ConnectorSetupNextStepKind;
-  /** Server-authorized owner setup action; live owner catalogs always set it. */
+  /** Server-authorized owner-facing setup action; live owner catalogs always set it. */
   ownerActionable?: boolean;
-  /** Projected action method, retained so the console can reject incomplete actions. */
+  /** Projected owner-agent method; null for owner-mediated browser setup. */
   ownerActionMethod?: string | null;
-  /** Projected action URL, retained so the console can reject incomplete actions. */
+  /** Projected owner-agent URL; null for owner-mediated browser setup. */
   ownerActionUrl?: string | null;
   /** Proof gate blocking support, if any. */
   proofGate: string | null;
@@ -387,30 +390,44 @@ function isCatalogValue<T extends string>(values: ReadonlySet<T>, value: unknown
 function actionableOwnerActionFromTemplate(
   template: OwnerConnectorTemplateLike,
   entry: {
+    connectorModality: ConnectorIntentModality;
     disposition: CatalogDisposition;
     enrollmentKey?: string;
     nextStepKind: ConnectorSetupNextStepKind;
     proofGate: string | null;
+    setupModality: ConnectorSetupModality;
     supportState: ConnectorSetupSupportState;
   }
 ): { actionable: boolean; method: string | null; url: string | null } {
   const action = template.supported_actions?.find((candidate) => candidate.family === "initiate_connection");
   const method = typeof action?.method === "string" ? action.method : null;
   const url = typeof action?.url === "string" && action.url.trim() ? action.url : null;
-  const actionable =
+  const authority =
     template.registration_status === "registered" &&
     template.public_listing?.listed === true &&
     typeof template.public_listing.status === "string" &&
     OWNER_ACTIONABLE_PUBLIC_LISTING_STATUSES.has(template.public_listing.status) &&
     template.setup_plan?.owner_actionable === true &&
+    entry.nextStepKind === template.setup_plan?.next_step_kind;
+  const ownerAgentActionable =
+    authority &&
     entry.supportState === "supported" &&
     entry.proofGate === null &&
-    entry.nextStepKind === template.setup_plan?.next_step_kind &&
     action?.status === "supported" &&
     method !== null &&
     url !== null &&
     (entry.disposition !== "local_collector_enroll" || typeof entry.enrollmentKey === "string");
-  return { actionable, method, url };
+  const ownerSessionBrowserActionable =
+    authority &&
+    entry.connectorModality === "browser_bound" &&
+    ((entry.disposition === "browser_collector_manual" &&
+      entry.nextStepKind === "enroll_browser_collector" &&
+      typeof entry.enrollmentKey === "string") ||
+      (entry.disposition === "static_secret_connect" && entry.setupModality === "static_secret")) &&
+    action?.status === "owner_mediated" &&
+    method === null &&
+    url === null;
+  return { actionable: ownerAgentActionable || ownerSessionBrowserActionable, method, url };
 }
 
 /**
@@ -461,10 +478,12 @@ export function buildOwnerConnectorCatalog(
     const proofGate = typeof setupPlan.proof_gate === "string" ? setupPlan.proof_gate : null;
     const enrollmentKey = cleanManifestText(setupPlan.enrollment_key) ?? undefined;
     const capability = actionableOwnerActionFromTemplate(template, {
+      connectorModality,
       disposition,
       enrollmentKey,
       nextStepKind,
       proofGate,
+      setupModality,
       supportState,
     });
     const setupCopy = setupCopyFromManifest(manifestForCopy);
@@ -501,6 +520,18 @@ export function buildOwnerConnectorCatalog(
 
 export function isOwnerActionableEntry(entry: ConnectorCatalogEntry): boolean {
   if (entry.ownerActionable !== undefined) {
+    const ownerSessionBrowserActionable =
+      entry.ownerActionable &&
+      entry.modality === "browser_bound" &&
+      ((entry.disposition === "browser_collector_manual" &&
+        entry.nextStepKind === "enroll_browser_collector" &&
+        typeof entry.enrollmentKey === "string") ||
+        (entry.disposition === "static_secret_connect" && entry.setupModality === "static_secret")) &&
+      entry.ownerActionMethod === null &&
+      entry.ownerActionUrl === null;
+    if (ownerSessionBrowserActionable) {
+      return true;
+    }
     return (
       entry.ownerActionable &&
       entry.supportState === "supported" &&
