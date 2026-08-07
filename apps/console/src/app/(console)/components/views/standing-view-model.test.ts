@@ -1197,6 +1197,40 @@ test("a locally alarming source row cannot override a healthy server fleet verdi
   assert.equal(hero.kicker, "Where you stand");
 });
 
+test("overview counts healthy sources without adding them to the attention groups", () => {
+  const data = buildStandingData(
+    baseInputs({
+      sourceCount: 3,
+      sourceWork: {
+        needsOwner: [],
+        notMeasured: [],
+        review: [
+          {
+            actionLabel: "Retry now",
+            connectorKey: "chase",
+            deviceLocal: false,
+            group: "review",
+            id: "conn_chase",
+            label: "Chase",
+            routeId: "conn_chase",
+            statusLabel: "Retry now",
+            what: "Retry this source.",
+          },
+        ],
+        systemIssues: [],
+        working: [],
+      },
+    })
+  );
+  assert.equal(data.healthySourceCount, 2);
+  assert.equal(data.sourceWorkSections.flatMap((section) => section.rows).length, 1);
+});
+
+test("overview with partial source data does not claim an exact healthy-source count", () => {
+  const data = buildStandingData(baseInputs({ overviewLoadIssues: ["source_status_incomplete_fleet"], sourceCount: 3 }));
+  assert.equal(data.healthySourceCount, null);
+});
+
 test("hero is CALM with reassurance when all is well", () => {
   const clients: OwnerIssuedClient[] = [
     { active_token_count: 1, client_id: "c1", client_name: "Claude Desktop", created_at: NOW.toISOString() },
