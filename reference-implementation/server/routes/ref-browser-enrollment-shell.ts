@@ -53,15 +53,8 @@ export interface BrowserEnrollmentShellSourceBinding {
   readonly kind: "browser_enrollment_shell";
 }
 
-// Durable binding a browser-enrollment shell promotes to once it proves a
-// successful first collection (see `promoteBrowserEnrollmentShellBinding`
-// below). `browser_collector` is the reserved vocabulary for a
-// browser-driven binding on the source_binding_json.kind axis — the same
-// value `BROWSER_SESSION_BINDING_KINDS`/`isBrowserSessionBoundConnection`
-// (connection-modality.ts, ref-control.ts) already route repair for. No
-// `enrollment_expires_at` — a promoted binding has no TTL and is exempt from
-// `browser-enrollment-shell-retirement.ts` by construction (its guard checks
-// `binding.kind === "browser_enrollment_shell"`).
+// The durable binding a browser-enrollment shell promotes to — no TTL, so
+// exempt from browser-enrollment-shell-retirement.ts by construction.
 export interface BrowserCollectorSourceBinding {
   readonly connector_id: string;
   readonly kind: "browser_collector";
@@ -69,12 +62,7 @@ export interface BrowserCollectorSourceBinding {
   readonly promoted_from: "browser_enrollment_shell";
 }
 
-// Builds the durable binding a browser-enrollment shell promotes to. Pure —
-// no I/O — so the store-write call site can unit-test the shape directly.
-// `connector_id` carries over unchanged from the shell binding; only `kind`
-// changes (plus provenance fields), preserving the row's identity tuple
-// (connector_instance_id is derived from owner/connector/source_kind/
-// source_binding_key, none of which this touches).
+// Pure — no I/O — so it's independently unit-testable.
 export function promoteBrowserEnrollmentShellBinding(
   shellBinding: BrowserEnrollmentShellSourceBinding,
   now: string

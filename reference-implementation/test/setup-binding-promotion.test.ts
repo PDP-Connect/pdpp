@@ -25,21 +25,12 @@ import {
   isOwnerVisibleConnectorInstance,
 } from "../server/stores/connector-instance-store.ts";
 
-// Generic regression coverage: EVERY temporary setup binding kind
-// (browser_enrollment_shell, static_secret_draft, manual_upload_draft — the
-// members of RETIRED_SETUP_SHELL_BINDING_KINDS) must atomically promote to
-// its durable sibling kind on first successful ingest, or a later revoke
-// (TTL sweep for the browser shell; explicit owner revoke for the other
-// two, which have no TTL sweep) wrongly hides a connection that holds real
-// retained data, exactly like Sources hiding a 9,163-record ChatGPT
-// connection while Explore still showed its records.
-//
-// This file drives the SAME three-scenario matrix — success promotes,
-// abandon/failure stays hidden (never promoted), a promoted connection
-// survives whatever revoke path applies to it and stays owner-visible —
-// against all three kinds via one parameterized conformance body, proving
-// the fix is generic (SETUP_BINDING_PROMOTIONS in server/index.ts), not
-// browser-specific.
+// Every RETIRED_SETUP_SHELL_BINDING_KINDS member (browser_enrollment_shell,
+// static_secret_draft, manual_upload_draft) must promote to its durable
+// sibling on first successful ingest, or a later revoke wrongly hides a
+// real, fully-collected connection. One parameterized conformance body
+// drives the same scenario matrix — success, abandon, revoke-after-promote,
+// and the race guard — against all three kinds.
 
 const NOW = "2026-08-06T09:00:00.000Z";
 const PROMOTED_AT = "2026-08-06T09:05:00.000Z";
@@ -54,7 +45,7 @@ interface StoreLike {
   promoteSetupBinding: (
     connectorInstanceId: string,
     args: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
-  ) => unknown | Promise<unknown>;
+  ) => { instance: unknown; promoted: boolean } | Promise<{ instance: unknown; promoted: boolean }>;
   updateStatus: (
     connectorInstanceId: string,
     args: { status: string; updatedAt: string; revokedAt?: string | null }
@@ -183,11 +174,12 @@ async function runPromotionConformanceForKind({
     status: "active",
     updatedAt: NOW,
   })) as ConnectorInstanceLike;
-  await store.promoteSetupBinding(nonSetupRow.connectorInstanceId, {
+  const nonSetupResult = await store.promoteSetupBinding(nonSetupRow.connectorInstanceId, {
     fromKind: fixture.draftKind,
     sourceBinding: fixture.promote(fixture.draftBinding(), PROMOTED_AT),
     updatedAt: PROMOTED_AT,
   });
+  assert.equal(nonSetupResult.promoted, false, "guard rejects a binding kind mismatch");
   const nonSetupAfter = (await store.get(nonSetupRow.connectorInstanceId)) as ConnectorInstanceLike;
   assert.deepEqual(nonSetupAfter.sourceBinding, nonSetupBinding, "promotion never touches an unrelated binding kind");
   assert.equal(nonSetupAfter.updatedAt, NOW, "promotion guard rejected the write; updated_at is untouched");
@@ -210,11 +202,13 @@ async function runPromotionConformanceForKind({
     updatedAt: NOW,
   })) as ConnectorInstanceLike;
 
-  const promoted = (await store.promoteSetupBinding(draft.connectorInstanceId, {
+  const promotedResult = await store.promoteSetupBinding(draft.connectorInstanceId, {
     fromKind: fixture.draftKind,
     sourceBinding: fixture.promote(draftBinding, PROMOTED_AT),
     updatedAt: PROMOTED_AT,
-  })) as ConnectorInstanceLike;
+  });
+  assert.equal(promotedResult.promoted, true, "guard admits a matching draft binding");
+  const promoted = promotedResult.instance as ConnectorInstanceLike;
 
   assert.equal(promoted.connectorInstanceId, draft.connectorInstanceId, "connector_instance_id is preserved");
   assert.equal(promoted.ownerSubjectId, ownerSubjectId, "owner is preserved");
@@ -225,11 +219,13 @@ async function runPromotionConformanceForKind({
   fixture.durableMetadataAssertions(draftBinding, promoted.sourceBinding as Record<string, unknown>);
 
   // --- Idempotency: a second promotion call is a safe no-op.
-  const promotedAgain = (await store.promoteSetupBinding(draft.connectorInstanceId, {
+  const promotedAgainResult = await store.promoteSetupBinding(draft.connectorInstanceId, {
     fromKind: fixture.draftKind,
     sourceBinding: fixture.promote(draftBinding, "2026-08-06T09:10:00.000Z"),
     updatedAt: "2026-08-06T09:10:00.000Z",
-  })) as ConnectorInstanceLike;
+  });
+  assert.equal(promotedAgainResult.promoted, false, "already-promoted row no longer matches status = draft");
+  const promotedAgain = promotedAgainResult.instance as ConnectorInstanceLike;
   assert.equal(promotedAgain.updatedAt, PROMOTED_AT, "second promotion call is a no-op; no re-stamp");
 
   // --- The exact live-repro shape: a promoted connection that is LATER
@@ -321,14 +317,15 @@ async function assertPromotedBrowserShellSurvivesTtlSweep({
     status: "draft",
     updatedAt: NOW,
   })) as ConnectorInstanceLike;
-  const promoted = (await store.promoteSetupBinding(draft.connectorInstanceId, {
+  const { instance: promotedInstance } = await store.promoteSetupBinding(draft.connectorInstanceId, {
     fromKind: "browser_enrollment_shell",
     sourceBinding: promoteBrowserEnrollmentShellBinding(
       draft.sourceBinding as unknown as Parameters<typeof promoteBrowserEnrollmentShellBinding>[0],
       PROMOTED_AT
     ) as unknown as Record<string, unknown>,
     updatedAt: PROMOTED_AT,
-  })) as ConnectorInstanceLike;
+  });
+  const promoted = promotedInstance as ConnectorInstanceLike;
 
   const afterTtlExpiry = "2026-08-06T12:00:00.000Z";
   const survivorIds = expiredEnrollmentShellIds(
@@ -359,6 +356,68 @@ async function assertPromotedBrowserShellSurvivesTtlSweep({
   assert.equal(promotedAfterSweep.status, "active", "promoted connection survives the TTL sweep untouched");
 }
 
+// Deterministic race oracle: revoke FIRST, then call promoteSetupBinding
+// with a stale pre-revoke read — reproduces the exact interleaving
+// (activateDraftConnection reads draft, revoke commits, then the UPDATE
+// lands) without depending on real thread timing.
+async function assertRevokeWinsRaceAgainstPromotion({
+  store,
+  ownerSubjectId,
+}: {
+  store: StoreLike;
+  ownerSubjectId: string;
+}): Promise<void> {
+  const key = `browser_enrollment_shell_${ownerSubjectId}_race`;
+  const draftBinding = {
+    connector_id: "chatgpt",
+    enrollment_expires_at: "2026-08-06T11:00:00.000Z",
+    kind: "browser_enrollment_shell",
+  };
+  const draft = (await store.upsert({
+    connectorId: "chatgpt",
+    createdAt: NOW,
+    displayName: "ChatGPT",
+    ownerSubjectId,
+    sourceBinding: draftBinding,
+    sourceBindingKey: key,
+    sourceKind: "account",
+    status: "draft",
+    updatedAt: NOW,
+  })) as ConnectorInstanceLike;
+
+  // The race: an owner revoke commits between activateDraftConnection's read
+  // and promoteSetupBinding's UPDATE.
+  const revokedAt = "2026-08-06T09:03:00.000Z";
+  const revoked = (await store.updateStatus(draft.connectorInstanceId, {
+    revokedAt,
+    status: "revoked",
+    updatedAt: revokedAt,
+  })) as ConnectorInstanceLike;
+  assert.equal(revoked.status, "revoked");
+
+  // promoteSetupBinding is called anyway with the STALE pre-revoke read
+  // (mirroring activateDraftConnection's actual sequencing: it read the
+  // draft binding before the revoke landed).
+  const raceResult = await store.promoteSetupBinding(draft.connectorInstanceId, {
+    fromKind: "browser_enrollment_shell",
+    sourceBinding: promoteBrowserEnrollmentShellBinding(
+      draftBinding as unknown as Parameters<typeof promoteBrowserEnrollmentShellBinding>[0],
+      "2026-08-06T09:05:00.000Z"
+    ) as unknown as Record<string, unknown>,
+    updatedAt: "2026-08-06T09:05:00.000Z",
+  });
+
+  assert.equal(raceResult.promoted, false, "the status = 'draft' guard rejects a row revoked mid-race");
+  const finalRow = (await store.get(draft.connectorInstanceId)) as ConnectorInstanceLike;
+  assert.equal(finalRow.status, "revoked", "the row is NOT resurrected to active by the lost-race promotion attempt");
+  assert.equal(
+    finalRow.sourceBinding?.kind,
+    "browser_enrollment_shell",
+    "the binding is NOT rewritten to the durable kind by the lost-race promotion attempt"
+  );
+  assert.equal(finalRow.updatedAt, revokedAt, "the revoke's updated_at is not overwritten by the lost race");
+}
+
 async function runFullConformance({
   store,
   seedConnector,
@@ -379,6 +438,10 @@ async function runFullConformance({
   }
   await assertPromotedBrowserShellSurvivesTtlSweep({
     ownerSubjectId: `${ownerSubjectId}_ttl`,
+    store,
+  });
+  await assertRevokeWinsRaceAgainstPromotion({
+    ownerSubjectId: `${ownerSubjectId}_race`,
     store,
   });
 }

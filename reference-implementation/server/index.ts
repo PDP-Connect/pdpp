@@ -2473,12 +2473,8 @@ async function resolveRegisteredConnectorManifest(connectorId: string) {
   return manifest;
 }
 
-// Every temporary setup binding kind that must promote to a durable sibling
-// kind on first successful ingest (see `activateDraftConnection` below).
-// Keyed by the CURRENT (setup) binding kind; each builder is pure and
-// returns the durable replacement binding. Adding a new setup-binding kind
-// means adding one entry here — the ingest-activation wiring itself never
-// needs to change.
+// Keyed by the current setup binding kind; each builder returns the durable
+// replacement binding. A new setup-binding kind only needs an entry here.
 const SETUP_BINDING_PROMOTIONS: Record<
   string,
   (currentBinding: Record<string, unknown>, now: string) => Record<string, unknown>
@@ -2499,6 +2495,55 @@ const SETUP_BINDING_PROMOTIONS: Record<
       unknown
     >,
 };
+
+interface ActivateDraftConnectionStore {
+  activateDraft: (connectorInstanceId: string) => unknown | Promise<unknown>;
+  get: (
+    connectorInstanceId: string
+  ) =>
+    | { status?: string; sourceBinding?: unknown }
+    | null
+    | Promise<{ status?: string; sourceBinding?: unknown } | null>;
+  promoteSetupBinding: (
+    connectorInstanceId: string,
+    args: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+  ) => { instance: unknown; promoted: boolean } | Promise<{ instance: unknown; promoted: boolean }>;
+}
+
+// Extracted from its `rsMutationContext.activateDraftConnection` call site
+// so it's unit-testable against a fake store without a full server — see
+// test/activate-draft-connection.test.ts.
+type ActivationScheduleAttacher = (
+  instance: { connectorId?: string; connectorInstanceId?: string; status?: string } | null | undefined
+) => Promise<unknown>;
+
+export async function activateDraftConnection(
+  connectorInstanceId: string,
+  store: ActivateDraftConnectionStore,
+  attachSchedule: ActivationScheduleAttacher
+): Promise<unknown> {
+  const current = await store.get(connectorInstanceId);
+  const bindingKind =
+    current?.sourceBinding && typeof current.sourceBinding === "object"
+      ? (current.sourceBinding as { kind?: unknown }).kind
+      : null;
+  const promotion = typeof bindingKind === "string" ? SETUP_BINDING_PROMOTIONS[bindingKind] : undefined;
+  const now = new Date().toISOString();
+  const { instance, promoted } =
+    current?.status === "draft" && promotion
+      ? await store.promoteSetupBinding(connectorInstanceId, {
+          fromKind: bindingKind as string,
+          sourceBinding: promotion(current.sourceBinding as Record<string, unknown>, now),
+          updatedAt: now,
+        })
+      : { instance: await store.activateDraft(connectorInstanceId), promoted: true };
+  if (!promoted) {
+    return null;
+  }
+  return await attachSchedule(
+    instance as { connectorId?: string; connectorInstanceId?: string; status?: string } | null | undefined
+  );
+}
 
 function createActivationScheduleAttacher(controller: unknown) {
   return async (
@@ -5647,43 +5692,13 @@ function buildRsApp(opts: ServerOpts = {}) {
   // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
   // (registered after) share the same context object.
   const rsMutationContext = {
-    // First-ingest activation for every temporary setup binding
-    // (browser_enrollment_shell, static_secret_draft, manual_upload_draft):
-    // flip draft → active once a record lands. No-op on a non-draft row. See
-    // add-static-secret-owner-session-connect-path design Decision 5.
-    //
-    // A plain status flip is NOT enough on its own: RETIRED_SETUP_SHELL_
-    // BINDING_KINDS hides any REVOKED row still carrying one of these three
-    // binding kinds from every owner-visible read surface — correct for
-    // setup residue that was abandoned/never completed, but wrong for a
-    // connection that genuinely finished setup and later gets revoked
-    // (TTL sweep for the browser shell; explicit owner revoke for the other
-    // two, which have no TTL sweep). `SETUP_BINDING_PROMOTIONS` below routes
-    // each kind through `promoteSetupBinding`, which atomically rewrites the
-    // binding to its durable sibling kind (exempt from
-    // RETIRED_SETUP_SHELL_BINDING_KINDS by construction) alongside the
-    // status flip, preserving whatever setup-specific durable metadata that
-    // kind's builder carries forward. Any other binding kind (plain
-    // `account`, etc.) falls through to the pre-existing plain activation.
-    activateDraftConnection: async (connectorInstanceId: string) => {
-      const store = createRequestConnectorInstanceStore();
-      const current = await store.get(connectorInstanceId);
-      const bindingKind =
-        current?.sourceBinding && typeof current.sourceBinding === "object"
-          ? (current.sourceBinding as { kind?: unknown }).kind
-          : null;
-      const promotion = typeof bindingKind === "string" ? SETUP_BINDING_PROMOTIONS[bindingKind] : undefined;
-      const now = new Date().toISOString();
-      const instance =
-        current?.status === "draft" && promotion
-          ? await store.promoteSetupBinding(connectorInstanceId, {
-              fromKind: bindingKind as string,
-              sourceBinding: promotion(current.sourceBinding as Record<string, unknown>, now),
-              updatedAt: now,
-            })
-          : await store.activateDraft(connectorInstanceId);
-      return await attachActivationScheduleForConnection(instance);
-    },
+    // See add-static-secret-owner-session-connect-path design Decision 5.
+    activateDraftConnection: (connectorInstanceId: string) =>
+      activateDraftConnection(
+        connectorInstanceId,
+        createRequestConnectorInstanceStore(),
+        attachActivationScheduleForConnection
+      ),
     buildMutationContext,
     buildStateContext,
     deleteAllRecords,
