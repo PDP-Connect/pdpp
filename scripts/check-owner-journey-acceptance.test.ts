@@ -1153,6 +1153,54 @@ test("live semantic probe accepts visible source count claims that match connect
   assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
 });
 
+test("live semantic probe compares the configured stream roster for a fresh draft", async () => {
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          has_more: false,
+          data: [
+            {
+              connection_id: "cin_chatgpt_draft",
+              connector_id: "chatgpt",
+              display_name: "ChatGPT",
+              status: "draft",
+              stream_count: 0,
+              streams: ["conversations", "messages", "attachments"],
+              total_records: 0,
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/sources")) {
+      return response(200, "<main><h1>Sources</h1><a>ChatGPT 0 records · 3 streams</a></main>");
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
+});
+
 test("live semantic probe rejects direct browser-session new-source controls", async () => {
   const response = (
     status: number,
