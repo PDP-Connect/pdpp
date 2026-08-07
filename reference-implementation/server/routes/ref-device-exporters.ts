@@ -2115,6 +2115,37 @@ export function mountRefDeviceExporterRevoke(app: AppLike, ctx: MountRefDeviceEx
   );
 }
 
+// POST /_ref/device-exporters/:deviceId/self-revoke
+//
+// A device credential may revoke itself, never another device: auth is the
+// device's own bearer token (not an owner session), and the path deviceId
+// must match the credential that authenticated the request. This is the
+// route `pdpp-local-collector logout` calls before deleting its local
+// profile — without it, a local device has no way to close its own
+// server-side lane, and logout could only ever delete local state while the
+// device token stayed live against the reference deployment indefinitely.
+export function mountRefDeviceExporterSelfRevoke(app: AppLike, ctx: MountRefDeviceExportersContext): void {
+  app.post(
+    "/_ref/device-exporters/:deviceId/self-revoke",
+    { contract: "refSelfRevokeDeviceExporter" },
+    ctx.requireDeviceExporterCredential,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const deviceId = decodeURIComponent(req.params.deviceId as string);
+        if (deviceId !== req.deviceExporter?.deviceId) {
+          ctx.pdppError(res, 403, "permission_error", "Device credential is not valid for this device");
+          return;
+        }
+        const revokedAt = new Date().toISOString();
+        await ctx.deviceExporterStore.revokeDevice(deviceId, revokedAt);
+        res.json({ device_id: deviceId, object: "device_exporter_revocation", revoked_at: revokedAt });
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
 async function markHeartbeatSourceInstance(input: {
   ctx: MountRefDeviceExportersContext;
   deviceId: string;
