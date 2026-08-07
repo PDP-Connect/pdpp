@@ -76,7 +76,7 @@ function MethodCard({ method }: { method: AcquisitionMethod }) {
           rel="noreferrer"
           target="_blank"
         >
-          Open instructions
+          Open instructions in a new tab
         </a>
       ) : null}
     </div>
