@@ -1,0 +1,332 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/steam",
+  "connector_key": "steam",
+  "manifest_uri": "https://registry.pdpp.org/connectors/steam",
+  "version": "0.1.0",
+  "display_name": "Steam",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "Steam API key",
+      "description": "Use a free Steam Web API key for your Steam account.",
+      "submit_label": "Create Steam connection and start first sync",
+      "fields": [
+        {
+          "name": "steamid",
+          "label": "Steam ID",
+          "type": "text",
+          "required": true,
+          "secret": false,
+          "help_url": "https://steamcommunity.com/",
+          "help_text": "Your Steam ID (the long number from your profile URL or steam://userid/XXXXX). Click your profile name in Steam and copy the number after 'profiles/'.",
+          "env": ["STEAM_USER_ID"]
+        },
+        {
+          "name": "secret",
+          "label": "Steam API Key",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://partner.steamgames.com/doc/webapi_overview/auth",
+          "help_text": "Generate a free Web API key at https://steamcommunity.com/dev/apikey, then paste it here.",
+          "env": ["STEAM_API_KEY"]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "high",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at 250ms per-request floor; adaptive backoff applies 429/403 throttling. 1-hour polling is conservative to avoid community-reported multi-hour lockouts. background_safe stays false while listed:false/status:unproven — an unlisted connector must not be scheduled unattended before an operator has proven a live run."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "profile",
+      "description": "Steam account profile information.",
+      "display": {
+        "label": "Your Steam profile",
+        "detail": "Public profile data: username, avatar, personalization state, account creation date, region."
+      },
+      "semantics": "mutable_state",
+      "required": false,
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "steamid": {
+            "type": "string"
+          },
+          "personaname": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "profileurl": {
+            "type": ["string", "null"]
+          },
+          "avatar": {
+            "type": ["string", "null"]
+          },
+          "avatarmedium": {
+            "type": ["string", "null"]
+          },
+          "avatarfull": {
+            "type": ["string", "null"]
+          },
+          "personastate": {
+            "type": ["integer", "null"]
+          },
+          "communityvisibilitystate": {
+            "type": ["integer", "null"]
+          },
+          "profilestate": {
+            "type": ["integer", "null"]
+          },
+          "realname": {
+            "type": ["string", "null"]
+          },
+          "primaryclanid": {
+            "type": ["string", "null"]
+          },
+          "timecreated": {
+            "type": ["integer", "null"]
+          },
+          "loccountrycode": {
+            "type": ["string", "null"]
+          },
+          "loccstatecode": {
+            "type": ["string", "null"]
+          },
+          "loccityid": {
+            "type": ["string", "null"]
+          },
+          "lastlogoff": {
+            "type": ["integer", "null"]
+          },
+          "commentcount": {
+            "type": ["integer", "null"]
+          }
+        },
+        "required": ["steamid"]
+      }
+    },
+    {
+      "name": "owned_games",
+      "description": "Games owned by the account.",
+      "display": {
+        "label": "Your owned games",
+        "detail": "List of games in your Steam library: name, total playtime, platform playtimes, last-played timestamp (where available), community stats availability."
+      },
+      "semantics": "mutable_state",
+      "required": false,
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window",
+      "query": {
+        "search": {
+          "lexical_fields": ["name"]
+        }
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "steamid": {
+            "type": "string"
+          },
+          "appid": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "playtime_forever": {
+            "type": "integer"
+          },
+          "playtime_windows": {
+            "type": ["integer", "null"]
+          },
+          "playtime_mac": {
+            "type": ["integer", "null"]
+          },
+          "playtime_linux": {
+            "type": ["integer", "null"]
+          },
+          "img_icon_url": {
+            "type": ["string", "null"]
+          },
+          "img_logo_url": {
+            "type": ["string", "null"]
+          },
+          "has_community_visible_stats": {
+            "type": ["boolean", "null"]
+          },
+          "rtime_last_played": {
+            "type": ["integer", "null"]
+          },
+          "content_descriptorids": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": ["id", "steamid", "appid", "name", "playtime_forever"]
+      }
+    },
+    {
+      "name": "recently_played_games",
+      "description": "Recently played games (last 100).",
+      "display": {
+        "label": "Your recently played games",
+        "detail": "Games played in the last 2 weeks: name, 2-week and total playtime, platform playtimes, last-played timestamp."
+      },
+      "semantics": "mutable_state",
+      "required": false,
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window",
+      "query": {
+        "search": {
+          "lexical_fields": ["name"]
+        }
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "steamid": {
+            "type": "string"
+          },
+          "appid": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "playtime_2weeks": {
+            "type": ["integer", "null"]
+          },
+          "playtime_forever": {
+            "type": "integer"
+          },
+          "playtime_windows": {
+            "type": ["integer", "null"]
+          },
+          "playtime_mac": {
+            "type": ["integer", "null"]
+          },
+          "playtime_linux": {
+            "type": ["integer", "null"]
+          },
+          "img_icon_url": {
+            "type": ["string", "null"]
+          },
+          "img_logo_url": {
+            "type": ["string", "null"]
+          },
+          "rtime_last_played": {
+            "type": ["integer", "null"]
+          }
+        },
+        "required": ["id", "steamid", "appid", "name", "playtime_forever"]
+      }
+    },
+    {
+      "name": "friends",
+      "description": "Your Steam friends list.",
+      "display": {
+        "label": "Your Steam friends",
+        "detail": "Steam friends: friend steamid, relationship type, friend-since timestamp."
+      },
+      "semantics": "mutable_state",
+      "required": false,
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "steamid": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "owner_steamid": {
+            "type": "string"
+          },
+          "relationship": {
+            "type": "string",
+            "x_pdpp_role": "secondary"
+          },
+          "friend_since": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "steamid",
+          "owner_steamid",
+          "relationship",
+          "friend_since"
+        ]
+      }
+    },
+    {
+      "name": "steam_level",
+      "description": "Account Steam level.",
+      "display": {
+        "label": "Your Steam level",
+        "detail": "Account level, calculated from badges, achievements, and playtime."
+      },
+      "semantics": "mutable_state",
+      "required": false,
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "steamid": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "player_level": {
+            "type": "integer"
+          }
+        },
+        "required": ["id", "steamid", "player_level"]
+      }
+    }
+  ]
+}

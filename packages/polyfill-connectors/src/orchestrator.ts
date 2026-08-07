@@ -86,6 +86,13 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
   },
   ical: c("ical"),
   chase: c("chase"),
+  apple_contacts: c("apple_contacts"),
+  google_calendar: c("google_calendar"),
+  google_contacts: c("google_contacts"),
+  groupme: c("groupme"),
+  jellyfin: c("jellyfin"),
+  netflix_export: c("netflix_export"),
+  steam: c("steam"),
 };
 
 export function getConnectorPaths(name: string): ConnectorPaths {

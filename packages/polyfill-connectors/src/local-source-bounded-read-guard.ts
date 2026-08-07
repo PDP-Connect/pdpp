@@ -52,6 +52,21 @@ export const BOUNDED_READ_EXCEPTIONS: readonly BoundedReadException[] = [
     reason: "Reads one Takeout JSON sidecar per call; streaming migration is deferred until large fixtures justify it.",
   },
   {
+    connector: "google_takeout",
+    file: "index.ts",
+    pattern: "readFile",
+    lineIncludes: 'import { readdir, readFile, stat } from "node:fs/promises";',
+    reason: "Imports readFile for the reviewed size-capped photo byte read below.",
+  },
+  {
+    connector: "google_takeout",
+    file: "index.ts",
+    pattern: "readFile",
+    lineIncludes: "const bytes = await readFile(path);",
+    reason:
+      "readBoundedPhotoBytes stats the file first and returns early (tooLarge: true) when size exceeds maxBytes, so this readFile only runs for files already confirmed at or under the cap.",
+  },
+  {
     connector: "ical",
     file: "index.ts",
     pattern: "readFile",
