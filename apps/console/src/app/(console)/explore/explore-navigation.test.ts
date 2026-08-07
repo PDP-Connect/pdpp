@@ -153,6 +153,30 @@ test("order FLIP is feed-defining: re-pages from page 1 (drops anchor + cursor t
   assert.equal(params.get("ucursors"), null, "an order flip resets the upcoming trail too (fresh snapshot)");
 });
 
+test("order FLIP preserves the active query and filters while resetting pagination", () => {
+  const state = accumulatingState({
+    connectionIds: ["cin_ynab"],
+    excludeConnectionIds: ["cin_private"],
+    excludeStreams: ["secrets"],
+    query: "coffee",
+    since: "2026-06-01",
+    streams: ["transactions"],
+    until: "2026-07-01",
+  });
+  const params = paramsOf(buildNavigateHref(EXPLORE, state, { order: "oldest" }));
+
+  assert.equal(params.get("q"), "coffee", "the sort flip must keep the text query");
+  assert.deepEqual(params.getAll("connection"), ["cin_ynab"], "the sort flip must keep included sources");
+  assert.deepEqual(params.getAll("xconnection"), ["cin_private"], "the sort flip must keep excluded sources");
+  assert.deepEqual(params.getAll("stream"), ["transactions"], "the sort flip must keep included streams");
+  assert.deepEqual(params.getAll("xstream"), ["secrets"], "the sort flip must keep excluded streams");
+  assert.equal(params.get("since"), "2026-06-01", "the sort flip must keep the lower time bound");
+  assert.equal(params.get("until"), "2026-07-01", "the sort flip must keep the upper time bound");
+  assert.equal(params.get("order"), "oldest", "the sort flip must select oldest-first");
+  assert.equal(params.get("anchor"), null, "the sort flip must reset the old snapshot anchor");
+  assert.equal(params.get("cursors"), null, "the sort flip must reset the old cursor trail");
+});
+
 test("a same-value order (carried forward by a peek) is NOT feed-defining (same feed)", () => {
   // A peek that carries the current order forward unchanged (newest == state.order)
   // is a pure same-feed move — the accumulated trail + anchor must survive.

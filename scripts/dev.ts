@@ -59,6 +59,10 @@ const env = {
   ...process.env,
   PDPP_WEB_PORT: String(webPort),
   PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN ?? `http://localhost:${webPort}`,
+  // The local console and reference server run from this checkout, where the
+  // merged-timeline read contract supports direction=asc. Preserve an explicit
+  // =0 override for testing an unsupported backend honestly.
+  PDPP_EXPLORE_TIMELINE_DIRECTION: process.env.PDPP_EXPLORE_TIMELINE_DIRECTION ?? "1",
 };
 
 console.error(`[pdpp dev] console origin: ${env.PDPP_REFERENCE_ORIGIN}`);

@@ -174,9 +174,14 @@ CMD ["node", "reference-implementation/server/index.ts"]
 # tranche. See openspec/changes/split-public-site-and-operator-console.
 FROM base AS console
 
+# The console image is paired with the current reference implementation, whose
+# merged-timeline contract supports direction=asc. Keep the explicit capability
+# gate enabled for that pairing; an older external RS can still fail closed by
+# setting PDPP_EXPLORE_TIMELINE_DIRECTION=0.
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    PDPP_EXPLORE_TIMELINE_DIRECTION=1
 
 COPY --from=console-builder /app/apps/console/.next/standalone ./
 COPY --from=console-builder /app/apps/console/.next/static ./apps/console/.next/static
@@ -222,6 +227,9 @@ ARG PDPP_REFERENCE_REVISION=unknown
 # [[restart]] override). If this stage is ever deployed through a path with
 # no restart policy, that deployment is the truthful gap to fix, not this
 # flag.
+# Core bundles the matching reference implementation, including the
+# direction=asc merged-timeline read contract. Keep the UI capability gate
+# explicit; an older external RS can still fail closed with =0.
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000 \
@@ -234,6 +242,7 @@ ENV NODE_ENV=production \
     PDPP_BROWSER_PROFILE_ROOT=/var/lib/pdpp/browser-profiles \
     PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1 \
     PDPP_EMBEDDING_CACHE_DIR=/var/lib/pdpp/transformers \
+    PDPP_EXPLORE_TIMELINE_DIRECTION=1 \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1 \
     PDPP_RECONCILE_POLYFILL_MANIFESTS=1 \
