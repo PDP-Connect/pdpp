@@ -376,3 +376,28 @@ test("Google Data Portability provider-auth route materializes an active connect
     await closeServer(server);
   }
 });
+
+test("Google Maps Data Portability must be unlisted because it only exposes control-plane metadata (archive jobs), not actual Maps data", async () => {
+  const manifest = readManifest();
+  const publicListing = manifest.capabilities?.public_listing;
+
+  assert.ok(publicListing, "manifest declares capabilities.public_listing");
+  assert.equal(
+    publicListing.listed,
+    false,
+    "google_maps_data_portability must be unlisted: only archive_jobs (control-plane job status) is implemented; no archive download, Maps resource group parsing, or user data exposure."
+  );
+  assert.ok(
+    publicListing.proof_gate,
+    "manifest must explain why it is unlisted via proof_gate field"
+  );
+
+  const streams = manifest.streams ?? [];
+  const archiveJobsStream = streams.find((s) => s.name === "archive_jobs");
+  assert.ok(archiveJobsStream, "the only stream present is archive_jobs (control plane)");
+  assert.equal(
+    streams.length,
+    1,
+    "only one stream implemented: archive_jobs control-plane metadata. Maps resource group data (reviews, places, activity, etc.) not yet parsed/exposed."
+  );
+});

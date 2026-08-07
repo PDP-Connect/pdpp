@@ -44,7 +44,6 @@ export const PRODUCTION_READY_CONNECTORS: Record<string, { testFile: string }> =
   gmail: { testFile: "connectors/gmail/integration.test.ts" },
   heb: { testFile: "connectors/heb/index.test.ts" },
   google_maps: { testFile: "connectors/google_maps/parsers.test.ts" },
-  google_maps_data_portability: { testFile: "connectors/google_maps_data_portability/api.test.ts" },
   notion: { testFile: "connectors/notion/schemas.test.ts" },
   oura: { testFile: "connectors/oura/schemas.test.ts" },
   reddit: { testFile: "connectors/reddit/integration.test.ts" },
@@ -87,6 +86,7 @@ export const KNOWN_SCAFFOLD_CONNECTORS = [
  */
 export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {
   apple_health: { testFile: "connectors/apple_health/parsers.test.ts" },
+  google_maps_data_portability: { testFile: "connectors/google_maps_data_portability/api.test.ts" },
   google_takeout: { testFile: "connectors/google_takeout/schemas.test.ts" },
   ical: { testFile: "connectors/ical/parsers.test.ts" },
   imessage: { testFile: "connectors/imessage/integration.test.ts" },
