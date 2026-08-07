@@ -3034,6 +3034,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     if (connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID) {
       ingestUrl.searchParams.set("connector_instance_id", connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID);
     }
+    // Threads run identity to the storage layer so it can fence a write that
+    // was already admitted before cancellation against the run's own terminal
+    // state, instead of relying solely on this fetch's AbortSignal (a client
+    // socket-close heuristic that cannot un-admit a write the server already
+    // accepted). See harden-ingest-run-admission-fence.
+    ingestUrl.searchParams.set("run_id", runId);
     const resp = await fetch(ingestUrl.toString(), {
       body: ndjson,
       headers: {

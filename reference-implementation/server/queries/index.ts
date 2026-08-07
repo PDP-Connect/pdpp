@@ -261,6 +261,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly controllerDeleteSchedule: MutationQuery;
   readonly controllerFinalizeRunHistory: MutationQuery;
   readonly controllerGetLatestRunHistoryForConnection: ReadOneQuery;
+  readonly controllerGetRunHistoryStatusForRun: ReadOneQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;
   readonly controllerInsertFinalizedRunHistory: MutationQuery;
   readonly controllerInsertRunHistory: MutationQuery;

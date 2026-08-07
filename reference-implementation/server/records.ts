@@ -202,6 +202,16 @@ interface RecordIngestOptions {
   deferIndexes?: boolean;
   deviceFinalInputIndex?: number;
   deviceReservation?: DeviceReservation;
+  /**
+   * The run this write belongs to, when known. When present, the durable
+   * mutation checks run_history for (runId, connectorInstanceId) inside the
+   * same write transaction and refuses the write if the run is already
+   * terminal — the runtime's own AbortSignal is a client-side socket-close
+   * heuristic and cannot prevent a write already admitted into the
+   * connector-instance write coordinator from committing after cancellation.
+   * See harden-ingest-run-admission-fence.
+   */
+  runId?: string | null;
 }
 interface CurrentRecordRow {
   deleted: boolean | number;
@@ -780,6 +790,21 @@ export class RecordIndexAdmissionError extends Error {
   }
 }
 
+// A write already admitted into the per-connector-instance write coordinator
+// for a run that has since reached a terminal state (owner-cancelled, timed
+// out, or otherwise closed). The runtime's own cancellation signal is a
+// client-side AbortSignal that cannot retroactively un-admit a write the
+// server already accepted; this is the storage-layer fence that refuses it
+// instead. See harden-ingest-run-admission-fence.
+export class RecordIngestRunTerminalError extends Error {
+  code: string;
+  constructor(runId: string) {
+    super(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
+    this.name = "RecordIngestRunTerminalError";
+    this.code = "run_terminal";
+  }
+}
+
 let activeIndexWork = 0;
 const indexWorkWaiters: IndexWorkWaiter[] = [];
 
@@ -1164,7 +1189,8 @@ export async function ingestRecord(
 export async function ingestRecords(
   storageTarget: RecordStorageTarget,
   records: readonly RecordEnvelope[],
-  afterRecord?: RecordIngestAfterRecord
+  afterRecord?: RecordIngestAfterRecord,
+  options: Pick<RecordIngestOptions, "runId"> = {}
 ): Promise<RecordIngestBatchOutcome[]> {
   const coordinationConnectorId = connectorIdForStorageTarget(storageTarget);
   const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
@@ -1177,7 +1203,13 @@ export async function ingestRecords(
     const result = await withConnectorInstanceWrite(
       coordinationInstanceId,
       async (coordinatorOwnership) => {
-        const batch = await ingestRecordsWithinCoordinator(storageTarget, records, coordinatorOwnership, afterRecord);
+        const batch = await ingestRecordsWithinCoordinator(
+          storageTarget,
+          records,
+          coordinatorOwnership,
+          afterRecord,
+          options.runId
+        );
         if (batch.changedRecords.length > 0) {
           deferredIndexWork = enqueueConnectorInstanceIndexWork(
             coordinationInstanceId,
@@ -1222,10 +1254,16 @@ async function ingestRecordsWithinCoordinator(
   storageTarget: RecordStorageTarget,
   records: readonly RecordEnvelope[],
   coordinatorOwnership: ConnectorInstanceWriteOwnership,
-  afterRecord?: RecordIngestAfterRecord
+  afterRecord?: RecordIngestAfterRecord,
+  runId?: string | null
 ): Promise<IngestRecordsWithinCoordinatorResult> {
   const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
   const changedRecords: DeferredRecordIndex[] = [];
+  const perRecordOptions: RecordIngestOptions = {
+    coordinatorOwnership,
+    deferIndexes: true,
+    ...(runId ? { runId } : {}),
+  };
 
   for (const [index, record] of records.entries()) {
     let outcome: RecordIngestBatchOutcome;
@@ -1235,10 +1273,7 @@ async function ingestRecordsWithinCoordinator(
       // indexes are scheduled after that fence so expensive embedding work
       // cannot starve an unrelated blob writer.
       // biome-ignore lint/performance/noAwaitInLoops: Durable version allocation and same-instance state transitions are intentionally ordered.
-      outcome = await ingestRecordWithinCoordinator(storageTarget, record, {
-        coordinatorOwnership,
-        deferIndexes: true,
-      });
+      outcome = await ingestRecordWithinCoordinator(storageTarget, record, perRecordOptions);
       if (outcome.accepted && outcome.changed) {
         changedRecords.push({ index, record });
       }
@@ -1336,6 +1371,7 @@ function toPostgresIngestOptions(options: RecordIngestOptions) {
   return {
     ...(attemptContext ? { attemptContext } : {}),
     ...(options.deviceReservation ? { deviceReservation: options.deviceReservation } : {}),
+    ...(options.runId ? { runId: options.runId } : {}),
   };
 }
 
@@ -1521,6 +1557,31 @@ function pruneRecordChangeHistory(
   return { prunedBytesForDelta, prunedRowsForDelta };
 }
 
+// Run-admission fence: SQLite's single writer connection makes this
+// read-then-write atomic with run_history's terminal write (both go through
+// the same synchronous handle — see run-history-writer.ts header). Fails
+// CLOSED: a caller that supplies a runId is asserting run-bound ingestion,
+// and runtime/index.ts always awaits the run.started spine write (which
+// durably inserts this row with status='running') before spawning the child
+// that could ever call flushBatch — so a genuine run-bound write is
+// guaranteed to find its row. A missing row for a supplied runId means the
+// id is spoofed, mistyped, or belongs to a run this process never started;
+// none of those should be admitted. Must be called from inside the durable
+// write transaction so no other write can land between this check and the
+// mutation it guards. See harden-ingest-run-admission-fence.
+function assertSqliteRunStillAdmitted(runId: string | null | undefined, connectorInstanceId: string): void {
+  if (!runId) {
+    return;
+  }
+  const runStatus = getOne<{ status: string }>(referenceQueries.controllerGetRunHistoryStatusForRun, [
+    runId,
+    connectorInstanceId,
+  ]);
+  if (runStatus?.status !== "running") {
+    throw new RecordIngestRunTerminalError(runId);
+  }
+}
+
 async function ingestSqliteRecord(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
@@ -1561,6 +1622,7 @@ async function ingestSqliteRecord(
   // Durable mutation unit: returns the operation outcome so derived index
   // maintenance can run *after* the commit succeeds.
   const outcome = writeTransaction<DurableIngestOutcome>(() => {
+    assertSqliteRunStillAdmitted(options.runId, connectorInstanceId);
     const finishDurableOutcome = (value: DurableIngestOutcome): DurableIngestOutcome => {
       if (options.deviceReservation) {
         advanceSqliteDeviceIngestPrefix(options.deviceReservation, options.deviceReservation.inputIndex);
