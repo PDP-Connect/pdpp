@@ -668,9 +668,6 @@ export default async function ConnectionSetupStatusPage({
   const importPhases = importPhaseProgress(status);
   const displayName = deriveSetupStatusDisplayName(status);
   const title = accountIdentity ? `${displayName} · ${accountIdentity}` : displayName;
-  const refreshQuery = pageParams.run_id ? `?${new URLSearchParams({ run_id: pageParams.run_id }).toString()}` : "";
-  const refreshHref = `/connect/status/${encodeURIComponent(connectionId)}${refreshQuery}`;
-
   return (
     <RecordroomShellWithPalette>
       <LivePoller enabled={status.pending} />
@@ -754,14 +751,6 @@ export default async function ConnectionSetupStatusPage({
           status.setup_state === "first_sync_unverified_missing_counts" ? (
             <Link className={buttonVariants({ size: "sm", variant: "default" })} href={setupHref(status)}>
               {retryLabel(status)}
-            </Link>
-          ) : null}
-          {described.tone === "pending" &&
-          status.pending &&
-          status.setup_state !== "awaiting_credential" &&
-          status.setup_state !== "awaiting_browser_login" ? (
-            <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={refreshHref}>
-              Refresh status
             </Link>
           ) : null}
         </div>
