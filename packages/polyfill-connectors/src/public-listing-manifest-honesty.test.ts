@@ -224,9 +224,9 @@ test("needs-human-auth manifests require assisted-after-owner-auth posture for a
   );
 });
 
-test("iMessage local-device binding stays hidden and not background-safe", () => {
+test("iMessage filesystem binding stays hidden and not background-safe", () => {
   const imessage = readManifest("imessage");
-  assert.equal(imessage.runtime_requirements?.bindings?.local_device?.required, true);
+  assert.equal(imessage.runtime_requirements?.bindings?.filesystem?.required, true);
   assert.equal(imessage.capabilities?.public_listing?.listed, false);
   assert.equal(imessage.capabilities?.public_listing?.status, "unproven");
   assert.equal(imessage.capabilities?.refresh_policy?.recommended_mode, "manual");
