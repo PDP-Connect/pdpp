@@ -5,6 +5,15 @@ packages:
 overrides:
   "@pdpp/cli": "workspace:*"
   "@pdpp/read-core": "workspace:*"
+# React's own package ships no types, so a dependency's `import * as React from
+# "react"` resolves types by walking up from its isolated pnpm store directory —
+# where `@types/react` is not reachable. next-themes' `ThemeProviderProps extends
+# React.PropsWithChildren` then degrades to `{}` and every consumer fails with
+# "Property 'children' does not exist". Hoisting the React types to the workspace
+# root puts them back on that lookup path. Runtime resolution is unaffected.
+publicHoistPattern:
+  - "@types/react"
+  - "@types/react-dom"
 onlyBuiltDependencies:
   - "better-sqlite3"
   - "esbuild"
