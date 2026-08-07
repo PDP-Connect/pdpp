@@ -14,7 +14,7 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 145,
+            "PDPP_TEST_POSTGRES_URL unset": 147,
             "dedicated disposable URL not selected": 1,
             "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
             "set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke": 1,
