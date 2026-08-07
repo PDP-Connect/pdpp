@@ -67,6 +67,39 @@ Site agent notes: [`apps/site/AGENTS.md`](../../apps/site/AGENTS.md). Site compo
 | Public marketing / concept | site `/`, `/self-host`, `/participate`, root 404 | **Concept** — route shell + components + concept tokens |
 | Spec docs chrome | site `/specification` | Both — Fumadocs + `styles/surfaces/specification.css` under `[data-pdpp-doc-theme]` |
 
+### Specification ↔ concept theme parity (TODO)
+
+`/specification` reuses `PdppConceptShell` (masthead, footer, `[data-surface="concept"]`
+tokens) but **does not inherit concept prose styling**. Spec body copy is
+`.pdpp-docs-body` in `styles/surfaces/specification.css`, not `.pdpp-doc` in
+`styles/surfaces/concept/components.css`. Fumadocs owns the DOM (Shiki
+`figure.shiki`, tables, Cards, prev/next, mobile drawer, Copy/Open actions);
+concept pages use JSX + `.pdpp-terminal` for code blocks.
+
+**Current shape:** `specification.css` is scoped entirely to
+`[data-pdpp-doc-theme]` — the former unscoped operator register was removed.
+Shiki blocks mirror `.pdpp-terminal` metrics; inline `code` mirrors
+`[data-surface="concept"] code`. Remaining gaps are called out below.
+
+**Direction (address later):** spec should **maximize concept theme reuse** so
+it matches `/`, `/self-host`, `/participate` — not maintain a parallel prose
+skin. Concrete targets:
+
+| Area | Today | Should align with |
+| --- | --- | --- |
+| Code blocks (Shiki) | Metrics mirror `.pdpp-terminal`; colours duplicated in `specification.css` | Shared `@utility` / class so spec and concept cannot drift |
+| Copy Markdown / Open | Fumadocs buttons; only `border-radius` squared | `.pdpp-copy-btn` |
+| Tables | Bordered box | `.pdpp-doc table` open ruled rows |
+| h2/h3 metrics | Local clamps in `specification.css` | Concept type ladder / `Text` rungs |
+| Mobile sidebar / TOC popover | Fumadocs defaults | Concept rail register |
+
+**Layout bridge (done):** `--fd-layout-width: 100%` on `#nd-docs-layout` inside
+`container max-w-page`; `--fd-sidebar-width: var(--spacing-rail)`. Fumadocs does
+not read `--container-page` — the wrapper + `--fd-layout-width` are the bridge.
+
+Do not add more one-off `[data-pdpp-doc-theme]` prose rules without checking
+whether `.pdpp-doc` / concept tokens already own the behavior.
+
 ## Format mechanically (Biome / Ultracite)
 
 - Formatter: **Biome** via Ultracite. Workspace [`.vscode/settings.json`](../../.vscode/settings.json): format on save + Biome for JS/TS/JSON/CSS. Do not hand-reflow JSX — the next save undoes it.
