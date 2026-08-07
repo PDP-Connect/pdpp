@@ -834,6 +834,34 @@ function buildConnectorExitFailureMessage({
   return "Connector exited before emitting DONE.";
 }
 
+// Bounds a runtime-thrown Error's own message before it's persisted as
+// `failure_message` on a terminal spine event, mirroring
+// `controller.ts`'s `boundedLaunchFailureMessage` — a pathological error
+// (e.g. one embedding a large payload) can't bloat the terminal row.
+const RUNTIME_FAILURE_MESSAGE_MAX = 500;
+
+function boundedRuntimeFailureMessage(message: string): string {
+  return message.length > RUNTIME_FAILURE_MESSAGE_MAX ? `${message.slice(0, RUNTIME_FAILURE_MESSAGE_MAX)}…` : message;
+}
+
+// A runtime-side throw (mid-stream message processing, or the post-close
+// finalize path) with no more specific structured shape — a
+// connector-reported DONE.error, an ingest failure detail, or a protocol
+// violation, each of which already carries its own explanation — would
+// otherwise reach the terminal spine event with nothing beyond the
+// classified `reason` code (usually the generic "runtime_error" fallback).
+// Shared by handleMessageFailure and handleCloseFailure so the terminal
+// event always carries the thrown error's own message when nothing else
+// explains the failure.
+function runtimeAuthoredFailureMessage(
+  err: RuntimeRunError,
+  doneMessageError: ConnectorDoneError | null | undefined
+): string | null {
+  const hasStructuredFailureDetail =
+    Boolean(doneMessageError) || Boolean(err.ingest_failure) || err instanceof ProtocolViolation;
+  return !hasStructuredFailureDetail && err.message ? boundedRuntimeFailureMessage(err.message) : null;
+}
+
 function buildStderrTailDiagnostic(tail: StderrTail | null | undefined): Record<string, unknown> | null {
   if (!tail || typeof tail !== "object") {
     return null;
@@ -3408,6 +3436,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       err.terminal_reason = failureReason;
       err.connector_error = null;
       err.known_gaps = buildKnownGapsForTerminal(failureReason, null);
+      const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, null);
 
       if (!terminalEventRecorded) {
         try {
@@ -3417,6 +3446,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
             actor_type: "runtime",
             data: buildRunTerminalData({
               connectorError: null,
+              failureMessage: runtimeFailureMessage,
+              failureOrigin: runtimeFailureMessage ? "runtime" : null,
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: totalEmitted,
@@ -4782,6 +4813,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       if (doneMessage) {
         err.reported_records_emitted = doneMessage.records_emitted;
       }
+      const runtimeFailureMessage = runtimeAuthoredFailureMessage(err, doneMessage?.error);
 
       if (!terminalEventRecorded) {
         try {
@@ -4792,6 +4824,8 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
             data: buildRunTerminalData({
               connectorError: doneMessage?.error || null,
               exitCode: code,
+              failureMessage: runtimeFailureMessage,
+              failureOrigin: runtimeFailureMessage ? "runtime" : null,
               ingestFailure: err.ingest_failure || null,
               reason: failureReason,
               recordsEmitted: doneMessage ? doneMessage.records_emitted : totalEmitted,

@@ -2416,6 +2416,16 @@ rl.on('line', (line) => {
         assert.equal(failedEvent.data.state_streams_staged, 2);
         assert.equal(failedEvent.data.state_streams_committed, 1);
         assert.equal(failedEvent.data.checkpoint_commit_status, "partially_committed");
+        // This throw has no connector-reported DONE.error (DONE said
+        // "succeeded") and no structured ingest/protocol detail — without a
+        // runtime-authored failure_message, the terminal event's only
+        // explanation is the bare "runtime_error" code. Regression for the
+        // observability gap this triage found on a live-DB whatsapp run:
+        // real state-commit failures classified as runtime_error carried no
+        // explanation at all in known_gaps or failure_message.
+        assert.equal(failedEvent.data.failure_origin, "runtime");
+        // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
+        assert.match(String(failedEvent.data.failure_message), /State persistence failed for other_items: 500/);
       } finally {
         cleanup();
         await closeHttpServer(rsServer);
