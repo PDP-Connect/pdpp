@@ -92,7 +92,9 @@ export const KNOWN_SCAFFOLD_CONNECTORS = [
  */
 export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {
   apple_health: { testFile: "connectors/apple_health/parsers.test.ts" },
+  apple_photos: { testFile: "connectors/apple_photos/integration.test.ts" },
   google_maps_data_portability: { testFile: "connectors/google_maps_data_portability/api.test.ts" },
+  google_messages: { testFile: "connectors/google_messages/integration.test.ts" },
   google_takeout: { testFile: "connectors/google_takeout/schemas.test.ts" },
   steam: { testFile: "connectors/steam/index.test.ts" },
   ical: { testFile: "connectors/ical/parsers.test.ts" },

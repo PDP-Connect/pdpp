@@ -65,6 +65,8 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
     { store: "search_history", stream: "search_history" },
     { store: "photos", stream: "photos" },
   ],
+  apple_photos: [{ store: "export_dir", stream: "photos" }],
+  google_messages: [{ store: "gmcli_archive", stream: "messages" }],
 } as const;
 
 type LocalCoverageStoreNamesByConnector = {

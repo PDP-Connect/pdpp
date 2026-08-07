@@ -1,0 +1,152 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/google-messages",
+  "connector_key": "google_messages",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-messages",
+  "version": "0.1.0",
+  "display_name": "Google Messages (via gmcli)",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    },
+    "external_tools": [
+      {
+        "name": "gmcli",
+        "license": "AGPL-3.0",
+        "purpose": "QR-paired Google Messages (Android SMS/RCS) archive query",
+        "install_hint": "See github.com/johnlindquist/gmkit. Beta, single maintainer, no numbered release tags.",
+        "detect": {
+          "executable": "gmcli",
+          "args": ["version"],
+          "exit_code": 0
+        }
+      }
+    ]
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Google Messages access requires a one-time QR pairing (`gmcli auth`, run manually by the user outside this connector) with an Android phone that must stay online and reachable for gmcli to sync. Pairing/session tokens require full manual re-pairing after roughly 14 days of inactivity, so an unattended background schedule cannot be relied on to keep working."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven",
+      "rationale": "Requires a real gmcli binary (github.com/johnlindquist/gmkit, beta, single maintainer, AGPL-3.0) and a real QR-paired Google Messages account; not yet proven against a live paired device."
+    }
+  },
+  "streams": [
+    {
+      "name": "messages",
+      "required": true,
+      "description": "Google Messages read from the paired Android device's local gmcli archive, via `gmcli messages search --json` (RichHit rows — the field set here mirrors that Go struct exactly, verified from github.com/johnlindquist/gmkit's internal/store/search.go source: message_id, conversation_id, conversation_name, sender_name, body, timestamp_ms/timestamp_iso, is_from_me). No exotic fields (reactions, read receipts, RCS-vs-SMS transport distinction, attachments, group participant lists) are claimed — RichHit does not expose them. Media attachments are not downloaded (gmcli media download is out of scope). Resume is best-effort only — gmcli's exact resume-cursor semantics were not independently verified from source.",
+      "display": {
+        "label": "Your Google Messages",
+        "detail": "Message id, conversation id/name, sender name, body text, sent timestamp, and direction (from/to you) for each message in the gmcli-synced archive. Requires the Android device to have been QR-paired via `gmcli auth` (run manually by you) and to remain online for gmcli to sync."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "chat_name": {
+            "type": ["string", "null"]
+          },
+          "sender_name": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "actor"
+          },
+          "body": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "direction": {
+            "type": "string",
+            "enum": ["incoming", "outgoing"]
+          }
+        },
+        "required": ["id", "chat_id", "body", "sent_at", "direction"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "sent_at",
+      "consent_time_field": "sent_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["body"],
+          "semantic_fields": ["body"]
+        },
+        "range_filters": {
+          "sent_at": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["sent_at"],
+          "group_by": ["chat_id", "direction"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "coverage_diagnostics",
+      "required": false,
+      "description": "Safe coverage status for this connector's one known local store (the gmcli-synced message archive), so a local-collector run always leaves durable, honest coverage evidence even when gmcli is missing, unpaired, or fails to query — never a silent zero-evidence run.",
+      "display": {
+        "label": "Local collector coverage status",
+        "detail": "Whether gmcli was found, paired, and successfully queried on this run."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "stream": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": ["id", "store", "status", "reason"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    }
+  ]
+}

@@ -77,6 +77,8 @@ These connectors parse local files without network access. Run on-device only. *
 | twitter_archive | `~/.pdpp/imports/twitter_archive/` (extracted archive) | 🟡 code ready | ✅ (expected) |
 | imessage | `~/Library/Messages/chat.db` (auto-discovered on macOS) | 🟡 code ready | ✅ (expected) |
 | apple_health | `~/.pdpp/imports/apple_health/` (extracted iOS export) | 🟡 code ready | ✅ (expected) |
+| apple_photos | `~/.pdpp/imports/apple_photos/` (Photos.app "Export Unmodified Originals") | 🟡 code ready | ✅ (expected) |
+| google_messages | External `gmcli` (github.com/johnlindquist/gmkit, AGPL-3.0) subprocess — QR-paired local SQLite archive, `gmcli --json` query output normalized (slackdump-style arms-length wrapper; PDPP never imports libgm) | 🟡 in progress, unproven without a real paired account | ⚠️ requires `gmcli` binary + one-time QR pairing + phone online |
 | ical | `.ics` files or `ICAL_SUBSCRIPTION_URL` | 🟡 code ready | ✅ (expected) |
 
 Docker runs do not see the host home directory unless it is mounted. The default

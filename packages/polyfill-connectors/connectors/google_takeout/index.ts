@@ -20,23 +20,22 @@
  * for range-filter efficiency only.
  */
 
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CollectContext } from "../../src/connector-runtime.ts";
 import { runConnector } from "../../src/connector-runtime.ts";
 import {
+  hydrateMediaBytes,
+  resolveMaxMediaBytes,
+  sanitizeHydrationError,
+} from "../../src/local-media-blob-hydration.ts";
+import {
   buildCoverageDiagnosticsStateSnapshot,
   buildLocalSourceInventory,
   type KnownLocalStore,
 } from "../../src/local-source-inventory.ts";
-import {
-  makeReferenceBlobUploader,
-  type ReferenceBlobRef,
-  runtimeBlobUploadAvailable,
-} from "../../src/reference-blob-uploader.ts";
 import {
   buildLocationRecord,
   buildPhotoRecord,
@@ -51,7 +50,6 @@ import { validateRecord } from "./schemas.ts";
 import type {
   GoogleTakeoutState,
   LocationFile,
-  PhotoHydrationStatus,
   PhotoMetadataFile,
   PhotoRecord,
   SearchHistoryEntry,
@@ -65,79 +63,10 @@ const SIDECAR_JSON_SUFFIX_RE = /\.json$/i;
 
 // Same cap family as gmail's DEFAULT_MAX_ATTACHMENT_BYTES: bound local-file
 // reads so one oversized export item can't blow memory or dominate a run.
-const DEFAULT_MAX_PHOTO_BYTES = 25 * 1024 * 1024;
 const MAX_PHOTO_BYTES_ENV = "PDPP_GOOGLE_TAKEOUT_MAX_PHOTO_BYTES";
-// Diagnostic text must never carry a local filesystem path or filename.
-const HYDRATION_ERROR_MAX_CHARS = 240;
 
 function maxPhotoBytes(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[MAX_PHOTO_BYTES_ENV];
-  if (!raw) {
-    return DEFAULT_MAX_PHOTO_BYTES;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_PHOTO_BYTES;
-}
-
-function contentTypeForFileName(fileName: string): string {
-  const lower = fileName.toLowerCase();
-  const map: [string, string][] = [
-    [".jpg", "image/jpeg"],
-    [".jpeg", "image/jpeg"],
-    [".png", "image/png"],
-    [".gif", "image/gif"],
-    [".bmp", "image/bmp"],
-    [".webp", "image/webp"],
-    [".mp4", "video/mp4"],
-    [".mov", "video/quicktime"],
-    [".mts", "video/mp2t"],
-    [".m4v", "video/x-m4v"],
-    [".3gp", "video/3gpp"],
-    [".3g2", "video/3gpp2"],
-    [".wmv", "video/x-ms-wmv"],
-    [".avi", "video/x-msvideo"],
-    [".mkv", "video/x-matroska"],
-    [".flv", "video/x-flv"],
-    [".webm", "video/webm"],
-  ];
-  for (const [ext, mime] of map) {
-    if (lower.endsWith(ext)) {
-      return mime;
-    }
-  }
-  return "application/octet-stream";
-}
-
-function sanitizeHydrationError(message: string): string {
-  // Strip anything path-shaped and cap length so a diagnostic never leaks a
-  // local filesystem location (standing PDPP PII rule: diagnostics carry
-  // hashed/structural info, not raw paths or user text).
-  const noPaths = message.replace(/(?:[A-Za-z]:)?[/\\][^\s"']*/g, "<path>");
-  return noPaths.slice(0, HYDRATION_ERROR_MAX_CHARS);
-}
-
-function uploadPhotoBlob(args: {
-  bytes: Buffer;
-  mimeType: string;
-  recordKey: string;
-}): Promise<ReferenceBlobRef | null> {
-  const rsUrl = process.env.PDPP_RS_URL || process.env.RS_URL;
-  const ownerToken = process.env.PDPP_OWNER_TOKEN;
-  if (!(runtimeBlobUploadAvailable(process.env) && rsUrl && ownerToken)) {
-    return Promise.resolve(null);
-  }
-  const uploader = makeReferenceBlobUploader({
-    connectorInstanceId: process.env.PDPP_CONNECTOR_INSTANCE_ID || null,
-    ownerToken,
-    rsUrl,
-  });
-  return uploader({
-    connectorId: "https://registry.pdpp.org/connectors/google-takeout",
-    content: [args.bytes],
-    mimeType: args.mimeType,
-    recordKey: args.recordKey,
-    stream: "photos",
-  });
+  return resolveMaxMediaBytes(MAX_PHOTO_BYTES_ENV, env);
 }
 
 function resolveLocationFile(importDir: string): string | null {
@@ -308,23 +237,6 @@ interface DiscoveredPhotoFile {
   name: string;
 }
 
-/**
- * Read a photo/video file's bytes bounded by maxBytes. Stats first so an
- * oversized file is never fully read into memory; only files at or under the
- * cap are hashed and returned.
- */
-async function readBoundedPhotoBytes(
-  path: string,
-  maxBytes: number
-): Promise<{ bytes: Buffer | null; sizeBytes: number; tooLarge: boolean }> {
-  const stats = await stat(path);
-  if (stats.size > maxBytes) {
-    return { bytes: null, sizeBytes: stats.size, tooLarge: true };
-  }
-  const bytes = await readFile(path);
-  return { bytes, sizeBytes: bytes.byteLength, tooLarge: false };
-}
-
 async function resolveSidecarMetadata(
   file: DiscoveredPhotoFile,
   jsonFilenamesByDir: Map<string, string[]>
@@ -352,66 +264,6 @@ async function resolvePhotoEventTimeMs(file: DiscoveredPhotoFile, metadata: Phot
   return stats?.mtimeMs ?? Date.now();
 }
 
-interface PhotoHydrationResult {
-  blobRef: ReferenceBlobRef | null;
-  contentSha256: string | null;
-  hydrationError: string | null;
-  hydrationStatus: PhotoHydrationStatus;
-  sizeBytes: number | null;
-}
-
-/**
- * Read, hash, and attempt blob upload for a media file within the size cap.
- * Never throws — unreadable/oversized files return a hydration_status
- * describing why bytes are absent, so the stream never fabricates a
- * deletion or silently drops a discovered file.
- */
-async function hydratePhotoBytes(file: DiscoveredPhotoFile, maxBytes: number): Promise<PhotoHydrationResult> {
-  try {
-    const { bytes, sizeBytes, tooLarge } = await readBoundedPhotoBytes(join(file.dir, file.name), maxBytes);
-    if (tooLarge || !bytes) {
-      return {
-        blobRef: null,
-        contentSha256: null,
-        hydrationError: null,
-        hydrationStatus: "skipped_too_large",
-        sizeBytes,
-      };
-    }
-    const contentSha256 = createHash("sha256").update(bytes).digest("hex");
-    try {
-      const blobRef = await uploadPhotoBlob({
-        bytes,
-        mimeType: contentTypeForFileName(file.name),
-        recordKey: contentSha256,
-      });
-      return {
-        blobRef,
-        contentSha256,
-        hydrationError: null,
-        hydrationStatus: blobRef ? "hydrated" : "unavailable",
-        sizeBytes,
-      };
-    } catch (err) {
-      return {
-        blobRef: null,
-        contentSha256,
-        hydrationError: sanitizeHydrationError(err instanceof Error ? err.message : String(err)),
-        hydrationStatus: "failed",
-        sizeBytes,
-      };
-    }
-  } catch (err) {
-    return {
-      blobRef: null,
-      contentSha256: null,
-      hydrationError: sanitizeHydrationError(err instanceof Error ? err.message : String(err)),
-      hydrationStatus: "failed",
-      sizeBytes: null,
-    };
-  }
-}
-
 /**
  * Build one photos record for a discovered media file: locate its sidecar
  * (best-effort, tolerant of missing/mismatched-suffix sidecars), resolve
@@ -425,7 +277,13 @@ async function buildPhotoRecordForFile(
   const metadata = await resolveSidecarMetadata(file, jsonFilenamesByDir);
   const tsMs = await resolvePhotoEventTimeMs(file, metadata);
   const ts = new Date(tsMs).toISOString();
-  const hydration = await hydratePhotoBytes(file, maxBytes);
+  const hydration = await hydrateMediaBytes({
+    connectorId: "https://registry.pdpp.org/connectors/google-takeout",
+    fileName: file.name,
+    filePath: join(file.dir, file.name),
+    maxBytes,
+    stream: "photos",
+  });
 
   const base = buildPhotoRecord(file.name, ts, hydration.contentSha256, metadata);
   return {

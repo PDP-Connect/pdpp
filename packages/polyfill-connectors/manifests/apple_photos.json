@@ -1,0 +1,176 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/apple-photos",
+  "connector_key": "apple_photos",
+  "manifest_uri": "https://registry.pdpp.org/connectors/apple-photos",
+  "version": "0.1.0",
+  "display_name": "Apple Photos",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Apple Photos imports require the user to manually export files from Photos.app (File → Export → Export Unmodified Originals) into the import directory; there is no API or background-refreshable path — PhotoKit requires a signed app bundle and is not reachable from this connector, and the reverse-engineered Photos.sqlite path is out of scope by design."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "photos",
+      "required": true,
+      "description": "File-level metadata AND hydrated bytes for images and videos exported from Photos.app, within a configured size cap. Uses the same shared local-media blob hydration module as google_takeout's photos stream (src/local-media-blob-hydration.ts) — bounded local read, sha256 content hash, MIME-by-extension, and upload through the runtime's reference-blob-uploader when blob-upload bindings are configured. A record's `id` is derived from content_sha256 alone, so the same photo present in more than one Photos.app export collapses to one record rather than duplicating.",
+      "display": {
+        "label": "Your exported photos and videos",
+        "detail": "Filename, size, content hash, MIME type, file-modified timestamp, and (within the size cap) hydrated bytes for each file found in the Photos.app export directory. hydration_status/hydration_error explain when bytes are absent (oversized or unreadable) without dropping the record. EXIF/XMP fields (taken date, GPS, camera) are present in the schema but not populated in this cut — a bounded, explicit omission, not silently missing coverage."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": ["integer", "null"]
+          },
+          "content_sha256": {
+            "type": ["string", "null"]
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": ["failed", "hydrated", "skipped_too_large", "unavailable"]
+          },
+          "hydration_error": {
+            "type": ["string", "null"]
+          },
+          "blob_ref": {
+            "type": ["object", "null"],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
+          },
+          "taken_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "file_modified_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "latitude": {
+            "type": ["number", "null"]
+          },
+          "longitude": {
+            "type": ["number", "null"]
+          },
+          "camera_make": {
+            "type": ["string", "null"]
+          },
+          "camera_model": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": [
+          "id",
+          "filename",
+          "content_type",
+          "hydration_status",
+          "file_modified_at"
+        ]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "file_modified_at",
+      "consent_time_field": "file_modified_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "file_modified_at": ["gte", "gt", "lte", "lt"],
+          "taken_at": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["file_modified_at", "taken_at"],
+          "group_by": ["content_type"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "coverage_diagnostics",
+      "required": false,
+      "description": "Safe coverage status for this connector's one known local store (the Photos.app export directory), so a local-collector run always leaves durable, honest coverage evidence even when the export directory is missing or empty — never a silent zero-evidence run.",
+      "display": {
+        "label": "Local collector coverage status",
+        "detail": "Whether the Photos.app export directory was found and collected on this run."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "stream": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": ["id", "store", "status", "reason"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    }
+  ]
+}

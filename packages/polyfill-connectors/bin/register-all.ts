@@ -61,8 +61,10 @@ const CONNECTORS = [
   "claude_code",
   "codex",
   "apple_health",
+  "apple_photos",
   "ical",
   "apple_contacts",
+  "google_messages",
   // 'pocket' intentionally excluded — Mozilla shut Pocket down 2025-07-08; the
   // shipped manifest is now public_listing.listed=false /
   // status=deprecated_upstream / recommended_mode=manual. See
