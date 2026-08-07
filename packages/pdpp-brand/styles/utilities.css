@@ -8,7 +8,7 @@
 
 /* ─── Density ─────────────────────────────────────────────────────────────── */
 @utility pdpp-data-list-row {
-  padding-block: var(--data-list-row-padding-block);
+  padding-block: var(--spacing-data-list-row);
 }
 
 /* ─── Layout ──────────────────────────────────────────────────────────────── */
@@ -96,5 +96,52 @@
 
   &::-webkit-scrollbar {
     display: none;
+  }
+}
+
+/* 44px minimum hit target without growing the layout box — ::before overlay. */
+@utility hit-area-overlay {
+  position: relative;
+
+  &::before {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(44px, 100%);
+    height: max(44px, 100%);
+    content: "";
+    translate: -50% -50%;
+  }
+}
+
+/* ─── Prose ───────────────────────────────────────────────────────────────── */
+/* Emitted by brand-react Text `link`. Surfaces theme via --primary
+ * (concept remaps --primary → teal). Not CSS text-decoration: underline.
+ *
+ * --primary, NOT --color-primary. An @utility body is emitted as authored;
+ * Tailwind does not rewrite theme references inside it, so `inline` on the
+ * colour block cannot help here. --color-primary is emitted at :root and its
+ * var() is frozen there, which pinned every concept link to brand blue.
+ * Same rule as tokens/semantic.css: raw CSS reads the semantic token. */
+@utility link-prose {
+  color: var(--primary);
+  text-decoration: none;
+  border-bottom-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  border-bottom-style: solid;
+  border-bottom-width: 1px;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease;
+
+  &:hover,
+  &:focus-visible {
+    color: color-mix(in oklch, var(--primary) 72%, var(--foreground));
+    border-bottom-color: var(--primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 3px;
+    border-radius: 1px;
   }
 }

@@ -12,12 +12,7 @@
   --radius: 9px;
   --radius-control: var(--radius);
   --spacing: 4px;
-  --spacing-inset: 1rem;
-  --data-list-row-padding-block: 0.5rem;
-
-  /* ─── Typography ───────────────────────────────────────────────────────── */
-  /* Every amount, count, and timestamp aligns in columns. */
-  --numeric: tabular-nums lining-nums;
+  --spacing-inset: 15px;
 
   /* ─── Canvas, text, and controls ───────────────────────────────────────── */
   --background: oklch(0.99 0.002 95);
@@ -28,6 +23,12 @@
   --popover-foreground: oklch(0.13 0 0);
   --primary: oklch(0.58 0.172 253.7);
   --primary-foreground: oklch(0.99 0 0);
+  --primary-emphasis: oklch(0.48 0.172 253.7);
+  --primary-on-wash: oklch(0.48 0.172 253.7);
+  --on-primary-emphasis: oklch(0.99 0 0);
+  --on-primary-emphasis-soft: oklch(0.88 0.02 253.7);
+  --on-primary-emphasis-label: oklch(0.72 0.08 253.7);
+  --on-primary-emphasis-wash: var(--primary-wash);
   /* Brand accent alias — same runtime value as primary; keep a distinct name
      for chrome utilities (border-shadow-brand) that mean "brand", not "CTA". */
   --brand: var(--primary);
@@ -35,11 +36,14 @@
   --secondary-foreground: oklch(0.2 0 0);
   --muted: oklch(0.96 0 0);
   --muted-foreground: oklch(0.5 0 0);
+  --foreground-faint: oklch(0.58 0 0);
   --accent: oklch(0.96 0 0);
   --accent-foreground: oklch(0.2 0 0);
   --destructive: oklch(0.55 0.2 27);
   --destructive-foreground: oklch(0.99 0 0);
   --border: oklch(0.94 0 0);
+  /* biome-ignore format: multiline color-mix breaks the CSS language service */
+  --border-subtle: color-mix(in oklab, var(--foreground) 10%, var(--background));
   --input: oklch(0.91 0 0);
   --ring: oklch(0.58 0.172 253.7);
 
@@ -150,10 +154,17 @@
 
   --primary: oklch(0.72 0.16 253.7);
   --primary-foreground: oklch(0.14 0.01 260);
+  --primary-emphasis: oklch(0.62 0.16 253.7);
+  --primary-on-wash: oklch(0.82 0.14 253.7);
+  --on-primary-emphasis: oklch(0.96 0.005 260);
+  --on-primary-emphasis-soft: oklch(0.78 0.02 260);
+  --on-primary-emphasis-label: oklch(0.62 0.04 260);
+  --on-primary-emphasis-wash: var(--primary-wash);
   --secondary: oklch(0.26 0.006 260);
   --secondary-foreground: oklch(0.96 0.005 260);
   --muted: oklch(0.24 0.006 260);
   --muted-foreground: oklch(0.7 0.01 260);
+  --foreground-faint: oklch(0.62 0.01 260);
   --accent: oklch(0.26 0.006 260);
   --accent-foreground: oklch(0.96 0.005 260);
 
