@@ -311,6 +311,7 @@ export interface CliOptions {
   json?: boolean;
   keepCount?: number;
   limit?: number;
+  localOnly?: boolean;
   maxDrainPasses?: number;
   olderThanDays?: number;
   profile?: string;
@@ -339,9 +340,18 @@ Guided setup (start here):
           [--profile <name>]        Optional profile file name (default: connector id).
           [--json]                  Machine-readable output instead of human text.
   connectors                      List connector ids this build accepts.
-  logout  --connector <id>        Delete the local profile for a connector/profile
-          [--profile <name>]        name. Local-only: does not revoke the device
-                                     token server-side.
+  logout  --connector <id>        Revoke this device's own credential on the
+          [--profile <name>]        reference server, then delete the local profile
+          [--local-only]            for a connector/profile name. Deletion only
+                                     happens after the server confirms the
+                                     credential is revoked (or was already
+                                     revoked) — a network/server failure leaves
+                                     local credentials in place so you can retry.
+                                     --local-only skips the server call entirely
+                                     and deletes local credentials unconditionally;
+                                     use it only when the server is unreachable or
+                                     decommissioned, since the device token stays
+                                     live on the server until revoked some other way.
 
 Everyday commands:
   run     --connection-id <id>    Run a bundled filesystem-class connector. Live
@@ -541,7 +551,7 @@ async function runOnboardingCommand(options: CliOptions): Promise<void> {
   }
 
   // options.command === "logout"
-  const result = runLogout(options);
+  const result = await runLogout(options);
   writeJson(result);
   if (!result.removed) {
     process.exitCode = 1;
@@ -640,7 +650,40 @@ type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
 /** Sentinel so the sample-abort catch in {@link runCollectorSample} only swallows aborts it triggered itself. */
 class SampleLimitReachedAbort extends Error {}
 
-function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
+/** Sentinel so {@link runCollectorOnce}'s interrupt-abort catch only swallows aborts it triggered itself. */
+export class CollectorInterruptedAbort extends Error {}
+
+/**
+ * Install real SIGINT/SIGTERM handling for the duration of a plain `run`,
+ * reusing the identical abort/flush mechanism `--sample <n>` already relies
+ * on (`abortSignal` into `runCollectorConnector` → `streamConnectorIntoOutbox`
+ * flushes already-parsed records to the durable outbox before the abort
+ * propagates — see `collector-runner.ts`). Before this, Ctrl+C during plain
+ * `run` had no handler at all: the terminal's process-group SIGINT killed
+ * the CLI and its connector child with no flush and no recorded gap, purely
+ * by accident of process-group membership, not by design.
+ *
+ * The handler calls `controller.abort(...)` and returns — it does NOT call
+ * `process.exit()` itself. That lets the normal `runCollectorConnector`
+ * await/catch flow in the caller run to completion (flush happens inside
+ * `streamConnectorIntoOutbox`, then the CLI's usual `writeJson`/exit-code
+ * path takes over), exactly like `runCollectorSample`'s internal abort.
+ * Listeners are removed in `finally` so a `recover` drain loop that calls
+ * `runCollectorOnce` many times does not accumulate handlers.
+ */
+export function installInterruptAbort(controller: AbortController): () => void {
+  const onSignal = (): void => {
+    controller.abort(new CollectorInterruptedAbort());
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  return () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  };
+}
+
+export async function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
     throw new CollectorUsageError(
       "run requires --device-id <id>, --device-token <token>, and --connection-id/--source-instance-id <id>"
@@ -652,16 +695,23 @@ function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
 
   const spec = buildConnectorSpec(options);
   const reporter = options.quiet ? null : createRunProgressReporter();
-  return runCollectorConnector({
-    baseUrl: options.baseUrl,
-    connector: spec,
-    deviceId: options.deviceId,
-    deviceToken: options.deviceToken,
-    ...(reporter ? { onMessage: reporter.onMessage } : {}),
-    queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
-    ...(options.runId ? { runId: options.runId } : {}),
-    sourceInstanceId: options.sourceInstanceId,
-  });
+  const controller = new AbortController();
+  const removeInterruptHandlers = installInterruptAbort(controller);
+  try {
+    return await runCollectorConnector({
+      abortSignal: controller.signal,
+      baseUrl: options.baseUrl,
+      connector: spec,
+      deviceId: options.deviceId,
+      deviceToken: options.deviceToken,
+      ...(reporter ? { onMessage: reporter.onMessage } : {}),
+      queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
+      ...(options.runId ? { runId: options.runId } : {}),
+      sourceInstanceId: options.sourceInstanceId,
+    });
+  } finally {
+    removeInterruptHandlers();
+  }
 }
 
 export interface SampleRunOutput {
@@ -764,6 +814,11 @@ export interface SetupOutput {
   source_instance_id: string;
 }
 
+export interface RunSetupDeps {
+  enroll?: typeof enrollCollector;
+  runSample?: (options: CliOptions) => Promise<SampleRunOutput>;
+}
+
 /**
  * The guided, one-command onboarding path: exchange a one-time enrollment
  * code for device credentials, persist them as a profile `.env` file
@@ -786,7 +841,10 @@ export interface SetupOutput {
  * activates when a matching profile exists; explicit flags/env vars still
  * win — see {@link resolveInspectionOptions}/{@link applyProfileEnv}).
  */
-async function runSetup(options: CliOptions): Promise<void> {
+export async function runSetup(options: CliOptions, deps: RunSetupDeps = {}): Promise<SetupOutput> {
+  const enroll = deps.enroll ?? enrollCollector;
+  const runSample = deps.runSample ?? runCollectorSample;
+
   if (!options.code) {
     throw new CollectorUsageError("setup requires --code <one-time-code>");
   }
@@ -803,7 +861,7 @@ async function runSetup(options: CliOptions): Promise<void> {
     );
   }
 
-  const enrollment = await enrollCollector({
+  const enrollment = await enroll({
     baseUrl: options.baseUrl,
     code: options.code,
     ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
@@ -828,7 +886,7 @@ async function runSetup(options: CliOptions): Promise<void> {
       deviceToken: enrollment.device_token,
       sourceInstanceId: enrollment.source_instance_id,
     };
-    sample = await runCollectorSample(sampleOptions);
+    sample = await runSample(sampleOptions);
   }
 
   const output: SetupOutput = {
@@ -845,7 +903,7 @@ async function runSetup(options: CliOptions): Promise<void> {
 
   if (options.json) {
     writeJson(output);
-    return;
+    return output;
   }
   writeStdout(`✓ Enrolled ${normalizedConnector} (device ${enrollment.device_id}).\n`);
   writeStdout(`✓ Credentials saved to ${profilePath} (readable only by you).\n`);
@@ -856,31 +914,139 @@ async function runSetup(options: CliOptions): Promise<void> {
     `\nNext: pdpp-local-collector run --connection-id ${enrollment.source_instance_id}\n` +
       "(the profile above is picked up automatically — no env vars to set by hand)\n"
   );
+  return output;
 }
 
 export interface LogoutOutput {
   object: "local_collector_logout";
   path: string;
   removed: boolean;
+  revoke_note: string;
+  revoked: boolean;
+}
+
+export interface RunLogoutDeps {
+  /** Injectable seam for tests; defaults to a real {@link LocalDeviceClient}. */
+  selfRevoke?: (input: { baseUrl: string; deviceId: string; deviceToken: string }) => Promise<unknown>;
 }
 
 /**
- * Delete the local profile `.env` file for a connector/profile name (the
- * `logout`/credential-removal half of the `setup` lifecycle). This is a
- * LOCAL-ONLY operation: it does not call the reference server to revoke the
- * device token. A removed profile stops `run`/`recover` from auto-resolving
- * credentials for that source, but the token itself remains valid against
- * the reference deployment until that deployment's own admin revokes it —
- * documented explicitly so an operator does not assume `logout` closes the
- * server-side lane.
+ * Revoke this device's own server-side credential, then delete the local
+ * profile `.env` file for a connector/profile name (the `logout`/
+ * credential-removal half of the `setup` lifecycle). Deletion only happens
+ * AFTER the server confirms the credential is gone — either freshly revoked
+ * or already revoked from a prior attempt — so a `logout` that fails
+ * halfway never leaves an operator believing the server-side lane is closed
+ * when it is not. On an ambiguous failure (network error, timeout, or an
+ * unexpected server response) this fails closed: local credentials are left
+ * in place so the operator can retry, rather than silently deleting the
+ * only record of a token that may still be live server-side.
+ *
+ * `--local-only` skips the server call entirely (see {@link CliOptions.localOnly})
+ * for the unreachable/decommissioned-server escape hatch — deliberately not
+ * named "logout" in the flag itself, since it does not close the
+ * server-side lane and an operator must know that.
  */
-function runLogout(options: CliOptions): LogoutOutput {
+export async function runLogout(options: CliOptions, deps: RunLogoutDeps = {}): Promise<LogoutOutput> {
   const name = options.profile ?? (options.connector ? normalizeConnectorId(options.connector) : null);
   if (!name) {
     throw new CollectorUsageError("logout requires --profile <name> or --connector <connector-id>");
   }
+
+  const profileDir = process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  const fileName = safeProfileFileName(name);
+  const path = join(profileDir, fileName);
+
+  if (!existsSync(path)) {
+    return {
+      object: "local_collector_logout",
+      path,
+      removed: false,
+      revoke_note: "No local profile found; nothing to revoke or delete.",
+      revoked: false,
+    };
+  }
+
+  if (options.localOnly) {
+    const result = removeLocalCollectorProfile({ name });
+    return {
+      object: "local_collector_logout",
+      ...result,
+      revoke_note:
+        "--local-only skipped the server-side revoke. The device token may still be valid against the " +
+        "reference deployment until revoked some other way (server admin, or a future logout once reachable).",
+      revoked: false,
+    };
+  }
+
+  let env: Record<string, string>;
+  try {
+    env = parseCollectorProfileEnv(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new CollectorUsageError(
+      `logout could not read the local profile at ${path}: ${error instanceof Error ? error.message : String(error)}. ` +
+        "Refusing to delete an unreadable profile; pass --local-only to force local deletion without a server-side revoke.",
+      { cause: error }
+    );
+  }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established idiom in applyProfileEnv above.
+  const baseUrl = env.PDPP_REFERENCE_BASE_URL?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established idiom in applyProfileEnv above.
+  const deviceId = env.PDPP_LOCAL_DEVICE_ID?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches the established idiom in applyProfileEnv above.
+  const deviceToken = env.PDPP_LOCAL_DEVICE_TOKEN?.trim();
+  if (!(baseUrl && deviceId && deviceToken)) {
+    throw new CollectorUsageError(
+      `logout found a local profile at ${path} that is missing device credentials needed to revoke it server-side. ` +
+        "Pass --local-only to delete it locally without a server-side revoke."
+    );
+  }
+
+  const selfRevoke =
+    deps.selfRevoke ??
+    ((input: { baseUrl: string; deviceId: string; deviceToken: string }) =>
+      new LocalDeviceClient({
+        baseUrl: input.baseUrl,
+        deviceId: input.deviceId,
+        deviceToken: input.deviceToken,
+      }).selfRevoke());
+
+  try {
+    await selfRevoke({ baseUrl, deviceId, deviceToken });
+  } catch (error) {
+    if (error instanceof LocalDeviceHttpError && (error.status === 401 || error.status === 403)) {
+      // Unambiguous: this credential is already invalid/revoked server-side
+      // (or was never valid for this device). There is nothing further a
+      // retry could revoke, so proceeding to delete the local copy is safe
+      // and keeps logout idempotent across repeated calls.
+      const result = removeLocalCollectorProfile({ name });
+      return {
+        object: "local_collector_logout",
+        ...result,
+        revoke_note: "Device credential was already revoked (or invalid) server-side; deleted local credentials.",
+        revoked: true,
+      };
+    }
+    // Ambiguous failure — network error, timeout, or an unexpected server
+    // response. Fail closed: keep local credentials so the operator can
+    // retry once the server is reachable, instead of deleting the only
+    // local record of a token that may still be live.
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CollectorUsageError(
+      `logout could not confirm the device credential was revoked server-side (${detail}). Local credentials at ` +
+        `${path} were left in place — retry once the server is reachable, or pass --local-only to delete them ` +
+        "without a confirmed server-side revoke (the token then remains live until revoked some other way).",
+      { cause: error }
+    );
+  }
+
   const result = removeLocalCollectorProfile({ name });
-  return { object: "local_collector_logout", ...result };
+  return {
+    object: "local_collector_logout",
+    ...result,
+    revoke_note: "Device credential revoked server-side; deleted local credentials.",
+    revoked: true,
+  };
 }
 
 export interface LocalCollectorRunOutput extends Omit<CollectorRunResult, "flushedState" | "priorState"> {
@@ -2532,6 +2698,10 @@ function applyFlagOption(options: CliOptions, arg: string): boolean {
   }
   if (arg === "--json") {
     options.json = true;
+    return true;
+  }
+  if (arg === "--local-only") {
+    options.localOnly = true;
     return true;
   }
   return false;
