@@ -90,6 +90,7 @@ const EXPECTED_CODE_TO_STATUS = {
   static_secret_identity_missing: 502,
   static_secret_identity_revoked: 409,
   static_secret_identity_unavailable: 503,
+  static_secret_identity_unverified_replacement: 409,
   unknown_field: 400,
   unsupported_version: 400,
 };
