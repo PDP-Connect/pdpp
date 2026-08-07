@@ -105,6 +105,7 @@ interface PostSubmitTransition {
 interface FakeControlState {
   enabled: boolean;
   filledValue?: string;
+  text?: string;
   visible: boolean;
 }
 
@@ -116,6 +117,7 @@ interface FakeFormState {
   submitControls: FakeControlState[];
   values: {
     code?: string;
+    codeDigits?: string[];
     email?: string;
     password?: string;
   };
@@ -146,8 +148,8 @@ type FakePageInit = Partial<Omit<FakePageState, "postSubmitOutcomes">> & {
 
 let state: FakePageState;
 
-function createControl(visible: boolean, enabled = visible): FakeControlState {
-  return { enabled, visible };
+function createControl(visible: boolean, enabled = visible, text?: string): FakeControlState {
+  return text === undefined ? { enabled, visible } : { enabled, text, visible };
 }
 
 function createForm({
@@ -251,7 +253,17 @@ function maybeApplyPostSubmitOutcome(): void {
 function emptyLocator(): Locator {
   const locator: Pick<
     Locator,
-    "click" | "count" | "fill" | "first" | "inputValue" | "isEnabled" | "isVisible" | "locator" | "nth" | "press"
+    | "click"
+    | "count"
+    | "fill"
+    | "first"
+    | "innerText"
+    | "inputValue"
+    | "isEnabled"
+    | "isVisible"
+    | "locator"
+    | "nth"
+    | "press"
   > = {
     click: (): Promise<void> => Promise.resolve(),
     count: async (): Promise<number> => 0,
@@ -259,6 +271,7 @@ function emptyLocator(): Locator {
     first(): Locator {
       return locator as Locator;
     },
+    innerText: async (): Promise<string> => "",
     inputValue: async (): Promise<string> => "",
     isEnabled: async (): Promise<boolean> => false,
     isVisible: async (): Promise<boolean> => false,
@@ -316,9 +329,9 @@ function controlLocator(form: FakeFormState, _formIndex: number, kind: ControlKi
   }
   function triggerSubmit(): void {
     state.submitClicks += 1;
+    const codeValue = form.values.code ?? form.values.codeDigits?.join("");
     const canSucceed =
-      process.env.HEB_LOGIN_SHOULD_SUCCEED !== "0" &&
-      Boolean(form.values.code || (form.values.email && form.values.password));
+      process.env.HEB_LOGIN_SHOULD_SUCCEED !== "0" && Boolean(codeValue || (form.values.email && form.values.password));
     if (canSucceed && state.postSubmitOutcomes.length === 0) {
       state.live = true;
       state.url = ORDERS_URL;
@@ -329,7 +342,17 @@ function controlLocator(form: FakeFormState, _formIndex: number, kind: ControlKi
   }
   const locator: Pick<
     Locator,
-    "click" | "count" | "fill" | "first" | "inputValue" | "isEnabled" | "isVisible" | "locator" | "nth" | "press"
+    | "click"
+    | "count"
+    | "fill"
+    | "first"
+    | "innerText"
+    | "inputValue"
+    | "isEnabled"
+    | "isVisible"
+    | "locator"
+    | "nth"
+    | "press"
   > = {
     click: (): Promise<void> => {
       if (kind === "submit") {
@@ -343,7 +366,13 @@ function controlLocator(form: FakeFormState, _formIndex: number, kind: ControlKi
       if (kind === "email") {
         form.values.email = value;
       } else if (kind === "code") {
-        form.values.code = value;
+        if (form.codeControls.length > 1) {
+          const digits = form.values.codeDigits ?? new Array(form.codeControls.length).fill("");
+          digits[controlIndex] = value;
+          form.values.codeDigits = digits;
+        } else {
+          form.values.code = value;
+        }
       } else if (kind === "password") {
         form.values.password = value;
       }
@@ -352,6 +381,7 @@ function controlLocator(form: FakeFormState, _formIndex: number, kind: ControlKi
     first(): Locator {
       return locator as Locator;
     },
+    innerText: async (): Promise<string> => control.text ?? "",
     inputValue: async (): Promise<string> => control.filledValue ?? "",
     isEnabled: async (): Promise<boolean> => control.enabled,
     isVisible: async (): Promise<boolean> => control.visible,
@@ -375,7 +405,17 @@ function controlListLocator(form: FakeFormState, formIndex: number, kind: Contro
   const controls = controlListFor(form, kind);
   const locator: Pick<
     Locator,
-    "click" | "count" | "fill" | "first" | "inputValue" | "isEnabled" | "isVisible" | "locator" | "nth" | "press"
+    | "click"
+    | "count"
+    | "fill"
+    | "first"
+    | "innerText"
+    | "inputValue"
+    | "isEnabled"
+    | "isVisible"
+    | "locator"
+    | "nth"
+    | "press"
   > = {
     click: (): Promise<void> => Promise.resolve(),
     count: async (): Promise<number> => controls.length,
@@ -383,6 +423,7 @@ function controlListLocator(form: FakeFormState, formIndex: number, kind: Contro
     first(): Locator {
       return controls[0] ? controlLocator(form, formIndex, kind, 0) : emptyLocator();
     },
+    innerText: async (): Promise<string> => "",
     inputValue: async (): Promise<string> => "",
     isEnabled: async (): Promise<boolean> => controls.some((control) => control.enabled && control.visible),
     isVisible: async (): Promise<boolean> => controls.some((control) => control.visible),
@@ -400,7 +441,17 @@ function controlListLocator(form: FakeFormState, formIndex: number, kind: Contro
 function formLocator(form: FakeFormState, formIndex: number): Locator {
   const locator: Pick<
     Locator,
-    "click" | "count" | "fill" | "first" | "inputValue" | "isEnabled" | "isVisible" | "locator" | "nth" | "press"
+    | "click"
+    | "count"
+    | "fill"
+    | "first"
+    | "innerText"
+    | "inputValue"
+    | "isEnabled"
+    | "isVisible"
+    | "locator"
+    | "nth"
+    | "press"
   > = {
     click: (): Promise<void> => Promise.resolve(),
     count: async (): Promise<number> => 1,
@@ -408,6 +459,7 @@ function formLocator(form: FakeFormState, formIndex: number): Locator {
     first(): Locator {
       return locator as Locator;
     },
+    innerText: async (): Promise<string> => "",
     inputValue: async (): Promise<string> => "",
     isEnabled: async (): Promise<boolean> => form.enabled,
     isVisible: async (): Promise<boolean> => form.visible,
@@ -1210,6 +1262,78 @@ test("ensureHebSession keeps OTP root ambiguity fail-closed after a valid respon
     assert.equal(harness.requests.length, 1);
     assert.equal(harness.requests[0]?.kind, "otp");
     assert.equal(state.submitClicks, 0);
+    assert.equal(state.live, false);
+  });
+});
+
+// Models the exact DOM shape captured from run_1786117042566: H-E-B's
+// verification-code page renders six single-digit `code_input_N` inputs
+// (all sharing autocomplete="one-time-code", so VERIFICATION_CODE_SELECTOR
+// matches all six) plus two type="submit" buttons ("Verify" and "Back")
+// inside the same <form>, instead of the single named `code`/`otp` field the
+// prior selector-uniqueness check assumed.
+function splitCodeForm(): FakeFormState {
+  return createForm({
+    codeControls: [
+      createControl(true),
+      createControl(true),
+      createControl(true),
+      createControl(true),
+      createControl(true),
+      createControl(true),
+    ],
+    submitControls: [createControl(true, true, "Verify"), createControl(true, true, "Back")],
+  });
+}
+
+test("ensureHebSession fills a split six-digit OTP form one digit per input and clicks Verify, not Back", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: VERIFICATION_HTML,
+      forms: [splitCodeForm()],
+      live: false,
+      url: SIGNIN_URL,
+      view: "verification",
+    });
+    const harness = makeInteractionHarness();
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests[0]?.kind, "otp");
+    assert.equal(state.submitClicks, 1);
+    assert.equal(state.live, true);
+  });
+});
+
+test("ensureHebSession reports a clear provider-rejected error when the split OTP form remains visible after submit", async () => {
+  await withHebCredentials(async () => {
+    process.env.HEB_LOGIN_SHOULD_SUCCEED = "0";
+    const page = makePage({
+      html: VERIFICATION_HTML,
+      forms: [splitCodeForm()],
+      live: false,
+      postSubmitOutcomes: [],
+      url: SIGNIN_URL,
+      view: "verification",
+    });
+    const harness = makeInteractionHarness();
+
+    await assert.rejects(
+      ensureHebSession({
+        page,
+        postSubmitWaitClock: makePostSubmitWaitClock(page),
+        sendInteraction: harness.sendInteraction,
+      }),
+      /heb_verification_code_not_accepted/
+    );
+    assert.equal(harness.requests.length, 1);
+    assert.equal(state.submitClicks, 1);
     assert.equal(state.live, false);
   });
 });

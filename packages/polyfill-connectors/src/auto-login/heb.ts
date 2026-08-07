@@ -36,6 +36,8 @@ const PASSWORD_SELECTOR = 'input[name="password"], input[type="password"], input
 const SUBMIT_SELECTOR = 'button[type="submit"], input[type="submit"]';
 const VERIFICATION_CODE_SELECTOR =
   'input[name="code"], input[name="otp"], input[name="verification_code"], input[autocomplete="one-time-code"]';
+const VERIFY_SUBMIT_TEXT_RE = /\b(verify|continue|submit)\b/i;
+const MAX_SPLIT_CODE_DIGITS = 8;
 const PASSKEY_RE = /\bpasskey\b/i;
 const VERIFICATION_CODE_RE = /\b(verification code|security code|one[- ]time code|code sent)\b/i;
 const CAPTCHA_RE = /\b(captcha|verify you are human|security check)\b/i;
@@ -163,6 +165,10 @@ async function resolveUniqueLoginFormRoot(page: Page): Promise<Locator | null> {
   return viableRoots === 1 ? resolved : null;
 }
 
+function isViableVerificationCodeDigitCount(codeCount: number): boolean {
+  return codeCount === 1 || (codeCount > 1 && codeCount <= MAX_SPLIT_CODE_DIGITS);
+}
+
 async function resolveUniqueVerificationCodeFormRoot(page: Page): Promise<Locator | null> {
   const forms = page.locator(LOGIN_FORM_SELECTOR);
   const count = await forms.count().catch((): number => 0);
@@ -179,7 +185,7 @@ async function resolveUniqueVerificationCodeFormRoot(page: Page): Promise<Locato
       continue;
     }
     const codeCount = await countUsableCandidates(root.locator(VERIFICATION_CODE_SELECTOR));
-    if (codeCount === 1) {
+    if (isViableVerificationCodeDigitCount(codeCount)) {
       viableRoots += 1;
       resolved = root;
       if (viableRoots > 1) {
@@ -449,16 +455,63 @@ async function submitVerifiedLoginForm(
   return clicked;
 }
 
+async function fillSplitVerificationCodeDigits(
+  page: Page,
+  verificationCode: Locator,
+  digits: string,
+  digitCount: number
+): Promise<boolean> {
+  if (digits.length !== digitCount) {
+    return false;
+  }
+  for (let i = 0; i < digitCount; i += 1) {
+    const filled = await fillWhenUsable(page, verificationCode.nth(i), digits[i] ?? "", { timeout: 3000 });
+    if (!filled) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function clickVerifySubmit(page: Page, submit: Locator): Promise<boolean> {
+  const count = await submit.count().catch((): number => 0);
+  const start = Date.now();
+  while (Date.now() - start < 3000) {
+    for (let i = 0; i < count; i += 1) {
+      const candidate = submit.nth(i);
+      const [visible, enabled, text] = await Promise.all([
+        candidate.isVisible().catch((): boolean => false),
+        candidate.isEnabled().catch((): boolean => false),
+        candidate.innerText().catch((): string => ""),
+      ]);
+      if (visible && enabled && VERIFY_SUBMIT_TEXT_RE.test(text)) {
+        await candidate.click();
+        return true;
+      }
+    }
+    await page.waitForTimeout(200);
+  }
+  return false;
+}
+
 async function submitVerificationCodeForm(root: Locator, page: Page, code: string): Promise<boolean> {
   const verificationCode = root.locator(VERIFICATION_CODE_SELECTOR);
-  const codeFilled = await fillWhenUsable(page, verificationCode, code);
+  const codeCount = await countUsableCandidates(verificationCode);
+
+  const codeFilled =
+    codeCount > 1
+      ? await fillSplitVerificationCodeDigits(page, verificationCode, code, codeCount)
+      : await fillWhenUsable(page, verificationCode, code);
   if (!codeFilled) {
     return false;
   }
 
   const submit = root.locator(SUBMIT_SELECTOR);
   const submitCount = await countUsableCandidates(submit);
-  if (submitCount > 0) {
+  if (submitCount > 1) {
+    return await clickVerifySubmit(page, submit);
+  }
+  if (submitCount === 1) {
     const clicked = await clickWhenUsable(page, submit, { timeout: 3000 });
     if (!clicked) {
       return false;
