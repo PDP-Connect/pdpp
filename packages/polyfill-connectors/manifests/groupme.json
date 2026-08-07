@@ -13,25 +13,43 @@
     }
   },
   "setup": {
-    "modality": "manual_action",
-    "description": "GroupMe OAuth2 implicit grant: user performs authorization at oauth.groupme.com/oauth/authorize via console provider wiring (TBD). Connector accepts GROUPME_ACCESS_TOKEN env var (durable callback token, no refresh documented). Attachment fetches are origin-validated (i.groupme.com only) and reject redirects (fail closed)."
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "access_token",
+      "label": "GroupMe access token",
+      "description": "Use a GroupMe access token for the account this connection should collect.",
+      "submit_label": "Create GroupMe connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "GroupMe access token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://dev.groupme.com/applications",
+          "help_text": "Create an access token in the GroupMe developer applications console. This grants access to your GroupMe account data via the GroupMe API v3.",
+          "env": ["GROUPME_ACCESS_TOKEN"]
+        }
+      ]
+    }
   },
   "capabilities": {
     "auth": {
       "kind": "env",
       "required": ["GROUPME_ACCESS_TOKEN"]
     },
-    "human_interaction": ["manual_action"],
+    "human_interaction": [],
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 600,
       "maximum_staleness_seconds": 86400,
-      "interaction_posture": "manual_action_likely",
+      "interaction_posture": "none",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": true,
-      "rationale": "GroupMe API rate limits are undocumented; conservative pacing (10s+ between requests) keeps well below observed abuse thresholds. OAuth token flows require one-time manual authorization; subsequent refreshes are automatic."
+      "rationale": "GroupMe API rate limits are undocumented; conservative pacing (10s+ between requests) keeps well below observed abuse thresholds. Static access token is reused across runs; no refresh authorization needed."
     },
     "public_listing": {
       "listed": true,
