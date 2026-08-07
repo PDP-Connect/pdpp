@@ -375,7 +375,11 @@ export interface MountRsMutationContext {
 
   // Capability: error handler for untyped errors
   readonly handleError: (res: RouteResponse, err: unknown) => void;
-  readonly ingestRecord: (target: StorageTargetLike, record: unknown) => Promise<unknown>;
+  readonly ingestRecord: (
+    target: StorageTargetLike,
+    record: unknown,
+    options?: { runId?: string | null }
+  ) => Promise<unknown>;
   /**
    * Optional common-path batch capability; hosts without it use the ordered
    * fallback. Hosts that provide it must await `afterRecord` after each
@@ -384,7 +388,8 @@ export interface MountRsMutationContext {
   readonly ingestRecords?: (
     target: StorageTargetLike,
     records: readonly unknown[],
-    afterRecord?: (record: unknown, outcome: unknown) => Promise<void>
+    afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
+    options?: { runId?: string | null }
   ) => Promise<readonly unknown[]>;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
@@ -1013,6 +1018,12 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
   app.post("/v1/ingest/:stream", ctx.requireToken, ctx.requireOwner, async (req: RouteRequest, res: RouteResponse) => {
     const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
     const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+    // Run-bound connector ingestion threads its run_id through so the storage
+    // layer can fence a write already admitted before cancellation against
+    // the run's own terminal state (see harden-ingest-run-admission-fence).
+    // Absent for owner/API ingestion that has no run concept — the fence is
+    // opt-in and those callers are unaffected.
+    const runId = ctx.resolveSingleConnectorIdQueryValue(req.query.run_id);
     // parseLines is imported inside executeRecordsIngest; the line-count for
     // the mutation context must be computed here using the same parser.
     // Index.js imported `parseLines as parseIngestLines` from the operation
@@ -1060,7 +1071,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ...draftAdmission(cin),
               connectorInstanceId: cin,
             }));
-          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record);
+          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, { runId });
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
               ctx.getLatestAcquisitionBatchForConnection(namespace.connectorInstanceId)
@@ -1115,7 +1126,8 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
                 const outcomes = await ingestRecords(
                   ctx.storageTargetForConnectorNamespace(namespace),
                   records,
-                  afterRecord
+                  afterRecord,
+                  { runId }
                 );
                 return mapBatchIngestOutcomes(records, outcomes);
               },

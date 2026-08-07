@@ -241,6 +241,8 @@ interface IngestRecord {
 interface IngestOptions {
   attemptContext?: DeviceAttemptContext | null;
   deviceReservation?: JsonObject & { inputIndex: number };
+  /** See RecordIngestOptions.runId in server/records.ts. */
+  runId?: string | null;
 }
 
 interface IngestOutcome {
@@ -1763,6 +1765,42 @@ async function writePostgresIngestMutation({
   return nextRecordJsonBytes;
 }
 
+type PostgresTransactionClient = Parameters<Parameters<typeof withPostgresTransaction>[0]>[0];
+
+// Run-admission fence: `FOR UPDATE` takes Postgres' row lock on this run's
+// run_history row, so this SELECT blocks until any concurrent terminal write
+// (writePostgresRunHistoryForSpineEvent's `UPDATE ... WHERE status='running'`,
+// which takes the same row lock implicitly) commits or rolls back —
+// whichever transaction reaches the row first wins, giving a linearized
+// ordering rather than a check-then-write race. Fails CLOSED: a caller that
+// supplies a runId is asserting run-bound ingestion, and runtime/index.ts
+// always awaits the run.started spine write (which durably inserts this row
+// with status='running') before spawning the child that could ever call
+// flushBatch — so a genuine run-bound write is guaranteed to find its row. A
+// missing row for a supplied runId means the id is spoofed, mistyped, or
+// belongs to a run this process never started; none of those should be
+// admitted. Must be called from inside the same transaction as the mutation
+// it guards. See harden-ingest-run-admission-fence.
+async function assertPostgresRunStillAdmitted(
+  client: PostgresTransactionClient,
+  runId: string | null | undefined,
+  connectorInstanceId: string
+): Promise<void> {
+  if (!runId) {
+    return;
+  }
+  const runStatusResult = await client.query<{ status: string }>(
+    "SELECT status FROM run_history WHERE run_id = $1 AND connector_instance_id = $2 FOR UPDATE",
+    [runId, connectorInstanceId]
+  );
+  const runStatus = runStatusResult.rows[0]?.status;
+  if (!runStatus || runStatus !== "running") {
+    throw new Error(
+      `run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`
+    );
+  }
+}
+
 export async function postgresIngestRecord(
   storageTarget: StorageTarget,
   record: IngestRecord,
@@ -1802,6 +1840,7 @@ export async function postgresIngestRecord(
     op === "delete" ? null : semanticTimeValue(data ?? null, manifestStream, effectiveEmittedAt);
 
   const outcome = await withPostgresTransaction<DurableIngestOutcome>(async (client) => {
+    await assertPostgresRunStillAdmitted(client, options.runId, connectorInstanceId);
     const finishDurableOutcome = async (value: DurableIngestOutcome): Promise<DurableIngestOutcome> => {
       if (options.deviceReservation) {
         await advancePostgresDeviceIngestPrefix(
