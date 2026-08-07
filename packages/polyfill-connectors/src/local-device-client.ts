@@ -7,6 +7,7 @@ import type { LocalDeviceIngestBatchRequest } from "./local-device-envelope.ts";
 export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
   heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
+  selfRevoke: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/self-revoke`,
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
   terminalCollection: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/terminal-collection`,
@@ -199,6 +200,12 @@ export interface RecoverLocalCollectorGapRequest {
   stream_boundary?: string;
 }
 
+export interface SelfRevokeDeviceResponse {
+  device_id: string;
+  object: "device_exporter_revocation";
+  revoked_at: string;
+}
+
 export class LocalDeviceHttpError extends Error {
   readonly body: string;
   readonly envelopeMessage: string | null;
@@ -317,6 +324,19 @@ export class LocalDeviceClient {
     return this.#request(LOCAL_DEVICE_ENDPOINTS.heartbeat(this.#requireDeviceId()), {
       authenticate: true,
       body: request,
+      method: "POST",
+    });
+  }
+
+  /**
+   * Revoke this device's own credential using its own bearer token. A
+   * device may only revoke itself — the server rejects any deviceId that
+   * does not match the authenticated credential. Called by `logout` before
+   * deleting local credentials so the server-side lane closes with them.
+   */
+  selfRevoke(): Promise<SelfRevokeDeviceResponse> {
+    return this.#request(LOCAL_DEVICE_ENDPOINTS.selfRevoke(this.#requireDeviceId()), {
+      authenticate: true,
       method: "POST",
     });
   }
