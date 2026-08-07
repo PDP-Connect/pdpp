@@ -11,6 +11,8 @@ import {
 } from "@pdpp/display";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { buildBreakdownLabel } from "@pdpp/operator-ui/lib/source-storage";
+import { formatStorageBytes } from "@pdpp/operator-ui/lib/storage-footprint";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
@@ -153,6 +155,13 @@ export interface ConnectorPageModel {
    *  command templates. `null` when unavailable → command fails closed. */
   providerOrigin: string | null;
   recentRuns: RunSummary[];
+  /**
+   * Retained payload for this connection, already computed onto `overview`
+   * (`retainedBytes` / `totalRetainedBytes`) and previously discarded. `null`
+   * when the retained-bytes evidence is unobserved/stale/failed — the header
+   * then omits the size rather than fabricating a `0 B`.
+   */
+  retainedStorage: { breakdown: string | null; total: string } | null;
   schedule: RefSchedule | null;
   scheduleError: string | null;
   /** Connection-scoped source-binding kind for binding-first repair routing. */
@@ -415,6 +424,17 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     totalRecords,
     totalRecordsState: summary.total_records_state,
   });
+  // The retained payload for this connection was already projected onto the
+  // overview and then discarded by every renderer. Surface it in the header.
+  // `total_retained_bytes` is `null` whenever the retained-bytes evidence is
+  // unobserved/stale/failed, so absence hides the line rather than rendering
+  // a fabricated `0 B`. This is a LOGICAL payload size — it is deliberately
+  // not compared here against any physical on-disk figure.
+  const retainedTotal = overview.totalRetainedBytes;
+  const retainedStorage =
+    typeof retainedTotal === "number" && Number.isFinite(retainedTotal) && retainedTotal >= 0
+      ? { breakdown: buildBreakdownLabel(overview.retainedBytes), total: formatStorageBytes(retainedTotal) }
+      : null;
   // Seed the rename field with the owner-set label only. A fallback label
   // (bare connector type / registry URL) seeds blank so the operator names
   // the connection from scratch rather than editing a meaningless default.
@@ -445,6 +465,7 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     overview,
     providerOrigin,
     recentRuns,
+    retainedStorage,
     // Connection-scoped binding kind, so repair routing is binding-first (a
     // browser-session connection reconnects its session, not a static secret).
     sourceBindingKind: summary.source_binding_kind ?? null,
@@ -557,6 +578,7 @@ function ConnectorPageView({
     overview,
     providerOrigin,
     recentRuns,
+    retainedStorage,
     schedule,
     scheduleError,
     sourceBindingKind,
@@ -649,7 +671,22 @@ function ConnectorPageView({
           />
         }
         breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: displayName }]}
-        count={headerCount}
+        count={
+          retainedStorage === null ? (
+            headerCount
+          ) : (
+            <>
+              {headerCount}
+              <span
+                className="ml-3 text-muted-foreground/70"
+                data-testid="header-retained-bytes"
+                title={retainedStorage.breakdown ?? undefined}
+              >
+                {retainedStorage.total} retained
+              </span>
+            </>
+          )
+        }
         description={
           <ConnectionIdentityLine
             connectionId={connectionId}

@@ -17,6 +17,7 @@ const TOP_LEVEL_REGEX_16 = /saved records that failed to upload/i;
 const TOP_LEVEL_REGEX_17 = /recover local collector uploads/i;
 const TOP_LEVEL_REGEX_18 = /dead[- ]letter/i;
 const TOP_LEVEL_REGEX_19 = /temporary server or network errors/i;
+const TOP_LEVEL_REGEX_20 = /runs only when you sync it/i;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -2303,6 +2304,138 @@ test("collection_rate: surfaced on degraded connections too (annotation, not a h
   );
   assert.equal(snap.state, "degraded");
   assert.deepEqual(snap.collection_rate, rate, "collection_rate is available even when the connection is degraded");
+});
+
+// ─── not_applicable: settled absence, not a pending verdict ───────────────
+
+/**
+ * The shape of the owner's healthy self-hosted Reddit connection: a server-side
+ * browser-backed connector with no enrolled local collector, no
+ * `@opendatalabs/remote-surface` package, and no schedule row yet.
+ */
+function healthySelfHostedInput(overrides: Partial<ComputeConnectionHealthInput> = {}) {
+  return input({
+    coverage: { axis: "complete" },
+    freshness: { axis: "fresh" },
+    localDeviceBacked: false,
+    outbox: null,
+    remoteSurface: null,
+    run: run(),
+    schedule: null,
+    ...overrides,
+  });
+}
+
+function supportingTypes(snap: ConnectionHealthSnapshot): readonly string[] {
+  const byId = new Map(snap.conditions.map((item) => [item.id, item]));
+  return (snap.supporting_condition_ids ?? []).flatMap((id) => {
+    const found = byId.get(id);
+    return found ? [found.type] : [];
+  });
+}
+
+test("a healthy connection with no local device and no remote surface surfaces none of those conditions", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput());
+
+  assert.equal(snap.state, "healthy");
+  // Each of these is structurally unanswerable in this deployment: there is no
+  // exporter, no managed surface, no browser process and no schedule row. The
+  // projection knows that, so none may sit in the owner's list as "Unknown".
+  for (const type of [
+    "BacklogClear",
+    "LocalExporterAvailable",
+    "RemoteSurfaceAvailable",
+    "RuntimeAvailable",
+    "CredentialContinuity",
+    "ScheduleEligible",
+  ] as const) {
+    assert.equal(findCondition(snap, type)?.status, "not_applicable", `${type} must be settled, not unknown`);
+  }
+  assert.deepEqual(supportingTypes(snap), [], "a healthy self-hosted connection shows an empty conditions list");
+});
+
+test("not_applicable conditions stay on the snapshot for machine consumers", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput());
+  // Filtered from the owner-facing list, never dropped from the evidence.
+  assert.ok(
+    snap.conditions.some((item) => item.status === "not_applicable"),
+    "the full condition set still carries the settled answers"
+  );
+});
+
+test("a local-device-backed connection with no heartbeat keeps an honest unknown outbox", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput({ localDeviceBacked: true }));
+
+  // Here the evidence really is outstanding — the collector is enrolled and has
+  // simply not checked in — so `unknown` is the honest answer and must survive.
+  assert.equal(findCondition(snap, "BacklogClear")?.status, "unknown");
+  assert.equal(findCondition(snap, "LocalExporterAvailable")?.status, "unknown");
+  const shown = supportingTypes(snap);
+  assert.ok(shown.includes("BacklogClear"), "a bound-but-silent collector is still worth showing");
+  assert.ok(shown.includes("LocalExporterAvailable"));
+});
+
+test("a stalled outbox still degrades and surfaces, regardless of the not_applicable filter", () => {
+  const snap = computeConnectionHealth(
+    healthySelfHostedInput({
+      localDeviceBacked: true,
+      outbox: { axis: "stalled", cause: "dead_letter_backlog" },
+    })
+  );
+
+  // The scope fix must not suppress the real, actionable local-device failure.
+  assert.equal(snap.state, "degraded");
+  assert.equal(findCondition(snap, "LocalExporterAvailable")?.status, "false");
+  assert.ok(supportingTypes(snap).includes("LocalExporterAvailable"));
+});
+
+test("CredentialContinuity can render true when the runtime proves continuity", async () => {
+  const { projectEphemeralBrowserSurfaceHealth } = await import(
+    "../runtime/browser-surface/ephemeral-health-projection.ts"
+  );
+  const runtime = projectEphemeralBrowserSurfaceHealth({
+    active_lease: null,
+    allocator_observation: { expires_at: "2026-05-19T12:05:00.000Z", observed_at: NOW, status: "available" },
+    connection_id: "reddit",
+    connection_kind: "browser-runtime",
+    current_compatible_idle_surfaces: 0,
+    demand: "none",
+    surface_mode: "dynamic-managed",
+  });
+  const snap = computeConnectionHealth(
+    healthySelfHostedInput({
+      ephemeralBrowserRuntime: { ...runtime, credential_continuity: "continuity_proven" },
+    })
+  );
+
+  const continuity = findCondition(snap, "CredentialContinuity");
+  // Before this branch existed the runtime computed the proof and then threw it
+  // away, so a proven session and an unprobed one were the same pixel.
+  assert.equal(continuity?.status, "true");
+  assert.equal(continuity?.reason, "credential_continuity_proven");
+  assert.equal(snap.state, "healthy");
+  assert.ok(!supportingTypes(snap).includes("CredentialContinuity"), "a proven true+info condition is not noise");
+});
+
+test("ScheduleEligible reports a missing schedule as settled, without demoting health to owner-paused", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput());
+  const schedule = findCondition(snap, "ScheduleEligible");
+
+  assert.equal(schedule?.status, "not_applicable");
+  assert.equal(schedule?.reason, "schedule_not_configured");
+  assert.match(schedule?.message ?? "", TOP_LEVEL_REGEX_20);
+  // `classifyOwnerPaused` claims any FALSE ScheduleEligible as an intentional
+  // pause. Encoding "no schedule row" as false would silently demote every
+  // unscheduled healthy connection to idle.
+  assert.equal(snap.state, "healthy", "an unscheduled connection is not owner-paused");
+});
+
+test("a paused schedule is still false, and still owns the idle headline", () => {
+  const snap = computeConnectionHealth(healthySelfHostedInput({ schedule: { enabled: false } }));
+
+  assert.equal(findCondition(snap, "ScheduleEligible")?.status, "false");
+  assert.equal(snap.state, "idle");
+  assert.equal(snap.dominant_condition_id, "ScheduleEligible:schedule_paused");
 });
 
 function findCondition(snap: ConnectionHealthSnapshot, type: ConnectionHealthCondition["type"]) {

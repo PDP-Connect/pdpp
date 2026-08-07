@@ -16,8 +16,10 @@
  *     disabled guidance, not destructive forms;
  *   - revoke copy says sources/grants are retained and only future collection
  *     stops, and does NOT claim records are erased;
- *   - delete copy says this connection's records are erased, distinguishes
- *     itself from revoke, and names the active-run / default-account refusals;
+ *   - delete copy says this connection's records are permanently erased and
+ *     cannot be recovered, distinguishes itself from revoke (and points a
+ *     default-account owner at revoke), and names the active-run /
+ *     default-account refusals;
  *   - delete requires reproducing the connection id before the destructive
  *     submit enables (client gating) AND the server action enforces the same
  *     (`confirm_delete === connection_id`), revoke enforces `confirm_revoke`;
@@ -51,7 +53,14 @@ const DZ_REVOKE_RETAINED_RE = /retained/i;
 const DZ_REVOKE_FUTURE_RE = /future collection/i;
 const DZ_REVOKE_NO_ERASE_RE = /does not erase anything/i;
 const DZ_DELETE_ERASES_RE = /[Ee]rases this connection's records/;
-const DZ_DELETE_NOT_REVOKE_RE = /not revoke/i;
+/**
+ * Delete must distinguish itself from revoke. The copy states this positively —
+ * it names the permanence revoke does not carry, and points a default-account
+ * owner at revoke instead — rather than the older "this is not revoke" phrasing.
+ */
+const DZ_DELETE_PERMANENCE_RE = /[Pp]ermanently erases/;
+const DZ_DELETE_CANNOT_UNDO_RE = /cannot be undone/i;
+const DZ_DELETE_POINTS_AT_REVOKE_RE = /revoke that instead/i;
 const DZ_DELETE_RUN_REFUSAL_RE = /run is in flight|run in flight|a run is in flight/i;
 const DZ_DELETE_DEFAULT_ACCOUNT_RE = /default-account/i;
 const DZ_DELETE_CONFIRMED_RE = /const confirmed = typed === connectionId/;
@@ -107,7 +116,9 @@ test("revoke copy retains records and stops only future collection, never claims
 test("delete copy erases this connection, distinguishes from revoke, names the refusals", async () => {
   const dz = await read(DANGER_ZONE_FILE);
   assert.match(dz, DZ_DELETE_ERASES_RE);
-  assert.match(dz, DZ_DELETE_NOT_REVOKE_RE);
+  assert.match(dz, DZ_DELETE_PERMANENCE_RE);
+  assert.match(dz, DZ_DELETE_CANNOT_UNDO_RE);
+  assert.match(dz, DZ_DELETE_POINTS_AT_REVOKE_RE);
   assert.match(dz, DZ_DELETE_RUN_REFUSAL_RE);
   assert.match(dz, DZ_DELETE_DEFAULT_ACCOUNT_RE);
 });

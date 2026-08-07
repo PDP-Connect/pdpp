@@ -28,11 +28,34 @@
  *     erasing any collected data. Copy is SLVP-honest: shows the retained
  *     record count and notes that credential freshness may need attention on
  *     the next run for OAuth/account connections.
- *   - Reauthorize has no dedicated server action at the index level; it links
- *     to the connection detail page (the always-safe target where reauth lives)
- *     and is labeled as a navigation, not a stubbed mutation.
+ *   - Reauthorization has no dedicated server action at the index level, and no
+ *     affordance here claims otherwise. "Source details →" links to the
+ *     connection detail page (the always-safe target where reauth and
+ *     credential controls actually live) and is named for that destination —
+ *     it is a navigation, not a stubbed mutation. The label is CONSTANT: it
+ *     used to flip to "Reauthorize →" on a manual-upload / non-owner-verdict
+ *     condition unrelated to reauthorization, while pointing at the same href.
  *   - The next_action CTA renders the formatted, non-secret label and links to
  *     the in-app detail page, never the raw `action_target`.
+ *
+ * ── NAV-vs-ACTION RULE (applies to every affordance in this file) ──
+ *
+ * A <Link> NAVIGATES and never changes state. An <IcButton> CHANGES STATE and
+ * never navigates. The rendered chrome must say which is which BEFORE the user
+ * reads the label:
+ *
+ *   1. Navigation carries a trailing "→" and never a filled or destructive
+ *      variant. In `pdpp-btn` terms that means `pdpp-btn--ghost`, never
+ *      `pdpp-btn--default` / `--destructive` / `--human`.
+ *   2. Mutation carries NO arrow and keeps the filled `default` /
+ *      `destructive` / `human` variant semantics.
+ *
+ * Why: these sit side by side in one `rr-s-actions` flex row. Before this rule,
+ * "Add another export" (a <Link>) and "Reactivate" (a real server action) both
+ * rendered as filled `default` `sm` controls, and "Reprocess all exports" (a
+ * mutation) was styled identically to "Source details →" (navigation). Nothing
+ * in the output distinguished a route change from a state change. The trailing
+ * arrow already existed as a habit here — this promotes it to the rule.
  */
 "use client";
 
@@ -337,13 +360,26 @@ function InstanceListItem({
         {inner}
       </Link>
       {/*
-       * Desktop (>800px): in-place selection drives the right-column passport.
-       * Hidden on mobile via CSS so only one affordance is interactive at
-       * any given viewport width.
+       * Desktop (>800px): the row body SELECTS (drives the right-column
+       * passport in place); a SEPARATE "Open →" link navigates to the
+       * connection detail page. Two distinct outcomes, so navigation is no
+       * longer split by CSS breakpoint — the same pattern the Explore feed
+       * uses (rr-x-row-wrap--desktop: row body peeks, a sibling Open link
+       * routes). Hidden on mobile via CSS, where the row Link above is the
+       * single affordance.
        */}
-      <button aria-pressed={selected} className={`${cls} rr-s-item--desktop`} onClick={onSelect} type="button">
-        {inner}
-      </button>
+      <div className="rr-s-item-wrap rr-s-item-wrap--desktop">
+        <button aria-pressed={selected} className={`${cls} rr-s-item--desktop`} onClick={onSelect} type="button">
+          {inner}
+        </button>
+        <Link
+          aria-label={`Open ${instance.displayName} source details`}
+          className="rr-s-item-open"
+          href={instance.detailHref}
+        >
+          Open →
+        </Link>
+      </div>
     </>
   );
 }
@@ -365,7 +401,20 @@ function InstancePassport({
         <SheetTitle>{instance.revoked ? <s>{instance.displayName}</s> : instance.displayName}</SheetTitle>
         {instance.connectionId ? (
           <SheetSerial>
+            {/* The connection id is the thing owners recognize a source BY, so it
+                is both a jump-off and a copy target — not either/or. CopyMono keeps
+                the copy affordance (its button is a real control, so it must stay a
+                SIBLING of the link, never nested inside one); the adjacent arrow
+                link navigates to the same detail page the foot CTA targets. */}
             <CopyMono text={instance.connectionId} />
+            <Link
+              aria-label={`Open source details for connection ${instance.connectionId}`}
+              className="rr-s-serial-open"
+              href={instance.detailHref}
+              title="Open this connection's detail page."
+            >
+              →
+            </Link>
           </SheetSerial>
         ) : (
           <SheetSerial>no connection id</SheetSerial>
@@ -486,14 +535,7 @@ function PassportActions({
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const [confirmingReactivate, setConfirmingReactivate] = useState(false);
   const { manualUploadHref } = instance;
-  const nonOwnerVerdictAction =
-    instance.primaryVerdictAction !== null && !instance.primaryVerdictAction.ownerRunnable
-      ? instance.primaryVerdictAction
-      : null;
-  const detailsTitle = sourceDetailsTitle({
-    hasManualUpload: Boolean(manualUploadHref),
-    hasNonOwnerVerdictAction: Boolean(nonOwnerVerdictAction),
-  });
+  const detailsTitle = sourceDetailsTitle();
 
   const handleSync = useCallback(() => {
     setToast({ kind: "none" });
@@ -543,8 +585,13 @@ function PassportActions({
           syncDisabled={syncDisabled}
         />
 
+        {/* NAV (see the nav-vs-action rule above): one destination, one name.
+            The label used to flip to "Reauthorize →" on a condition — manual-upload
+            support / a non-owner-runnable verdict — that has nothing to do with
+            reauthorization, so a healthy OAuth source with no pending reauth still
+            read "Reauthorize →". The href never changed; only the word did. */}
         <Link className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm" href={instance.detailHref} title={detailsTitle}>
-          {manualUploadHref || nonOwnerVerdictAction ? "Source details →" : "Reauthorize →"}
+          Source details →
         </Link>
 
         {interactive && revokeAction && instance.connectionId && !instance.revoked ? (
@@ -604,14 +651,30 @@ function PassportActions({
   );
 }
 
-function sourceDetailsTitle(input: { hasManualUpload: boolean; hasNonOwnerVerdictAction: boolean }): string {
-  if (input.hasNonOwnerVerdictAction) {
-    return "Open runs, receipts, streams, and source settings for this source.";
-  }
-  if (input.hasManualUpload) {
-    return "Open runs, receipts, streams, and source settings.";
-  }
-  return "Reauthorize and credential controls live on the connection detail page.";
+/**
+ * Tooltip for the "Source details →" link.
+ *
+ * One destination gets one description. The old fallback branch read
+ * "Reauthorize and credential controls live on the connection detail page." —
+ * an accurate description of a PAGE attached to a control that read like a
+ * CREDENTIAL OPERATION, which is what made the affordance misleading. The
+ * detail page is where reauth/credential controls live either way, so naming
+ * the page honestly covers every branch.
+ */
+function sourceDetailsTitle(): string {
+  return "Open runs, receipts, streams, credential controls, and settings for this source.";
+}
+
+/**
+ * Enforce the nav-vs-action rule's trailing arrow on a SERVER-SUPPLIED label.
+ *
+ * Verdict CTAs come from the reference's rendered verdict, so their wording is
+ * not ours to choose — but the arrow is chrome, not copy, and every navigation
+ * in this file must carry one. Idempotent: a `cta` that already ends in an
+ * arrow is returned untouched, so this never yields "Open →  →".
+ */
+function withNavArrow(label: string): string {
+  return label.trimEnd().endsWith("→") ? label : `${label} →`;
 }
 
 function manualImportButtonLabel(instance: SourceInstanceView, isPending: boolean): string {
@@ -673,28 +736,36 @@ function CollectionRunAction({
     );
   }
   if (primaryVerdictAction?.ownerRunnable) {
+    // NAV: this owner action is COMPLETED on the detail page, not started here,
+    // so it takes the ghost+arrow navigation chrome. It previously rendered
+    // filled `default` — visually identical to the adjacent Reactivate/Sync
+    // mutations. The server-supplied `cta` may or may not already end in an
+    // arrow, so append one only when it does not.
     return (
       <Link
-        className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
+        className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
         data-action-audience={primaryVerdictAction.audience}
         data-action-kind={primaryVerdictAction.kind}
         data-testid="sources-owner-verdict-action"
         href={instance.detailHref}
         title="Open source details to complete this owner action."
       >
-        {primaryVerdictAction.cta}
+        {withNavArrow(primaryVerdictAction.cta)}
       </Link>
     );
   }
   if (manualUploadHref) {
     return (
       <>
+        {/* NAV: this routes to the manual-upload flow; it does not itself upload
+            anything. It used to render filled `default` — the same chrome as the
+            Reactivate mutation beside it. Ghost + arrow per the rule above. */}
         <Link
-          className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
+          className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
           href={manualUploadHref}
           title="Upload another exported file into this same source. Use Add source only for a different account or identity."
         >
-          Add another export
+          Add another export →
         </Link>
         <IcButton
           aria-label={`Reprocess the uploaded export for ${instance.displayName}`}

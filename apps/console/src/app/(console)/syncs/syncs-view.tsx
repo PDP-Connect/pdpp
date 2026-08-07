@@ -29,14 +29,16 @@ import {
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { SOURCE_WORK_GROUP_COPY } from "../lib/source-actionability.ts";
-import type {
-  DuplicateSyncGroup,
-  FailureCard,
-  PendingSetupCard,
-  SyncGroup,
-  SyncRhythmTick,
-  SyncRow,
-  SyncsViewModel,
+import {
+  type DuplicateSyncGroup,
+  describeRecentSyncOutcome,
+  type FailureCard,
+  type PendingSetupCard,
+  type RecentSyncEntry,
+  type SyncGroup,
+  type SyncRhythmTick,
+  type SyncRow,
+  type SyncsViewModel,
 } from "./syncs-model.ts";
 
 const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1.2fr) minmax(0,0.9fr)";
@@ -55,7 +57,7 @@ const FAILURE_SECTION_COPY: Record<FailureSection, { label: string; note: string
   notMeasured: SOURCE_WORK_GROUP_COPY.notMeasured,
   other: {
     label: "Other source work",
-    note: "Worth a look when you have a moment.",
+    note: "Open when you have a moment.",
   },
   review: SOURCE_WORK_GROUP_COPY.review,
   systemIssue: SOURCE_WORK_GROUP_COPY.systemIssue,
@@ -180,12 +182,25 @@ function failureSectionForCard(card: FailureCard): FailureSection {
   return card.summary.ownerActionRequired ? "needsOwner" : "other";
 }
 
-function failureCardSections(cards: readonly FailureCard[]): Array<{
+interface AttentionSectionData {
   cards: FailureCard[];
+  pendingSetupCards: PendingSetupCard[];
   section: FailureSection;
-}> {
+}
+
+/**
+ * Bucket every attention card into exactly ONE section per group id.
+ *
+ * Draft connections awaiting setup are a different card SHAPE
+ * ({@link PendingSetupCard} — no rendered verdict to derive a
+ * {@link FailureSummary} from), but they are the same KIND of work as a
+ * verdict-derived needs-you card: the owner has to act before collection
+ * continues. They therefore join the `needsOwner` section instead of rendering
+ * a second section under an identical heading.
+ */
+function attentionSections(model: SyncsViewModel): AttentionSectionData[] {
   const bySection = new Map<FailureSection, FailureCard[]>();
-  for (const card of cards) {
+  for (const card of model.failureCards) {
     const section = failureSectionForCard(card);
     const bucket = bySection.get(section);
     if (bucket) {
@@ -195,20 +210,30 @@ function failureCardSections(cards: readonly FailureCard[]): Array<{
     }
   }
   return FAILURE_SECTION_ORDER.flatMap((section) => {
-    const sectionCards = bySection.get(section);
-    return sectionCards && sectionCards.length > 0 ? [{ cards: sectionCards, section }] : [];
+    const sectionCards = bySection.get(section) ?? [];
+    const pendingSetupCards = section === "needsOwner" ? [...model.pendingSetupCards] : [];
+    if (sectionCards.length === 0 && pendingSetupCards.length === 0) {
+      return [];
+    }
+    return [{ cards: sectionCards, pendingSetupCards, section }];
   });
 }
 
-function FailureCardSection({ cards, section }: { cards: FailureCard[]; section: FailureSection }) {
+function AttentionSection({ cards, pendingSetupCards, section }: AttentionSectionData) {
   const copy = FAILURE_SECTION_COPY[section];
+  const count = cards.length + pendingSetupCards.length;
   return (
     <section className="rr-sync__fix-section" data-source-work={section}>
       <div className="rr-sync__fix-section-head">
-        <h2 className="rr-sync__fix-section-title">{copy.label}</h2>
+        <h2 className="rr-sync__fix-section-title">
+          {copy.label} <span className="rr-sync__fix-section-count">{count}</span>
+        </h2>
         <Caption>{copy.note}</Caption>
       </div>
       <div className="rr-sync__fix-section-cards">
+        {pendingSetupCards.map((card) => (
+          <PendingSetupCardPanel card={card} key={`setup:${card.connectionId}`} />
+        ))}
         {cards.map((card) => (
           <FailureCardPanel card={card} key={card.connectionId} />
         ))}
@@ -244,6 +269,69 @@ function DuplicateSyncGroupPanel({ group }: { group: DuplicateSyncGroup }) {
         Review duplicate source labels →
       </Link>
     </aside>
+  );
+}
+
+// ─── Recent syncs (one run per row) ───────────────────────────────────────────
+
+const RECENT_COLS = "minmax(0,1.4fr) minmax(0,1fr) minmax(0,0.9fr) minmax(0,0.8fr)";
+
+/**
+ * One recent run. The whole row links to `/syncs/[runId]`, so the primary
+ * gesture on this page is "open the sync I am looking at".
+ */
+function RecentSyncRow({ entry }: { entry: RecentSyncEntry }) {
+  return (
+    <Link className="pdpp-table__row rr-recent-row" href={entry.href} prefetch={false}>
+      <TableCell className="rr-recent-row__name">
+        <span className="rr-recent-row__connection">{entry.connectionName}</span>
+        <span className="rr-recent-row__run">{entry.runId}</span>
+      </TableCell>
+      <TableCell className="rr-recent-row__outcome">
+        <span className="rr-recent-row__chip" data-outcome={entry.outcome}>
+          {describeRecentSyncOutcome(entry.outcome)}
+        </span>
+        {entry.duration === null ? null : <span className="rr-recent-row__duration">{entry.duration}</span>}
+      </TableCell>
+      <TableCell className="rr-recent-row__records">
+        {entry.eventCount === null ? (
+          <span className="rr-recent-row__empty">—</span>
+        ) : (
+          `${entry.eventCount.toLocaleString()} record${entry.eventCount === 1 ? "" : "s"}`
+        )}
+      </TableCell>
+      <TableCell className="rr-recent-row__when" numeric>
+        <IcTimestamp mode="relative" value={entry.at} />
+      </TableCell>
+    </Link>
+  );
+}
+
+function RecentSyncsSection({ entries }: { entries: readonly RecentSyncEntry[] }) {
+  return (
+    <section className="rr-sync__recent" data-testid="syncs-recent-list">
+      <div className="rr-sync__section-head">
+        <h2 className="rr-sync__section-title">Recent syncs</h2>
+        <Caption>Open one to see what it collected and what it did.</Caption>
+      </div>
+      {entries.length > 0 ? (
+        <Table cols={RECENT_COLS}>
+          <TableHeaderRow>
+            <TableHeader>source</TableHeader>
+            <TableHeader>outcome</TableHeader>
+            <TableHeader>records</TableHeader>
+            <TableHeader numeric>when</TableHeader>
+          </TableHeaderRow>
+          {entries.map((entry) => (
+            <RecentSyncRow entry={entry} key={entry.runId} />
+          ))}
+        </Table>
+      ) : (
+        <div className="rr-sync__empty">
+          <Caption>Syncs appear here once a source runs.</Caption>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -409,24 +497,10 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
 
       <HealthBandStrip band={model.band} />
 
-      {model.pendingSetupCards.length > 0 ? (
-        <section className="rr-sync__fix-section" data-source-work="needsOwner">
-          <div className="rr-sync__fix-section-head">
-            <h2 className="rr-sync__fix-section-title">{SOURCE_WORK_GROUP_COPY.needsOwner.label}</h2>
-            <Caption>{SOURCE_WORK_GROUP_COPY.needsOwner.note}</Caption>
-          </div>
-          <div className="rr-sync__fix-section-cards">
-            {model.pendingSetupCards.map((card) => (
-              <PendingSetupCardPanel card={card} key={card.connectionId} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {model.failureCards.length > 0 ? (
+      {model.pendingSetupCards.length > 0 || model.failureCards.length > 0 ? (
         <div className="rr-sync__fixes">
-          {failureCardSections(model.failureCards).map(({ cards, section }) => (
-            <FailureCardSection cards={cards} key={section} section={section} />
+          {attentionSections(model).map(({ cards, pendingSetupCards, section }) => (
+            <AttentionSection cards={cards} key={section} pendingSetupCards={pendingSetupCards} section={section} />
           ))}
         </div>
       ) : null}
@@ -439,17 +513,25 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
         </div>
       ) : null}
 
-      {model.groups.length > 0 ? (
-        <div className="rr-sync__groups">
-          {model.groups.map((group) => (
-            <SyncGroupBlock group={group} key={group.connectionId} />
-          ))}
+      <RecentSyncsSection entries={model.recentSyncs} />
+
+      <section className="rr-sync__streams">
+        <div className="rr-sync__section-head">
+          <h2 className="rr-sync__section-title">Streams by source</h2>
+          <Caption>Cadence and last result for every stream each source collects.</Caption>
         </div>
-      ) : (
-        <div className="rr-sync__empty">
-          <Caption>No connections sync here yet. Connect a source and its streams appear as sync rows.</Caption>
-        </div>
-      )}
+        {model.groups.length > 0 ? (
+          <div className="rr-sync__groups">
+            {model.groups.map((group) => (
+              <SyncGroupBlock group={group} key={group.connectionId} />
+            ))}
+          </div>
+        ) : (
+          <div className="rr-sync__empty">
+            <Caption>Connect a source and its streams appear here.</Caption>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

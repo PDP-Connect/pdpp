@@ -1490,7 +1490,9 @@ test("buildStandingData wires bearers, relationships, lately, attention", () => 
   assert.match(data.bearers[0]?.how ?? "", BEARER_HOW_RE);
   assert.equal(data.relationships.length, 1);
   assert.equal(data.relationships[0]?.reads, "reads only your pay");
-  assert.equal(data.relationships[0]?.actionLabel, "review");
+  // The action only NAVIGATES, so it is labeled as navigation (trailing arrow,
+  // no destructive verb) and drills into the one identifiable grant.
+  assert.equal(data.relationships[0]?.actionLabel, "Review grant →");
   assert.equal(data.relationships[0]?.actionHref, HREFS.grant("g1"));
   assert.equal(data.lately.length, 1);
   assert.equal(data.lately[0]?.deny, false);
@@ -1783,7 +1785,9 @@ test("relationships summarize grants by client instead of repeating one row per 
     "reads only token activity, read requests, data disclosures, and rejected reads"
   );
   assert.equal(data.relationships[0]?.terms, "last active yesterday · 2 grants");
-  assert.equal(data.relationships[0]?.actionLabel, "review");
+  // Two distinct grants under one client: no single grant is the subject, so the
+  // link degrades to the grants list and SAYS how many it covers.
+  assert.equal(data.relationships[0]?.actionLabel, "Review 2 grants →");
   assert.equal(data.relationships[0]?.actionHref, HREFS.grants);
 });
 

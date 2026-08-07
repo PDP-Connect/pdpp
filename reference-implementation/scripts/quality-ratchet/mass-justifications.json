@@ -1,4 +1,9 @@
 {
+  "runtime/connection-health.ts": {
+    "allowed_mass": 84,
+    "reason": "Connection diagnostics applicability correction (2026-08-07): two outbox-axis branches now distinguish a local-device source whose exporter evidence is genuinely missing from a server-side source for which no exporter or local outbox exists. Collapsing those states would restore permanent false-unknown diagnostics. Focused connection-health tests cover both bound and non-bound sources, and the console filters only the new settled not_applicable status without changing headline health classification.",
+    "date": "2026-08-07"
+  },
   "runtime/index.ts": {
     "allowed_mass": 422,
     "reason": "Owner-run cancellation terminalization fix (2026-08-07): after the proven queue-drain repro, the runtime must clear buffered child messages, abort the active ingest transport, and let cancellation win over a queued DONE while preserving the already-started ingest. The queue-drop/in-flight-preservation oracle in test/runtime-cancel-queue.test.ts distinguishes cooperative and SIGTERM-ignoring children by requiring no ingest after abort, at least one ingest before abort, and sub-1.5s terminalization; runtime-cancel-run.test.ts separately proves pre-cancel records remain durable and staged state is not committed. The terminalStopRequested extraction lowers the measured mass from 428 to 422; further decomposition would split the queue-drop, transport-cancel, child-close ordering invariant across shallow helpers.",

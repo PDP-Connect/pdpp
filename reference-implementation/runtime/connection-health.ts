@@ -77,7 +77,34 @@ export type ConnectionConditionType =
   | "ScheduleEligible"
   | "SourceCoverageComplete";
 
-export type ConnectionConditionStatus = "false" | "true" | "unknown";
+/**
+ * Condition status.
+ *
+ *   - `true`           : the condition holds on current evidence.
+ *   - `false`          : the condition is violated on current evidence.
+ *   - `unknown`        : the condition is answerable in principle, but current
+ *                        evidence does not settle it. A verdict is genuinely
+ *                        pending.
+ *   - `not_applicable` : the condition cannot apply to this connection at all,
+ *                        because the evidence source it reads does not exist
+ *                        here (no local-device binding, no managed runtime
+ *                        surface, no browser-process continuity to prove). This
+ *                        is a *settled* answer, not a pending one.
+ *
+ * `not_applicable` exists so the projection stops encoding certainty as doubt.
+ * A self-hosted deployment with no local collector and no
+ * `@opendatalabs/remote-surface` package can never answer `BacklogClear` or
+ * `RemoteSurfaceAvailable`; reporting those as `unknown` invited the owner to
+ * wait for a verdict that would never arrive. {@link pickSupportingConditionIds}
+ * filters these out of the owner-facing supporting list the same way it filters
+ * uninteresting `true`+`info` conditions, so a healthy connection shows an
+ * honest, near-empty diagnostics list.
+ *
+ * Classification treats `not_applicable` exactly as it treated the `unknown` it
+ * replaces: it is never `true` and never `false`, so no headline state, axis, or
+ * healthy-set predicate changes. Only presentation changes.
+ */
+export type ConnectionConditionStatus = "false" | "not_applicable" | "true" | "unknown";
 
 export type ConnectionConditionSeverity = "blocked" | "error" | "info" | "warning";
 
@@ -103,6 +130,8 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_SUCCEEDED: "collection_succeeded",
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
   COVERAGE_UNKNOWN: "coverage_unknown",
+  CREDENTIAL_CONTINUITY_NOT_APPLICABLE: "credential_continuity_not_applicable",
+  CREDENTIAL_CONTINUITY_PROVEN: "credential_continuity_proven",
   CREDENTIAL_CONTINUITY_UNPROVEN: "credential_continuity_unproven",
   CREDENTIAL_REJECTED: "credential_rejected",
   CREDENTIAL_REQUIRED: "credential_required",
@@ -114,6 +143,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   LOCAL_EXPORTER_ACTIVE: "local_exporter_active",
   LOCAL_EXPORTER_DEAD_LETTER_BACKLOG: "local_exporter_dead_letter_backlog",
   LOCAL_EXPORTER_IDLE: "local_exporter_idle",
+  LOCAL_EXPORTER_NOT_APPLICABLE: "local_exporter_not_applicable",
   LOCAL_EXPORTER_STALE_HEARTBEAT: "local_exporter_stale_heartbeat",
   LOCAL_EXPORTER_STALE_PENDING: "local_exporter_stale_pending",
   LOCAL_EXPORTER_STALLED: "local_exporter_stalled",
@@ -126,6 +156,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   OUTBOX_ACTIVE: "outbox_active",
   OUTBOX_DEAD_LETTER_BACKLOG: "outbox_dead_letter_backlog",
   OUTBOX_IDLE: "outbox_idle",
+  OUTBOX_NOT_APPLICABLE: "outbox_not_applicable",
   OUTBOX_STALE_HEARTBEAT: "outbox_stale_heartbeat",
   OUTBOX_STALE_PENDING: "outbox_stale_pending",
   OUTBOX_STALLED: "outbox_stalled",
@@ -1118,6 +1149,21 @@ export interface ComputeConnectionHealthInput {
   readonly detailGapBacklog?: ConnectionDetailGapBacklogEvidence | null;
   readonly ephemeralBrowserRuntime?: EphemeralBrowserRuntimeProjection | null | undefined;
   readonly freshness: ConnectionFreshnessEvidence | null;
+  /**
+   * True when this connection collects through an enrolled local-device
+   * collector, so the local-device outbox axis is a question this deployment can
+   * actually answer. Server-side connectors (a browser-backed Reddit connection,
+   * for example) have no local collector component at all, and their outbox axis
+   * stays `unknown` forever — not because evidence is missing, but because there
+   * is no exporter to report one.
+   *
+   * The projection uses this only to distinguish "no outbox evidence yet" from
+   * "this connection has no outbox", which selects `not_applicable` instead of
+   * `unknown` for `BacklogClear` / `LocalExporterAvailable`. It never changes the
+   * axis, the headline state, or any remediation. Omit/`false` preserves the
+   * prior `unknown` behavior for callers that do not know the binding.
+   */
+  readonly localDeviceBacked?: boolean;
   readonly localDeviceCollection?: ConnectionLocalDeviceCollectionEvidence | null;
   readonly observedAt?: string | null;
   readonly outbox: ConnectionOutboxEvidence | null;
@@ -1641,6 +1687,7 @@ function projectConditions(
   const observedAt = input.observedAt ?? input.run?.lastSuccessAt ?? input.backoff?.nextRunAt ?? null;
   // The stalled cause is only meaningful when the axis is actually stalled.
   const stalledCause = axes.outbox === "stalled" ? (input.outbox?.cause ?? null) : null;
+  const localDeviceBacked = input.localDeviceBacked === true;
   return [
     projectionReliableCondition(input),
     scheduleEligibleCondition(input),
@@ -1651,10 +1698,10 @@ function projectConditions(
     credentialContinuityCondition(input),
     runtimeAvailableCondition(input),
     remoteSurfaceAvailableCondition(input),
-    localExporterAvailableCondition(axes, stalledCause),
+    localExporterAvailableCondition(axes, stalledCause, localDeviceBacked),
     sourceCoverageCondition(input, axes),
     freshCondition(input, axes),
-    backlogClearCondition(axes, stalledCause),
+    backlogClearCondition(axes, stalledCause, localDeviceBacked),
   ].map((item) => {
     const conditionObservedAt = item.observed_at ?? observedAt;
     return {
@@ -1758,12 +1805,33 @@ function canonicalProjectionUnreliableSources(sources: readonly string[]): reado
 
 function scheduleEligibleCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   if (!input.schedule) {
+    // "There is no schedule row" is a fact the scheduler is certain about, so it
+    // must not render as a pending verdict. It is deliberately NOT `false`:
+    // `classifyOwnerPaused` treats any false `ScheduleEligible` as an intentional
+    // owner pause and would demote an otherwise-healthy connection to `idle`,
+    // and `pickDominantConditionId` would surface it as the dominant condition
+    // for that idle state. Both would change what the projection claims is true
+    // about the connection, which this change must not do.
+    //
+    // `not_applicable` is the honest encoding for the owner-facing surface: no
+    // schedule *policy* applies here yet. The condition drops out of the
+    // supporting list rather than sitting there as a permanent "Unknown", and
+    // the schedules page remains the place where the owner sets one. The copy
+    // states the consequence the owner can act on instead of naming an absent
+    // config object.
     return condition({
-      message: "No scheduler policy is configured for this connection.",
+      message: "No schedule yet — this connection runs only when you sync it.",
       origin: "scheduler",
       reason: CONDITION_REASON.SCHEDULE_NOT_CONFIGURED,
+      remediation: {
+        action: "wait",
+        label: "Set a schedule to refresh this connection automatically",
+        retryable: false,
+        surface: { kind: "schedule" },
+        target: "schedule",
+      },
       severity: "info",
-      status: "unknown",
+      status: "not_applicable",
       type: "ScheduleEligible",
     });
   }
@@ -2136,12 +2204,30 @@ function credentialContinuityCondition(input: ComputeConnectionHealthInput): Con
       type: "CredentialContinuity",
     });
   }
+  // The runtime does the work to prove continuity across a process replacement;
+  // before this branch existed the answer was computed and then discarded, so a
+  // proven session and an unprobed one rendered identically.
+  if (continuity === "continuity_proven") {
+    return condition({
+      message: "Browser-session continuity is proven across the last process replacement.",
+      origin: "runtime",
+      reason: CONDITION_REASON.CREDENTIAL_CONTINUITY_PROVEN,
+      severity: "info",
+      status: "true",
+      type: "CredentialContinuity",
+    });
+  }
+  // Everything else is `not_applicable` — either the projection said so (any
+  // connection that is not browser-runtime backed, or a dynamic runtime with no
+  // replacement receipt), or there is no ephemeral runtime projection at all.
+  // There is no process-bound session here, so nothing could ever prove or
+  // disprove continuity. That is a settled answer, not a pending one.
   return condition({
-    message: "No process-bound credential continuity proof is required or available.",
+    message: "This connection has no process-bound browser session, so continuity does not apply.",
     origin: "runtime",
-    reason: CONDITION_REASON.CREDENTIALS_NOT_PROBED,
+    reason: CONDITION_REASON.CREDENTIAL_CONTINUITY_NOT_APPLICABLE,
     severity: "info",
-    status: "unknown",
+    status: "not_applicable",
     type: "CredentialContinuity",
   });
 }
@@ -2195,7 +2281,7 @@ function unmanagedEphemeralRuntimeCondition(): ConnectionHealthCondition {
     origin: "runtime",
     reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
     severity: "info",
-    status: "unknown",
+    status: "not_applicable",
     type: "RuntimeAvailable",
   });
 }
@@ -2252,7 +2338,7 @@ function legacyRuntimeAvailableCondition(input: ComputeConnectionHealthInput): C
       origin: "runtime",
       reason: CONDITION_REASON.RUNTIME_NOT_MANAGED,
       severity: "info",
-      status: "unknown",
+      status: "not_applicable",
       type: "RuntimeAvailable",
     });
   }
@@ -2313,7 +2399,7 @@ function idleDynamicRuntimeRemoteSurfaceCondition(
     origin: "remote_surface",
     reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
     severity: "info",
-    status: "unknown",
+    status: "not_applicable",
     type: "RemoteSurfaceAvailable",
   });
 }
@@ -2331,7 +2417,7 @@ function legacyRemoteSurfaceAvailableCondition(input: ComputeConnectionHealthInp
       origin: "remote_surface",
       reason: CONDITION_REASON.REMOTE_SURFACE_NOT_REQUIRED,
       severity: "info",
-      status: "unknown",
+      status: "not_applicable",
       type: "RemoteSurfaceAvailable",
     });
   }
@@ -2464,7 +2550,8 @@ function stalledCauseCopy(cause: OutboxStalledCause | null): StalledCauseCopy {
 
 function localExporterAvailableCondition(
   axes: ConnectionAxes,
-  stalledCause: OutboxStalledCause | null
+  stalledCause: OutboxStalledCause | null,
+  localDeviceBacked: boolean
 ): ConnectionHealthCondition {
   switch (axes.outbox) {
     case "idle":
@@ -2503,14 +2590,27 @@ function localExporterAvailableCondition(
       });
     }
     default:
-      return condition({
-        message: "No trusted local exporter evidence is available.",
-        origin: "local_device",
-        reason: CONDITION_REASON.LOCAL_EXPORTER_UNKNOWN,
-        severity: "info",
-        status: "unknown",
-        type: "LocalExporterAvailable",
-      });
+      // A connection with no local-device binding has no exporter to report on,
+      // so this is settled rather than pending. Keep the honest `unknown` for a
+      // local-device-backed connection whose collector simply has not checked in
+      // yet — there the evidence really is outstanding.
+      return localDeviceBacked
+        ? condition({
+            message: "No trusted local exporter evidence is available.",
+            origin: "local_device",
+            reason: CONDITION_REASON.LOCAL_EXPORTER_UNKNOWN,
+            severity: "info",
+            status: "unknown",
+            type: "LocalExporterAvailable",
+          })
+        : condition({
+            message: "This connection collects on the server, so no local exporter applies.",
+            origin: "local_device",
+            reason: CONDITION_REASON.LOCAL_EXPORTER_NOT_APPLICABLE,
+            severity: "info",
+            status: "not_applicable",
+            type: "LocalExporterAvailable",
+          });
   }
 }
 
@@ -2883,7 +2983,8 @@ function deriveConnectionForwardDisposition(
 
 function backlogClearCondition(
   axes: ConnectionAxes,
-  stalledCause: OutboxStalledCause | null
+  stalledCause: OutboxStalledCause | null,
+  localDeviceBacked: boolean
 ): ConnectionHealthCondition {
   switch (axes.outbox) {
     case "idle":
@@ -2928,14 +3029,26 @@ function backlogClearCondition(
       });
     }
     default:
-      return condition({
-        message: "No trusted local-device outbox evidence is available.",
-        origin: "local_device",
-        reason: CONDITION_REASON.OUTBOX_UNKNOWN,
-        severity: "info",
-        status: "unknown",
-        type: "BacklogClear",
-      });
+      // Mirrors `localExporterAvailableCondition`: no local-device binding means
+      // there is no outbox to have a backlog, which is settled. A bound
+      // connection with no heartbeat yet stays honestly `unknown`.
+      return localDeviceBacked
+        ? condition({
+            message: "No trusted local-device outbox evidence is available.",
+            origin: "local_device",
+            reason: CONDITION_REASON.OUTBOX_UNKNOWN,
+            severity: "info",
+            status: "unknown",
+            type: "BacklogClear",
+          })
+        : condition({
+            message: "This connection collects on the server, so there is no local-device outbox.",
+            origin: "local_device",
+            reason: CONDITION_REASON.OUTBOX_NOT_APPLICABLE,
+            severity: "info",
+            status: "not_applicable",
+            type: "BacklogClear",
+          });
   }
 }
 
@@ -3125,6 +3238,13 @@ function pickSupportingConditionIds(
       continue;
     }
     if (conditionValue.status === "true" && conditionValue.severity === "info") {
+      continue;
+    }
+    // A condition this connection cannot answer is a settled fact, not a pending
+    // verdict. Surfacing it would tell the owner to wait for evidence that no
+    // deployment change short of enrolling a local collector or installing the
+    // remote-surface package could ever produce.
+    if (conditionValue.status === "not_applicable") {
       continue;
     }
     ids.push(conditionValue.id);

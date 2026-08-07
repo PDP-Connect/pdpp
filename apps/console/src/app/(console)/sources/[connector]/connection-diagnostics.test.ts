@@ -7,7 +7,7 @@
  * Mirrors the file-grep style used by `connector-row.test.ts`: we
  * verify the source wires the honest-by-default paths the brief
  * requires for task 6.3 and 6.5:
- *   - explicit "Projection evidence unavailable" branch when there is
+ *   - explicit "Projection unavailable" branch when there is
  *     no `connection_health`;
  *   - explicit "Schedule unavailable" / "Device-exporter diagnostics
  *     unavailable" branches when the individual fetches fail;
@@ -33,7 +33,7 @@ const PAGE_FILE = `${HERE}page.tsx`;
 const SOURCES_VIEW_MODEL_FILE = fileURLToPath(new URL("../sources-view-model.ts", import.meta.url));
 
 const PROJECTION_MISSING_TESTID = /data-testid="diagnostics-projection-missing"/;
-const PROJECTION_UNAVAILABLE_COPY = /Projection evidence unavailable/;
+const PROJECTION_UNAVAILABLE_COPY = /Projection unavailable/;
 const PROJECTION_FRESHNESS_HELPER = /formatProjectionFreshness/;
 const PROJECTION_UNRELIABLE_TESTID = /data-testid="diagnostics-projection-unreliable"/;
 const DOMINANT_CONDITION_HELPER = /formatDominantCondition/;
@@ -41,6 +41,11 @@ const DOMINANT_CONDITION_TESTID = /data-testid="diagnostics-dominant-condition"/
 const CONDITIONS_TESTID = /data-testid="diagnostics-conditions"/;
 const CONDITIONS_USE_SUPPORTING_IDS = /supporting_condition_ids/;
 const CONDITIONS_BY_ID = /conditionById/;
+const CONDITIONS_FORMAT_HELPER = /formatSupportingCondition/;
+const CONDITIONS_DROP_NOT_APPLICABLE = /condition\.status !== "not_applicable"/;
+const CONDITIONS_RAW_TYPE_RENDER = /\{condition\.type\}/;
+const CONDITIONS_RAW_REASON_TITLE = /title=\{condition\.reason\}/;
+const CONDITIONS_FALSE_ONLY_MESSAGE = /condition\.status === "false" \?/;
 const SCHEDULE_ERROR_TESTID = /data-testid="diagnostics-schedule-error"/;
 const SCHEDULE_UNAVAILABLE_COPY = /Schedule unavailable/;
 const SOURCES_ERROR_TESTID = /data-testid="diagnostics-sources-error"/;
@@ -275,6 +280,23 @@ test("connection-diagnostics surfaces typed conditions from the shared projectio
   assert.match(src, CONDITIONS_TESTID);
   assert.match(src, CONDITIONS_USE_SUPPORTING_IDS);
   assert.match(src, CONDITIONS_BY_ID);
+});
+
+test("connection-diagnostics renders conditions through the shared formatter, never raw enum keys", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  // The label, the humanized reason and the always-rendered message all live in
+  // `formatSupportingCondition` so they stay testable as a view model.
+  assert.match(src, CONDITIONS_FORMAT_HELPER);
+  // A reference that predates the `not_applicable` status must not be able to
+  // reintroduce permanent "Unknown" rows through `supporting_condition_ids`.
+  assert.match(src, CONDITIONS_DROP_NOT_APPLICABLE);
+  // The three shapes this section regressed from: the raw `ConnectionConditionType`
+  // enum key, the raw snake_case reason in the tooltip, and dropping `message` on
+  // every status except `false` — which hid the one readable field exactly when a
+  // healthy connection needed it most.
+  assert.doesNotMatch(src, CONDITIONS_RAW_TYPE_RENDER);
+  assert.doesNotMatch(src, CONDITIONS_RAW_REASON_TITLE);
+  assert.doesNotMatch(src, CONDITIONS_FALSE_ONLY_MESSAGE);
 });
 
 test("connection-diagnostics has explicit error branches for schedule and source-instance fetches", async () => {
