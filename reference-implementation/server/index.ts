@@ -228,6 +228,7 @@ import {
   getRecordFieldWindowAcrossBindings,
   getSyncState,
   ingestRecord,
+  ingestRecords,
   listAllStreams,
   listDatasetSummaryStreamProjectionSeeds,
   listDatasetTopConnectorCandidates,
@@ -5717,6 +5718,8 @@ function buildRsApp(opts: ServerOpts = {}) {
     handleError,
     ingestRecord: (target: unknown, record: unknown) =>
       ingestRecord(target as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1]),
+    ingestRecords: (target: unknown, records: readonly unknown[]) =>
+      ingestRecords(target as Parameters<typeof ingestRecords>[0], records as Parameters<typeof ingestRecords>[1]),
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
     // delete). `maybeActivateDraftAfterIngest` (rs-mutation.ts) calls this

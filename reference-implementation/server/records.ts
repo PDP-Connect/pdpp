@@ -231,6 +231,11 @@ interface RecordIngestOutcome {
   version?: number;
 }
 type DeviceRecordPlanEntry = { inputIndex: number; record: RecordEnvelope } & Record<string, unknown>;
+
+type RecordIngestBatchOutcome = RecordIngestOutcome & {
+  /** Present when the durable write or its derived-index phase failed. */
+  error?: string;
+};
 interface JsonSchema {
   format?: string;
   properties?: Record<string, JsonSchema>;
@@ -1098,6 +1103,64 @@ export async function ingestRecord(
     (coordinatorOwnership) =>
       ingestRecordWithinCoordinator(storageTarget, record, { ...options, coordinatorOwnership }),
     options.coordinatorOwnership
+  );
+}
+
+/**
+ * Ingest one HTTP batch under a single connector-instance fence.
+ *
+ * Durable record mutations and their derived indexes stay in the same ordered
+ * per-record phase as `ingestRecord`. The only optimization is reusing one
+ * connector-instance ownership capability for the whole request, removing
+ * repeated admission/key/advisory-lock setup while keeping the durable
+ * checkpoint boundary at the HTTP response.
+ */
+export async function ingestRecords(
+  storageTarget: RecordStorageTarget,
+  records: readonly RecordEnvelope[]
+): Promise<RecordIngestBatchOutcome[]> {
+  const coordinationConnectorId = connectorIdForStorageTarget(storageTarget);
+  const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
+  return await withConnectorInstanceWrite(
+    coordinationInstanceId,
+    (coordinatorOwnership) => ingestRecordsWithinCoordinator(storageTarget, records, coordinatorOwnership),
+    undefined
+  );
+}
+
+async function ingestRecordsWithinCoordinator(
+  storageTarget: RecordStorageTarget,
+  records: readonly RecordEnvelope[],
+  coordinatorOwnership: ConnectorInstanceWriteOwnership
+): Promise<RecordIngestBatchOutcome[]> {
+  const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
+
+  for (const [index, record] of records.entries()) {
+    try {
+      // Versions, current-state transitions, history, summaries, derived
+      // indexes, and after-commit notifications keep the same one-record
+      // semantics as `ingestRecord`; only coordinator ownership is reused.
+      // biome-ignore lint/performance/noAwaitInLoops: Durable version allocation and same-instance state transitions are intentionally ordered.
+      const outcome = await ingestRecordWithinCoordinator(storageTarget, record, {
+        coordinatorOwnership,
+      });
+      outcomes[index] = outcome;
+    } catch (err) {
+      outcomes[index] = {
+        accepted: false,
+        changed: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  return outcomes.map(
+    (outcome) =>
+      outcome ?? {
+        accepted: false,
+        changed: false,
+        error: "ingest batch did not produce a result",
+      }
   );
 }
 
