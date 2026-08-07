@@ -652,13 +652,19 @@ async function main(argv: string[]): Promise<void> {
   });
 
   await runCheck(checks, "data.explore", "Collected data appears in the owner UI", async () => {
-    const body = await requireStatus(context, "/explore", 200);
+    // Seed timestamps are stable fixtures; search proves owner-UI visibility without depending on unrelated volume history.
     const expected = ["Deploy Test Quartet", "Restart Survival Band"];
-    const missing = expected.filter((value) => !body.text.includes(value));
+    const results = await Promise.all(
+      expected.map(async (value) => ({
+        body: await requireStatus(context, `/explore?q=${encodeURIComponent(value)}`, 200),
+        value,
+      }))
+    );
+    const missing = results.filter(({ body, value }) => !body.text.includes(value)).map(({ value }) => value);
     if (missing.length > 0) {
-      throw new GateBlocker(`/explore did not render seeded data: missing ${missing.join(", ")}`);
+      throw new GateBlocker(`/explore search did not render seeded data: missing ${missing.join(", ")}`);
     }
-    return "Owner /explore rendered both durable seed records";
+    return "Owner /explore search rendered both durable seed records";
   });
 
   await runCheck(checks, "semantic.search", "Semantic search returns a semantic result", async () => {
