@@ -783,7 +783,7 @@ test("setup-status resolves a draft by its exact connection_id, not by connector
   });
 });
 
-test("waiting owner action: credential captured but no ingest yet stays setup_in_progress on /_ref/connectors, not healthy or degraded", async () => {
+test("credential captured with first sync active reads collecting on /_ref/connectors, not healthy or degraded", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, "gmail");
@@ -808,7 +808,7 @@ test("waiting owner action: credential captured but no ingest yet stays setup_in
       );
       assert.ok(row, "draft with a captured credential but no run yet must still be discoverable");
       assert.equal(row.status, "draft");
-      assert.equal(ownerStateOf(row)?.resolver, "setup_in_progress");
+      assert.equal(ownerStateOf(row)?.resolver, "collecting");
       assert.notEqual(ownerStateOf(row)?.resolver, "healthy");
       assert.notEqual(ownerStateOf(row)?.resolver, "system_degraded");
     });

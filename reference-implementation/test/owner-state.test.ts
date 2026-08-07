@@ -674,26 +674,26 @@ test("exhaustive cross-product: every (state, coverage, schedule, last_success, 
                 // mask an active/urgent state" precedence; exclude it here
                 // rather than assert a resolver this module never claimed.
                 const ownerPausedEligible = schedule?.enabled === false && lastSuccessAt !== null;
-                if (hasOwnerAttention) {
-                  assert.equal(
-                    state1.resolver,
-                    "needs_owner",
-                    "draft with open owner attention must resolve needs_owner"
-                  );
-                } else if (hasMaintainerAction) {
+                if (hasMaintainerAction) {
                   assert.equal(
                     state1.resolver,
                     "blocked_maintainer",
                     "draft with a maintainer-audience primary action must resolve blocked_maintainer"
                   );
-                } else if (active && !ownerPausedEligible) {
-                  assert.equal(state1.resolver, "collecting", "draft with an active run must resolve collecting");
                 } else if (!(active || ownerPausedEligible)) {
                   assert.equal(
                     state1.resolver,
                     "setup_in_progress",
-                    "draft with no active run and no open attention must resolve setup_in_progress"
+                    "idle draft must resolve setup_in_progress before generic owner attention"
                   );
+                } else if (hasOwnerAttention) {
+                  assert.equal(
+                    state1.resolver,
+                    "needs_owner",
+                    "draft with open owner attention must resolve needs_owner"
+                  );
+                } else if (active && !ownerPausedEligible) {
+                  assert.equal(state1.resolver, "collecting", "draft with an active run must resolve collecting");
                 }
               }
               // Design gate #3: owner_paused/refresh-schedule requires a real
