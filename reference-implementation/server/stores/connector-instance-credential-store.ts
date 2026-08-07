@@ -81,6 +81,12 @@ interface CredentialStoreRun {
 export interface ConnectorInstanceCredentialStore {
   capture: (args: CaptureCredentialArgs) => Promise<CredentialMetadata | null>;
   delete: (connectorInstanceId: string) => Promise<boolean>;
+  /**
+   * Non-secret, key-derived fingerprint of a candidate plaintext, for proving
+   * "is this the exact same credential already stored" without sealing or
+   * persisting anything. Same derivation `capture` uses; a pure read.
+   */
+  fingerprintCandidate: (secret: string) => string | null;
   getMetadata: (connectorInstanceId: string) => Promise<CredentialMetadata | null>;
   /** Non-secret metadata keyed by exact instance id. Empty input performs no SQL. */
   getMetadataByInstanceIds: (connectorInstanceIds: readonly string[]) => Promise<Map<string, CredentialMetadata>>;
@@ -256,6 +262,10 @@ function buildStore({
       const existed = Boolean(await read.getRaw(connectorInstanceId));
       await run.delete(connectorInstanceId);
       return existed;
+    },
+
+    fingerprintCandidate(secret: string) {
+      return cipher().fingerprint(secret);
     },
 
     /** Non-secret metadata for one instance, or null when no credential exists. */

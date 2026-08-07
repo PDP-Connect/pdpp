@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
+import { fingerprintsEqual } from "./stores/credential-encryption.ts";
 
 const DRAFT_IDENTITY_PREFIX = "static_secret_draft_identity_";
 const VERIFIED_IDENTITY_PREFIX = "static_secret_verified_identity_";
@@ -212,47 +213,97 @@ function collectStaticSecretSetupFields(
   );
 }
 
-export function assertStaticSecretActiveIdentityCanClaim(input: {
-  identity: string;
-  identityFieldName?: string | undefined;
+// A binding only carries retarget-protection authority once it has gone
+// through the real static-secret setup pipeline — captured as a
+// `static_secret_draft` and, once promoted, a `static_secret` binding. A row
+// with neither kind — e.g. an `account_hint`-only legacy shape that predates
+// this pipeline entirely — never had the chance to record a durable identity
+// signal and must remain repairable exactly as before. This is the one
+// legacy carve-out; every pipeline-shaped active row is subject to the
+// fail-closed rule below, whether or not `activateDraft` has yet rewritten
+// its binding `kind` from `static_secret_draft` to `static_secret`.
+const STATIC_SECRET_PIPELINE_BINDING_KINDS = new Set(["static_secret", "static_secret_draft"]);
+
+export function isStaticSecretPipelineBinding(sourceBinding: unknown): boolean {
+  const kind = objectRecord(sourceBinding)?.kind;
+  return typeof kind === "string" && STATIC_SECRET_PIPELINE_BINDING_KINDS.has(kind);
+}
+
+function staticSecretRetargetRefusedError(): Error & { code: string } {
+  return staticSecretIdentityConflictError(
+    "This active connection has no verified provider identity on record, so a credential replacement cannot be " +
+      "proven safe. To connect a different account, disconnect this connection and create a new one.",
+    "static_secret_identity_unverified_replacement"
+  );
+}
+
+// Terminal authority for REPLACING the credential behind an ACTIVE
+// static-secret connection. Only fires when a credential already exists —
+// the very first capture on an active row (no credential yet, e.g. a
+// connection seeded active before its owner ever sealed a secret) is
+// establishment, not replacement, and always proceeds.
+//
+// Once a credential exists, absence of proof is never read as permission,
+// and PROOF MEANS EVIDENCE THE OWNER DID NOT AUTHOR: a replacement is
+// allowed only when THIS request affirmatively proves sameness via one of
+// two channels, both independent of anything the caller typed into the
+// request body —
+//   1. `identity` is a value a synchronous PROVIDER PROBE just returned for
+//      the new secret, and it matches the durable `verified_identity`
+//      already on the binding — itself only ever written from an earlier
+//      successful probe. `setup_fields` (owner-typed, non-secret, resubmit-
+//      table alongside any stolen secret) is NEVER an acceptable source for
+//      either side of this comparison — an attacker who already knows the
+//      account email can trivially resubmit it.
+//   2. A non-secret, key-derived fingerprint proves the submitted secret is
+//      byte-for-byte the same credential already stored — computed from the
+//      plaintext itself, never from anything the request "claims".
+// A provider-probed identity that CONTRADICTS the durable one is a hard
+// reject — fingerprint sameness cannot override an explicit, proven account
+// mismatch. Anything that proves neither channel is refused; the sanctioned
+// path for a genuine account change is an explicit disconnect + new
+// connection.
+export function assertStaticSecretActiveCredentialReplacementAllowed(input: {
+  existingCredentialFingerprint: string | null;
+  hasExistingCredential: boolean;
+  newSecretFingerprint: string | null;
+  probedIdentity?: string | undefined;
   sourceBinding: unknown;
   status: string;
 }): void {
-  if (input.status !== "active") {
+  if (
+    input.status !== "active" ||
+    !isStaticSecretPipelineBinding(input.sourceBinding) ||
+    !input.hasExistingCredential
+  ) {
     return;
   }
-  assertVerifiedIdentityCanChange(input);
-  assertSetupIdentityCanChange(input);
-}
-
-function assertVerifiedIdentityCanChange(input: { identity: string; sourceBinding: unknown }): void {
-  // A legacy active row can retain a historical identity key after its
-  // binding metadata is missing. Only an explicit verified_identity makes the
-  // active retarget guard authoritative; the database key still enforces
-  // uniqueness when the repaired binding is written.
-  const storedIdentity = staticSecretVerifiedIdentityFromBinding(input.sourceBinding);
-  if (storedIdentity && normalizeStaticSecretIdentity(storedIdentity) !== input.identity) {
-    throw staticSecretIdentityConflictError(
-      "This active connection is already verified for a different provider identity. Create a separate connection for the other account.",
-      "static_secret_identity_mismatch"
-    );
+  const durableIdentity = staticSecretVerifiedIdentityFromBinding(input.sourceBinding);
+  const probedIdentity =
+    input.probedIdentity === undefined ? null : normalizeStaticSecretIdentity(input.probedIdentity);
+  if (durableIdentity !== null && probedIdentity !== null) {
+    if (probedIdentity !== normalizeStaticSecretIdentity(durableIdentity)) {
+      throw staticSecretIdentityConflictError(
+        "This active connection is already verified for a different provider identity. Create a separate connection for the other account.",
+        "static_secret_identity_mismatch"
+      );
+    }
+    return;
   }
-}
-
-function assertSetupIdentityCanChange(input: {
-  identity: string;
-  identityFieldName?: string | undefined;
-  sourceBinding: unknown;
-}): void {
-  const storedIdentity = input.identityFieldName
-    ? staticSecretSetupFieldsFromBinding(input.sourceBinding)?.[input.identityFieldName]
-    : null;
-  if (storedIdentity && normalizeStaticSecretIdentity(storedIdentity) !== input.identity) {
-    throw staticSecretIdentityConflictError(
-      "This active connection is configured for a different provider identity. Create a separate connection for the other account.",
-      "static_secret_identity_mismatch"
-    );
+  // No affirmative provider-verified identity match: either nothing durable
+  // is on record yet, or this request had no probe to compare against (a
+  // no-probe connector never reaches the branch above at all). Fall back to
+  // exact-credential proof — fingerprints are derived from the plaintext
+  // under the operator key, so a match proves sameness without decrypting
+  // the stored secret or trusting anything the request merely claims.
+  if (
+    input.existingCredentialFingerprint &&
+    input.newSecretFingerprint &&
+    fingerprintsEqual(input.existingCredentialFingerprint, input.newSecretFingerprint)
+  ) {
+    return;
   }
+  throw staticSecretRetargetRefusedError();
 }
 
 export interface StaticSecretIdentityInstance {
