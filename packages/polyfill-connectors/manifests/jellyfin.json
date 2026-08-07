@@ -1,0 +1,217 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/jellyfin",
+  "connector_key": "jellyfin",
+  "manifest_uri": "https://registry.pdpp.org/connectors/jellyfin",
+  "version": "0.1.0",
+  "display_name": "Jellyfin",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "api_key",
+      "label": "Jellyfin API Key",
+      "description": "Generate an API key from your Jellyfin instance's admin dashboard and paste it here.",
+      "submit_label": "Create Jellyfin connection and start first sync",
+      "fields": [
+        {
+          "name": "base_url",
+          "label": "Jellyfin Server Base URL",
+          "type": "text",
+          "required": true,
+          "autocomplete": "off",
+          "help_text": "The base URL of your Jellyfin instance (e.g., https://jellyfin.example.com or http://192.168.1.100:8096).",
+          "env": ["JELLYFIN_BASE_URL"]
+        },
+        {
+          "name": "secret",
+          "label": "Jellyfin API Key",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_text": "Generate a new API key in your Jellyfin instance's admin dashboard under 'Plugins' > 'My Plugins' or 'Users'.",
+          "env": ["JELLYFIN_API_KEY"]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 900,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Jellyfin is self-hosted with no public rate limits. Core API provides LastPlayedDate and PlayCount as aggregate state (not per-session history). Items are fetched as a full inventory snapshot each run (Jellyfin core API does not expose a true incremental cursor for items; only library-level metadata). Hourly polling is conservative and suitable for self-hosted deployments. v10.11.11 stable (2026-06-06). PlaybackReporting plugin is optional and marks v2 scope expansion; core v1 scope limited to aggregate playback metadata."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "libraries",
+      "description": "Jellyfin media libraries (Movies, TV Shows, Music, Collections, etc.). One record per library the user can access.",
+      "display": {
+        "label": "Your Jellyfin libraries",
+        "detail": "Library names, types (Movies, Series, Music, etc.), and collection paths. Does not include individual items."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "collection_type": {
+            "type": ["string", "null"]
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["id", "name", "fetched_at"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": null,
+      "required": true,
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": ["name"]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "items",
+      "description": "Items (content) across all Jellyfin libraries. Includes movies, TV episodes, music tracks, photos, etc. One record per item with current playback state (LastPlayedDate, PlayCount). Does not include session-level watch history—use PlaybackReporting plugin for that if available on your instance.",
+      "display": {
+        "label": "Your Jellyfin items",
+        "detail": "Item names, types, library, playback state (LastPlayedDate, PlayCount, Played flag), genres, release date, and external provider IDs (IMDb, TVDB, TMDB). Cover art uploaded as blobs."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "library_id": {
+            "type": "string"
+          },
+          "type": {
+            "type": ["string", "null"]
+          },
+          "played": {
+            "type": "boolean"
+          },
+          "play_count": {
+            "type": "integer"
+          },
+          "last_played_date": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "genres": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "release_date": {
+            "type": ["string", "null"],
+            "format": "date"
+          },
+          "image_url": {
+            "type": ["string", "null"]
+          },
+          "provider_ids": {
+            "type": ["object", "null"]
+          },
+          "production_year": {
+            "type": ["integer", "null"]
+          }
+        },
+        "required": ["id", "name", "library_id", "played", "play_count"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": null,
+      "consent_time_field": "last_played_date",
+      "required": true,
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "relationships": [
+        {
+          "name": "library",
+          "stream": "libraries",
+          "foreign_key": "library_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": ["name", "type"]
+        },
+        "range_filters": {
+          "last_played_date": ["gte", "gt", "lte", "lt"],
+          "play_count": ["gte", "gt", "lte", "lt"],
+          "production_year": ["gte", "gt", "lte", "lt"],
+          "release_date": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": ["play_count"],
+          "group_by": ["type", "played"],
+          "group_by_time": ["last_played_date"]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "basic",
+      "label": "Basic playback tracking",
+      "streams": [
+        {
+          "name": "libraries"
+        },
+        {
+          "name": "items"
+        }
+      ]
+    }
+  ]
+}

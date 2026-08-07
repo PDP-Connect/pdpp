@@ -202,6 +202,103 @@
       },
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "photos",
+      "description": "Photos and videos from Google Takeout.",
+      "display": {
+        "label": "Your Google photos and videos",
+        "detail": "Photos/videos with metadata: timestamps, title, description, geolocation when available. Full-resolution media. Parsed from Google Takeout Photos/ directory."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "event_time": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "title": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": ["string", "null"]
+          },
+          "latitude": {
+            "type": ["number", "null"]
+          },
+          "longitude": {
+            "type": ["number", "null"]
+          },
+          "altitude": {
+            "type": ["number", "null"]
+          },
+          "blob_ref": {
+            "type": ["object", "null"],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
+          },
+          "content_sha256": {
+            "type": ["string", "null"]
+          },
+          "size_bytes": {
+            "type": ["number", "null"]
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": ["failed", "hydrated", "skipped_too_large", "unavailable"]
+          },
+          "hydration_error": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["id", "filename", "event_time"]
+      },
+      "required": true,
+      "primary_key": ["id"],
+      "cursor_field": "event_time",
+      "consent_time_field": "event_time",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "range_filters": {
+          "event_time": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["event_time"]
+        },
+        "search": {
+          "lexical_fields": ["title", "description"],
+          "semantic_fields": ["title", "description"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

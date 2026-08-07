@@ -1,0 +1,94 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/netflix-export",
+  "connector_key": "netflix-export",
+  "manifest_uri": "https://registry.pdpp.org/connectors/netflix-export",
+  "version": "0.1.0",
+  "display_name": "Netflix Export",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": false
+      },
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Netflix official export (getmyinfo) requires manual download from netflix.com/account/getmyinfo. The export takes up to 30 days and must be extracted locally. No automated refresh path exists."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "viewing_activity",
+      "required": false,
+      "description": "Netflix viewing activity from official export.",
+      "display": {
+        "label": "Your Netflix viewing history",
+        "detail": "Titles watched with timestamp, device type, and watch duration percent. Parsed from ViewingActivity.csv in the Netflix export bundle."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": ["string", "null"]
+          },
+          "watched_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "device_type": {
+            "type": ["string", "null"]
+          },
+          "watch_duration_percent": {
+            "type": ["number", "null"]
+          },
+          "profile_name": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["id", "watched_at"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "watched_at",
+      "consent_time_field": "watched_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "watched_at": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["watched_at"]
+        },
+        "search": {
+          "lexical_fields": ["title", "profile_name"],
+          "semantic_fields": ["title"]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

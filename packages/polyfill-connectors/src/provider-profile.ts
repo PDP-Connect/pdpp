@@ -208,3 +208,81 @@ export function ynabPacingProfile(): ProviderPacingProfile {
 export function slackApiPacingProfile(): ProviderPacingProfile {
   return { pacingMinIntervalMs: 3000 };
 }
+
+/**
+ * Steam — 250ms (4 req/s, matching Oura). Steam Web API publishes no official
+ * numeric rate limits on https://partner.steamgames.com/doc/webapi_overview/auth
+ * or https://partner.steamgames.com/doc/webapi/iplayerservice (confirmed primary
+ * sources 2026-08-07). Community reports document multi-hour 403 lockouts from
+ * sustained high-frequency use, but no published threshold. Per PDPP policy:
+ * when an undocumented provider has no numeric limit, use the least restrictive
+ * existing operational ceiling (Oura's 250ms, proven safe in production), paired
+ * with adaptive backoff (AIMD) to reduce rate on any 429/403 response. This lets
+ * the governor accelerate under success and retreat on throttling, converging to
+ * the provider's actual (undocumented) threshold without guessing. The manifest's
+ * 1-hour polling interval is a separate conservative choice (infrastructure, not
+ * API pacing). A 5-endpoint first run at 250ms ceiling takes 1.25s + network
+ * latency; adaptive backoff will slow if Steam signals throttling.
+ * Derived 2026-08-07: no published limit, use policy default.
+ */
+export function steamPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 250 };
+}
+
+/**
+ * Google Calendar / Google Contacts (People API) — 200ms (5 req/s, 300 req/min)
+ * each, shared derivation. Both connectors are the same Google Cloud project's
+ * per-user quota family. Calendar's documented per-project-per-user ceiling
+ * (May 2026 restructuring, corrected in the reconciliation report from the
+ * originally-claimed and FALSE "10,000/sec, 1,000,000/day/user") is 600
+ * requests/minute/user/project (=100ms sustained). People API publishes no
+ * static numeric quota (its quota page has no table; it points to a
+ * project-configurable Cloud Console setting) — treated conservatively as no
+ * looser than Calendar's documented per-user ceiling since both APIs share a
+ * project's quota pool. 200ms (300 req/min) sits at half Calendar's documented
+ * 600 req/min ceiling, leaving headroom for both connectors' requests to share
+ * the same per-user budget without either one alone draining it. Exposed as two
+ * distinct named factories (matching the one-factory-per-connector convention
+ * every other governor-using connector follows) rather than one shared export,
+ * so each connector's own audited-profile import stays literally grep-able.
+ * Factory names intentionally match each connector's directory name verbatim
+ * (`google_calendar`, `google_contacts`, not camelCased) — the existing
+ * `provider-profile-conformance.test.ts` roster check greps for the literal
+ * substring `${connectorDirName}PacingProfile` in each connector's source.
+ * Doc: https://developers.google.com/workspace/calendar/api/guides/quota,
+ *      https://developers.google.com/people/legacy/limits
+ */
+const GOOGLE_CALENDAR_CONTACTS_PACING_MIN_INTERVAL_MS = 200;
+
+export function google_calendarPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: GOOGLE_CALENDAR_CONTACTS_PACING_MIN_INTERVAL_MS };
+}
+
+export function google_contactsPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: GOOGLE_CALENDAR_CONTACTS_PACING_MIN_INTERVAL_MS };
+}
+
+/**
+ * GroupMe — 10000ms (6 req/min). GroupMe's API v3 documentation does not publish
+ * exact rate limits. Community reports indicate 429 responses occur under sustained
+ * abuse; the connector uses a conservative 10s floor between requests (~6 req/min)
+ * to remain well below any observed abuse thresholds. This is undocumented pacing,
+ * derived from "be gentle" rather than a published quota.
+ * Doc: https://dev.groupme.com/docs/v3 (rate limits not specified)
+ */
+export function groupmePacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 10_000 };
+}
+
+/**
+ * Jellyfin — PDPP operational default (100ms shared backoff, no invented limits).
+ * Jellyfin is self-hosted with no published rate limits. We use PDPP's default
+ * responsive pacing rather than inventing conservative figures. A typical run
+ * fetches one /System/Info probe + one /Users/{id}/Views call + paginated
+ * /Users/{id}/Items calls (500 items/page), totaling ~10-20 requests per run,
+ * well within any self-hosted capacity. Honors Retry-After headers if returned.
+ * Reference: Authority doc §10 (Jellyfin v10.11.11, self-hosted, no documented limits).
+ */
+export function jellyfinPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 100 };
+}
