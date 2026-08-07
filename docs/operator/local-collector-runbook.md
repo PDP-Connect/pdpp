@@ -208,20 +208,23 @@ Open `/device-exporters`. The device row updates with:
 
 ## Stopping a run and interrupt safety
 
-`Ctrl+C` (`SIGINT`) during a `run`/`setup --sample` is safe: the collector
-forwards the signal to the connector child (`SIGTERM`, then `SIGKILL` after a
-grace period if it does not exit), flushes any records it had already parsed
-before the interrupt to the durable local outbox, and records an honest
-recovery gap. Nothing already flushed is lost, and nothing beyond what was
-flushed is claimed as collected &mdash; the interrupted pass never advances the
-server-side checkpoint. Re-run the same command (or `recover --apply`) to pick
-up where it left off; the durable outbox is exactly what makes that safe. This
-is the same mechanism `--sample <n>` uses internally to stop after n records.
+`Ctrl+C` (`SIGINT`, and `SIGTERM`) during a plain `run` or `run --sample`/
+`setup --sample` is safe: the collector installs a real signal handler for
+the duration of the run and aborts the same `abortSignal` `--sample <n>` uses
+internally to stop after N records. The abort forwards to the connector child
+(`SIGTERM`, then `SIGKILL` after a grace period if it does not exit), flushes
+any records it had already parsed before the interrupt to the durable local
+outbox, and records an honest recovery gap. Nothing already flushed is lost,
+and nothing beyond what was flushed is claimed as collected &mdash; the
+interrupted pass never advances the server-side checkpoint, and the CLI exits
+non-zero so a supervising script does not mistake an interrupt for success.
+Re-run the same command (or `recover --apply`) to pick up where it left off;
+the durable outbox is exactly what makes that safe.
 
 ## Removing a host
 
-To stop a host from being able to auto-resolve credentials for a connection
-(the local half of "logging out"):
+To fully log out a host &mdash; revoke its device credential on the reference
+server, then delete its local profile:
 
 ```bash
 npx -y @pdpp/local-collector logout --connector claude_code
@@ -229,11 +232,31 @@ npx -y @pdpp/local-collector logout --connector claude_code
 npx -y @pdpp/local-collector logout --profile <name>
 ```
 
-This deletes the local profile `.env` file only. It does **not** revoke the
-device token server-side &mdash; the token remains valid against the
-reference deployment until you revoke the device from `/device-exporters`.
-For a full removal: revoke the device on the dashboard, then run `logout` on
-the host, then delete the durable outbox file (`status` reports its exact
+`logout` calls the reference server first, using the device's own credential
+to revoke itself (a device can only revoke itself, never another device),
+and only deletes the local profile `.env` file after the server confirms the
+credential is gone &mdash; either freshly revoked, or already revoked from a
+prior `logout` attempt (idempotent). If the server call fails ambiguously
+(network error, timeout, unexpected response) `logout` fails closed: it
+prints an error and leaves the local profile in place so you can retry once
+the server is reachable, rather than silently deleting the only local record
+of a token that may still be live.
+
+If the server is unreachable or has been decommissioned and you need to
+clear local state anyway, pass `--local-only`:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code --local-only
+```
+
+This skips the server call entirely and deletes the local profile
+unconditionally &mdash; the device token then remains valid against the
+reference deployment until revoked some other way (a server admin
+revoking it directly, or a future `logout` once the server is reachable
+again). It is deliberately not what plain `logout` does, since it does not
+close the server-side lane.
+
+After logout, also delete the durable outbox file (`status` reports its exact
 path under `db.path`) if you no longer need the locally queued history for
 that connection.
 

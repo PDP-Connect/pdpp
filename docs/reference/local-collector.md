@@ -276,11 +276,21 @@ List the connector ids this build accepts:
 npx -y @pdpp/local-collector connectors
 ```
 
-Remove a saved local profile (does not revoke the device token
-server-side — revoke the device from the dashboard for that):
+Revoke this device's own credential on the reference server, then remove its
+saved local profile. Deletion only happens after the server confirms the
+credential is revoked (or was already revoked); a network/server failure
+leaves local credentials in place so you can retry:
 
 ```bash
 npx -y @pdpp/local-collector logout --connector claude_code
+```
+
+If the server is unreachable or decommissioned, `--local-only` skips the
+server call and deletes local credentials unconditionally — the device token
+then stays valid server-side until revoked some other way:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code --local-only
 ```
 
 ## Recover A Stalled Collector
