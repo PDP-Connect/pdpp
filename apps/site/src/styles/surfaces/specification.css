@@ -510,6 +510,18 @@
 
 /* ─── Left rail (Fumadocs sidebar slot → spec-rail.tsx) ──────────────────── */
 
+/* Below the rail's in-flow width the sidebar becomes a fixed drawer
+   (#nd-sidebar-mobile, `invisible fixed`), but fumadocs' grid still reserves
+   its `sidebar` area from --fd-sidebar-width. On a 390px viewport that spent
+   181px on a rail that is not in flow and left the article 169px, which
+   clipped the h1 mid-word. Zero the reserved column; the drawer and its
+   Open Sidebar trigger are unaffected. */
+@media (max-width: 768px) {
+  [data-pdpp-doc-theme] #nd-docs-layout {
+    --fd-sidebar-width: 0px;
+  }
+}
+
 [data-pdpp-doc-theme] #nd-sidebar {
   --fd-sidebar-width: var(--spacing-rail);
   font-family: var(--font-sans);
