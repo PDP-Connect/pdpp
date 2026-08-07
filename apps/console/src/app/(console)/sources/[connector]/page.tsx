@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay, isFallbackConnectionLabel, streamDisplayLabel } from "@pdpp/display";
+import type { StreamManifestEntry } from "@pdpp/display";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
@@ -658,6 +659,9 @@ function ConnectorPageView({
               const ownerActionAvailable = collectionOwnerActionByStream[s.name] ?? true;
               const countLabel = streamCountLabel(s);
               const unexpected = isUnexpectedStreamDeclaration(s.declaration_state);
+              const streamDecl = manifest?.streams?.find((d) => d.name === s.name) as StreamManifestEntry | undefined;
+              const displayLabel = streamDisplayLabel(s.name, streamDecl);
+              const isDisplayLabelDifferent = displayLabel !== s.name;
               return (
                 <li key={s.name}>
                   <Link
@@ -666,8 +670,8 @@ function ConnectorPageView({
                     }`}
                     href={`/sources/${encodeURIComponent(connectionId)}/${encodeURIComponent(s.name)}`}
                   >
-                    <span className="pdpp-body break-all font-medium font-mono">
-                      {s.name}
+                    <span className="pdpp-body break-all font-medium font-mono" title={isDisplayLabelDifferent ? s.name : undefined}>
+                      {displayLabel}
                       {unexpected ? (
                         <span
                           className="ml-1.5 align-middle text-[color:var(--warning)]"

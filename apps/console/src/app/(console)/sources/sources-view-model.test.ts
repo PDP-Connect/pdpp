@@ -1176,3 +1176,35 @@ test("toSourceInstanceView: accountLine preserves owned name (no fallback)", () 
   );
   assert.equal(view.accountLine, "100 records · 2 streams");
 });
+
+test("toSourceInstanceView: Google Maps timeline_points displays human label, not protocol identifier", () => {
+  const manifest = {
+    connector_id: "google-maps",
+    streams: [
+      {
+        name: "timeline_points",
+        display: { label: "Your Google Maps location points" },
+      },
+    ],
+  };
+  const sum = summary({ streams: ["timeline_points"] });
+  const view = toSourceInstanceView(sum, { manifests: [manifest] });
+  assert.equal(view.streams[0]?.displayLabel, "Your Google Maps location points");
+  assert.notEqual(view.streams[0]?.displayLabel, "timeline_points");
+});
+
+test("toSourceInstanceView: stream without manifest display.label falls back to name", () => {
+  const manifest = {
+    connector_id: "gmail",
+    streams: [{ name: "messages" }],
+  };
+  const sum = summary({ connector_id: "gmail", streams: ["messages"] });
+  const view = toSourceInstanceView(sum, { manifests: [manifest] });
+  assert.equal(view.streams[0]?.displayLabel, "messages");
+});
+
+test("toSourceInstanceView: stream with no manifest available falls back to name", () => {
+  const sum = summary({ streams: ["messages"] });
+  const view = toSourceInstanceView(sum, { manifests: undefined });
+  assert.equal(view.streams[0]?.displayLabel, "messages");
+});
