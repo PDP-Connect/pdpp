@@ -23,11 +23,7 @@
  * `owner-journey-slvp-realignment-plan-2026-06-10.md`.
  */
 
-import {
-  type ConnectorCatalogEntry,
-  isOwnerActionableEntry,
-  isReadyProviderAuthorizationEntry,
-} from "./connection-catalog.ts";
+import { type ConnectorCatalogEntry, isOwnerActionableEntry } from "./connection-catalog.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -99,9 +95,6 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
   if (isUnavailableSetupEntry(entry)) {
     return 8;
   }
-  if (isReadyProviderAuthorizationEntry(entry)) {
-    return 5;
-  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return 0;
@@ -113,6 +106,8 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
       return 3;
     case "manual_upload_pending":
       return 4;
+    case "provider_auth_connect":
+      return 5;
     case "provider_auth_deployment_blocked":
       return 6;
     case "browser_bound_runbook":
@@ -138,12 +133,6 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
     };
   }
-  if (isReadyProviderAuthorizationEntry(entry)) {
-    return {
-      label: "Authorize account",
-      tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
-    };
-  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return { label: "Add now", tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg" };
@@ -160,6 +149,11 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
     case "manual_upload_connect":
       return {
         label: "Import file",
+        tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
+      };
+    case "provider_auth_connect":
+      return {
+        label: "Authorize account",
         tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
       };
     case "manual_upload_pending":
@@ -197,9 +191,6 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
   if (browserBoundWithStoredCredentials(entry)) {
     return "Sign in in the secure browser. Saving sign-in details is optional and may help with setup or repair, but one-time codes, passkeys, and other human steps still happen in the browser. Automatic reconnection is not guaranteed.";
   }
-  if (isReadyProviderAuthorizationEntry(entry)) {
-    return "Authorize this provider account in the provider's browser. The connection activates after authorization and account inventory succeed.";
-  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
@@ -209,6 +200,8 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
       return "Upload an owner-exported file. Reuse an existing source for another export from the same identity; create a new source only for a different account, profile, device, or source identity.";
+    case "provider_auth_connect":
+      return "Authorize this provider account in the provider's browser. The connection activates after authorization and account inventory succeed.";
     case "manual_upload_pending":
       return "This source accepts an owner-provided file, but file import is not available in this dashboard yet.";
     case "provider_auth_deployment_blocked":
@@ -244,12 +237,6 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
       label: "Connect account",
     };
   }
-  if (isReadyProviderAuthorizationEntry(entry)) {
-    return {
-      href: `/connect/provider-auth/${encodeURIComponent(entry.connectorKey)}`,
-      label: "Authorize account",
-    };
-  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return {
@@ -271,6 +258,11 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
         href: `/connect/browser-session/${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
         label: "Connect account",
       };
+    case "provider_auth_connect":
+      return {
+        href: `/connect/provider-auth/${encodeURIComponent(entry.connectorKey)}`,
+        label: "Authorize account",
+      };
     default:
       return null;
   }
@@ -287,14 +279,12 @@ export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSet
   if (isUnavailableSetupEntry(entry)) {
     return "not_available_here";
   }
-  if (isReadyProviderAuthorizationEntry(entry)) {
-    return "available_now";
-  }
   switch (entry.disposition) {
     case "local_collector_enroll":
     case "static_secret_connect":
     case "manual_upload_connect":
     case "browser_collector_manual":
+    case "provider_auth_connect":
       return "available_now";
     case "provider_auth_deployment_blocked":
       return "requires_server_setup";
@@ -313,14 +303,12 @@ export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSuppo
   if (isUnavailableSetupEntry(entry)) {
     return "not_self_service";
   }
-  if (isReadyProviderAuthorizationEntry(entry)) {
-    return "self_service";
-  }
   switch (entry.disposition) {
     case "local_collector_enroll":
     case "static_secret_connect":
     case "manual_upload_connect":
     case "browser_collector_manual":
+    case "provider_auth_connect":
       return "self_service";
     case "browser_bound_runbook":
     case "manual_upload_pending":

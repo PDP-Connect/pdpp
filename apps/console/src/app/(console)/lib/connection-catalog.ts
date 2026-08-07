@@ -519,17 +519,6 @@ export function isOwnerActionableEntry(entry: ConnectorCatalogEntry): boolean {
   return entry.supportState === "supported" || entry.disposition === "browser_collector_manual";
 }
 
-/** A ready provider-auth plan has the same action contract as the backend route. */
-export function isReadyProviderAuthorizationEntry(entry: ConnectorCatalogEntry): boolean {
-  return (
-    entry.disposition === "provider_auth_connect" &&
-    entry.nextStepKind === "open_provider_auth" &&
-    entry.setupModality === "provider_authorization" &&
-    entry.deploymentReadiness.state === "ready" &&
-    isOwnerActionableEntry(entry)
-  );
-}
-
 /** Catalog entries the console can start as a one-click local-collector enroll. */
 export function localCollectorEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "local_collector_enroll");
@@ -575,7 +564,7 @@ export function manualUploadPendingEntries(catalog: readonly ConnectorCatalogEnt
 
 /** Provider-auth entries whose shared plan authorizes an owner action now. */
 export function providerAuthConnectEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
-  return catalog.filter(isReadyProviderAuthorizationEntry);
+  return catalog.filter((e) => e.disposition === "provider_auth_connect");
 }
 
 /** Provider-authorization entries blocked on instance-level deployment config. */
@@ -588,7 +577,7 @@ export function unsupportedNetworkEntries(catalog: readonly ConnectorCatalogEntr
   return catalog.filter(
     (e) =>
       e.disposition === "api_network_unsupported" ||
-      (e.disposition === "provider_auth_proof_gated" && !isReadyProviderAuthorizationEntry(e)) ||
+      e.disposition === "provider_auth_proof_gated" ||
       e.disposition === "unknown_unsupported"
   );
 }
