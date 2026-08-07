@@ -96,6 +96,7 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   connection_not_found: 404,
   connection_run_active: 409,
   connection_tombstoned: 409,
+  connector_instance_busy: 503,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
   connector_instance_not_found: 404,
