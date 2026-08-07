@@ -493,9 +493,21 @@ async function resolveRunEvidence(
     };
   }
   const history = await lookupRunHistory(ctx, connectorInstanceId, requestedRunId);
-  if (!history || history.status === "running") {
+  if (!history) {
     return { activeRun: null, lastRun: null };
   }
+  // A history row can legitimately still read `"running"` in the window
+  // between the controller writing it and `controller_active_runs`
+  // gaining (or losing) its row for this connection — e.g. right after
+  // dispatch, or right after the active-run row clears but the history
+  // row's terminal write hasn't landed yet. Surfacing it as `lastRun`
+  // (rather than discarding it) lets `setupRunIsRunning` classify it as
+  // running, matching this route's own doc comment above ("otherwise,
+  // read... the latest... run-history row"). Discarding it here previously
+  // made the projection fall back to `first_sync_pending` with a stale
+  // read that never advanced until the history row went terminal
+  // (fr-setup-status-lifecycle-0806 — Slack/YNAB setup reading stuck on
+  // "First sync pending" while a run was genuinely in flight).
   return {
     activeRun: null,
     lastRun: setupStatusRunFromHistory(history, requestedRunId),

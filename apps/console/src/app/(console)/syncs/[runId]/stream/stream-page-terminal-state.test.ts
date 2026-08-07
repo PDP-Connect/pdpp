@@ -27,6 +27,11 @@ const UNAVAILABLE_STREAM_POLLER_RE =
 const PREPARING_BROWSER_SURFACE_GATE_RE =
   /hasActiveBrowserSurface\(envelope\.events\)[\s\S]{0,120}<PreparingBrowserSurface/;
 const PREPARING_BROWSER_SURFACE_COPY_RE = /Preparing the secure browser\./;
+const ASSISTANCE_COMPLETE_GATE_RE =
+  /hasResolvedBrowserSurfaceAssistance\(envelope\.events\)[\s\S]{0,120}<AssistanceCompleteSurface/;
+const ASSISTANCE_COMPLETE_COPY_RE = /Browser step complete\./;
+const ASSISTANCE_COMPLETE_POLLER_RE =
+  /function AssistanceCompleteSurface[\s\S]{0,520}<NoAssistanceRunPoller runId=\{runId\} \/>/;
 const EXTERNAL_APPROVAL_COPY_RE = /Approve the request with the provider\./;
 const EXTERNAL_APPROVAL_WAITING_COPY_RE = /No browser controls are\s+waiting/;
 const OPTIONAL_RUN_DETAILS_COPY_RE = /View run details \(optional\)/;
@@ -99,8 +104,31 @@ test("stream page does not render resolved copy solely because assistance disapp
   assert.match(pageSource, CONTINUING_SURFACE_RE);
   assert.match(pageSource, CONTINUING_POLLER_RE);
   assert.match(pageSource, SETUP_STATUS_LINK_RE);
-  assert.equal([...pageSource.matchAll(SETUP_STATUS_CTA_RE)].length, 2);
+  assert.equal([...pageSource.matchAll(SETUP_STATUS_CTA_RE)].length, 3);
   assert.doesNotMatch(pageSource, NO_PENDING_TIMELINE_DETOUR_RE);
+});
+
+// fr-setup-status-lifecycle-0806: a browser-assistance connector (e.g. H-E-B)
+// that already resolved its login step must not fall back to the generic
+// "No browser action is waiting" copy — that copy is now reserved for a run
+// that genuinely never raised browser assistance at all. Once assistance was
+// requested and resolved, the page must say so plainly and keep polling for
+// any FURTHER assistance request, not just for the run's own terminal state.
+test("stream page hands off with explicit copy once browser assistance resolves, instead of the generic no-action copy", () => {
+  assert.match(pageSource, ASSISTANCE_COMPLETE_GATE_RE);
+  assert.match(pageSource, ASSISTANCE_COMPLETE_COPY_RE);
+  assert.match(pageSource, ASSISTANCE_COMPLETE_POLLER_RE);
+  // The resolved-assistance gate must be checked before the generic
+  // RunContinuingSurface fallback, so a resolved run never regresses to the
+  // ambiguous copy.
+  const assistanceCompleteGateIndex = pageSource.search(ASSISTANCE_COMPLETE_GATE_RE);
+  const continuingSurfaceIndex = pageSource.lastIndexOf("return <RunContinuingSurface");
+  assert.notEqual(assistanceCompleteGateIndex, -1);
+  assert.notEqual(continuingSurfaceIndex, -1);
+  assert.ok(
+    assistanceCompleteGateIndex < continuingSurfaceIndex,
+    "resolved-assistance handoff must be checked before the generic no-action fallback"
+  );
 });
 
 test("automatic waits keep run details visibly optional", () => {
