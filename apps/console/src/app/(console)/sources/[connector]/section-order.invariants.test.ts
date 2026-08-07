@@ -25,7 +25,14 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
-async function renderOrder(): Promise<Record<string, number>> {
+interface SectionOffsets {
+  coverage: number;
+  dangerZone: number;
+  diagnostics: number;
+  runs: number;
+}
+
+async function renderOrder(): Promise<SectionOffsets> {
   const src = await readFile(PAGE_FILE, "utf8");
   return {
     coverage: src.indexOf("<AcquisitionCoverageSection"),
