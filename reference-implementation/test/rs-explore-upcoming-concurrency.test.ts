@@ -76,6 +76,7 @@ test("postgresFetchUpcoming concurrency constant equals 4 and mapWithConcurrency
 test("postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit", {
   skip: !POSTGRES_URL,
 }, async () => {
+  assert.ok(POSTGRES_URL);
   initDb(":memory:");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
 
@@ -116,6 +117,7 @@ test("postgresFetchUpcoming: live Postgres in-flight partition workers never exc
 test("sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic", {
   skip: !POSTGRES_URL,
 }, async () => {
+  assert.ok(POSTGRES_URL);
   initDb(":memory:");
 
   try {
