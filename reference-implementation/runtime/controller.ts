@@ -235,6 +235,8 @@ export interface ActiveRun {
   readonly trace_id: string;
 }
 
+export type RunAdmission = "collection" | "setup" | "browser_enrollment";
+
 export interface RunNowOptions {
   connectorInstanceId?: string;
   /**
@@ -259,7 +261,7 @@ export interface RunNowOptions {
    * browser enrollment draft. Omitted means the ordinary active-connection
    * collection path.
    */
-  runAdmission?: "browser_enrollment" | "setup";
+  runAdmission?: RunAdmission;
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
@@ -421,7 +423,7 @@ export interface ControllerOptions {
     connectorId: string;
     connectorInstanceId: string | null;
     ownerSubjectId: string;
-    runAdmission: "collection" | "setup" | "browser_enrollment";
+    runAdmission: RunAdmission;
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
@@ -557,7 +559,7 @@ function resolveAdmittedRunConnection(
   connectorId: string,
   connectorInstanceId: string | undefined,
   ownerSubjectId: string,
-  runAdmission: "collection" | "setup" | "browser_enrollment"
+  runAdmission: RunAdmission
 ): Promise<{ connectorId: string; connectorInstanceId: string }> {
   if (controllerOptions.admitRunConnection) {
     return controllerOptions.admitRunConnection({
@@ -573,7 +575,7 @@ function resolveAdmittedRunConnection(
   );
 }
 
-function runAdmissionFor(options: RunNowOptions): "collection" | "setup" | "browser_enrollment" {
+function runAdmissionFor(options: RunNowOptions): RunAdmission {
   return options.runAdmission ?? "collection";
 }
 

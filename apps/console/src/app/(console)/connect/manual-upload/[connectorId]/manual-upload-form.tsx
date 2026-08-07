@@ -434,8 +434,9 @@ async function pollArtifactStatus(
 
 async function startImportRun(connectionId: string): Promise<{ run_id?: string | null }> {
   const res = await fetch(`/_ref/connections/${encodeURIComponent(connectionId)}/run`, {
+    body: JSON.stringify({ run_admission: "setup" }),
     credentials: "same-origin",
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "POST",
   });
   const text = await res.text();
