@@ -72,7 +72,6 @@ jobs:
               packages/polyfill-connectors/*|packages/polyfill-connectors/**|\
               packages/reference-contract/*|packages/reference-contract/**|\
               openspec/changes/complete-mcp-slvp-surface/*|openspec/changes/complete-mcp-slvp-surface/**|\
-              docs/research/mcp-slvp-*.md|\
               reference-implementation/*|reference-implementation/**|\
               scripts/check-console-health-surfaces.ts|\
               scripts/check-console-health-surfaces.test.ts|\
