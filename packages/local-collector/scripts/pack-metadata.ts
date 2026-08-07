@@ -42,9 +42,14 @@ export async function npmPackMetadata({
     throw withCommandOutput(error, "npm", args);
   }
 
-  const metadata = JSON.parse(result.stdout);
-  assert.ok(Array.isArray(metadata) && metadata.length === 1, "npm pack must return exactly one metadata record");
-  return metadata[0] as PackMetadata;
+  const parsed = JSON.parse(result.stdout);
+  // npm's `pack --json` output shape changed across major versions: older
+  // npm (≤11) emits a top-level array of one record; npm 12 emits an object
+  // keyed by package name instead. Accept either so this script isn't pinned
+  // to one npm major.
+  const records = Array.isArray(parsed) ? parsed : Object.values(parsed as Record<string, unknown>);
+  assert.ok(records.length === 1, "npm pack must return exactly one metadata record");
+  return records[0] as PackMetadata;
 }
 
 function withCommandOutput(error: unknown, command: string, args: string[]): Error {

@@ -48,7 +48,7 @@ interface Manifest {
   };
   connector_id?: unknown;
   runtime_requirements?: {
-    bindings?: { local_device?: { required?: unknown } };
+    bindings?: { filesystem?: { required?: unknown }; local_device?: { required?: unknown } };
   };
 }
 

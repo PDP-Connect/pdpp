@@ -1,7 +1,6 @@
 {
   "dependencies": {
     "@streamparser/json": "^0.0.22",
-    "better-sqlite3": "^13.0.2",
     "dotenv": "^17.4.2",
     "imapflow": "^1.6.5",
     "linkedom": "^0.18.13",
@@ -22,7 +21,8 @@
     "./runner": "./src/runner/index.ts",
     "./collectors": "./src/collector-registry.ts",
     "./connectors/claude_code": "./connectors/claude_code/index.ts",
-    "./connectors/codex": "./connectors/codex/index.ts"
+    "./connectors/codex": "./connectors/codex/index.ts",
+    "./connectors/imessage": "./connectors/imessage/index.ts"
   },
   "scripts": {
     "postinstall": "node ./scripts/install-patchright-browser.ts",
@@ -40,7 +40,9 @@
   "description": "Polyfill connectors for non-PDPP platforms (YNAB, Gmail, Amazon, ChatGPT, USAA).",
   "devDependencies": {
     "@biomejs/biome": "2.5.6",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/ws": "^8.18.1",
+    "better-sqlite3": "^13.0.2",
     "ultracite": "7.9.4"
   },
   "license": "Apache-2.0"

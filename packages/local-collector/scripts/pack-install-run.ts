@@ -7,6 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { npmPackMetadata } from "./pack-metadata.ts";
@@ -219,7 +220,7 @@ async function main(): Promise<void> {
     const advertised = JSON.parse(advertise.stdout);
     assert.equal(advertised.runtime, "collector");
     assert.deepEqual([...advertised.bindings].sort(), ["filesystem", "local_device", "network"]);
-    assert.deepEqual([...advertised.bundled_connectors].sort(), ["claude_code", "codex"]);
+    assert.deepEqual([...advertised.bundled_connectors].sort(), ["claude_code", "codex", "imessage"]);
     // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(advertised.collector_protocol_version, /^\d+$/);
 
@@ -247,9 +248,11 @@ async function main(): Promise<void> {
         advertisedProtocolVersion: advertised.collector_protocol_version,
       });
       await runProtocolMismatchSmoke({ projectDir, env });
+      await runImessageSampleSmoke({ projectDir, env });
     } else {
       log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.ts not present.");
       log("SKIP collector_protocol_mismatch smoke: reference-implementation/server/index.ts not present.");
+      log("SKIP iMessage bounded-sample smoke: reference-implementation/server/index.ts not present.");
     }
 
     log("PASS pack-install-run local smoke");
@@ -627,6 +630,215 @@ async function prepareCodexFixture(): Promise<string> {
   );
   await writeFile(path.join(rulesDir, "trust.rules"), "# trust registry\nallow shell pwd\n");
   return codexHome;
+}
+
+const IMESSAGE_FIXTURE_MESSAGE_COUNT = 500;
+const IMESSAGE_SAMPLE_LIMIT = 20;
+// An arbitrary positive Apple-epoch-seconds base (some time after
+// 2001-01-01), so every fixture row's `date` is a small positive integer —
+// the connector's `since` cursor query is `WHERE date > ? OR date IS NULL`
+// with `since` defaulting to 0, so a negative or zero date would be
+// silently excluded from every run.
+const IMESSAGE_FIXTURE_DATE_BASE_APPLE_SEC = 700_000_000;
+
+/**
+ * Build a synthetic chat.db large enough to exercise `--sample` truncation
+ * (500 rows, sampled to 20) using `node:sqlite`'s `DatabaseSync` — the same
+ * native-free primitive the packed iMessage connector itself uses, so this
+ * fixture builder proves nothing about the packed tarball that depends on a
+ * dependency the tarball doesn't actually ship. No real chat.db, no PII:
+ * every handle/text value here is synthetic.
+ */
+async function prepareImessageFixture(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "pdpp-local-collector-imessage-fixture-"));
+  const dbPath = path.join(dir, "chat.db");
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+      CREATE TABLE message (
+        ROWID INTEGER PRIMARY KEY, guid TEXT, handle_id INTEGER, service TEXT,
+        is_from_me INTEGER, text TEXT, date INTEGER, date_read INTEGER, cache_has_attachments INTEGER
+      );
+      CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+    `);
+    db.prepare("INSERT INTO handle (ROWID, id) VALUES (?, ?)").run(1, "+15550100000");
+    const insertMessage = db.prepare(
+      `INSERT INTO message (ROWID, guid, handle_id, service, is_from_me, text, date, date_read, cache_has_attachments)
+       VALUES (?, ?, ?, 'iMessage', 0, ?, ?, NULL, 0)`
+    );
+    const insertJoin = db.prepare("INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, ?)");
+    for (let i = 0; i < IMESSAGE_FIXTURE_MESSAGE_COUNT; i += 1) {
+      const dateApple = IMESSAGE_FIXTURE_DATE_BASE_APPLE_SEC + i;
+      insertMessage.run(i + 1, `fixture-guid-${i}`, 1, `fixture message ${i}`, dateApple);
+      insertJoin.run(i + 1);
+    }
+  } finally {
+    db.close();
+  }
+  return dbPath;
+}
+
+/**
+ * Fixture-backed bounded-sample smoke for iMessage (proves the large-row /
+ * `--sample` path against the actual packed, installed tarball — not just
+ * the connector's own unit tests, which run from source).
+ *
+ * Points `IMESSAGE_DB_PATH` at a 500-row synthetic chat.db and runs the
+ * installed `pdpp-local-collector run --connector imessage --streams
+ * messages --sample 20`. Asserts the run queues and sends exactly the
+ * sampled 20, not the full 500 — the same truncation contract
+ * `local-device-runtime.test.ts` unit-tests at the source level, proven
+ * here end-to-end through the published entrypoint.
+ */
+async function runImessageSampleSmoke({
+  projectDir,
+  env,
+}: {
+  projectDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  log("Booting in-process reference server for the iMessage bounded-sample smoke...");
+  const { startServer } = await import(`file://${referenceServerEntry}`);
+  const { getDb } = await import(`file://${referenceDbModule}`);
+  // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+  const server = (await (startServer as any)({
+    asPort: 0,
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  })) as ServerInstance;
+  const baseUrl = `http://127.0.0.1:${server.asPort}`;
+  const chatDbPath = await prepareImessageFixture();
+  try {
+    log("Creating enrollment code for imessage...");
+    const codeResp = await postJson(`${baseUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: "imessage",
+      local_binding_name: "pack-install-run-imessage",
+    });
+    assert.equal(
+      codeResp.status,
+      201,
+      `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const enrollmentCode = (codeResp.body as any).enrollment_code;
+
+    log("Running installed pdpp-local-collector enroll for imessage...");
+    const enroll = await run(
+      "npx",
+      ["--no-install", "pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode],
+      { cwd: projectDir, env }
+    );
+    const enrollment = JSON.parse(enroll.stdout) as EnrollmentData;
+
+    log(`Running installed pdpp-local-collector run --connector imessage --sample ${IMESSAGE_SAMPLE_LIMIT}...`);
+    const queuePath = path.join(projectDir, "pack-install-run-imessage-outbox.json");
+    const runResult = await run(
+      "npx",
+      [
+        "--no-install",
+        "pdpp-local-collector",
+        "run",
+        "--base-url",
+        baseUrl,
+        "--connector",
+        "imessage",
+        "--device-id",
+        enrollment.device_id,
+        "--device-token",
+        enrollment.device_token,
+        "--connection-id",
+        enrollment.source_instance_id,
+        "--queue",
+        queuePath,
+        "--streams",
+        "messages",
+        "--sample",
+        String(IMESSAGE_SAMPLE_LIMIT),
+      ],
+      {
+        cwd: projectDir,
+        env: { ...env, IMESSAGE_DB_PATH: chatDbPath },
+      }
+    );
+    const runOutput = JSON.parse(runResult.stdout) as {
+      object?: string;
+      records_seen?: number;
+      status?: { outbox?: { counts?: { pending?: number; sent?: number; total?: number } } };
+    };
+    assert.equal(runOutput.object, "local_collector_sample", `unexpected --sample response shape: ${runResult.stdout}`);
+    // The sample abort is asynchronous (see runCollectorSample's onMessage
+    // hook in pdpp-local-collector.ts): recordsSeen can overshoot the limit
+    // by a small margin before the abort signal actually stops the child, so
+    // the documented contract is records_seen >= sample_limit, never exact
+    // equality. What matters for "bounded" is that it stopped nowhere near
+    // the full 500-row fixture.
+    assert.ok(
+      typeof runOutput.records_seen === "number" && runOutput.records_seen >= IMESSAGE_SAMPLE_LIMIT,
+      `--sample ${IMESSAGE_SAMPLE_LIMIT} must see at least the limit before stopping: ${runResult.stdout}`
+    );
+    assert.ok(
+      runOutput.records_seen < IMESSAGE_FIXTURE_MESSAGE_COUNT,
+      `--sample ${IMESSAGE_SAMPLE_LIMIT} must stop well short of the full ${IMESSAGE_FIXTURE_MESSAGE_COUNT}-row fixture; got ${runOutput.records_seen}: ${runResult.stdout}`
+    );
+    // The abort fires mid-scan, before the queued batch necessarily drains to
+    // the server in the same process lifetime — this matches the CLI's own
+    // documented note ("these records are durably queued but this is NOT a
+    // complete collection"). Assert the local outbox actually holds the
+    // sampled work, then prove it drains for real with a normal follow-up
+    // `run` (no --sample) — the exact UAT-documented recovery step.
+    const outboxTotal = runOutput.status?.outbox?.counts?.total ?? 0;
+    assert.ok(outboxTotal > 0, `sample run must leave sampled work in the local outbox: ${runResult.stdout}`);
+
+    log("Running installed pdpp-local-collector run --connector imessage (no --sample) to drain the full fixture...");
+    const fullRun = await run(
+      "npx",
+      [
+        "--no-install",
+        "pdpp-local-collector",
+        "run",
+        "--base-url",
+        baseUrl,
+        "--connector",
+        "imessage",
+        "--device-id",
+        enrollment.device_id,
+        "--device-token",
+        enrollment.device_token,
+        "--connection-id",
+        enrollment.source_instance_id,
+        "--queue",
+        queuePath,
+        "--streams",
+        "messages",
+      ],
+      { cwd: projectDir, env: { ...env, IMESSAGE_DB_PATH: chatDbPath } }
+    );
+    const fullRunOutput = JSON.parse(fullRun.stdout) as RunOutput;
+    assert.equal(
+      fullRunOutput.done?.status,
+      "succeeded",
+      `follow-up full imessage run did not report DONE.status=succeeded: ${fullRun.stdout}`
+    );
+
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const persisted = (getDb() as any)
+      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .get("imessage", enrollment.connector_instance_id);
+    assert.equal(
+      persisted.n,
+      IMESSAGE_FIXTURE_MESSAGE_COUNT,
+      `expected the full ${IMESSAGE_FIXTURE_MESSAGE_COUNT}-row fixture persisted after the non-sampled follow-up run; got ${persisted.n}`
+    );
+    log(
+      `iMessage bounded-sample + full-drain smoke PASS: sample stopped at ${runOutput.records_seen} of ${IMESSAGE_FIXTURE_MESSAGE_COUNT}, follow-up run persisted all ${persisted.n}.`
+    );
+  } finally {
+    await closeServer(server);
+    await rm(path.dirname(chatDbPath), { recursive: true, force: true });
+  }
 }
 
 await main();

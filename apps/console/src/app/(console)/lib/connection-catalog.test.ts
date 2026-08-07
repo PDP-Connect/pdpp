@@ -759,7 +759,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   const total = groups.reduce((sum, g) => sum + g.length, 0);
   assert.equal(total, catalog.length, "every entry must land in exactly one render group");
   // At least one of each supported path class that still has committed entries.
-  assert.ok(localCollectorEntries(catalog).length >= 2, "claude_code + codex");
+  assert.ok(localCollectorEntries(catalog).length >= 3, "claude_code + codex + imessage");
   assert.equal(browserCollectorEntries(catalog).length, 0, "heb now routes through browser-bound static-secret setup");
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
   assert.ok(experimentalEntries(catalog).length >= 1, "wave-0807 experimental static-secret connectors");

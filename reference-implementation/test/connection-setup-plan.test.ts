@@ -435,22 +435,37 @@ test("wave-0807 static-secret connectors (Steam, Jellyfin, Apple Contacts) surfa
   }
 });
 
-test("wave-0807 filesystem-shaped connectors (Netflix Export, iMessage) stay local_collector_unproven, not promoted", async () => {
-  // Netflix Export and iMessage read a live local artifact (extracted export
-  // archive / macOS chat.db) that the generic manual-upload route cannot
-  // stage correctly — no registered manual_or_upload validator kind exists
-  // for either shape, and there is no local-collector bridge registered for
-  // them. They must stay honestly unproven, not silently reclassified.
-  for (const connectorId of ["netflix_export", "imessage"]) {
-    const shippedManifest =
-      // biome-ignore lint/performance/noAwaitInLoops: sequential fixture loads over a fixed short list read clearer than Promise.all here.
-      (await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } }))
-        .default;
-    const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
-    assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
-    assert.equal(plan.catalogDisposition, "local_collector_unproven", `${connectorId}: catalogDisposition`);
-    assert.equal(plan.supportState, "proof_gated", `${connectorId}: supportState`);
-  }
+test("Netflix Export stays local_collector_unproven, not promoted", async () => {
+  // Netflix Export reads a live local artifact (extracted export archive)
+  // that the generic manual-upload route cannot stage correctly — no
+  // registered manual_or_upload validator kind exists for that shape, and
+  // there is no local-collector bridge registered for it. It must stay
+  // honestly unproven, not silently reclassified.
+  const connectorId = "netflix_export";
+  const shippedManifest = (
+    await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })
+  ).default;
+  const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
+  assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
+  assert.equal(plan.catalogDisposition, "local_collector_unproven", `${connectorId}: catalogDisposition`);
+  assert.equal(plan.supportState, "proof_gated", `${connectorId}: supportState`);
+});
+
+test("iMessage is a supported local_collector_enroll connector, not proof-gated", async () => {
+  // iMessage reads chat.db via node:sqlite (no native module), so it ships in
+  // the published @pdpp/local-collector bundle like Claude Code/Codex and is
+  // registered in SUPPORTED_LOCAL_COLLECTOR_CONNECTORS — the enroll path
+  // must reflect that, not the older filesystem-shaped-but-unproven state.
+  const connectorId = "imessage";
+  const shippedManifest = (
+    await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })
+  ).default;
+  const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
+  assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
+  assert.equal(plan.catalogDisposition, "local_collector_enroll", `${connectorId}: catalogDisposition`);
+  assert.equal(plan.nextStepKind, "enroll_local_collector", `${connectorId}: nextStepKind`);
+  assert.equal(plan.supportState, "supported", `${connectorId}: supportState`);
+  assert.equal(plan.proofGate, null, `${connectorId}: proofGate`);
 });
 
 test("wave-0807 GroupMe manifest (manual_action, no credential_capture) stays unsupported", async () => {

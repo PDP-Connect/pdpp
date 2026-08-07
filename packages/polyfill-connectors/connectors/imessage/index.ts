@@ -6,8 +6,14 @@
  * PDPP iMessage Connector (v0.1.0)
  *
  * Reads ~/Library/Messages/chat.db (macOS only by default). SQLite is
- * read-only opened. User may override with IMESSAGE_DB_PATH env var (useful
- * for copying chat.db off a machine and running the connector on Linux).
+ * read-only opened via `node:sqlite`'s `DatabaseSync` (unflagged since
+ * Node 22.13, and this repo's minimum supported engine) — deliberately not
+ * `better-sqlite3`, a native compiled dependency: this connector must ship in
+ * the published `@pdpp/local-collector` npx bundle (see
+ * `packages/local-collector/scripts/validate-package.ts`'s forbidden-pattern
+ * list), and a native module can't. User may override with IMESSAGE_DB_PATH
+ * env var (useful for copying chat.db off a machine and running the
+ * connector on Linux).
  *
  * Incremental via message.date (Apple epoch: seconds/nanos since 2001-01-01)
  * for `messages`. `participants` and `attachments` are full resnapshots each
@@ -57,7 +63,7 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, constants as fsConstants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, sep } from "node:path";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { type EmittedMessage, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
@@ -207,7 +213,7 @@ function appleDateToIso(raw: number | null | undefined): string | null {
 // built on an absent table degrade to SKIP_RESULT rather than crashing the
 // whole run — the `messages` stream must keep working even if group-chat or
 // attachment tables are missing/renamed on a given macOS version.
-function tableExists(db: Database.Database, table: string): boolean {
+function tableExists(db: DatabaseSync, table: string): boolean {
   const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
   return row !== undefined;
 }
@@ -227,7 +233,7 @@ function tableExists(db: Database.Database, table: string): boolean {
 // tradeoff: a null-date row is re-selected (and re-skipped) on every run,
 // since there's no date value to gate it out of a future `since` window —
 // that's still strictly better than never surfacing it at all.
-function queryMessageRows(db: Database.Database, since: number): IterableIterator<MessageRow> {
+function queryMessageRows(db: DatabaseSync, since: number): IterableIterator<MessageRow> {
   return db
     .prepare(
       `
@@ -251,7 +257,7 @@ function queryMessageRows(db: Database.Database, since: number): IterableIterato
 // (best-effort local-account marker; the owner's own handle is often absent
 // from chat_handle_join entirely, which callers must treat as "the owner is
 // an implicit participant", not as "this chat has one fewer member").
-function queryParticipantRows(db: Database.Database): IterableIterator<ParticipantRow> {
+function queryParticipantRows(db: DatabaseSync): IterableIterator<ParticipantRow> {
   return db
     .prepare(
       `
@@ -274,7 +280,7 @@ function queryParticipantRows(db: Database.Database): IterableIterator<Participa
 // raw local filesystem path (e.g. `~/Library/Messages/Attachments/.../IMG.jpg`)
 // — never exposed to emitted records or diagnostics; only its basename and a
 // hash of the full path travel downstream.
-function queryAttachmentRows(db: Database.Database, hasChatJoin: boolean): IterableIterator<AttachmentRow> {
+function queryAttachmentRows(db: DatabaseSync, hasChatJoin: boolean): IterableIterator<AttachmentRow> {
   const chatIdSelect = hasChatJoin ? "cmj.chat_id as chat_id" : "NULL as chat_id";
   const chatJoin = hasChatJoin ? "LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID" : "";
   return db
@@ -358,7 +364,7 @@ async function emitParticipantRows({
   db,
   emitRecord,
 }: {
-  db: Database.Database;
+  db: DatabaseSync;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
 }): Promise<number> {
   if (!tableExists(db, "chat_handle_join")) {
@@ -607,7 +613,7 @@ async function emitAttachmentRows({
   progress,
 }: {
   attachmentsRoot: string;
-  db: Database.Database;
+  db: DatabaseSync;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   maxBytes: number;
   progress: (message: string, extra?: Record<string, unknown>) => Promise<void>;
@@ -668,7 +674,7 @@ if (isMainModule(import.meta.url)) {
         );
       }
 
-      const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      const db = new DatabaseSync(dbPath, { readOnly: true });
 
       if (requested.has("messages")) {
         const messagesState = (state.messages ?? {}) as {

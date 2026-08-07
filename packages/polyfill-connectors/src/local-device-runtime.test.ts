@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,9 +16,12 @@ import {
   CLAUDE_CODE_CONNECTOR_ID,
   CODEX_CONNECTOR_ID,
   DEFAULT_AMAZON_STREAMS,
+  DEFAULT_IMESSAGE_STREAMS,
   drainLocalDeviceQueue,
+  IMESSAGE_CONNECTOR_ID,
   LOCAL_DEVICE_CONNECTOR_PROFILES,
   resolveLocalDeviceConnectorProfile,
+  runLocalDeviceExporter,
   transformRecordsToLocalDeviceEnvelopes,
 } from "./local-device-runtime.ts";
 
@@ -137,13 +140,127 @@ test("amazon profile START scope carries its declared streams without a token", 
   assert.equal(JSON.stringify(start).includes("token"), false);
 });
 
-test("local-device profile registry covers exactly codex, claude-code, and amazon", () => {
+test("local-device runner resolves the imessage local-collector connector profile", () => {
+  const profile = resolveLocalDeviceConnectorProfile(IMESSAGE_CONNECTOR_ID);
+  assert.equal(profile.connectorId, IMESSAGE_CONNECTOR_ID);
+  assert.equal(profile.entrypoint, "connectors/imessage/index.ts");
+  assert.deepEqual([...profile.defaultStreams], [...DEFAULT_IMESSAGE_STREAMS]);
+  assert.deepEqual([...DEFAULT_IMESSAGE_STREAMS], ["messages", "participants", "attachments"]);
+});
+
+test("imessage profile START scope carries its declared streams without a token", () => {
+  const profile = resolveLocalDeviceConnectorProfile(IMESSAGE_CONNECTOR_ID);
+  const start = buildLocalDeviceStartMessage(profile.defaultStreams);
+  assert.deepEqual(start, {
+    scope: { streams: [{ name: "messages" }, { name: "participants" }, { name: "attachments" }] },
+    type: "START",
+  });
+  assert.equal(JSON.stringify(start).includes("token"), false);
+});
+
+test("local-device profile registry covers exactly codex, claude-code, amazon, and imessage", () => {
   assert.deepEqual(
     Object.keys(LOCAL_DEVICE_CONNECTOR_PROFILES).sort(),
-    [AMAZON_CONNECTOR_ID, CLAUDE_CODE_CONNECTOR_ID, CODEX_CONNECTOR_ID].sort()
+    [AMAZON_CONNECTOR_ID, CLAUDE_CODE_CONNECTOR_ID, CODEX_CONNECTOR_ID, IMESSAGE_CONNECTOR_ID].sort()
   );
 });
 
 test("resolveLocalDeviceConnectorProfile still rejects an unknown connector", () => {
   assert.throws(() => resolveLocalDeviceConnectorProfile("totally-unknown"), /unsupported local-device connector/);
+});
+
+test("runLocalDeviceExporter truncates queued records to sampleLimit but reports the true recordsSeen count", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-local-device-runtime-"));
+  const fakeConnectorPath = join(dir, "fake-connector.mjs");
+  // A minimal stand-in connector: reads START from stdin, emits 5 RECORDs,
+  // then DONE — enough to exercise the sample-truncation path without a real
+  // chat.db fixture or subprocess protocol harness.
+  await writeFile(
+    fakeConnectorPath,
+    `
+    process.stdin.on("data", () => {});
+    process.stdin.on("end", () => {
+      for (let i = 0; i < 5; i += 1) {
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", data: { id: "r" + i } }) + "\\n");
+      }
+      process.stdout.write(JSON.stringify({ type: "DONE", status: "ok", records_emitted: 5 }) + "\\n");
+      process.exit(0);
+    });
+    `
+  );
+
+  const queuePath = join(dir, "queue.json");
+  const originalFetch = global.fetch;
+  const requests: { path: string; body: unknown }[] = [];
+  global.fetch = ((url: string | URL, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    requests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
+    return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  }) as typeof fetch;
+
+  try {
+    const result = await runLocalDeviceExporter({
+      baseUrl: "http://127.0.0.1:1",
+      connectorArgs: [fakeConnectorPath],
+      connectorCommand: process.execPath,
+      connectorId: IMESSAGE_CONNECTOR_ID,
+      deviceId: "device-1",
+      deviceToken: "token-1",
+      queuePath,
+      sampleLimit: 2,
+      sourceInstanceId: "source-1",
+    });
+
+    assert.equal(result.recordsSeen, 5, "the fake connector emitted 5 records total");
+    assert.equal(result.recordsQueued, 2, "sampleLimit=2 must cap what gets queued/ingested");
+    assert.equal(result.truncatedBySample, true);
+
+    const ingestRequests = requests.filter((r) => r.path.includes("ingest-batches"));
+    assert.equal(ingestRequests.length, 1);
+    const ingestBody = ingestRequests[0]?.body as { records: unknown[] } | undefined;
+    assert.equal(ingestBody?.records.length, 2, "only the truncated 2 records should ever hit the wire");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("runLocalDeviceExporter queues every record when sampleLimit is unset", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-local-device-runtime-"));
+  const fakeConnectorPath = join(dir, "fake-connector.mjs");
+  await writeFile(
+    fakeConnectorPath,
+    `
+    process.stdin.on("data", () => {});
+    process.stdin.on("end", () => {
+      for (let i = 0; i < 3; i += 1) {
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", data: { id: "r" + i } }) + "\\n");
+      }
+      process.stdout.write(JSON.stringify({ type: "DONE", status: "ok", records_emitted: 3 }) + "\\n");
+      process.exit(0);
+    });
+    `
+  );
+
+  const queuePath = join(dir, "queue.json");
+  const originalFetch = global.fetch;
+  global.fetch = (() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }))) as typeof fetch;
+
+  try {
+    const result = await runLocalDeviceExporter({
+      baseUrl: "http://127.0.0.1:1",
+      connectorArgs: [fakeConnectorPath],
+      connectorCommand: process.execPath,
+      connectorId: IMESSAGE_CONNECTOR_ID,
+      deviceId: "device-1",
+      deviceToken: "token-1",
+      queuePath,
+      sourceInstanceId: "source-1",
+    });
+
+    assert.equal(result.recordsSeen, 3);
+    assert.equal(result.recordsQueued, 3);
+    assert.equal(result.truncatedBySample, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

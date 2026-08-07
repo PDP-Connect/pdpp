@@ -95,10 +95,11 @@ test("runner exports a stable COLLECTOR_PROTOCOL_VERSION string", () => {
   assert.match(COLLECTOR_PROTOCOL_VERSION, /^\d+$/);
 });
 
-test("bundled connectors registry contains claude_code and codex only", () => {
-  assert.deepEqual([...BUNDLED_CONNECTOR_IDS].sort(), ["claude_code", "codex"]);
+test("bundled connectors registry contains claude_code, codex, and imessage", () => {
+  assert.deepEqual([...BUNDLED_CONNECTOR_IDS].sort(), ["claude_code", "codex", "imessage"]);
   assert.ok(BUNDLED_CONNECTORS.claude_code);
   assert.ok(BUNDLED_CONNECTORS.codex);
+  assert.ok(BUNDLED_CONNECTORS.imessage);
 });
 
 test("bundled registry is assembled from the connector-owned definitions (runtime names no connector)", async () => {
@@ -150,17 +151,30 @@ test("bundled connector entries declare filesystem binding as required", () => {
   }
 });
 
-test("bundled connector defaults request coverage_diagnostics so a drained run is never coverage_unknown", () => {
+test("bundled connector defaults request coverage_diagnostics whenever the connector's manifest declares that stream, so a drained run is never coverage_unknown", async () => {
   // Local-device collectors push records from a device outbox and write no
   // spine run, so the connection-health rollup can only project a non-`unknown`
-  // coverage axis from durable `coverage_diagnostics` records. If the published
-  // default stream set omits that stream, every `pdpp-local-collector run`
-  // emits zero coverage evidence and the dashboard is stuck at
-  // `coverage_unknown` even after a healthy drain. See
-  // openspec/changes/derive-local-collector-coverage-from-diagnostics.
+  // coverage axis from durable `coverage_diagnostics` records where that is the
+  // connector's coverage mechanism. If the published default stream set omits
+  // that stream, every `pdpp-local-collector run` emits zero coverage evidence
+  // and the dashboard is stuck at `coverage_unknown` even after a healthy
+  // drain. See openspec/changes/derive-local-collector-coverage-from-diagnostics.
+  //
+  // Not every connector uses this mechanism: iMessage declares a per-stream
+  // `coverage_strategy` (snapshot_import_receipt) in its manifest instead, and
+  // has no coverage_diagnostics stream to request at all — this check only
+  // applies when the manifest declares one.
   for (const id of BUNDLED_CONNECTOR_IDS) {
     const entry = getBundledConnector(id);
     assert.ok(entry, `entry for ${id}`);
+    const manifestPath = new URL(`../../polyfill-connectors/manifests/${id}.json`, import.meta.url);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const declaresCoverageDiagnostics = manifest.streams.some(
+      (stream) => stream.name === "coverage_diagnostics"
+    );
+    if (!declaresCoverageDiagnostics) {
+      continue;
+    }
     assert.ok(
       entry.streams.includes("coverage_diagnostics"),
       `${id} default streams must include coverage_diagnostics; got ${entry.streams.join(", ")}`

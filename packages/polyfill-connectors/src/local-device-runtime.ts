@@ -19,6 +19,7 @@ import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queu
 export const CODEX_CONNECTOR_ID = "codex";
 export const CLAUDE_CODE_CONNECTOR_ID = "claude-code";
 export const AMAZON_CONNECTOR_ID = "amazon";
+export const IMESSAGE_CONNECTOR_ID = "imessage";
 export const DEFAULT_CODEX_STREAMS = ["sessions", "messages", "function_calls", "rules", "prompts", "skills"] as const;
 export const DEFAULT_CLAUDE_CODE_STREAMS = [
   "sessions",
@@ -29,6 +30,7 @@ export const DEFAULT_CLAUDE_CODE_STREAMS = [
   "slash_commands",
 ] as const;
 export const DEFAULT_AMAZON_STREAMS = ["orders", "order_items"] as const;
+export const DEFAULT_IMESSAGE_STREAMS = ["messages", "participants", "attachments"] as const;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
@@ -76,6 +78,19 @@ export const LOCAL_DEVICE_CONNECTOR_PROFILES: Readonly<Record<string, LocalDevic
     defaultStreams: DEFAULT_AMAZON_STREAMS,
     entrypoint: "connectors/amazon/index.ts",
   },
+  // iMessage's PRIMARY operator path is `npx @pdpp/local-collector setup`
+  // (it is a registered `LOCAL_COLLECTOR_DEFINITIONS` entry — see
+  // collector-registry.ts — because it reads chat.db via node:sqlite, not a
+  // native module, so it ships in that bundle like Claude Code/Codex). This
+  // profile registers the same connector on the lower-level monorepo-only
+  // exporter as an optional fallback for scripting/CI contexts that already
+  // run from a checkout — not a second advertised setup path. macOS-only,
+  // and requires Full Disk Access for the terminal/Node binary that runs it.
+  [IMESSAGE_CONNECTOR_ID]: {
+    connectorId: IMESSAGE_CONNECTOR_ID,
+    defaultStreams: DEFAULT_IMESSAGE_STREAMS,
+    entrypoint: "connectors/imessage/index.ts",
+  },
 };
 
 export function resolveLocalDeviceConnectorProfile(connectorId: string): LocalDeviceConnectorProfile {
@@ -117,6 +132,15 @@ export interface LocalDeviceRuntimeConfig {
   deviceId: string;
   deviceToken: string;
   queuePath: string;
+  /**
+   * Bound the number of records queued to a proof pass, e.g. for a UAT run
+   * that should not push an operator's full source on first try. The
+   * connector still reads its full local scope before this truncates the
+   * result (this runtime is batch, not streaming, so there is no cheaper
+   * abort point) — appropriate for a local-disk read like chat.db, not a
+   * paginated network source. Unset queues every record the connector emits.
+   */
+  sampleLimit?: number;
   sourceInstanceId: string;
   streams?: readonly string[];
 }
@@ -125,7 +149,11 @@ export interface LocalDeviceRuntimeResult {
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   recordsQueued: number;
+  /** Total records the connector emitted before any `sampleLimit` truncation. */
+  recordsSeen: number;
   sentBatches: number;
+  /** True when `sampleLimit` truncated the queued records below what the connector emitted. */
+  truncatedBySample: boolean;
 }
 
 export async function enrollLocalDevice(config: LocalDeviceEnrollmentConfig): Promise<EnrollmentExchangeResponse> {
@@ -165,9 +193,16 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
   });
 
   const messages = await collectConnectorMessages(profile, config);
-  const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
+  const allRecords = messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD"
+  );
   const done =
     messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
+
+  const { sampleLimit } = config;
+  const recordsSeen = allRecords.length;
+  const records = sampleLimit !== undefined && sampleLimit >= 0 ? allRecords.slice(0, sampleLimit) : allRecords;
+  const truncatedBySample = records.length < allRecords.length;
 
   let recordsQueued = 0;
   let enqueuedBatches = 0;
@@ -199,7 +234,7 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
     status: "healthy",
   });
 
-  return { done, enqueuedBatches, recordsQueued, sentBatches };
+  return { done, enqueuedBatches, recordsQueued, recordsSeen, sentBatches, truncatedBySample };
 }
 
 /** @deprecated use {@link runLocalDeviceExporter}; retained for back-compat. */

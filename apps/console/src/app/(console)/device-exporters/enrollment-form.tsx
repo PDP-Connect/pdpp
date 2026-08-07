@@ -14,8 +14,13 @@ import {
 } from "@/lib/pdpp-cli-command.ts";
 import { createEnrollmentCodeAction } from "./actions.ts";
 
-const COLLECTOR_RUN_CONNECTORS = ["claude_code", "codex"] as const;
+const COLLECTOR_RUN_CONNECTORS = ["claude_code", "codex", "imessage"] as const;
 const SETUP_SAMPLE_SIZE = 20;
+const MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS = ["imessage"] as const;
+
+function isMacosOnlyLocalCollectorConnector(connectorId: string): boolean {
+  return (MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS as readonly string[]).includes(connectorId);
+}
 
 export function EnrollmentForm({
   referenceBaseUrl,
@@ -37,7 +42,9 @@ export function EnrollmentForm({
 
   let setupCommand: string | null = null;
   let enrollCommand: string | null = null;
+  let isMacosOnly = false;
   if (state.ok === true) {
+    isMacosOnly = isMacosOnlyLocalCollectorConnector(state.code.connector_id);
     setupCommand = pdppLocalCollectorSetupCommand({
       baseUrl: referenceBaseUrl,
       code: state.code.enrollment_code,
@@ -88,13 +95,30 @@ export function EnrollmentForm({
             <p className="pdpp-caption mt-1 text-muted-foreground">Expires at {state.code.expires_at}</p>
           </div>
 
+          {isMacosOnly ? (
+            <div
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2"
+              data-testid="collector-macos-requirements"
+            >
+              <p className="pdpp-caption text-foreground">
+                <strong>Requires a physical Mac.</strong> iMessage reads{" "}
+                <code className="font-mono">~/Library/Messages/chat.db</code>, which only exists on macOS &mdash; this
+                cannot run on Linux/Windows or in a container. It also needs{" "}
+                <strong>Full Disk Access</strong> for the terminal (or Node binary) running the command: System
+                Settings &rarr; Privacy &amp; Security &rarr; Full Disk Access &rarr; enable your terminal app, then
+                restart it. Without Full Disk Access, chat.db reads fail with a permissions error even though the
+                file path is correct.
+              </p>
+            </div>
+          ) : null}
+
           <div>
             <div className="pdpp-eyebrow text-muted-foreground">Set up the device that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Run this <code className="font-mono">@pdpp/local-collector</code> command on the device with Claude Code
-              or Codex data. It exchanges the code, saves your device credentials to a local file only you can read
-              (never printed here or in your terminal), and runs a bounded {SETUP_SAMPLE_SIZE}-record proof pass so you
-              can see it working before it collects everything.
+              Run this <code className="font-mono">@pdpp/local-collector</code> command on the device with the data
+              (Claude Code, Codex, or iMessage). It exchanges the code, saves your device credentials to a local file
+              only you can read (never printed here or in your terminal), and runs a bounded {SETUP_SAMPLE_SIZE}-record
+              proof pass so you can see it working before it collects everything.
             </p>
             <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
               <code
