@@ -505,6 +505,41 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
   );
 });
 
+test("live Explore render fails when only one sort direction is present", async () => {
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    headers: { get: () => null },
+    status,
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl models the async fetch contract for the live harness.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ data: [], has_more: false, object: "list" }));
+    }
+    if (href.endsWith("/explore")) {
+      return response(
+        200,
+        "<main><h1>Explore</h1><label>Search names, fields, and values</label><details><summary>Filters</summary></details><button>newest</button></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+    origin: "https://example.com/",
+  });
+
+  assert.equal(result.ok, false, "a one-sided sort control must fail the rendered acceptance gate");
+  assert.ok(result.findings.some((finding) => finding.ruleId === "explore-content-rendered"));
+  assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
+});
+
 test("live semantic probe requests connectors at limit=100 (the reference's own page-size ceiling), never the invalid limit=200", async () => {
   const urlsSeen: string[] = [];
   const response = (status: number, body: string, setCookie: string | null = null) => ({

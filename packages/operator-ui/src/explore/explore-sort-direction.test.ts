@@ -40,6 +40,16 @@ function ynabSummary(): RefConnectorSummary {
   } as RefConnectorSummary;
 }
 
+function excludedSummary(): RefConnectorSummary {
+  return {
+    ...ynabSummary(),
+    connection_id: "cin_excluded",
+    connector_instance_id: "cin_excluded",
+    display_name: "Private",
+    streams: ["private"],
+  } as RefConnectorSummary;
+}
+
 function ynabManifest(): ConnectorManifest {
   return {
     connector_id: "ynab",
@@ -63,7 +73,14 @@ const notStubbed = () => Promise.reject(new Error("not stubbed"));
 /** A fake source that records the `direction` opt of each listExploreTimeline call. */
 function makeDirectionCapturingSource(
   captured: Array<"asc" | "desc" | undefined>,
-  supportsTimelineDirection = true
+  supportsTimelineDirection = true,
+  capturedRequests: Array<{
+    connectionIds: readonly string[];
+    direction: "asc" | "desc" | undefined;
+    excludeConnectionIds: readonly string[];
+    excludeStreams: readonly string[];
+    streams: readonly string[];
+  }> = []
 ): DashboardDataSource {
   return {
     aggregateRecordsByTime: notStubbed,
@@ -80,10 +97,17 @@ function makeDirectionCapturingSource(
     isSemanticRetrievalAdvertised: () => Promise.resolve(false),
     kind: "live",
     listConnectorManifests: () => Promise.resolve([ynabManifest()]),
-    listConnectorSummaries: mockListConnectorSummaries([ynabSummary()]),
+    listConnectorSummaries: mockListConnectorSummaries([ynabSummary(), excludedSummary()]),
     listExploreRecordBuckets: notStubbed,
     listExploreTimeline: (opts): Promise<ExploreTimelinePage> => {
       captured.push(opts?.direction);
+      capturedRequests.push({
+        connectionIds: [...(opts?.connectionIds ?? [])],
+        direction: opts?.direction,
+        excludeConnectionIds: [...(opts?.excludeConnectionIds ?? [])],
+        excludeStreams: [...(opts?.excludeStreams ?? [])],
+        streams: [...(opts?.streams ?? [])],
+      });
       return Promise.resolve(emptyTimelinePage());
     },
     listGrants: () => Promise.resolve({ data: [], has_more: false, object: "list" as const }),
@@ -137,6 +161,35 @@ test("oldest re-page also threads through a multi-page Load-more trail (every pa
   assert.ok(captured.length >= 3, "a 2-cursor trail fetches page 1 + 2 trail cursors");
   for (const dir of captured) {
     assert.equal(dir, "asc", "every page of an oldest-first trail must stay ascending");
+  }
+});
+
+test("oldest pagination preserves the Explore query scope on every direction-bound request", async () => {
+  const captured: Array<"asc" | "desc" | undefined> = [];
+  const capturedRequests: Parameters<typeof makeDirectionCapturingSource>[2] = [];
+  const ds = makeDirectionCapturingSource(captured, true, capturedRequests);
+
+  await assembleExplorerData(
+    {
+      anchor: SNAPSHOT_AT,
+      connection: "cin_ynab",
+      cursors: "c1,c2",
+      order: "oldest",
+      stream: "transactions",
+      xconnection: "cin_excluded",
+      xstream: "private",
+    },
+    ds,
+    "https://rs.test"
+  );
+
+  assert.ok(capturedRequests.length >= 3, "the query must make page-1 and cursor-trail requests");
+  for (const request of capturedRequests) {
+    assert.equal(request.direction, "asc", "the query's oldest direction must survive pagination");
+    assert.deepEqual(request.connectionIds, ["cin_ynab"], "the selected connection must survive pagination");
+    assert.deepEqual(request.streams, ["transactions"], "the selected stream must survive pagination");
+    assert.deepEqual(request.excludeConnectionIds, ["cin_excluded"], "the excluded connection must survive pagination");
+    assert.deepEqual(request.excludeStreams, ["private"], "the excluded stream must survive pagination");
   }
 });
 
