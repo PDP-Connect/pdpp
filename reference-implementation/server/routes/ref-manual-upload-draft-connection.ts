@@ -87,6 +87,57 @@ interface ConnectorInstanceStore {
   }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
+// The two `sourceBinding` shapes `createManualUploadDraftConnection` and
+// `validateAndStageArtifact` write below — `staged_upload`/`import_validation`/
+// `uploaded_file_name` are optional because each writer only sets a subset.
+export interface ManualUploadDraftSourceBinding {
+  readonly acquisition_method: "owner_artifact";
+  readonly import_dir: string;
+  readonly import_dir_env_var: string;
+  readonly import_validation?: unknown;
+  readonly kind: "manual_upload_draft";
+  readonly staged_upload?: boolean;
+  readonly uploaded_file_name?: string;
+}
+
+// Durable binding a manual-upload draft promotes to once it proves a
+// successful first ingest (see `promoteBrowserEnrollmentShellBinding` in
+// ref-browser-enrollment-shell.ts for the sibling browser case this mirrors).
+// `import_dir`/`import_dir_env_var` are NOT setup-only residue — the manual-
+// upload run-env resolver (connection-scoped-run-env.ts,
+// buildControllerManualUploadRunEnvResolver in index.ts) reads them on EVERY
+// run, so they must survive promotion unchanged, unlike the browser case's
+// enrollment_expires_at (which is genuinely setup-only and is dropped).
+export interface ManualUploadDurableSourceBinding {
+  readonly acquisition_method: "owner_artifact";
+  readonly import_dir: string;
+  readonly import_dir_env_var: string;
+  readonly import_validation?: unknown;
+  readonly kind: "manual_upload";
+  readonly promoted_at: string;
+  readonly promoted_from: "manual_upload_draft";
+  readonly uploaded_file_name?: string;
+}
+
+// Pure — no I/O. `staged_upload` deliberately does not carry over: it only
+// ever meant "no file has been staged yet," which is no longer true once a
+// connection has ingested real records.
+export function promoteManualUploadDraftBinding(
+  draftBinding: ManualUploadDraftSourceBinding,
+  now: string
+): ManualUploadDurableSourceBinding {
+  return {
+    acquisition_method: draftBinding.acquisition_method,
+    import_dir: draftBinding.import_dir,
+    import_dir_env_var: draftBinding.import_dir_env_var,
+    kind: "manual_upload",
+    promoted_at: now,
+    promoted_from: "manual_upload_draft",
+    ...(draftBinding.import_validation === undefined ? {} : { import_validation: draftBinding.import_validation }),
+    ...(draftBinding.uploaded_file_name === undefined ? {} : { uploaded_file_name: draftBinding.uploaded_file_name }),
+  };
+}
+
 interface AcquisitionBatch {
   readonly acceptedCount?: number | null;
   readonly artifactSha256?: string | null;

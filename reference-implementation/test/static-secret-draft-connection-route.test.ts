@@ -600,6 +600,11 @@ test("first ingest with records flips the draft to active and makes it visible",
       assert.equal(created.status, 201, `draft create: ${created.text}`);
       const connectionId = requireString(created.body.connection_id, "created.body.connection_id");
 
+      const preIngestRow = getDb()
+        .prepare("SELECT source_binding_json FROM connector_instances WHERE connector_instance_id = ?")
+        .get(connectionId) as { source_binding_json: string };
+      assert.equal(JSON.parse(preIngestRow.source_binding_json).kind, "static_secret_draft");
+
       const ownerToken = await issueOwnerToken(asUrl);
       const ingested = await ingest(rsUrl, ownerToken, "gmail", connectionId, "messages", [
         { emitted_at: "2026-06-02T12:00:00.000Z", id: "m1", subject: "hello" },
@@ -614,6 +619,40 @@ test("first ingest with records flips the draft to active and makes it visible",
       );
       assert.ok(visible, "connection is visible after first ingest");
       assert.equal(visible.status, "active");
+
+      // Regression coverage for the setup-shell promotion gap: first
+      // successful ingest must promote the binding off `static_secret_draft`
+      // to the durable `static_secret` kind, preserving `setup_fields` —
+      // not just flip status. Otherwise a LATER revoke of this real,
+      // fully-collected connection would wrongly hide it from Sources
+      // (RETIRED_SETUP_SHELL_BINDING_KINDS), exactly like the browser
+      // enrollment shell bug this mirrors.
+      const postIngestRow = getDb()
+        .prepare("SELECT source_binding_json FROM connector_instances WHERE connector_instance_id = ?")
+        .get(connectionId) as { source_binding_json: string };
+      const postIngestBinding = JSON.parse(postIngestRow.source_binding_json);
+      assert.equal(postIngestBinding.kind, "static_secret", "binding kind moved off static_secret_draft");
+      assert.deepEqual(
+        postIngestBinding.setup_fields,
+        { account_email: "owner@example.com" },
+        "setup_fields survive promotion — read on every credential probe/run, not just at setup"
+      );
+
+      // Revoking this now-real, fully-collected connection must NOT hide it
+      // from Sources — it is an ordinary revoked connection, not retired
+      // setup residue.
+      const revoked = await fetch(`${rsUrl}/v1/owner/connections/${encodeURIComponent(connectionId)}/revoke`, {
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        method: "POST",
+      });
+      assert.equal(revoked.status, 200, `revoke should succeed: ${await revoked.text()}`);
+
+      const listAfterRevoke = await listConnections(asUrl, cookie);
+      const visibleAfterRevoke = dataArrayOf(listAfterRevoke.body).find(
+        (c) => c.connection_id === connectionId || c.connector_instance_id === connectionId
+      );
+      assert.ok(visibleAfterRevoke, "revoked-after-promotion connection stays visible on /_ref/connections");
+      assert.equal(visibleAfterRevoke.status, "revoked");
     });
   });
 });

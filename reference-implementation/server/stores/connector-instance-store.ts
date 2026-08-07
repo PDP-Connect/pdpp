@@ -1514,6 +1514,62 @@ export function createSqliteConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
+    // Promotes ANY temporary setup binding (browser_enrollment_shell,
+    // static_secret_draft, manual_upload_draft — the members of
+    // RETIRED_SETUP_SHELL_BINDING_KINDS) to its durable sibling kind
+    // (browser_collector, static_secret, manual_upload respectively) once
+    // the caller's own success authority proves a real connection: verified
+    // session/identity capture, or first accepted ingest. Generic across all
+    // three because the underlying defect is generic: `activateDraft` only
+    // ever flips status, never the binding kind, so a connection that
+    // genuinely completed setup stays permanently tagged as `*_draft`/
+    // `*_shell` — and RETIRED_SETUP_SHELL_BINDING_KINDS then hides it from
+    // every owner-visible read surface the moment it is later revoked
+    // (TTL sweep for the browser case; explicit owner revoke for the other
+    // two, which have no TTL sweep), even though it holds real retained
+    // data. `browser-enrollment-shell-retirement.ts` already documents the
+    // browser case's half of this contract ("the durable completion signal
+    // is the source-binding kind moving away from `browser_enrollment_shell`,
+    // not the status alone") — nothing previously implemented it for any of
+    // the three kinds.
+    //
+    // The UPDATE's WHERE guards on the CURRENT binding kind still being
+    // `fromKind`, so this is idempotent and safe under a concurrent second
+    // caller (a second call finds the row already promoted and is a no-op)
+    // and never touches a row that was abandoned/revoked/re-typed by
+    // something else in between. connector_instance_id, owner_subject_id,
+    // source_kind, and source_binding_key are NEVER written here — those
+    // form the row's identity tuple (`makeConnectorInstanceId`) and must
+    // survive promotion unchanged. Callers own preserving whatever
+    // setup-specific durable metadata (e.g. manual-upload's `import_dir`,
+    // static-secret's `setup_fields`) the new binding shape still needs for
+    // future runs — this method just performs the guarded write.
+    promoteSetupBinding(
+      connectorInstanceId: string,
+      {
+        fromKind,
+        sourceBinding,
+        updatedAt,
+      }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+    ): ConnectorInstance | null {
+      writeTransaction(() => {
+        const result = exec(referenceQueries.connectorInstancesPromoteSetupBinding, [
+          stableJson(sourceBinding),
+          "active",
+          updatedAt,
+          connectorInstanceId,
+          fromKind,
+        ]);
+        if (result.changes) {
+          exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+            `connector instance promoted from ${fromKind}`,
+            connectorInstanceId,
+          ]);
+        }
+      });
+      return this.get(connectorInstanceId);
+    },
+
     resolveActiveByConnector(ownerSubjectId: string, connectorId: string): ConnectorInstance {
       const rows = getMany<ConnectorInstanceRow>(
         referenceQueries.connectorInstancesListActiveByOwnerConnector,
@@ -2179,6 +2235,39 @@ export function createPostgresConnectorInstanceStore() {
       const rows = result.rows as ConnectorInstanceRow[];
       const hasMore = rows.length > limit;
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
+    },
+
+    // Postgres mirror of the SQLite arm above — see its doc comment for the
+    // full rationale. Same guard (WHERE the CURRENT binding kind is still
+    // `fromKind`), same identity-preserving contract
+    // (connector_instance_id/owner_subject_id/source_kind/source_binding_key
+    // are never written here), same idempotent-under-concurrency behavior.
+    async promoteSetupBinding(
+      connectorInstanceId: string,
+      {
+        fromKind,
+        sourceBinding,
+        updatedAt,
+      }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+    ): Promise<ConnectorInstance | null> {
+      await withPostgresTransaction(
+        async (client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null }> }) => {
+          const result = await client.query(
+            `UPDATE connector_instances
+             SET source_binding_json = $1::jsonb, status = $2, updated_at = $3
+             WHERE connector_instance_id = $4
+               AND source_binding_json->>'kind' = $5`,
+            [stableJson(sourceBinding), "active", updatedAt, connectorInstanceId, fromKind]
+          );
+          if (result.rowCount) {
+            await client.query(
+              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+              [`connector instance promoted from ${fromKind}`, connectorInstanceId]
+            );
+          }
+        }
+      );
+      return await this.get(connectorInstanceId);
     },
 
     async resolveActiveByConnector(ownerSubjectId: string, connectorId: string): Promise<ConnectorInstance> {

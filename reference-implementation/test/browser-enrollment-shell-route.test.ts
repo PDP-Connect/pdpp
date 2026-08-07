@@ -14,6 +14,7 @@ import {
 import { getDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { BROWSER_ENROLLMENT_SHELL_TTL_MS } from "../server/routes/ref-browser-enrollment-shell.ts";
+import { createSqliteConnectorInstanceStore } from "../server/stores/connector-instance-store.ts";
 
 // Integration coverage for the browser-enrollment shell routes:
 //   POST /_ref/connectors/:connectorId/browser-enrollment-shell  (on AS)
@@ -106,6 +107,32 @@ async function withServer(fn: (urls: { asUrl: string; rsUrl: string }) => Promis
   }
 }
 
+// Owner-auth-disabled harness for the end-to-end promotion test below, which
+// needs an owner BEARER token (device flow) in addition to the owner-session
+// shell-creation surface. With an empty owner password the default owner
+// session is active with no cookie needed at all, so `/device/approve`
+// (owner-session + CSRF gated) and `/_ref/...` both work with an empty
+// cookie — same pattern as static-secret-draft-connection-route.test.ts's
+// `withOpenServer`.
+async function withOpenServer(fn: (urls: { asUrl: string; rsUrl: string }) => Promise<void>): Promise<void> {
+  const server = await startServer({
+    asPort: 0,
+    autoEnrollEligibleSchedules: false,
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    ownerAuthSubjectId: OWNER_SUBJECT_ID,
+    quiet: true,
+    rsPort: 0,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await fn({ asUrl, rsUrl });
+  } finally {
+    await closeServer(server);
+  }
+}
+
 // Owner login is on the AS (same as /_ref/... routes).
 async function ownerLogin(asUrl: string, password: string = OWNER_PASSWORD): Promise<string> {
   const res = await fetch(`${asUrl}/owner/login`, {
@@ -116,6 +143,58 @@ async function ownerLogin(asUrl: string, password: string = OWNER_PASSWORD): Pro
   });
   const cookie = res.headers.get("set-cookie") ?? "";
   return cookie.split(";")[0] ?? "";
+}
+
+// Owner bearer token via the device-authorization flow, same as the
+// static-secret-draft ingest-activation coverage (see
+// static-secret-draft-connection-route.test.ts's `issueOwnerToken`) — the RS
+// ingest endpoint below is bearer-authenticated, not cookie-authenticated.
+async function issueOwnerToken(asUrl: string, subjectId: string = OWNER_SUBJECT_ID): Promise<string> {
+  const clientId = "cli_longview";
+  const deviceRes = await fetch(`${asUrl}/oauth/device_authorization`, {
+    body: new URLSearchParams({ client_id: clientId }).toString(),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
+  const deviceBody = await jsonBody(deviceRes);
+  await fetch(`${asUrl}/device/approve`, {
+    body: new URLSearchParams({ subject_id: subjectId, user_code: String(deviceBody.user_code) }).toString(),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
+  const tokenRes = await fetch(`${asUrl}/oauth/token`, {
+    body: new URLSearchParams({
+      client_id: clientId,
+      device_code: String(deviceBody.device_code),
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+    }).toString(),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
+  const tokenBody = await jsonBody(tokenRes);
+  return String(tokenBody.access_token);
+}
+
+async function ingestNdjson(
+  rsUrl: string,
+  ownerToken: string,
+  connectorId: string,
+  connectionId: string,
+  stream: string,
+  records: Array<{ id: string; emitted_at: string; [key: string]: unknown }>
+): Promise<Response> {
+  const lines = records
+    .map((record) => JSON.stringify({ data: record, emitted_at: record.emitted_at, key: record.id }))
+    .join("\n");
+  const url =
+    `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}` +
+    `?connector_id=${encodeURIComponent(connectorId)}` +
+    `&connector_instance_id=${encodeURIComponent(connectionId)}`;
+  return await fetch(url, {
+    body: lines,
+    headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/x-ndjson" },
+    method: "POST",
+  });
 }
 
 // --- POST /_ref/connectors/:connectorId/browser-enrollment-shell ---
@@ -484,4 +563,91 @@ test("retireExpiredBrowserEnrollmentShells flips expired draft/active shell bind
       connectorInstanceId: "cin_active",
     },
   ]);
+});
+
+// --- End-to-end promotion: shell creation -> real ingest -> durable binding ---
+//
+// Live repro this closes: a ChatGPT connector_instance with 9,163 records had
+// status revoked while source_binding_json still read
+// `{kind: browser_enrollment_shell, ...}` — Sources hid it (RETIRED_SETUP_
+// SHELL_BINDING_KINDS) while Explore still showed its records, because
+// nothing had ever promoted the binding off `browser_enrollment_shell` on
+// successful first collection. This drives the REAL HTTP path (shell create
+// -> RS ingest -> the same `activateDraftConnection` capability the
+// static-secret-draft flow uses) rather than calling the store directly.
+test("browser-enrollment shell: a successful first ingest promotes the shell to a durable browser_collector binding, and TTL retirement afterward never revokes it", async () => {
+  await withOpenServer(async ({ asUrl, rsUrl }) => {
+    await registerConnector(asUrl, "chatgpt");
+    const cookie = "";
+
+    const created = await fetch(`${asUrl}/_ref/connectors/chatgpt/browser-enrollment-shell`, {
+      headers: { cookie },
+      method: "POST",
+    });
+    assert.equal(created.status, 201);
+    const createdBody = await jsonBody(created);
+    const connectionId = asString(createdBody.connection_id);
+
+    // Before ingest: still a shell, hidden from /_ref/connections (mirrors
+    // the static-secret-draft pattern this flow was modeled on).
+    const preIngestRow = getDb()
+      .prepare("SELECT status, source_binding_json FROM connector_instances WHERE connector_instance_id = ?")
+      .get(connectionId) as { status: string; source_binding_json: string };
+    assert.equal(preIngestRow.status, "draft");
+    assert.equal(JSON.parse(preIngestRow.source_binding_json).kind, "browser_enrollment_shell");
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const ingestRes = await ingestNdjson(rsUrl, ownerToken, "chatgpt", connectionId, "conversations", [
+      { emitted_at: "2026-08-06T09:00:00.000Z", id: "conv_1", title: "hello" },
+    ]);
+    assert.equal(ingestRes.status, 200, `ingest into shell should succeed: ${await ingestRes.text()}`);
+
+    // After ingest: promoted — durable binding, active, and NOT the shell
+    // kind anymore.
+    const postIngestRow = getDb()
+      .prepare("SELECT status, source_binding_json FROM connector_instances WHERE connector_instance_id = ?")
+      .get(connectionId) as { status: string; source_binding_json: string };
+    assert.equal(postIngestRow.status, "active", "promoted connection is active");
+    const postIngestBinding = JSON.parse(postIngestRow.source_binding_json);
+    assert.equal(postIngestBinding.kind, "browser_collector", "binding kind moved off browser_enrollment_shell");
+    assert.equal(postIngestBinding.connector_id, "chatgpt", "connector_id carried over from the shell binding");
+
+    // Now visible on the owner-facing raw connection list.
+    const listRes = await fetch(`${asUrl}/_ref/connections`, { headers: { cookie } });
+    const listBody = (await jsonBody(listRes)) as { data?: Record<string, unknown>[] };
+    const visible = (listBody.data ?? []).find(
+      (c) => c.connection_id === connectionId || c.connector_instance_id === connectionId
+    );
+    assert.ok(visible, "promoted connection is visible on /_ref/connections");
+    assert.equal(visible?.status, "active");
+
+    // The exact live-bug shape: run the REAL retirement sweep well past the
+    // shell's original 2h TTL. A promoted connection must survive untouched
+    // — this is the assertion that would have failed against the code
+    // before this fix (the sweep would have revoked it).
+    const store = createSqliteConnectorInstanceStore();
+    const farFuture = new Date(Date.now() + BROWSER_ENROLLMENT_SHELL_TTL_MS * 10).toISOString();
+    const retiredIds = await retireExpiredBrowserEnrollmentShells(
+      {
+        listDraftBrowserEnrollmentShells: (ownerSubjectId) =>
+          Promise.resolve(
+            store.listDraftBrowserEnrollmentShells(ownerSubjectId) as unknown as {
+              connectorInstanceId: string;
+              sourceBinding?: Record<string, unknown> | null;
+              status: string;
+            }[]
+          ),
+        updateStatus: (connectorInstanceId, args) => Promise.resolve(store.updateStatus(connectorInstanceId, args)),
+      },
+      { now: farFuture, ownerSubjectId: OWNER_SUBJECT_ID }
+    );
+    assert.ok(
+      !retiredIds.includes(connectionId),
+      "TTL retirement run long past the shell's original TTL does not revoke the promoted connection"
+    );
+    const finalRow = getDb()
+      .prepare("SELECT status FROM connector_instances WHERE connector_instance_id = ?")
+      .get(connectionId) as { status: string };
+    assert.equal(finalRow.status, "active", "connection remains active after the retirement sweep");
+  });
 });

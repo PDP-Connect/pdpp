@@ -252,6 +252,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesListByOwnerIncludingDrafts: ReadManyQuery;
   readonly connectorInstancesListDraftBrowserEnrollmentShells: SmallEnumerationQuery;
   readonly connectorInstancesMigrateLegacyBindingKey: MutationQuery;
+  readonly connectorInstancesPromoteSetupBinding: MutationQuery;
   readonly connectorInstancesUpdateDisplayName: MutationQuery;
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly connectorSummaryEvidenceMarkDirtyByConnectorInstance: MutationQuery;
