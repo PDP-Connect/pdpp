@@ -40,8 +40,9 @@ preview instead of a full collection.
 # List connector ids this build accepts.
 npx -y @pdpp/local-collector connectors
 
-# Remove a saved local profile (local-only; does not revoke the device
-# token server-side — revoke the device from the dashboard for that).
+# Revoke this device's credential on the reference server, then remove its
+# saved local profile. Add --local-only to skip the server call (only for an
+# unreachable/decommissioned server — the device token stays live otherwise).
 npx -y @pdpp/local-collector logout --connector claude_code
 
 # Preview host-local recovery for a stalled collector lane. This loads the
