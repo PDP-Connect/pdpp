@@ -25,7 +25,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const OWNER_SUBJECT_ID = "owner_local";
 const NOW = "2026-06-01T00:00:00.000Z";
-const OWNER_INTENT_URL_RE = /\/v1\/owner\/connections\/intents$/;
 
 interface TestHttpServer {
   close: (callback: () => void) => void;
@@ -363,6 +362,9 @@ test("owner-template readiness reflects configured provider authorization", asyn
       assert.equal(status, 200);
 
       const google = byConnector(body, "google-maps-data-portability");
+      const publicListing = asRecord(google.public_listing);
+      assert.equal(publicListing.listed, false);
+      assert.equal(publicListing.status, "unproven");
       const setupPlan = asRecord(google.setup_plan);
       assert.equal(setupPlan.catalog_disposition, "provider_auth_connect");
       const deploymentReadiness = asRecord(setupPlan.deployment_readiness);
@@ -370,11 +372,11 @@ test("owner-template readiness reflects configured provider authorization", asyn
       assert.equal(setupPlan.next_step_kind, "open_provider_auth");
       assert.equal(setupPlan.support_state, "supported");
       assert.equal(setupPlan.proof_gate, null);
-      assert.equal(setupPlan.owner_actionable, true);
+      assert.equal(setupPlan.owner_actionable, false);
       const initiate = actionByFamily(google, "initiate_connection");
-      assert.equal(initiate.method, "POST");
-      assert.equal(initiate.status, "supported");
-      assert.match(String(initiate.url), OWNER_INTENT_URL_RE);
+      assert.equal(initiate.method, null);
+      assert.equal(initiate.status, "unsupported");
+      assert.equal(initiate.url, null);
     },
     { configuredProviderAuthConnectorKeys: ["google-maps-data-portability"] }
   );
