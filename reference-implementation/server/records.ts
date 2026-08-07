@@ -5835,6 +5835,10 @@ export function deleteConnectionRecordRowsSqlite(connectorInstanceId: string) {
   exec(referenceQueries.recordsDeleteDeleteRecordChangesByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteVersionCounterByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteBlobBindingsByInstance, [connectorInstanceId]);
+  // Blob rows are content-addressed and can have a binding from a sibling
+  // connection. The registered delete query removes only unreferenced rows,
+  // after this connection's bindings are gone, so the sibling binding remains
+  // valid under SQLite's blob_bindings foreign key.
   exec(referenceQueries.recordsDeleteDeleteBlobsByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteAttentionRecordsByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteRecordsByInstance, [connectorInstanceId]);
@@ -5856,7 +5860,16 @@ export async function deleteConnectionRecordRowsPostgres(client: PostgresClient,
   await client.query("DELETE FROM record_changes WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM version_counter WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM blob_bindings WHERE connector_instance_id = $1", [connectorInstanceId]);
-  await client.query("DELETE FROM blobs WHERE connector_instance_id = $1", [connectorInstanceId]);
+  await client.query(
+    `DELETE FROM blobs
+      WHERE connector_instance_id = $1
+        AND NOT EXISTS (
+          SELECT 1
+            FROM blob_bindings
+           WHERE blob_bindings.blob_id = blobs.blob_id
+        )`,
+    [connectorInstanceId]
+  );
   await client.query("DELETE FROM connector_attention_records WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM records WHERE connector_instance_id = $1", [connectorInstanceId]);
   return count;
