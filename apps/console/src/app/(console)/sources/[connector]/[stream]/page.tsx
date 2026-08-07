@@ -21,6 +21,7 @@ import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroo
 import { ServerUnreachable } from "../../../components/shell.tsx";
 import { WarningsBanner } from "../../../components/warnings-banner.tsx";
 import { formatStreamCollectionFacts, type StreamCollectionFacts } from "../../../lib/collection-report.ts";
+import { connectorRunSummaryId } from "../../../lib/connector-run-summary-status.ts";
 import { ReferenceServerUnreachableError, ResourceServerHttpError } from "../../../lib/owner-token.ts";
 import { pickSemanticTimestamp, primaryTimestamp } from "../../../lib/record-timestamps.ts";
 import type { RefCollectionReportEntry, RefConnectorRunSummary } from "../../../lib/ref-client.ts";
@@ -664,7 +665,8 @@ function latestStreamRunEvidence(
   facts: StreamCollectionFacts | null,
   latestRun: RefConnectorRunSummary | null
 ): { detail: string; href: string | null; value: string } {
-  const href = latestRun ? `/syncs/${encodeURIComponent(latestRun.run_id)}` : null;
+  const runId = connectorRunSummaryId(latestRun?.run_id);
+  const href = runId ? `/syncs/${encodeURIComponent(runId)}` : null;
   if (!facts) {
     return {
       detail: latestRun
@@ -675,7 +677,7 @@ function latestStreamRunEvidence(
     };
   }
   const detailParts = [
-    latestRun ? `run ${latestRun.run_id}` : null,
+    runId ? `run ${runId}` : null,
     `coverage ${facts.coverage.value}`,
     facts.disposition ? `next run: ${facts.disposition.label}` : null,
     facts.pendingDetailGapsLabel,

@@ -93,7 +93,7 @@ export interface RunStatusEnvelope {
   } | null;
   links: { timeline: string };
   object: "run_status";
-  run_id: string;
+  run_id?: string | null;
   started_at: string | null;
   status: RunHandleStatus;
   terminal_reason: string | null;
