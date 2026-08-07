@@ -6,6 +6,7 @@ Presentation policy is currently duplicated across the public site, operator con
 
 - Add a framework-independent `@pdpp/display` package for connector identity, record presentation, and timestamp policy.
 - Make `@pdpp/brand` the layered token, typography, utility, and shared-style source while applications retain surface-specific CSS.
+- Add one theme-aware React text primitive whose size and tone resolve through the active Tailwind theme without importing application-specific vocabulary.
 - Use one `next-themes` runtime from `@pdpp/operator-ui` across the public site and console.
 - Co-locate component styling and Node test CSS handling with `@pdpp/operator-ui`.
 
