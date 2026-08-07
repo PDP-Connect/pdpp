@@ -202,6 +202,24 @@ function loadManifest(name: string): ConnectorManifest {
   ) as ConnectorManifest;
 }
 
+function verifiedEmptyCollectionFacts(connectorName: string): Record<string, unknown> {
+  const manifest = loadManifest(connectorName);
+  const streams = Array.isArray(manifest.streams)
+    ? (manifest.streams as Array<{ name?: unknown; required?: unknown }>)
+        .filter((stream) => typeof stream.name === "string" && stream.name.length > 0)
+        .map((stream) => ({
+          checkpoint: "committed",
+          collected: 0,
+          considered: 0,
+          covered: 0,
+          pending_detail_gaps: 0,
+          skipped: null,
+          stream: stream.name,
+        }))
+    : [];
+  return { collection_facts: { streams } };
+}
+
 const VALID_TIMELINE_BODY = JSON.stringify({
   locations: [
     {
@@ -352,12 +370,13 @@ async function emitTerminalRunEvent(
   connectorId: string,
   runId: string,
   status: string,
-  data: Readonly<Record<string, unknown>> = {}
+  data: Readonly<Record<string, unknown>> = {},
+  connectorInstanceId = `cin_${connectorId}`
 ): Promise<void> {
   await emitSpineEvent({
     actor_id: connectorId,
     actor_type: "runtime",
-    data: { source: { id: connectorId, kind: "connector" }, ...data },
+    data: { connector_instance_id: connectorInstanceId, source: { id: connectorId, kind: "connector" }, ...data },
     event_type: status === "failed" ? "run.failed" : "run.completed",
     object_id: runId,
     object_type: "run",
@@ -373,14 +392,15 @@ async function emitTerminalRunEvent(
 async function emitStartedRunEvent(
   connectorId: string,
   runId: string,
-  occurredAt = "2026-06-10T00:02:00.000Z"
+  occurredAt = "2026-06-10T00:02:00.000Z",
+  connectorInstanceId = `cin_${connectorId}`
 ): Promise<void> {
   await emitSpineEvent({
     actor_id: connectorId,
     actor_type: "runtime",
     data: {
       boot_epoch: "11111111-1111-4111-8111-111111111111",
-      connector_instance_id: `cin_${connectorId}`,
+      connector_instance_id: connectorInstanceId,
       seq: 1,
       source: { id: connectorId, kind: "connector" },
     },
@@ -469,17 +489,42 @@ test("pending static-secret setup is visible before any records are accepted", a
       assert.ok(!afterCapture.text.includes(SECRET), "status must not echo the secret");
       clearActiveRun(connectionId);
 
-      await emitTerminalRunEvent("gmail", "run_status_zero_yield", "succeeded", {
-        records_emitted: 0,
-        reported_records_emitted: 0,
-      });
+      await emitTerminalRunEvent(
+        "gmail",
+        "run_status_zero_yield",
+        "succeeded",
+        {
+          records_emitted: 0,
+          reported_records_emitted: 0,
+        },
+        connectionId
+      );
       const zeroYield = await getStatus(asUrl, cookie, connectionId, "run_status_zero_yield");
       assert.equal(zeroYield.status, 200, zeroYield.text);
-      assert.equal(zeroYield.body.setup_state, "first_sync_zero_yield");
-      assert.equal(zeroYield.body.health_state, "idle");
+      assert.equal(zeroYield.body.setup_state, "first_sync_unverified_zero");
+      assert.equal(zeroYield.body.health_state, "needs_attention");
       assert.equal(zeroYield.body.pending, false);
+      assert.equal(zeroYield.body.terminal_setup_disposition, "unverified_zero");
       assert.equal(subObject(zeroYield.body, "run").records_emitted, 0);
       assert.equal(subObject(zeroYield.body, "run").reported_records_emitted, 0);
+      assert.equal(
+        getDb().prepare("SELECT 1 FROM connector_schedules WHERE connector_instance_id = ?").get(connectionId),
+        undefined,
+        "zero-yield draft must remain unscheduled"
+      );
+
+      // Revisit without a run_id resolves the latest terminal row through the
+      // connection-scoped run-history reader, rather than falling back to an
+      // unscoped spine lookup or returning to first_sync_pending.
+      const revisited = await getStatus(asUrl, cookie, connectionId);
+      assert.equal(revisited.body.setup_state, "first_sync_unverified_zero");
+      assert.equal(revisited.body.terminal_setup_disposition, "unverified_zero");
+
+      const summaries = await listRefConnectors(asUrl, cookie);
+      assert.equal(summaries.status, 200, summaries.text);
+      const summary = dataArrayOf(summaries.body).find((item) => item.connection_id === connectionId);
+      assert.ok(summary, "draft terminal setup should remain owner-visible in connector summaries");
+      assert.equal(summary.terminal_setup_disposition, "unverified_zero");
     });
   });
 });
@@ -525,6 +570,69 @@ test("pending manual/upload setup is visible without credential semantics", asyn
   });
 });
 
+test("terminal setup evidence is composite connection/run scoped and survives revisit without run_id", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+      const first = await createDraft(asUrl, cookie, "gmail", { account_email: "first@example.com" });
+      const second = await createDraft(asUrl, cookie, "gmail", { account_email: "second@example.com" });
+      const third = await createDraft(asUrl, cookie, "gmail", { account_email: "third@example.com" });
+      const firstConnectionId = requireString(first.body.connection_id, "first.body.connection_id");
+      const secondConnectionId = requireString(second.body.connection_id, "second.body.connection_id");
+      const thirdConnectionId = requireString(third.body.connection_id, "third.body.connection_id");
+      await capture(asUrl, cookie, firstConnectionId);
+      await capture(asUrl, cookie, secondConnectionId);
+      await capture(asUrl, cookie, thirdConnectionId);
+
+      const duplicateRunId = "run_duplicate_connection_scope";
+      await emitTerminalRunEvent(
+        "gmail",
+        duplicateRunId,
+        "succeeded",
+        { records_emitted: 0, reported_records_emitted: 0 },
+        firstConnectionId
+      );
+      await emitTerminalRunEvent(
+        "gmail",
+        duplicateRunId,
+        "succeeded",
+        { ...verifiedEmptyCollectionFacts("gmail"), records_emitted: 0, reported_records_emitted: 0 },
+        secondConnectionId
+      );
+      await emitTerminalRunEvent("gmail", duplicateRunId, "succeeded", {}, thirdConnectionId);
+
+      const firstRevisit = await getStatus(asUrl, cookie, firstConnectionId);
+      const secondRevisit = await getStatus(asUrl, cookie, secondConnectionId);
+      const thirdRevisit = await getStatus(asUrl, cookie, thirdConnectionId);
+      assert.equal(firstRevisit.body.terminal_setup_disposition, "unverified_zero");
+      assert.equal(firstRevisit.body.setup_state, "first_sync_unverified_zero");
+      assert.equal(secondRevisit.body.terminal_setup_disposition, "verified_empty");
+      assert.equal(secondRevisit.body.setup_state, "first_sync_verified_empty");
+      assert.equal(thirdRevisit.body.terminal_setup_disposition, "unverified_missing_counts");
+      assert.equal(thirdRevisit.body.setup_state, "first_sync_unverified_missing_counts");
+
+      // The explicit run_id override remains fenced by the addressed
+      // connector_instance_id even when both connections share the run id.
+      const firstExact = await getStatus(asUrl, cookie, firstConnectionId, duplicateRunId);
+      const secondExact = await getStatus(asUrl, cookie, secondConnectionId, duplicateRunId);
+      const thirdExact = await getStatus(asUrl, cookie, thirdConnectionId, duplicateRunId);
+      assert.equal(firstExact.body.terminal_setup_disposition, "unverified_zero");
+      assert.equal(secondExact.body.terminal_setup_disposition, "verified_empty");
+      assert.equal(thirdExact.body.terminal_setup_disposition, "unverified_missing_counts");
+
+      const summaries = await listRefConnectors(asUrl, cookie);
+      assert.equal(summaries.status, 200, summaries.text);
+      const firstSummary = dataArrayOf(summaries.body).find((item) => item.connection_id === firstConnectionId);
+      const secondSummary = dataArrayOf(summaries.body).find((item) => item.connection_id === secondConnectionId);
+      const thirdSummary = dataArrayOf(summaries.body).find((item) => item.connection_id === thirdConnectionId);
+      assert.equal(firstSummary?.terminal_setup_disposition, "unverified_zero");
+      assert.equal(secondSummary?.terminal_setup_disposition, "verified_empty");
+      assert.equal(thirdSummary?.terminal_setup_disposition, "unverified_missing_counts");
+    });
+  });
+});
+
 test("a failed first sync is visible with an actionable error and no secret leak", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
@@ -538,7 +646,7 @@ test("a failed first sync is visible with an actionable error and no secret leak
       // The run terminated as failed (no active-run row remains). The owner
       // surface holds the run id; the route resolves its terminal status.
       const runId = "run_status_failed";
-      await emitTerminalRunEvent("gmail", runId, "failed");
+      await emitTerminalRunEvent("gmail", runId, "failed", {}, connectionId);
 
       const failed = await getStatus(asUrl, cookie, connectionId, runId);
       assert.equal(failed.status, 200, failed.text);
@@ -609,8 +717,8 @@ test("setup status flips to active once first ingest accepts records", async () 
       clearActiveRun(connectionId);
 
       const failedRunId = "run_status_credential_rotation_failed";
-      await emitStartedRunEvent("gmail", failedRunId, "9999-01-01T00:00:00.000Z");
-      await emitTerminalRunEvent("gmail", failedRunId, "failed");
+      await emitStartedRunEvent("gmail", failedRunId, "9999-01-01T00:00:00.000Z", connectionId);
+      await emitTerminalRunEvent("gmail", failedRunId, "failed", {}, connectionId);
       const failedVerification = await getStatus(asUrl, cookie, connectionId, failedRunId);
       assert.equal(failedVerification.status, 200, failedVerification.text);
       assert.equal(failedVerification.body.status, "active");
@@ -856,7 +964,7 @@ test("ChatGPT browser-enrollment-shell draft is classified browser_session, not 
     // A failed first sync on a browser-session connection gets a browser-safe
     // remediation, never "re-enter the provider credential".
     const runId = "run_browser_status_failed";
-    await emitTerminalRunEvent("chatgpt", runId, "failed");
+    await emitTerminalRunEvent("chatgpt", runId, "failed", {}, connectionId);
     const failed = await getStatus(asUrl, cookie, connectionId, runId);
     assert.equal(failed.status, 200, failed.text);
     assert.equal(failed.body.setup_kind, "browser_session");

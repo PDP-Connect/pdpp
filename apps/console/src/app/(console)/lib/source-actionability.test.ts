@@ -20,6 +20,7 @@ import {
   SOURCE_WORK_GROUP_COPY,
   sourceAttentionHeadline,
   sourceWorkFromConnectors,
+  TERMINAL_SETUP_DISPOSITION_COPY,
   verdictRequiresOwnerNow,
 } from "./source-actionability.ts";
 
@@ -435,6 +436,25 @@ test("source actionability projects a draft connection as needs-you setup_in_pro
   assert.equal(actionability.work?.group, "needsOwner");
   assert.equal(actionability.work?.actionLabel, SETUP_IN_PROGRESS_CTA_LABEL);
   assert.equal(actionability.work?.statusLabel, "needs you");
+});
+
+test("terminal setup dispositions replace generic draft copy while staying inactive setup work", () => {
+  for (const disposition of ["verified_empty", "unverified_zero", "unverified_missing_counts"] as const) {
+    const copy = TERMINAL_SETUP_DISPOSITION_COPY[disposition];
+    const actionability = projectSourceActionability(draftConnector({ terminal_setup_disposition: disposition }));
+
+    assert.equal(isSetupInProgressConnector(draftConnector({ terminal_setup_disposition: disposition })), true);
+    assert.equal(actionability.renderedStatus.label, copy.statusLabel);
+    assert.equal(actionability.renderedStatus.kind, "degraded");
+    assert.equal(actionability.nextAction?.label, copy.actionLabel);
+    assert.equal(actionability.primaryVerdictAction?.cta, copy.actionLabel);
+    assert.equal(actionability.primaryVerdictAction?.terminal, true);
+    assert.equal(actionability.ownerActionCue?.label, copy.actionLabel);
+    assert.equal(actionability.work?.group, "needsOwner");
+    assert.equal(actionability.work?.actionLabel, copy.actionLabel);
+    assert.equal(actionability.work?.statusLabel, copy.statusLabel);
+    assert.equal(actionability.work?.what, copy.what);
+  }
 });
 
 test("source actionability: revoked outranks draft — a revoked connection never reads as setup_in_progress", () => {

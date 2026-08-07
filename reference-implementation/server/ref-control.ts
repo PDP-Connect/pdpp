@@ -82,6 +82,10 @@ import {
 } from "../runtime/recovery-decision.ts";
 import type { RenderedVerdict, ScheduleEvidence } from "../runtime/rendered-verdict.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import {
+  classifyTerminalSetupDisposition,
+  type SetupTerminalDisposition,
+} from "../runtime/static-secret-setup-status.ts";
 import { pickMostUrgentAttention } from "./attention-urgency.ts";
 import { getConnectorManifest } from "./auth.ts";
 import {
@@ -479,6 +483,7 @@ export interface ConnectorRunSummary {
   readonly first_at: string;
   readonly known_gaps: unknown[];
   readonly last_at: string;
+  readonly records_emitted?: number | null;
   /**
    * Whether this run was dispatched `recovery_only` (drains pending detail
    * gaps only; performs no forward/list-pass inventory scan). Read directly
@@ -493,10 +498,12 @@ export interface ConnectorRunSummary {
    * verdict that wipes prior proven coverage.
    */
   readonly recovery_only: boolean;
+  readonly reported_records_emitted?: number | null;
   readonly run_id: string | undefined;
   readonly started_at: string;
   readonly status: string;
   readonly terminal_reason: string | null;
+  readonly yield_counts_present?: boolean;
 }
 
 export interface PendingDetailGapSummary {
@@ -802,6 +809,8 @@ export interface ConnectorSummary {
     readonly as_of: string | null;
     readonly reason_code: string | null;
   };
+  /** Shared terminal setup disposition for a draft, or null otherwise. */
+  readonly terminal_setup_disposition: SetupTerminalDisposition | null;
   readonly total_records: number;
   /**
    * Orthogonal state for `total_records`, the same `count_state` contract
@@ -1142,6 +1151,27 @@ function isActiveRunSummaryStatus(status: string): boolean {
   return status === "pending" || status === "started" || status === "in_progress";
 }
 
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function productRunYieldCounts(history: ProductRunHistoryRecord): {
+  readonly present: boolean;
+  readonly recordsEmitted: number | null;
+  readonly reportedRecordsEmitted: number | null;
+} {
+  const facts = history.factsJson;
+  const present =
+    facts === null || facts === undefined
+      ? true
+      : Object.hasOwn(facts, "records_emitted") || Object.hasOwn(facts, "reported_records_emitted");
+  return {
+    present,
+    recordsEmitted: present ? finiteNumberOrNull(history.recordsEmitted) : null,
+    reportedRecordsEmitted: present ? finiteNumberOrNull(history.reportedRecordsEmitted) : null,
+  };
+}
+
 /**
  * Product LIST/detail composition (terminal-read-architecture-fable-0730.md
  * §9/R9.2): a `run_history` row for ANY run kind, composed with the
@@ -1166,6 +1196,7 @@ function productRunHistoryToConnectorRunSummary(
     return null;
   }
   const facts = history.factsJson ?? null;
+  const yieldCounts = productRunYieldCounts(history);
   const isLive = Boolean(activeRun && history.runId && activeRun.run_id === history.runId);
   let status: string = history.status;
   if (status === "running") {
@@ -1187,11 +1218,14 @@ function productRunHistoryToConnectorRunSummary(
     first_at: history.startedAt,
     known_gaps: terminalKnownGaps.length > 0 ? terminalKnownGaps : [...history.knownGaps],
     last_at: isActiveRunSummaryStatus(status) ? history.startedAt : history.completedAt,
+    records_emitted: yieldCounts.recordsEmitted,
     recovery_only: facts?.recovery_only === true,
+    reported_records_emitted: yieldCounts.reportedRecordsEmitted,
     run_id: history.runId || undefined,
     started_at: history.startedAt,
     status,
     terminal_reason: history.terminalReason ?? null,
+    yield_counts_present: yieldCounts.present,
   };
 }
 
@@ -4626,8 +4660,10 @@ function shouldHydrateRunSummariesForInstance(
   // still refuses connector-wide fallback unless the connector has exactly one
   // active visible source, but skipping hydration here would also drop exact
   // `connector_instance_id` / browser-profile matches for multi-account
-  // connectors and render them as indefinitely "checking".
-  return instance.status === "active";
+  // connectors and render them as indefinitely "checking". Drafts are also
+  // hydrated so owner surfaces can reuse the same terminal setup disposition
+  // without making a second lifecycle projection.
+  return instance.status === "active" || instance.status === "draft";
 }
 
 function groupRetainedSizeRowsByInstance(
@@ -4867,6 +4903,20 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const authoritativeLastRun = localDeviceBacked ? null : lastRun;
   const authoritativeLastSuccessfulRun = localDeviceBacked ? null : lastSuccessfulRun;
   const authoritativeLatestStreamFacts = localDeviceBacked ? null : latestStreamFacts;
+  const terminalSetupDisposition =
+    instance.status === "draft" && authoritativeLastRun
+      ? classifyTerminalSetupDisposition({
+          collectionFacts: authoritativeLastRun.collection_facts,
+          manifestStreams: (manifest.streams ?? []).map((stream) => ({
+            name: stream.name,
+            ...(stream.required === undefined ? {} : { required: stream.required }),
+          })),
+          recordsEmitted: authoritativeLastRun.records_emitted,
+          reportedRecordsEmitted: authoritativeLastRun.reported_records_emitted,
+          status: authoritativeLastRun.status,
+          yieldCountsPresent: authoritativeLastRun.yield_counts_present,
+        })
+      : null;
   const healthRemoteSurface = connectionHealthRemoteSurface({
     remoteSurface,
     runtime: authoritativeEphemeralBrowserRuntime,
@@ -5102,6 +5152,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     terminal_facts: evidence
       ? evidence.terminal_facts
       : { as_of: null, event_seq: null, reason_code: "summary_evidence_unavailable", state: "unobserved" },
+    terminal_setup_disposition: terminalSetupDisposition,
     total_records: totalRecords,
     total_records_state: totalRecordsState,
     total_retained_bytes: totalRetainedBytes,

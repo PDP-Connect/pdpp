@@ -157,13 +157,15 @@ function PendingSetupCardPanel({ card }: { card: PendingSetupCard }) {
   return (
     <section className="rr-fix" data-source-work="needsOwner" data-testid="syncs-pending-setup-card">
       <div className="rr-fix__body">
-        <h3 className="rr-fix__title">{card.name} — setup in progress</h3>
-        <p className="rr-fix__expl">Finish connecting this source to start its first sync.</p>
+        <h3 className="rr-fix__title">
+          {card.name} — {card.statusLabel}
+        </h3>
+        <p className="rr-fix__expl">{card.what}</p>
       </div>
       <div className="rr-fix__act">
         <Link href={card.continueHref} prefetch={false}>
           <IcButton size="sm" variant="human">
-            Continue setup
+            {card.actionLabel}
           </IcButton>
         </Link>
       </div>

@@ -39,6 +39,7 @@ import {
   type SourceStatusFlag,
   type SourceWorkItem,
   sourceAttentionHeadline,
+  sourceWorkItemFromConnector,
 } from "../lib/source-actionability.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
@@ -157,6 +158,8 @@ export interface FailureCard {
  * fix-pending-connection-discovery design.
  */
 export interface PendingSetupCard {
+  /** Shared owner action translated from the connection-scoped disposition. */
+  actionLabel: string;
   /** Durable connection identity. */
   connectionId: string;
   /** Connector key. */
@@ -165,6 +168,10 @@ export interface PendingSetupCard {
   continueHref: string;
   /** Connection display name (the card title). */
   name: string;
+  /** Shared terminal/setup status label. */
+  statusLabel: string;
+  /** Shared owner-facing explanation. */
+  what: string;
 }
 
 /**
@@ -663,11 +670,15 @@ function toPendingSetupCard(connector: RefConnectorSummary): PendingSetupCard {
   // recordsHrefForSummary for the same documented pattern).
   // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connector.connection_id ?? connector.connector_instance_id ?? connector.connector_id;
+  const work = pendingSetupWorkItem(connector);
   return {
+    actionLabel: work.actionLabel ?? SETUP_IN_PROGRESS_CTA_LABEL,
     connectionId: connector.connection_id,
     connectorId: connector.connector_id,
     continueHref: `/connect/status/${encodeURIComponent(routeId)}`,
     name: connector.display_name,
+    statusLabel: work.statusLabel,
+    what: work.what,
   };
 }
 
@@ -676,6 +687,10 @@ function pendingSetupWorkItem(connector: RefConnectorSummary): SourceWorkItem {
   // connection_id is non-optional in the current contract; connector_instance_id
   // /connector_id are a real legacy-server fallback (see schedule-row.tsx's
   // recordsHrefForSummary for the same documented pattern).
+  const work = sourceWorkItemFromConnector(connector);
+  if (work) {
+    return work;
+  }
   // biome-ignore lint/suspicious/noUnnecessaryConditions: see comment above.
   const routeId = connector.connection_id ?? connector.connector_instance_id ?? connector.connector_id;
   return {

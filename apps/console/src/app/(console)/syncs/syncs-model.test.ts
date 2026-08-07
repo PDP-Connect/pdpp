@@ -28,6 +28,7 @@ const RECONNECT_PROMPT_RE = /reconnect|log in/i;
 const RESUME_FALSE_REASSURANCE_RE = /fills on the next successful run|resumes normally/i;
 const RESUME_NORMALLY_RE = /resume normally/i;
 const THROTTLING_RE = /throttling/i;
+const UNVERIFIED_ZERO_COPY_RE = /without proving the account was empty/;
 const ACTIONABILITY_RENDERED_STATUS_RE = /actionability\.renderedStatus/;
 const RAW_VERDICT_TONE_RE = /rendered_verdict\.pill\.tone|verdict\.pill\.tone/;
 const SYNCS_PAGE_SOURCE = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
@@ -549,6 +550,22 @@ test("a draft connection produces a PendingSetupCard, not a SyncGroup or Failure
   // Same durable target every other draft surface (Sources row, next-action,
   // source-detail redirect) resolves to.
   assert.equal(card.continueHref, "/connect/status/cin_draft");
+});
+
+test("terminal setup disposition keeps a draft out of sync groups and carries shared actionability copy", () => {
+  const model = buildSyncsViewModel({
+    connectors: [draftConnector({ terminal_setup_disposition: "unverified_zero" })],
+    runs: [],
+  });
+
+  assert.equal(model.groups.length, 0);
+  assert.equal(model.failureCards.length, 0);
+  assert.equal(model.pendingSetupCards.length, 1);
+  const [card] = model.pendingSetupCards;
+  assert.ok(card);
+  assert.equal(card.statusLabel, "needs review");
+  assert.equal(card.actionLabel, "Retry first sync");
+  assert.match(card.what, UNVERIFIED_ZERO_COPY_RE);
 });
 
 test("a draft connection counts toward needYourHand and inflates onSchedule by zero", () => {
