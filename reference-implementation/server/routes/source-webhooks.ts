@@ -88,6 +88,9 @@ export interface MountRefSourceWebhooksContext {
   getSchedulerStore: () => SourceWebhookSchedulerStore;
   getSourceWebhookEventStore: () => SourceWebhookEventStoreLike;
   handleError: (res: unknown, err: unknown) => void;
+  // This route is intentionally connector-scoped, not connection-scoped. If
+  // it ever accepts a connector_instance_id, it must use the lifecycle
+  // admission fence documented by assertConnectorInstanceWritable.
   ingestRecord: (connectorId: string, record: Record<string, unknown>) => unknown | Promise<unknown>;
   parseSourceWebhookSecrets: () => SourceWebhookSecretsMap;
   pdppError: (res: unknown, status: number, code: string, message: string | undefined) => unknown;

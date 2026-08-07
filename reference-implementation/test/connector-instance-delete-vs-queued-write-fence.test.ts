@@ -341,6 +341,29 @@ test("SQLite: delete-commits-first then a queued write is refused, never creatin
   }
 });
 
+test("SQLite negative control: generic ingest remains ungated unless a lifecycle-aware caller opts in", async () => {
+  initDb();
+  try {
+    await registerConnector(manifest());
+    const connectorInstanceId = "cin_delete_fence_negative_control";
+    await seedSqliteInstance(connectorInstanceId);
+    const storageTarget = { connector_id: CONNECTOR_ID, connector_instance_id: connectorInstanceId };
+    const store = createSqliteConnectorInstanceStore();
+
+    await store.deleteConnection(connectorInstanceId, {
+      now: NOW,
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      purge: sqlitePurge(),
+    });
+    const outcome = await ingestRecord(storageTarget, recordEnvelope("rec_negative_control"));
+
+    assert.deepEqual(outcome, { accepted: true, changed: true });
+    assert.equal(sqliteRowCounts(connectorInstanceId).records, 1);
+  } finally {
+    closeDb();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Postgres (skipped unless PDPP_TEST_POSTGRES_URL targets the dedicated,
 // loopback-only test listener — see test/helpers/dedicated-postgres-test-url.ts)
