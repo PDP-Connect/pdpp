@@ -16,6 +16,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findManifestForConnectorId } from "../sources/lib/relationships.ts";
+import type { OwnerConnectorTemplateLike } from "./connection-catalog.ts";
 import { isActiveConnectorRunSummaryStatus } from "./connector-run-summary-status.ts";
 import {
   getOwnerToken,
@@ -802,16 +803,8 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
   return manifests;
 }
 
-/** Minimal owner-template projection used to reuse the reference planner's readiness decision. */
-export interface OwnerConnectorTemplate {
-  connector_key?: string | null;
-  setup_plan?: {
-    deployment_readiness?: {
-      state?: "needs_config" | "ready" | "not_applicable" | string | null;
-    } | null;
-    setup_modality?: string | null;
-  } | null;
-}
+/** Server-owned catalog projection consumed by the live Add Source surface. */
+export type OwnerConnectorTemplate = OwnerConnectorTemplateLike;
 
 export async function listOwnerConnectorTemplates(): Promise<OwnerConnectorTemplate[]> {
   const body = (await authedFetch("/v1/owner/connector-templates")) as { data?: OwnerConnectorTemplate[] };

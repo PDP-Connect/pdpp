@@ -7,11 +7,7 @@ import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroo
 import { existingSourcesByConnectorCatalog } from "../../components/existing-sources-by-connector.ts";
 import { ServerUnreachable } from "../../components/shell.tsx";
 import { type ExistingSourceSetupLink, SourceSetupCatalog } from "../../components/source-setup-catalog.tsx";
-import {
-  buildConnectorCatalog,
-  type ConnectorCatalogEntry,
-  ownerCatalogManifests,
-} from "../../lib/connection-catalog.ts";
+import { buildOwnerConnectorCatalog, type ConnectorCatalogEntry } from "../../lib/connection-catalog.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { listConnectorManifests, listOwnerConnectorTemplates } from "../../lib/rs-client.ts";
 
@@ -32,15 +28,7 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
   } else {
     try {
       const [manifests, templates] = await Promise.all([listConnectorManifests(), listOwnerConnectorTemplates()]);
-      const configuredProviderAuthConnectorKeys = templates
-        .filter(
-          (template) =>
-            template.setup_plan?.setup_modality === "provider_authorization" &&
-            template.setup_plan.deployment_readiness?.state === "ready"
-        )
-        .map((template) => template.connector_key?.trim())
-        .filter((key): key is string => Boolean(key));
-      catalog = buildConnectorCatalog(ownerCatalogManifests(manifests), configuredProviderAuthConnectorKeys);
+      catalog = buildOwnerConnectorCatalog(manifests, templates);
       // EXACT per-connector existing-sources lookup — one `GET
       // /_ref/connections?connector_id=` call per catalog entry (bounded by
       // the registered connector-type catalog size, a few dozen, never by

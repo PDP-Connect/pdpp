@@ -20,7 +20,7 @@ import { buildSourceAddSupport, resolveSourceAddSupport } from "./source-add-sup
 
 const ADD_ANOTHER_ACCOUNT_LABEL_RE = /add another account/i;
 const CONNECT_BROWSER_SESSION_ROUTE_RE = /\/connect\/browser-session\/amazon/;
-const STATIC_SECRET_ROUTE_RE = /\/connect\/static-secret\/ynab/;
+const STATIC_SECRET_ROUTE_RE = /\/connect\/static-secret\/gmail/;
 const DEVICE_EXPORTER_ROUTE_RE = /\/device-exporters\?connector=/;
 const MANUAL_UPLOAD_ROUTE_RE = /\/connect\/manual-upload\/google-maps/;
 const PACKAGED_PATH_PENDING_RE = /^Adding another account is not available yet$/;
@@ -114,9 +114,9 @@ function providerAuthManifest(connectorId: string): CatalogManifestLike {
   };
 }
 
-test("static-secret source supports self-service add-another-account with an action", () => {
-  const map = buildSourceAddSupport([staticSecretManifest("ynab")]);
-  const support = resolveSourceAddSupport(map, "ynab");
+test("proven static-secret source supports self-service add-another-account with an action", () => {
+  const map = buildSourceAddSupport([staticSecretManifest("gmail")]);
+  const support = resolveSourceAddSupport(map, "gmail");
   assert.ok(support, "static-secret connector must appear in the support map");
   assert.equal(support.support, "self_service");
   assert.ok(support.action, "self-service add must carry a next action");
@@ -187,8 +187,8 @@ test("provider-auth source reports deployment prerequisite, not static-secret se
 });
 
 test("a connection's raw registry-prefixed connector_id resolves to the canonical key", () => {
-  const map = buildSourceAddSupport([staticSecretManifest("ynab")]);
-  const support = resolveSourceAddSupport(map, "https://registry.pdpp.org/connectors/ynab");
+  const map = buildSourceAddSupport([staticSecretManifest("gmail")]);
+  const support = resolveSourceAddSupport(map, "https://registry.pdpp.org/connectors/gmail");
   assert.ok(support, "registry-URL connector_id must resolve via canonicalConnectorKey");
   assert.equal(support.support, "self_service");
 });

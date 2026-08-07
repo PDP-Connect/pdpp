@@ -84,10 +84,75 @@ function stripComments(src: string): string {
 
 /** A minimal catalog entry stub for a given disposition. */
 function entryForDisposition(disposition: ConnectorCatalogEntry["disposition"]): ConnectorCatalogEntry {
+  const supported = new Set<ConnectorCatalogEntry["disposition"]>([
+    "local_collector_enroll",
+    "static_secret_connect",
+    "manual_upload_connect",
+    "browser_collector_manual",
+    "provider_auth_connect",
+  ]).has(disposition);
+  const proofGated = new Set<ConnectorCatalogEntry["disposition"]>([
+    "local_collector_unproven",
+    "provider_auth_proof_gated",
+    "browser_bound_runbook",
+    "manual_upload_pending",
+  ]).has(disposition);
+  const providerDeploymentBlocked = disposition === "provider_auth_deployment_blocked";
+  let setupModality = "unsupported";
+  if (disposition === "static_secret_connect") {
+    setupModality = "static_secret";
+  } else if (disposition === "manual_upload_connect" || disposition === "manual_upload_pending") {
+    setupModality = "manual_or_upload";
+  } else if (
+    disposition === "provider_auth_connect" ||
+    providerDeploymentBlocked ||
+    disposition === "provider_auth_proof_gated"
+  ) {
+    setupModality = "provider_authorization";
+  } else if (disposition === "browser_collector_manual" || disposition === "browser_bound_runbook") {
+    setupModality = "browser_bound";
+  } else if (disposition === "local_collector_enroll" || disposition === "local_collector_unproven") {
+    setupModality = "local_collector";
+  }
+
+  let nextStepKind = "unsupported";
+  if (disposition === "local_collector_enroll") {
+    nextStepKind = "enroll_local_collector";
+  } else if (disposition === "browser_collector_manual") {
+    nextStepKind = "enroll_browser_collector";
+  } else if (disposition === "static_secret_connect") {
+    nextStepKind = "capture_static_secret";
+  } else if (disposition === "provider_auth_connect") {
+    nextStepKind = "open_provider_auth";
+  } else if (providerDeploymentBlocked) {
+    nextStepKind = "needs_deployment_config";
+  } else if (disposition === "manual_upload_connect" || disposition === "manual_upload_pending") {
+    nextStepKind = "provide_import_file";
+  } else if (disposition === "browser_bound_runbook" || disposition === "provider_auth_proof_gated") {
+    nextStepKind = "manual_runbook";
+  }
+  let supportState = "unsupported";
+  if (providerDeploymentBlocked) {
+    supportState = "needs_deployment_config";
+  } else if (supported) {
+    supportState = "supported";
+  } else if (proofGated) {
+    supportState = "proof_gated";
+  }
   return {
     connectorKey: `stub-${disposition}`,
-    deploymentReadiness: { blockers: [], ready: true },
+    deploymentReadiness: {
+      blockers: [],
+      guidance: null,
+      state: providerDeploymentBlocked ? "needs_config" : "ready",
+    },
     disposition,
+    nextStepKind,
+    ownerActionMethod: supported ? "POST" : null,
+    ownerActionUrl: supported ? "/v1/owner/connections/intents" : null,
+    proofGate: proofGated ? "setup_proof_missing" : null,
+    setupModality,
+    supportState,
   } as unknown as ConnectorCatalogEntry;
 }
 
@@ -99,6 +164,7 @@ const ALL_DISPOSITIONS: readonly ConnectorCatalogEntry["disposition"][] = [
   "manual_upload_connect",
   "manual_upload_pending",
   "provider_auth_deployment_blocked",
+  "provider_auth_connect",
   "browser_bound_runbook",
   "local_collector_unproven",
   "provider_auth_proof_gated",
@@ -127,6 +193,7 @@ test("only self-service and server-setup dispositions expose primary actions", (
     "static_secret_connect",
     "manual_upload_connect",
     "browser_collector_manual",
+    "provider_auth_connect",
   ]);
   const serverSetupDisposition = "provider_auth_deployment_blocked" as const;
   for (const disposition of ALL_DISPOSITIONS) {
