@@ -101,6 +101,7 @@ const blobRefSchema = z.object({
   size_bytes: z.number(),
 });
 const HYDRATION_STATUS_RE = /^(failed|hydrated|skipped_too_large|unavailable)$/;
+const coverageStatusSchema = z.enum(["collected", "inventory_only", "excluded", "deferred", "missing", "unsupported"]);
 
 export const photosSchema = z.object({
   id: recordIdSchema,
@@ -118,6 +119,14 @@ export const photosSchema = z.object({
   hydration_error: pdppSafeText.max(240).nullable(),
 });
 
+export const coverageDiagnosticsSchema = z.object({
+  id: pdppSafeText,
+  store: pdppSafeText,
+  stream: pdppSafeText.nullable(),
+  status: coverageStatusSchema,
+  reason: pdppSafeText.max(512),
+});
+
 /**
  * Stream → schema registry. Single source of truth for the streams this
  * connector emits.
@@ -127,6 +136,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   youtube_watch_history: youtubeWatchHistorySchema,
   search_history: searchHistorySchema,
   photos: photosSchema,
+  coverage_diagnostics: coverageDiagnosticsSchema,
 };
 
 export const validateRecord = makeValidateRecord(SCHEMAS);
