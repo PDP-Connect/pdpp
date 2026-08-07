@@ -143,7 +143,7 @@ export function PdppConceptMasthead() {
             <Link
               aria-label="PDPP, home"
               className={cn(
-                "inline-flex items-center gap-3 hover:text-primary!",
+                "inline-flex items-center gap-3 text-primary hover:text-foreground",
                 // align
                 "md:translate-y-[0.25em]",
                 // hide on home but retain layout space
