@@ -833,10 +833,13 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
 
 function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][number] }) {
   const { collection } = stream;
+  const isDisplayLabelDifferent = stream.displayLabel !== stream.name;
   return (
     <Link className="pdpp-table__row rr-s-stream-row" href={stream.exploreHref} style={{ display: "grid" }}>
       <TableCell>
-        <span className="rr-s-stream">{stream.name}</span>
+        <span className="rr-s-stream" title={isDisplayLabelDifferent ? stream.name : undefined}>
+          {stream.displayLabel}
+        </span>
       </TableCell>
       <TableCell>
         <StreamRecordCount stream={stream} />

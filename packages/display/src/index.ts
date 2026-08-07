@@ -13,6 +13,8 @@ export {
   formatSourceWithConnectionForDisplay,
   isFallbackConnectionLabel,
 } from "./identity/connector-display.ts";
+export type { StreamManifestEntry } from "./identity/stream-display.ts";
+export { streamDisplayDetail, streamDisplayLabel } from "./identity/stream-display.ts";
 export type {
   ClientDisplayInput,
   GrantLabelInput,

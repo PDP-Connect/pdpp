@@ -31,7 +31,9 @@ import {
   deriveSourceDisplayNameFallback,
   formatConnectorNameForDisplay,
   isFallbackConnectionLabel,
+  streamDisplayLabel,
 } from "@pdpp/display";
+import type { StreamManifestEntry } from "@pdpp/display";
 import {
   type ConnectorManifestLike,
   canonicalConnectorKey,
@@ -86,6 +88,8 @@ export interface SourceStreamManifestRow {
   collection: SourceStreamCollectionFacts | null;
   /** Cursor/checkpoint hint, or null when none is exposed at the index level. */
   cursor: string | null;
+  /** Human display label from manifest display.label, or stream name if absent. */
+  displayLabel: string;
   /** Deep-link into Explore for this connection + stream. */
   exploreHref: string;
   name: string;
@@ -522,9 +526,20 @@ export function toSourceInstanceView(
   const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
 
+  const manifest = options.manifests
+    ? options.manifests.find((candidate) => manifestMatchesConnectorId(candidate, connectorId))
+    : undefined;
+  const streamsByName = new Map<string, StreamManifestEntry | undefined>();
+  if (manifest?.streams) {
+    for (const stream of manifest.streams) {
+      streamsByName.set(stream.name, stream as StreamManifestEntry);
+    }
+  }
+
   const streams: SourceStreamManifestRow[] = sourceStreamNames.map((name) => {
     const facts = collectionFactsByStream.get(name) ?? null;
     const retained = streamRecordsByStream.get(name) ?? null;
+    const streamDecl = streamsByName.get(name);
     return {
       collection: facts
         ? {
@@ -541,10 +556,8 @@ export function toSourceInstanceView(
             tone: facts.tone,
           }
         : null,
-      // The index summary exposes no cursor or searchable flag per stream;
-      // render them as unknown rather than guessing. Collection-report facts
-      // are server-owned and safe to show here without another read.
       cursor: null,
+      displayLabel: streamDisplayLabel(name, streamDecl),
       exploreHref: exploreHrefFor(routeId, name),
       name,
       recordCount: retained ? retained.record_count : null,
