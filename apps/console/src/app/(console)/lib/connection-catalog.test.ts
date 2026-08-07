@@ -23,6 +23,7 @@ import {
   type CatalogManifestLike,
   catalogModalityFromManifest,
   deploymentBlockedEntries,
+  isOwnerActionableEntry,
   localCollectorEntries,
   localCollectorUnprovenEntries,
   manualUploadConnectEntries,
@@ -755,4 +756,139 @@ test("filesystem connectors outside the proven set are local-collector-unproven,
   for (const entry of network) {
     assert.notEqual(entry.modality, "local_collector");
   }
+});
+
+test("ownerActionable field is the sole authority for live owner catalogs", () => {
+  // Live owner catalogs always compute ownerActionable once in
+  // buildOwnerConnectorCatalog and store it. isOwnerActionableEntry must
+  // trust that field, not re-derive it.
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "actionable-api",
+        disposition: "provider_auth_connect",
+        ownerActionable: true,
+      }),
+      ownerTemplate({
+        connectorKey: "blocked-api",
+        disposition: "provider_auth_connect",
+        ownerActionable: false,
+      }),
+      ownerTemplate({
+        connectorKey: "actionable-static-secret",
+        connectorModality: "browser_bound",
+        disposition: "static_secret_connect",
+        setupModality: "static_secret",
+        nextStepKind: "capture_static_secret",
+        ownerActionable: true,
+        actionMethod: null,
+        actionStatus: "owner_mediated",
+        actionUrl: null,
+      }),
+      ownerTemplate({
+        connectorKey: "blocked-static-secret",
+        connectorModality: "browser_bound",
+        disposition: "static_secret_connect",
+        setupModality: "static_secret",
+        nextStepKind: "capture_static_secret",
+        ownerActionable: false,
+        actionMethod: null,
+        actionStatus: "unsupported",
+        actionUrl: null,
+      }),
+    ]
+  );
+
+  for (const entry of catalog) {
+    const actionable = isOwnerActionableEntry(entry);
+    assert.equal(
+      actionable,
+      entry.ownerActionable,
+      `isOwnerActionableEntry(${entry.connectorKey}) must return the ownerActionable field: ${entry.ownerActionable}`
+    );
+  }
+});
+
+test("isOwnerActionableEntry respects demo/test fallback rules when ownerActionable is undefined", async () => {
+  // Pure manifest catalogs (buildConnectorCatalog) have no ownerActionable field.
+  // isOwnerActionableEntry must apply fallback rules for testing. YNAB is proven
+  // to be supported (not proof-gated), so it serves as a good fallback test.
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+
+  const ynab = catalog.find((e) => e.connectorKey === "ynab");
+  assert.ok(ynab);
+  assert.equal(ynab.ownerActionable, undefined);
+  assert.equal(ynab.setupModality, "static_secret");
+  assert.equal(ynab.supportState, "supported");
+  assert.equal(ynab.proofGate, null);
+  // Fallback rule: static_secret dispositions are actionable if supported and not proof-gated
+  assert.equal(isOwnerActionableEntry(ynab), true);
+});
+
+test("presentation consistency: helper functions agree with ownerActionable authority", async () => {
+  // Every fixture in the presentation test suite must have presentation functions
+  // that agree with isOwnerActionableEntry. This is the core maintainability check.
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+
+  for (const entry of catalog) {
+    const isActionable = isOwnerActionableEntry(entry);
+    const hasAction = sourceSetupAction(entry) !== null;
+
+    // The invariant: if isOwnerActionableEntry returns true, sourceSetupAction
+    // must have a non-null result. Mutations to either would break this.
+    assert.equal(
+      hasAction,
+      isActionable,
+      `${entry.connectorKey}: sourceSetupAction must match isOwnerActionableEntry. ` +
+        `Helper says ${isActionable}, action is ${hasAction ? "set" : "null"}`
+    );
+  }
+});
+
+test("owner catalog: presentation consistency between actionability and availability", () => {
+  // For owner catalogs, ownerActionable gates both sourceSetupAvailability and
+  // sourceSetupAction. They must converge.
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "available",
+        disposition: "provider_auth_connect",
+        ownerActionable: true,
+      }),
+      ownerTemplate({
+        connectorKey: "not-available",
+        disposition: "provider_auth_proof_gated",
+        ownerActionable: false,
+        proofGate: "missing_proof",
+      }),
+      ownerTemplate({
+        connectorKey: "deployment-blocked",
+        disposition: "provider_auth_deployment_blocked",
+        ownerActionable: false,
+      }),
+    ]
+  );
+
+  const available = catalog.find((e) => e.connectorKey === "available");
+  assert.ok(available);
+  assert.equal(isOwnerActionableEntry(available), true);
+  assert.equal(sourceSetupAction(available) !== null, true);
+  assert.equal(sourceSetupAvailability(available), "available_now");
+
+  const notAvailable = catalog.find((e) => e.connectorKey === "not-available");
+  assert.ok(notAvailable);
+  assert.equal(isOwnerActionableEntry(notAvailable), false);
+  assert.equal(sourceSetupAction(notAvailable), null);
+  assert.equal(sourceSetupAvailability(notAvailable), "not_available_here");
+
+  const deploymentBlocked = catalog.find((e) => e.connectorKey === "deployment-blocked");
+  assert.ok(deploymentBlocked);
+  assert.equal(isOwnerActionableEntry(deploymentBlocked), false);
+  assert.equal(sourceSetupAction(deploymentBlocked), null);
+  // Special case: deployment_blocked gets "requires_server_setup", not "not_available_here"
+  assert.equal(sourceSetupAvailability(deploymentBlocked), "requires_server_setup");
 });

@@ -62,8 +62,7 @@ function browserBoundWithStoredCredentials(entry: ConnectorCatalogEntry): boolea
 
 function isUnavailableSetupEntry(entry: ConnectorCatalogEntry): boolean {
   return (
-    (entry.ownerActionable === false && entry.disposition !== "provider_auth_deployment_blocked") ||
-    (entry.setupModality === "static_secret" && !isOwnerActionableEntry(entry))
+    !isOwnerActionableEntry(entry) && entry.disposition !== "provider_auth_deployment_blocked"
   );
 }
 

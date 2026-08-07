@@ -518,27 +518,17 @@ export function buildOwnerConnectorCatalog(
   return entries;
 }
 
+/**
+ * Check if this entry is owner-actionable.
+ *
+ * For live owner-catalog entries, ownerActionable is the authoritative field
+ * computed once during buildOwnerConnectorCatalog. For demo/test entries from
+ * buildConnectorCatalog, fall back to explicit rules since they carry no
+ * owner-session authority.
+ */
 export function isOwnerActionableEntry(entry: ConnectorCatalogEntry): boolean {
   if (entry.ownerActionable !== undefined) {
-    const ownerSessionBrowserActionable =
-      entry.ownerActionable &&
-      entry.modality === "browser_bound" &&
-      ((entry.disposition === "browser_collector_manual" &&
-        entry.nextStepKind === "enroll_browser_collector" &&
-        typeof entry.enrollmentKey === "string") ||
-        (entry.disposition === "static_secret_connect" && entry.setupModality === "static_secret")) &&
-      entry.ownerActionMethod === null &&
-      entry.ownerActionUrl === null;
-    if (ownerSessionBrowserActionable) {
-      return true;
-    }
-    return (
-      entry.ownerActionable &&
-      entry.supportState === "supported" &&
-      entry.proofGate === null &&
-      typeof entry.ownerActionMethod === "string" &&
-      typeof entry.ownerActionUrl === "string"
-    );
+    return entry.ownerActionable;
   }
   // `buildConnectorCatalog` remains a pure manifest/planner projection for
   // tests and demo data. Its static-secret and provider branches still fail
