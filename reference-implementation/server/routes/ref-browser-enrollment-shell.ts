@@ -53,6 +53,28 @@ export interface BrowserEnrollmentShellSourceBinding {
   readonly kind: "browser_enrollment_shell";
 }
 
+// The durable binding a browser-enrollment shell promotes to — no TTL, so
+// exempt from browser-enrollment-shell-retirement.ts by construction.
+export interface BrowserCollectorSourceBinding {
+  readonly connector_id: string;
+  readonly kind: "browser_collector";
+  readonly promoted_at: string;
+  readonly promoted_from: "browser_enrollment_shell";
+}
+
+// Pure — no I/O — so it's independently unit-testable.
+export function promoteBrowserEnrollmentShellBinding(
+  shellBinding: BrowserEnrollmentShellSourceBinding,
+  now: string
+): BrowserCollectorSourceBinding {
+  return {
+    connector_id: shellBinding.connector_id,
+    kind: "browser_collector",
+    promoted_at: now,
+    promoted_from: "browser_enrollment_shell",
+  };
+}
+
 interface RouteRequest {
   readonly body?: unknown;
   ownerSession?: { readonly sub?: string | null } | null;

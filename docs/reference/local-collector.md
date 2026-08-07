@@ -167,12 +167,43 @@ versions, and capabilities such as `network`, `filesystem`, and `local_device`.
 Browser-bound connectors are intentionally not shipped in this package until
 each has its own publishability review.
 
-## Enroll
+## Setup (guided)
 
 Start the reference deployment and open the dashboard's local exporter
 enrollment form. Create an enrollment code for the connector id and local
-binding you want to run, then exchange that short-lived code on the host that
-has the local data:
+binding you want to run, then run `setup` on the host that has the local
+data:
+
+```bash
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector setup \
+  --base-url https://<reference-host> \
+  --code <one-time-code> \
+  --connector claude_code \
+  --device-label "<host label>" \
+  --sample 20
+```
+
+`setup` exchanges the code, writes the device id/device token/connection id
+to a local profile `.env` file under `~/.config/pdpp/collectors/`
+(`$PDPP_LOCAL_COLLECTOR_PROFILE_DIR` or `${XDG_CONFIG_HOME:-$HOME/.config}/pdpp/collectors`;
+file permissions `0600`, directory `0700` &mdash; POSIX mode bits, inert on
+Windows, where the file's protection comes from living under your own user
+profile directory instead), and prints a human-readable summary — never the
+raw device token. `--sample 20` runs a bounded 20-record proof pass
+immediately after enrolling, so you get real evidence the pairing works
+before deciding to collect the full source; omit it to only enroll and save
+credentials. Add `--json` for machine-readable output. Connector ids are
+case-insensitive and hyphens normalize to underscores (`claude-code` ==
+`claude_code`).
+
+Once `setup` has written a profile, `run --connection-id <id>` resolves
+device id/device token/connector from it automatically — see "Run" below.
+
+**Low-level alternative.** `enroll` is the scriptable primitive `setup` is
+built on: it performs the same exchange but prints the raw JSON response
+instead of writing a profile, for callers that manage credentials themselves
+(unchanged, still fully supported):
 
 ```bash
 # @pdpp/local-collector package, npx-launched pdpp-local-collector binary
@@ -192,8 +223,24 @@ lane.
 
 ## Run
 
-Run the connector with the enrollment response values supplied through
-environment variables:
+If you used `setup`, the profile it wrote is picked up automatically:
+
+```bash
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector run --connection-id <source_instance_id>
+```
+
+Live progress (phase, running record counts, a final summary) prints to
+stderr as the connector finds records — stdout stays a pure JSON result, so
+piping/parsing `run`'s output is unaffected. Pass `--quiet` to suppress
+progress lines (for example under a systemd unit, where stderr already lands
+in the journal). Pass `--sample <n>` any time to run a bounded proof pass
+instead of a full collection — it stops the connector after `n` records,
+still durably queues what it collected, and never marks the pass as a
+complete/coverage-checkpointed run.
+
+**Low-level alternative.** Supply the enrollment response values directly
+through environment variables — unchanged, still fully supported:
 
 ```bash
 # @pdpp/local-collector package, npx-launched pdpp-local-collector binary
@@ -220,6 +267,31 @@ npx -y @pdpp/local-collector run \
 `PDPP_SOURCE_INSTANCE_ID` remains a compatibility alias for
 `PDPP_CONNECTION_ID`, but new docs and scripts should use
 `PDPP_CONNECTION_ID`.
+
+## Connectors and logout
+
+List the connector ids this build accepts:
+
+```bash
+npx -y @pdpp/local-collector connectors
+```
+
+Revoke this device's own credential on the reference server, then remove its
+saved local profile. Deletion only happens after the server confirms the
+credential is revoked (or was already revoked); a network/server failure
+leaves local credentials in place so you can retry:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code
+```
+
+If the server is unreachable or decommissioned, `--local-only` skips the
+server call and deletes local credentials unconditionally — the device token
+then stays valid server-side until revoked some other way:
+
+```bash
+npx -y @pdpp/local-collector logout --connector claude_code --local-only
+```
 
 ## Recover A Stalled Collector
 

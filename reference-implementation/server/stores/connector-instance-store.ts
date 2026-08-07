@@ -1066,6 +1066,7 @@ export async function resolveOwnerConnectorInstanceNamespace({
  * connector type (or another owner's deterministic id) as a capability.
  */
 export function admitOwnerRunConnection({
+  allowDraft = false,
   ownerSubjectId,
   connectorId,
   connectorInstanceId = null,
@@ -1073,6 +1074,8 @@ export function admitOwnerRunConnection({
   displayName = null,
   now,
 }: {
+  /** Setup routes may explicitly admit the exact draft they just created. */
+  allowDraft?: boolean;
   ownerSubjectId: string;
   connectorId: string;
   connectorInstanceId?: string | null;
@@ -1084,6 +1087,7 @@ export function admitOwnerRunConnection({
     // Explicit selectors never materialize or fall through. The broader
     // resolver still supports legacy read compatibility independently.
     allowDefaultAccount: !connectorInstanceId,
+    allowStatuses: allowDraft ? ["active", "draft"] : ["active"],
     connectorId,
     connectorInstanceId,
     connectorInstanceStore,
@@ -1510,6 +1514,39 @@ export function createSqliteConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
+    // Promotes a temporary setup binding to its durable sibling kind.
+    // Guarded by `status = 'draft' AND binding.kind = fromKind`: a
+    // concurrent revoke racing this UPDATE loses safely (no row change,
+    // `promoted: false`). Never writes the identity tuple
+    // (connector_instance_id/owner_subject_id/source_kind/source_binding_key).
+    promoteSetupBinding(
+      connectorInstanceId: string,
+      {
+        fromKind,
+        sourceBinding,
+        updatedAt,
+      }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+    ): { instance: ConnectorInstance | null; promoted: boolean } {
+      let promoted = false;
+      writeTransaction(() => {
+        const result = exec(referenceQueries.connectorInstancesPromoteSetupBinding, [
+          stableJson(sourceBinding),
+          "active",
+          updatedAt,
+          connectorInstanceId,
+          fromKind,
+        ]);
+        promoted = Boolean(result.changes);
+        if (promoted) {
+          exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+            `connector instance promoted from ${fromKind}`,
+            connectorInstanceId,
+          ]);
+        }
+      });
+      return { instance: this.get(connectorInstanceId), promoted };
+    },
+
     resolveActiveByConnector(ownerSubjectId: string, connectorId: string): ConnectorInstance {
       const rows = getMany<ConnectorInstanceRow>(
         referenceQueries.connectorInstancesListActiveByOwnerConnector,
@@ -1555,6 +1592,47 @@ export function createSqliteConnectorInstanceStore() {
           "connector instance display_name changed",
           connectorInstanceId,
         ]);
+      });
+      return this.get(connectorInstanceId);
+    },
+
+    // Re-key one owner-session static-secret instance after a synchronous
+    // provider probe proves its account identity. The connector instance id
+    // is intentionally preserved: records, schedules, history, and callers
+    // all address that id. The existing binding unique constraint is the
+    // cross-request identity claim; a concurrent claim for the same verified
+    // identity raises the backend's normal unique-constraint error for the
+    // route to resolve to the winner.
+    updateStaticSecretBinding({
+      connectorInstanceId,
+      connectorId,
+      ownerSubjectId,
+      sourceBinding,
+      sourceBindingKey,
+      updatedAt,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      sourceBinding: Record<string, unknown>;
+      sourceBindingKey: string;
+      updatedAt: string;
+    }): ConnectorInstance | null {
+      writeTransaction(() => {
+        const result = exec(referenceQueries.connectorInstancesUpdateStaticSecretBinding, [
+          sourceBindingKey,
+          stableJson(sourceBinding),
+          updatedAt,
+          connectorInstanceId,
+          ownerSubjectId,
+          connectorId,
+        ]);
+        if (result.changes) {
+          exec(referenceQueries.connectorSummaryEvidenceMarkDirtyByConnectorInstance, [
+            "static-secret binding updated",
+            connectorInstanceId,
+          ]);
+        }
       });
       return this.get(connectorInstanceId);
     },
@@ -2177,6 +2255,40 @@ export function createPostgresConnectorInstanceStore() {
       return { hasMore, rows: rows.slice(0, limit).map(mapInstance) };
     },
 
+    // Postgres mirror of the SQLite arm above — same `status = 'draft' AND
+    // binding.kind = fromKind` guard, same `promoted` result, same
+    // identity-preserving contract.
+    async promoteSetupBinding(
+      connectorInstanceId: string,
+      {
+        fromKind,
+        sourceBinding,
+        updatedAt,
+      }: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+    ): Promise<{ instance: ConnectorInstance | null; promoted: boolean }> {
+      let promoted = false;
+      await withPostgresTransaction(
+        async (client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null }> }) => {
+          const result = await client.query(
+            `UPDATE connector_instances
+             SET source_binding_json = $1::jsonb, status = $2, updated_at = $3
+             WHERE connector_instance_id = $4
+               AND status = 'draft'
+               AND source_binding_json->>'kind' = $5`,
+            [stableJson(sourceBinding), "active", updatedAt, connectorInstanceId, fromKind]
+          );
+          promoted = Boolean(result.rowCount);
+          if (promoted) {
+            await client.query(
+              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+              [`connector instance promoted from ${fromKind}`, connectorInstanceId]
+            );
+          }
+        }
+      );
+      return { instance: await this.get(connectorInstanceId), promoted };
+    },
+
     async resolveActiveByConnector(ownerSubjectId: string, connectorId: string): Promise<ConnectorInstance> {
       const result = await postgresQuery(
         `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
@@ -2225,6 +2337,49 @@ export function createPostgresConnectorInstanceStore() {
             `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
             ["connector instance display_name changed", connectorInstanceId]
           );
+        }
+      );
+      return await this.get(connectorInstanceId);
+    },
+
+    // Postgres mirror of the SQLite static-secret identity claim. The binding
+    // unique constraint is enforced by the database, not by a process-local
+    // read/then-write sequence, so concurrent owners/processes cannot both
+    // claim one verified identity.
+    async updateStaticSecretBinding({
+      connectorInstanceId,
+      connectorId,
+      ownerSubjectId,
+      sourceBinding,
+      sourceBindingKey,
+      updatedAt,
+    }: {
+      connectorId: string;
+      connectorInstanceId: string;
+      ownerSubjectId: string;
+      sourceBinding: Record<string, unknown>;
+      sourceBindingKey: string;
+      updatedAt: string;
+    }): Promise<ConnectorInstance | null> {
+      await withPostgresTransaction(
+        async (client: { query: (sql: string, params?: unknown[]) => Promise<{ rowCount?: number | null }> }) => {
+          const result = await client.query(
+            `UPDATE connector_instances
+             SET source_binding_key = $1,
+                 source_binding_json = $2::jsonb,
+                 updated_at = $3
+             WHERE connector_instance_id = $4
+               AND owner_subject_id = $5
+               AND connector_id = $6
+               AND status IN ('active', 'draft')`,
+            [sourceBindingKey, stableJson(sourceBinding), updatedAt, connectorInstanceId, ownerSubjectId, connectorId]
+          );
+          if (result.rowCount) {
+            await client.query(
+              `UPDATE connector_summary_evidence SET dirty = 1, state = 'stale', last_error = $1 WHERE connector_instance_id = $2`,
+              ["static-secret binding updated", connectorInstanceId]
+            );
+          }
         }
       );
       return await this.get(connectorInstanceId);

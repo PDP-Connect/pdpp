@@ -6,6 +6,7 @@ import { isBrowserBoundConnector } from "../../../../../lib/connection-modality.
 import { requireDashboardAccess } from "../../../../../lib/dashboard-access.ts";
 import { runConnectionNow } from "../../../../../lib/operator-runs.ts";
 import { abandonBrowserEnrollmentShell } from "../../../../../lib/ref-client.ts";
+import { originMatchesHost } from "../../../../../lib/same-origin-route.ts";
 import { type BrowserSessionRunStartResult, classifyBrowserSessionLaunchResult } from "../launch-result.ts";
 
 export const dynamic = "force-dynamic";
@@ -17,22 +18,6 @@ interface RouteParams {
 
 function pagePath(connectorId: string): string {
   return `/connect/browser-session/${encodeURIComponent(connectorId)}/launch`;
-}
-
-function originMatchesHost(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) {
-    return true;
-  }
-  const host = request.headers.get("host");
-  if (!host) {
-    return false;
-  }
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
 }
 
 function readRequiredStringField(formData: FormData, name: string): string {

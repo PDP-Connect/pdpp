@@ -82,14 +82,15 @@ const SOURCES_PAGE_STATUS_HELPER_IMPORT_RE =
   /isActiveConnectorRunSummaryStatus[\s\S]*from "\.\.\/lib\/connector-run-summary-status\.ts"/;
 const SOURCES_PAGE_STATUS_HELPER_CALL_RE = /isActiveConnectorRunSummaryStatus\(\s*s\.last_run\.status\s*\)/;
 const LIST_CONNECTOR_MANIFESTS_RE = /listConnectorManifests\(\)/;
-const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
+const LIST_OWNER_CONNECTOR_TEMPLATES_RE = /listOwnerConnectorTemplates\(\)/;
+const BUILD_CONNECTOR_CATALOG_RE = /buildOwnerConnectorCatalog\(manifests, templates\)/;
 const SOURCE_SETUP_CATALOG_RE = /<SourceSetupCatalog/;
 const SOURCE_SETUP_SECTION_RE = /title="Add data"/;
 const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search source name or connector key/;
 const SOURCE_CARD_RE = /data-testid=\{`source-setup-\$\{entry\.connectorKey\}`\}/;
 const SOURCE_ACQUISITION_PATHS_RE = /data-testid="source-acquisition-paths"/;
 const SOURCE_ACQUISITION_PATH_RE = /data-testid="source-acquisition-path"/;
-const OTHER_COVERAGE_PATHS_RE = /Other ways to add coverage/;
+const OTHER_COVERAGE_PATHS_RE = /Other ways to add data/;
 const UNAVAILABLE_GROUP_RE = /Sources not available from this page/;
 const SERVER_SETUP_GROUP_RE = /Server settings needed before setup/;
 const SERVER_SETUP_SUMMARY_RE = /data-testid="server-setup-summary"/;
@@ -130,6 +131,7 @@ test("Sources owns the add-source catalog route", async () => {
   const page = await readFile(RECORDS_ADD_PAGE_FILE, "utf8");
   const catalog = await readFile(SOURCE_SETUP_CATALOG_FILE, "utf8");
   assert.match(page, LIST_CONNECTOR_MANIFESTS_RE);
+  assert.match(page, LIST_OWNER_CONNECTOR_TEMPLATES_RE);
   assert.match(page, BUILD_CONNECTOR_CATALOG_RE);
   assert.match(page, SOURCE_SETUP_CATALOG_RE);
   assert.match(catalog, SOURCE_SETUP_SECTION_RE);
@@ -228,7 +230,7 @@ test("source setup presentation has no connector-specific copy or examples", asy
   assert.doesNotMatch(src, FORBIDDEN_DEV_STRINGS_RE);
 });
 
-// ── 4. "Connect AI apps" is a separate read-access surface ──────────────────
+// ── 4. "Connect apps" is a separate read-access surface ─────────────────────
 
 test("the nav names the inbound client surface 'Connect apps', distinct from Sources", async () => {
   const src = await readFile(SHELL_FILE, "utf8");

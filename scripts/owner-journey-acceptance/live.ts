@@ -251,8 +251,12 @@ function connectorLabel(connector: Connector): string {
 
 function sourceCountPhrase(connector: Connector): string | null {
   const records = Number(connector.total_records);
-  const rawStreamCount =
-    connector.stream_count ?? (Array.isArray(connector.streams) ? (connector.streams as unknown[]).length : null);
+  // Sources shows the manifest-declared stream roster. `stream_count` is a
+  // different protocol fact: streams with retained evidence, which is
+  // legitimately zero for a fresh draft whose declared streams are visible.
+  const rawStreamCount = Array.isArray(connector.streams)
+    ? (connector.streams as unknown[]).length
+    : connector.stream_count;
   const streams = Number(rawStreamCount);
   if (!(Number.isFinite(records) && Number.isFinite(streams))) {
     return null;

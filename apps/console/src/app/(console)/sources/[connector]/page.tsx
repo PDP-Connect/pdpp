@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
+import type { StreamManifestEntry } from "@pdpp/display";
+import {
+  formatConnectorKeyForDisplay,
+  formatConnectorNameForDisplay,
+  isFallbackConnectionLabel,
+  streamDisplayLabel,
+} from "@pdpp/display";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
@@ -31,7 +37,7 @@ import {
   syncActionIdleLabel,
 } from "../../lib/connection-evidence.ts";
 import { isBrowserBoundConnector, isBrowserSessionBoundConnection } from "../../lib/connection-modality.ts";
-import { isActiveConnectorRunSummaryStatus } from "../../lib/connector-run-summary-status.ts";
+import { connectorRunSummaryId, isActiveConnectorRunSummaryStatus } from "../../lib/connector-run-summary-status.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import {
@@ -158,7 +164,8 @@ export interface ConnectorPageModel {
 }
 
 function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
-  if (!summary) {
+  const runId = connectorRunSummaryId(summary?.run_id);
+  if (!(summary && runId)) {
     return null;
   }
   return {
@@ -167,7 +174,7 @@ function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
     first_at: summary.first_at,
     known_gaps: summary.known_gaps ?? [],
     last_at: summary.last_at,
-    run_id: summary.run_id,
+    run_id: runId,
     status: summary.status,
   };
 }
@@ -179,6 +186,10 @@ function toRunSummaryForConnection(
   collectionReport: readonly RefCollectionReportEntry[] | null | undefined
 ): RunSummary | null {
   if (!summary) {
+    return null;
+  }
+  const runId = connectorRunSummaryId(summary.run_id);
+  if (!runId) {
     return null;
   }
   const status = runStatusWithCollectionReportGaps(summary.status, collectionReport);
@@ -194,7 +205,7 @@ function toRunSummaryForConnection(
     last_at: summary.last_at,
     needs_input: false,
     object: "run_summary",
-    run_id: summary.run_id,
+    run_id: runId,
     status,
   };
 }
@@ -482,11 +493,37 @@ function resolveActiveRunNavigation(input: { overview: ConnectorOverview; schedu
   running: boolean;
 } {
   const activeRunId =
-    input.scheduleActiveRunId ?? (input.overview.isRunning ? (input.overview.lastRun?.run_id ?? null) : null);
+    input.scheduleActiveRunId ??
+    (input.overview.isRunning && input.overview.lastRun ? input.overview.lastRun.run_id : null);
   return {
     activeRunHref: activeRunId ? `/syncs/${encodeURIComponent(activeRunId)}` : null,
     running: activeRunId !== null || input.overview.isRunning,
   };
+}
+
+function StreamDisplayName({
+  displayLabel,
+  name,
+  unexpected,
+}: {
+  displayLabel: string;
+  name: string;
+  unexpected: boolean;
+}) {
+  return (
+    <span className="pdpp-body break-all font-medium font-mono" title={displayLabel === name ? undefined : name}>
+      {displayLabel}
+      {unexpected ? (
+        <span
+          className="ml-1.5 align-middle text-[color:var(--warning)]"
+          data-testid="stream-unexpected-declaration"
+          title="This stream has canonical or retained data, but the current manifest no longer declares it."
+        >
+          (undeclared)
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 function ConnectorPageView({
@@ -579,6 +616,12 @@ function ConnectorPageView({
   const syncIdleLabel = syncActionIdleLabel(overview.lastRun?.status);
   const streakDots = deriveStreakDots(recentRuns);
   const autoPausedBanner = deriveAutoPausedBanner(schedule);
+  const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
+  const streamLabelsByName = new Map(
+    manifestStreams.map(
+      (stream) => [stream.name, streamDisplayLabel(stream.name, stream as StreamManifestEntry)] as const
+    )
+  );
 
   return (
     <RecordroomShellWithPalette>
@@ -658,6 +701,7 @@ function ConnectorPageView({
               const ownerActionAvailable = collectionOwnerActionByStream[s.name] ?? true;
               const countLabel = streamCountLabel(s);
               const unexpected = isUnexpectedStreamDeclaration(s.declaration_state);
+              const displayLabel = streamLabelsByName.get(s.name) ?? s.name;
               return (
                 <li key={s.name}>
                   <Link
@@ -666,18 +710,7 @@ function ConnectorPageView({
                     }`}
                     href={`/sources/${encodeURIComponent(connectionId)}/${encodeURIComponent(s.name)}`}
                   >
-                    <span className="pdpp-body break-all font-medium font-mono">
-                      {s.name}
-                      {unexpected ? (
-                        <span
-                          className="ml-1.5 align-middle text-[color:var(--warning)]"
-                          data-testid="stream-unexpected-declaration"
-                          title="This stream has canonical or retained data, but the current manifest no longer declares it."
-                        >
-                          (undeclared)
-                        </span>
-                      ) : null}
-                    </span>
+                    <StreamDisplayName displayLabel={displayLabel} name={s.name} unexpected={unexpected} />
                     <span
                       className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums"
                       data-count-state={s.count_state ?? "unknown_state"}

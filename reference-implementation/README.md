@@ -516,19 +516,22 @@ persistent browser profiles and remain subject to upstream anti-bot behavior.
 Mount any optional local connector inputs, such as Slack archives, explicitly
 when testing those connectors.
 
-Slack imports additionally require a host-provided `slackdump` executable. The
-stock reference image intentionally does not bundle `slackdump` because it is an
-AGPL-licensed external tool. For Docker runs, set
-`PDPP_DOCKER_SLACKDUMP_DIR` in `.env.docker` to a host directory containing a
-`slackdump` executable, and keep `SLACKDUMP_BIN` pointed at the stable
-in-container path:
+Slack imports require `slackdump` v4.4.2 (AGPL-3.0). The `core`, `core-browser`,
+`railway-core`, and `platform-core` Docker images ship `slackdump` bundled by default.
+Source tree and license: bundled at `/usr/local/share/slackdump/` in the image
+(LICENSE.agpl-3.0.txt, SOURCE_URL, SLACKDUMP_BIN=/usr/local/bin/slackdump).
+
+To override with a different `slackdump` build or version, set `SLACKDUMP_BIN`
+to point at an alternative executable on `PATH` or an in-container path. For
+Docker runs, you can mount a host directory via `PDPP_DOCKER_SLACKDUMP_DIR`
+in `.env.docker`:
 
 ```env
 PDPP_DOCKER_SLACKDUMP_DIR=/home/user/go/bin
 SLACKDUMP_BIN=/opt/pdpp-tools/slackdump/slackdump
 ```
 
-Alternatively, place or symlink the executable at
+Alternatively, place or symlink an alternative executable at
 `packages/polyfill-connectors/.pdpp-tools/slackdump/slackdump`; that local
 runtime directory is gitignored and is the default compose mount source.
 

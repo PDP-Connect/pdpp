@@ -27,10 +27,12 @@ import {
   type ConnectionSetupKind,
   projectConnectionSetupStatus,
   type SetupStatusImportReceipt,
+  type SetupStatusManifestStream,
   type SetupStatusMaterialMetadata,
   type SetupStatusRun,
 } from "../../runtime/static-secret-setup-status.ts";
 import { type ConnectorManifestLike, staticSecretCredentialCaptureFromManifest } from "../connection-setup-plan.ts";
+import { readCollectionFactsFromTerminalData } from "../runtime-collection-facts.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 interface RouteRequest {
@@ -110,18 +112,34 @@ interface ConnectorNamespace {
   readonly connectorInstanceId: string;
 }
 
+interface ProductRunHistoryRecord {
+  readonly completedAt: string | null;
+  readonly connectorInstanceId?: string | null;
+  readonly error?: string;
+  readonly factsJson?: Record<string, unknown> | null;
+  readonly failureReason?: string | null;
+  readonly recordsEmitted: number;
+  readonly reportedRecordsEmitted?: number | null;
+  readonly runId?: string | null;
+  readonly startedAt: string;
+  readonly status: string;
+  readonly terminalReason?: string | null;
+}
+
 export interface MountRefStaticSecretSetupStatusContext {
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
   createRequestAcquisitionBatchStore: () => AcquisitionBatchStore;
   createRequestConnectorInstanceCredentialStore: () => ConnectorInstanceCredentialStore;
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
+  /** Product run-history readers are both durable and connection-scoped. */
+  getLatestRunHistoryForProductByConnectionId?: (
+    connectorInstanceId: string
+  ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   getOwnerSubjectId: (req: unknown) => string;
-  // Bounded lookup of the run.start event timestamp, used to prove whether a
-  // terminal verification run belongs to the current credential rotation.
-  getRunStartedAt: (runId: string) => Promise<string | null>;
-  // Window-independent terminal status for a run by run_id: "failed" |
-  // "completed" | "cancelled" | "abandoned" | null (still running / unknown).
-  getRunTerminalStatus: (runId: string) => Promise<string | null>;
+  getProductRunHistoryForConnectionRunId?: (
+    connectorInstanceId: string,
+    runId: string
+  ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   handleError: (res: unknown, err: unknown) => void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
@@ -148,6 +166,29 @@ function identityFieldName(manifest: ConnectorManifestLike): string | null {
   }
   const field = capture.fields.find((candidate) => candidate.identity && !candidate.secret);
   return field?.name ?? null;
+}
+
+function setupStatusManifestStreamFromUnknown(value: unknown): SetupStatusManifestStream | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const stream = value as { readonly name?: unknown; readonly required?: unknown };
+  if (typeof stream.name !== "string" || stream.name.length === 0) {
+    return null;
+  }
+  return { name: stream.name, required: stream.required !== false };
+}
+
+function isSetupStatusManifestStream(value: SetupStatusManifestStream | null): value is SetupStatusManifestStream {
+  return value !== null;
+}
+
+function manifestStreamsForSetupStatus(manifest: ConnectorManifestLike): readonly SetupStatusManifestStream[] {
+  const { streams } = manifest as { readonly streams?: unknown };
+  if (!Array.isArray(streams)) {
+    return [];
+  }
+  return streams.map(setupStatusManifestStreamFromUnknown).filter(isSetupStatusManifestStream);
 }
 
 // Pull the non-secret setup fields out of the draft's source binding. The draft
@@ -186,6 +227,7 @@ const SETUP_KIND_BY_BINDING_KIND: Partial<Record<string, ConnectionSetupKind>> =
   browser_enrollment_shell: "browser_session",
   manual_upload: "manual_upload",
   manual_upload_draft: "manual_upload",
+  static_secret: "static_secret",
   static_secret_draft: "static_secret",
 };
 
@@ -211,7 +253,9 @@ function nonCredentialSetupMaterial(setupKind: ConnectionSetupKind): SetupStatus
   return UNKNOWN_SETUP_MATERIAL;
 }
 
-function setupKindForConnection(sourceBinding: unknown, manifest: ConnectorManifestLike): ConnectionSetupKind {
+// Exported for direct unit coverage of the binding-kind -> setup-kind
+// mapping, isolated from the manifest-fallback branch below.
+export function setupKindForConnection(sourceBinding: unknown, manifest: ConnectorManifestLike): ConnectionSetupKind {
   const kind = bindingKind(sourceBinding);
   const bindingSetupKind = SETUP_KIND_BY_BINDING_KIND[kind ?? ""];
   if (bindingSetupKind) {
@@ -360,13 +404,84 @@ function importReceiptFromBatch(batch: AcquisitionBatch | null): SetupStatusImpo
   };
 }
 
-const TERMINAL_FAILURE = new Set(["failed", "cancelled", "abandoned"]);
+const TERMINAL_FAILURE = new Set([
+  "failed",
+  "cancelled",
+  "canceled",
+  "abandoned",
+  "errored",
+  "error",
+  "surface_failed",
+]);
+
+function historyYieldCountsPresent(facts: Record<string, unknown> | null | undefined): boolean {
+  if (facts === null || facts === undefined) {
+    return true;
+  }
+  return Object.hasOwn(facts, "records_emitted") || Object.hasOwn(facts, "reported_records_emitted");
+}
+
+function historyYieldCount(
+  facts: Record<string, unknown> | null | undefined,
+  key: string,
+  fallback: number | null | undefined
+): number | null {
+  return asFiniteNumberOrNull(facts?.[key]) ?? asFiniteNumberOrNull(fallback);
+}
+
+function runYieldFromHistory(history: ProductRunHistoryRecord): {
+  readonly recordsEmitted: number | null;
+  readonly reportedRecordsEmitted: number | null;
+  readonly present: boolean;
+} {
+  const facts = history.factsJson;
+  const present = historyYieldCountsPresent(facts);
+  if (!present) {
+    return { present: false, recordsEmitted: null, reportedRecordsEmitted: null };
+  }
+  return {
+    present,
+    recordsEmitted: historyYieldCount(facts, "records_emitted", history.recordsEmitted),
+    reportedRecordsEmitted: historyYieldCount(facts, "reported_records_emitted", history.reportedRecordsEmitted),
+  };
+}
 
 // Resolve the run evidence for the setup-status projection.
 //   - an in-flight run is the active-run row keyed on connector_instance_id;
-//   - otherwise, if a run id is known (in-flight earlier, or supplied by the
-//     owner surface that started the run), its terminal status answers whether
-//     the first sync failed.
+//   - otherwise, read the exact requested run or the latest product run-history
+//     row for this connection. There is intentionally no global run-id lookup:
+//     run ids are not connection identity.
+function lookupRunHistory(
+  ctx: MountRefStaticSecretSetupStatusContext,
+  connectorInstanceId: string,
+  requestedRunId: string | null
+) {
+  if (requestedRunId) {
+    return ctx.getProductRunHistoryForConnectionRunId?.(connectorInstanceId, requestedRunId);
+  }
+  return ctx.getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId);
+}
+
+function historyFailureReason(history: ProductRunHistoryRecord): string {
+  return history.failureReason ?? history.error ?? history.terminalReason ?? history.status;
+}
+
+function setupStatusRunFromHistory(history: ProductRunHistoryRecord, requestedRunId: string | null): SetupStatusRun {
+  const failed = TERMINAL_FAILURE.has(history.status);
+  const yieldCounts = runYieldFromHistory(history);
+  return {
+    collectionFacts: readCollectionFactsFromTerminalData(history.factsJson ?? null),
+    failureReason: failed ? historyFailureReason(history) : null,
+    finishedAt: history.completedAt,
+    recordsEmitted: yieldCounts.recordsEmitted,
+    reportedRecordsEmitted: yieldCounts.reportedRecordsEmitted,
+    runId: history.runId ?? requestedRunId,
+    startedAt: history.startedAt,
+    status: failed ? "failed" : history.status,
+    yieldCountsPresent: yieldCounts.present,
+  };
+}
+
 async function resolveRunEvidence(
   ctx: MountRefStaticSecretSetupStatusContext,
   store: ConnectorInstanceStore,
@@ -380,23 +495,25 @@ async function resolveRunEvidence(
       lastRun: null,
     };
   }
-  if (!requestedRunId) {
+  const history = await lookupRunHistory(ctx, connectorInstanceId, requestedRunId);
+  if (!history) {
     return { activeRun: null, lastRun: null };
   }
-  const terminal = await ctx.getRunTerminalStatus(requestedRunId);
-  if (!terminal) {
-    return { activeRun: null, lastRun: null };
-  }
-  const failed = TERMINAL_FAILURE.has(terminal);
-  const startedAt = await ctx.getRunStartedAt(requestedRunId);
+  // A history row can legitimately still read `"running"` in the window
+  // between the controller writing it and `controller_active_runs`
+  // gaining (or losing) its row for this connection — e.g. right after
+  // dispatch, or right after the active-run row clears but the history
+  // row's terminal write hasn't landed yet. Surfacing it as `lastRun`
+  // (rather than discarding it) lets `setupRunIsRunning` classify it as
+  // running, matching this route's own doc comment above ("otherwise,
+  // read... the latest... run-history row"). Discarding it here previously
+  // made the projection fall back to `first_sync_pending` with a stale
+  // read that never advanced until the history row went terminal
+  // (fr-setup-status-lifecycle-0806 — Slack/YNAB setup reading stuck on
+  // "First sync pending" while a run was genuinely in flight).
   return {
     activeRun: null,
-    lastRun: {
-      failureReason: failed ? terminal : null,
-      runId: requestedRunId,
-      startedAt,
-      status: failed ? "failed" : terminal,
-    },
+    lastRun: setupStatusRunFromHistory(history, requestedRunId),
   };
 }
 
@@ -497,6 +614,7 @@ function projectSetupStatus(
       updatedAt: instance.updatedAt ?? null,
     },
     lastRun,
+    manifestStreams: manifestStreamsForSetupStatus(manifest),
     setupKind,
     setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),
   });

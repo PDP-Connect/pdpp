@@ -25,14 +25,16 @@ const OPERATOR_ARTIFACT_RE = /browser-collector runbook|\bneko\b|n\.eko|hosted C
 const SERVER_ACTION_TRANSPORT_RE = /startBrowserEnrollmentAction|from "\.\/actions\.ts"|<form action=\{[^}]+Action/;
 const POST_ROUTE_TRANSPORT_RE =
   /<form action=\{`\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/start`\} method="post">/;
-const PAGE_SETUP_DESCRIPTION_RE =
-  /Create a new account in a secure browser\. You can optionally remember sign-in details for automatic reconnection and repair/;
+const PAGE_SETUP_DESCRIPTION_RE = /browserFormContract\.setupDescription/;
 const PAGE_NEW_ACCOUNT_COPY_RE = /Create a new account/;
-const PAGE_OPTIONAL_LABEL_RE = /Source label \(optional\)/;
-const PAGE_DISPLAY_NAME_FIELD_RE = /name="display_name"/;
-const PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE = /Remember my sign-in details for automatic reconnection \(optional\)/;
-const PAGE_MANIFEST_CREDENTIAL_FIELDS_RE = /setup\.credential_capture\.fields\.map/;
-const PAGE_NO_GUARANTEED_UNATTENDED_RE = /unattended reconnection is not guaranteed/;
+const PAGE_OPTIONAL_LABEL_RE = /connectionName\.label/;
+const PAGE_DISPLAY_NAME_FIELD_RE = /name=\{connectionName\.name\}/;
+const PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE = /credentials\.title/;
+const PAGE_MANIFEST_CREDENTIAL_FIELDS_RE = /credentials\.fields\.map/;
+const PAGE_FORM_CONTRACT_RE = /browserSessionFormContract\(storedCredentialSetup\)/;
+const PAGE_PRIMARY_ACTION_LABEL_RE =
+  /const primaryActionLabel = repairMode \? `Reconnect \$\{displayName\}` : "Connect account";/;
+const PAGE_HOW_IT_WORKS_ACTION_RE = /Select <strong className="text-foreground">\{primaryActionLabel\}<\/strong> below/;
 const PAGE_EXISTING_SOURCE_LINK_RE = /Choose an existing source/;
 const START_ROUTE_POST_RE = /export async function POST/;
 const START_ROUTE_AUTH_RE = /await requireDashboardAccess\(pagePath\(connectorId\)\)/;
@@ -50,8 +52,8 @@ const START_ROUTE_CREDENTIAL_CAPTURE_RE = /captureStaticSecretCredential/;
 const START_ROUTE_SAFE_CONTEXT_RE = /setupFields/;
 const START_ROUTE_NO_SECRET_LOG_RE = /\b(?:console|logger)\.(?:debug|info|log|warn|error)\s*\(/;
 const START_ROUTE_NO_SECRET_QUERY_RE = /query\.set\([^)]*(?:password|secret)/iu;
-const START_ROUTE_PUBLIC_ORIGIN_RE = /x-forwarded-host/;
-const START_ROUTE_REDIRECT_RE = /NextResponse\.redirect\(new URL\(path, publicOrigin\(request\)\), 303\)/;
+const START_ROUTE_ORIGIN_HELPER_IMPORT_RE = /same-origin-route\.ts/;
+const START_ROUTE_REDIRECT_HELPER_RE = /redirectToPublicPath/;
 const PAGE_CONNECTION_ID_FIELD_RE = /browser-session-connection-id/;
 const LAUNCH_PANEL_FETCH_RE =
   /fetch\(`\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/launch\/start`/;
@@ -86,7 +88,9 @@ test("browser-session setup page keeps the new-account form and reconnect escape
   assert.match(src, PAGE_DISPLAY_NAME_FIELD_RE);
   assert.match(src, PAGE_OPTIONAL_CREDENTIAL_CONTROL_RE);
   assert.match(src, PAGE_MANIFEST_CREDENTIAL_FIELDS_RE);
-  assert.match(src, PAGE_NO_GUARANTEED_UNATTENDED_RE);
+  assert.match(src, PAGE_FORM_CONTRACT_RE);
+  assert.match(src, PAGE_PRIMARY_ACTION_LABEL_RE);
+  assert.match(src, PAGE_HOW_IT_WORKS_ACTION_RE);
   assert.doesNotMatch(src, PAGE_CONNECTION_ID_FIELD_RE);
 });
 
@@ -117,8 +121,8 @@ test("browser-session start route preserves auth and repair handoff semantics", 
   assert.match(route, START_ROUTE_UNSUPPORTED_REDIRECT_RE);
   assert.match(route, START_ROUTE_LAUNCH_REDIRECT_RE);
   assert.doesNotMatch(route, START_ROUTE_FORBIDS_SLOW_RUN_RE);
-  assert.match(route, START_ROUTE_PUBLIC_ORIGIN_RE);
-  assert.match(route, START_ROUTE_REDIRECT_RE);
+  assert.match(route, START_ROUTE_ORIGIN_HELPER_IMPORT_RE);
+  assert.match(route, START_ROUTE_REDIRECT_HELPER_RE);
 });
 
 test("browser-session launch page owns slow run-start and renders inline failure", async () => {

@@ -1556,7 +1556,8 @@ CREATE INDEX IF NOT EXISTS idx_connector_attention_dedupe
 -- additive; existing rows are backfilled in initDb post-schema. New
 -- inserts compute event_seq via a (SELECT MAX(event_seq) + 1 FROM ...)
 -- subquery inside the INSERT, which is safe under SQLite's single-writer
--- lock model.
+-- lock model. The startup backfill preserves any sequence already assigned
+-- by an interleaved writer and allocates the remaining legacy rows above it.
 -- Spec: openspec/changes/replace-spine-rowid-cursor-with-event-seq/specs/
 --       reference-implementation-architecture/spec.md
 CREATE TABLE IF NOT EXISTS spine_events (
@@ -5082,14 +5083,31 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   });
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
-  // seed it for any rows that lack a value. The seed orders by `rowid` —
-  // SQLite's physical row identity at the moment of backfill — purely as a
-  // one-shot reconstruction of historical append order. After backfill,
-  // `event_seq` is the only ordering surface readers and cursors consult;
-  // the cursor contract no longer reads `rowid`.
+  // seed any rows that lack a value. An interrupted boot can leave the column
+  // present while a concurrent writer has already assigned sequences, so
+  // preserve those values and allocate NULL rows above the current maximum,
+  // ordered by `rowid`. After backfill, `event_seq` is the only ordering
+  // surface readers and cursors consult; the cursor contract no longer reads
+  // `rowid`.
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "spine_events", "event_seq", "INTEGER"));
   runWithSqliteBusyRetrySync(() => {
-    raw.exec("UPDATE spine_events SET event_seq = rowid WHERE event_seq IS NULL");
+    raw.exec(`
+      WITH pending AS (
+        SELECT rowid, ROW_NUMBER() OVER (ORDER BY rowid) AS ordinal
+          FROM spine_events
+         WHERE event_seq IS NULL
+      ), current AS (
+        SELECT COALESCE(MAX(event_seq), 0) AS max_seq
+          FROM spine_events
+      )
+      UPDATE spine_events
+         SET event_seq = (
+           SELECT current.max_seq + pending.ordinal
+             FROM pending, current
+            WHERE pending.rowid = spine_events.rowid
+         )
+       WHERE rowid IN (SELECT rowid FROM pending)
+    `);
   });
   runWithSqliteBusyRetrySync(() => migrateSpineSourceColumns(raw, opts));
   // blob_bindings gains a json_path column (RFC 6901 JSON Pointer or

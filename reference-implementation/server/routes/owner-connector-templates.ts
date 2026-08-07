@@ -5,13 +5,14 @@
 // route `GET /v1/owner/connector-templates`.
 //
 // This route is intentionally template-level. It tells a trusted owner agent
-// what connector implementations exist and which configured connection
-// instances currently belong to each template. Stateful work still targets
-// `connection_id` through `/v1/owner/connections`; adding a new connection is
-// exposed only as a typed intent and is marked unsupported when this reference
-// build lacks a proven provider primitive.
+// what registered connector implementations exist and which configured
+// connection instances currently belong to each template. Stateful work still
+// targets `connection_id` through `/v1/owner/connections`; adding a new
+// connection is exposed as a typed owner-agent intent only when the
+// server-owned planner and proof/listing contract mark that REST action
+// supported. Interactive browser setup remains owner-mediated in Console.
 
-import { buildConnectionSetupPlan } from "../connection-setup-plan.ts";
+import { buildConnectionSetupPlan, isSupportedBrowserCollectorConnector } from "../connection-setup-plan.ts";
 import type { OwnerAgentControlAction } from "../metadata.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
@@ -32,6 +33,19 @@ interface AppLike {
 }
 
 interface ConnectorManifestLike {
+  readonly capabilities?: {
+    readonly auth?: {
+      readonly deployment_config?: readonly string[] | null;
+      readonly kind?: string | null;
+      readonly mode?: string | null;
+      readonly required?: readonly string[] | null;
+      readonly type?: string | null;
+    } | null;
+    readonly public_listing?: {
+      readonly listed?: boolean | null;
+      readonly status?: string | null;
+    } | null;
+  } | null;
   readonly connector_id?: string | null;
   readonly connector_key?: string | null;
   readonly display_name?: string | null;
@@ -60,11 +74,11 @@ interface ConnectorInstanceStore {
 
 export interface MountOwnerConnectorTemplatesContext {
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
+  configuredProviderAuthConnectorKeys?: readonly string[];
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
   getConnectorManifest: (connectorId: string) => Promise<ConnectorManifestLike | null> | ConnectorManifestLike | null;
   getOwnerTokenSubjectId: (req: unknown) => string;
   handleError: (res: unknown, err: unknown) => void;
-  listReferenceLocalConnectorCatalogManifests: () => readonly ConnectorManifestLike[];
   listRegisteredConnectorIds: () => Promise<readonly string[]> | readonly string[];
   projectStorageDisplayName: (
     displayName: string | null | undefined,
@@ -121,13 +135,74 @@ function projectConnectionSummary(
   };
 }
 
+const ACTIONABLE_PUBLIC_LISTING_STATUSES = new Set(["proven", "needs_human_auth"]);
+// These are the dispositions with a supported owner-agent REST intent. Browser
+// setup is intentionally handled by the separate owner-session projection
+// below, because the REST intent route cannot launch interactive login.
+const ACTIONABLE_CATALOG_DISPOSITIONS = new Set([
+  "local_collector_enroll",
+  "manual_upload_connect",
+  "provider_auth_connect",
+  "static_secret_connect",
+]);
+
+const OWNER_SESSION_BROWSER_ACTION_REASON =
+  "Connect this account from the owner's secure browser-session dashboard. Owner-agent REST does not launch interactive browser setup.";
+
+function isActionablePublicListing(manifest: ConnectorManifestLike): boolean {
+  // `needs_human_auth` is an explicitly actionable listing state for sources
+  // whose owner-mediated setup still requires an interactive provider step.
+  const listing = manifest.capabilities?.public_listing;
+  return (
+    listing?.listed === true &&
+    typeof listing.status === "string" &&
+    ACTIONABLE_PUBLIC_LISTING_STATUSES.has(listing.status)
+  );
+}
+
+export function isSupportedOwnerActionPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  return (
+    ACTIONABLE_CATALOG_DISPOSITIONS.has(plan.catalogDisposition) &&
+    plan.ownerAgentIntent.status === "supported" &&
+    plan.ownerAgentIntent.method !== null &&
+    plan.ownerAgentIntent.nextStepKind === plan.nextStepKind &&
+    plan.supportState === "supported" &&
+    plan.proofGate === null
+  );
+}
+
+/**
+ * Browser setup has a shipped owner-session route, but it is not an
+ * owner-agent REST primitive: the owner must complete interactive login in
+ * the secure browser. The planner's production-ready browser roster is the
+ * proof for browser-backed static-secret entries; the manual disposition is
+ * already the planner's proof-backed browser classification.
+ */
+export function isOwnerSessionBrowserActionPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  if (plan.connectorModality !== "browser_bound") {
+    return false;
+  }
+  if (plan.catalogDisposition === "browser_collector_manual") {
+    return plan.nextStepKind === "enroll_browser_collector" && typeof plan.enrollmentKey === "string";
+  }
+  return (
+    plan.catalogDisposition === "static_secret_connect" &&
+    plan.setupModality === "static_secret" &&
+    isSupportedBrowserCollectorConnector(plan.connectorKey)
+  );
+}
+
+function isOwnerActionablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  return isSupportedOwnerActionPlan(plan) || isOwnerSessionBrowserActionPlan(plan);
+}
+
 function buildTemplateSupportedActions(args: {
-  connectorKey: string;
+  manifest: ConnectorManifestLike;
   plan: ReturnType<typeof buildConnectionSetupPlan>;
   resource: string;
 }): OwnerAgentControlAction[] {
   const rs = stripTrailingSlash(args.resource);
-  if (args.plan.ownerAgentIntent.status === "supported") {
+  if (isActionablePublicListing(args.manifest) && isSupportedOwnerActionPlan(args.plan)) {
     return [
       {
         family: "initiate_connection",
@@ -135,6 +210,17 @@ function buildTemplateSupportedActions(args: {
         reason: `${args.plan.ownerAgentIntent.reason} Body: { connector_id, display_name? }.`,
         status: "supported",
         url: `${rs}/v1/owner/connections/intents`,
+      },
+    ];
+  }
+  if (isActionablePublicListing(args.manifest) && isOwnerSessionBrowserActionPlan(args.plan)) {
+    return [
+      {
+        family: "initiate_connection",
+        method: null,
+        reason: OWNER_SESSION_BROWSER_ACTION_REASON,
+        status: "owner_mediated",
+        url: null,
       },
     ];
   }
@@ -149,10 +235,19 @@ function buildTemplateSupportedActions(args: {
   ];
 }
 
-function projectSetupPlan(plan: ReturnType<typeof buildConnectionSetupPlan>): Record<string, unknown> {
+function projectSetupPlan(
+  manifest: ConnectorManifestLike,
+  plan: ReturnType<typeof buildConnectionSetupPlan>
+): Record<string, unknown> {
   return {
+    catalog_disposition: plan.catalogDisposition,
     deployment_readiness: plan.deploymentReadiness,
+    enrollment_key: plan.enrollmentKey ?? null,
     next_step_kind: plan.nextStepKind,
+    // This is owner-facing actionability, not owner-agent REST support. A
+    // browser action is represented in supported_actions as owner_mediated
+    // with no method or URL because interactive setup stays in Console.
+    owner_actionable: isActionablePublicListing(manifest) && isOwnerActionablePlan(plan),
     proof_gate: plan.proofGate,
     runbook_path: plan.runbookPath,
     setup_modality: plan.setupModality,
@@ -171,7 +266,11 @@ function projectTemplate(
   if (!connectorKey) {
     return null;
   }
-  const plan = buildConnectionSetupPlan({ connectorKey, manifest });
+  const plan = buildConnectionSetupPlan({
+    configuredProviderAuthConnectorKeys: ctx.configuredProviderAuthConnectorKeys ?? [],
+    connectorKey,
+    manifest,
+  });
   const modality = plan.connectorModality;
   const connections = (connectionsByConnector.get(connectorKey) ?? []).map((instance) =>
     projectConnectionSummary(ctx, instance)
@@ -184,21 +283,17 @@ function projectTemplate(
     connector_modality: modality,
     display_name: displayNameForTemplate(connectorKey, manifest),
     object: "owner_connector_template",
-    setup_plan: projectSetupPlan(plan),
+    public_listing: manifest.capabilities?.public_listing ?? null,
+    registration_status: "registered",
+    setup_plan: projectSetupPlan(manifest, plan),
     stream_count: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
-    supported_actions: buildTemplateSupportedActions({ connectorKey, plan, resource }),
+    supported_actions: buildTemplateSupportedActions({ manifest, plan, resource }),
     version: manifest.version ?? null,
   };
 }
 
 async function collectConnectorTemplates(ctx: MountOwnerConnectorTemplatesContext): Promise<ConnectorManifestLike[]> {
   const byConnectorKey = new Map<string, ConnectorManifestLike>();
-  for (const manifest of ctx.listReferenceLocalConnectorCatalogManifests()) {
-    const key = connectorKeyFromManifest(ctx, manifest);
-    if (key) {
-      byConnectorKey.set(key, manifest);
-    }
-  }
   for (const connectorId of await ctx.listRegisteredConnectorIds()) {
     const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
     try {

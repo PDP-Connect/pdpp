@@ -2545,6 +2545,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   let ownerCancelRequested = false;
   let runTimedOut = false;
   let ownerCancelForced = false;
+  const terminalStopRequested = (): boolean => ownerCancelRequested || runTimedOut;
   const knownGaps: Record<string, unknown>[] = [];
   // Streams whose batch ingest was rejected as not_found for a stream the runtime
   // already validated present in the manifest at START (transient manifest drift
@@ -3009,6 +3010,14 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
   }
 
   async function flushBatch(stream: string): Promise<void> {
+    // Cancellation owns the terminal outcome. Do not start another ingest for
+    // a RECORD that was already buffered in the parent after the child was
+    // stopped; doing so makes terminalization wait behind an unbounded Gmail
+    // message/attachment queue.
+    if (terminalStopRequested()) {
+      recordBatch[stream] = [];
+      return;
+    }
     // Already deferred this run for transient manifest drift: don't re-POST (it
     // would just 404 again). Drop any further buffered records for the stream.
     if (driftSkippedStreams.has(stream)) {
@@ -3025,6 +3034,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     if (connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID) {
       ingestUrl.searchParams.set("connector_instance_id", connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID);
     }
+    // Threads run identity to the storage layer so it can fence a write that
+    // was already admitted before cancellation against the run's own terminal
+    // state, instead of relying solely on this fetch's AbortSignal (a client
+    // socket-close heuristic that cannot un-admit a write the server already
+    // accepted). See harden-ingest-run-admission-fence.
+    ingestUrl.searchParams.set("run_id", runId);
     const resp = await fetch(ingestUrl.toString(), {
       body: ndjson,
       headers: {
@@ -3032,7 +3047,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         "Content-Type": "application/x-ndjson",
       },
       method: "POST",
+      signal: cancelSignal ?? null,
     });
+    if (terminalStopRequested()) {
+      recordBatch[stream] = [];
+      return;
+    }
     let result: Awaited<ReturnType<typeof readIngestResponse>>;
     try {
       result = await readIngestResponse(resp, stream, batch.length);
@@ -3246,7 +3266,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     // listener is removed in cleanupChildHandles so a settled run does not leak
     // it on the controller's shared AbortController.
     function handleCancellation() {
-      if (terminalEventRecorded || ownerCancelRequested || runTimedOut) {
+      if (terminalEventRecorded || terminalStopRequested()) {
         return;
       }
       runTimedOut = cancelSignal?.reason === "run_timed_out";
@@ -3270,6 +3290,10 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         });
         onProgress({ run_id: runId, type: "cancel_requested" });
       }
+      // The child has stopped being a source of work. Discard messages already
+      // buffered in the parent; only the single handler currently in flight
+      // remains, and its ingest transport observes this cancellation signal.
+      msgQueue.length = 0;
       terminateChild();
     }
     if (cancelSignal) {
@@ -3347,6 +3371,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     function waitForQueueDrain(): Promise<void> {
+      if (terminalStopRequested()) {
+        msgQueue.length = 0;
+        if (!processing) {
+          return Promise.resolve();
+        }
+      }
       if (!(msgQueue.length || processing)) {
         return Promise.resolve();
       }
@@ -3417,6 +3447,11 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     async function processNext(): Promise<void> {
+      if (terminalStopRequested()) {
+        msgQueue.length = 0;
+        notifyQueueDrained();
+        return;
+      }
       if (processing || !msgQueue.length) {
         return;
       }
@@ -3428,6 +3463,9 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       try {
         await handleMsg(msg);
       } catch (caught) {
+        if (terminalStopRequested()) {
+          return;
+        }
         await handleMessageFailure(caught);
         return;
       } finally {
@@ -3435,7 +3473,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         notifyQueueDrained();
       }
 
-      processNext();
+      if (terminalStopRequested()) {
+        msgQueue.length = 0;
+        notifyQueueDrained();
+      } else {
+        processNext();
+      }
     }
 
     async function handleDetailCoverageMessage(msg: ConnectorMessage): Promise<void> {
@@ -4793,12 +4836,12 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         if (!terminalEventRecorded) {
           if (runTimedOut) {
             await recordRunTimedOutTerminal(code);
+          } else if (ownerCancelRequested) {
+            await handleOwnerCancellationClose(code);
           } else if (doneMessage) {
             if (await handleDoneClose(code)) {
               return;
             }
-          } else if (ownerCancelRequested) {
-            await handleOwnerCancellationClose(code);
           } else {
             await handleConnectorExitClose(code, stderrTailDiagnostic);
           }

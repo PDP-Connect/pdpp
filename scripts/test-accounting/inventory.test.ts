@@ -650,6 +650,26 @@ test("keeps every terminal-LIST PostgreSQL skip title in the exact receipt mappi
     ["Postgres terminal LIST projection rejects late canonical snapshots"]
   );
 });
+test("keeps the setup-binding promotion PostgreSQL skip title in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    ["Postgres: every setup-binding kind promotes on success, stays hidden on abandon, survives its revoke path"]
+  );
+});
+test("keeps the Explore upcoming PostgreSQL skip titles in the exact receipt mapping", () => {
+  assert.deepEqual(
+    [
+      "postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit",
+      "sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic",
+    ].filter((name) => POSTGRES_UNNAMED_SKIP_TEST_NAME_ROWS.includes(name)),
+    [
+      "postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit",
+      "sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic",
+    ]
+  );
+});
 // SECOND LIVE CANARY REVISE (2026-07-30): the interrupted-migration
 // reconciliation test file added two PostgreSQL tests using the same
 // bare-boolean `skip: !POSTGRES_URL` shape. FOURTH-PASS GATE REVISE
@@ -915,15 +935,16 @@ test("the PostgreSQL profile declares its exact live-gate skip baseline", async 
 // FIFTH-PASS GATE FIX (2026-07-30): this hardcoded literal must track
 // test-accounting.manifest.json's memory-default "PDPP_TEST_POSTGRES_URL
 // unset" count exactly. The integration branch already carried a verified
-// baseline of 135; interrupted-migration reconciliation adds three more
-// PostgreSQL-only tests, for a final baseline of 138.
+// baseline of 135; the integrated PostgreSQL-only contracts add thirteen more
+// canonical skips plus two ordering probes that require a dedicated database.
 test("the memory-default profile declares the exact current skip baseline", async () => {
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const manifestValue = await readManifest(join(root, "test-accounting.manifest.json"), { root });
   const suite = manifestValue.suites.find((entry) => entry.id === "ri-default");
   const memoryDefault = suite?.profiles?.find((entry) => typeof entry !== "string" && entry.id === "memory-default");
   assert.deepEqual(typeof memoryDefault === "string" ? undefined : memoryDefault?.skip_reasons, {
-    "PDPP_TEST_POSTGRES_URL unset": 138,
+    "PDPP_TEST_POSTGRES_URL unset": 148,
+    "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 2,
     "set PDPP_TEST_POSTGRES_URL to the dedicated loopback listener": 13,
     "dedicated disposable URL not selected": 1,
     "set PDPP_LIVE_CONNECTOR_HEALTH_GATE=1 to run": 1,

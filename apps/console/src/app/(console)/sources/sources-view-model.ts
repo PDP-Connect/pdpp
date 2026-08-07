@@ -27,7 +27,13 @@
  * a false zero or green.
  */
 
-import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
+import type { StreamManifestEntry } from "@pdpp/display";
+import {
+  deriveSourceDisplayNameFallback,
+  formatConnectorNameForDisplay,
+  isFallbackConnectionLabel,
+  streamDisplayLabel,
+} from "@pdpp/display";
 import {
   type ConnectorManifestLike,
   canonicalConnectorKey,
@@ -44,6 +50,7 @@ import type {
   RefRecordVersionStatsRow,
   RefSchedule,
 } from "../lib/ref-client.ts";
+import { scheduleEnabled, scheduleIntervalSeconds } from "../lib/schedule-evidence.ts";
 import {
   isRevokedConnector,
   isSetupInProgressConnector,
@@ -81,6 +88,8 @@ export interface SourceStreamManifestRow {
   collection: SourceStreamCollectionFacts | null;
   /** Cursor/checkpoint hint, or null when none is exposed at the index level. */
   cursor: string | null;
+  /** Human display label from manifest display.label, or stream name if absent. */
+  displayLabel: string;
   /** Deep-link into Explore for this connection + stream. */
   exploreHref: string;
   name: string;
@@ -194,7 +203,10 @@ export interface SourcesRuntimeAdvisory {
   note: string;
 }
 
-type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
+type SourceManifestLike = ConnectorManifestLike & {
+  connector_id: string;
+  streams?: readonly StreamManifestEntry[];
+};
 
 const DUPLICATE_SOURCE_GROUP_MIN_UNNAMED = 3;
 
@@ -275,16 +287,21 @@ export function formatSchedule(schedule: RefSchedule | null): string {
   if (!schedule) {
     return "manual — no schedule";
   }
-  if (schedule.effective_mode === "paused" || !schedule.enabled) {
+  const enabled = scheduleEnabled(schedule.enabled);
+  if (schedule.effective_mode === "paused" || enabled === false) {
     return "paused";
   }
+  const interval = scheduleIntervalSeconds(schedule.interval_seconds);
+  if (enabled === null || interval === null) {
+    return "schedule details unavailable";
+  }
   if (schedule.ineligibility_reason) {
-    return `every ${formatInterval(schedule.interval_seconds)} · paused by policy`;
+    return `every ${formatInterval(interval)} · paused by policy`;
   }
   if (schedule.effective_mode === "automatic") {
-    return `every ${formatInterval(schedule.interval_seconds)} · automatic`;
+    return `every ${formatInterval(interval)} · automatic`;
   }
-  return `every ${formatInterval(schedule.interval_seconds)} · manual`;
+  return `every ${formatInterval(interval)} · manual`;
 }
 
 /**
@@ -498,7 +515,12 @@ export function toSourceInstanceView(
   const listKind = listKindForDisplayName(displayName, kind);
   let accountLine: string;
   if (hasFallbackLabel) {
-    accountLine = `Unnamed source · ${formatSourceListFacts(summary, sourceStreamNames.length)}`;
+    const fallbackName = deriveSourceDisplayNameFallback({
+      connectorId,
+      displayName: summary.display_name,
+      name: summary.connector_display_name,
+    });
+    accountLine = `${fallbackName} · ${formatSourceListFacts(summary, sourceStreamNames.length)}`;
   } else {
     accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
   }
@@ -507,9 +529,20 @@ export function toSourceInstanceView(
   const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
 
+  const manifest = options.manifests
+    ? options.manifests.find((candidate) => manifestMatchesConnectorId(candidate, connectorId))
+    : undefined;
+  const streamsByName = new Map<string, StreamManifestEntry | undefined>();
+  if (manifest?.streams) {
+    for (const stream of manifest.streams) {
+      streamsByName.set(stream.name, stream as StreamManifestEntry);
+    }
+  }
+
   const streams: SourceStreamManifestRow[] = sourceStreamNames.map((name) => {
     const facts = collectionFactsByStream.get(name) ?? null;
     const retained = streamRecordsByStream.get(name) ?? null;
+    const streamDecl = streamsByName.get(name);
     return {
       collection: facts
         ? {
@@ -526,10 +559,8 @@ export function toSourceInstanceView(
             tone: facts.tone,
           }
         : null,
-      // The index summary exposes no cursor or searchable flag per stream;
-      // render them as unknown rather than guessing. Collection-report facts
-      // are server-owned and safe to show here without another read.
       cursor: null,
+      displayLabel: streamDisplayLabel(name, streamDecl),
       exploreHref: exploreHrefFor(routeId, name),
       name,
       recordCount: retained ? retained.record_count : null,

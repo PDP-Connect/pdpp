@@ -15,7 +15,7 @@ import { ListLoadingSkeleton } from "../components/route-loading.tsx";
 export default function RunsLoading() {
   return (
     <RecordroomShellWithPalette>
-      <ListLoadingSkeleton label="runs" rows={8} />
+      <ListLoadingSkeleton label="Syncs" rows={8} />
     </RecordroomShellWithPalette>
   );
 }

@@ -148,6 +148,11 @@ export interface SchedulerStore {
     connectorInstanceId: string,
     status?: string | null
   ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
+  /** Exact product run-history lookup fenced by the addressed connection. */
+  getProductRunHistoryForConnectionRunId?: (
+    connectorInstanceId: string,
+    runId: string
+  ) => Promise<ProductRunHistoryRecord | null> | ProductRunHistoryRecord | null;
   getSchedule: (connectorInstanceId: string) => Promise<ScheduleRecord | null> | ScheduleRecord | null;
   listActiveRuns: () => Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
   listLastRunTimes: () => Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
@@ -439,6 +444,24 @@ export function createSqliteSchedulerStore(): SchedulerStore {
            ORDER BY COALESCE(completed_at, started_at) DESC, id DESC
            LIMIT 1`,
           [connectorInstanceId, status, status]
+        ),
+      ].at(0);
+      return row ? rowToProductRunHistoryRecord(row) : null;
+    },
+
+    getProductRunHistoryForConnectionRunId(connectorInstanceId, runId) {
+      // REVIEWED-DYNAMIC: both values are bound; the fixed projection is the
+      // existing product run-history reader. The composite predicate is the
+      // identity fence because run_id is not globally unique.
+      const row = [
+        ...iterateDynamicSqlAcknowledged<SchedulerRunHistoryRow>(
+          `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
+           FROM run_history
+           WHERE connector_instance_id = ?
+             AND run_id = ?
+           ORDER BY id DESC
+           LIMIT 1`,
+          [connectorInstanceId, runId]
         ),
       ].at(0);
       return row ? rowToProductRunHistoryRecord(row) : null;
@@ -805,6 +828,19 @@ export function createPostgresSchedulerStore(): SchedulerStore {
          ORDER BY COALESCE(completed_at, started_at) DESC, id DESC
          LIMIT 1`,
         [connectorInstanceId, status]
+      );
+      return result.rows[0] ? rowToProductRunHistoryRecord(result.rows[0] as SchedulerRunHistoryRow) : null;
+    },
+
+    async getProductRunHistoryForConnectionRunId(connectorInstanceId, runId) {
+      const result = await postgresQuery(
+        `SELECT ${PRODUCT_RUN_HISTORY_COLUMNS}
+         FROM run_history
+         WHERE connector_instance_id = $1
+           AND run_id = $2
+         ORDER BY id DESC
+         LIMIT 1`,
+        [connectorInstanceId, runId]
       );
       return result.rows[0] ? rowToProductRunHistoryRecord(result.rows[0] as SchedulerRunHistoryRow) : null;
     },

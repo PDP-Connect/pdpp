@@ -213,6 +213,7 @@ import {
 import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
 import {
   aggregateRecordsAcrossBindings,
+  assertConnectorInstanceWritable,
   deleteAllRecords,
   deleteConnectionRecordRowsPostgres,
   deleteConnectionRecordRowsSqlite,
@@ -228,6 +229,7 @@ import {
   getRecordFieldWindowAcrossBindings,
   getSyncState,
   ingestRecord,
+  ingestRecords,
   listAllStreams,
   listDatasetSummaryStreamProjectionSeeds,
   listDatasetTopConnectorCandidates,
@@ -308,7 +310,11 @@ import {
   mountRefSchedules,
   mountRefSearch,
 } from "./routes/ref-admin.ts";
-import { mountRefBrowserEnrollmentShell } from "./routes/ref-browser-enrollment-shell.ts";
+import {
+  type BrowserEnrollmentShellSourceBinding,
+  mountRefBrowserEnrollmentShell,
+  promoteBrowserEnrollmentShellBinding,
+} from "./routes/ref-browser-enrollment-shell.ts";
 import {
   mountRefConnectionDelete,
   mountRefConnectionDetail,
@@ -357,6 +363,7 @@ import {
   mountRefDeviceExporterLocalCollectorGaps,
   mountRefDeviceExporterLocalCollectorGapsRecovered,
   mountRefDeviceExporterRevoke,
+  mountRefDeviceExporterSelfRevoke,
   mountRefDeviceExporterSourceInstanceStateGet,
   mountRefDeviceExporterSourceInstanceStatePut,
   mountRefDeviceExporterSourceInstances,
@@ -373,7 +380,11 @@ import {
   mountRefGrantPackagesList,
   mountRefGrantPackagesRevoke,
 } from "./routes/ref-grants.ts";
-import { mountRefManualUploadDraftConnection } from "./routes/ref-manual-upload-draft-connection.ts";
+import {
+  type ManualUploadDraftSourceBinding,
+  mountRefManualUploadDraftConnection,
+  promoteManualUploadDraftBinding,
+} from "./routes/ref-manual-upload-draft-connection.ts";
 import {
   createInProcessPendingAuthStore,
   mountRefProviderAuthCallback,
@@ -384,7 +395,11 @@ import { mountRefRunStatus } from "./routes/ref-run-status.ts";
 import { mountRefGrants, mountRefRuns, mountRefTraces } from "./routes/ref-spine-correlations.ts";
 import { mountRefGrantTimeline, mountRefRunTimeline, mountRefTraceTimeline } from "./routes/ref-spine-timelines.ts";
 import { mountRefStaticSecretCredentialCapture } from "./routes/ref-static-secret-credentials.ts";
-import { mountRefStaticSecretDraftConnection } from "./routes/ref-static-secret-draft-connection.ts";
+import {
+  mountRefStaticSecretDraftConnection,
+  promoteStaticSecretDraftBinding,
+  type StaticSecretDraftSourceBinding,
+} from "./routes/ref-static-secret-draft-connection.ts";
 import { mountRefStaticSecretSetupStatus } from "./routes/ref-static-secret-setup-status.ts";
 import {
   mountAsAuthorizationServerMetadata,
@@ -1158,12 +1173,6 @@ function readReferenceLocalConnectorCatalogManifest(connectorId: string) {
       streams: [],
     };
   }
-}
-
-function listReferenceLocalConnectorCatalogManifests() {
-  return Array.from(REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.keys())
-    .map((connectorId) => readReferenceLocalConnectorCatalogManifest(connectorId))
-    .filter(Boolean);
 }
 
 async function ensureReferenceConnectorCatalogEntry(
@@ -2467,6 +2476,78 @@ async function resolveRegisteredConnectorManifest(connectorId: string) {
   return manifest;
 }
 
+// Keyed by the current setup binding kind; each builder returns the durable
+// replacement binding. A new setup-binding kind only needs an entry here.
+const SETUP_BINDING_PROMOTIONS: Record<
+  string,
+  (currentBinding: Record<string, unknown>, now: string) => Record<string, unknown>
+> = {
+  browser_enrollment_shell: (binding, now) =>
+    promoteBrowserEnrollmentShellBinding(
+      binding as unknown as BrowserEnrollmentShellSourceBinding,
+      now
+    ) as unknown as Record<string, unknown>,
+  manual_upload_draft: (binding, now) =>
+    promoteManualUploadDraftBinding(binding as unknown as ManualUploadDraftSourceBinding, now) as unknown as Record<
+      string,
+      unknown
+    >,
+  static_secret_draft: (binding, now) =>
+    promoteStaticSecretDraftBinding(binding as unknown as StaticSecretDraftSourceBinding, now) as unknown as Record<
+      string,
+      unknown
+    >,
+};
+
+interface ActivateDraftConnectionStore {
+  activateDraft: (connectorInstanceId: string) => unknown | Promise<unknown>;
+  get: (
+    connectorInstanceId: string
+  ) =>
+    | { status?: string; sourceBinding?: unknown }
+    | null
+    | Promise<{ status?: string; sourceBinding?: unknown } | null>;
+  promoteSetupBinding: (
+    connectorInstanceId: string,
+    args: { fromKind: string; sourceBinding: Record<string, unknown>; updatedAt: string }
+  ) => { instance: unknown; promoted: boolean } | Promise<{ instance: unknown; promoted: boolean }>;
+}
+
+// Extracted from its `rsMutationContext.activateDraftConnection` call site
+// so it's unit-testable against a fake store without a full server — see
+// test/activate-draft-connection.test.ts.
+type ActivationScheduleAttacher = (
+  instance: { connectorId?: string; connectorInstanceId?: string; status?: string } | null | undefined
+) => Promise<unknown>;
+
+export async function activateDraftConnection(
+  connectorInstanceId: string,
+  store: ActivateDraftConnectionStore,
+  attachSchedule: ActivationScheduleAttacher
+): Promise<unknown> {
+  const current = await store.get(connectorInstanceId);
+  const bindingKind =
+    current?.sourceBinding && typeof current.sourceBinding === "object"
+      ? (current.sourceBinding as { kind?: unknown }).kind
+      : null;
+  const promotion = typeof bindingKind === "string" ? SETUP_BINDING_PROMOTIONS[bindingKind] : undefined;
+  const now = new Date().toISOString();
+  const { instance, promoted } =
+    current?.status === "draft" && promotion
+      ? await store.promoteSetupBinding(connectorInstanceId, {
+          fromKind: bindingKind as string,
+          sourceBinding: promotion(current.sourceBinding as Record<string, unknown>, now),
+          updatedAt: now,
+        })
+      : { instance: await store.activateDraft(connectorInstanceId), promoted: true };
+  if (!promoted) {
+    return null;
+  }
+  return await attachSchedule(
+    instance as { connectorId?: string; connectorInstanceId?: string; status?: string } | null | undefined
+  );
+}
+
 function createActivationScheduleAttacher(controller: unknown) {
   return async (
     instance: { connectorId?: string; connectorInstanceId?: string; status?: string } | null | undefined
@@ -3331,8 +3412,14 @@ async function persistContentAddressedBlob({
   mimeType: string;
   data: Buffer;
 }) {
-  return withConnectorInstanceWrite(connectorInstanceId, (ownership) =>
-    persistContentAddressedBlobWithinFence({
+  return withConnectorInstanceWrite(connectorInstanceId, async (ownership) => {
+    // `persistContentAddressedBlob` is only reached via the HTTP blob-write
+    // route (not called directly by tests, unlike `ingestRecord`), so the
+    // existence re-check runs unconditionally, inside the fence, right
+    // before the write. See `assertConnectorInstanceWritable` in records.ts
+    // for the delete/write TOCTOU this closes.
+    await assertConnectorInstanceWritable(connectorInstanceId);
+    return persistContentAddressedBlobWithinFence({
       connectorId,
       connectorInstanceId,
       coordinatorOwnership: ownership,
@@ -3340,8 +3427,8 @@ async function persistContentAddressedBlob({
       mimeType,
       recordKey,
       stream,
-    })
-  );
+    });
+  });
 }
 
 async function persistContentAddressedBlobWithinFence({
@@ -5093,9 +5180,11 @@ export function buildAsApp(opts: ServerOpts = {}) {
     createRequestAcquisitionBatchStore,
     createRequestConnectorInstanceCredentialStore,
     createRequestConnectorInstanceStore,
+    getLatestRunHistoryForProductByConnectionId: (connectorInstanceId: string) =>
+      getDefaultSchedulerStore().getLatestRunHistoryForProductByConnectionId?.(connectorInstanceId) ?? null,
     getOwnerSubjectId,
-    getRunStartedAt: async (runId: string) => (await getRunStartedEvent(runId))?.occurred_at ?? null,
-    getRunTerminalStatus,
+    getProductRunHistoryForConnectionRunId: (connectorInstanceId: string, runId: string) =>
+      getDefaultSchedulerStore().getProductRunHistoryForConnectionRunId?.(connectorInstanceId, runId) ?? null,
     handleError,
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,
@@ -5168,6 +5257,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
   // enforcement; the adapter owns all route logic.
   const refDeviceExportersContext = {
     acceptedCollectorProtocolVersions,
+    assertConnectorInstanceWritable,
     canonicalConnectorKey,
     createRequestConnectorInstanceStore,
     DeviceBatchConflictError,
@@ -5224,6 +5314,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
   mountRefDeviceExporterRevoke(
     app,
     refDeviceExportersContext as unknown as Parameters<typeof mountRefDeviceExporterRevoke>[1]
+  );
+  mountRefDeviceExporterSelfRevoke(
+    app,
+    refDeviceExportersContext as unknown as Parameters<typeof mountRefDeviceExporterSelfRevoke>[1]
   );
   mountRefDeviceExporterHeartbeat(
     app,
@@ -5612,13 +5706,13 @@ function buildRsApp(opts: ServerOpts = {}) {
   // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
   // (registered after) share the same context object.
   const rsMutationContext = {
-    // First-ingest activation for static-secret drafts: flip draft → active
-    // once a record lands. No-op on a non-draft row. See
-    // add-static-secret-owner-session-connect-path design Decision 5.
-    activateDraftConnection: async (connectorInstanceId: string) => {
-      const instance = await createRequestConnectorInstanceStore().activateDraft(connectorInstanceId);
-      return await attachActivationScheduleForConnection(instance);
-    },
+    // See add-static-secret-owner-session-connect-path design Decision 5.
+    activateDraftConnection: (connectorInstanceId: string) =>
+      activateDraftConnection(
+        connectorInstanceId,
+        createRequestConnectorInstanceStore(),
+        attachActivationScheduleForConnection
+      ),
     buildMutationContext,
     buildStateContext,
     deleteAllRecords,
@@ -5635,8 +5729,24 @@ function buildRsApp(opts: ServerOpts = {}) {
       )[0] ?? null,
     getSyncState,
     handleError,
-    ingestRecord: (target: unknown, record: unknown) =>
-      ingestRecord(target as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1]),
+    ingestRecord: (
+      target: unknown,
+      record: unknown,
+      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+    ) =>
+      ingestRecord(target as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1], options),
+    ingestRecords: (
+      target: unknown,
+      records: readonly unknown[],
+      afterRecord: ((record: unknown, outcome: unknown) => Promise<void>) | undefined,
+      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+    ) =>
+      ingestRecords(
+        target as Parameters<typeof ingestRecords>[0],
+        records as Parameters<typeof ingestRecords>[1],
+        afterRecord,
+        options
+      ),
     // Same cache the mutation routes below already invalidate on every other
     // connection-mutating action (revoke, reactivate, schedule, run, rename,
     // delete). `maybeActivateDraftAfterIngest` (rs-mutation.ts) calls this
@@ -6244,17 +6354,16 @@ function buildRsApp(opts: ServerOpts = {}) {
   // GET /v1/owner/connector-templates is the bearer-authed owner-agent template
   // catalog. It separates connector implementation metadata from configured
   // connection instances, embeds related connection summaries, and reports
-  // template-level `initiate_connection` support truthfully: proven
-  // local-collector templates can create an enrollment intent; browser-bound and
-  // API/network-only templates name the missing primitive instead of pretending
-  // an owner bearer can add a provider account.
+  // template-level `initiate_connection` support truthfully: only registered
+  // templates whose server-owned listing, proof, readiness, and planner
+  // contract support an owner action receive a supported intent.
   mountOwnerConnectorTemplates(app, {
     canonicalConnectorKey,
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
     createRequestConnectorInstanceStore,
     getConnectorManifest: (connectorId: string) => getConnectorManifest(connectorId),
     getOwnerTokenSubjectId,
     handleError,
-    listReferenceLocalConnectorCatalogManifests,
     listRegisteredConnectorIds,
     projectStorageDisplayName,
     requireOwner,
@@ -6620,6 +6729,7 @@ export async function startServer(opts: ServerOpts = {}) {
               ownerSubjectId,
             })
           : await admitOwnerRunConnection({
+              allowDraft: runAdmission === "setup",
               connectorId,
               connectorInstanceId,
               connectorInstanceStore: createRequestConnectorInstanceStore(),
@@ -6819,6 +6929,15 @@ export async function startServer(opts: ServerOpts = {}) {
   // (it lazily imports the connector package's probe + live transport). Tests
   // may inject their own via `opts.staticSecretCredentialProber`.
   const staticSecretCredentialProber = opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
+  const configuredProviderAuthConnectorKeys =
+    opts.configuredProviderAuthConnectorKeys ?? configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
+  const providerAuthExchanger =
+    opts.providerAuthExchanger ??
+    (configuredProviderAuthConnectorKeys.includes("google-maps-data-portability")
+      ? createGoogleDataPortabilityProviderAuthExchanger({
+          credentialStoreFactory: createRequestConnectorInstanceCredentialStore,
+        })
+      : null);
 
   const asApp = buildAsApp({
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
@@ -6865,10 +6984,10 @@ export async function startServer(opts: ServerOpts = {}) {
     ...(browserSurfaceControllerOptions as Record<string, unknown>),
     // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
     cancelScheduledRun: (runId: string) => schedulerManager?.cancelRun?.(runId) ?? null,
-    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
+    configuredProviderAuthConnectorKeys,
     logger,
     onScheduleMutation: () => schedulerManager?.refresh(),
-    providerAuthExchanger: opts.providerAuthExchanger ?? null,
+    providerAuthExchanger,
     runTargetRegistry,
     staticSecretAutoResume: opts.staticSecretAutoResume,
   } as unknown as ServerOpts);
@@ -6917,6 +7036,7 @@ export async function startServer(opts: ServerOpts = {}) {
     asIssuer: configuredAsIssuer || asPublicUrl,
     asPort,
     asPublicUrl,
+    configuredProviderAuthConnectorKeys,
     controller,
     hybridRetrievalCapability: opts.hybridRetrievalCapability,
     // Hybrid retrieval experimental extension knobs — see search-hybrid.js +

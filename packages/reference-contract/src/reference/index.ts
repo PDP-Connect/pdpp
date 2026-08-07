@@ -2367,6 +2367,33 @@ export const referenceManifests = [
     tags: ["reference", "device-exporters"],
   },
   {
+    id: "refSelfRevokeDeviceExporter",
+    method: "POST",
+    path: "/_ref/device-exporters/{deviceId}/self-revoke",
+    request: { params: DeviceIdParamSchema },
+    responses: {
+      200: {
+        schema: {
+          additionalProperties: false,
+          properties: {
+            device_id: { type: "string" },
+            object: { const: "device_exporter_revocation" },
+            revoked_at: { type: "string" },
+          },
+          required: ["object", "device_id", "revoked_at"],
+          type: "object",
+        },
+      },
+      ...DeviceExporterErrors,
+    },
+    summary:
+      "Revoke a local device exporter's own credential using its own device bearer token. A device credential may " +
+      "only revoke itself, never another device; the path deviceId must match the authenticated credential's " +
+      "device. Used by local-collector `logout` to close the server-side lane before deleting local credentials.",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+  },
+  {
     id: "refHeartbeatDeviceExporter",
     method: "POST",
     path: "/_ref/device-exporters/{deviceId}/heartbeat",

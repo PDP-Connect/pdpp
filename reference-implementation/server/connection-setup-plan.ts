@@ -39,6 +39,7 @@ export type ConnectorCatalogDisposition =
   | "manual_upload_connect"
   | "manual_upload_pending"
   | "provider_auth_deployment_blocked"
+  | "provider_auth_connect"
   | "provider_auth_proof_gated"
   | "api_network_unsupported"
   | "unknown_unsupported";
@@ -277,8 +278,8 @@ export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
 //   github — run_1781131195649 completed/succeeded, env-free container
 //           + run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records)
 //   slack  — run_1781131204868 completed/succeeded, env-free container
-// (ynab store path also proven; token is provider-side dead — not a capture-path failure)
-export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack"] as const;
+//   ynab   — store path proven; captured credentials validated successfully
+export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack", "ynab"] as const;
 
 export type StaticSecretLiveProvenConnector = (typeof STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS)[number];
 
@@ -775,7 +776,7 @@ function buildProviderAuthorizationSetupPlan(ctx: ConnectionSetupPlanContext): C
   const lifecycleProven = !deploymentBlocked && isProviderAuthLifecycleProven(ctx.connectorKey);
   if (lifecycleProven) {
     return {
-      catalogDisposition: "provider_auth_proof_gated",
+      catalogDisposition: "provider_auth_connect",
       connectorKey: ctx.connectorKey,
       connectorModality: ctx.connectorModality,
       deploymentReadiness: ctx.deploymentReadiness,

@@ -432,6 +432,12 @@ interface ConnectorDetailGapStore {
 export interface MountRefDeviceExportersContext {
   acceptedCollectorProtocolVersions: readonly string[];
 
+  // Re-checks the connection once per device-ingest batch after its
+  // coordinator fence is acquired. Every record write reuses that held
+  // fence, so one check covers the whole loop. Closes the delete/write TOCTOU documented on
+  // `assertConnectorInstanceWritable` in server/records.ts.
+  assertConnectorInstanceWritable: (connectorInstanceId: string) => Promise<void>;
+
   // Canonical key resolution
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
@@ -2115,6 +2121,37 @@ export function mountRefDeviceExporterRevoke(app: AppLike, ctx: MountRefDeviceEx
   );
 }
 
+// POST /_ref/device-exporters/:deviceId/self-revoke
+//
+// A device credential may revoke itself, never another device: auth is the
+// device's own bearer token (not an owner session), and the path deviceId
+// must match the credential that authenticated the request. This is the
+// route `pdpp-local-collector logout` calls before deleting its local
+// profile — without it, a local device has no way to close its own
+// server-side lane, and logout could only ever delete local state while the
+// device token stayed live against the reference deployment indefinitely.
+export function mountRefDeviceExporterSelfRevoke(app: AppLike, ctx: MountRefDeviceExportersContext): void {
+  app.post(
+    "/_ref/device-exporters/:deviceId/self-revoke",
+    { contract: "refSelfRevokeDeviceExporter" },
+    ctx.requireDeviceExporterCredential,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const deviceId = decodeURIComponent(req.params.deviceId as string);
+        if (deviceId !== req.deviceExporter?.deviceId) {
+          ctx.pdppError(res, 403, "permission_error", "Device credential is not valid for this device");
+          return;
+        }
+        const revokedAt = new Date().toISOString();
+        await ctx.deviceExporterStore.revokeDevice(deviceId, revokedAt);
+        res.json({ device_id: deviceId, object: "device_exporter_revocation", revoked_at: revokedAt });
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
 async function markHeartbeatSourceInstance(input: {
   ctx: MountRefDeviceExportersContext;
   deviceId: string;
@@ -2366,6 +2403,15 @@ async function processDeviceIngestBatch(
       ctx.pdppError(res, 400, "invalid_request", "connector_id does not match source_instance_id", "connector_id");
       return;
     }
+
+    // Re-check the connection still exists before any new mutation below.
+    // Runs once, under the SAME held fence every write in this batch (the
+    // reservation, the per-record ctx.ingestRecord loop, and
+    // prepareDeviceFinalRecords) reuses via `coordinatorOwnership` — closes
+    // the delete/write TOCTOU for the whole batch in one check, not one per
+    // record. An already-accepted replay (returned above) is a historical
+    // read, not a new write, so it is intentionally NOT gated by this check.
+    await ctx.assertConnectorInstanceWritable(connectorInstanceId);
 
     // Accepted replays returned above intentionally do not consult the current
     // manifest or semantic backend. Every new/processing attempt does.

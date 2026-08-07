@@ -16,22 +16,34 @@ enrollment response currently names that value `source_instance_id`.
 
 ## Usage
 
+Guided path — one command pairs the host and saves credentials, no manual
+JSON/env-var copying:
+
 ```bash
 # @pdpp/local-collector package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector advertise
-
-# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector enroll \
+npx -y @pdpp/local-collector setup \
   --base-url https://<reference-host> \
-  --code <one-time-code>
+  --code <one-time-code> \
+  --connector claude_code \
+  --sample 20   # bounded proof pass: verify without collecting the whole archive
 
-# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
-PDPP_LOCAL_DEVICE_ID=<device_id> \
-PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
-PDPP_CONNECTION_ID=<source_instance_id> \
-npx -y @pdpp/local-collector run \
-  --base-url https://<reference-host> \
-  --connector claude_code
+# credentials are saved to ~/.config/pdpp/collectors/claude_code.env (0600);
+# run resolves them automatically from --connection-id alone:
+npx -y @pdpp/local-collector run --connection-id <source_instance_id>
+```
+
+`run` prints live progress to stderr as records are found (`--quiet` to
+suppress). `--sample <n>` works on `run` too, any time you want a bounded
+preview instead of a full collection.
+
+```bash
+# List connector ids this build accepts.
+npx -y @pdpp/local-collector connectors
+
+# Revoke this device's credential on the reference server, then remove its
+# saved local profile. Add --local-only to skip the server call (only for an
+# unreachable/decommissioned server — the device token stays live otherwise).
+npx -y @pdpp/local-collector logout --connector claude_code
 
 # Preview host-local recovery for a stalled collector lane. This loads the
 # enrolled local profile for the source instance and changes nothing.
@@ -39,6 +51,26 @@ npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id>
 
 # Apply recovery: requeue failed uploads when present, then run the collector once.
 npx -y @pdpp/local-collector recover --source-instance-id <source_instance_id> --apply
+```
+
+Low-level / scriptable primitives (unchanged, still supported):
+
+```bash
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector advertise
+
+# enroll prints the raw JSON response instead of saving a profile.
+npx -y @pdpp/local-collector enroll \
+  --base-url https://<reference-host> \
+  --code <one-time-code>
+
+# run with credentials supplied entirely via env vars/flags.
+PDPP_LOCAL_DEVICE_ID=<device_id> \
+PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
+PDPP_CONNECTION_ID=<source_instance_id> \
+npx -y @pdpp/local-collector run \
+  --base-url https://<reference-host> \
+  --connector claude_code
 ```
 
 The collector sends `X-PDPP-Collector-Protocol` on enrollment and every

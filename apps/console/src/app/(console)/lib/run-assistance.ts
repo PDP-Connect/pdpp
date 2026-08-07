@@ -98,6 +98,42 @@ export function hasActiveBrowserSurface(events: SpineEvent[]): boolean {
   return false;
 }
 
+/**
+ * True once a browser-surface-shaped assistance request has ever been raised
+ * for this run and is now terminal (resolved/cancelled/escalated/timed out) —
+ * the H-E-B "owner finished login" signal. Distinct from
+ * `hasActiveBrowserSurface`, which answers "is a browser surface open right
+ * now": this answers "did the owner already do the browser step," so the
+ * stream page can hand off to a background-continuing surface instead of
+ * re-showing the same no-action-waiting copy it would show for a run that
+ * never needed browser input at all (fr-setup-status-lifecycle-0806).
+ */
+export function hasResolvedBrowserSurfaceAssistance(events: SpineEvent[]): boolean {
+  const terminalState = getTerminalAssistanceState(events);
+  for (const event of events) {
+    if (event.event_type === "run.assistance_requested") {
+      const id = getEventAssistanceId(event);
+      if (id && terminalState.ids.has(id) && requiresBrowserSurfaceAssistance(assistanceFromEvent(event, id))) {
+        return true;
+      }
+      continue;
+    }
+    if (event.event_type === "run.interaction_completed") {
+      const id = getEventAssistanceId(event);
+      if (!id) {
+        continue;
+      }
+      const requested = events.find(
+        (candidate) => candidate.event_type === "run.interaction_required" && getEventAssistanceId(candidate) === id
+      );
+      if (requested && requiresBrowserSurfaceAssistance(assistanceFromLegacyInteraction(requested, id))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function getCompletedLegacyInteractions(events: SpineEvent[]): Set<string> {
   return new Set(
     events

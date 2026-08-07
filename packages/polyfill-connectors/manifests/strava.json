@@ -15,19 +15,19 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
-      "background_safe": true,
-      "rationale": "Strava activities are uploaded after workouts; six-hourly refresh stays well inside rate limits."
+      "background_safe": false,
+      "rationale": "Manual refresh is retained while the owner setup path remains unproven."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "listed": false,
+      "status": "unproven"
     },
     "auth": {
       "kind": "env",

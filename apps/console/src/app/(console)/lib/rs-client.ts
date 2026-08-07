@@ -16,6 +16,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findManifestForConnectorId } from "../sources/lib/relationships.ts";
+import type { OwnerConnectorTemplateLike } from "./connection-catalog.ts";
 import { isActiveConnectorRunSummaryStatus } from "./connector-run-summary-status.ts";
 import {
   getOwnerToken,
@@ -142,6 +143,19 @@ export interface StreamMetadata {
 }
 
 export interface ConnectorManifest {
+  capabilities?: {
+    auth?: {
+      deployment_config?: readonly string[] | null;
+      kind?: string | null;
+      mode?: string | null;
+      required?: readonly string[] | null;
+      type?: string | null;
+    } | null;
+    public_listing?: {
+      listed?: boolean | null;
+      status?: string | null;
+    } | null;
+  } | null;
   connector_id: string;
   connector_key?: string;
   display_name?: string;
@@ -787,6 +801,14 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
   const manifests = parsed.filter((m): m is ConnectorManifest => Boolean(m?.connector_id));
   manifests.sort((a, b) => a.connector_id.localeCompare(b.connector_id));
   return manifests;
+}
+
+/** Server-owned catalog projection consumed by the live Add Source surface. */
+export type OwnerConnectorTemplate = OwnerConnectorTemplateLike;
+
+export async function listOwnerConnectorTemplates(): Promise<OwnerConnectorTemplate[]> {
+  const body = (await authedFetch("/v1/owner/connector-templates")) as { data?: OwnerConnectorTemplate[] };
+  return Array.isArray(body.data) ? body.data : [];
 }
 
 export interface ConnectorOverview {

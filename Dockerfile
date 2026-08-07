@@ -105,6 +105,49 @@ EXPOSE 7662 7663
 
 CMD ["sh", "-c", "export AS_PORT=\"${PORT:-${AS_PORT:-7662}}\"; export PDPP_RS_URL=\"${PDPP_RS_URL:-http://127.0.0.1:${RS_PORT:-7663}}\"; exec node reference-implementation/server/index.ts"]
 
+# Isolated slackdump (v4.4.2, AGPL-3.0) builder stage.
+# Downloads pre-built tarball, verifies SHA256, extracts binary and license.
+# Only the binary (not build deps or Go) is copied to final image.
+FROM debian:bookworm-slim AS slackdump-builder
+
+ARG TARGETARCH
+
+WORKDIR /build
+
+# Map Docker TARGETARCH to slackdump release tarball name
+RUN case "${TARGETARCH}" in \
+      x86_64|amd64) SLACKDUMP_TARBALL="slackdump_Linux_x86_64.tar.gz"; SLACKDUMP_SHA256="e2f386b2af30b0ba0ae98973f6a053225fba7d7127a20ad196cfdd96bf601052" ;; \
+      arm64) SLACKDUMP_TARBALL="slackdump_Linux_arm64.tar.gz"; SLACKDUMP_SHA256="71d8b55b9132c0d39d6fe66e3542ee7d2ec6c032b7701928124c736611cc235e" ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    echo "${SLACKDUMP_TARBALL}" > /tmp/tarball.txt && \
+    echo "${SLACKDUMP_SHA256}" > /tmp/sha256.txt
+
+# Install only ca-certificates and curl; minimal runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download from official GitHub release, verify SHA256, extract
+RUN TARBALL=$(cat /tmp/tarball.txt) && \
+    EXPECTED_SHA=$(cat /tmp/sha256.txt) && \
+    curl -fsSL -o "${TARBALL}" "https://github.com/rusq/slackdump/releases/download/v4.4.2/${TARBALL}" && \
+    ACTUAL_SHA=$(sha256sum "${TARBALL}" | awk '{print $1}') && \
+    if [ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]; then \
+      echo "SHA256 mismatch for ${TARBALL}" >&2; \
+      echo "Expected: ${EXPECTED_SHA}" >&2; \
+      echo "Actual:   ${ACTUAL_SHA}" >&2; \
+      exit 1; \
+    fi && \
+    tar -xzf "${TARBALL}" && \
+    test -x slackdump && \
+    ./slackdump version
+
+# Download LICENSE and source reference from upstream
+# AGPL section 6(d): Corresponding Source URL must resolve to exact versioned tree
+RUN curl -fsSL -o LICENSE "https://raw.githubusercontent.com/rusq/slackdump/v4.4.2/LICENSE" && \
+    echo "https://github.com/rusq/slackdump/tree/v4.4.2" > SOURCE_URL && \
+    test -f LICENSE && test -s LICENSE
+
 # Dedicated browsers stage. Patchright + bundled Chromium + (on amd64) Google
 # Chrome stable + their apt deps are baked into a stage whose cache key is
 # only the patchright version and target arch. This is independent of the
@@ -174,9 +217,14 @@ CMD ["node", "reference-implementation/server/index.ts"]
 # tranche. See openspec/changes/split-public-site-and-operator-console.
 FROM base AS console
 
+# The console image is paired with the current reference implementation, whose
+# merged-timeline contract supports direction=asc. Keep the explicit capability
+# gate enabled for that pairing; an older external RS can still fail closed by
+# setting PDPP_EXPLORE_TIMELINE_DIRECTION=0.
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    PDPP_EXPLORE_TIMELINE_DIRECTION=1
 
 COPY --from=console-builder /app/apps/console/.next/standalone ./
 COPY --from=console-builder /app/apps/console/.next/static ./apps/console/.next/static
@@ -222,6 +270,9 @@ ARG PDPP_REFERENCE_REVISION=unknown
 # [[restart]] override). If this stage is ever deployed through a path with
 # no restart policy, that deployment is the truthful gap to fix, not this
 # flag.
+# Core bundles the matching reference implementation, including the
+# direction=asc merged-timeline read contract. Keep the UI capability gate
+# explicit; an older external RS can still fail closed with =0.
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000 \
@@ -234,6 +285,7 @@ ENV NODE_ENV=production \
     PDPP_BROWSER_PROFILE_ROOT=/var/lib/pdpp/browser-profiles \
     PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1 \
     PDPP_EMBEDDING_CACHE_DIR=/var/lib/pdpp/transformers \
+    PDPP_EXPLORE_TIMELINE_DIRECTION=1 \
     PDPP_REFERENCE_OPERATIONAL_DEFAULTS=1 \
     PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT=1 \
     PDPP_RECONCILE_POLYFILL_MANIFESTS=1 \
@@ -244,6 +296,15 @@ COPY --from=source /app /app
 COPY --from=console-builder /app/apps/console/.next/standalone /console
 COPY --from=console-builder /app/apps/console/.next/static /console/apps/console/.next/static
 COPY --from=console-builder /app/apps/console/public /console/apps/console/public
+
+# Copy slackdump binary (AGPL-3.0, v4.4.2) from builder stage.
+# Binary required by Slack connector; upstream: https://github.com/rusq/slackdump/blob/v4.4.2
+COPY --from=slackdump-builder /build/slackdump /usr/local/bin/slackdump
+COPY --from=slackdump-builder /build/LICENSE /usr/local/share/slackdump/LICENSE.agpl-3.0.txt
+COPY --from=slackdump-builder /build/SOURCE_URL /usr/local/share/slackdump/SOURCE_URL
+
+# Verify slackdump is executable and functional
+RUN chmod +x /usr/local/bin/slackdump && /usr/local/bin/slackdump version
 
 EXPOSE 3000
 

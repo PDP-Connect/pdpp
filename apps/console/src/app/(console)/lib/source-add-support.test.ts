@@ -20,10 +20,10 @@ import { buildSourceAddSupport, resolveSourceAddSupport } from "./source-add-sup
 
 const ADD_ANOTHER_ACCOUNT_LABEL_RE = /add another account/i;
 const CONNECT_BROWSER_SESSION_ROUTE_RE = /\/connect\/browser-session\/amazon/;
-const STATIC_SECRET_ROUTE_RE = /\/connect\/static-secret\/ynab/;
+const STATIC_SECRET_ROUTE_RE = /\/connect\/static-secret\/gmail/;
 const DEVICE_EXPORTER_ROUTE_RE = /\/device-exporters\?connector=/;
 const MANUAL_UPLOAD_ROUTE_RE = /\/connect\/manual-upload\/google-maps/;
-const PACKAGED_PATH_PENDING_RE = /^Add path not packaged$/;
+const NOT_SELF_SERVICE_RE = /^Adding another account is not available here$/;
 const DEMOTION_COPY_RE = /not self-service|not supported|track only|developer proof/i;
 const DEV_JARGON_RE = /pnpm --dir|packages\/|monorepo|env var|connector_instance_id|PDPP_/;
 
@@ -114,9 +114,9 @@ function providerAuthManifest(connectorId: string): CatalogManifestLike {
   };
 }
 
-test("static-secret source supports self-service add-another-account with an action", () => {
-  const map = buildSourceAddSupport([staticSecretManifest("ynab")]);
-  const support = resolveSourceAddSupport(map, "ynab");
+test("proven static-secret source supports self-service add-another-account with an action", () => {
+  const map = buildSourceAddSupport([staticSecretManifest("gmail")]);
+  const support = resolveSourceAddSupport(map, "gmail");
   assert.ok(support, "static-secret connector must appear in the support map");
   assert.equal(support.support, "self_service");
   assert.ok(support.action, "self-service add must carry a next action");
@@ -146,23 +146,23 @@ test("supported browser collector source is self-service and routes to browser-s
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
 });
 
-test("browser-bound runbook source stays packaged-path-pending", () => {
+test("proof-gated browser runbook stays unavailable for self-service setup", () => {
   const map = buildSourceAddSupport([browserBoundManifest("some_browser_source")]);
   const support = resolveSourceAddSupport(map, "some_browser_source");
   assert.ok(support);
-  assert.equal(support.support, "packaged_path_pending");
+  assert.equal(support.support, "not_self_service");
   assert.equal(support.action, null);
-  assert.match(support.supportLabel, PACKAGED_PATH_PENDING_RE);
+  assert.match(support.supportLabel, NOT_SELF_SERVICE_RE);
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
 });
 
-test("manual/upload pending source stays packaged-path-pending", () => {
+test("unshipped manual upload path stays unavailable for self-service setup", () => {
   const map = buildSourceAddSupport([manualUploadPendingManifest("google-maps-pending")]);
   const support = resolveSourceAddSupport(map, "google-maps-pending");
   assert.ok(support);
-  assert.equal(support.support, "packaged_path_pending");
+  assert.equal(support.support, "not_self_service");
   assert.equal(support.action, null);
-  assert.match(support.supportLabel, PACKAGED_PATH_PENDING_RE);
+  assert.match(support.supportLabel, NOT_SELF_SERVICE_RE);
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
 });
 
@@ -187,8 +187,8 @@ test("provider-auth source reports deployment prerequisite, not static-secret se
 });
 
 test("a connection's raw registry-prefixed connector_id resolves to the canonical key", () => {
-  const map = buildSourceAddSupport([staticSecretManifest("ynab")]);
-  const support = resolveSourceAddSupport(map, "https://registry.pdpp.org/connectors/ynab");
+  const map = buildSourceAddSupport([staticSecretManifest("gmail")]);
+  const support = resolveSourceAddSupport(map, "https://registry.pdpp.org/connectors/gmail");
   assert.ok(support, "registry-URL connector_id must resolve via canonicalConnectorKey");
   assert.equal(support.support, "self_service");
 });

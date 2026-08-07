@@ -204,6 +204,24 @@ test("setup planner marks live-proven static-secret connectors as supported", ()
   }
 });
 
+test("YNAB static-secret setup supports owner-session capture route", () => {
+  // YNAB regression: static-secret capture form was unreachable from the
+  // catalog picker when YNAB was not in the live-proven roster. Verify the fix.
+  const plan = buildConnectionSetupPlan({
+    connectorKey: "ynab",
+    manifest: staticSecretManifest("ynab", "personal_access_token"),
+  });
+  assert.equal(plan.connectorModality, "api_network");
+  assert.equal(plan.setupModality, "static_secret");
+  assert.equal(plan.supportState, "supported");
+  assert.equal(plan.catalogDisposition, "static_secret_connect");
+  assert.equal(plan.nextStepKind, "capture_static_secret");
+  assert.equal(plan.ownerAgentIntent.status, "supported");
+  assert.equal(plan.ownerAgentIntent.method, "POST");
+  assert.equal(plan.proofGate, null);
+  assert.equal(plan.validationMode, "first_sync");
+});
+
 test("setup planner treats hybrid filesystem static-secret connectors as credential capture setup", () => {
   const plan = buildConnectionSetupPlan({
     connectorKey: "slack",

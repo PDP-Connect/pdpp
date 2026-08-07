@@ -113,7 +113,10 @@ import {
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
 } from "./storage-utils.ts";
-import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.ts";
+import {
+  ConnectorInstanceResolutionError,
+  makeDefaultAccountConnectorInstanceId,
+} from "./stores/connector-instance-store.ts";
 import { getDefaultConnectorStateStore } from "./stores/connector-state-store.ts";
 import { advanceSqliteDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
 
@@ -202,6 +205,31 @@ interface RecordIngestOptions {
   deferIndexes?: boolean;
   deviceFinalInputIndex?: number;
   deviceReservation?: DeviceReservation;
+  /**
+   * Opt-in re-check, inside the SAME `withConnectorInstanceWrite` fence this
+   * call already acquires, that the `connector_instances` row still exists
+   * before writing. Closes the delete/write TOCTOU a bare fence does not
+   * close on its own: the fence only serializes a delete against a write for
+   * the SAME identity, it does not reject a write that acquires the fence
+   * AFTER a delete already committed and removed the row (see
+   * `assertConnectorInstanceWritable`). Opt-in (default false/omitted) so
+   * `ingestRecord`/`ingestRecords` stay usable as a connector-agnostic
+   * durable storage primitive by direct callers (tests, internal repair
+   * paths) that never enroll a `connector_instances` row; HTTP routes that
+   * admit an external caller after resolving a real connection set this
+   * true.
+   */
+  requireConnectionAdmission?: boolean;
+  /**
+   * The run this write belongs to, when known. When present, the durable
+   * mutation checks run_history for (runId, connectorInstanceId) inside the
+   * same write transaction and refuses the write if the run is already
+   * terminal — the runtime's own AbortSignal is a client-side socket-close
+   * heuristic and cannot prevent a write already admitted into the
+   * connector-instance write coordinator from committing after cancellation.
+   * See harden-ingest-run-admission-fence.
+   */
+  runId?: string | null;
 }
 interface CurrentRecordRow {
   deleted: boolean | number;
@@ -231,6 +259,20 @@ interface RecordIngestOutcome {
   version?: number;
 }
 type DeviceRecordPlanEntry = { inputIndex: number; record: RecordEnvelope } & Record<string, unknown>;
+
+type RecordIngestBatchOutcome = RecordIngestOutcome & {
+  /** Present when the durable write or its derived-index phase failed. */
+  error?: string;
+};
+type RecordIngestAfterRecord = (record: RecordEnvelope, outcome: RecordIngestBatchOutcome) => void | Promise<void>;
+interface DeferredRecordIndex {
+  index: number;
+  record: RecordEnvelope;
+}
+interface IngestRecordsWithinCoordinatorResult {
+  changedRecords: DeferredRecordIndex[];
+  outcomes: RecordIngestBatchOutcome[];
+}
 interface JsonSchema {
   format?: string;
   properties?: Record<string, JsonSchema>;
@@ -766,6 +808,21 @@ export class RecordIndexAdmissionError extends Error {
   }
 }
 
+// A write already admitted into the per-connector-instance write coordinator
+// for a run that has since reached a terminal state (owner-cancelled, timed
+// out, or otherwise closed). The runtime's own cancellation signal is a
+// client-side AbortSignal that cannot retroactively un-admit a write the
+// server already accepted; this is the storage-layer fence that refuses it
+// instead. See harden-ingest-run-admission-fence.
+export class RecordIngestRunTerminalError extends Error {
+  code: string;
+  constructor(runId: string) {
+    super(`run ${runId} is already terminal; refusing to commit an ingest write admitted before cancellation`);
+    this.name = "RecordIngestRunTerminalError";
+    this.code = "run_terminal";
+  }
+}
+
 let activeIndexWork = 0;
 const indexWorkWaiters: IndexWorkWaiter[] = [];
 
@@ -842,6 +899,43 @@ async function withIndexWork<T>(operation: () => Promise<T>): Promise<T> {
   } finally {
     releaseIndexWork();
   }
+}
+
+// Index work is derived state. Keep it ordered for one connector instance so
+// a newer record writer cannot race an older batch's lexical/semantic repair,
+// but do not make that derived queue another connector-instance writer fence.
+// A batch schedules its work before releasing the authoritative fence and
+// supplies a start barrier, so later batches cannot overtake it while blobs
+// remain free to acquire the writer fence.
+const connectorInstanceIndexTails = new Map<string, Promise<void>>();
+
+function enqueueConnectorInstanceIndexWork(
+  connectorInstanceId: string,
+  operation: () => Promise<void>,
+  startAfter?: Promise<void>
+): Promise<void> {
+  const previous = connectorInstanceIndexTails.get(connectorInstanceId) ?? Promise.resolve();
+  const next = previous.then(async () => {
+    if (startAfter) {
+      await startAfter;
+    }
+    await operation();
+  });
+  let tail: Promise<void>;
+  tail = next.then(
+    () => {
+      if (connectorInstanceIndexTails.get(connectorInstanceId) === tail) {
+        connectorInstanceIndexTails.delete(connectorInstanceId);
+      }
+    },
+    () => {
+      if (connectorInstanceIndexTails.get(connectorInstanceId) === tail) {
+        connectorInstanceIndexTails.delete(connectorInstanceId);
+      }
+    }
+  );
+  connectorInstanceIndexTails.set(connectorInstanceId, tail);
+  return next;
 }
 
 export function recordIndexWorkStatsForTests(): { active: number; queued: number } {
@@ -1066,6 +1160,56 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
 }
 
 /**
+ * Refuse a record/blob write for a `connector_instance_id` whose
+ * `connector_instances` row is gone — closing a delete/write TOCTOU the
+ * coordinator fence's mutual exclusion alone does not close: the fence only
+ * serializes a delete against a write for the SAME identity, it does not
+ * reject a write that acquires the fence AFTER a delete already committed
+ * and removed the row. Neither the SQLite nor the Postgres schema declares a
+ * foreign key from `records`/`record_changes`/`blobs`/`blob_bindings` to
+ * `connector_instances`, so without this check a post-delete write silently
+ * resurrects a live `records` row for a tombstoned, no-longer-existent
+ * connection.
+ *
+ * `ingestRecord`/`ingestRecords` stay a connector-agnostic durable storage
+ * primitive for direct callers by default (internal repair paths, and
+ * dozens of existing tests that ingest without ever enrolling a
+ * `connector_instances` row) — this function is called from inside them
+ * ONLY when the caller opts in via `RecordIngestOptions.requireConnectionAdmission`.
+ * Owner HTTP ingest (server/routes/rs-mutation.ts) opts in on every call
+ * that resolved a real connection. Device-exporter ingest
+ * (server/routes/ref-device-exporters.ts) calls this function directly,
+ * once per batch, immediately after acquiring the batch's coordinator fence
+ * and before its first mutation — every record write in that batch reuses
+ * the SAME held fence via `coordinatorOwnership`, so the one check covers
+ * the whole batch. `persistContentAddressedBlob` (blob writes,
+ * server/index.ts) calls this function directly and unconditionally inside
+ * its own fence, since it is reached only via the HTTP blob-write route.
+ * Source-webhook ingest (server/routes/source-webhooks.ts) is deliberately
+ * NOT wired to this check: it is connector-id-only generic ingest with no
+ * per-connection admission concept at that layer, so it is out of scope for
+ * this fix.
+ *
+ * Reuses `ConnectorInstanceResolutionError`'s `connector_instance_not_found`
+ * code — the same typed outcome `deleteConnection`'s own ownership check
+ * raises — so callers already handling that code (e.g. a route's
+ * `handleError` mapping to 404) require no new branch.
+ */
+export async function assertConnectorInstanceWritable(connectorInstanceId: string): Promise<void> {
+  const exists = isPostgresStorageBackend()
+    ? (await postgresQuery("SELECT 1 FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]))
+        .rows.length > 0
+    : Boolean(getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]));
+  if (!exists) {
+    throw new ConnectorInstanceResolutionError(
+      "connector_instance_not_found",
+      `Connector instance '${connectorInstanceId}' does not exist; it may have been deleted concurrently with this write.`,
+      { connectorInstanceId }
+    );
+  }
+}
+
+/**
  * Ingest a RECORD envelope (owner-authenticated).
  *
  * Atomicity: durable record mutation — current-state read, no-op decision,
@@ -1095,10 +1239,154 @@ export async function ingestRecord(
   const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
   return await withConnectorInstanceWrite(
     coordinationInstanceId,
-    (coordinatorOwnership) =>
-      ingestRecordWithinCoordinator(storageTarget, record, { ...options, coordinatorOwnership }),
+    async (coordinatorOwnership) => {
+      if (options.requireConnectionAdmission) {
+        await assertConnectorInstanceWritable(coordinationInstanceId);
+      }
+      return ingestRecordWithinCoordinator(storageTarget, record, { ...options, coordinatorOwnership });
+    },
     options.coordinatorOwnership
   );
+}
+
+/**
+ * Ingest one HTTP batch under a single connector-instance fence.
+ *
+ * Durable record mutations stay in one ordered phase under one
+ * connector-instance ownership capability. Derived index work is serialized
+ * on a separate per-instance lane after that fence releases, so embedding and
+ * index latency cannot starve blob writers. When supplied, `afterRecord` is
+ * awaited between a record's storage completion and the next record.
+ */
+export async function ingestRecords(
+  storageTarget: RecordStorageTarget,
+  records: readonly RecordEnvelope[],
+  afterRecord?: RecordIngestAfterRecord,
+  options: Pick<RecordIngestOptions, "requireConnectionAdmission" | "runId"> = {}
+): Promise<RecordIngestBatchOutcome[]> {
+  const coordinationConnectorId = connectorIdForStorageTarget(storageTarget);
+  const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
+  let deferredIndexWork: Promise<void> | undefined;
+  let releaseFence: (() => void) | undefined;
+  const fenceReleasedPromise = new Promise<void>((resolve) => {
+    releaseFence = resolve;
+  });
+  try {
+    const result = await withConnectorInstanceWrite(
+      coordinationInstanceId,
+      async (coordinatorOwnership) => {
+        if (options.requireConnectionAdmission) {
+          await assertConnectorInstanceWritable(coordinationInstanceId);
+        }
+        const batch = await ingestRecordsWithinCoordinator(
+          storageTarget,
+          records,
+          coordinatorOwnership,
+          afterRecord,
+          options.runId
+        );
+        if (batch.changedRecords.length > 0) {
+          deferredIndexWork = enqueueConnectorInstanceIndexWork(
+            coordinationInstanceId,
+            () => runDeferredRecordIndexes(storageTarget, batch),
+            fenceReleasedPromise
+          );
+        }
+        return batch;
+      },
+      undefined
+    );
+    releaseFence?.();
+    await deferredIndexWork;
+    return result.outcomes;
+  } finally {
+    releaseFence?.();
+  }
+}
+
+async function runDeferredRecordIndexes(
+  storageTarget: RecordStorageTarget,
+  batch: IngestRecordsWithinCoordinatorResult
+): Promise<void> {
+  for (const { index, record } of batch.changedRecords) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: One connector instance's derived index repairs are intentionally ordered.
+      await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, {}));
+    } catch (err) {
+      const outcome = batch.outcomes[index];
+      if (outcome?.accepted) {
+        batch.outcomes[index] = {
+          accepted: false,
+          changed: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+  }
+}
+
+async function ingestRecordsWithinCoordinator(
+  storageTarget: RecordStorageTarget,
+  records: readonly RecordEnvelope[],
+  coordinatorOwnership: ConnectorInstanceWriteOwnership,
+  afterRecord?: RecordIngestAfterRecord,
+  runId?: string | null
+): Promise<IngestRecordsWithinCoordinatorResult> {
+  const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
+  const changedRecords: DeferredRecordIndex[] = [];
+  const perRecordOptions: RecordIngestOptions = {
+    coordinatorOwnership,
+    deferIndexes: true,
+    ...(runId ? { runId } : {}),
+  };
+
+  for (const [index, record] of records.entries()) {
+    let outcome: RecordIngestBatchOutcome;
+    try {
+      // Versions, current-state transitions, summaries, and after-commit
+      // notifications stay inside the one authoritative batch fence. Derived
+      // indexes are scheduled after that fence so expensive embedding work
+      // cannot starve an unrelated blob writer.
+      // biome-ignore lint/performance/noAwaitInLoops: Durable version allocation and same-instance state transitions are intentionally ordered.
+      outcome = await ingestRecordWithinCoordinator(storageTarget, record, perRecordOptions);
+      if (outcome.accepted && outcome.changed) {
+        changedRecords.push({ index, record });
+      }
+    } catch (err) {
+      outcome = {
+        accepted: false,
+        changed: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (afterRecord && outcome.accepted) {
+      try {
+        // The callback is part of the per-record completion boundary. It must
+        // finish before the next record enters storage so host-side provenance
+        // and similar effects preserve the established store->effect order.
+        await afterRecord(record, outcome);
+      } catch (err) {
+        outcome = {
+          accepted: false,
+          changed: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    outcomes[index] = outcome;
+  }
+
+  return {
+    changedRecords,
+    outcomes: outcomes.map(
+      (outcome) =>
+        outcome ?? {
+          accepted: false,
+          changed: false,
+          error: "ingest batch did not produce a result",
+        }
+    ),
+  };
 }
 
 function ingestRecordWithinCoordinator(
@@ -1158,6 +1446,7 @@ function toPostgresIngestOptions(options: RecordIngestOptions) {
   return {
     ...(attemptContext ? { attemptContext } : {}),
     ...(options.deviceReservation ? { deviceReservation: options.deviceReservation } : {}),
+    ...(options.runId ? { runId: options.runId } : {}),
   };
 }
 
@@ -1343,6 +1632,31 @@ function pruneRecordChangeHistory(
   return { prunedBytesForDelta, prunedRowsForDelta };
 }
 
+// Run-admission fence: SQLite's single writer connection makes this
+// read-then-write atomic with run_history's terminal write (both go through
+// the same synchronous handle — see run-history-writer.ts header). Fails
+// CLOSED: a caller that supplies a runId is asserting run-bound ingestion,
+// and runtime/index.ts always awaits the run.started spine write (which
+// durably inserts this row with status='running') before spawning the child
+// that could ever call flushBatch — so a genuine run-bound write is
+// guaranteed to find its row. A missing row for a supplied runId means the
+// id is spoofed, mistyped, or belongs to a run this process never started;
+// none of those should be admitted. Must be called from inside the durable
+// write transaction so no other write can land between this check and the
+// mutation it guards. See harden-ingest-run-admission-fence.
+function assertSqliteRunStillAdmitted(runId: string | null | undefined, connectorInstanceId: string): void {
+  if (!runId) {
+    return;
+  }
+  const runStatus = getOne<{ status: string }>(referenceQueries.controllerGetRunHistoryStatusForRun, [
+    runId,
+    connectorInstanceId,
+  ]);
+  if (runStatus?.status !== "running") {
+    throw new RecordIngestRunTerminalError(runId);
+  }
+}
+
 async function ingestSqliteRecord(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
@@ -1383,6 +1697,7 @@ async function ingestSqliteRecord(
   // Durable mutation unit: returns the operation outcome so derived index
   // maintenance can run *after* the commit succeeds.
   const outcome = writeTransaction<DurableIngestOutcome>(() => {
+    assertSqliteRunStillAdmitted(options.runId, connectorInstanceId);
     const finishDurableOutcome = (value: DurableIngestOutcome): DurableIngestOutcome => {
       if (options.deviceReservation) {
         advanceSqliteDeviceIngestPrefix(options.deviceReservation, options.deviceReservation.inputIndex);
@@ -5657,6 +5972,10 @@ export function deleteConnectionRecordRowsSqlite(connectorInstanceId: string) {
   exec(referenceQueries.recordsDeleteDeleteRecordChangesByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteVersionCounterByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteBlobBindingsByInstance, [connectorInstanceId]);
+  // Blob rows are content-addressed and can have a binding from a sibling
+  // connection. The registered delete query removes only unreferenced rows,
+  // after this connection's bindings are gone, so the sibling binding remains
+  // valid under SQLite's blob_bindings foreign key.
   exec(referenceQueries.recordsDeleteDeleteBlobsByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteAttentionRecordsByInstance, [connectorInstanceId]);
   exec(referenceQueries.recordsDeleteDeleteRecordsByInstance, [connectorInstanceId]);
@@ -5678,7 +5997,16 @@ export async function deleteConnectionRecordRowsPostgres(client: PostgresClient,
   await client.query("DELETE FROM record_changes WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM version_counter WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM blob_bindings WHERE connector_instance_id = $1", [connectorInstanceId]);
-  await client.query("DELETE FROM blobs WHERE connector_instance_id = $1", [connectorInstanceId]);
+  await client.query(
+    `DELETE FROM blobs
+      WHERE connector_instance_id = $1
+        AND NOT EXISTS (
+          SELECT 1
+            FROM blob_bindings
+           WHERE blob_bindings.blob_id = blobs.blob_id
+        )`,
+    [connectorInstanceId]
+  );
   await client.query("DELETE FROM connector_attention_records WHERE connector_instance_id = $1", [connectorInstanceId]);
   await client.query("DELETE FROM records WHERE connector_instance_id = $1", [connectorInstanceId]);
   return count;

@@ -220,6 +220,27 @@ async function maybeRecordAcquisitionProvenance(
   });
 }
 
+function batchOutcomeError(outcome: unknown): string | null {
+  if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) {
+    return "ingest batch returned a malformed record outcome";
+  }
+  const result = outcome as { accepted?: unknown; error?: unknown };
+  if (typeof result.error === "string") {
+    return result.error;
+  }
+  return result.accepted === true ? null : "ingest batch returned a rejected record without an error";
+}
+
+function mapBatchIngestOutcomes(
+  records: readonly Record<string, unknown>[],
+  outcomes: readonly unknown[]
+): readonly (string | null)[] {
+  if (outcomes.length !== records.length) {
+    throw new Error(`ingestRecords returned ${outcomes.length} results for ${records.length} records`);
+  }
+  return outcomes.map(batchOutcomeError);
+}
+
 interface TokenInfo {
   readonly client_id?: string | null;
   readonly grant?: GrantLike | null;
@@ -354,7 +375,22 @@ export interface MountRsMutationContext {
 
   // Capability: error handler for untyped errors
   readonly handleError: (res: RouteResponse, err: unknown) => void;
-  readonly ingestRecord: (target: StorageTargetLike, record: unknown) => Promise<unknown>;
+  readonly ingestRecord: (
+    target: StorageTargetLike,
+    record: unknown,
+    options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+  ) => Promise<unknown>;
+  /**
+   * Optional common-path batch capability; hosts without it use the ordered
+   * fallback. Hosts that provide it must await `afterRecord` after each
+   * accepted store and before starting the next record.
+   */
+  readonly ingestRecords?: (
+    target: StorageTargetLike,
+    records: readonly unknown[],
+    afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
+    options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+  ) => Promise<readonly unknown[]>;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
   // ref-connectors.ts) invalidates the dashboard/Sources/Syncs summary cache
@@ -982,6 +1018,12 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
   app.post("/v1/ingest/:stream", ctx.requireToken, ctx.requireOwner, async (req: RouteRequest, res: RouteResponse) => {
     const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
     const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+    // Run-bound connector ingestion threads its run_id through so the storage
+    // layer can fence a write already admitted before cancellation against
+    // the run's own terminal state (see harden-ingest-run-admission-fence).
+    // Absent for owner/API ingestion that has no run concept — the fence is
+    // opt-in and those callers are unaffected.
+    const runId = ctx.resolveSingleConnectorIdQueryValue(req.query.run_id);
     // parseLines is imported inside executeRecordsIngest; the line-count for
     // the mutation context must be computed here using the same parser.
     // Index.js imported `parseLines as parseIngestLines` from the operation
@@ -1009,6 +1051,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
       // target; the connector-only path stays active-only. `allowStatuses` is
       // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
       const draftAdmission = (cin: string | null) => (cin ? { allowStatuses: ["active", "draft"] as const } : {});
+      const { ingestRecords } = ctx;
       const dependencies: RecordsIngestDependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
@@ -1028,7 +1071,10 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ...draftAdmission(cin),
               connectorInstanceId: cin,
             }));
-          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record);
+          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, {
+            requireConnectionAdmission: Boolean(namespace.connectorInstanceId),
+            runId,
+          });
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
               ctx.getLatestAcquisitionBatchForConnection(namespace.connectorInstanceId)
@@ -1044,6 +1090,52 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           }
           return result;
         },
+        ...(ingestRecords
+          ? {
+              ingestRecords: async (
+                cid: string,
+                cin: string | null,
+                records: readonly Record<string, unknown>[]
+              ): Promise<readonly (string | null)[]> => {
+                const namespace =
+                  storageNamespace ??
+                  (await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                    ...draftAdmission(cin),
+                    connectorInstanceId: cin,
+                  }));
+                // biome-ignore lint/suspicious/noUnnecessaryConditions: Express route params are nullable at runtime even though the local adapter type narrows them.
+                const streamName = req.params.stream ?? "";
+                const getLatestAcquisitionBatch = ctx.getLatestAcquisitionBatchForConnection;
+                const connectorInstanceIdForBatch = namespace.connectorInstanceId;
+                const afterRecord = async (record: unknown, outcome: unknown): Promise<void> => {
+                  const outcomeError = batchOutcomeError(outcome);
+                  if (outcomeError) {
+                    throw new Error(outcomeError);
+                  }
+                  if (!(getLatestAcquisitionBatch && connectorInstanceIdForBatch)) {
+                    return;
+                  }
+                  acquisitionBatchPromise ??= Promise.resolve(
+                    getLatestAcquisitionBatch(connectorInstanceIdForBatch) ?? null
+                  );
+                  await maybeRecordAcquisitionProvenance(
+                    ctx,
+                    namespace,
+                    await acquisitionBatchPromise,
+                    streamName,
+                    record
+                  );
+                };
+                const outcomes = await ingestRecords(
+                  ctx.storageTargetForConnectorNamespace(namespace),
+                  records,
+                  afterRecord,
+                  { requireConnectionAdmission: Boolean(namespace.connectorInstanceId), runId }
+                );
+                return mapBatchIngestOutcomes(records, outcomes);
+              },
+            }
+          : {}),
       };
       let output: RecordsIngestOutput;
       try {

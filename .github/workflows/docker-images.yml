@@ -148,10 +148,20 @@ jobs:
           build-args: |
             PDPP_REFERENCE_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
+          load: ${{ matrix.image == 'core' }}
           platforms: linux/amd64
           push: false
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ matrix.image == 'core' && 'pdpp:ci-core-test' || '' }}
           target: ${{ matrix.target }}
+
+      - name: Test core image (slackdump bundling, license, builder isolation)
+        if: (github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == 'core') && matrix.image == 'core'
+        env:
+          PDPP_CORE_IMAGE_TAG: pdpp:ci-core-test
+        run: |
+          node --test scripts/docker-slackdump-core-bundle.test.ts
 
   publish:
     name: publish ${{ matrix.image }}

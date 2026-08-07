@@ -87,6 +87,51 @@ interface ConnectorInstanceStore {
   }) => Promise<ConnectorInstance> | ConnectorInstance;
 }
 
+// Written by both createManualUploadDraftConnection and
+// validateAndStageArtifact below; each sets a different subset of the
+// optional fields.
+export interface ManualUploadDraftSourceBinding {
+  readonly acquisition_method: "owner_artifact";
+  readonly import_dir: string;
+  readonly import_dir_env_var: string;
+  readonly import_validation?: unknown;
+  readonly kind: "manual_upload_draft";
+  readonly staged_upload?: boolean;
+  readonly uploaded_file_name?: string;
+}
+
+// import_dir/import_dir_env_var are read on every run (connection-scoped-run-env.ts,
+// buildControllerManualUploadRunEnvResolver), not just at setup — they must
+// survive promotion.
+export interface ManualUploadDurableSourceBinding {
+  readonly acquisition_method: "owner_artifact";
+  readonly import_dir: string;
+  readonly import_dir_env_var: string;
+  readonly import_validation?: unknown;
+  readonly kind: "manual_upload";
+  readonly promoted_at: string;
+  readonly promoted_from: "manual_upload_draft";
+  readonly uploaded_file_name?: string;
+}
+
+// Pure — no I/O. `staged_upload` does not carry over: it meant "no file
+// staged yet," no longer true once records have ingested.
+export function promoteManualUploadDraftBinding(
+  draftBinding: ManualUploadDraftSourceBinding,
+  now: string
+): ManualUploadDurableSourceBinding {
+  return {
+    acquisition_method: draftBinding.acquisition_method,
+    import_dir: draftBinding.import_dir,
+    import_dir_env_var: draftBinding.import_dir_env_var,
+    kind: "manual_upload",
+    promoted_at: now,
+    promoted_from: "manual_upload_draft",
+    ...(draftBinding.import_validation === undefined ? {} : { import_validation: draftBinding.import_validation }),
+    ...(draftBinding.uploaded_file_name === undefined ? {} : { uploaded_file_name: draftBinding.uploaded_file_name }),
+  };
+}
+
 interface AcquisitionBatch {
   readonly acceptedCount?: number | null;
   readonly artifactSha256?: string | null;

@@ -93,7 +93,7 @@ export interface RunStatusEnvelope {
   } | null;
   links: { timeline: string };
   object: "run_status";
-  run_id: string;
+  run_id?: string | null;
   started_at: string | null;
   status: RunHandleStatus;
   terminal_reason: string | null;
@@ -317,10 +317,15 @@ export interface RefConnectorRunSummary {
   first_at: string;
   known_gaps?: unknown[];
   last_at: string;
+  records_emitted?: number | null;
+  reported_records_emitted?: number | null;
   run_id: string;
   started_at: string;
   status: string;
+  yield_counts_present?: boolean;
 }
+
+export type RefTerminalSetupDisposition = "verified_empty" | "unverified_missing_counts" | "unverified_zero";
 
 export interface RefreshPolicy {
   assisted_after_owner_auth?: boolean;
@@ -676,6 +681,8 @@ export interface RefConnectorSummary {
    * the same reason as `manifest_declaration`.
    */
   terminal_facts?: RefTerminalFactsState | null;
+  /** Shared connection-scoped terminal setup disposition for a draft. */
+  terminal_setup_disposition?: RefTerminalSetupDisposition | null;
   total_records: number;
   /**
    * Orthogonal state for `total_records` (`reconcile-active-summary-evidence`
@@ -1114,8 +1121,12 @@ export interface RefCollectionRateSnapshot {
   current_interval_ms: number;
   /** Current effective rate (requests/min). */
   effective_rate_per_min: number;
-  /** Most recent back-off, or null when none. */
-  last_backoff: { at?: string | null; at_interval_ms: number; reason: string } | null;
+  /** Most recent back-off, or null when none; legacy projections may be partial. */
+  last_backoff?: {
+    at?: string | null;
+    at_interval_ms?: number | null;
+    reason?: string | null;
+  } | null;
 }
 
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
@@ -1302,6 +1313,29 @@ export async function refFetch(
     throw new RefRequestError(describeErrorText(body, `_ref ${path} failed (${res.status})`), res.status, body);
   }
   return res.json();
+}
+
+export interface ProviderAuthInitiateResponse {
+  authorization_url: string;
+  connector_id: string;
+  expires_at: string;
+  next_step: {
+    authorization_url: string;
+    expires_at: string;
+    kind: "open_provider_auth";
+    reason: string;
+    redirect_uri: string;
+  };
+  object: "provider_auth_initiate";
+  setup_modality: "provider_authorization";
+}
+
+export async function initiateProviderAuthorization(connectorId: string): Promise<ProviderAuthInitiateResponse> {
+  return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/provider-auth-initiate`, undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as ProviderAuthInitiateResponse;
 }
 
 export { RefNotFoundError, RefRequestError };
@@ -2009,6 +2043,7 @@ export interface StaticSecretDraftConnection {
   connector_id: string;
   connector_instance_id: string;
   credential_kind: string;
+  display_name: string;
   next_step: {
     kind: "capture_static_secret_credential";
     method: "POST";
@@ -2016,7 +2051,7 @@ export interface StaticSecretDraftConnection {
     url: string;
   };
   object: "static_secret_draft_connection";
-  status: "draft";
+  status: "active" | "draft";
 }
 
 export interface StaticSecretCredentialCapture {
@@ -2040,6 +2075,7 @@ export interface StaticSecretCredentialCapture {
     rotated_at: string | null;
     status: string | null;
   };
+  deduplicated?: boolean;
   // Non-secret account identity from a synchronous credential probe ("Connected
   // as {identity}"). Null when the connector has no probe (first-sync path).
   identity: { account_identity: string; detail: string | null } | null;
@@ -2133,6 +2169,7 @@ export async function captureStaticSecretCredential(input: {
   connectionId: string;
   credentialKind: string;
   secret: string;
+  setupFields?: Record<string, string>;
 }): Promise<StaticSecretCredentialCapture> {
   try {
     return (await refFetch(
@@ -2142,6 +2179,7 @@ export async function captureStaticSecretCredential(input: {
         body: JSON.stringify({
           credential_kind: input.credentialKind,
           secret: input.secret,
+          ...(input.setupFields ? { setup_fields: input.setupFields } : {}),
         }),
         headers: { "content-type": "application/json" },
         method: "POST",
@@ -2173,6 +2211,10 @@ export type StaticSecretSetupStateValue =
   | "first_sync_failed"
   | "first_sync_pending"
   | "first_sync_running"
+  | "first_sync_unverified_missing_counts"
+  | "first_sync_unverified_zero"
+  | "first_sync_verified_empty"
+  /** @deprecated Kept for references that still emit the pre-disposition state. */
   | "first_sync_zero_yield"
   | "paused"
   | "revoked"
@@ -2242,6 +2284,7 @@ export interface ConnectionSetupStatus {
   };
   setup_state: StaticSecretSetupStateValue;
   status: string;
+  terminal_setup_disposition: RefTerminalSetupDisposition | null;
   updated_at: string | null;
 }
 

@@ -505,6 +505,41 @@ test("live probe can create an owner session from PDPP_OWNER_PASSWORD and scan a
   );
 });
 
+test("live Explore render fails when only one sort direction is present", async () => {
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    headers: { get: () => null },
+    status,
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl models the async fetch contract for the live harness.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(200, JSON.stringify({ data: [], has_more: false, object: "list" }));
+    }
+    if (href.endsWith("/explore")) {
+      return response(
+        200,
+        "<main><h1>Explore</h1><label>Search names, fields, and values</label><details><summary>Filters</summary></details><button>newest</button></main>"
+      );
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+    origin: "https://example.com/",
+  });
+
+  assert.equal(result.ok, false, "a one-sided sort control must fail the rendered acceptance gate");
+  assert.ok(result.findings.some((finding) => finding.ruleId === "explore-content-rendered"));
+  assert.equal(result.semanticChecks.find((check) => check.id === "explore-content-rendered")?.status, "fail");
+});
+
 test("live semantic probe requests connectors at limit=100 (the reference's own page-size ceiling), never the invalid limit=200", async () => {
   const urlsSeen: string[] = [];
   const response = (status: number, body: string, setCookie: string | null = null) => ({
@@ -1104,6 +1139,54 @@ test("live semantic probe accepts visible source count claims that match connect
     }
     if (href.endsWith("/sources")) {
       return response(200, "<main><h1>Sources</h1><a>Amazon - Personal 2,868 records · 2 streams</a></main>");
+    }
+    return response(200, defaultLiveOwnerPageHtml(url));
+  };
+
+  const result = await runLiveAcceptance({
+    origin: "https://example.com",
+    env: { PDPP_OWNER_SESSION_COOKIE: "sid=secret" },
+    fetchImpl,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.semanticChecks.find((check) => check.id === "records-counts-match-reality")?.status, "pass");
+});
+
+test("live semantic probe compares the configured stream roster for a fresh draft", async () => {
+  const response = (
+    status: number,
+    body: string
+  ): { headers: { get: () => null }; status: number; text: () => Promise<string> } => ({
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(body),
+  });
+  // biome-ignore lint/suspicious/useAwait: fetchImpl must satisfy the async FetchImpl contract even though this mock resolves synchronously; the caller awaits it like real fetch.
+  const fetchImpl = async (url: string | URL) => {
+    const href = String(url);
+    if (href.includes("/_ref/connectors")) {
+      return response(
+        200,
+        JSON.stringify({
+          object: "list",
+          has_more: false,
+          data: [
+            {
+              connection_id: "cin_chatgpt_draft",
+              connector_id: "chatgpt",
+              display_name: "ChatGPT",
+              status: "draft",
+              stream_count: 0,
+              streams: ["conversations", "messages", "attachments"],
+              total_records: 0,
+            },
+          ],
+        })
+      );
+    }
+    if (href.endsWith("/sources")) {
+      return response(200, "<main><h1>Sources</h1><a>ChatGPT 0 records · 3 streams</a></main>");
     }
     return response(200, defaultLiveOwnerPageHtml(url));
   };

@@ -132,6 +132,7 @@ interface FakePageState {
   live: boolean;
   loginHtml: string;
   nowMs: number;
+  onWaitForTimeout: (() => void) | undefined;
   postSubmitOutcomes: PostSubmitTransition[];
   submitClicks: number;
   url: string;
@@ -467,6 +468,7 @@ function makePage(initial: FakePageInit = {}): Page {
     live: initial.live ?? false,
     loginHtml: initial.html ?? SIGNIN_HTML,
     nowMs: 0,
+    onWaitForTimeout: initial.onWaitForTimeout,
     postSubmitOutcomes: initial.postSubmitOutcomes ?? (initial.postSubmitOutcome ? [initial.postSubmitOutcome] : []),
     submitClicks: 0,
     url: initial.url ?? SIGNIN_URL,
@@ -519,6 +521,7 @@ function makePage(initial: FakePageInit = {}): Page {
     waitForTimeout: (ms: number): Promise<void> => {
       state.nowMs += ms;
       maybeApplyPostSubmitOutcome();
+      state.onWaitForTimeout?.();
       return Promise.resolve();
     },
   };
@@ -1097,5 +1100,116 @@ test("ensureHebSession times out on a stable unknown post-submit page", async ()
     assert.match(harness.requests[0]?.message ?? "", /did not render the expected login form|open the secure browser/i);
     assert.equal(state.gotoEvents.length, 2);
     assert.ok(state.gotoEvents[1]?.atMs !== undefined && state.gotoEvents[1].atMs >= 8000);
+  });
+});
+
+test("ensureHebSession recognizes authenticated evidence that appears after the old eight-second window", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: SIGNIN_HTML,
+      live: false,
+      postSubmitOutcomes: [
+        {
+          atMs: 9500,
+          html: LIVE_HTML,
+          kind: "live",
+          url: ORDERS_URL,
+        },
+      ],
+      url: SIGNIN_URL,
+      view: "login",
+    });
+    const harness = makeInteractionHarness();
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(harness.requests.length, 0);
+    assert.equal(state.submitClicks, 1);
+    assert.equal(state.live, true);
+    assert.ok(state.nowMs >= 9500);
+  });
+});
+
+test("ensureHebSession re-resolves a remounted OTP form after a delayed owner response", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: VERIFICATION_HTML,
+      live: false,
+      postSubmitOutcome: {
+        atMs: 200,
+        html: LIVE_HTML,
+        kind: "live",
+        url: ORDERS_URL,
+      },
+      url: SIGNIN_URL,
+      view: "verification",
+    });
+    const harness = makeInteractionHarness({
+      responseForRequest: (req: InteractionRequest): InteractionResponse => {
+        assert.equal(req.kind, "otp");
+        // Model the UAT shape: the owner response arrives after the page has
+        // had time to replace the original OTP root, but before the new root
+        // is available to the resumed connector.
+        state.nowMs += 19_000;
+        state.forms = [];
+        state.onWaitForTimeout = () => {
+          state.forms = [createForm({ codeControls: [createControl(true)], submitControls: [] })];
+          state.onWaitForTimeout = undefined;
+        };
+        return {
+          data: { code: "123456" },
+          request_id: req.request_id ?? "test_interaction",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        };
+      },
+    });
+
+    const ok = await ensureHebSession({
+      page,
+      postSubmitWaitClock: makePostSubmitWaitClock(page),
+      sendInteraction: harness.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests[0]?.kind, "otp");
+    assert.equal(state.submitClicks, 1);
+    assert.equal(state.live, true);
+    assert.ok(state.nowMs >= 19_000);
+  });
+});
+
+test("ensureHebSession keeps OTP root ambiguity fail-closed after a valid response", async () => {
+  await withHebCredentials(async () => {
+    const page = makePage({
+      html: VERIFICATION_HTML,
+      forms: [
+        createForm({ codeControls: [createControl(true)], submitControls: [] }),
+        createForm({ codeControls: [createControl(true)], submitControls: [] }),
+      ],
+      live: false,
+      url: SIGNIN_URL,
+      view: "verification",
+    });
+    const harness = makeInteractionHarness();
+
+    await assert.rejects(
+      ensureHebSession({
+        page,
+        postSubmitWaitClock: makePostSubmitWaitClock(page),
+        sendInteraction: harness.sendInteraction,
+      }),
+      /heb_verification_code_input_missing/
+    );
+    assert.equal(harness.requests.length, 1);
+    assert.equal(harness.requests[0]?.kind, "otp");
+    assert.equal(state.submitClicks, 0);
+    assert.equal(state.live, false);
   });
 });

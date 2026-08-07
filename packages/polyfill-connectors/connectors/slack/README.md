@@ -157,10 +157,10 @@ See `openspec/changes/complete-slack-bundled-connector-coverage` for the evidenc
 
 ## Auth
 
-Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK_TOKEN` (an `xoxc-` token) and `SLACK_COOKIE` (the `d=...` cookie value) from a logged-in browser session against your workspace.
+Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK_TOKEN` (the browser web-client `xoxc-` token) and `SLACK_COOKIE` (the value of the cookie named `d`, usually `xoxd-...`; paste the value without `d=` and preserve URL escapes) from a logged-in browser session against your workspace. See the official [Slackdump manual authentication guide](https://github.com/rusq/slackdump/blob/5ecece6b7fa63f6e1a71e049900b9ccc61f6b1e7/doc/login-manual.md).
 
 Slackdump resolution:
 
 - Host runs: put `slackdump` on `PATH` or set `SLACKDUMP_BIN` to the binary path.
-- Docker runs: the stock PDPP reference image does not bundle AGPL-3.0 `slackdump`. Build a derived image that installs it, or mount the binary into the container and set `SLACKDUMP_BIN` to that in-container path.
+- Docker runs: `core`, `core-browser`, `railway-core`, and `platform-core` images ship `slackdump` v4.4.2 (AGPL-3.0) bundled by default at `/usr/local/bin/slackdump`. To override, set `SLACKDUMP_BIN` to an alternative executable path or mount it as described in the reference-implementation README.
 - Missing binary failures are reported before credentials are printed; do not paste Slack tokens into logs.

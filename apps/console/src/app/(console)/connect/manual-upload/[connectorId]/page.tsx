@@ -76,7 +76,7 @@ function MethodCard({ method }: { method: AcquisitionMethod }) {
           rel="noreferrer"
           target="_blank"
         >
-          Open instructions
+          Open instructions in a new tab
         </a>
       ) : null}
     </div>
@@ -130,7 +130,7 @@ export default async function ManualUploadConnectPage({
       <Section
         description={
           setup.description ??
-          "This form is generated from the connector manifest. The uploaded file is stored for this connection and is never returned to agents, MCP clients, REST reads, or audit payloads."
+          "The uploaded file is stored for this source and is not exposed to connected apps or clients."
         }
         title={setup.label}
       >

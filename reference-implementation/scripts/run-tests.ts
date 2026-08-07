@@ -23,6 +23,7 @@ import {
   dedicatedPostgresTestUrl,
   isDedicatedPostgresTestDatabaseName,
 } from "../test/helpers/dedicated-postgres-test-url.ts";
+import { collectChildProcessOutput } from "./child-process-output.ts";
 import { deriveDedicatedPostgresDbNameForFile } from "./dedicated-postgres-db-name.ts";
 import type { ProcessEnvLike } from "./test-env.ts";
 import { buildScrubbedTestEnv } from "./test-env.ts";
@@ -293,8 +294,9 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let output = "";
     let timedOut = false;
+    let settled = false;
+    const outputPromise = collectChildProcessOutput(child);
 
     // Watchdog: a normal run drains its reporter stream and exits on its
     // own well within this window, so the timer never fires and never
@@ -310,24 +312,24 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
     }, PER_FILE_TIMEOUT_MS);
     watchdog.unref?.();
 
-    child.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-
-    child.on("error", (err) => {
+    const settleAfterRelease = async (finish: () => void | Promise<void>) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(watchdog);
       if (allocation) {
-        allocation.release().finally(() => reject(err));
-      } else {
-        reject(err);
+        await allocation.release();
       }
+      await finish();
+    };
+
+    child.on("error", (err) => {
+      settleAfterRelease(() => reject(err)).catch(reject);
     });
-    child.on("exit", (code, signal) => {
-      clearTimeout(watchdog);
-      const finish = () => {
+    child.on("close", (code, signal) => {
+      settleAfterRelease(async () => {
+        const output = await outputPromise;
         if (timedOut) {
           reject(new Error(`Test process for ${filePath} timed out after ${PER_FILE_TIMEOUT_MS}ms and was killed`));
           return;
@@ -342,12 +344,7 @@ async function runNodeTest(filePath: string, extraArgs: string[]): Promise<NodeT
           filePath,
           output: `\n==> ${filePath}\n${output}`,
         });
-      };
-      if (allocation) {
-        allocation.release().finally(finish);
-      } else {
-        finish();
-      }
+      }).catch(reject);
     });
   });
 }

@@ -8,6 +8,7 @@ import type {
   RefConnectorSummary,
   RefRenderedVerdict,
   RefRequiredAction,
+  RefTerminalSetupDisposition,
   RefVerdictTone,
 } from "./ref-client.ts";
 import {
@@ -121,6 +122,31 @@ export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; 
   },
 };
 
+export interface TerminalSetupDispositionCopy {
+  actionLabel: string;
+  statusLabel: string;
+  what: string;
+}
+
+/** Shared owner copy for the server-owned terminal setup dispositions. */
+export const TERMINAL_SETUP_DISPOSITION_COPY: Record<RefTerminalSetupDisposition, TerminalSetupDispositionCopy> = {
+  unverified_missing_counts: {
+    actionLabel: "Review setup",
+    statusLabel: "needs review",
+    what: "The first sync completed without durable count evidence. Review the connection before retrying.",
+  },
+  unverified_zero: {
+    actionLabel: "Retry first sync",
+    statusLabel: "needs review",
+    what: "The first sync returned zero records without proving the account was empty. Review the connection and retry.",
+  },
+  verified_empty: {
+    actionLabel: "Review empty result",
+    statusLabel: "verified empty",
+    what: "The first sync verified that this source has no records. Review the setup result before trying again.",
+  },
+};
+
 /** The one owner-facing meaning of the headline "needs you" attention number. */
 export interface SourceAttentionHeadline {
   /** Count of sources genuinely blocked on the owner's action (the needs-you group). */
@@ -231,10 +257,20 @@ function labelWithFreshness(base: string, note: string | null): string {
 export function deriveRenderedSourceStatus(
   verdict: RefRenderedVerdict | null | undefined,
   revoked: boolean,
-  pending = false
+  pending = false,
+  terminalSetupDisposition: RefTerminalSetupDisposition | null = null
 ): SourceStatusFlag {
   if (revoked) {
     return { dot: "⊘", freshnessNote: null, kind: "revoked", label: "Revoked", tone: "muted" };
+  }
+  if (terminalSetupDisposition) {
+    return {
+      dot: "◐",
+      freshnessNote: null,
+      kind: "degraded",
+      label: TERMINAL_SETUP_DISPOSITION_COPY[terminalSetupDisposition].statusLabel,
+      tone: "warning",
+    };
   }
   // Setup-in-progress overrides any verdict shape, same priority as revoked:
   // a draft has no meaningful health/coverage evidence yet (see
@@ -276,8 +312,18 @@ export const SETUP_IN_PROGRESS_CTA_LABEL = "Continue setup";
  */
 export function formatRenderedRequiredAction(
   verdict: RefRenderedVerdict | null | undefined,
-  pending = false
+  pending = false,
+  terminalSetupDisposition: RefTerminalSetupDisposition | null = null
 ): FormattedNextAction | null {
+  if (terminalSetupDisposition) {
+    return {
+      actionTarget: "connection_detail",
+      caveat: null,
+      label: TERMINAL_SETUP_DISPOSITION_COPY[terminalSetupDisposition].actionLabel,
+      notificationHint: null,
+      variant: "structured",
+    };
+  }
   if (pending) {
     return {
       actionTarget: "connection_detail",
@@ -320,10 +366,26 @@ function setupInProgressPrimaryVerdictAction(): SourcePrimaryVerdictAction {
   };
 }
 
+function terminalSetupPrimaryVerdictAction(disposition: RefTerminalSetupDisposition): SourcePrimaryVerdictAction {
+  return {
+    audience: "owner",
+    channel: "attention",
+    cta: TERMINAL_SETUP_DISPOSITION_COPY[disposition].actionLabel,
+    kind: "reauth",
+    ownerRunnable: true,
+    satisfiedWhenKind: "attention_resolved",
+    terminal: true,
+  };
+}
+
 export function formatPrimaryVerdictAction(
   verdict: RefRenderedVerdict | null | undefined,
-  pending = false
+  pending = false,
+  terminalSetupDisposition: RefTerminalSetupDisposition | null = null
 ): SourcePrimaryVerdictAction | null {
+  if (terminalSetupDisposition) {
+    return terminalSetupPrimaryVerdictAction(terminalSetupDisposition);
+  }
   if (pending) {
     return setupInProgressPrimaryVerdictAction();
   }
@@ -476,6 +538,16 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
     return null;
   }
 
+  const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
+  if (isSetupInProgressConnector(connector) && terminalSetupDisposition) {
+    const copy = TERMINAL_SETUP_DISPOSITION_COPY[terminalSetupDisposition];
+    return itemFromConnector(connector, "needsOwner", {
+      actionLabel: copy.actionLabel,
+      statusLabel: copy.statusLabel,
+      what: copy.what,
+    });
+  }
+
   // Setup-in-progress outranks the verdict (see `isSetupInProgressConnector`):
   // a draft has no health/coverage evidence to derive work from, and the
   // owner genuinely has something to finish, so it always surfaces in the
@@ -578,20 +650,25 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
   const routeId = connectionRouteId(connector);
   const label = connectorLabel(connector);
   const revoked = isRevokedConnector(connector);
-  const pending = !revoked && isSetupInProgressConnector(connector);
+  const terminalSetupDisposition = connector.terminal_setup_disposition ?? null;
+  const pending = !revoked && isSetupInProgressConnector(connector) && terminalSetupDisposition === null;
   const primaryAction = pending ? null : primaryRequiredAction(connector.rendered_verdict);
-  const primaryVerdictAction = formatPrimaryVerdictAction(connector.rendered_verdict, pending);
+  const primaryVerdictAction = formatPrimaryVerdictAction(
+    connector.rendered_verdict,
+    pending,
+    terminalSetupDisposition
+  );
   return {
     failureSummary: pending
       ? null
       : deriveFailureSummary(connector.connection_health, connector.rendered_verdict ?? null),
     label,
-    nextAction: formatRenderedRequiredAction(connector.rendered_verdict, pending),
+    nextAction: formatRenderedRequiredAction(connector.rendered_verdict, pending, terminalSetupDisposition),
     ownerActionByStream: pending ? {} : ownerActionAvailabilityByStream(connector.rendered_verdict ?? null),
     ownerActionCue: ownerActionCueFromVerdictAction(primaryVerdictAction),
     primaryAction,
     primaryVerdictAction,
-    renderedStatus: deriveRenderedSourceStatus(connector.rendered_verdict, revoked, pending),
+    renderedStatus: deriveRenderedSourceStatus(connector.rendered_verdict, revoked, pending, terminalSetupDisposition),
     revoked,
     routeId,
     work: sourceWorkItemFromConnector(connector),

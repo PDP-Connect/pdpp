@@ -68,7 +68,7 @@ function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
   const reviewValue = band.needYourHand > 0 ? band.needYourHand : band.needsReview;
   let reviewLabel = "need attention";
   if (band.needYourHand > 0) {
-    reviewLabel = "need your hand";
+    reviewLabel = "need your attention";
   } else if (band.needsReview > 0) {
     reviewLabel = "need review";
   }
@@ -79,7 +79,9 @@ function HealthBandStrip({ band }: { band: SyncsViewModel["band"] }) {
         <BandCell className={band.needsReview > 0 ? "is-warn" : undefined} k={reviewLabel} v={reviewValue} />
       </Band>
       <p className="rr-sync-health__note">
-        {band.allClear ? `Nothing needs you right now. ${RESET_NOTE}` : `Review the cards below. ${RESET_NOTE}`}
+        {band.allClear
+          ? `Nothing needs your attention right now. ${RESET_NOTE}`
+          : `Review the cards below. ${RESET_NOTE}`}
       </p>
     </div>
   );
@@ -155,13 +157,15 @@ function PendingSetupCardPanel({ card }: { card: PendingSetupCard }) {
   return (
     <section className="rr-fix" data-source-work="needsOwner" data-testid="syncs-pending-setup-card">
       <div className="rr-fix__body">
-        <h3 className="rr-fix__title">{card.name} — setup in progress</h3>
-        <p className="rr-fix__expl">Finish connecting this source to start its first sync.</p>
+        <h3 className="rr-fix__title">
+          {card.name} — {card.statusLabel}
+        </h3>
+        <p className="rr-fix__expl">{card.what}</p>
       </div>
       <div className="rr-fix__act">
         <Link href={card.continueHref} prefetch={false}>
           <IcButton size="sm" variant="human">
-            Continue setup
+            {card.actionLabel}
           </IcButton>
         </Link>
       </div>
@@ -216,14 +220,14 @@ function FailureCardSection({ cards, section }: { cards: FailureCard[]; section:
 function DuplicateSyncGroupPanel({ group }: { group: DuplicateSyncGroup }) {
   return (
     <aside className="rr-sync-duplicates" data-testid="syncs-duplicate-group">
-      <span className="rr-sync-duplicates__eyebrow">same source type · review labels</span>
+      <span className="rr-sync-duplicates__eyebrow">Several sources need labels</span>
       <p className="rr-sync-duplicates__head">
         {group.total.toLocaleString()} unnamed {group.kind} sources are collapsed in this overview.
       </p>
       <p className="rr-sync-duplicates__note">
         They still represent {group.streamCount.toLocaleString()} stream{group.streamCount === 1 ? "" : "s"}.
         {group.ownerActionCount > 0
-          ? ` ${group.ownerActionCount.toLocaleString()} ${group.ownerActionCount === 1 ? "source needs" : "sources need"} your hand.`
+          ? ` ${group.ownerActionCount.toLocaleString()} ${group.ownerActionCount === 1 ? "source needs" : "sources need"} your attention.`
           : ""}
         {group.advisoryCount > 0
           ? ` ${group.advisoryCount.toLocaleString()} ${
@@ -237,7 +241,7 @@ function DuplicateSyncGroupPanel({ group }: { group: DuplicateSyncGroup }) {
         href={dashboardRoutes.connector(group.firstConnectionId)}
         prefetch={false}
       >
-        Review first unnamed source →
+        Review duplicate source labels →
       </Link>
     </aside>
   );
@@ -399,7 +403,7 @@ export function SyncsView({ model, seeded = false }: { model: SyncsViewModel; se
     <div className="rr-sync">
       <header className="rr-sync__masthead">
         <h1 className="rr-sync__title">Syncs</h1>
-        <p className="rr-sync__sub">What was recently collected, and what — in plain English — needs your hand.</p>
+        <p className="rr-sync__sub">What ran recently and what needs your attention.</p>
         {seeded ? <Endorse className="rr-sync__seeded" label="seeded demo" status="continuous" /> : null}
       </header>
 

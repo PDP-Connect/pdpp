@@ -6,12 +6,15 @@
 export type { ConnectorDisplayInput, SourceDisplayInput } from "./identity/connector-display.ts";
 // biome-ignore lint/performance/noBarrelFile: this package intentionally provides one stable public import surface.
 export {
+  deriveSourceDisplayNameFallback,
   formatConnectorKeyForDisplay,
   formatConnectorNameForDisplay,
   formatSourceForDisplay,
   formatSourceWithConnectionForDisplay,
   isFallbackConnectionLabel,
 } from "./identity/connector-display.ts";
+export type { StreamManifestEntry } from "./identity/stream-display.ts";
+export { streamDisplayDetail, streamDisplayLabel } from "./identity/stream-display.ts";
 export type {
   ClientDisplayInput,
   GrantLabelInput,

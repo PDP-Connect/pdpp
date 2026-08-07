@@ -18,13 +18,24 @@ const ENDED_SURFACE_GATE_RE =
   /noAssistanceState === "ended"[\s\S]{0,360}<RunEndedSurface[\s\S]{0,360}resolveNoAssistanceEndedTerminalStatus/;
 const CONTINUING_SURFACE_RE = /<RunContinuingSurface/;
 const CONTINUING_POLLER_RE = /<NoAssistanceRunPoller runId=\{runId\} \/>/;
+const SETUP_STATUS_LINK_RE =
+  /function SetupStatusLink[\s\S]{0,520}\/connect\/status\/\$\{encodeURIComponent\(connectionId\)\}/;
+const SETUP_STATUS_CTA_RE = /<SetupStatusLink connectionId=\{connectionId\} runId=\{runId\} \/>/g;
+const NO_PENDING_TIMELINE_DETOUR_RE = /still being checked[\s\S]{0,220}Open the run timeline/;
 const UNAVAILABLE_STREAM_POLLER_RE =
   /function UnavailableStreamSurface[\s\S]{0,520}<NoAssistanceRunPoller runId=\{runId\} \/>/;
 const PREPARING_BROWSER_SURFACE_GATE_RE =
   /hasActiveBrowserSurface\(envelope\.events\)[\s\S]{0,120}<PreparingBrowserSurface/;
 const PREPARING_BROWSER_SURFACE_COPY_RE = /Preparing the secure browser\./;
-const EXTERNAL_APPROVAL_COPY_RE = /Approve the prompt outside PDPP\./;
+const ASSISTANCE_COMPLETE_GATE_RE =
+  /hasResolvedBrowserSurfaceAssistance\(envelope\.events\)[\s\S]{0,120}<AssistanceCompleteSurface/;
+const ASSISTANCE_COMPLETE_COPY_RE = /Browser step complete\./;
+const ASSISTANCE_COMPLETE_POLLER_RE =
+  /function AssistanceCompleteSurface[\s\S]{0,520}<NoAssistanceRunPoller runId=\{runId\} \/>/;
+const EXTERNAL_APPROVAL_COPY_RE = /Approve the request with the provider\./;
 const EXTERNAL_APPROVAL_WAITING_COPY_RE = /No browser controls are\s+waiting/;
+const OPTIONAL_RUN_DETAILS_COPY_RE = /View run details \(optional\)/;
+const LEGACY_RUN_TIMELINE_CTA_RE = /Open run timeline/;
 const POLLER_TIMELINE_PROBE_RE = /fetch\(`\/_ref\/runs\/\$\{encodeURIComponent\(runId\)\}\/timeline`/;
 const POLLER_STREAM_READY_RE = /getCurrentBrowserSurfaceAssistance\(timelineEventsFrom\(body\)\) !== null/;
 const POLLER_HARD_RELOAD_RE = /window\.location\.reload\(\)/;
@@ -92,6 +103,39 @@ test("stream page does not render resolved copy solely because assistance disapp
   assert.match(pageSource, PREPARING_BROWSER_SURFACE_COPY_RE);
   assert.match(pageSource, CONTINUING_SURFACE_RE);
   assert.match(pageSource, CONTINUING_POLLER_RE);
+  assert.match(pageSource, SETUP_STATUS_LINK_RE);
+  assert.equal([...pageSource.matchAll(SETUP_STATUS_CTA_RE)].length, 3);
+  assert.doesNotMatch(pageSource, NO_PENDING_TIMELINE_DETOUR_RE);
+});
+
+// fr-setup-status-lifecycle-0806: a browser-assistance connector (e.g. H-E-B)
+// that already resolved its login step must not fall back to the generic
+// "No browser action is waiting" copy — that copy is now reserved for a run
+// that genuinely never raised browser assistance at all. Once assistance was
+// requested and resolved, the page must say so plainly and keep polling for
+// any FURTHER assistance request, not just for the run's own terminal state.
+test("stream page hands off with explicit copy once browser assistance resolves, instead of the generic no-action copy", () => {
+  assert.match(pageSource, ASSISTANCE_COMPLETE_GATE_RE);
+  assert.match(pageSource, ASSISTANCE_COMPLETE_COPY_RE);
+  assert.match(pageSource, ASSISTANCE_COMPLETE_POLLER_RE);
+  // The resolved-assistance gate must be checked before the generic
+  // RunContinuingSurface fallback, so a resolved run never regresses to the
+  // ambiguous copy.
+  const assistanceCompleteGateIndex = pageSource.search(ASSISTANCE_COMPLETE_GATE_RE);
+  const continuingSurfaceIndex = pageSource.lastIndexOf("return <RunContinuingSurface");
+  assert.notEqual(assistanceCompleteGateIndex, -1);
+  assert.notEqual(continuingSurfaceIndex, -1);
+  assert.ok(
+    assistanceCompleteGateIndex < continuingSurfaceIndex,
+    "resolved-assistance handoff must be checked before the generic no-action fallback"
+  );
+});
+
+test("automatic waits keep run details visibly optional", () => {
+  assert.match(pageSource, OPTIONAL_RUN_DETAILS_COPY_RE);
+  assert.match(streamViewerSource, OPTIONAL_RUN_DETAILS_COPY_RE);
+  assert.doesNotMatch(pageSource, LEGACY_RUN_TIMELINE_CTA_RE);
+  assert.doesNotMatch(streamViewerSource, LEGACY_RUN_TIMELINE_CTA_RE);
 });
 
 test("external provider approval does not render as a browser-session repair", () => {

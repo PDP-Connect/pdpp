@@ -23,7 +23,7 @@
  * `owner-journey-slvp-realignment-plan-2026-06-10.md`.
  */
 
-import type { ConnectorCatalogEntry } from "./connection-catalog.ts";
+import { type ConnectorCatalogEntry, isOwnerActionableEntry } from "./connection-catalog.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -37,8 +37,33 @@ export interface SourceSetupAction {
   label: string;
 }
 
+/**
+ * Owner context projected from manifest setup/capability metadata. The
+ * fallback is intentionally setup-modality based: it keeps provider auth
+ * distinct from file import without naming a connector or claiming a new
+ * protocol behavior.
+ */
+export function sourceSetupContext(entry: ConnectorCatalogEntry): string | null {
+  if (entry.setupHelpText) {
+    return entry.setupHelpText;
+  }
+  if (entry.setupModality === "provider_authorization") {
+    return (
+      entry.refreshPolicyRationale ??
+      "This source uses provider authorization, not a file import. Provider app settings must be configured on the instance before an owner can authorize an account."
+    );
+  }
+  return entry.setupDescription;
+}
+
 function browserBoundWithStoredCredentials(entry: ConnectorCatalogEntry): boolean {
   return entry.modality === "browser_bound" && entry.setupModality === "static_secret";
+}
+
+function isUnavailableSetupEntry(entry: ConnectorCatalogEntry): boolean {
+  return (
+    !isOwnerActionableEntry(entry) && entry.disposition !== "provider_auth_deployment_blocked"
+  );
 }
 
 /**
@@ -66,6 +91,9 @@ export type SourceSetupAvailability = "available_now" | "requires_server_setup" 
 
 /** Owner-facing picker order: actionable dispositions first, unsupported last. */
 export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
+  if (isUnavailableSetupEntry(entry)) {
+    return 8;
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return 0;
@@ -77,22 +105,27 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
       return 3;
     case "manual_upload_pending":
       return 4;
-    case "provider_auth_deployment_blocked":
+    case "provider_auth_connect":
       return 5;
+    case "provider_auth_deployment_blocked":
+      return 6;
     case "browser_bound_runbook":
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
-      return 6;
+      return 7;
     case "api_network_unsupported":
     case "unknown_unsupported":
-      return 7;
-    default:
       return 8;
+    default:
+      return 9;
   }
 }
 
 /** The owner-facing status label + tone for first-account setup. */
 export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStatus {
+  if (isUnavailableSetupEntry(entry)) {
+    return { label: "Not available here", tone: "border-border bg-muted/30 text-muted-foreground" };
+  }
   if (browserBoundWithStoredCredentials(entry)) {
     return {
       label: "Connect account",
@@ -117,9 +150,14 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
         label: "Import file",
         tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
       };
+    case "provider_auth_connect":
+      return {
+        label: "Authorize account",
+        tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
+      };
     case "manual_upload_pending":
       return {
-        label: "Import not packaged",
+        label: "Import not available yet",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "provider_auth_deployment_blocked":
@@ -129,7 +167,7 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       };
     case "browser_bound_runbook":
       return {
-        label: "Browser setup not packaged",
+        label: "Browser setup not available yet",
         tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "local_collector_unproven":
@@ -146,30 +184,35 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
 
 /** One short owner-facing guidance line for first-account setup. */
 export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
+  if (isUnavailableSetupEntry(entry)) {
+    return "This dashboard cannot add this source yet.";
+  }
   if (browserBoundWithStoredCredentials(entry)) {
-    return "Connect in a secure browser session. You can optionally remember sign-in details for automatic reconnection; they may help with initial sign-in or repair, but CAPTCHA, OTP, passkeys, and other human steps stay in the secure browser and unattended reconnection is not guaranteed.";
+    return "Sign in in the secure browser. Saving sign-in details is optional and may help with setup or repair, but one-time codes, passkeys, and other human steps still happen in the browser. Automatic reconnection is not guaranteed.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return "Set up the local collector on the machine that has this data. Repeat setup to add another device or account.";
     case "browser_collector_manual":
-      return "Create a browser-session shell to connect a new account. Add an optional source label so the source is easy to distinguish; if you need to reconnect an existing source, go back to Sources and open that source's reconnect flow.";
+      return "Connect a new account in a secure browser. Add an optional source label to distinguish it later; to reconnect an existing source, go back to Sources and open its reconnect flow.";
     case "static_secret_connect":
       return "Enter the required provider credential in the protected setup form. Submit again to add another account.";
     case "manual_upload_connect":
       return "Upload an owner-exported file. Reuse an existing source for another export from the same identity; create a new source only for a different account, profile, device, or source identity.";
+    case "provider_auth_connect":
+      return "Authorize this provider account in the provider's browser. The connection activates after authorization and account inventory succeed.";
     case "manual_upload_pending":
-      return "This source imports an owner-provided file, but the dashboard upload step is not packaged yet.";
+      return "This source accepts an owner-provided file, but file import is not available in this dashboard yet.";
     case "provider_auth_deployment_blocked":
-      return `Configure instance-level provider app material first: ${entry.deploymentReadiness.blockers
+      return `Finish the server setup first: ${entry.deploymentReadiness.blockers
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
     case "browser_bound_runbook":
-      return "This source can collect through a logged-in browser, but this dashboard does not yet package the add-account path safely.";
+      return "This source can collect through a logged-in browser, but this dashboard cannot start a new account from here yet.";
     case "local_collector_unproven":
-      return "This connector needs a packaged collector path before it can be started from this dashboard.";
+      return "This source needs a local collection setup before it can start from this dashboard.";
     case "provider_auth_proof_gated":
-      return "Provider authorization is not packaged in this dashboard yet.";
+      return "Provider authorization is not available in this dashboard yet.";
     case "api_network_unsupported":
       return "This dashboard cannot add this source yet.";
     default:
@@ -181,6 +224,9 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
 
 /** The primary next action for first-account setup, or null when none exists. */
 export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
+  if (!isOwnerActionableEntry(entry)) {
+    return null;
+  }
   // Browser-bound connectors that also declare credential capture still start
   // from the one browser-session path. The optional saved-sign-in-details
   // fields live inside that page rather than becoming a second picker choice.
@@ -211,8 +257,11 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
         href: `/connect/browser-session/${encodeURIComponent(entry.enrollmentKey ?? entry.connectorKey)}`,
         label: "Connect account",
       };
-    case "provider_auth_deployment_blocked":
-      return { href: "/deployment", label: "Open server settings" };
+    case "provider_auth_connect":
+      return {
+        href: `/connect/provider-auth/${encodeURIComponent(entry.connectorKey)}`,
+        label: "Authorize account",
+      };
     default:
       return null;
   }
@@ -226,11 +275,15 @@ export function sourceSetupSecondaryAction(_entry: ConnectorCatalogEntry): Sourc
 }
 
 export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSetupAvailability {
+  if (isUnavailableSetupEntry(entry)) {
+    return "not_available_here";
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
     case "static_secret_connect":
     case "manual_upload_connect":
     case "browser_collector_manual":
+    case "provider_auth_connect":
       return "available_now";
     case "provider_auth_deployment_blocked":
       return "requires_server_setup";
@@ -246,11 +299,15 @@ export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSet
  * self-service add-another-account (the browser-bound dispositions).
  */
 export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSupport {
+  if (isUnavailableSetupEntry(entry)) {
+    return "not_self_service";
+  }
   switch (entry.disposition) {
     case "local_collector_enroll":
     case "static_secret_connect":
     case "manual_upload_connect":
     case "browser_collector_manual":
+    case "provider_auth_connect":
       return "self_service";
     case "browser_bound_runbook":
     case "manual_upload_pending":

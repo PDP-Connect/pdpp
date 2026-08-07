@@ -582,8 +582,8 @@ test("GET /_ref/connectors projects known gaps from the latest run summary", asy
       .get("run_spotify_known_gap") as RunHistoryTerminalRow | undefined;
     assert.equal(history?.status, "succeeded", "terminal event finalizes its matching run-history row");
     assert.deepEqual(
-      JSON.parse(history?.facts_json ?? "{}") as { known_gaps?: unknown },
-      { known_gaps: knownGaps },
+      JSON.parse(history?.facts_json ?? "{}") as { known_gaps?: unknown; records_emitted?: number },
+      { known_gaps: knownGaps, records_emitted: 0 },
       "terminal facts persist on the run-history authority"
     );
 

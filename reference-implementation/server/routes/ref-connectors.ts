@@ -44,6 +44,7 @@ import {
   ConnectorSummaryPageRequestError,
   parseConnectorSummaryPageRequest,
 } from "../../operations/ref-connectors-list/pagination.ts";
+import type { RunAdmission } from "../../runtime/controller.ts";
 import type { FleetHealthVerdict } from "../fleet-health.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { assertRemoteControlSupported } from "./_route-contract.ts";
@@ -221,7 +222,7 @@ export interface MountRefConnectorsContext {
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
-      runAdmission?: "browser_enrollment";
+      runAdmission?: RunAdmission;
       resources?: Readonly<Record<string, readonly string[]>>;
     }
   ) => Promise<unknown>;
@@ -743,8 +744,6 @@ function readExplicitRunForce(req: RouteRequest): boolean {
   );
 }
 
-type RunAdmission = "collection" | "browser_enrollment";
-
 function readRunAdmission(req: RouteRequest): RunAdmission {
   const { body } = req;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
@@ -754,12 +753,22 @@ function readRunAdmission(req: RouteRequest): RunAdmission {
   if (raw === undefined) {
     return "collection";
   }
-  if (raw === "browser_enrollment") {
+  if (raw === "setup" || raw === "browser_enrollment") {
     return raw;
   }
-  const err = new Error("run_admission must be browser_enrollment when provided") as Error & { code: string };
+  const err = new Error("run_admission must be setup or browser_enrollment when provided") as Error & { code: string };
   err.code = "invalid_request";
   throw err;
+}
+
+function runAdmissionStatuses(runAdmission: RunAdmission): readonly string[] {
+  if (runAdmission === "browser_enrollment") {
+    return ["draft"];
+  }
+  if (runAdmission === "setup") {
+    return ["active", "draft"];
+  }
+  return ["active"];
 }
 
 function readRunId(started: unknown): string | null {
@@ -850,7 +859,7 @@ async function executeRunNow(
     connectorInstanceId: namespace.connectorInstanceId,
     force: audit.force,
     ...(audit.ownerSubjectId ? { ownerSubjectId: audit.ownerSubjectId } : {}),
-    ...(audit.runAdmission === "browser_enrollment" ? { runAdmission: audit.runAdmission } : {}),
+    ...(audit.runAdmission === "collection" ? {} : { runAdmission: audit.runAdmission }),
     ...(resources ? { resources } : {}),
   });
   ctx.invalidateConnectorSummariesCache?.();
@@ -928,7 +937,7 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
         connectionId = connectorInstanceId;
         runAdmission = readRunAdmission(req);
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
-          allowStatuses: runAdmission === "browser_enrollment" ? ["draft"] : ["active", "draft"],
+          allowStatuses: runAdmissionStatuses(runAdmission),
         });
         connectionId = namespace.connectorInstanceId;
         connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;

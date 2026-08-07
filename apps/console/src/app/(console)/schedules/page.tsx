@@ -53,7 +53,9 @@ export default async function SchedulesPage({ searchParams }: { searchParams?: P
   }
 
   const summaries = page.items;
-  const hasActiveRun = summaries.some((s) => s.schedule?.active_run_id !== null);
+  const hasActiveRun = summaries.some(
+    (s) => typeof s.schedule?.active_run_id === "string" && s.schedule.active_run_id.length > 0
+  );
 
   return (
     <RecordroomShellWithPalette>

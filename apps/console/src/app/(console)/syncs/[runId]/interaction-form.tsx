@@ -92,8 +92,7 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
         </div>
       ) : null}
       <p className="pdpp-caption text-muted-foreground">
-        Values you submit here satisfy this run only. The reference server does not persist them as durable connector
-        credentials, env vars, or timeline payloads.
+        These values are used only for this run and are not saved as connection credentials.
       </p>
       {state.error ? (
         <p className="pdpp-caption text-destructive" role="alert">

@@ -73,12 +73,10 @@ test("postgresFetchUpcoming concurrency constant equals 4 and mapWithConcurrency
   );
 });
 
-test("postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit", async (t) => {
-  if (!POSTGRES_URL) {
-    t.skip("Skipped because PDPP_TEST_POSTGRES_URL is unset");
-    return;
-  }
-
+test("postgresFetchUpcoming: live Postgres in-flight partition workers never exceed the configured limit", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  assert.ok(POSTGRES_URL);
   initDb(":memory:");
   await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
 
@@ -116,7 +114,10 @@ test("postgresFetchUpcoming: live Postgres in-flight partition workers never exc
   }
 });
 
-test("sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic", async (t) => {
+test("sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and deterministic", {
+  skip: !POSTGRES_URL,
+}, async () => {
+  assert.ok(POSTGRES_URL);
   initDb(":memory:");
 
   try {
@@ -146,11 +147,7 @@ test("sqliteFetchUpcoming & postgresFetchUpcoming: output is bit-identical and d
     assert.ok(sqliteResult.total > 0, "Should have counted future records");
     assert.equal(sqliteResult.rows.length, Math.min(50, sqliteResult.total));
 
-    // Test Postgres backend if environment variable is available
-    if (!POSTGRES_URL) {
-      t.skip("Postgres parity check skipped because PDPP_TEST_POSTGRES_URL is unset");
-      return;
-    }
+    // Compare against Postgres when the declaration-time availability gate admits this test.
 
     await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
     try {

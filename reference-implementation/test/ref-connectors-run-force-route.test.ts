@@ -2,12 +2,14 @@ const TOP_LEVEL_REGEX_1 = /run resources must include at least one resource id p
 const TOP_LEVEL_REGEX_2 = /run resources must map stream names to string arrays/;
 const TOP_LEVEL_REGEX_3 = /run resources must include at least one resource id per stream/;
 const TOP_LEVEL_REGEX_4 = /run resources must map stream names to string arrays/;
+const DRAFT_NOT_ADMITTED = /draft connection not admitted/;
 
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { RunAdmission } from "../runtime/controller.ts";
 import type { MountOwnerConnectionRunContext } from "../server/routes/owner-connection-run.ts";
 import { mountOwnerConnectionRun } from "../server/routes/owner-connection-run.ts";
 import type { MountRefConnectorsContext } from "../server/routes/ref-connectors.ts";
@@ -60,7 +62,7 @@ interface RunNowCall {
   readonly options: {
     connectorInstanceId?: string | null;
     force?: boolean;
-    runAdmission?: "browser_enrollment";
+    runAdmission?: RunAdmission;
     resources?: Readonly<Record<string, readonly string[]>>;
   };
 }
@@ -72,7 +74,7 @@ interface ResolveNamespaceCall {
 
 type MountRefRun = typeof mountRefConnectionRun | typeof mountRefConnectorRun;
 
-function buildHarness(mount: MountRefRun) {
+function buildHarness(mount: MountRefRun, harnessOptions: { draftConnectionId?: string } = {}) {
   const calls: {
     emitSpineEvent: SpineEvent[];
     runNow: RunNowCall[];
@@ -124,6 +126,13 @@ function buildHarness(mount: MountRefRun) {
     requireOwnerSession: (_req, _res, next) => (typeof next === "function" ? next() : undefined),
     resolveOwnerConnectorNamespace(_req, connectorId, options = {}) {
       calls.resolveOwnerConnectorNamespace.push({ connectorId, options });
+      if (
+        harnessOptions.draftConnectionId !== undefined &&
+        harnessOptions.draftConnectionId === options.connectorInstanceId &&
+        !options.allowStatuses?.includes("draft")
+      ) {
+        throw new Error("draft connection not admitted");
+      }
       return Promise.resolve({
         connectorId: connectorId ?? "chatgpt",
         connectorInstanceId: options.connectorInstanceId ?? "cin_chatgpt",
@@ -318,6 +327,35 @@ function buildOwnerHarness() {
   };
 }
 
+test("POST /_ref/connections/:id/run keeps omitted and empty bodies active-only", async () => {
+  await Promise.all(
+    [null, {}].map(async (body) => {
+      const harness = buildHarness(mountRefConnectionRun, { draftConnectionId: "cin_draft" });
+
+      await assert.rejects(
+        () =>
+          harness.invoke({
+            body,
+            params: { connectorInstanceId: "cin_draft" },
+          }),
+        DRAFT_NOT_ADMITTED
+      );
+      assert.deepEqual(harness.calls.resolveOwnerConnectorNamespace, [
+        {
+          connectorId: null,
+          options: {
+            allowDefaultAccount: false,
+            allowStatuses: ["active"],
+            connectorInstanceId: "cin_draft",
+            ownerSubjectId: "owner_local",
+          },
+        },
+      ]);
+      assert.deepEqual(harness.calls.runNow, []);
+    })
+  );
+});
+
 test("POST /_ref/connections/:id/run forwards explicit force override to the controller", async () => {
   const harness = buildHarness(mountRefConnectionRun);
 
@@ -330,7 +368,11 @@ test("POST /_ref/connections/:id/run forwards explicit force override to the con
   assert.deepEqual(harness.calls.runNow, [
     {
       connectorId: "chatgpt",
-      options: { connectorInstanceId: "cin_chatgpt", force: true, ownerSubjectId: "owner_local" },
+      options: {
+        connectorInstanceId: "cin_chatgpt",
+        force: true,
+        ownerSubjectId: "owner_local",
+      },
     },
   ]);
   const [firstEvent] = harness.calls.emitSpineEvent;
@@ -440,6 +482,38 @@ test("POST /_ref/connections/:id/run forwards scoped stream resources", async ()
         force: false,
         ownerSubjectId: "owner_local",
         resources: { messages: ["C07JYF0U8BY"] },
+      },
+    },
+  ]);
+});
+
+test("POST /_ref/connections/:id/run accepts explicit setup admission", async () => {
+  const harness = buildHarness(mountRefConnectionRun, { draftConnectionId: "cin_draft" });
+  const res = await harness.invoke({
+    body: { run_admission: "setup" },
+    params: { connectorInstanceId: "cin_draft" },
+  });
+
+  assert.equal(res.statusCode, 202);
+  assert.deepEqual(harness.calls.resolveOwnerConnectorNamespace, [
+    {
+      connectorId: null,
+      options: {
+        allowDefaultAccount: false,
+        allowStatuses: ["active", "draft"],
+        connectorInstanceId: "cin_draft",
+        ownerSubjectId: "owner_local",
+      },
+    },
+  ]);
+  assert.deepEqual(harness.calls.runNow, [
+    {
+      connectorId: "chatgpt",
+      options: {
+        connectorInstanceId: "cin_draft",
+        force: false,
+        ownerSubjectId: "owner_local",
+        runAdmission: "setup",
       },
     },
   ]);

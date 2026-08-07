@@ -14,6 +14,7 @@ import {
   StaticSecretValidationError,
 } from "../../../lib/ref-client.ts";
 import { buildStaticSecretPayload, collectStaticSecretSetupFields } from "./static-secret-payload.ts";
+import { FirstSyncStartError, runIdAfterCapture } from "./static-secret-start.ts";
 
 function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
@@ -29,12 +30,24 @@ function pageHref(connectorId: string, params: Record<string, string>): string {
 // secret is deliberately NOT round-tripped — the owner re-enters it, matching
 // Plaid/Zapier credential-retry behavior. Non-secret values ride as `field_*`
 // query params the page re-reads into the inputs.
-function formRetryHref(connectorId: string, error: string, setupFields: Record<string, string>): string {
+function formRetryHref(
+  connectorId: string,
+  error: string,
+  setupFields: Record<string, string>,
+  displayName?: string | null
+): string {
   const params: Record<string, string> = { error };
   for (const [name, value] of Object.entries(setupFields)) {
     params[`field_${name}`] = value;
   }
+  if (displayName) {
+    params.display_name = displayName;
+  }
   return pageHref(connectorId, params);
+}
+
+function formErrorParams(error: string, displayName?: string | null): Record<string, string> {
+  return displayName ? { display_name: displayName, error } : { error };
 }
 
 // Durable per-connection setup-status surface. After a successful submit the
@@ -58,41 +71,10 @@ function statusHref(connectionId: string, runId: string | null, identity?: strin
   return suffix ? `${base}?${suffix}` : base;
 }
 
-interface AutoResumeResult {
-  confirming_run: { run_id?: string } | null;
-  status?: string | null;
-}
-
-interface StaticSecretCaptureResult {
-  auto_resume?: AutoResumeResult | null;
-}
-
-function autoResumeRunId(capture: StaticSecretCaptureResult): string | null {
-  const runId = capture.auto_resume?.confirming_run?.run_id;
-  return typeof runId === "string" && runId.length > 0 ? runId : null;
-}
-
-function shouldStartRunAfterCapture(capture: StaticSecretCaptureResult): boolean {
-  const autoResume = capture.auto_resume;
-  return autoResume === null || autoResume === undefined || autoResume.status === "no_satisfied_action";
-}
-
-async function runIdAfterCapture(connectionId: string, capture: StaticSecretCaptureResult): Promise<string | null> {
-  const autoRunId = autoResumeRunId(capture);
-  if (autoRunId) {
-    return autoRunId;
-  }
-  if (!shouldStartRunAfterCapture(capture)) {
-    return null;
-  }
-  const started = (await runConnectionNow(connectionId)) as {
-    run_id?: string;
-    trace_id?: string;
-  };
-  return started.run_id ?? null;
-}
-
 function errorMessage(err: unknown): string {
+  if (err instanceof FirstSyncStartError) {
+    return "The credential was captured, but the first sync could not start. Check the credential and submit again.";
+  }
   return err instanceof Error ? err.message : "Static-secret setup failed.";
 }
 
@@ -130,16 +112,18 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
       connectionId,
       credentialKind: setup.credential_kind,
       secret: payload.secret,
+      setupFields,
     });
-    const runId = await runIdAfterCapture(connectionId, captured);
+    const capturedConnectionId = captured.connection_id;
+    const runId = await runIdAfterCapture(capturedConnectionId, captured, runConnectionNow);
     revalidatePath("/sources");
     // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
-    target = statusHref(connectionId, runId, captured.identity?.account_identity ?? null);
+    target = statusHref(capturedConnectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       target = formRetryHrefWithConnectionId(connectorId, connectionId, err.message, setupFields);
     } else {
-      target = pageHrefWithConnectionId(connectorId, connectionId, { error: errorMessage(err) });
+      target = formRetryHrefWithConnectionId(connectorId, connectionId, errorMessage(err), setupFields);
     }
   }
   redirect(target);
@@ -158,17 +142,25 @@ function formRetryHrefWithConnectionId(
   connectorId: string,
   connectionId: string,
   error: string,
-  setupFields: Record<string, string>
+  setupFields: Record<string, string>,
+  options: { displayName?: string | null; draftRetry?: boolean } = {}
 ): string {
-  const params: Record<string, string> = { error };
+  const params: Record<string, string> = {
+    ...(options.draftRetry ? { draft_retry: "1" } : {}),
+    error,
+  };
   for (const [name, value] of Object.entries(setupFields)) {
     params[`field_${name}`] = value;
+  }
+  if (options.displayName) {
+    params.display_name = options.displayName;
   }
   return pageHrefWithConnectionId(connectorId, connectionId, params);
 }
 
 export async function createStaticSecretConnectionAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
+  const displayName = asString(formData.get("display_name")) || null;
   await requireDashboardAccess(`/connect/static-secret/${encodeURIComponent(connectorId)}`);
   const setup = await getStaticSecretSetup(connectorId).catch((err) => {
     redirect(pageHref(connectorId, { error: errorMessage(err) }));
@@ -182,40 +174,51 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
   }
   const payload = buildStaticSecretPayload(setup, formData);
   if (!payload.ok) {
-    redirect(pageHref(connectorId, { error: payload.error }));
+    redirect(pageHref(connectorId, formErrorParams(payload.error, displayName)));
   }
   const setupFields = collectStaticSecretSetupFields(setup, formData);
 
   let draftConnectionId: string | null = null;
   let target: string;
   try {
-    const draft = await createStaticSecretDraftConnection(connectorId, setupFields);
+    const draft = await createStaticSecretDraftConnection(connectorId, setupFields, { displayName });
     draftConnectionId = draft.connection_id;
     const captured = await captureStaticSecretCredential({
       connectionId: draft.connection_id,
       credentialKind: setup.credential_kind,
       secret: payload.secret,
+      setupFields,
     });
-    const runId = await runIdAfterCapture(draft.connection_id, captured);
+    const capturedConnectionId = captured.connection_id;
+    const runId = await runIdAfterCapture(capturedConnectionId, captured, runConnectionNow);
     revalidatePath("/sources");
     // Land on the durable setup-status surface, not a transient form notice. The
     // status page reads the connection's projected setup_state and, for a
     // synchronous-probe connector, surfaces the echoed account identity.
     // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
-    target = statusHref(draft.connection_id, runId, captured.identity?.account_identity ?? null);
+    target = statusHref(capturedConnectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
     if (err instanceof StaticSecretValidationError) {
       // Synchronous validation rejected the credential — nothing was stored, no
-      // run started. Keep the owner on the form with the provider-named reason
-      // and their non-secret context preserved, so they can fix and resubmit.
-      target = formRetryHref(connectorId, err.message, setupFields);
+      // run started. Keep the owner on the same resumable draft with the
+      // provider-named reason and non-secret context. The secret is never
+      // round-tripped.
+      target = draftConnectionId
+        ? formRetryHrefWithConnectionId(connectorId, draftConnectionId, err.message, setupFields, {
+            displayName,
+            draftRetry: true,
+          })
+        : formRetryHref(connectorId, err.message, setupFields, displayName);
     } else if (draftConnectionId) {
-      // The draft exists but a later step (capture/run) failed for a non-
-      // validation reason; the owner can see and repair it on its durable status
-      // surface, so the submitted account is never invisible.
-      target = statusHref(draftConnectionId, null);
+      // A draft with captured material but no confirmed run must not land on
+      // first_sync_pending: that state has no run to observe or refresh. Keep
+      // the owner on the repair form with non-secret context preserved.
+      target = formRetryHrefWithConnectionId(connectorId, draftConnectionId, errorMessage(err), setupFields, {
+        displayName,
+        draftRetry: true,
+      });
     } else {
-      target = pageHref(connectorId, { error: errorMessage(err) });
+      target = pageHref(connectorId, formErrorParams(errorMessage(err), displayName));
     }
   }
   redirect(target);

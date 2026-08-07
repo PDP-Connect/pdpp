@@ -85,10 +85,143 @@ test("draft with a failed last run projects first_sync_failed -> needs_attention
   });
   assert.equal(status.setup_state, "first_sync_failed");
   assert.equal(status.health_state, "needs_attention");
+  assert.equal(status.pending, false);
   assert.ok(status.last_error);
   assert.equal(status.last_error.reason, "authentication_failed");
   // biome-ignore lint/performance/useTopLevelRegex: localized test assertion preserves its explicit contract.
   assert.match(status.last_error.remediation, /credential/i);
+});
+
+test("a completed zero-yield first run is terminal and explicitly unverified", () => {
+  const status = projectStaticSecretSetupStatus({
+    activeRun: null,
+    credential: { capturedAt: null, credentialKind: "app_password", present: true },
+    identityFieldName: "account_email",
+    instance: baseInstance,
+    lastRun: {
+      finishedAt: "2026-06-10T00:04:00.000Z",
+      recordsEmitted: 0,
+      reportedRecordsEmitted: 0,
+      runId: "run_zero_yield",
+      status: "completed",
+    },
+  });
+  assert.equal(status.setup_state, "first_sync_unverified_zero");
+  assert.equal(status.health_state, "needs_attention");
+  assert.equal(status.pending, false);
+  assert.equal(status.terminal_setup_disposition, "unverified_zero");
+  assert.equal(status.running, false);
+  assert.equal(status.run?.records_emitted, 0);
+  assert.equal(status.run?.reported_records_emitted, 0);
+});
+
+test("terminal collection facts distinguish a verified empty result from zero-count silence", () => {
+  const status = projectStaticSecretSetupStatus({
+    activeRun: null,
+    credential: { present: true },
+    identityFieldName: "account_email",
+    instance: baseInstance,
+    lastRun: {
+      collectionFacts: {
+        streams: [
+          {
+            checkpoint: "committed",
+            considered: 0,
+            covered: 0,
+            pending_detail_gaps: 0,
+            skipped: null,
+            stream: "messages",
+          },
+        ],
+      },
+      recordsEmitted: 0,
+      reportedRecordsEmitted: 0,
+      runId: "run_verified_empty",
+      status: "succeeded",
+      yieldCountsPresent: true,
+    },
+    manifestStreams: [{ name: "messages" }],
+  });
+
+  assert.equal(status.setup_state, "first_sync_verified_empty");
+  assert.equal(status.health_state, "needs_attention");
+  assert.equal(status.pending, false);
+  assert.equal(status.terminal_setup_disposition, "verified_empty");
+  assert.equal(status.last_error, null);
+});
+
+test("incomplete collection facts cannot prove a verified empty result", () => {
+  const status = projectStaticSecretSetupStatus({
+    activeRun: null,
+    credential: { present: true },
+    identityFieldName: "account_email",
+    instance: baseInstance,
+    lastRun: {
+      collectionFacts: {
+        streams: [
+          {
+            checkpoint: "committed",
+            considered: 0,
+            covered: 0,
+            pending_detail_gaps: 0,
+            skipped: null,
+            stream: "messages",
+          },
+        ],
+      },
+      recordsEmitted: 0,
+      reportedRecordsEmitted: 0,
+      runId: "run_incomplete_empty_facts",
+      status: "succeeded",
+      yieldCountsPresent: true,
+    },
+    manifestStreams: [{ name: "messages" }, { name: "threads" }],
+  });
+
+  assert.equal(status.setup_state, "first_sync_unverified_zero");
+  assert.equal(status.terminal_setup_disposition, "unverified_zero");
+});
+
+test("a terminal zero without collection facts remains unverified", () => {
+  const status = projectStaticSecretSetupStatus({
+    activeRun: null,
+    credential: { present: true },
+    identityFieldName: "account_email",
+    instance: baseInstance,
+    lastRun: {
+      recordsEmitted: 0,
+      reportedRecordsEmitted: 0,
+      runId: "run_silent_zero",
+      status: "succeeded",
+      yieldCountsPresent: true,
+    },
+    manifestStreams: [{ name: "messages" }],
+  });
+
+  assert.equal(status.setup_state, "first_sync_unverified_zero");
+  assert.equal(status.terminal_setup_disposition, "unverified_zero");
+  assert.equal(status.last_error?.reason, "first_sync_unverified_zero");
+});
+
+test("a terminal run with omitted yield counts is distinct from an observed zero", () => {
+  const status = projectStaticSecretSetupStatus({
+    activeRun: null,
+    credential: { present: true },
+    identityFieldName: "account_email",
+    instance: baseInstance,
+    lastRun: {
+      recordsEmitted: null,
+      reportedRecordsEmitted: null,
+      runId: "run_missing_counts",
+      status: "succeeded",
+      yieldCountsPresent: false,
+    },
+    manifestStreams: [{ name: "messages" }],
+  });
+
+  assert.equal(status.setup_state, "first_sync_unverified_missing_counts");
+  assert.equal(status.terminal_setup_disposition, "unverified_missing_counts");
+  assert.equal(status.last_error?.reason, "first_sync_unverified_missing_counts");
 });
 
 test("active instance projects active -> healthy and not pending", () => {
@@ -102,6 +235,7 @@ test("active instance projects active -> healthy and not pending", () => {
   assert.equal(status.setup_state, "active");
   assert.equal(status.health_state, "healthy");
   assert.equal(status.pending, false);
+  assert.equal(status.terminal_setup_disposition, null);
 });
 
 test("credential rotation metadata stays visible on setup status", () => {
@@ -194,7 +328,7 @@ test("browser-session draft with an active run projects first_sync_running even 
   assert.equal(status.setup_material.present, false);
 });
 
-test("browser-session draft with a completed last run (no active run) projects first_sync_pending, not awaiting_browser_login", () => {
+test("browser-session draft with terminal counts missing projects unverified setup, not awaiting_browser_login", () => {
   const status = projectConnectionSetupStatus({
     activeRun: null,
     credential: null,
@@ -203,7 +337,9 @@ test("browser-session draft with a completed last run (no active run) projects f
     lastRun: { failureReason: null, runId: "run_browser_2", status: "completed" },
     setupKind: "browser_session",
   });
-  assert.equal(status.setup_state, "first_sync_pending");
+  assert.equal(status.setup_state, "first_sync_unverified_missing_counts");
+  assert.equal(status.terminal_setup_disposition, "unverified_missing_counts");
+  assert.equal(status.pending, false);
 });
 
 test("browser-session draft with a failed last run projects first_sync_failed with browser-safe remediation", () => {

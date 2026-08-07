@@ -18,6 +18,7 @@ const REF_UPLOAD_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-staged-artifact
 const REF_ARTIFACT_POLL_ENDPOINT = /\/_ref\/manual-upload\/artifacts/;
 const REF_PREVIEW_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-validation-preview/;
 const REF_RUN_ENDPOINT = /\/_ref\/connections\/.*\/run/;
+const REF_RUN_SETUP_ADMISSION = /run_admission:\s*"setup"/;
 const STAGED_CONTENT_TYPE = /application\/vnd\.pdpp\.manual-upload/;
 const FILE_INPUT = /type="file"/;
 const MULTIPLE_FILES = /\bmultiple\b/;
@@ -26,8 +27,9 @@ const ACCEPT_EXTENSIONS = /accepted_file_extensions/;
 const SIZE_PREFLIGHT = /max_file_bytes/;
 const HELP_URL = /help_url/;
 const NEW_TAB = /target="_blank"/;
+const NEW_TAB_COPY = /in a new tab/;
 const NOREFERRER = /rel="noreferrer"/;
-const SECURITY_BOUNDARY_COPY = /never returned to agents, MCP clients, REST reads/i;
+const SECURITY_BOUNDARY_COPY = /stored for this source and is not exposed to connected apps or clients/i;
 const NO_CONNECTOR_BRANCH = /connectorId\s*===/;
 const NO_PROVIDER_COPY = /\bGoogle\b|\bTimeline\b|\bMaps\b/i;
 
@@ -39,7 +41,7 @@ const OPTIONAL_PREVIEW_COPY = /Preview checks one file/;
 const WHAT_PDPP_FOUND_COPY = /What PDPP found/;
 const TARGET_CHOICE_COPY = /Create a new source for these files/;
 const EXISTING_SOURCE_COPY = /Add these files to an existing source/;
-const LABEL_INPUT = /name="display_name"/;
+const LABEL_INPUT = /name=\{connectionName\.name\}/;
 const NO_SERVER_ACTION = /useActionState|manualUploadConnectionFormAction|action=\{formAction\}/;
 const NO_SECRET_LOG = /console\.(log|error|warn)\([\s\S]*secret/;
 
@@ -70,6 +72,7 @@ test("manual-upload form imports directly and offers preview without connector-s
   assert.match(src, REF_ARTIFACT_POLL_ENDPOINT);
   assert.match(src, REF_PREVIEW_ENDPOINT);
   assert.match(src, REF_RUN_ENDPOINT);
+  assert.match(src, REF_RUN_SETUP_ADMISSION);
   assert.match(src, STAGED_CONTENT_TYPE);
   assert.match(src, FILE_INPUT);
   assert.match(src, MULTIPLE_FILES);
@@ -78,6 +81,7 @@ test("manual-upload form imports directly and offers preview without connector-s
   assert.match(src, SIZE_PREFLIGHT);
   assert.match(src, HELP_URL);
   assert.match(src, NEW_TAB);
+  assert.match(src, NEW_TAB_COPY);
   assert.match(src, NOREFERRER);
   assert.match(src, PREVIEW_ONLY_COPY);
   assert.match(src, IMPORT_FILE_COPY);

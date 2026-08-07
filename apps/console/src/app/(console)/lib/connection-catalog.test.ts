@@ -19,18 +19,24 @@ import {
   browserBoundRunbookEntries,
   browserCollectorEntries,
   buildConnectorCatalog,
+  buildOwnerConnectorCatalog,
   type CatalogManifestLike,
   catalogModalityFromManifest,
   deploymentBlockedEntries,
+  isOwnerActionableEntry,
   localCollectorEntries,
   localCollectorUnprovenEntries,
   manualUploadConnectEntries,
   manualUploadPendingEntries,
+  type OwnerConnectorTemplateLike,
+  providerAuthConnectEntries,
   staticSecretConnectEntries,
   unsupportedNetworkEntries,
 } from "./connection-catalog.ts";
 import {
   sourceSetupAction,
+  sourceSetupAvailability,
+  sourceSetupContext,
   sourceSetupGuidance,
   sourceSetupSecondaryAction,
   sourceSetupStatus,
@@ -38,8 +44,14 @@ import {
 
 const FIRST_PARTY_REGISTRY_PREFIX = "https://registry.pdpp.org/connectors/";
 const TRAILING_SLASH_RE = /\/$/;
-const SECURE_BROWSER_SESSION_RE = /secure browser session/i;
+const SECURE_BROWSER_RE = /secure browser/i;
 const SAVE_SIGN_IN_DETAILS_RE = /sign-in details/i;
+const DATA_PORTABILITY_SEPARATE_RE = /separate from Google Maps Timeline Import/;
+const TIMELINE_API_DISTINCTION_RE = /not exposed by Google's documented Data Portability API/i;
+const TIMELINE_NO_SIGN_IN_RE = /no Google account sign-in is used/i;
+const GOOGLE_DEPLOYMENT_BLOCKER_RE = /GOOGLE_DATAPORTABILITY_CLIENT_ID/;
+const PROVIDER_BROWSER_GUIDANCE_RE = /provider's browser/;
+const OWNER_INTENT_URL_RE = /\/v1\/owner\/connections\/intents$/;
 
 function canonicalKeyFromManifestId(connectorId: string): string {
   if (connectorId.startsWith(FIRST_PARTY_REGISTRY_PREFIX)) {
@@ -62,6 +74,52 @@ async function loadCommittedManifests(): Promise<CatalogManifestLike[]> {
     })
   );
   return parsed.filter((m) => m.connector_id);
+}
+
+function ownerTemplate(
+  args: {
+    actionMethod?: string | null;
+    actionStatus?: string;
+    actionUrl?: string | null;
+    connectorKey?: string;
+    connectorModality?: string;
+    disposition?: string;
+    enrollmentKey?: string | null;
+    listingStatus?: string;
+    nextStepKind?: string;
+    ownerActionable?: boolean;
+    proofGate?: string | null;
+    setupModality?: string;
+    supportState?: string;
+  } = {}
+): OwnerConnectorTemplateLike {
+  const connectorKey = args.connectorKey ?? "test-provider";
+  return {
+    connector_key: connectorKey,
+    connector_modality: args.connectorModality ?? "api_network",
+    display_name: connectorKey,
+    public_listing: { listed: true, status: args.listingStatus ?? "proven" },
+    registration_status: "registered",
+    setup_plan: {
+      catalog_disposition: args.disposition ?? "provider_auth_connect",
+      deployment_readiness: { blockers: [], guidance: null, state: "ready" },
+      enrollment_key: args.enrollmentKey ?? null,
+      next_step_kind: args.nextStepKind ?? "open_provider_auth",
+      owner_actionable: args.ownerActionable ?? true,
+      proof_gate: args.proofGate ?? null,
+      runbook_path: null,
+      setup_modality: args.setupModality ?? "provider_authorization",
+      support_state: args.supportState ?? "supported",
+    },
+    supported_actions: [
+      {
+        family: "initiate_connection",
+        method: args.actionMethod === undefined ? "POST" : args.actionMethod,
+        status: args.actionStatus ?? "supported",
+        url: args.actionUrl === undefined ? "https://reference.test/v1/owner/connections/intents" : args.actionUrl,
+      },
+    ],
+  };
 }
 
 test("catalogModalityFromManifest mirrors the filesystem>browser>network precedence", () => {
@@ -119,7 +177,7 @@ test("only proven-creatable dispositions carry an enrollment deep-link key", asy
   }
 });
 
-test("heb is cataloged as one browser-bound account setup with optional stored credentials", async () => {
+test("unproven browser-bound static-secret entries fail closed", async () => {
   const catalog = buildConnectorCatalog(await loadCommittedManifests());
   const heb = catalog.find((entry) => entry.connectorKey === "heb");
   if (!heb) {
@@ -129,16 +187,17 @@ test("heb is cataloged as one browser-bound account setup with optional stored c
   assert.equal(heb.setupModality, "static_secret");
   assert.equal(heb.disposition, "static_secret_connect");
   assert.equal(heb.enrollmentKey, undefined);
-  assert.equal(sourceSetupStatus(heb).label, "Connect account");
-  assert.equal(sourceSetupAction(heb)?.href, "/connect/browser-session/heb");
-  assert.equal(sourceSetupAction(heb)?.label, "Connect account");
+  assert.equal(heb.supportState, "proof_gated");
+  assert.equal(heb.proofGate, "static_secret_live_proof_missing");
+  assert.equal(sourceSetupStatus(heb).label, "Not available here");
+  assert.equal(sourceSetupAction(heb), null);
   assert.equal(sourceSetupSecondaryAction(heb), null);
-  assert.match(sourceSetupGuidance(heb), SECURE_BROWSER_SESSION_RE);
-  assert.match(sourceSetupGuidance(heb), SAVE_SIGN_IN_DETAILS_RE);
+  assert.doesNotMatch(sourceSetupGuidance(heb), SECURE_BROWSER_RE);
+  assert.doesNotMatch(sourceSetupGuidance(heb), SAVE_SIGN_IN_DETAILS_RE);
   assert.deepEqual(browserCollectorEntries(catalog), []);
 });
 
-test("browser-bound static-secret-capable connectors get one primary choice generically", () => {
+test("browser-bound static-secret capability is not enough to create an account", () => {
   const catalog = buildConnectorCatalog([
     {
       connector_id: "https://registry.pdpp.org/connectors/browser-sample",
@@ -159,9 +218,9 @@ test("browser-bound static-secret-capable connectors get one primary choice gene
   assert.equal(entry.modality, "browser_bound");
   assert.equal(entry.setupModality, "static_secret");
   assert.equal(entry.disposition, "static_secret_connect");
-  assert.equal(sourceSetupAction(entry)?.href, "/connect/browser-session/browser-sample");
+  assert.equal(sourceSetupAction(entry), null);
   assert.equal(sourceSetupSecondaryAction(entry), null);
-  assert.equal(sourceSetupStatus(entry).label, "Connect account");
+  assert.equal(sourceSetupStatus(entry).label, "Not available here");
 });
 
 test("non-browser static-secret connectors keep the existing single capture path", () => {
@@ -188,6 +247,24 @@ test("non-browser static-secret connectors keep the existing single capture path
   assert.equal(sourceSetupAction(entry)?.href, "/connect/static-secret/gmail");
   assert.equal(sourceSetupSecondaryAction(entry), null);
   assert.equal(sourceSetupStatus(entry).label, "Add account");
+});
+
+test("YNAB static-secret entry shows as actionable with draft-create path", async () => {
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+  const ynab = catalog.find((entry) => entry.connectorKey === "ynab");
+  assert.ok(ynab, "ynab must be present in the catalog");
+  assert.equal(ynab.modality, "api_network");
+  assert.equal(ynab.setupModality, "static_secret");
+  assert.equal(ynab.disposition, "static_secret_connect");
+  assert.equal(ynab.enrollmentKey, undefined);
+  assert.equal(ynab.supportState, "supported");
+  assert.equal(ynab.proofGate, null);
+  assert.equal(sourceSetupStatus(ynab).label, "Add account");
+  assert.equal(sourceSetupAction(ynab)?.href, "/connect/static-secret/ynab");
+  assert.equal(sourceSetupSecondaryAction(ynab), null);
+  assert.equal(sourceSetupAvailability(ynab), "available_now");
+  assert.ok(sourceSetupGuidance(ynab).includes("protected setup form"));
 });
 
 test("no browser-bound or API/network connector is one-click-creatable", async () => {
@@ -400,6 +477,8 @@ test("provider-authorization deployment blockers are separate from unsupported n
   );
   assert.deepEqual(deploymentBlockedEntries(catalog), [entry]);
   assert.deepEqual(unsupportedNetworkEntries(catalog), []);
+  assert.equal(sourceSetupAction(entry), null);
+  assert.equal(sourceSetupAvailability(entry), "requires_server_setup");
   assert.equal(entry.enrollmentKey, undefined);
 });
 
@@ -418,7 +497,196 @@ test("Google Maps Data Portability is the API-backed provider-auth source, not T
     entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
     ["GOOGLE_DATAPORTABILITY_CLIENT_ID", "GOOGLE_DATAPORTABILITY_CLIENT_SECRET", "GOOGLE_DATAPORTABILITY_REDIRECT_URI"]
   );
+  assert.equal(sourceSetupAction(entry), null, "provider settings must not link to diagnostics as a setup CTA");
+  assert.match(sourceSetupGuidance(entry), GOOGLE_DEPLOYMENT_BLOCKER_RE);
+  assert.match(sourceSetupContext(entry) ?? "", DATA_PORTABILITY_SEPARATE_RE);
+  assert.ok(entry.externalDocs.length >= 1, "provider-auth manifest documentation should remain available");
   assert.equal(entry.enrollmentKey, undefined);
+});
+
+test("Google Maps Timeline keeps its import/API distinction visible in the catalog", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests());
+  const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps");
+  assert.ok(entry, "google-maps must be in the committed catalog");
+  assert.match(sourceSetupContext(entry) ?? "", TIMELINE_API_DISTINCTION_RE);
+  assert.match(sourceSetupContext(entry) ?? "", TIMELINE_NO_SIGN_IN_RE);
+});
+
+test("configured Google provider readiness exposes the existing owner authorization action", async () => {
+  const catalog = buildConnectorCatalog(await loadCommittedManifests(), ["google-maps-data-portability"]);
+  const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps-data-portability");
+  assert.ok(entry, "google-maps-data-portability must be in the committed catalog");
+  assert.equal(entry.deploymentReadiness.state, "ready");
+  assert.equal(entry.nextStepKind, "open_provider_auth");
+  assert.equal(entry.supportState, "supported");
+  assert.equal(entry.disposition, "provider_auth_connect");
+  assert.equal(sourceSetupStatus(entry).label, "Authorize account");
+  assert.match(sourceSetupGuidance(entry), PROVIDER_BROWSER_GUIDANCE_RE);
+  assert.deepEqual(sourceSetupAction(entry), {
+    href: "/connect/provider-auth/google-maps-data-portability",
+    label: "Authorize account",
+  });
+  assert.equal(sourceSetupAvailability(entry), "available_now");
+  assert.deepEqual(providerAuthConnectEntries(catalog), [entry]);
+});
+
+test("owner catalog fails closed for local-only, listed-unproven, and proof-gated static-secret entries", () => {
+  const staleLocalManifest: CatalogManifestLike = {
+    capabilities: { public_listing: { listed: true, status: "proven" } },
+    connector_id: "stale-local-only",
+    display_name: "Stale local-only",
+    runtime_requirements: { bindings: { network: {} } },
+  };
+  assert.deepEqual(buildOwnerConnectorCatalog([staleLocalManifest], []), [], "local-only entries are not listed");
+
+  const listedUnproven = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "listed-unproven",
+        connectorModality: "local_collector",
+        disposition: "local_collector_enroll",
+        listingStatus: "unproven",
+        nextStepKind: "enroll_local_collector",
+        ownerActionable: false,
+        setupModality: "local_collector",
+        actionMethod: null,
+        actionStatus: "unsupported",
+        actionUrl: null,
+      }),
+    ]
+  );
+  const [listedUnprovenEntry] = listedUnproven;
+  assert.ok(listedUnprovenEntry, "server listing status controls visibility");
+  assert.equal(listedUnprovenEntry.ownerActionable, false);
+  assert.equal(sourceSetupAction(listedUnprovenEntry), null);
+  assert.equal(sourceSetupAvailability(listedUnprovenEntry), "not_available_here");
+
+  const proofGatedStaticSecret = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "unproven-static-secret",
+        disposition: "static_secret_connect",
+        nextStepKind: "capture_static_secret",
+        ownerActionable: false,
+        proofGate: "static_secret_live_proof_missing",
+        setupModality: "static_secret",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "unsupported",
+        actionUrl: null,
+      }),
+    ]
+  );
+  const [proofGatedEntry] = proofGatedStaticSecret;
+  assert.ok(proofGatedEntry, "proof-gated static-secret template should remain visible");
+  assert.equal(proofGatedEntry.supportState, "proof_gated");
+  assert.equal(sourceSetupStatus(proofGatedEntry).label, "Not available here");
+  assert.equal(sourceSetupAction(proofGatedEntry), null);
+  assert.equal(sourceSetupAvailability(proofGatedEntry), "not_available_here");
+});
+
+test("owner catalog exposes browser owner-session actions without inventing an owner-agent REST action", () => {
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "chatgpt",
+        connectorModality: "browser_bound",
+        disposition: "static_secret_connect",
+        nextStepKind: "capture_static_secret",
+        ownerActionable: true,
+        proofGate: "static_secret_live_proof_missing",
+        setupModality: "static_secret",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "owner_mediated",
+        actionUrl: null,
+      }),
+      ownerTemplate({
+        connectorKey: "chase",
+        connectorModality: "browser_bound",
+        disposition: "browser_collector_manual",
+        enrollmentKey: "chase",
+        nextStepKind: "enroll_browser_collector",
+        ownerActionable: true,
+        proofGate: "browser_collector_live_proof_missing",
+        setupModality: "browser_bound",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "owner_mediated",
+        actionUrl: null,
+      }),
+      ownerTemplate({
+        connectorKey: "doordash",
+        connectorModality: "browser_bound",
+        disposition: "browser_bound_runbook",
+        nextStepKind: "manual_runbook",
+        ownerActionable: false,
+        proofGate: "browser_collector_live_proof_missing",
+        setupModality: "browser_bound",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "unsupported",
+        actionUrl: null,
+      }),
+    ]
+  );
+
+  const chatgpt = catalog.find((entry) => entry.connectorKey === "chatgpt");
+  assert.ok(chatgpt);
+  assert.equal(chatgpt.ownerActionable, true);
+  assert.equal(chatgpt.ownerActionMethod, null);
+  assert.equal(chatgpt.ownerActionUrl, null);
+  assert.equal(sourceSetupAvailability(chatgpt), "available_now");
+  assert.deepEqual(sourceSetupAction(chatgpt), {
+    href: "/connect/browser-session/chatgpt",
+    label: "Connect account",
+  });
+
+  const chase = catalog.find((entry) => entry.connectorKey === "chase");
+  assert.ok(chase);
+  assert.equal(chase.ownerActionable, true);
+  assert.equal(sourceSetupAvailability(chase), "available_now");
+  assert.deepEqual(sourceSetupAction(chase), {
+    href: "/connect/browser-session/chase",
+    label: "Connect account",
+  });
+
+  const doordash = catalog.find((entry) => entry.connectorKey === "doordash");
+  assert.ok(doordash);
+  assert.equal(doordash.ownerActionable, false);
+  assert.equal(sourceSetupAvailability(doordash), "not_available_here");
+  assert.equal(sourceSetupAction(doordash), null);
+});
+
+test("a supported owner action has an invariant actionable provider projection", () => {
+  const catalog = buildOwnerConnectorCatalog(
+    [
+      {
+        connector_id: "test-provider",
+        display_name: "Provider display from manifest",
+        external_docs: [{ label: "Provider docs", url: "https://example.test/docs" }],
+      },
+    ],
+    [ownerTemplate({ connectorKey: "test-provider", listingStatus: "needs_human_auth" })]
+  );
+  const [entry] = catalog;
+  assert.ok(entry);
+  assert.equal(entry.ownerActionable, true);
+  assert.equal(entry.disposition, "provider_auth_connect");
+  assert.equal(entry.supportState, "supported");
+  assert.equal(entry.proofGate, null);
+  assert.equal(entry.ownerActionMethod, "POST");
+  assert.match(entry.ownerActionUrl ?? "", OWNER_INTENT_URL_RE);
+  assert.equal(sourceSetupAvailability(entry), "available_now");
+  assert.deepEqual(sourceSetupAction(entry), {
+    href: "/connect/provider-auth/test-provider",
+    label: "Authorize account",
+  });
+  assert.deepEqual(entry.externalDocs, [{ label: "Provider docs", url: "https://example.test/docs" }]);
+  assert.equal(entry.displayName, "test-provider");
 });
 
 test("claude-code manifest slug maps to the claude_code enrollment key", async () => {
@@ -452,6 +720,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
     manualUploadConnectEntries(catalog),
     manualUploadPendingEntries(catalog),
     deploymentBlockedEntries(catalog),
+    providerAuthConnectEntries(catalog),
     unsupportedNetworkEntries(catalog),
   ];
   const total = groups.reduce((sum, g) => sum + g.length, 0);
@@ -487,4 +756,139 @@ test("filesystem connectors outside the proven set are local-collector-unproven,
   for (const entry of network) {
     assert.notEqual(entry.modality, "local_collector");
   }
+});
+
+test("ownerActionable field is the sole authority for live owner catalogs", () => {
+  // Live owner catalogs always compute ownerActionable once in
+  // buildOwnerConnectorCatalog and store it. isOwnerActionableEntry must
+  // trust that field, not re-derive it.
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "actionable-api",
+        disposition: "provider_auth_connect",
+        ownerActionable: true,
+      }),
+      ownerTemplate({
+        connectorKey: "blocked-api",
+        disposition: "provider_auth_connect",
+        ownerActionable: false,
+      }),
+      ownerTemplate({
+        connectorKey: "actionable-static-secret",
+        connectorModality: "browser_bound",
+        disposition: "static_secret_connect",
+        setupModality: "static_secret",
+        nextStepKind: "capture_static_secret",
+        ownerActionable: true,
+        actionMethod: null,
+        actionStatus: "owner_mediated",
+        actionUrl: null,
+      }),
+      ownerTemplate({
+        connectorKey: "blocked-static-secret",
+        connectorModality: "browser_bound",
+        disposition: "static_secret_connect",
+        setupModality: "static_secret",
+        nextStepKind: "capture_static_secret",
+        ownerActionable: false,
+        actionMethod: null,
+        actionStatus: "unsupported",
+        actionUrl: null,
+      }),
+    ]
+  );
+
+  for (const entry of catalog) {
+    const actionable = isOwnerActionableEntry(entry);
+    assert.equal(
+      actionable,
+      entry.ownerActionable,
+      `isOwnerActionableEntry(${entry.connectorKey}) must return the ownerActionable field: ${entry.ownerActionable}`
+    );
+  }
+});
+
+test("isOwnerActionableEntry respects demo/test fallback rules when ownerActionable is undefined", async () => {
+  // Pure manifest catalogs (buildConnectorCatalog) have no ownerActionable field.
+  // isOwnerActionableEntry must apply fallback rules for testing. YNAB is proven
+  // to be supported (not proof-gated), so it serves as a good fallback test.
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+
+  const ynab = catalog.find((e) => e.connectorKey === "ynab");
+  assert.ok(ynab);
+  assert.equal(ynab.ownerActionable, undefined);
+  assert.equal(ynab.setupModality, "static_secret");
+  assert.equal(ynab.supportState, "supported");
+  assert.equal(ynab.proofGate, null);
+  // Fallback rule: static_secret dispositions are actionable if supported and not proof-gated
+  assert.equal(isOwnerActionableEntry(ynab), true);
+});
+
+test("presentation consistency: helper functions agree with ownerActionable authority", async () => {
+  // Every fixture in the presentation test suite must have presentation functions
+  // that agree with isOwnerActionableEntry. This is the core maintainability check.
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+
+  for (const entry of catalog) {
+    const isActionable = isOwnerActionableEntry(entry);
+    const hasAction = sourceSetupAction(entry) !== null;
+
+    // The invariant: if isOwnerActionableEntry returns true, sourceSetupAction
+    // must have a non-null result. Mutations to either would break this.
+    assert.equal(
+      hasAction,
+      isActionable,
+      `${entry.connectorKey}: sourceSetupAction must match isOwnerActionableEntry. ` +
+        `Helper says ${isActionable}, action is ${hasAction ? "set" : "null"}`
+    );
+  }
+});
+
+test("owner catalog: presentation consistency between actionability and availability", () => {
+  // For owner catalogs, ownerActionable gates both sourceSetupAvailability and
+  // sourceSetupAction. They must converge.
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "available",
+        disposition: "provider_auth_connect",
+        ownerActionable: true,
+      }),
+      ownerTemplate({
+        connectorKey: "not-available",
+        disposition: "provider_auth_proof_gated",
+        ownerActionable: false,
+        proofGate: "missing_proof",
+      }),
+      ownerTemplate({
+        connectorKey: "deployment-blocked",
+        disposition: "provider_auth_deployment_blocked",
+        ownerActionable: false,
+      }),
+    ]
+  );
+
+  const available = catalog.find((e) => e.connectorKey === "available");
+  assert.ok(available);
+  assert.equal(isOwnerActionableEntry(available), true);
+  assert.equal(sourceSetupAction(available) !== null, true);
+  assert.equal(sourceSetupAvailability(available), "available_now");
+
+  const notAvailable = catalog.find((e) => e.connectorKey === "not-available");
+  assert.ok(notAvailable);
+  assert.equal(isOwnerActionableEntry(notAvailable), false);
+  assert.equal(sourceSetupAction(notAvailable), null);
+  assert.equal(sourceSetupAvailability(notAvailable), "not_available_here");
+
+  const deploymentBlocked = catalog.find((e) => e.connectorKey === "deployment-blocked");
+  assert.ok(deploymentBlocked);
+  assert.equal(isOwnerActionableEntry(deploymentBlocked), false);
+  assert.equal(sourceSetupAction(deploymentBlocked), null);
+  // Special case: deployment_blocked gets "requires_server_setup", not "not_available_here"
+  assert.equal(sourceSetupAvailability(deploymentBlocked), "requires_server_setup");
 });

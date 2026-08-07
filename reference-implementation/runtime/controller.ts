@@ -235,6 +235,8 @@ export interface ActiveRun {
   readonly trace_id: string;
 }
 
+export type RunAdmission = "collection" | "setup" | "browser_enrollment";
+
 export interface RunNowOptions {
   connectorInstanceId?: string;
   /**
@@ -254,10 +256,12 @@ export interface RunNowOptions {
   resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
   /**
-   * Narrow owner-session admission for the first run of a browser enrollment
-   * shell. Omitted means the ordinary active-connection collection path.
+   * Narrow owner-session admission for setup lifecycle runs. `setup` admits an
+   * exact draft or active connection; `browser_enrollment` admits only an exact
+   * browser enrollment draft. Omitted means the ordinary active-connection
+   * collection path.
    */
-  runAdmission?: "browser_enrollment";
+  runAdmission?: RunAdmission;
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
@@ -309,6 +313,10 @@ function buildAutoResumeRunNowOptions(
   const options: RunNowOptions = {
     connectorInstanceId,
     priorityClass: "interactive",
+    // Credential capture is an owner-session setup operation. Its exact draft
+    // is intentionally admitted through the setup capability before the run
+    // is created; ordinary collection remains active-only.
+    runAdmission: "setup",
     triggerKind: "manual",
   };
   if (input.manifest !== undefined) {
@@ -415,7 +423,7 @@ export interface ControllerOptions {
     connectorId: string;
     connectorInstanceId: string | null;
     ownerSubjectId: string;
-    runAdmission: "collection" | "browser_enrollment";
+    runAdmission: RunAdmission;
   }) => Promise<{ connectorId: string; connectorInstanceId: string }>;
   asPublicUrl?: string;
   /** Awaited before a managed surface lease becomes reusable after run cleanup. */
@@ -551,7 +559,7 @@ function resolveAdmittedRunConnection(
   connectorId: string,
   connectorInstanceId: string | undefined,
   ownerSubjectId: string,
-  runAdmission: "collection" | "browser_enrollment"
+  runAdmission: RunAdmission
 ): Promise<{ connectorId: string; connectorInstanceId: string }> {
   if (controllerOptions.admitRunConnection) {
     return controllerOptions.admitRunConnection({
@@ -567,7 +575,7 @@ function resolveAdmittedRunConnection(
   );
 }
 
-function runAdmissionFor(options: RunNowOptions): "collection" | "browser_enrollment" {
+function runAdmissionFor(options: RunNowOptions): RunAdmission {
   return options.runAdmission ?? "collection";
 }
 

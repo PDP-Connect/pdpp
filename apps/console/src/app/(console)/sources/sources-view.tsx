@@ -57,6 +57,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
+import { SOURCE_ACCESS_NOTE } from "./sources-copy.ts";
 import {
   buildDuplicateSourceReview,
   collapseDuplicateFallbackSources,
@@ -168,7 +169,7 @@ export function SourcesView({
             <Link className="rr-s-link" href={ADD_SOURCE_HREF}>
               add a source →
             </Link>
-            <span className="rr-s-end__note">a source pushes into your streams · nothing leaves</span>
+            <span className="rr-s-end__note">{SOURCE_ACCESS_NOTE}</span>
           </div>
         </aside>
 
@@ -227,7 +228,7 @@ function DuplicateSourcesAdvisory({ reviews }: { reviews: readonly DuplicateSour
   const more = reviews.length > 1 ? ` ${reviews.length - 1} other source type needs the same review.` : "";
   return (
     <aside className="rr-s-duplicates" data-testid="sources-duplicate-review" role="note">
-      <span className="rr-s-churn__eyebrow">same source type · review labels</span>
+      <span className="rr-s-churn__eyebrow">Several sources need labels</span>
       <p className="rr-s-churn__head">
         {primary.total.toLocaleString()} {primary.kind} sources are configured; {primary.unnamed.toLocaleString()}{" "}
         {primary.unnamed === 1 ? "is" : "are"} unnamed.
@@ -237,7 +238,7 @@ function DuplicateSourcesAdvisory({ reviews }: { reviews: readonly DuplicateSour
         and revoke it if it was only a setup attempt.{more}
       </p>
       <Link className="rr-s-duplicates__link" href={primary.firstUnnamedHref}>
-        Review first unnamed source →
+        Review duplicate source labels →
       </Link>
     </aside>
   );
@@ -832,10 +833,13 @@ function StreamManifest({ instance }: { instance: SourceInstanceView }) {
 
 function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][number] }) {
   const { collection } = stream;
+  const isDisplayLabelDifferent = stream.displayLabel !== stream.name;
   return (
     <Link className="pdpp-table__row rr-s-stream-row" href={stream.exploreHref} style={{ display: "grid" }}>
       <TableCell>
-        <span className="rr-s-stream">{stream.name}</span>
+        <span className="rr-s-stream" title={isDisplayLabelDifferent ? stream.name : undefined}>
+          {stream.displayLabel}
+        </span>
       </TableCell>
       <TableCell>
         <StreamRecordCount stream={stream} />
