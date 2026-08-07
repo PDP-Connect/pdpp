@@ -12,6 +12,7 @@ import {
   formatConnectorNameForDisplay,
   isFallbackConnectionLabel,
   parseFieldRole,
+  streamDisplayLabel,
 } from "@pdpp/display";
 import { validateListEnvelope } from "@pdpp/list-envelope";
 /**
@@ -1619,7 +1620,8 @@ async function loadTimeRangeFeed(
  */
 function detectSingleStreamDoor(
   filtered: Array<{ connector_id: string; stream: string }>,
-  filteredSummaries: RefConnectorIdentitySummary[]
+  filteredSummaries: RefConnectorIdentitySummary[],
+  streamDisplayLabels: ReadonlyMap<string, string>
 ): ExplorerStreamDoor | null {
   if (filtered.length === 0) {
     return null;
@@ -1640,10 +1642,13 @@ function detectSingleStreamDoor(
     return null;
   }
   const [summary] = matchingSummaries;
+  const connectorKey = manifestConnectorKey({ connector_id: sharedConnector } as { connector_id: string });
+  const labelKey = `${connectorKey}::${sharedStream}`;
+  const streamLabel = streamDisplayLabels.get(labelKey) ?? sharedStream;
   return {
     connectionId: summary.connection_id,
     connectorId: sharedConnector,
-    displayName: `${connectorSummaryDisplayName(summary)} - ${sharedStream}`,
+    displayName: `${connectorSummaryDisplayName(summary)} - ${streamLabel}`,
     stream: sharedStream,
   };
 }
@@ -1866,6 +1871,7 @@ async function loadSearchFeed(
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   declaredFieldRoles: ReadonlyMap<string, DeclaredFieldRoles>,
   selectedConnectionIds: ReadonlySet<string>,
+  streamDisplayLabels: ReadonlyMap<string, string>,
   // EXCLUDE scope ("is not" / `-con:`/`-stream:`): drop excluded hits BEFORE counts/
   // descriptors are built so "everything except X" is honest in search too.
   exclude: { instanceIds: ReadonlySet<string>; streams: ReadonlySet<string> },
@@ -1953,7 +1959,7 @@ async function loadSearchFeed(
 
   // Detect single-entity case (all hits share same connection+stream) for the
   // per-source browse door and for Most-recent single-stream pagination.
-  const streamDoor = detectSingleStreamDoor(filtered, filteredSummaries);
+  const streamDoor = detectSingleStreamDoor(filtered, filteredSummaries, streamDisplayLabels);
 
   // ── Most-recent mode: chronological, exhaustively pageable ─────────────────
   //
@@ -2249,6 +2255,7 @@ async function dispatchFeed(args: {
       declaredFieldTypes,
       declaredFieldRoles,
       filterConnectionSet,
+      manifestMetadata.streamDisplayLabels,
       exclude,
       dataSource
     );
@@ -2321,6 +2328,8 @@ interface ManifestMetadata {
    * object/array), mirroring how the records list page filters declared fields.
    */
   serverFilterableFields: Map<string, Set<string>>;
+  /** Stream display labels from manifest display.label, keyed by connector::stream. */
+  streamDisplayLabels: Map<string, string>;
   timestampMetadata: Map<string, SearchTimestampMetadata>;
 }
 
@@ -2546,12 +2555,18 @@ async function buildManifestMetadata(dataSource: DashboardDataSource): Promise<M
     declaredFieldTypes: new Map<string, DeclaredFieldTypes>(),
     manifestFieldNames: new Map<string, readonly string[]>(),
     serverFilterableFields: new Map<string, Set<string>>(),
+    streamDisplayLabels: new Map<string, string>(),
     timestampMetadata: new Map<string, SearchTimestampMetadata>(),
   };
   for (const manifest of await dataSource.listConnectorManifests()) {
     const connectorKey = manifestConnectorKey(manifest);
     for (const stream of (manifest.streams ?? []) as ManifestStream[]) {
       indexManifestStream(connectorKey, stream, maps);
+      const key = `${connectorKey}::${stream.name}`;
+      const displayLabel = (stream as { display?: { label?: string } }).display?.label;
+      if (displayLabel) {
+        maps.streamDisplayLabels.set(key, displayLabel);
+      }
     }
   }
   return maps;
