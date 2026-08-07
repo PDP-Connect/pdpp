@@ -99,7 +99,7 @@ test("no site source file hand-types the GitHub repo URL outside site-facts.ts",
     "src/lib/docs-shared.tsx",
     "src/components/docs/source-link.tsx",
     "src/app/specification/[[...slug]]/page.tsx",
-    "src/app/self-host/coverage/data.ts",
+    "src/app/(concept)/self-host/coverage/data.ts",
     "src/components/pdpp-concept/footer.tsx",
   ];
 
