@@ -667,9 +667,7 @@ export default async function ConnectionSetupStatusPage({
   const described = describeState(status);
   const importPhases = importPhaseProgress(status);
   const displayName = deriveSetupStatusDisplayName(status);
-  const title = accountIdentity
-    ? `${displayName} · ${accountIdentity}`
-    : displayName;
+  const title = accountIdentity ? `${displayName} · ${accountIdentity}` : displayName;
   const refreshQuery = pageParams.run_id ? `?${new URLSearchParams({ run_id: pageParams.run_id }).toString()}` : "";
   const refreshHref = `/connect/status/${encodeURIComponent(connectionId)}${refreshQuery}`;
 

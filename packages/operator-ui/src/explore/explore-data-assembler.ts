@@ -4,9 +4,9 @@
 import {
   buildRecordPreview,
   classifyRecordKind,
-  deriveSourceDisplayNameFallback,
   type DeclaredFieldRoles,
   type DeclaredFieldTypes,
+  deriveSourceDisplayNameFallback,
   EMPTY_DECLARED_FIELD_ROLES,
   type FieldRole,
   formatConnectorNameForDisplay,
