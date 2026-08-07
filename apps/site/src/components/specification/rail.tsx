@@ -14,6 +14,7 @@ import {
 } from "fumadocs-ui/layouts/docs/slots/sidebar";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { PdppRailFrontMatter } from "@/components/pdpp-concept/rail-front-matter.tsx";
 import { docsRoute, SUPPORTING_SLUGS } from "@/lib/spec-nav-slugs.ts";
 import { useSpecRailData } from "./rail-context.tsx";
 
@@ -70,32 +71,12 @@ function RailSeparator({ item }: { item: PageTree.Separator }) {
 function RailBanner() {
   const { frontMatter } = useSpecRailData();
   return (
-    <div className="pdpp-rail__block">
-      <dl className="pdpp-rail__meta">
-        <div className="pdpp-rail__row">
-          <dt>Version</dt>
-          <dd>{frontMatter.version}</dd>
-        </div>
-        <div className="pdpp-rail__row">
-          <dt>Status</dt>
-          <dd>{frontMatter.status}</dd>
-        </div>
-        <div className="pdpp-rail__row">
-          <dt>Date</dt>
-          <dd>{frontMatter.date}</dd>
-        </div>
-        <div className="pdpp-rail__row">
-          <dt>Editors</dt>
-          <dd>
-            {frontMatter.editors.map((editor: string) => (
-              <span className="pdpp-rail__editor" key={editor}>
-                {editor}
-              </span>
-            ))}
-          </dd>
-        </div>
-      </dl>
-    </div>
+    <PdppRailFrontMatter
+      date={frontMatter.date}
+      editors={frontMatter.editors}
+      status={frontMatter.status}
+      version={frontMatter.version}
+    />
   );
 }
 

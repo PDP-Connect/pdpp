@@ -26,13 +26,10 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
       className={cn(
         // Page measure: brand container (pad/center) + concept max width; flex child of [data-surface="concept"]
         "container max-w-page shrink-0 grow basis-auto",
-        // Default: one track (home / 404)
+        // Default: one track; lg+ with PdppRail: rail | doc
         "grid grid-cols-[minmax(0,1fr)] items-start",
-        // With direct-child PdppRail: rail | doc, gutter as column-gap (rail owns sticky col-1)
-        "has-[>[data-slot=pdpp-concept-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
-        "has-[>[data-slot=pdpp-concept-rail]]:gap-x-gutter",
-        // <720px: stack — PdppRail unsticks / becomes ruled strip
-        "max-[720px]:grid-cols-[minmax(0,1fr)] max-[720px]:gap-x-0",
+        "lg:has-[>[data-slot=pdpp-concept-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
+        "lg:has-[>[data-slot=pdpp-concept-rail]]:gap-x-gutter",
         // Short pages (home / 404): trim doc bottom pad
         home && "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5!",
         className
@@ -49,7 +46,13 @@ export function PdppConceptDoc({ children, className }: ConceptDocProps) {
   return (
     <article
       className={cn(
+        // Style the doc
         "pdpp-doc",
+        // Track is full column width; prose measure caps live on descendants in
+        // components.css — not on this shell (tables/terminal stay wide).
+        "min-w-0 max-w-full pt-[calc(var(--spacing-section-gap)/1.5)] pb-[calc(var(--spacing-section-gap)*1.25)]",
+        // max-lg
+        "max-lg:pt-[calc(var(--spacing-section-gap)/3)] max-lg:pb-[calc(var(--spacing-section-gap)*0.75)]",
         "[&_[data-slot=pdpp-concept-text]_a]:link-prose",
         "[&_a:not([class])]:link-prose",
         className

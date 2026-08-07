@@ -14,6 +14,34 @@
  * [data-pdpp-doc-theme].
  *
  * Not specification.css (Fumadocs shell) or ProsePage markdown typography.
+ *
+ * MIGRATION STATUS (concept routes /self-host, /participate, /):
+ *   DONE — page shell (PdppConceptPage, PdppConceptDoc, PdppRail, PdppConceptSection),
+ *          type (Text + text-variants + tokens/semantic.css), chrome (masthead, footer,
+ *          front door, buttons). Layout and spacing live on components + TW utilities.
+ *   REMAINING BEM here — delete a block only when no call site references it:
+ *          .pdpp-cmd* (command-tabs.tsx / self-host),
+ *          .pdpp-channels, .pdpp-ruled-list, .pdpp-updates (participate),
+ *          .pdpp-features, .pdpp-impl-table (self-host),
+ *          .pdpp-terminal (terminal.tsx),
+ *          .pdpp-doc scoping + base h2/h3/p (raw markdown / legacy prose),
+ *          .pdpp-note (MDX remark asides — spec + concept),
+ *          .pdpp-footer (selection hook; footer markup is TW).
+ *   INTENTION — shrink this file toward shell hooks + shared MDX primitives; each
+ *          widget above becomes a pdpp-concept component with TW before its BEM is removed.
+ *
+ * SHARED CHROME WITH /specification (why this file loads on the spec route):
+ *   specification/layout.tsx imports concept/index.css (tokens + this register)
+ *   before specification.css. SpecificationShell wraps fumadocs in PdppConceptShell,
+ *   so spec shares masthead, footer, palette/type tokens (tokens/semantic.css),
+ *   and [data-surface="concept"] surface defaults from below — not a second skin.
+ *   Layout keys (--spacing-rail, --spacing-gutter, max-w-page) also feed spec
+ *   (specification.css sets --fd-sidebar-width: var(--spacing-rail), etc.).
+ *   Spec prose/tables/headings: specification.css (.pdpp-docs-body) — not .pdpp-doc.
+ *   From this register spec still uses: ::selection, .pdpp-note (MDX asides;
+ *   specification.css overrides in-body), .pdpp-footer selection hook,
+ *   .pdpp-eyebrow / .pdpp-caption. Spec does NOT use concept-page BEM
+ *   (.pdpp-cmd, .pdpp-channels, .pdpp-features, .pdpp-impl-table, …).
  */
 
 /* ─── Document surface ────────────────────────────────────────────────────
@@ -42,79 +70,65 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 
 /* ─── Layout: document track ─────────────────────────────────────────────
    Page chrome (container / max-w-page / rail grid / short-page flex) lives on
-   PdppConceptPage. Rail sticky/type/mobile strip lives on PdppRail.
-   .pdpp-doc track pad stays here. Hero type: PdppFrontDoor + Text. */
-.pdpp-doc {
-  /* The measure is a property of the TYPE, not of the container. Capping the
-     CONTAINER here also capped the terminal block, tables and the CTA grid to
-     prose width: it held .pdpp-doc at 680px regardless of viewport, which
-     shrank the whole grid and pushed the rail 92px inboard of the concept's
-     (measured 2026-08-05 at 1280: rail left 144px against the concept's 52px,
-     doc 680px against 869.5px). Prose elements below carry their own
-     --measure cap; wide elements are free to use the rest of the track. Same
-     division the concept makes in its own .doc rule. */
-  max-inline-size: 100%;
-  min-width: 0;
-  padding-top: 64px;
-  padding-bottom: 120px;
-}
+   PdppConceptPage. Track pad lives on PdppConceptDoc. Rail: hidden <lg, sticky
+   side nav lg+. Hero type: PdppFrontDoor + Text. */
 
 @media (max-width: 720px) {
-  .pdpp-doc {
-    max-width: 100%;
-    padding-top: 32px;
-    padding-bottom: 72px;
-  }
-  .pdpp-section {
-    --spacing-section-gap: 64px;
-  }
   .pdpp-ruled-list__item {
     grid-template-columns: 2em 1fr;
   }
 }
 
-/* ─── Rail apparatus ─────────────────────────────────────────────────────── */
-.pdpp-rail__block {
-  margin-bottom: 40px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--pdpp-concept-ink-soft);
-}
-.pdpp-rail__meta dt {
-  margin-top: 16px;
-  font-size: 11px;
-  color: var(--pdpp-concept-ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.pdpp-rail__meta dd {
-  margin: 2px 0 0;
-  font-variant-numeric: tabular-nums;
-  color: var(--pdpp-concept-ink);
-}
+/* ─── Document type ──────────────────────────────────────────────────────────
+   DEFAULTS FOR RAW MARKDOWN HEADINGS, NOT THE OWNER OF HEADING METRICS. These
+   are bare element selectors, so they match every <h2>/<h3> on the surface —
+   including the ones `Text as="h2"` renders. This file is imported UNLAYERED
+   (see index.css) and unlayered CSS beats every layered rule regardless of
+   specificity, so before they were wrapped here they silently overrode the
+   whole `Text` ladder: a `<Text size="title" as="h2">` on /self-host and every
+   markdown h2 under /specification alike resolved 28px serif 600 from this
+   block, not from the rung. `@layer base` restores the intended cascade —
+   Tailwind utilities (layer `utilities`, so `Text`'s CVA classes) win, while
+   fumadocs-generated markdown headings, which carry no classes, still land on
+   a sane concept default. Layer ORDER is declared once by brand's
+   `@import "tailwindcss"` (theme, base, components, utilities) in site.css.
 
-/* ─── Document type ──────────────────────────────────────────────────────── */
-/* [data-surface="concept"] h1 {
-  margin: 0 0 8px;
-  font-family: var(--font-serif);
-  font-size: 44px;
-  font-weight: 600;
-  line-height: 1.15;
-  letter-spacing: -0.01em;
-} */
-[data-surface="concept"] h2 {
-  margin: 0 0 16px;
-  font-family: var(--font-serif);
-  font-size: 28px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-[data-surface="concept"] h3 {
-  margin: 0 0 8px;
-  font-family: var(--font-serif);
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 1.45;
+   Consequence for anyone editing here: a value in this block can no longer
+   override a component. If a heading needs different metrics, change the rung
+   in tokens/semantic.css or the variant — not this block. */
+@layer base {
+  /* [data-surface="concept"] h1 {
+    margin: 0 0 8px;
+    font-family: var(--font-serif);
+    font-size: 44px;
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+  } */
+  [data-surface="concept"] h2 {
+    margin: 0 0 16px;
+    font-family: var(--font-serif);
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  [data-surface="concept"] h3 {
+    margin: 0 0 8px;
+    font-family: var(--font-serif);
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.45;
+  }
+  /* Kept in the same layer as the base sizes so the mobile step still wins on
+     source order; hoisting it out would put it above them in the cascade. */
+  @media (max-width: 720px) {
+    [data-surface="concept"] h1 {
+      font-size: 34px;
+    }
+    [data-surface="concept"] h2 {
+      font-size: 24px;
+    }
+  }
 }
 /* Prose article rhythm for raw <p> only — not <Text data-slot>. Composed
    stacks own spacing with gap; no mb-0! hammer needed on Text trees. */
@@ -164,26 +178,6 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   color: var(--pdpp-concept-ink-faint);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-}
-
-/* ─── Enumerated sections ────────────────────────────────────────────────── */
-.pdpp-section {
-  position: relative;
-  padding-top: calc(var(--spacing-section-gap) / 2);
-  margin-top: calc(var(--spacing-section-gap) / 2);
-}
-.pdpp-section:first-of-type {
-  padding-top: 0;
-  margin-top: 40px;
-}
-/* Kept after the base heading sizes so the mobile step wins source order. */
-@media (max-width: 720px) {
-  [data-surface="concept"] h1 {
-    font-size: 34px;
-  }
-  [data-surface="concept"] h2 {
-    font-size: 24px;
-  }
 }
 
 /* ─── Ruled list ─────────────────────────────────────────────────────────── */
@@ -412,10 +406,8 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
 }
 /* Full-size pills need ~685px combined and wrap to a second row anywhere
    the doc column falls short of that — true in the stacked mobile layout
-   below 720px (doc 655-675px at 700-720px) AND right after the rail
-   collapses to sticky/desktop mode at 721px, which drops the doc column
-   further still, to as little as 436px (owner-reported 2026-08-05: "the
-   CTAs under Get Involved overflow to a second row"; the concept has this
+   below 720px (doc 655-675px at 700-720px) AND below lg where the rail is
+   hidden (full-width doc). The concept has this
    same wrap throughout 700-1023px, so it is not a PR-introduced regression,
    but the owner asked for one row at every width from 700 to 1920
    regardless). Tightened here, not by shrinking the doc column's own
@@ -435,13 +427,6 @@ html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
   .pdpp-channel__arrow {
     display: none;
   }
-}
-
-/* A section that leads a page carries no top rule (the h1 already separates
-   it) but still needs its numeral. */
-.pdpp-section--lead {
-  padding-top: 0;
-  margin-top: 48px;
 }
 
 /* ─── Terminal head (copy button) ────────────────────────────────────────── */

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { PdppCommandBuilder } from "@/components/pdpp-concept/command-tabs.tsx";
 import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
+import { PdppConceptSection } from "@/components/pdpp-concept/concept-section.tsx";
 import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
 import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
 import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
@@ -103,27 +104,20 @@ export default function ReferencePage() {
           title="Self-Host"
         />
 
-        <section className="pdpp-section pdpp-section--lead" id="run">
-          <Text as="h2" sectionIndex="01" size="title">
-            Run it
-          </Text>
+        <PdppConceptSection id="run" sectionIndex="01" title="Run it">
           <PdppCommandBuilder />
-
-          <Text className="mt-3.5!" size="callout">
+          <Text className="mt-pad" size="callout">
             A tool running on this machine reaches the node directly. Anything hosted elsewhere, including web
             assistants, calls from its own servers and needs the public address above.
           </Text>
-        </section>
+        </PdppConceptSection>
 
-        <section className="pdpp-section" id="features">
-          <Text as="h2" sectionIndex="02" size="title">
-            What you get
-          </Text>
+        <PdppConceptSection id="features" sectionIndex="02" title="What you get">
           <ul className="pdpp-features">
             {features.map((feature) => (
               <li key={feature.title}>
                 <Text as="span" color="foreground" size="body" weight="semi">
-                  {feature.title}
+                  {feature.title}.
                 </Text>{" "}
                 <Text as="span" color="foreground" size="body">
                   {feature.body}
@@ -137,12 +131,9 @@ export default function ReferencePage() {
               local collector →
             </a>
           </Text>
-        </section>
+        </PdppConceptSection>
 
-        <section className="pdpp-section" id="configuration">
-          <Text as="h2" sectionIndex="03" size="title">
-            Advanced configuration
-          </Text>
+        <PdppConceptSection id="configuration" sectionIndex="03" title="Advanced configuration">
           <table className="pdpp-impl-table pdpp-config-table">
             <thead>
               <tr>
@@ -169,12 +160,9 @@ export default function ReferencePage() {
               deploy/docker/README.md →
             </a>
           </Text>
-        </section>
+        </PdppConceptSection>
 
-        <section className="pdpp-section" id="implementations">
-          <Text as="h2" sectionIndex="04" size="title">
-            Other implementations
-          </Text>
+        <PdppConceptSection id="implementations" sectionIndex="04" title="Other implementations">
           <table className="pdpp-impl-table">
             <thead>
               <tr>
@@ -220,7 +208,7 @@ export default function ReferencePage() {
               <span aria-hidden="true">→</span>
             </a>
           </p>
-        </section>
+        </PdppConceptSection>
       </PdppConceptDoc>
     </PdppConceptPage>
   );

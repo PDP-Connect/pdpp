@@ -5,6 +5,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
+import { PdppConceptSection } from "@/components/pdpp-concept/concept-section.tsx";
 import { DiscordIcon, GithubIcon } from "@/components/pdpp-concept/icons.tsx";
 import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
 import {
@@ -84,10 +85,7 @@ export default function ParticipatePage() {
 
               /issues/new, not /issues — the owner said "I want to open an
               issue", which is the compose action, not the index. */}
-        <section className="pdpp-section pdpp-section--lead" id="get-involved">
-          <Text as="h2" sectionIndex="01" size="title">
-            Get involved
-          </Text>
+        <PdppConceptSection id="get-involved" sectionIndex="01" title="Get involved">
           <div className="pdpp-channels">
             <a className="pdpp-channel" href={GITHUB_NEW_ISSUE_URL} rel="noopener noreferrer" target="_blank">
               <GithubIcon className="pdpp-icon-github pdpp-channel__icon" />
@@ -115,17 +113,14 @@ export default function ParticipatePage() {
             In an issue, name the part of the specification your question applies to and what the text does not let you
             decide. A maintainer answers there.
           </Text>
-        </section>
+        </PdppConceptSection>
 
         {/* Grounded against the WHATWG Working Mode and the OpenTelemetry OTEP
               README, which document a change as EVIDENCE REQUIREMENTS rather
               than a stage pipeline. The previous version invented a four-stage
               pipeline (proposal / PR / review / consultation) that no comparable
               project runs and this lab cannot honour. */}
-        <section className="pdpp-section" id="how-it-changes">
-          <Text as="h2" sectionIndex="02" size="title">
-            How the specification changes
-          </Text>
+        <PdppConceptSection id="how-it-changes" sectionIndex="02" title="How the specification changes">
           <Text size="body">
             Normative text lives in the root <code>spec-*.md</code> files. Everything else, including the specification
             pages on this site, is a downstream copy.
@@ -161,15 +156,12 @@ export default function ParticipatePage() {
             before v1.0 is pinned. Governance and the license split are recorded in{" "}
             <Link href="/specification#specification-governance">specification governance</Link>.
           </Text>
-        </section>
+        </PdppConceptSection>
 
         {/* Renamed from "Status of this document". The owner spotted that the
               content is PDPP-project-wide status, not the status of this page,
               and the heading was the thing that was wrong. Content kept. */}
-        <section className="pdpp-section" id="status">
-          <Text as="h2" sectionIndex="03" size="title">
-            Where PDPP is today
-          </Text>
+        <PdppConceptSection id="status" sectionIndex="03" title="Where PDPP is today">
           <Text size="body">
             {SPEC_STATUS.version} is a {SPEC_STATUS.label.toLowerCase()}.
           </Text>
@@ -206,7 +198,7 @@ export default function ParticipatePage() {
               </Text>
             </li>
           </ul>
-        </section>
+        </PdppConceptSection>
       </PdppConceptDoc>
     </PdppConceptPage>
   );
