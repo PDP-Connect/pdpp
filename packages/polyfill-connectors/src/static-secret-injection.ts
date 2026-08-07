@@ -26,6 +26,8 @@
 
 /** Credential kinds the per-connection store can hold. Mirrors the store. */
 export type StaticSecretCredentialKind =
+  | "access_token"
+  | "api_key"
   | "app_password"
   | "personal_access_token"
   | "secret_bundle"
@@ -126,6 +128,10 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
  *   - heb/auto-login/heb.ts: HEB_USERNAME / HEB_PASSWORD
  *   - chase/auto-login/chase.ts: CHASE_USERNAME / CHASE_PASSWORD
  *   - usaa/auto-login/usaa.ts: USAA_USERNAME / USAA_PASSWORD
+ *   - steam/index.ts auth.required: STEAM_API_KEY, STEAM_USER_ID
+ *   - jellyfin/index.ts: JELLYFIN_BASE_URL / JELLYFIN_API_KEY (read via process.env fallback)
+ *   - apple_contacts/index.ts: APPLE_ID / APPLE_ID_EMAIL, APPLE_APP_SPECIFIC_PASSWORD
+ *   - groupme/index.ts auth: GROUPME_ACCESS_TOKEN
  *
  * A connector absent from this registry is NOT a static-secret connector for
  * the purposes of injection; callers must not invent env var names for it.
@@ -213,6 +219,31 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
         password: ["USAA_PASSWORD"],
         username: ["USAA_USERNAME"],
       },
+    }),
+    steam: freezeStaticSecretDescriptor({
+      credentialKind: "api_key",
+      secretEnvVars: ["STEAM_API_KEY"],
+      setupFieldEnvVars: {
+        steamid: ["STEAM_USER_ID"],
+      },
+    }),
+    jellyfin: freezeStaticSecretDescriptor({
+      credentialKind: "api_key",
+      secretEnvVars: ["JELLYFIN_API_KEY"],
+      setupFieldEnvVars: {
+        base_url: ["JELLYFIN_BASE_URL"],
+      },
+    }),
+    apple_contacts: freezeStaticSecretDescriptor({
+      credentialKind: "app_password",
+      secretEnvVars: ["APPLE_APP_SPECIFIC_PASSWORD"],
+      setupFieldEnvVars: {
+        account_email: ["APPLE_ID", "APPLE_ID_EMAIL"],
+      },
+    }),
+    groupme: freezeStaticSecretDescriptor({
+      credentialKind: "access_token",
+      secretEnvVars: ["GROUPME_ACCESS_TOKEN"],
     }),
   });
 

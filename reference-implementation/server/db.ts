@@ -562,7 +562,7 @@ CREATE TABLE IF NOT EXISTS connector_instance_tombstones (
 CREATE TABLE IF NOT EXISTS connector_instance_credentials (
   connector_instance_id TEXT PRIMARY KEY,
   owner_subject_id      TEXT NOT NULL,
-  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+  credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
   sealed_secret         TEXT NOT NULL,
   fingerprint           TEXT,
   status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
@@ -4624,6 +4624,80 @@ function migrateConnectorCredentialStatusRejected(raw: SqliteDatabase, opts: Mig
   return result;
 }
 
+// Widen the connector_instance_credentials.credential_kind CHECK to admit
+// 'access_token' and 'api_key' — the shapes needed to reach static-secret
+// connectors (GroupMe, Steam, Jellyfin) whose manifest credential_capture.kind
+// is neither an app password nor a generic PAT. Existing rows are copied
+// byte-for-byte; only the CHECK vocabulary changes.
+function migrateConnectorCredentialKindCheckAccessTokenApiKey(raw: SqliteDatabase, opts: MigrationOptions = {}) {
+  const table = raw
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instance_credentials'`)
+    .get<SqliteMasterRow>();
+  if (!table?.sql || (table.sql.includes("'access_token'") && table.sql.includes("'api_key'"))) {
+    return { rebuilt: false };
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instance_credentials RENAME TO connector_instance_credentials_old_kind_token;
+      DROP INDEX IF EXISTS idx_connector_instance_credentials_owner_status;
+
+      CREATE TABLE connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        sealed_secret         TEXT NOT NULL,
+        fingerprint           TEXT,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
+        captured_at           TEXT NOT NULL,
+        rotated_at            TEXT,
+        revoked_at            TEXT,
+        rejected_at           TEXT,
+        rejection_reason      TEXT,
+        FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO connector_instance_credentials(
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at,
+        rejected_at,
+        rejection_reason
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at,
+        rejected_at,
+        rejection_reason
+      FROM connector_instance_credentials_old_kind_token;
+
+      DROP TABLE connector_instance_credentials_old_kind_token;
+      CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === "function") {
+    opts.onSchemaMigration({ name: "connector_credential_kind_check_access_token_api_key", ...result });
+  }
+  return result;
+}
+
 // Boot-safe spine source schema migration (SQLite). Installs the
 // `source_kind`/`source_id` columns and their index and drops the superseded
 // `provider_id` column. Bounded, idempotent DDL only — it does NOT scan or
@@ -5146,6 +5220,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesStatusDraft(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialStatusRejected(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheckAccessTokenApiKey(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   raw.exec(

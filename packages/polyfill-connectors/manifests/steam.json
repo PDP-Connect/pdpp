@@ -15,7 +15,7 @@
   "setup": {
     "modality": "static_secret",
     "credential_capture": {
-      "kind": "personal_access_token",
+      "kind": "api_key",
       "label": "Steam API key",
       "description": "Use a free Steam Web API key for your Steam account.",
       "submit_label": "Create Steam connection and start first sync",

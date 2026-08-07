@@ -128,6 +128,8 @@ export interface ConnectorInstanceCredentialStore {
  */
 
 export const CREDENTIAL_KINDS = Object.freeze([
+  "access_token",
+  "api_key",
   "app_password",
   "personal_access_token",
   "secret_bundle",

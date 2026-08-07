@@ -769,7 +769,7 @@ export async function bootstrapPostgresSchema({
         connector_instance_id TEXT PRIMARY KEY
           REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE,
         owner_subject_id TEXT NOT NULL,
-        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        credential_kind TEXT NOT NULL CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
         sealed_secret TEXT NOT NULL,
         fingerprint TEXT,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
@@ -877,6 +877,43 @@ export async function bootstrapPostgresSchema({
           ALTER TABLE connector_instance_credentials
             ADD CONSTRAINT connector_instance_credentials_credential_kind_check
             CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password'));
+        END IF;
+      END $$;
+
+      -- Widen again for 'access_token' / 'api_key' — the credential_capture.kind
+      -- shapes declared by GroupMe, Steam, and Jellyfin's manifests.
+      DO $$
+      DECLARE
+        credential_kind_constraint_name TEXT;
+        credential_kind_constraint_def TEXT;
+      BEGIN
+        FOR credential_kind_constraint_name, credential_kind_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%secret_bundle%'
+             AND pg_get_constraintdef(oid) LIKE '%username_password%'
+        LOOP
+          IF credential_kind_constraint_def NOT LIKE '%access_token%'
+             OR credential_kind_constraint_def NOT LIKE '%api_key%' THEN
+            EXECUTE format('ALTER TABLE connector_instance_credentials DROP CONSTRAINT %I', credential_kind_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%credential_kind%'
+             AND pg_get_constraintdef(oid) LIKE '%access_token%'
+             AND pg_get_constraintdef(oid) LIKE '%api_key%'
+        ) THEN
+          ALTER TABLE connector_instance_credentials
+            ADD CONSTRAINT connector_instance_credentials_credential_kind_check
+            CHECK (credential_kind IN ('access_token', 'api_key', 'app_password', 'personal_access_token', 'secret_bundle', 'username_password'));
         END IF;
       END $$;
 
