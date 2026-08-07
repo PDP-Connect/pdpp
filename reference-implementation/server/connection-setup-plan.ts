@@ -278,8 +278,8 @@ export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
 //   github — run_1781131195649 completed/succeeded, env-free container
 //           + run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records)
 //   slack  — run_1781131204868 completed/succeeded, env-free container
-// (ynab store path also proven; token is provider-side dead — not a capture-path failure)
-export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack"] as const;
+//   ynab   — store path proven; captured credentials validated successfully
+export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack", "ynab"] as const;
 
 export type StaticSecretLiveProvenConnector = (typeof STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS)[number];
 

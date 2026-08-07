@@ -248,6 +248,24 @@ test("non-browser static-secret connectors keep the existing single capture path
   assert.equal(sourceSetupStatus(entry).label, "Add account");
 });
 
+test("YNAB static-secret entry shows as actionable with draft-create path", async () => {
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+  const ynab = catalog.find((entry) => entry.connectorKey === "ynab");
+  assert.ok(ynab, "ynab must be present in the catalog");
+  assert.equal(ynab.modality, "api_network");
+  assert.equal(ynab.setupModality, "static_secret");
+  assert.equal(ynab.disposition, "static_secret_connect");
+  assert.equal(ynab.enrollmentKey, undefined);
+  assert.equal(ynab.supportState, "supported");
+  assert.equal(ynab.proofGate, null);
+  assert.equal(sourceSetupStatus(ynab).label, "Add account");
+  assert.equal(sourceSetupAction(ynab)?.href, "/connect/static-secret/ynab");
+  assert.equal(sourceSetupSecondaryAction(ynab), null);
+  assert.equal(sourceSetupAvailability(ynab), "available_now");
+  assert.ok(sourceSetupGuidance(ynab).includes("protected setup form"));
+});
+
 test("no browser-bound or API/network connector is one-click-creatable", async () => {
   const catalog = buildConnectorCatalog(await loadCommittedManifests());
   for (const entry of catalog) {
