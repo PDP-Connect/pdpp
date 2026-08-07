@@ -480,6 +480,16 @@ export interface CollectorRunConfig {
   deviceId: string;
   deviceToken: string;
   /**
+   * Optional observer invoked for every protocol message the connector
+   * child emits (RECORD, STATE, PROGRESS, DONE, etc.), in emission order,
+   * before the message is applied to the durable outbox. Purely a
+   * read-only tap for live progress reporting (e.g. the CLI's terminal
+   * output) — it MUST NOT be relied on for correctness, is never awaited,
+   * and any error it throws is swallowed so a reporting bug cannot break
+   * the run.
+   */
+  onMessage?: (message: EmittedMessage) => void;
+  /**
    * Path to the durable SQLite outbox. The legacy `queuePath` field is
    * accepted as a fallback when this is omitted so existing call sites
    * (CLI, tests) keep working as the implementation cuts over.
@@ -1290,7 +1300,20 @@ async function streamConnectorIntoOutbox(
     coverageByStore.set(entry.store, { status: entry.status, stream: entry.stream });
   };
 
+  const notifyOnMessage = (message: EmittedMessage): void => {
+    if (!input.config.onMessage) {
+      return;
+    }
+    try {
+      input.config.onMessage(message);
+    } catch {
+      // The observer is a read-only reporting tap (e.g. CLI progress
+      // output); a bug in it must never break the run.
+    }
+  };
+
   const handleMessage = (message: EmittedMessage): void => {
+    notifyOnMessage(message);
     if (done !== null) {
       throw new Error(`${input.config.connector.connector_id} emitted ${message.type} after terminal DONE`);
     }
