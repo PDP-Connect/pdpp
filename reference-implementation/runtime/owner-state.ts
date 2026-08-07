@@ -303,22 +303,29 @@ function resolveOwnerStateResolver(
     return "retired";
   }
 
-  // A genuine owner-attention defect always outranks a draft's generic
-  // "setup in progress" reading: a durable interaction request (e.g. an
-  // OTP challenge mid first-sync) is real, specific, actionable evidence
-  // that must never be masked by the coarser draft-lifecycle fallback below
-  // (fr-setup-status-lifecycle-0806 — a Chase draft mid-OTP-wait was
-  // reading `needs_owner`'s own copy as generic "Finish connecting this
-  // source," discarding the exact required action). Checked before the
-  // draft check, mirroring the existing "attention outranks a paused
-  // schedule" precedent immediately below.
-  if (verdict.channel === "attention" && primary && primary.audience === "owner") {
-    return "needs_owner";
-  }
+  // A maintainer defect is specific and actionable even before first ingest.
   if (primary?.audience === "maintainer") {
     return "blocked_maintainer";
   }
 
+  // An idle draft has no more specific owner-facing runtime state yet.
+  // Resolve it before generic setup attention; active drafts continue below
+  // to either their exact owner action or collecting state.
+  if (isDraftAwaitingFirstActivity(evidence)) {
+    return "setup_in_progress";
+  }
+
+  // For an active draft, a genuine owner-attention defect outranks collecting:
+  // a durable interaction request (e.g. an OTP challenge mid first-sync) is
+  // specific, actionable evidence
+  // (fr-setup-status-lifecycle-0806 — a Chase draft mid-OTP-wait was
+  // reading `needs_owner`'s own copy as generic "Finish connecting this
+  // source," discarding the exact required action). Checked before the
+  // generic "collecting" state, mirroring the existing "attention outranks
+  // a paused schedule" precedent below.
+  if (verdict.channel === "attention" && primary && primary.audience === "owner") {
+    return "needs_owner";
+  }
   // Setup in progress: ONLY from explicit lifecycle evidence (the connector-
   // instance row's own `status`), same discipline as `retired` (design gate
   // #2's sibling). A `draft` connection has not completed its first
@@ -327,17 +334,13 @@ function resolveOwnerStateResolver(
   // the remaining resolvers so a draft never reads as `not_measured` or
   // (worse) `healthy`. See fix-pending-connection-discovery design.
   //
-  // Checked AFTER `needs_owner`/`blocked_maintainer` and BEFORE the
-  // `progress.active` check below: a draft run in flight with no interaction
+  // For an active draft, checked AFTER `needs_owner` and BEFORE the
+  // `progress.active` check below: a run in flight with no interaction
   // requested yet must read `collecting` (see the `progress.active` check
   // below), never a generic "needs you" — but a draft run in flight WITH an
   // open interaction request must resolve `needs_owner` (already returned
   // above) with the exact requested action, not `setup_in_progress`'s
   // generic "Finish connecting this source" copy.
-  if (isDraftAwaitingFirstActivity(evidence)) {
-    return "setup_in_progress";
-  }
-
   // Owner-paused schedule: a schedule row exists, was disabled, and the
   // connection has a prior success — and (per the two checks above) no
   // higher-priority owner-attention or maintainer defect is already present.
