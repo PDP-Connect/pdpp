@@ -52,21 +52,21 @@ test("deriveSourceDisplayNameFallback uses manifest name when available", () => 
   assert.equal(
     deriveSourceDisplayNameFallback({
       connectorId: "gmail",
-      name: "Gmail"
+      name: "Gmail",
     }),
     "Gmail source"
   );
   assert.equal(
     deriveSourceDisplayNameFallback({
       connectorId: "amazon",
-      name: "Amazon"
+      name: "Amazon",
     }),
     "Amazon source"
   );
   assert.equal(
     deriveSourceDisplayNameFallback({
       connectorId: "google-maps",
-      name: "Google Maps"
+      name: "Google Maps",
     }),
     "Google Maps source"
   );
@@ -91,7 +91,7 @@ test("deriveSourceDisplayNameFallback prioritizes manifest name over connectorId
   assert.equal(
     deriveSourceDisplayNameFallback({
       connectorId: "google_maps",
-      name: "Google Maps"
+      name: "Google Maps",
     }),
     "Google Maps source"
   );
