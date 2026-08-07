@@ -17,6 +17,7 @@ import {
   formatForwardDisposition,
   formatProjectionFreshness,
   formatSourceOutboxState,
+  formatSupportingCondition,
   summarizeAxisChips,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
@@ -128,7 +129,7 @@ export function ConnectionDiagnostics({
       : null;
   return (
     <Section
-      description="Evidence the dashboard derives from the reference's connection projection, scheduler, and device-exporter diagnostics. Unknown fields render explicitly, never as zeroes or green."
+      description="Derived from the connection projection, scheduler, and device-exporter readings. Anything unmeasured reads as unknown."
       title="Diagnostics"
     >
       {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
@@ -299,7 +300,7 @@ function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: R
     return null;
   }
   return (
-    <DiagnosticsBlock title="Suppressed evidence">
+    <DiagnosticsBlock title="Hidden from the summary">
       <ul
         className="pdpp-caption flex flex-col gap-1 text-muted-foreground"
         data-testid="diagnostics-suppressed-evidence"
@@ -327,10 +328,19 @@ const SOURCE_STATUS_BADGE_TONES = {
   warning: "warning",
 } satisfies Record<RenderedSourceStatus["tone"], StatusVocabulary[string]["tone"]>;
 
-function renderedSourceStatusVocabulary(status: RenderedSourceStatus): StatusVocabulary {
+/**
+ * Badge vocabulary for a rendered status.
+ *
+ * `label` is optional so the detail page can pass the bare pill label.
+ * `deriveRenderedSourceStatus` appends the freshness note to `status.label` for
+ * the Sources list row, where that row is the only surface carrying the fact.
+ * This page already states freshness in the annotations list, so repeating it
+ * inside the badge says the same thing twice.
+ */
+function renderedSourceStatusVocabulary(status: RenderedSourceStatus, label?: string): StatusVocabulary {
   return {
     [status.kind]: {
-      label: status.label,
+      label: label ?? status.label,
       tone: SOURCE_STATUS_BADGE_TONES[status.tone],
     },
   };
@@ -342,9 +352,9 @@ function RenderedVerdictSummary({ verdict }: { verdict: RefRenderedVerdict }) {
   return (
     <div className="mb-3 flex flex-col gap-2 border-border/70 border-y px-3 py-3" data-testid="rendered-verdict">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
-        <span>Verdict:</span>
+        <span>Status:</span>
         <span title={verdict.forward_statement}>
-          <StatusBadge status={status.kind} vocabulary={renderedSourceStatusVocabulary(status)} />
+          <StatusBadge status={status.kind} vocabulary={renderedSourceStatusVocabulary(status, verdict.pill.label)} />
         </span>
         <span aria-hidden>·</span>
         <span data-testid="rendered-verdict-channel">{verdict.channel}</span>
@@ -359,7 +369,7 @@ function RenderedVerdictSummary({ verdict }: { verdict: RefRenderedVerdict }) {
         <ul className="flex flex-col gap-1" data-testid="rendered-verdict-annotations">
           {verdict.annotations.map((annotation) => (
             <li className="pdpp-caption text-muted-foreground" key={`${annotation.kind}:${annotation.text}`}>
-              <span className="text-foreground">{annotation.kind}:</span> {annotation.text}
+              <span className="text-foreground">{annotation.kind.replaceAll("_", " ")}:</span> {annotation.text}
             </li>
           ))}
         </ul>
@@ -445,7 +455,7 @@ function ProjectedStateDiagnostics({
         data-testid="diagnostics-projection-missing"
         title="The reference did not return a connection_health snapshot for this connector."
       >
-        Projection evidence unavailable.
+        Projection unavailable.
       </p>
     );
   }
@@ -471,7 +481,12 @@ function ProjectedStateDiagnostics({
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
   const visibleConditions = (connectionHealth.supporting_condition_ids ?? [])
     .map((id) => conditionById.get(id))
-    .filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+    .filter((condition): condition is NonNullable<typeof condition> => Boolean(condition))
+    // A reference that predates the `not_applicable` status still lists these in
+    // `supporting_condition_ids`; drop them here too so an older backend does not
+    // reintroduce the permanent "Unknown" rows this section exists to remove.
+    .filter((condition) => condition.status !== "not_applicable")
+    .map(formatSupportingCondition);
   const recoverySourceInstances = sourceInstancesForRecovery(sourceInstances, connectionId);
   const recoverySourceId = recoverySourceInstanceId(sourceInstances, connectionId);
 
@@ -485,13 +500,17 @@ function ProjectedStateDiagnostics({
   // (Wave 10a/10b, 2026-07-09 state-model convergence — the server owns the
   // one verdict; the console never re-derives a second one from raw state).
   const renderedStatus = renderedVerdict ? deriveRenderedSourceStatus(renderedVerdict, false) : null;
-  const badge = renderedStatus ? (
-    <StatusBadge status={renderedStatus.kind} vocabulary={renderedSourceStatusVocabulary(renderedStatus)} />
-  ) : (
-    <StatusBadge status="unknown" vocabulary={CONNECTION_HEALTH_VOCABULARY} />
-  );
+  const badge =
+    renderedStatus && renderedVerdict ? (
+      <StatusBadge
+        status={renderedStatus.kind}
+        vocabulary={renderedSourceStatusVocabulary(renderedStatus, renderedVerdict.pill.label)}
+      />
+    ) : (
+      <StatusBadge status="unknown" vocabulary={CONNECTION_HEALTH_VOCABULARY} />
+    );
   // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
-  const badgeTitle = renderedVerdict?.forward_statement ?? "Verdict unavailable.";
+  const badgeTitle = renderedVerdict?.forward_statement ?? "Status unavailable.";
   return (
     <div className="flex flex-col gap-2">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">
@@ -564,9 +583,9 @@ function ProjectedStateDiagnostics({
       {visibleConditions.length ? (
         <ul className="pdpp-caption flex flex-col gap-1 text-muted-foreground" data-testid="diagnostics-conditions">
           {visibleConditions.map((condition) => (
-            <li key={condition.id} title={condition.reason}>
-              {condition.type}: <span className="text-foreground">{condition.status}</span>
-              {condition.status === "false" ? (
+            <li data-condition-status={condition.status} key={condition.id} title={condition.title}>
+              {condition.label}: <span className="text-foreground">{condition.statusLabel}</span>
+              {condition.message ? (
                 <>
                   {" · "}
                   {condition.message}

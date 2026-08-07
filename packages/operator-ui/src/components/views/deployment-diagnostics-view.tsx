@@ -5,6 +5,7 @@ import { formatConnectorKeyForDisplay } from "@pdpp/display";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
+import { buildSourceStorageModel, type SourceStorageInput } from "../../lib/source-storage.ts";
 import { buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";
@@ -22,6 +23,17 @@ interface DeploymentDiagnosticsViewProps {
   // labeled comparison. Optional: when omitted the comparison line is hidden
   // rather than guessed. Never combined with the physical size.
   retainedBytes?: number | null;
+  // Connector-summary rows (`GET /_ref/connectors`) used only for the
+  // per-source storage table. Optional: when omitted — or when the list read
+  // fails — the table is hidden rather than rendered empty, exactly as the
+  // physical footprint hides rather than guessing. These per-source totals are
+  // LOGICAL and are never summed with, or compared against, the physical
+  // on-disk size in the same section.
+  sources?: readonly SourceStorageInput[];
+  // True when `sources` is one bounded page and the server reported more
+  // beyond it. The table then says so explicitly rather than presenting a
+  // truncated list as the whole fleet.
+  sourcesTruncated?: boolean;
   title?: string;
 }
 
@@ -77,6 +89,8 @@ export function DeploymentDiagnosticsView({
   description,
   report,
   retainedBytes,
+  sources,
+  sourcesTruncated,
   title = "Deployment",
 }: DeploymentDiagnosticsViewProps) {
   return (
@@ -103,6 +117,7 @@ export function DeploymentDiagnosticsView({
           indexKind={report.semantic.index.kind}
           retainedBytes={retainedBytes}
         />
+        <SourceStorageSection sources={sources} truncated={sourcesTruncated} />
       </div>
       <div className="scroll-mt-16" id="diagnostics">
         <SectionGroupDivider label="Diagnostics" />
@@ -507,6 +522,77 @@ function DatabaseRelations({ relations }: { relations: ReturnType<typeof buildSt
         </tbody>
       </table>
     </div>
+  );
+}
+
+// Per-source retained payload. The Database section above answers "how big is
+// the database" and "which tables"; this answers "which SOURCE" — the question
+// an operator actually asks before pruning. Deliberately a separate Section
+// from the physical footprint so the two measurements are never read as one:
+// these totals are logical and do not reconcile against pg_database_size.
+function SourceStorageSection({
+  sources,
+  truncated,
+}: {
+  sources?: readonly SourceStorageInput[];
+  truncated?: boolean;
+}) {
+  if (!sources || sources.length === 0) {
+    return null;
+  }
+  const model = buildSourceStorageModel(sources);
+  if (model.rows.length === 0) {
+    return null;
+  }
+  // One bounded page may not hold every configured source. When the server
+  // reported more, the title and description say so — a truncated list must
+  // never read as the whole fleet.
+  const title = truncated ? `Retained payload by source (first ${model.rows.length})` : "Retained payload by source";
+  const description = truncated
+    ? `${model.logicalNote} This is the first page of ${model.rows.length} sources, ordered by retained payload within that page — the deployment holds more sources than are listed here. Open Sources for the full list.`
+    : model.logicalNote;
+  return (
+    <Section description={description} title={title}>
+      <table className="w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Source</th>
+            <th className="px-2 py-2 text-right font-medium">Records</th>
+            <th className="px-2 py-2 text-right font-medium">Retained (logical)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {model.rows.map((row) => (
+            <tr className="border-border/60 border-t align-top" key={row.connectionId}>
+              <td className="px-2 py-1.5">
+                <span className="text-foreground">{row.label}</span>
+                {row.breakdownLabel ? (
+                  <span className="block text-muted-foreground/70 text-xs" data-testid="retained-bytes-breakdown">
+                    {row.breakdownLabel}
+                  </span>
+                ) : null}
+              </td>
+              <td
+                className={`px-2 py-1.5 text-right tabular-nums ${row.recordsMeasured ? "" : "text-muted-foreground"}`}
+              >
+                {row.recordsLabel}
+              </td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${row.sizeMeasured ? "" : "text-muted-foreground"}`}>
+                {row.sizeLabel}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {model.someMeasured ? null : (
+        <Callout
+          className="mt-4"
+          description="No source reported a retained-payload size. Sizes appear once the retained-size projection has been observed for each connection."
+          surface="neutral"
+          title="Per-source sizes unmeasured"
+        />
+      )}
+    </Section>
   );
 }
 

@@ -527,6 +527,81 @@ a.rr-s-item {
   text-decoration: underline;
 }
 
+/* The passport serial's jump-off. Sits beside CopyMono so the connection id
+   both copies and navigates; kept quiet (muted, no underline) so the id itself
+   still reads as the primary content of the line. */
+.rr-s-serial-open {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  text-decoration: none;
+}
+.rr-s-serial-open:hover,
+.rr-s-serial-open:focus-visible {
+  color: var(--primary);
+}
+.rr-s-serial-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ── Desktop row: select (row body) + Open escalation ──
+   The row body button SELECTS the source into the right-hand passport; the
+   sibling "Open →" link NAVIGATES to the connection detail page. Two distinct
+   outcomes on one line, so drilling in no longer depends on viewport width.
+   Mirrors the Explore feed's rr-x-row-wrap--desktop / rr-x-row-open pattern.
+   The link stays keyboard-reachable at all times (never display:none) but is
+   visually quiet until the row is hovered, focused-within, or selected, so it
+   adds no per-row noise. */
+.rr-s-item-wrap--desktop {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+}
+.rr-s-item-wrap--desktop > .rr-s-item {
+  flex: 1;
+  min-width: 0;
+}
+.rr-s-item-open {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  align-self: center;
+  padding: 2px 9px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  opacity: 0;
+  transition:
+    opacity var(--duration-state) var(--ease-standard),
+    color var(--duration-state) var(--ease-standard),
+    border-color var(--duration-state) var(--ease-standard);
+}
+.rr-s-item-wrap--desktop:hover .rr-s-item-open,
+.rr-s-item-wrap--desktop:focus-within .rr-s-item-open,
+.rr-s-item-wrap--desktop:has(.rr-s-item.is-on) .rr-s-item-open {
+  opacity: 1;
+}
+.rr-s-item-open:hover,
+.rr-s-item-open:focus-visible {
+  color: var(--primary);
+  border-color: var(--primary);
+  opacity: 1;
+}
+.rr-s-item-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 /* ── Responsive: mobile push navigation ──
    These MUST come after all base rules so they win in the cascade.
    At ≤800px: hide the in-place detail panel and the desktop button affordance;
@@ -541,6 +616,12 @@ a.rr-s-item {
     display: none;
   }
   .rr-s-item.rr-s-item--desktop {
+    display: none;
+  }
+  /* Hide the whole desktop wrapper, not just the row button inside it —
+     otherwise the flex wrapper and its "Open →" link would still render as a
+     stray strip beneath each mobile row. */
+  .rr-s-item-wrap--desktop {
     display: none;
   }
   /* On narrow screens let the meta line wrap rather than clip mid-word.

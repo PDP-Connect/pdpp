@@ -506,6 +506,94 @@ export function formatDominantCondition(
   };
 }
 
+/**
+ * Owner-facing labels for the `ConnectionConditionType` enum. The reference
+ * emits CamelCase enum keys (`BacklogClear`); rendering those verbatim leaked an
+ * internal identifier into the diagnostics list. Unlisted types fall back to a
+ * CamelCase split so a new reference condition degrades to "Some New Check"
+ * rather than disappearing or throwing.
+ */
+const CONDITION_TYPE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  AttentionClear: "Attention clear",
+  BacklogClear: "Backlog clear",
+  CollectionSucceeded: "Collection succeeded",
+  CredentialContinuity: "Credential continuity",
+  CredentialsValid: "Credentials valid",
+  Fresh: "Fresh",
+  LocalExporterAvailable: "Local exporter available",
+  ProjectionReliable: "Projection reliable",
+  RemoteSurfaceAvailable: "Remote surface available",
+  RetryPolicyClear: "Retry policy clear",
+  RuntimeAvailable: "Runtime available",
+  ScheduleEligible: "Schedule eligible",
+  SourceCoverageComplete: "Source coverage complete",
+});
+
+/** Owner-facing labels for the condition status enum. */
+const CONDITION_STATUS_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  false: "No",
+  not_applicable: "Not applicable",
+  true: "Yes",
+  unknown: "Unknown",
+});
+
+export function conditionTypeLabel(type: string): string {
+  const known = CONDITION_TYPE_LABELS[type];
+  if (known) {
+    return known;
+  }
+  // Split CamelCase into words, then sentence-case the result.
+  const split = type.replace(/([a-z0-9])([A-Z])/g, "$1 $2").trim();
+  if (split.length === 0) {
+    return type;
+  }
+  return `${split.charAt(0).toUpperCase()}${split.slice(1).toLowerCase()}`;
+}
+
+export function conditionStatusLabel(status: string): string {
+  return CONDITION_STATUS_LABELS[status] ?? humanizeReason(status);
+}
+
+export interface SupportingConditionSummary {
+  id: string;
+  label: string;
+  message: string;
+  status: string;
+  statusLabel: string;
+  title: string;
+}
+
+/**
+ * View model for one row of the diagnostics supporting-condition list.
+ *
+ * Three prior defects are fixed here rather than in JSX: the raw enum key is
+ * mapped to a label, the raw snake_case reason is humanized before it reaches
+ * the tooltip, and `message` is carried for EVERY status. Previously `message`
+ * rendered only when the status was `false`, which dropped the one
+ * human-readable field exactly on the healthy connections where the bare
+ * "Unknown" was least self-explanatory.
+ */
+export function formatSupportingCondition(condition: {
+  id: string;
+  message: string;
+  reason: string;
+  remediation?: { label?: string | null } | null;
+  status: string;
+  type: string;
+}): SupportingConditionSummary {
+  const remediation = condition.remediation?.label ? ` ${condition.remediation.label}.` : "";
+  const message = condition.message.trim();
+  const title = `${humanizeReason(condition.reason)}.${message ? ` ${message}` : ""}${remediation}`.trim();
+  return {
+    id: condition.id,
+    label: conditionTypeLabel(condition.type),
+    message,
+    status: condition.status,
+    statusLabel: conditionStatusLabel(condition.status),
+    title,
+  };
+}
+
 function dominantCondition(snapshot: RefConnectionHealthSnapshot | null | undefined) {
   const conditions = snapshot?.conditions ?? [];
   const dominantId = snapshot?.dominant_condition_id ?? null;
@@ -550,7 +638,7 @@ export function formatProjectionFreshness(
   };
 }
 
-function humanizeReason(reason: string): string {
+export function humanizeReason(reason: string): string {
   const cleaned = reason.trim();
   if (cleaned.length === 0) {
     return reason;

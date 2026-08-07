@@ -953,6 +953,126 @@
   padding: 18px;
   border: 1px solid var(--border);
 }
+
+/* Recent syncs and Streams by source are peer sections of the page, so they
+   share one heading treatment. It is deliberately heavier than the attention
+   sections' uppercase eyebrow: those are triage groups nested under the band,
+   these are the page's two top-level regions. */
+.rr-sync__recent,
+.rr-sync__streams {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rr-sync__section-head {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.rr-sync__section-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.rr-sync__fix-section-count {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0 5px;
+  margin-left: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  text-align: center;
+  background: var(--muted);
+  border: 1px solid var(--border);
+}
+
+/* One recent run per row. The whole row is the link, so the hover affordance
+   sits on the row rather than on a trailing chevron. */
+.rr-recent-row {
+  align-items: center;
+  color: inherit;
+  text-decoration: none;
+}
+.rr-recent-row:hover {
+  background: var(--muted);
+}
+.rr-recent-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.rr-recent-row__name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rr-recent-row__connection {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rr-recent-row__run {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.rr-recent-row__outcome {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.rr-recent-row__duration {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+.rr-recent-row__records {
+  font-variant-numeric: tabular-nums;
+}
+.rr-recent-row__empty {
+  color: var(--muted-foreground);
+}
+
+/* The outcome chip is the one place this list spends state colour. `unknown`
+   stays neutral on purpose — an unclassified run must not read as a success. */
+.rr-recent-row__chip {
+  padding: 1px 7px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  background: var(--muted);
+  border: 1px solid var(--border-strong);
+}
+.rr-recent-row__chip[data-outcome="ok"] {
+  color: var(--success);
+  background: var(--success-tint);
+  border-color: var(--success);
+}
+.rr-recent-row__chip[data-outcome="partial"] {
+  color: var(--warning);
+  background: var(--warning-tint);
+  border-color: var(--warning);
+}
+.rr-recent-row__chip[data-outcome="failed"] {
+  color: var(--destructive);
+  background: var(--destructive-tint);
+  border-color: var(--destructive);
+}
+.rr-recent-row__chip[data-outcome="running"] {
+  color: var(--foreground);
+  border-color: var(--border-strong);
+}
 .rr-sync__overflow {
   max-width: 78ch;
   margin: -6px 0 0;

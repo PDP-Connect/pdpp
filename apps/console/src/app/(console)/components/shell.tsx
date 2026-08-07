@@ -118,7 +118,10 @@ export function DashboardShell({
 
 function DesktopSidebar({ active, mode, routes }: { active: DashboardSection; mode: ShellMode; routes: Routes }) {
   return (
-    <aside className="sticky top-0 hidden h-screen flex-col justify-between py-6 pr-4 pl-6 md:flex">
+    // The sidebar's masthead matches the Topbar's h-12 + border-b exactly so the
+    // two rules meet as one continuous line across the sidebar/content seam.
+    // Vertical padding therefore starts below the masthead, not at the top.
+    <aside className="sticky top-0 hidden h-screen flex-col justify-between pb-6 md:flex">
       <SidebarContent active={active} mode={mode} routes={routes} />
     </aside>
   );
@@ -130,13 +133,18 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
   return (
     <div className="flex h-full flex-col justify-between">
       <div>
-        <Link className="pdpp-body group inline-flex items-center gap-2 font-semibold" href={routes.section.overview}>
-          <PdppLogo className="h-5 w-5" />
-          <span className="tracking-tight">pdpp</span>
-          <span className="pdpp-caption font-normal text-muted-foreground">{tagline}</span>
-        </Link>
+        {/* h-12 + border-b mirrors Topbar so the two rules read as one line.
+            The border is drawn only on the desktop rail (md+); the mobile
+            drawer has no Topbar beside it to align with. */}
+        <div className="flex h-12 items-center border-border/80 md:border-b md:pr-4 md:pl-6">
+          <Link className="pdpp-body group inline-flex items-center gap-2 font-semibold" href={routes.section.overview}>
+            <PdppLogo className="h-5 w-5" />
+            <span className="tracking-tight">pdpp</span>
+            <span className="pdpp-caption font-normal text-muted-foreground">{tagline}</span>
+          </Link>
+        </div>
 
-        <nav aria-label="Primary" className="mt-6 flex flex-col gap-0.5">
+        <nav aria-label="Primary" className="mt-6 flex flex-col gap-0.5 md:pr-4 md:pl-6">
           {nav.map((item) => {
             const isActive = item.match(active);
             return (
@@ -158,12 +166,14 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
           })}
         </nav>
 
-        {active === "explore" || active === "search" ? <ExploreSubnav active={active} routes={routes} /> : null}
-        {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
-        {active === "deployment" && mode === "live" ? <DeploymentSubnav routes={routes} /> : null}
+        <div className="md:pr-4 md:pl-6">
+          {active === "explore" || active === "search" ? <ExploreSubnav active={active} routes={routes} /> : null}
+          {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
+          {active === "deployment" && mode === "live" ? <DeploymentSubnav routes={routes} /> : null}
+        </div>
       </div>
 
-      {mode === "mock-owner" ? <SandboxFooter /> : <EnvFooter />}
+      <div className="md:pr-4 md:pl-6">{mode === "mock-owner" ? <SandboxFooter /> : <EnvFooter />}</div>
     </div>
   );
 }

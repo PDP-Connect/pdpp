@@ -304,13 +304,12 @@ export default async function StreamPage({
               This stream is not available for <code className="font-mono">{connectionId}</code>.
             </p>
             <p className="pdpp-caption mt-2 text-muted-foreground">
-              The connector no longer advertises a stream named <code className="font-mono">{streamName}</code>. It may
-              have been renamed or retired in a newer manifest, or the stream list is showing a stale entry that has not
-              yet been reconciled. Return to{" "}
+              The connector's current manifest no longer lists <code className="font-mono">{streamName}</code> — it was
+              likely renamed or retired, or this link is a stale entry. Open{" "}
               <Link className="underline underline-offset-2" href={`/sources/${encodeURIComponent(connectionId)}`}>
                 the connection page
               </Link>{" "}
-              to see currently available streams.
+              for the streams available now.
             </p>
           </div>
         </RecordroomShellWithPalette>
@@ -618,7 +617,7 @@ function StreamEvidenceSection({
   const latestStreamRun = latestStreamRunEvidence(streamCollectionFacts, latestSourceRun);
   return (
     <Section
-      description="This is a paginated saved-record view for one stream, not a bounded sample. It also shows the latest stream-level collection fact when the runtime reported one."
+      description="Every saved record in this stream, paginated, plus the latest stream-level collection fact the runtime reported."
       title="Stream evidence"
     >
       <DataList ariaLabel="Stream evidence">
@@ -645,12 +644,12 @@ function StreamEvidenceSection({
           value={latestStreamRun.value}
         />
         <StreamEvidenceRow
-          detail={filtered ? exactFilterEvidenceLabel(filters) : "No exact filters are applied."}
+          detail={filtered ? exactFilterEvidenceLabel(filters) : "Showing every record in this stream."}
           label="Filters"
           value={filtered ? `${Object.keys(filters).length.toLocaleString()} exact` : "none"}
         />
         <StreamEvidenceRow
-          detail="Filters Syncs to this exact source, not every source of the same connector type."
+          detail="Scoped to this exact source, not every source of the same connector type."
           href={syncsHref}
           label="Run history"
           value="Open source-scoped Syncs"
@@ -668,8 +667,8 @@ function latestStreamRunEvidence(
   if (!facts) {
     return {
       detail: latestRun
-        ? "The latest source run did not include stream-level collection facts for this stream."
-        : "No attributed source run has reached this dashboard yet.",
+        ? "The latest source run reported facts for other streams only."
+        : "This dashboard is still waiting on its first attributed source run.",
       href,
       value: latestRun ? "stream report unavailable" : "not seen yet",
     };
@@ -721,9 +720,9 @@ function StreamEvidenceRow({
 
 function streamTotalEvidenceLabel(totalHeld: number | null): string {
   if (totalHeld === null) {
-    return "The retained total is not available yet; the page still shows the current saved records it received.";
+    return "The retained total is still unknown; the records below are what this page received.";
   }
-  return "Basis: retained records for this stream from stream metadata or the source summary.";
+  return "Retained records for this stream, from stream metadata or the source summary.";
 }
 
 function exactFilterEvidenceLabel(filters: Record<string, string>): string {

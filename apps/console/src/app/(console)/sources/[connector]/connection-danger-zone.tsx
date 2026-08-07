@@ -38,7 +38,7 @@ interface Props {
 export function ConnectionDangerZone({ connectionId, error, message }: Props) {
   return (
     <Section
-      description="Revoke stops future collection but keeps this connection's records. Delete erases this connection's records and removes it. These actions affect only this connection, never another."
+      description="These actions affect only this connection. Sibling connections of the same connector type are untouched."
       id="danger-zone"
       title="Danger zone"
     >
@@ -73,8 +73,8 @@ function RevokeForm({ connectionId }: { connectionId: string }) {
     <div className="flex flex-col gap-2">
       <h3 className="pdpp-body font-medium text-foreground">Revoke</h3>
       <p className="pdpp-caption text-muted-foreground">
-        Stops future collection for this connection. Already-collected records, grants, and audit history are retained —
-        revoke does not erase anything. Reversible only by an explicit owner re-initiate.
+        Stops future collection. Records, grants, and audit history are retained — revoke does not erase anything. To
+        resume, reconnect this source.
       </p>
       <form action={revokeConnectionAction} className="mt-1 flex flex-wrap items-center gap-3">
         <input name="connection_id" type="hidden" value={connectionId} />
@@ -99,9 +99,9 @@ function DeleteForm({ connectionId }: { connectionId: string }) {
     <div className="flex flex-col gap-2">
       <h3 className="pdpp-body font-medium text-destructive">Delete</h3>
       <p className="pdpp-caption text-muted-foreground">
-        Erases this connection's records and removes it. This is not revoke — it erases the past, not just the future,
-        and it cannot be undone. It may be refused if a run is in flight, or for a default-account connection (revoke
-        that instead). Sibling connections of the same connector type are untouched.
+        Permanently erases this connection's records, including everything already collected, and removes the
+        connection. This cannot be undone. Delete is refused while a run is in flight, and for a default-account
+        connection — revoke that instead.
       </p>
       <form action={deleteConnectionAction} className="mt-1 flex flex-col gap-2">
         <input name="connection_id" type="hidden" value={connectionId} />

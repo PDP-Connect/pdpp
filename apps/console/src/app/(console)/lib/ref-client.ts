@@ -1139,7 +1139,13 @@ export interface RefConnectionHealthCondition {
   remediation: RefConnectionConditionRemediation | null;
   sensitivity: "owner" | "public" | "secret_redacted";
   severity: "blocked" | "error" | "info" | "warning";
-  status: "false" | "true" | "unknown";
+  /**
+   * `not_applicable` means the condition cannot apply to this connection at all
+   * (no local-device binding, no managed runtime surface, no schedule policy) —
+   * a settled answer, not a pending one. The reference filters these out of
+   * `supporting_condition_ids`, so they arrive in `conditions` but are not shown.
+   */
+  status: "false" | "not_applicable" | "true" | "unknown";
   type: string;
 }
 

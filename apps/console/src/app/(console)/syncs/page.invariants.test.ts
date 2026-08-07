@@ -32,10 +32,20 @@ const REVIEW_CARDS_COPY_RE = /Review the cards below\./;
 const OLD_ALL_CLEAR_COPY_RE = /band\.allClear \? `Nothing needs you right now\. \$\{RESET_NOTE\}` : RESET_NOTE/;
 const FAILURE_SECTION_ORDER_RE =
   /const FAILURE_SECTION_ORDER = \["needsOwner", "review", "systemIssue", "working", "notMeasured", "other"\]/;
-const FAILURE_CARD_SECTION_RE = /function FailureCardSection\(/;
-const FAILURE_CARD_SECTIONS_CALL_RE = /failureCardSections\(model\.failureCards\)/;
+const FAILURE_CARD_SECTION_RE = /function AttentionSection\(/;
+const FAILURE_CARD_SECTIONS_CALL_RE = /attentionSections\(model\)/;
+// Draft/pending-setup cards are the same KIND of owner work as a
+// verdict-derived needs-you card, so they fold into the ONE `needsOwner`
+// section. A second top-level section rendering pending-setup cards under the
+// same heading is the duplicate-group defect this guards against.
+const PENDING_SETUP_FOLDED_RE = /section === "needsOwner" \? \[\.\.\.model\.pendingSetupCards\] : \[\]/;
+const STANDALONE_PENDING_SECTION_RE =
+  /model\.pendingSetupCards\.length > 0 \? \(\s*<section className="rr-sync__fix-section"/;
 const FAILURE_CARD_SOURCE_WORK_RE = /card\.work\?\.group \?\? "other"[\s\S]{0,80}data-source-work=/;
 const SYNCS_OVERVIEW_LIST_RUNS_RE = /listRuns\(\{\s*limit:\s*SYNCS_OVERVIEW_RUN_LIMIT\s*\}\)/;
+const RECENT_LIST_RENDER_RE = /<RecentSyncsSection entries=\{model\.recentSyncs\} \/>/;
+const RECENT_ROW_HREF_RE = /href=\{entry\.href\}/;
+const RECENT_ROW_PREFETCH_FALSE_RE = /href=\{entry\.href\}\s+prefetch=\{false\}/;
 
 test("run list peek query opens the full run detail route instead of inline details", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -91,6 +101,25 @@ test("syncs failure cards render through source-work sections", async () => {
   assert.match(src, FAILURE_CARD_SECTION_RE);
   assert.match(src, FAILURE_CARD_SECTIONS_CALL_RE);
   assert.match(src, FAILURE_CARD_SOURCE_WORK_RE);
+});
+
+test("pending-setup cards fold into the one needs-you section, never a second one", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(src, PENDING_SETUP_FOLDED_RE, "draft connections must join the needsOwner section");
+  assert.doesNotMatch(
+    src,
+    STANDALONE_PENDING_SECTION_RE,
+    "a standalone pending-setup section duplicates the needs-you heading"
+  );
+});
+
+test("recent syncs list drills into the run detail route", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(src, RECENT_LIST_RENDER_RE, "syncs must render the recent-runs list");
+  assert.match(src, RECENT_ROW_HREF_RE, "each recent sync row must link to its run detail route");
+  assert.match(src, RECENT_ROW_PREFETCH_FALSE_RE, "recent sync rows must not prefetch dynamic run routes");
 });
 
 test("syncs first-paint run feed is bounded to the overview budget", async () => {

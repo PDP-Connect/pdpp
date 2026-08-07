@@ -20,6 +20,8 @@ import {
   describeCadence,
   describeDelta,
   describeDuration,
+  describeRecentSyncOutcome,
+  recentSyncOutcome,
 } from "./syncs-model.ts";
 
 // The false-prompt the source-pressure guard must never emit on a throttled
@@ -1619,4 +1621,98 @@ test("the health band counts only the failure cards actually rendered, not advis
     model.failureCards.length,
     "band needs-review count must equal the number of rendered failure cards"
   );
+});
+
+// ─── Recent syncs: the drillable run list ─────────────────────────────────────
+
+test("recent syncs list every run newest-first and links each to its run detail route", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a", display_name: "Gmail — personal" })],
+    runs: [
+      run({ connection_id: "cin_a", last_at: "2026-06-13T04:00:06Z", run_id: "run_old" }),
+      run({ connection_id: "cin_a", last_at: "2026-06-13T06:00:06Z", run_id: "run_new" }),
+    ],
+  });
+
+  assert.deepEqual(
+    model.recentSyncs.map((entry) => entry.runId),
+    ["run_new", "run_old"]
+  );
+  assert.deepEqual(
+    model.recentSyncs.map((entry) => entry.href),
+    ["/syncs/run_new", "/syncs/run_old"]
+  );
+  assert.equal(model.recentSyncs[0]?.connectionName, "Gmail — personal");
+});
+
+test("a recent sync for a connection outside the current page keeps the connector key, never an invented name", () => {
+  const model = buildSyncsViewModel({
+    connectors: [],
+    runs: [run({ connection_id: "cin_absent", connector_id: "gmail", run_id: "run_x" })],
+  });
+
+  const [entry] = model.recentSyncs;
+  assert.equal(entry?.connectionName, "gmail");
+  assert.equal(entry?.connectionId, "cin_absent");
+});
+
+test("recentSyncOutcome keeps succeeded_with_gaps distinct from a clean success", () => {
+  assert.equal(recentSyncOutcome("succeeded"), "ok");
+  assert.equal(recentSyncOutcome("succeeded_with_gaps"), "partial");
+  assert.equal(recentSyncOutcome("failed"), "failed");
+  assert.equal(recentSyncOutcome("cancelled"), "failed");
+  assert.equal(recentSyncOutcome("in_progress"), "running");
+});
+
+test("an unrecognised run status reads as unknown, never as a success", () => {
+  assert.equal(recentSyncOutcome("some_new_backend_status"), "unknown");
+  assert.equal(recentSyncOutcome("deferred"), "unknown");
+  assert.equal(describeRecentSyncOutcome("unknown"), "Unclassified");
+});
+
+test("a run reports its live flag from terminal status, and duration only when both bounds parse", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: [
+      run({
+        connection_id: "cin_a",
+        first_at: "2026-06-13T04:00:00Z",
+        last_at: "2026-06-13T04:00:06Z",
+        run_id: "run_done",
+        status: "succeeded",
+      }),
+      run({
+        connection_id: "cin_a",
+        first_at: "2026-06-13T05:00:00Z",
+        last_at: "2026-06-13T05:00:00Z",
+        run_id: "run_live",
+        status: "in_progress",
+      }),
+    ],
+  });
+
+  const done = model.recentSyncs.find((entry) => entry.runId === "run_done");
+  const live = model.recentSyncs.find((entry) => entry.runId === "run_live");
+  assert.equal(done?.live, false);
+  assert.equal(done?.duration, "6 s");
+  assert.equal(live?.live, true);
+  assert.equal(live?.outcome, "running");
+});
+
+test("recent syncs dedupe repeated run ids from the feed", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: [run({ connection_id: "cin_a", run_id: "run_dupe" }), run({ connection_id: "cin_a", run_id: "run_dupe" })],
+  });
+
+  assert.equal(model.recentSyncs.length, 1);
+});
+
+test("recent syncs never fabricate a record count when the feed omits one", () => {
+  const model = buildSyncsViewModel({
+    connectors: [connector({ connection_id: "cin_a" })],
+    runs: [run({ connection_id: "cin_a", event_count: Number.NaN, run_id: "run_x" })],
+  });
+
+  assert.equal(model.recentSyncs[0]?.eventCount, null);
 });

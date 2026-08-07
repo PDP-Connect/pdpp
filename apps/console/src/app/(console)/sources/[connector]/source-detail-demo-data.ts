@@ -272,6 +272,7 @@ export function buildRecoveryDemoModel(): ConnectorPageModel {
     overview,
     providerOrigin: "https://pdpp.example.test",
     recentRuns: [run],
+    retainedStorage: { breakdown: "current 4.50 MB · history 1.20 MB", total: "5.70 MB" },
     schedule: null,
     scheduleError: null,
     sourceBindingKind: null,

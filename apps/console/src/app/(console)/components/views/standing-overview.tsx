@@ -92,8 +92,13 @@ function BearerBlock({
                 <span className="rr-bearer__how">
                   {b.how} · {b.issuedLabel} <IcTimestamp value={b.issuedAt} />
                 </span>
-                <a className="rr-rel__revoke" href={b.revokeHref}>
-                  revoke
+                {/* NAV, not a mutation. This opens the owner-tokens page; the
+                    actual revoke ceremony lives there. It previously read
+                    "revoke" in a `rr-rel__revoke` slot — destructive wording and
+                    destructive chrome on a link that only navigates. The name
+                    now matches what the click does. */}
+                <a className="rr-rel__revoke rr-rel__manage" href={b.revokeHref}>
+                  Manage →
                 </a>
               </div>
             );
@@ -160,7 +165,10 @@ function RelationshipsBlock({
                 {r.reads} · <Endorse status={r.status} />
               </span>
               <span className="rr-rel__meta">{r.terms}</span>
-              <a className="rr-rel__revoke" href={r.actionHref}>
+              {/* NAV, not a mutation: opens the grant (or the filtered grants
+                  list when the group has no single subject). The label is
+                  supplied by the view-model and already carries the arrow. */}
+              <a className="rr-rel__revoke rr-rel__manage" href={r.actionHref}>
                 {r.actionLabel}
               </a>
             </div>

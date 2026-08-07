@@ -30,6 +30,7 @@ import {
   formatOutboxAxis,
   formatProjectionFreshness,
   formatSourceOutboxState,
+  formatSupportingCondition,
   outboxAxisIsApplicable,
   resolveRecordCountDisplay,
   summarizeAxisChips,
@@ -2253,6 +2254,67 @@ test("formatCollectionRateReadout fails closed for partial projection payloads",
     null,
     "invalid core rate → honest unknown"
   );
+});
+
+test("formatSupportingCondition labels the type instead of leaking the enum key", () => {
+  const view = formatSupportingCondition({
+    id: "BacklogClear:outbox_unknown",
+    message: "No trusted local-device outbox evidence is available.",
+    reason: "outbox_unknown",
+    status: "unknown",
+    type: "BacklogClear",
+  });
+
+  assert.equal(view.label, "Backlog clear", "the raw CamelCase enum key must never reach the owner");
+  assert.equal(view.statusLabel, "Unknown", "the bare lowercase status is capitalized");
+  assert.match(view.title, /outbox unknown/, "the snake_case reason is humanized before the tooltip");
+  assert.doesNotMatch(view.title, /outbox_unknown/);
+});
+
+test("formatSupportingCondition keeps the message on every status, not just false", () => {
+  // The old renderer dropped `message` unless the status was `false`, which hid
+  // the one human-readable field exactly on the healthy connections where a bare
+  // "Unknown" explained nothing.
+  for (const status of ["true", "false", "unknown", "not_applicable"]) {
+    const view = formatSupportingCondition({
+      id: `RuntimeAvailable:runtime_not_managed:${status}`,
+      message: "No managed runtime surface is required for this connection.",
+      reason: "runtime_not_managed",
+      status,
+      type: "RuntimeAvailable",
+    });
+    assert.match(view.message, /No managed runtime surface is required/, `${status} must carry its message`);
+    assert.match(view.title, /No managed runtime surface is required/);
+  }
+});
+
+test("formatSupportingCondition folds the remediation label into the tooltip", () => {
+  const view = formatSupportingCondition({
+    id: "LocalExporterAvailable:local_exporter_stalled",
+    message: "The local collector is not making progress.",
+    reason: "local_exporter_stalled",
+    remediation: { label: "Check the local collector" },
+    status: "false",
+    type: "LocalExporterAvailable",
+  });
+
+  assert.equal(view.statusLabel, "No");
+  assert.match(view.title, /Check the local collector\.$/);
+});
+
+test("formatSupportingCondition degrades gracefully for an unknown condition type", () => {
+  // A newer reference may add a condition type this console build has no label
+  // for; it must still read as words rather than vanishing or throwing.
+  const view = formatSupportingCondition({
+    id: "SomeNewCheck:whatever",
+    message: "",
+    reason: "whatever",
+    status: "unknown",
+    type: "SomeNewCheck",
+  });
+
+  assert.equal(view.label, "Some new check");
+  assert.equal(view.message, "", "an empty message stays empty rather than rendering a stray separator");
 });
 
 // The single-voice "handling it" badge synthesizer (`synthesizeConnectionVerdict`

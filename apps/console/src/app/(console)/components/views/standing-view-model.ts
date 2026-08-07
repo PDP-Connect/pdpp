@@ -608,10 +608,22 @@ function toRelationships(
   return Array.from(groups.values()).map((group) => {
     const grantCount = group.grantIds.length;
     const grantWord = grantCount === 1 ? "grant" : "grants";
+    // The group's subject is identifiable when it resolves to exactly ONE
+    // distinct grant id — dedupe first, so a client whose grants all carry the
+    // same id still drills into that grant rather than falling back to the list.
+    const distinctGrantIds = Array.from(new Set(group.grantIds.filter((id) => id.length > 0)));
+    const identifiableGrantId = distinctGrantIds.length === 1 ? distinctGrantIds[0] : null;
     const status = group.statuses.includes("expiring") ? "expiring" : (group.statuses[0] ?? "active");
     return {
-      actionHref: grantCount === 1 ? hrefs.grant(group.grantIds[0] ?? "") : hrefs.grants,
-      actionLabel: "review",
+      // Per-grant drill-in whenever a SPECIFIC grant is identifiable. A group is
+      // keyed by client, so a multi-grant group has no single subject — but the
+      // one-grant case does, and previously only the `=== 1` branch used it.
+      // `identifiableGrantId` keeps that drill-in and degrades to the filtered
+      // list (never the bare index) when the subject is genuinely ambiguous.
+      actionHref: identifiableGrantId ? hrefs.grant(identifiableGrantId) : hrefs.grants,
+      // NAV, not a mutation: this only opens a page. It rendered as the word
+      // "review" in a `rr-rel__revoke` slot, which read as a destructive control.
+      actionLabel: identifiableGrantId ? "Review grant →" : `Review ${grantCount} grants →`,
       clientId: group.clientId,
       reads:
         group.phrases.size > 0

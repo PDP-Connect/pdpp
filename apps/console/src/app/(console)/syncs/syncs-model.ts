@@ -191,6 +191,47 @@ export interface DuplicateSyncGroup {
   total: number;
 }
 
+/**
+ * One entry in the recent-syncs list — a single RUN, not a stream summary.
+ *
+ * This is the row a visitor to `/syncs` expects first: what ran, for which
+ * connection, how it went, and a link into `/syncs/[runId]`. It reads the runs
+ * feed directly, so it stays honest about runs whose connection is no longer in
+ * the current connector page (`connectionName` falls back to the connector key
+ * rather than inventing a display name).
+ */
+export interface RecentSyncEntry {
+  /** ISO timestamp the run last reported activity. */
+  at: string;
+  /** Durable connection identity when known, else null. */
+  connectionId: string | null;
+  /** Connection display name when the run maps to a listed connection, else the connector key. */
+  connectionName: string;
+  /** Connector key when known, else null. */
+  connectorId: string | null;
+  /** Short duration phrase ("6 s", "2 m 4 s"), or null when unknown. */
+  duration: string | null;
+  /** Records collected by this run. Null when the feed does not report a count. */
+  eventCount: number | null;
+  /** Deep link to the run detail route. */
+  href: string;
+  /** True while the run has not reached a terminal status. */
+  live: boolean;
+  /** Outcome bucket driving the row's status chip. */
+  outcome: RecentSyncOutcome;
+  /** Durable run identity. */
+  runId: string;
+  /** Verbatim run status from the feed, for the chip label. */
+  status: string;
+}
+
+/**
+ * The outcome bucket for a recent sync row. `unknown` is a real bucket, not a
+ * fallback to success: a status the console does not classify renders as
+ * unknown rather than being coerced into "ok".
+ */
+export type RecentSyncOutcome = "ok" | "partial" | "failed" | "running" | "unknown";
+
 /** The health stat band at the top of the Syncs view. */
 export interface HealthBand {
   /** True when there are no visible review/action cards — show the all-clear note. */
@@ -211,6 +252,8 @@ export interface SyncsViewModel {
   groups: SyncGroup[];
   /** Draft connections awaiting first credential capture / ingest. Sorted first, alongside failure cards. */
   pendingSetupCards: PendingSetupCard[];
+  /** Recent runs, newest first — the drillable sync history. */
+  recentSyncs: RecentSyncEntry[];
   totalGroupCount: number;
   totalReviewCardCount: number;
   totalStreamCount: number;
@@ -221,6 +264,12 @@ const FAILED_RUN_STATUSES = new Set(["failed", "rejected", "cancelled", "error"]
 const NEUTRAL_TERMINAL_RUN_STATUSES = new Set(["deferred"]);
 const DUPLICATE_SYNC_GROUP_MIN_UNNAMED = 3;
 const RECENT_RUN_LIMIT = 7;
+/**
+ * How many runs the recent-syncs list shows. The page fetches at most
+ * `SYNCS_OVERVIEW_RUN_LIMIT` (25) runs for first paint, so this stays under
+ * that ceiling and the list never implies a deeper history than was fetched.
+ */
+const RECENT_SYNC_LIST_LIMIT = 20;
 
 /**
  * Reduce a run status to a Rhythm tick. Partial (`succeeded_with_gaps`) counts
@@ -329,6 +378,105 @@ export function deriveConnectionRhythm(runs: readonly RunSummary[]): SyncRhythmT
   // `runs` arrive newest-first from the feed; reverse to oldest-first and cap.
   const recent = terminal.slice(0, RECENT_RUN_LIMIT).reverse();
   return recent.map((r) => runTick(r.status));
+}
+
+/**
+ * Bucket a run status for the recent-syncs list. A status the console does not
+ * recognise lands in `unknown` — it is never coerced into `ok`, so an
+ * unclassified run reads as unclassified rather than as a success.
+ */
+export function recentSyncOutcome(status: string): RecentSyncOutcome {
+  if (status === "succeeded_with_gaps") {
+    return "partial";
+  }
+  if (HEALTHY_RUN_STATUSES.has(status)) {
+    return "ok";
+  }
+  if (FAILED_RUN_STATUSES.has(status)) {
+    return "failed";
+  }
+  if (NEUTRAL_TERMINAL_RUN_STATUSES.has(status)) {
+    return "unknown";
+  }
+  if (isActiveConnectorRunSummaryStatus(status)) {
+    return "running";
+  }
+  return "unknown";
+}
+
+/**
+ * Human label for a run outcome. The verbatim status is shown alongside on the
+ * row, so this stays a short plain-English bucket name.
+ */
+export function describeRecentSyncOutcome(outcome: RecentSyncOutcome): string {
+  switch (outcome) {
+    case "ok":
+      return "Collected";
+    case "partial":
+      return "Collected with gaps";
+    case "failed":
+      return "Stopped";
+    case "running":
+      return "Running";
+    case "unknown":
+      return "Unclassified";
+    default: {
+      const _exhaustive: never = outcome;
+      throw new Error(`Unhandled recent sync outcome ${_exhaustive}`);
+    }
+  }
+}
+
+/**
+ * Build the recent-syncs list: the runs feed, newest first, each row labelled
+ * with the connection it belongs to and linked to `/syncs/[runId]`.
+ *
+ * Names are resolved against the connector page that the caller already
+ * fetched. A run whose connection is absent from that page keeps its connector
+ * key as the label — no display name is invented for it.
+ */
+export function buildRecentSyncs(input: {
+  connectors: readonly RefConnectorSummary[];
+  limit: number;
+  runs: readonly RunSummary[];
+}): RecentSyncEntry[] {
+  const byConnection = new Map<string, RefConnectorSummary>();
+  for (const connector of input.connectors) {
+    for (const id of [connector.connection_id, connector.connector_instance_id]) {
+      if (typeof id === "string" && id.length > 0) {
+        byConnection.set(id, connector);
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  const entries: RecentSyncEntry[] = [];
+  for (const run of input.runs) {
+    if (seen.has(run.run_id)) {
+      continue;
+    }
+    seen.add(run.run_id);
+    const matched = Array.from(exactRunConnectionIds(run))
+      .map((id) => byConnection.get(id))
+      .find((connector): connector is RefConnectorSummary => connector !== undefined);
+    const connectorId = runConnectorKey(run);
+    const outcome = recentSyncOutcome(run.status);
+    entries.push({
+      at: run.last_at,
+      connectionId: matched?.connection_id ?? run.connection_id ?? null,
+      connectorId,
+      connectionName: matched?.display_name ?? connectorId ?? run.run_id,
+      duration: describeDuration(run.first_at, run.last_at),
+      eventCount: Number.isFinite(run.event_count) ? run.event_count : null,
+      href: `/syncs/${encodeURIComponent(run.run_id)}`,
+      live: !isTerminalRunStatus(run.status),
+      outcome,
+      runId: run.run_id,
+      status: run.status,
+    });
+  }
+
+  return entries.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, input.limit);
 }
 
 /**
@@ -796,12 +944,18 @@ export function buildSyncsViewModel(input: {
   // the duplicate-group panel, so counting them here would tell the owner to
   // "review the cards below" when no such card is visible.
   const band = buildHealthBand({ failureCards, groups: allGroups, pendingSetupWork, projections: ordered });
+  const recentSyncs = buildRecentSyncs({
+    connectors: input.connectors,
+    limit: RECENT_SYNC_LIST_LIMIT,
+    runs: input.runs,
+  });
   return {
     band,
     duplicateGroups,
     failureCards,
     groups,
     pendingSetupCards,
+    recentSyncs,
     totalGroupCount: projections.length,
     totalReviewCardCount: allFailureCards.length,
     totalStreamCount,
