@@ -237,6 +237,14 @@ type RecordIngestBatchOutcome = RecordIngestOutcome & {
   error?: string;
 };
 type RecordIngestAfterRecord = (record: RecordEnvelope, outcome: RecordIngestBatchOutcome) => void | Promise<void>;
+interface DeferredRecordIndex {
+  index: number;
+  record: RecordEnvelope;
+}
+interface IngestRecordsWithinCoordinatorResult {
+  changedRecords: DeferredRecordIndex[];
+  outcomes: RecordIngestBatchOutcome[];
+}
 interface JsonSchema {
   format?: string;
   properties?: Record<string, JsonSchema>;
@@ -850,6 +858,43 @@ async function withIndexWork<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+// Index work is derived state. Keep it ordered for one connector instance so
+// a newer record writer cannot race an older batch's lexical/semantic repair,
+// but do not make that derived queue another connector-instance writer fence.
+// A batch schedules its work before releasing the authoritative fence and
+// supplies a start barrier, so later batches cannot overtake it while blobs
+// remain free to acquire the writer fence.
+const connectorInstanceIndexTails = new Map<string, Promise<void>>();
+
+function enqueueConnectorInstanceIndexWork(
+  connectorInstanceId: string,
+  operation: () => Promise<void>,
+  startAfter?: Promise<void>
+): Promise<void> {
+  const previous = connectorInstanceIndexTails.get(connectorInstanceId) ?? Promise.resolve();
+  const next = previous.then(async () => {
+    if (startAfter) {
+      await startAfter;
+    }
+    await operation();
+  });
+  let tail: Promise<void>;
+  tail = next.then(
+    () => {
+      if (connectorInstanceIndexTails.get(connectorInstanceId) === tail) {
+        connectorInstanceIndexTails.delete(connectorInstanceId);
+      }
+    },
+    () => {
+      if (connectorInstanceIndexTails.get(connectorInstanceId) === tail) {
+        connectorInstanceIndexTails.delete(connectorInstanceId);
+      }
+    }
+  );
+  connectorInstanceIndexTails.set(connectorInstanceId, tail);
+  return next;
+}
+
 export function recordIndexWorkStatsForTests(): { active: number; queued: number } {
   return { active: activeIndexWork, queued: indexWorkWaiters.length };
 }
@@ -1110,11 +1155,10 @@ export async function ingestRecord(
 /**
  * Ingest one HTTP batch under a single connector-instance fence.
  *
- * Durable record mutations and their derived indexes stay in the same ordered
- * per-record phase as `ingestRecord`. The only optimization is reusing one
- * connector-instance ownership capability for the whole request, removing
- * repeated admission/key/advisory-lock setup while keeping the durable
- * checkpoint boundary at the HTTP response. When supplied, `afterRecord` is
+ * Durable record mutations stay in one ordered phase under one
+ * connector-instance ownership capability. Derived index work is serialized
+ * on a separate per-instance lane after that fence releases, so embedding and
+ * index latency cannot starve blob writers. When supplied, `afterRecord` is
  * awaited between a record's storage completion and the next record.
  */
 export async function ingestRecords(
@@ -1124,11 +1168,54 @@ export async function ingestRecords(
 ): Promise<RecordIngestBatchOutcome[]> {
   const coordinationConnectorId = connectorIdForStorageTarget(storageTarget);
   const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
-  return await withConnectorInstanceWrite(
-    coordinationInstanceId,
-    (coordinatorOwnership) => ingestRecordsWithinCoordinator(storageTarget, records, coordinatorOwnership, afterRecord),
-    undefined
-  );
+  let deferredIndexWork: Promise<void> | undefined;
+  let releaseFence: (() => void) | undefined;
+  const fenceReleasedPromise = new Promise<void>((resolve) => {
+    releaseFence = resolve;
+  });
+  try {
+    const result = await withConnectorInstanceWrite(
+      coordinationInstanceId,
+      async (coordinatorOwnership) => {
+        const batch = await ingestRecordsWithinCoordinator(storageTarget, records, coordinatorOwnership, afterRecord);
+        if (batch.changedRecords.length > 0) {
+          deferredIndexWork = enqueueConnectorInstanceIndexWork(
+            coordinationInstanceId,
+            () => runDeferredRecordIndexes(storageTarget, batch),
+            fenceReleasedPromise
+          );
+        }
+        return batch;
+      },
+      undefined
+    );
+    releaseFence?.();
+    await deferredIndexWork;
+    return result.outcomes;
+  } finally {
+    releaseFence?.();
+  }
+}
+
+async function runDeferredRecordIndexes(
+  storageTarget: RecordStorageTarget,
+  batch: IngestRecordsWithinCoordinatorResult
+): Promise<void> {
+  for (const { index, record } of batch.changedRecords) {
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: One connector instance's derived index repairs are intentionally ordered.
+      await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, {}));
+    } catch (err) {
+      const outcome = batch.outcomes[index];
+      if (outcome?.accepted) {
+        batch.outcomes[index] = {
+          accepted: false,
+          changed: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+  }
 }
 
 async function ingestRecordsWithinCoordinator(
@@ -1136,19 +1223,25 @@ async function ingestRecordsWithinCoordinator(
   records: readonly RecordEnvelope[],
   coordinatorOwnership: ConnectorInstanceWriteOwnership,
   afterRecord?: RecordIngestAfterRecord
-): Promise<RecordIngestBatchOutcome[]> {
+): Promise<IngestRecordsWithinCoordinatorResult> {
   const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
+  const changedRecords: DeferredRecordIndex[] = [];
 
   for (const [index, record] of records.entries()) {
     let outcome: RecordIngestBatchOutcome;
     try {
-      // Versions, current-state transitions, history, summaries, derived
-      // indexes, and after-commit notifications keep the same one-record
-      // semantics as `ingestRecord`; only coordinator ownership is reused.
+      // Versions, current-state transitions, summaries, and after-commit
+      // notifications stay inside the one authoritative batch fence. Derived
+      // indexes are scheduled after that fence so expensive embedding work
+      // cannot starve an unrelated blob writer.
       // biome-ignore lint/performance/noAwaitInLoops: Durable version allocation and same-instance state transitions are intentionally ordered.
       outcome = await ingestRecordWithinCoordinator(storageTarget, record, {
         coordinatorOwnership,
+        deferIndexes: true,
       });
+      if (outcome.accepted && outcome.changed) {
+        changedRecords.push({ index, record });
+      }
     } catch (err) {
       outcome = {
         accepted: false,
@@ -1173,14 +1266,17 @@ async function ingestRecordsWithinCoordinator(
     outcomes[index] = outcome;
   }
 
-  return outcomes.map(
-    (outcome) =>
-      outcome ?? {
-        accepted: false,
-        changed: false,
-        error: "ingest batch did not produce a result",
-      }
-  );
+  return {
+    changedRecords,
+    outcomes: outcomes.map(
+      (outcome) =>
+        outcome ?? {
+          accepted: false,
+          changed: false,
+          error: "ingest batch did not produce a result",
+        }
+    ),
+  };
 }
 
 function ingestRecordWithinCoordinator(

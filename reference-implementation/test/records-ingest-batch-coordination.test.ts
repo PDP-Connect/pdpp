@@ -14,9 +14,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { __setConnectorInstancePostgresLockPoolForTest } from "../server/connector-instance-write-coordinator.ts";
+import {
+  __setConnectorInstancePostgresLockPoolForTest,
+  withConnectorInstanceWrite,
+} from "../server/connector-instance-write-coordinator.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
-import { __setIngestFaultHookForTest, ingestRecord, ingestRecords } from "../server/records.ts";
+import {
+  __setIngestFaultHookForTest,
+  ingestRecord,
+  ingestRecords,
+  recordIndexWorkStatsForTests,
+  withRecordIndexWorkForTests,
+} from "../server/records.ts";
 
 interface TestPostgresLockClient {
   query: (
@@ -55,6 +64,26 @@ function changeRows(connectorId: string, stream: string): Array<{ record_key: st
        ORDER BY version`
     )
     .all(connectorId, stream) as Array<{ record_key: string; version: number }>;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  assert.ok(resolve, "Promise executor runs synchronously, so resolve is always assigned here");
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("timed out waiting for the deterministic test condition");
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Polling is intentionally sequential for a deterministic gate.
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
 }
 
 test("common ingest reuses coordinator ownership for messages and timeline_points", async () => {
@@ -117,5 +146,53 @@ test("common ingest reuses coordinator ownership for messages and timeline_point
     __setIngestFaultHookForTest(null);
     __setConnectorInstancePostgresLockPoolForTest(null);
     closeDb();
+  }
+});
+
+test("batch releases the instance fence while its derived index lane is saturated", async () => {
+  const previousLimit = process.env.PDPP_INGEST_INDEX_WORK_LIMIT;
+  process.env.PDPP_INGEST_INDEX_WORK_LIMIT = "1";
+  initDb();
+
+  const indexEntered = deferred();
+  const indexRelease = deferred();
+  const heldIndexPermit = withRecordIndexWorkForTests(async () => {
+    indexEntered.resolve();
+    await indexRelease.promise;
+  });
+  let batch: Promise<Awaited<ReturnType<typeof ingestRecords>>> | undefined;
+  let blobWriter: Promise<string> | undefined;
+  try {
+    await indexEntered.promise;
+    assert.deepEqual(recordIndexWorkStatsForTests(), { active: 1, queued: 0 });
+
+    const connectorInstanceId = "cin_batch_blob_liveness";
+    const target = {
+      connector_id: "https://probe.example/connectors/gmail",
+      connector_instance_id: connectorInstanceId,
+    };
+    batch = ingestRecords(target, records("messages", "liveness"));
+    await waitFor(() => recordIndexWorkStatsForTests().queued === 1);
+
+    blobWriter = withConnectorInstanceWrite(connectorInstanceId, async () => "blob-writer");
+    const admission = await Promise.race([
+      blobWriter.then(() => "completed" as const),
+      new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 250)),
+    ]);
+    assert.equal(admission, "completed", "a blob-style writer must not wait behind deferred index work");
+
+    indexRelease.resolve();
+    const outcomes = await batch;
+    assert.equal(outcomes.filter((outcome) => outcome.accepted).length, 3);
+    await blobWriter;
+  } finally {
+    indexRelease.resolve();
+    await Promise.allSettled([heldIndexPermit, ...(batch ? [batch] : []), ...(blobWriter ? [blobWriter] : [])]);
+    closeDb();
+    if (previousLimit === undefined) {
+      delete process.env.PDPP_INGEST_INDEX_WORK_LIMIT;
+    } else {
+      process.env.PDPP_INGEST_INDEX_WORK_LIMIT = previousLimit;
+    }
   }
 });
