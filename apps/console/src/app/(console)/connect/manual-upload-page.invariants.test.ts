@@ -18,6 +18,7 @@ const REF_UPLOAD_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-staged-artifact
 const REF_ARTIFACT_POLL_ENDPOINT = /\/_ref\/manual-upload\/artifacts/;
 const REF_PREVIEW_ENDPOINT = /\/_ref\/connectors\/.*manual-upload-validation-preview/;
 const REF_RUN_ENDPOINT = /\/_ref\/connections\/.*\/run/;
+const REF_RUN_SETUP_ADMISSION = /run_admission:\s*"setup"/;
 const STAGED_CONTENT_TYPE = /application\/vnd\.pdpp\.manual-upload/;
 const FILE_INPUT = /type="file"/;
 const MULTIPLE_FILES = /\bmultiple\b/;
@@ -70,6 +71,7 @@ test("manual-upload form imports directly and offers preview without connector-s
   assert.match(src, REF_ARTIFACT_POLL_ENDPOINT);
   assert.match(src, REF_PREVIEW_ENDPOINT);
   assert.match(src, REF_RUN_ENDPOINT);
+  assert.match(src, REF_RUN_SETUP_ADMISSION);
   assert.match(src, STAGED_CONTENT_TYPE);
   assert.match(src, FILE_INPUT);
   assert.match(src, MULTIPLE_FILES);

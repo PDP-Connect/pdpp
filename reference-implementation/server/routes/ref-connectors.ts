@@ -44,6 +44,7 @@ import {
   ConnectorSummaryPageRequestError,
   parseConnectorSummaryPageRequest,
 } from "../../operations/ref-connectors-list/pagination.ts";
+import type { RunAdmission } from "../../runtime/controller.ts";
 import type { FleetHealthVerdict } from "../fleet-health.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import { assertRemoteControlSupported } from "./_route-contract.ts";
@@ -221,7 +222,7 @@ export interface MountRefConnectorsContext {
     options: {
       connectorInstanceId?: string | null;
       force?: boolean;
-      runAdmission?: "browser_enrollment" | "setup";
+      runAdmission?: RunAdmission;
       resources?: Readonly<Record<string, readonly string[]>>;
     }
   ) => Promise<unknown>;
@@ -743,16 +744,14 @@ function readExplicitRunForce(req: RouteRequest): boolean {
   );
 }
 
-type RunAdmission = "collection" | "setup" | "browser_enrollment";
-
 function readRunAdmission(req: RouteRequest): RunAdmission {
   const { body } = req;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
-    return "setup";
+    return "collection";
   }
   const raw = (body as { run_admission?: unknown }).run_admission;
   if (raw === undefined) {
-    return "setup";
+    return "collection";
   }
   if (raw === "setup" || raw === "browser_enrollment") {
     return raw;
@@ -760,6 +759,16 @@ function readRunAdmission(req: RouteRequest): RunAdmission {
   const err = new Error("run_admission must be setup or browser_enrollment when provided") as Error & { code: string };
   err.code = "invalid_request";
   throw err;
+}
+
+function runAdmissionStatuses(runAdmission: RunAdmission): readonly string[] {
+  if (runAdmission === "browser_enrollment") {
+    return ["draft"];
+  }
+  if (runAdmission === "setup") {
+    return ["active", "draft"];
+  }
+  return ["active"];
 }
 
 function readRunId(started: unknown): string | null {
@@ -922,13 +931,13 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
       const force = readExplicitRunForce(req);
       let connectionId: string | null = null;
       let connectorKey: string | null = null;
-      let runAdmission: RunAdmission = "setup";
+      let runAdmission: RunAdmission = "collection";
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         connectionId = connectorInstanceId;
         runAdmission = readRunAdmission(req);
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
-          allowStatuses: runAdmission === "browser_enrollment" ? ["draft"] : ["active", "draft"],
+          allowStatuses: runAdmissionStatuses(runAdmission),
         });
         connectionId = namespace.connectorInstanceId;
         connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;

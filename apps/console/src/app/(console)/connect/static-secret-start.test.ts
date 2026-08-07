@@ -37,6 +37,17 @@ test("runIdAfterCapture retries a blocked auto-resume and requires a run id", as
   assert.deepEqual(startedFor, ["connection-2"]);
 });
 
+test("runIdAfterCapture explicitly requests setup admission for its fallback run", async () => {
+  let receivedOptions: { runAdmission?: string } | undefined;
+  const runId = await runIdAfterCapture("connection-setup", { auto_resume: null }, (_connectionId, options) => {
+    receivedOptions = options;
+    return Promise.resolve({ run_id: "run-setup" });
+  });
+
+  assert.equal(runId, "run-setup");
+  assert.deepEqual(receivedOptions, { runAdmission: "setup" });
+});
+
 test("runIdAfterCapture turns an unconfirmed start into a terminal error", async () => {
   await assert.rejects(
     runIdAfterCapture("connection-3", { auto_resume: null }, () => Promise.resolve({ trace_id: "trace-only" })),

@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import type { RunNowOptions } from "../../../lib/operator-runs.ts";
+
 export interface StaticSecretCaptureStartResult {
   auto_resume?: {
     confirming_run: { run_id?: string } | null;
@@ -8,7 +10,10 @@ export interface StaticSecretCaptureStartResult {
   } | null;
 }
 
-export type StartConnectionRun = (connectionId: string) => Promise<unknown>;
+export type StartConnectionRun = (
+  connectionId: string,
+  options?: Pick<RunNowOptions, "runAdmission">
+) => Promise<unknown>;
 
 export class FirstSyncStartError extends Error {
   readonly code: "auto_resume_unconfirmed" | "run_start_failed" | "run_start_unconfirmed";
@@ -53,7 +58,7 @@ export async function runIdAfterCapture(
 
   let started: unknown;
   try {
-    started = await startRun(connectionId);
+    started = await startRun(connectionId, { runAdmission: "setup" });
   } catch (error) {
     throw new FirstSyncStartError("run_start_failed", { cause: error });
   }

@@ -14,6 +14,7 @@ const CONNECTION_CONTROL_PATH_TEMPLATE_RE =
   /`\/_ref\/connections\/\$\{encodeURIComponent\(connectionId\)\}\$\{suffix\}`/;
 const RUN_CONNECTION_EXPORT_RE =
   /export function runConnectionNow\(connectionId: string, options: RunNowOptions = \{\}\)/;
+const RUN_ADMISSION_TYPE_RE = /export type RunAdmission = "browser_enrollment" \| "setup";/;
 const RUN_NOW_FORCE_BODY_RE = /forceOption === true \? \{ force: true \}/;
 const RUN_NOW_ADMISSION_BODY_RE = /runAdmission \? \{ run_admission: runAdmission \}/;
 const RUN_CONNECTOR_OPTIONS_RE =
@@ -33,6 +34,7 @@ test("operator run helpers expose connection-scoped control paths", async () => 
   assert.match(src, CONNECTION_CONTROL_PATH_TEMPLATE_RE);
   assert.match(src, RUN_CONNECTOR_OPTIONS_RE);
   assert.match(src, RUN_CONNECTION_EXPORT_RE);
+  assert.match(src, RUN_ADMISSION_TYPE_RE);
   assert.match(src, RUN_NOW_FORCE_BODY_RE);
   assert.match(src, RUN_NOW_ADMISSION_BODY_RE);
   assert.match(src, SAVE_CONNECTION_SCHEDULE_EXPORT_RE);
