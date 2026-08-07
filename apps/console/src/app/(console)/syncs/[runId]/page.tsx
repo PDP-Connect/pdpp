@@ -473,9 +473,15 @@ function KnownGapsSection({
       <header className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
         <div>
           <h3 className="pdpp-eyebrow">Known source gaps</h3>
-          <p className="pdpp-caption text-muted-foreground">
-            Partial coverage means flushed records may be useful, but this run did not collect every requested source.
-          </p>
+          {/* Explain partial coverage only when there IS partial coverage.
+              Rendering the explanation unconditionally put it directly above
+              "No partial source-coverage gaps were reported", so the section
+              defined a problem and denied it in the same breath. */}
+          {coverageGaps.length > 0 ? (
+            <p className="pdpp-caption text-muted-foreground">
+              This run collected some of what was asked for. The records it did flush are still usable.
+            </p>
+          ) : null}
         </div>
         {summary?.count ? (
           <span className="pdpp-caption text-muted-foreground">
@@ -509,9 +515,14 @@ function KnownGapsSection({
           ))}
         </ul>
       ) : (
-        <p className="pdpp-caption text-muted-foreground">
-          No partial source-coverage gaps were reported. Protocol failures are shown separately below.
-        </p>
+        // Only claim "nothing missing" when nothing else in this section
+        // contradicts it. With silently-skipped streams the honest answer is
+        // "unknown", which the skipped-stream line below states.
+        skippedCount === 0 ? (
+          <p className="pdpp-caption text-muted-foreground">
+            This run reported no missing sources. Anything below is a separate protocol failure.
+          </p>
+        ) : null
       )}
 
       {informationalGaps.length > 0 ? (
@@ -549,10 +560,14 @@ function KnownGapsSection({
           Failure diagnosis.
         </p>
       ) : null}
+      {/* Skipped streams with no gap record are the ONLY thing this section has
+          to say when coverageGaps is empty — so say it plainly instead of
+          footnoting it under a denial. The connector skipped these without
+          recording why, which is a reporting gap on its side, not a clean run. */}
       {skippedCount > 0 && coverageGaps.length === 0 ? (
         <p className="pdpp-caption mt-3 text-muted-foreground">
-          Timeline includes {skippedCount} skipped stream event{skippedCount === 1 ? "" : "s"} without terminal gap
-          details.
+          {skippedCount} stream{skippedCount === 1 ? " was" : "s were"} skipped without saying why. The connector did
+          not record a reason, so PDPP cannot tell you whether anything is missing.
         </p>
       ) : null}
     </section>
