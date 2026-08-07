@@ -28,7 +28,7 @@ import type { CaptureSession } from "../fixture-capture.ts";
 const ORDERS_URL = "https://www.heb.com/my-account/your-orders";
 const SESSION_PROBE_WAIT_MS = 2000;
 const POST_SUBMIT_POLL_INTERVAL_MS = 200;
-const POST_SUBMIT_TIMEOUT_MS = 8000;
+const POST_SUBMIT_TIMEOUT_MS = 12_000;
 const FIELD_TIMEOUT_MS = 15_000;
 const EMAIL_SELECTOR =
   'input[name="email"], input[type="email"], input[autocomplete="username"], input[name="username"]';
