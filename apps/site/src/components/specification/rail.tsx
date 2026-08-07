@@ -15,7 +15,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { docsRoute, SUPPORTING_SLUGS } from "@/lib/spec-nav-slugs.ts";
-import { useSpecRailData } from "./spec-rail-context.tsx";
+import { useSpecRailData } from "./rail-context.tsx";
 
 const supportingUrls = new Set(SUPPORTING_SLUGS.map((slug) => `${docsRoute}/${slug}`));
 

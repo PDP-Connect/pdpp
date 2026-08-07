@@ -49,7 +49,7 @@ function pick(byUrl: Map<string, PageTree.Item>, slugs: readonly string[]): Page
 // "Specification" label, then a separator the rail draws as a bare hairline,
 // then the supporting documents.
 //
-// The separator names are load-bearing — spec-rail.tsx renders "Specification"
+// The separator names are load-bearing — components/specification/rail.tsx renders "Specification"
 // as the rail's one label and every other separator as a rule with no heading.
 export function getSpecNavTree(): PageTree.Root {
   const full = source.getPageTree();

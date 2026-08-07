@@ -24,7 +24,7 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
   return (
     <main
       className={cn(
-        // Page measure: brand container (pad/center) + concept max width; flex child of .pdpp-concept
+        // Page measure: brand container (pad/center) + concept max width; flex child of [data-surface="concept"]
         "container max-w-page shrink-0 grow basis-auto",
         // Default: one track (home / 404)
         "grid grid-cols-[minmax(0,1fr)] items-start",

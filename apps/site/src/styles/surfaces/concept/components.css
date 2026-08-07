@@ -2,172 +2,48 @@
  * Copyright The PDP-Connect Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * PDPP public-site editorial / marketing register — ported from the design
- * concept (see /home/tnunamak/.tmp/pdpp-site-concept/DESIGN-SPEC.md).
+ * PDPP public-site editorial / marketing component register.
  *
- * Owns: --pdpp-concept-* tokens (paper, ink, teal, Newsreader, oversized
- * numerals) and leftover concept BEM (.pdpp-concept, .pdpp-doc,
- * footer/rail/…). Masthead chrome lives in masthead.tsx (TW + editorial-tokens).
+ * Runtime tokens and Tailwind bridge live in tokens/. This file owns concept
+ * shell @apply, selection, and remaining BEM selectors.
  *
  * DELIBERATELY separate from @pdpp/brand's oklch product-UI tokens — bolting
  * this vocabulary onto the shared package would corrupt it for apps/console.
- * Namespaced --pdpp-concept-* so nothing here can collide with @pdpp/brand.
+ * This register nests under [data-surface="concept"]; it does not replace brand at :root.
+ * The specification surface bridges Fumadocs chrome onto these tokens under
+ * [data-pdpp-doc-theme].
  *
- * Cascade reality: brand + this sheet + fumadocs + docs.css all load on every
- * site page (see apps/site/src/app/globals.css). This register nests under
- * .pdpp-concept; it does not replace brand at :root. docs.css bridges fumadocs
- * chrome onto these tokens under [data-pdpp-doc-theme].
- *
- * Not docs.css (Fumadocs shell) and not docs-prose.css (ProsePage markdown).
+ * Not specification.css (Fumadocs shell) or ProsePage markdown typography.
  */
 
-:root {
-  --pdpp-concept-paper: #f5f6f6;
-  --pdpp-concept-paper-deep: #ebeded;
-  --pdpp-concept-paper-panel: #dce8e4;
-  --pdpp-concept-ink: #1a1a17;
-  --pdpp-concept-ink-soft: #57544c;
-  /* Was #8A867C, which computes to 3.35:1 on paper and fails WCAG AA for
-     normal text (it carries the smallest type on the site — 11-12px mono
-     labels). #6E6B62 is the same hue at 4.92:1, which clears AA. */
-  --pdpp-concept-ink-faint: #6e6b62;
-  --pdpp-concept-teal: #0e5a54;
-  --pdpp-concept-teal-deep: #0a3f3b;
-  --pdpp-concept-teal-wash: #e7efed;
-  /* Text set ON TOP of a teal-wash fill (schematic "GRANT"/"PDPP · CONSENT &
-     AUTHORIZATION" labels). Needs its own token because it must stay dark
-     on the light wash but flip to light on the dark variant's near-black
-     wash — the wash itself inverts, so the same token used elsewhere
-     (teal-deep) would go invisible-on-dark otherwise. */
-  --pdpp-concept-teal-on-wash: #0a3f3b;
+/* ─── Document surface ────────────────────────────────────────────────────
+   Frame on PdppConceptShell; palette + type rebinds live in tokens/semantic.css. */
 
-  /* Text/icons set on a FIXED teal-deep ground (.pdpp-footer, .pdpp-terminal,
-     CTA hover states) — the footer and terminal keep the same dark
-     teal background in both color schemes (it is deliberately not "the page
-     ground", the same way a code block or a footer band is its own surface
-     elsewhere on this site), so text on it must NOT use --pdpp-concept-paper/
-     -ink-soft/-teal-wash, which flip to their dark-mode values chosen for the
-     DARK PAPER ground and land dark-on-dark-teal. These are pinned to the
-     light-mode values across every scheme, same pattern as
-     --pdpp-concept-teal-on-wash above. Measured against --pdpp-concept-teal-
-     deep #0a3f3b: onteal-deep 10.85:1, onteal-deep-soft 7.84:1, onteal-deep-
-     label 4.70:1, onteal-deep-wash (color-mix'd at point of use) 10.55:1.
-     -label was #84a09d (4.19:1) at first pass — .pdpp-footer__label is 11px/
-     400, which takes the 4.5 body-text bar (WCAG large-text needs 18.66px
-     bold or 24px regular; 11px/400 clears neither), so 4.19 failed. Lightened
-     the color-mix ratio (55%->60% of --teal-wash) rather than the type size
-     or weight, which would have changed the design to satisfy the checker
-     instead of fixing the token. */
-  --pdpp-concept-onteal-deep: #f5f6f6;
-  --pdpp-concept-onteal-deep-soft: #cbd5d4;
-  --pdpp-concept-onteal-deep-label: #8fa9a6;
-  --pdpp-concept-onteal-deep-wash: #e7efed;
-
-  --pdpp-concept-rule: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
-  --pdpp-concept-rule-faint: 1px solid
-    color-mix(in srgb, var(--pdpp-concept-ink) 10%, var(--pdpp-concept-paper));
-
-  --pdpp-concept-serif:
-    var(--font-pdpp-serif), Georgia, "Times New Roman", serif;
-  --pdpp-concept-sans:
-    var(--font-pdpp-sans), system-ui, -apple-system, sans-serif;
-  --pdpp-concept-mono:
-    var(--font-pdpp-mono), "SFMono-Regular", Menlo, Consolas, monospace;
-
-  /* 1240 rather than 1200: the concept bumped this 2026-08-04 (its own
-     comment: "the extra 40px goes entirely to the rail, whose longest TOC
-     labels wrapped to two lines at 240px while the page had unused width
-     beside it") and this port hadn't caught up — at 1440px that stale 1200
-     value landed content 18px further right and the nav cluster 242px
-     further right than the concept's own --max: 1240px does. */
-  --pdpp-concept-max: 1240px;
-  /* 276px rather than 240px: the extra space goes entirely to the rail, whose
-     longest TOC labels wrapped to two lines at 240px while the page had
-     unused width beside it. Concept ships this token TWICE (styles.css:51 as a
-     flat 276px, then styles.css:1981 as this clamp) — the second :root wins
-     the cascade, so this clamp (not the flat value) is the one actually
-     rendered. Coefficient is the concept's own value, not derived. */
-  --pdpp-concept-rail: clamp(200px, 6.3462rem + 12.5vw, 276px);
-  --pdpp-concept-gutter: clamp(40px, 1.2692rem + 1.9231vw, 48px);
-  --pdpp-concept-measure: 68ch;
-  --pdpp-concept-section-gap: 96px;
-  --pdpp-concept-pad: clamp(20px, -0.5263rem + 3.9474vw, 32px);
+[data-surface="concept"] {
+  @apply bg-background font-serif text-body text-foreground oldstyle-nums;
 }
 
-/* ─── Dark variant ────────────────────────────────────────────────────────
-   The concept is light-only by design (a paper document). apps/site has a
-   working dark mode (ThemeProvider + data-theme tokens in
-   packages/pdpp-brand/tokens/primitive.css) that must not regress. Rather than gate the
-   concept surface to light-only (which would make /docs, /reference, /,
-   /participate go blank or unstyled for dark-mode users), a dark variant is
-   derived here using the SAME token names, following @pdpp/brand's own
-   data-theme mechanism, so `[data-theme="dark"]` works. The light paper moved from
-   a warm cream (#faf7f2) to a cool near-white (#f5f6f6) per the concept, so the
-   dark ground is re-derived to match that family — a cool-neutral near-black
-   rather than the old warm-near-black — while keeping the same relationships:
-   teal lightened for contrast, the teal-wash fill inverted to a low-alpha
-   tint. The concept's ink/paper/teal relationship is preserved, not merely
-   dimmed. */
-[data-theme="dark"] {
-  --pdpp-concept-paper: #17181a;
-  --pdpp-concept-paper-deep: #1e2022;
-  --pdpp-concept-paper-panel: #12211e;
-  --pdpp-concept-ink: #eceeed;
-  --pdpp-concept-ink-soft: #b3b6b3;
-  --pdpp-concept-ink-faint: #85887f;
-  --pdpp-concept-teal: #4bb3a6;
-  --pdpp-concept-teal-deep: #0a3f3b;
-  --pdpp-concept-teal-wash: rgb(75 179 166 / 12%);
-  --pdpp-concept-teal-on-wash: #a8e0d6;
-}
-
-/* ─── Document surface ──────────────────────────────────────────────────── */
-.pdpp-concept {
-  --spacing-inset: var(--pdpp-concept-pad);
-  font-family: var(--pdpp-concept-serif);
-  font-size: 17px;
-  font-variant-numeric: oldstyle-nums;
-  line-height: 1.65;
-  color: var(--pdpp-concept-ink);
-  background: var(--pdpp-concept-paper);
-}
-
-/* Bold default: concept measures this at >6:1 contrast against every light
-   ground (paper, paper-panel, paper-deep), because a solid teal fill is dark
-   enough to read as a highlight rather than disappear into them the way the
-   wash does. The wash variant is kept, but only for grounds that are
-   themselves teal-deep (.pdpp-footer, .pdpp-terminal, .pdpp-cmd__panel — the
-   self-host command builder's own teal-deep panel, see .pdpp-cmd__panel
-   above), where it holds ~15:1 against ink text and the bold variant would
-   fight the ground's own color. Owner-reported 2026-08-04: "when I select
-   text [in the Docker code block] that has green behind it, I can't see the
-   highlight" — the bold teal selection was disappearing into the panel's own
-   teal-deep ground. */
-.pdpp-concept ::selection {
+/* Teal fill on light grounds; wash on teal-deep (.pdpp-footer, .pdpp-terminal, .pdpp-cmd__panel). */
+[data-surface="concept"] ::selection {
   color: var(--pdpp-concept-paper);
   background: var(--pdpp-concept-teal);
 }
-.pdpp-concept .pdpp-footer ::selection,
-.pdpp-concept .pdpp-terminal ::selection,
-.pdpp-concept .pdpp-cmd__panel ::selection {
+[data-surface="concept"] .pdpp-footer ::selection,
+[data-surface="concept"] .pdpp-terminal ::selection,
+[data-surface="concept"] .pdpp-cmd__panel ::selection {
   color: var(--pdpp-concept-ink);
   background: var(--pdpp-concept-teal-wash);
+}
+
+/* Page-level scrollbar only — not terminal/table overflow-x bars. */
+html:has([data-surface="concept"])::-webkit-scrollbar-thumb {
+  background: transparent;
 }
 
 /* ─── Layout: document track ─────────────────────────────────────────────
    Page chrome (container / max-w-page / rail grid / short-page flex) lives on
    PdppConceptPage. Rail sticky/type/mobile strip lives on PdppRail.
    .pdpp-doc track pad stays here. Hero type: PdppFrontDoor + Text. */
-/* @pdpp/brand's base.css gives the operator console an always-visible page
-   scrollbar thumb, which is correct for a dense app shell but not for this
-   document register — the concept leaves the page-level scrollbar as the
-   plain browser default. Scoping this reset to `html::-webkit-scrollbar-thumb`
-   (not the unscoped `::-webkit-scrollbar-thumb` base.css uses) touches only
-   the page-level bar, not the terminal/table's own overflow-x scrollbars. */
-html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
-  background: transparent;
-}
 .pdpp-doc {
   /* The measure is a property of the TYPE, not of the container. Capping the
      CONTAINER here also capped the terminal block, tables and the CTA grid to
@@ -190,21 +66,10 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
     padding-bottom: 72px;
   }
   .pdpp-section {
-    --pdpp-concept-section-gap: 64px;
-  }
-  .pdpp-section__head {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-  .pdpp-section__num {
-    font-size: 56px;
+    --spacing-section-gap: 64px;
   }
   .pdpp-ruled-list__item {
     grid-template-columns: 2em 1fr;
-  }
-  .pdpp-ruled-list__arrow {
-    grid-column: 2;
-    justify-self: start;
   }
 }
 
@@ -227,47 +92,26 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   font-variant-numeric: tabular-nums;
   color: var(--pdpp-concept-ink);
 }
-.pdpp-rail__note {
-  padding-left: 12px;
-  margin-bottom: 40px;
-  font-size: 12px;
-  line-height: 1.55;
-  color: var(--pdpp-concept-ink-soft);
-  border-left: 2px solid var(--pdpp-concept-teal);
-}
-.pdpp-stamp {
-  display: inline-block;
-  padding: 6px 10px;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 12px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.3;
-  color: var(--pdpp-concept-teal);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  border: 1px solid var(--pdpp-concept-teal);
-}
 
 /* ─── Document type ──────────────────────────────────────────────────────── */
-/* .pdpp-concept h1 {
+/* [data-surface="concept"] h1 {
   margin: 0 0 8px;
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   font-size: 44px;
   font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.01em;
 } */
-.pdpp-concept h2 {
+[data-surface="concept"] h2 {
   margin: 0 0 16px;
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   font-size: 28px;
   font-weight: 600;
   line-height: 1.3;
 }
-.pdpp-concept h3 {
+[data-surface="concept"] h3 {
   margin: 0 0 8px;
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   font-size: 20px;
   font-weight: 600;
   line-height: 1.45;
@@ -302,28 +146,19 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-doc li,
 .pdpp-doc blockquote,
 .pdpp-doc .pdpp-note {
-  max-width: var(--pdpp-concept-measure);
-}
-.pdpp-lede {
-  font-size: 20px;
-  line-height: 1.5;
-  color: var(--pdpp-concept-ink);
+  max-width: var(--container-measure);
 }
 .pdpp-caption {
   margin-top: 16px;
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   font-size: 15px;
   font-style: italic;
   line-height: 1.5;
   color: var(--pdpp-concept-ink-soft);
 }
-.pdpp-small {
-  font-size: 15px;
-  color: var(--pdpp-concept-ink-soft);
-}
 .pdpp-eyebrow {
   margin-bottom: 8px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 500;
   color: var(--pdpp-concept-ink-faint);
@@ -334,63 +169,27 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 /* ─── Enumerated sections ────────────────────────────────────────────────── */
 .pdpp-section {
   position: relative;
-  padding-top: calc(var(--pdpp-concept-section-gap) / 2);
-  margin-top: calc(var(--pdpp-concept-section-gap) / 2);
+  padding-top: calc(var(--spacing-section-gap) / 2);
+  margin-top: calc(var(--spacing-section-gap) / 2);
 }
 .pdpp-section:first-of-type {
   padding-top: 0;
   margin-top: 40px;
 }
-.pdpp-section__head {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 24px;
-  align-items: start;
-  margin-bottom: 24px;
-}
-/* The mobile type step, kept here rather than with the other 720px rules
-   further up: these three base sizes are declared above, and a step written
-   before them loses on source order and never applies. It was written up
-   there, so a phone rendered the 44px desktop headline and every element below
-   it inherited the offset — the front door ran 1557px against the concept's
-   1303px. Concept parity at 390px: h1 34px, h2 24px, lede 18px.
-   .pdpp-section__num is not restated: its clamp() already floors at 56px. */
+/* Kept after the base heading sizes so the mobile step wins source order. */
 @media (max-width: 720px) {
-  .pdpp-concept h1 {
+  [data-surface="concept"] h1 {
     font-size: 34px;
   }
-  .pdpp-concept h2 {
+  [data-surface="concept"] h2 {
     font-size: 24px;
   }
-  .pdpp-lede {
-    font-size: 18px;
-  }
-}
-
-.pdpp-section__num {
-  margin-top: -0.08em;
-  font-family: var(--pdpp-concept-serif);
-  font-size: clamp(56px, 3rem + 2.6vw, 96px);
-  font-weight: 300;
-  font-variant-numeric: tabular-nums lining-nums;
-  line-height: 0.85;
-  color: color-mix(in srgb, var(--pdpp-concept-teal) 85%, transparent);
-  user-select: none;
-}
-.pdpp-section__title {
-  padding-top: 8px;
-}
-.pdpp-section__title h2 {
-  margin-bottom: 0;
-}
-.pdpp-section__title .pdpp-eyebrow {
-  margin-bottom: 6px;
 }
 
 /* ─── Ruled list ─────────────────────────────────────────────────────────── */
 .pdpp-ruled-list {
   margin: 24px 0 0;
-  border-top: var(--pdpp-concept-rule);
+  border-top: 1px solid var(--border);
 }
 .pdpp-ruled-list__item {
   display: grid;
@@ -398,20 +197,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   gap: 20px;
   align-items: baseline;
   padding: 20px 0;
-  border-bottom: var(--pdpp-concept-rule);
+  border-bottom: 1px solid var(--border);
 }
 /* Separator, not a terminator — see .pdpp-features li:last-child. */
 .pdpp-ruled-list__item:last-child {
   border-bottom: none;
-}
-.pdpp-ruled-list__num {
-  font-family: var(--pdpp-concept-sans);
-  font-size: 13px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums lining-nums;
-  line-height: 1.45;
-  color: var(--pdpp-concept-ink-faint);
-  letter-spacing: 0.08em;
 }
 .pdpp-ruled-list__body h3 {
   margin-bottom: 4px;
@@ -421,23 +211,13 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   font-size: 16px;
   color: var(--pdpp-concept-ink-soft);
 }
-.pdpp-ruled-list__arrow {
-  align-self: center;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 15px;
-  white-space: nowrap;
-  border-bottom: none;
-}
-.pdpp-ruled-list__arrow:hover {
-  border-bottom: none;
-}
 
 /* ─── Terminal block ─────────────────────────────────────────────────────── */
 .pdpp-terminal {
   padding: 24px 28px;
   margin: 28px 0;
   overflow-x: auto;
-  font-family: var(--pdpp-concept-mono);
+  font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.7;
   /* --pdpp-concept-onteal-deep, not -paper: the terminal keeps its teal-deep
@@ -451,7 +231,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-terminal__label {
   display: block;
   margin-bottom: 12px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
   text-transform: uppercase;
@@ -462,35 +242,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   overflow-wrap: break-word;
   white-space: pre-wrap;
 }
-.pdpp-terminal .pdpp-prompt {
-  color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 65%, white);
-  user-select: none;
-}
-.pdpp-terminal .pdpp-comment {
-  color: color-mix(
-    in srgb,
-    var(--pdpp-concept-onteal-deep) 45%,
-    var(--pdpp-concept-teal-deep)
-  );
-}
-
-/* ─── Handoff ────────────────────────────────────────────────────────────── */
-.pdpp-handoff {
-  padding: 18px 22px;
-  margin: 28px 0 20px;
-  border: 1px solid var(--pdpp-concept-teal);
-}
-.pdpp-handoff a {
-  font-family: var(--pdpp-concept-sans);
-  font-size: 16px;
-  letter-spacing: 0.01em;
-  border-bottom: none;
-}
 
 /* ─── Code ───────────────────────────────────────────────────────────────── */
-.pdpp-concept code {
+[data-surface="concept"] code {
   padding: 1px 5px;
-  font-family: var(--pdpp-concept-mono);
+  font-family: var(--font-mono);
   font-size: 0.86em;
   overflow-wrap: anywhere;
   background: var(--pdpp-concept-paper-deep);
@@ -500,33 +256,13 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
    dark terminal block that chip is paper-on-paper — the command rendered as
    invisible white bars on the teal ground. A code element in a pre is a code
    BLOCK: it inherits the terminal's own colour and carries no chip. */
-.pdpp-concept .pdpp-terminal pre code {
+[data-surface="concept"] .pdpp-terminal pre code {
   padding: 0;
   font-size: 1em;
   color: inherit;
   background: none;
   border-radius: 0;
 }
-
-/* ─── Schematic ──────────────────────────────────────────────────────────── */
-.pdpp-schematic {
-  margin: 32px 0 0;
-}
-.pdpp-schematic svg {
-  display: block;
-  width: 100%;
-  max-width: 640px;
-  height: auto;
-}
-.pdpp-schematic svg text {
-  font-family: var(--pdpp-concept-sans);
-}
-.pdpp-schematic--loop svg {
-  max-width: 100%;
-  margin: 0 auto;
-}
-
-/* ─── Note ───────────────────────────────────────────────────────────────── */
 
 /* ─── Tables ─────────────────────────────────────────────────────────────── */
 .pdpp-doc table {
@@ -545,10 +281,10 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   line-height: 1.45;
   vertical-align: top;
   text-align: left;
-  border-bottom: var(--pdpp-concept-rule);
+  border-bottom: 1px solid var(--border);
 }
 .pdpp-doc thead th {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
   color: var(--pdpp-concept-ink-soft);
@@ -578,27 +314,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   padding-right: 0;
 }
 .pdpp-impl-table td:first-child {
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   font-weight: 600;
-}
-.pdpp-impl-table .pdpp-status {
-  font-family: var(--pdpp-concept-sans);
-  font-size: 12px;
-  color: var(--pdpp-concept-ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 .pdpp-impl-table td:nth-child(4) a {
   white-space: nowrap;
-}
-.pdpp-impl-table .pdpp-pending td,
-.pdpp-impl-table .pdpp-pending td:first-child,
-.pdpp-impl-table .pdpp-pending .pdpp-status {
-  color: var(--pdpp-concept-ink-faint);
-}
-.pdpp-impl-table .pdpp-pending td:first-child {
-  font-style: italic;
-  font-weight: 400;
 }
 
 /* ─── Dated updates list ─────────────────────────────────────────────────── */
@@ -613,17 +333,17 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   gap: 16px;
   padding: 10px 0;
   font-size: 16px;
-  border-bottom: var(--pdpp-concept-rule-faint);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .pdpp-updates li:first-child {
-  border-top: var(--pdpp-concept-rule-faint);
+  border-top: 1px solid var(--border-subtle);
 }
 /* Separator, not a terminator — see .pdpp-features li:last-child. */
 .pdpp-updates li:last-child {
   border-bottom: none;
 }
 .pdpp-updates time {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: var(--pdpp-concept-ink-faint);
@@ -632,22 +352,9 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 
 /* ─── Sticky footer ──────────────────────────────────────────────────────────
    Short pages (the front door especially) otherwise float the footer mid-
-   viewport with dead ground beneath it. The concept surface becomes a flex
-   column at least one viewport tall, and main absorbs the slack so the footer
-   lands on the fold's bottom edge. Pages longer than the viewport are
-   unaffected.
-
-   Scoped to .pdpp-concept rather than body: apps/site also serves the sandbox
-   and console-shaped routes that are NOT this register and must not inherit a
-   100dvh flex column. /docs, /reference and /participate wrap their content in
-   `.pdpp-concept flex min-h-screen flex-col` already; this rule is what makes
-   the front door (which is not inside that Tailwind wrapper) behave the same,
-   and it is harmless where those utilities already apply. */
-.pdpp-concept {
-  display: flex;
-  flex-direction: column;
-  min-height: 100dvh;
-}
+   viewport with dead ground beneath it. PdppConceptShell is a flex column at
+   least one viewport tall so main absorbs the slack and the footer lands on
+   the fold's bottom edge. Pages longer than the viewport are unaffected. */
 
 /* ─── Channels (Participate) ─────────────────────────────────────────────────
    Bordered targets, not prose rows. Whole row is the hit area, 44px minimum. */
@@ -671,11 +378,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   align-items: center;
   min-height: 44px;
   padding: 12px 16px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 15px;
   color: var(--pdpp-concept-ink);
   text-decoration: none;
-  border: var(--pdpp-concept-rule);
+  border: 1px solid var(--border);
   border-radius: 3px;
   transition:
     border-color 120ms ease,
@@ -702,10 +409,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-channel:hover .pdpp-channel__arrow,
 .pdpp-channel:focus-visible .pdpp-channel__arrow {
   color: var(--pdpp-concept-teal);
-}
-.pdpp-channels__note {
-  font-size: 16px;
-  color: var(--pdpp-concept-ink-soft);
 }
 /* Full-size pills need ~685px combined and wrap to a second row anywhere
    the doc column falls short of that — true in the stacked mobile layout
@@ -757,7 +460,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-copy-btn {
   flex: none;
   padding: 3px 10px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: color-mix(in srgb, var(--pdpp-concept-onteal-deep-wash) 70%, white);
   text-transform: uppercase;
@@ -783,12 +486,12 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   padding: 0;
   margin: 24px 0 0;
   list-style: none;
-  border-top: var(--pdpp-concept-rule-faint);
+  border-top: 1px solid var(--border-subtle);
 }
 .pdpp-features li {
   padding: 14px 0;
   color: var(--pdpp-concept-ink);
-  border-bottom: var(--pdpp-concept-rule-faint);
+  border-bottom: 1px solid var(--border-subtle);
 }
 /* The list opens on its own border-top, so each item's border-bottom is a
    SEPARATOR between items. On the last item there is nothing below to
@@ -800,7 +503,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-features strong {
   margin-right: 10px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 15px;
   font-weight: 600;
   color: var(--pdpp-concept-ink);
@@ -843,7 +546,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-cmd {
   margin: 32px 0 8px;
   background: var(--pdpp-concept-paper);
-  border: var(--pdpp-concept-rule);
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 /* The command panel is not prose and should not sit at the 68ch prose measure —
@@ -860,14 +563,14 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   flex-wrap: wrap;
   gap: 4px;
   padding: 4px 8px 0;
-  border-bottom: var(--pdpp-concept-rule-faint);
+  border-bottom: 1px solid var(--border-subtle);
 }
 /* Plain text, not buttons: no fill, no border, no pill. The active one is ink
    with an underline inset to the label width; the rest recede. */
 .pdpp-cmd__tab {
   padding: 10px 12px 9px;
   margin-bottom: -1px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 14px;
   color: var(--pdpp-concept-ink-faint);
   cursor: pointer;
@@ -925,7 +628,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   min-width: 0;
   margin: 0;
   overflow-x: auto;
-  font-family: var(--pdpp-concept-mono);
+  font-family: var(--font-mono);
   font-size: 13.5px;
   line-height: 1.75;
   /* Boilerplate recedes so the emphasised token can land — but on the teal-deep
@@ -965,7 +668,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-cmd__copy {
   flex: none;
   padding: 5px 12px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 11px;
   color: var(--pdpp-concept-onteal-deep-soft);
   text-transform: uppercase;
@@ -976,18 +679,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
     color-mix(in srgb, var(--pdpp-concept-onteal-deep) 35%, transparent);
   border-radius: 2px;
 }
-/* One line, outside the panel so the panel itself stays bare. */
-.pdpp-cmd__note {
-  margin: 12px 2px 0;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 14px;
-  color: var(--pdpp-concept-ink-soft);
-}
 /* ROW 3. The outcome choices, inside the panel's frame and above the rule so
    they read as properties of the command rather than page furniture. */
 .pdpp-cmd__config {
   padding: 14px 20px 16px;
-  border-top: var(--pdpp-concept-rule-faint);
+  border-top: 1px solid var(--border-subtle);
 }
 /* A real <fieldset>/<legend>: the grouping and its name are then carried by
    the element itself rather than by ARIA bolted onto a div. Both need their
@@ -1009,7 +705,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   flex: none;
   min-width: 54px;
   padding: 0;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 12px;
   line-height: 26px;
   color: var(--pdpp-concept-ink-faint);
@@ -1027,12 +723,12 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   box-sizing: border-box;
   min-height: 44px;
   padding: 5px 11px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 13px;
   color: var(--pdpp-concept-ink-faint);
   cursor: pointer;
   background: none;
-  border: var(--pdpp-concept-rule);
+  border: 1px solid var(--border);
   border-radius: 2px;
 }
 .pdpp-cmd__seg-btn:hover {
@@ -1071,7 +767,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-cmd__url > span {
   flex: none;
   min-width: 54px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 12px;
   color: var(--pdpp-concept-ink-faint);
   text-transform: uppercase;
@@ -1081,11 +777,11 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
   flex: 1 1 260px;
   min-width: 0;
   padding: 5px 9px;
-  font-family: var(--pdpp-concept-mono);
+  font-family: var(--font-mono);
   font-size: 13px;
   color: var(--pdpp-concept-ink);
   background: none;
-  border: var(--pdpp-concept-rule);
+  border: 1px solid var(--border);
   border-radius: 2px;
 }
 .pdpp-cmd__url input:focus-visible {
@@ -1094,7 +790,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-cmd__hint {
   margin: 6px 0 0 70px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   color: var(--pdpp-concept-ink-faint);
 }
@@ -1103,7 +799,7 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-cmd__blocked {
   padding: 2px 0;
   margin: 0;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 14px;
   color: var(--pdpp-concept-ink-soft);
 }
@@ -1131,11 +827,6 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 .pdpp-cmd__reveal:not(.is-shown) .pdpp-cmd__hint {
   display: none;
 }
-/* The one sentence that replaced a two-column section. Sits directly under the
-   builder because it explains the Access choice made there. */
-.pdpp-note--access {
-  margin-top: 14px;
-}
 /* The landing-page instance: the same component, the default command, and no
    configuration. A reader on the front door wants to see that one line exists,
    not to configure it — the Self-Host page is where the choices live. */
@@ -1144,34 +835,4 @@ html:has(.pdpp-concept)::-webkit-scrollbar-thumb {
 }
 .pdpp-cmd--compact .pdpp-cmd__config {
   display: none;
-}
-/* ─── Two-up split (local vs hosted access) ─────────────────────────────── */
-.pdpp-split {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 32px;
-  margin-top: 24px;
-}
-.pdpp-split__half h3 {
-  margin-bottom: 8px;
-}
-.pdpp-split__half p {
-  color: var(--pdpp-concept-ink-soft);
-}
-
-/* ─── Collapsed advanced block ──────────────────────────────────────────── */
-.pdpp-details {
-  margin-top: 20px;
-}
-.pdpp-details > summary {
-  padding: 8px 0;
-  font-family: var(--pdpp-concept-sans);
-  font-size: 15px;
-  color: var(--pdpp-concept-teal);
-  cursor: pointer;
-}
-.pdpp-details > summary:focus-visible {
-  outline: 2px solid var(--pdpp-concept-teal);
-  outline-offset: 3px;
-  border-radius: 2px;
 }

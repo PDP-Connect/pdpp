@@ -20,7 +20,7 @@ export function PdppHeroWaterStill() {
       }`}</style>
       <div
         aria-hidden="true"
-        className="flex h-full w-full overflow-hidden font-[family-name:var(--pdpp-concept-mono)] font-light text-[12px] text-ink leading-[34px] [-webkit-mask-image:linear-gradient(to_bottom,transparent,black_90px,black_calc(100%_-_90px),transparent)] [mask-image:linear-gradient(to_bottom,transparent,black_90px,black_calc(100%_-_90px),transparent)]"
+        className="flex h-full w-full overflow-hidden font-light font-mono text-[12px] text-foreground leading-[34px] [-webkit-mask-image:linear-gradient(to_bottom,transparent,black_90px,black_calc(100%_-_90px),transparent)] [mask-image:linear-gradient(to_bottom,transparent,black_90px,black_calc(100%_-_90px),transparent)]"
       >
         {HERO_WATER_STREAMS.map((stream, colIndex) => (
           <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap ps-[18px]" key={stream[0]?.[0] ?? colIndex}>

@@ -9,9 +9,11 @@ import { cn } from "@/lib/utils.ts";
 import { type CoverageState, type CoverageStatus, coverageRows, coverageSummary } from "./data.ts";
 
 export const metadata: Metadata = {
-  title: "Reference Coverage Matrix - PDPP",
+  alternates: { canonical: "/self-host/coverage" },
   description:
     "A falsifiable public matrix for PDPP reference implementation coverage across protocol flows, retrieval extensions, collection profiles, sandbox, and deferred scope.",
+  openGraph: { url: "/self-host/coverage" },
+  title: "Reference Coverage Matrix - PDPP",
 };
 
 const stateLabel: Record<CoverageState, string> = {

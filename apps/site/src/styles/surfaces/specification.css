@@ -2,13 +2,12 @@
  * Copyright The PDP-Connect Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Fumadocs shell overrides for /specification (and other DocsLayout routes).
+ * Fumadocs shell overrides owned exclusively by /specification.
  *
  * Owns: #nd-docs-layout, #nd-subnav, sidebar, TOC breakpoints, nav titles,
  * theme hooks ([data-pdpp-doc-theme]). Layout + chrome only — not body copy.
  *
- * Not docs-prose.css (ProsePage / .docs-prose markdown) and not editorial.css
- * (marketing --pdpp-concept-* register).
+ * Not ProsePage markdown typography or the concept component register.
  */
 :root {
   /* Fills the parent measure. Spec wraps #nd-docs-layout in
@@ -32,7 +31,7 @@
   /* Concept rail, not brand sidebar — must live in this MQ or the
      unscoped rule above wins on the layout track. */
   [data-pdpp-doc-theme] #nd-docs-layout {
-    --fd-sidebar-width: var(--pdpp-concept-rail);
+    --fd-sidebar-width: var(--spacing-rail);
   }
 }
 
@@ -423,7 +422,7 @@
 }
 /*
  * Applies the PDPP editorial register (paper/ink/teal, Newsreader/Inter/
- * JetBrains Mono — see editorial.css) to fumadocs' generated DOM for
+ * JetBrains Mono — see the concept surface) to Fumadocs' generated DOM for
  * /specification. The structural Fumadocs rules above and the scoped editorial
  * overrides below now have one Site-owned source. `[data-pdpp-doc-theme]`
  * limits the editorial register to the route that opts in.
@@ -435,11 +434,11 @@
 }
 
 [data-pdpp-doc-theme] #nd-docs-layout {
-  --fd-sidebar-width: var(--pdpp-concept-rail);
+  --fd-sidebar-width: var(--spacing-rail);
   /* Right TOC column stays closed (tableOfContent.enabled: false; TOC
      lives in the left rail). Beats the unscoped 1440px 18rem reserve. */
   --fd-toc-width: 0px;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   background: var(--pdpp-concept-paper);
 }
 
@@ -464,7 +463,7 @@
 }
 
 [data-pdpp-doc-theme] #nd-page {
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   color: var(--pdpp-concept-ink);
 }
 
@@ -472,14 +471,14 @@
    px-4/md:px-6/xl:px-8 so the start edge is exactly the concept gutter. */
 @media (min-width: 768px) {
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
-    padding-inline-start: var(--pdpp-concept-gutter);
+    padding-inline-start: var(--spacing-gutter);
     padding-inline-end: 0;
   }
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
 [data-pdpp-doc-theme] #nd-page h1 {
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
 }
 
 /* The structural .pdpp-docs-hero rule above is the operator-style
@@ -499,19 +498,19 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-title {
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   font-weight: 600;
   color: var(--pdpp-concept-ink);
   letter-spacing: -0.01em;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-description {
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   color: var(--pdpp-concept-ink-soft);
 }
 
 [data-pdpp-doc-theme] .pdpp-eyebrow {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   color: var(--pdpp-concept-ink-faint);
 }
 
@@ -521,12 +520,12 @@
 [data-pdpp-doc-theme] .pdpp-docs-body {
   width: 100%;
   max-width: none;
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :where(h1, h2, h3, h4, p, li, blockquote),
 [data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
-  max-width: var(--pdpp-concept-measure);
+  max-width: var(--container-measure);
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
@@ -536,7 +535,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :where(h2, h3, h4) {
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   color: var(--pdpp-concept-ink);
   letter-spacing: normal;
 }
@@ -611,7 +610,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body :not(pre) > code {
-  font-family: var(--pdpp-concept-mono);
+  font-family: var(--font-mono);
   background: var(--pdpp-concept-paper-deep);
   border-color: color-mix(
     in srgb,
@@ -629,11 +628,11 @@
 
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki pre,
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki code {
-  font-family: var(--pdpp-concept-mono) !important;
+  font-family: var(--font-mono) !important;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body table {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   border-color: color-mix(
     in srgb,
     var(--pdpp-concept-ink) 18%,
@@ -654,7 +653,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body th {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   color: var(--pdpp-concept-ink-soft);
 }
 
@@ -678,18 +677,18 @@
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] {
   background: none;
   border: none;
-  border-top: var(--pdpp-concept-rule-faint);
+  border-top: 1px solid var(--border-subtle);
   border-radius: 0;
   transition: background-color 120ms ease;
 }
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:last-child {
-  border-bottom: var(--pdpp-concept-rule-faint);
+  border-bottom: 1px solid var(--border-subtle);
 }
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:hover {
   background: var(--pdpp-concept-teal-wash);
 }
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] h3 {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-weight: 600;
   color: var(--pdpp-concept-ink);
 }
@@ -711,7 +710,7 @@
    Flattened the same way as the Card grid above. */
 [data-pdpp-doc-theme] .pdpp-docs-body + div a {
   border: none;
-  border-top: var(--pdpp-concept-rule-faint);
+  border-top: 1px solid var(--border-subtle);
   border-radius: 0;
 }
 [data-pdpp-doc-theme] .pdpp-docs-body + div a:hover {
@@ -734,12 +733,12 @@
 }
 
 [data-pdpp-doc-theme] #nd-toc {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   color: var(--pdpp-concept-ink-soft);
 }
 
 [data-pdpp-doc-theme] #nd-toc h3 {
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   color: var(--pdpp-concept-ink-faint);
 }
 
@@ -773,7 +772,7 @@
  */
 [data-pdpp-doc-theme] #nd-sidebar {
   --fd-sidebar-width: clamp(200px, 6.3462rem + 12.5vw, 276px);
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 13px;
   background: none;
   border-right: none;
@@ -816,7 +815,7 @@
 [data-pdpp-doc-theme] .pdpp-rail__meta dt {
   padding-top: 0;
   margin-top: 16px;
-  font-family: var(--pdpp-concept-mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--pdpp-concept-ink-soft);
   text-transform: uppercase;
@@ -829,7 +828,7 @@
 
 [data-pdpp-doc-theme] .pdpp-rail__meta dd {
   margin: 2px 0 0;
-  font-family: var(--pdpp-concept-serif);
+  font-family: var(--font-serif);
   font-size: 16px;
   font-variant-numeric: tabular-nums;
   color: var(--pdpp-concept-ink);
@@ -849,7 +848,7 @@
 [data-pdpp-doc-theme] .pdpp-rail__label {
   padding-bottom: 10px;
   margin: 0;
-  font-family: var(--pdpp-concept-sans);
+  font-family: var(--font-sans);
   font-size: 12px;
   color: var(--pdpp-concept-ink-soft);
   text-transform: uppercase;

@@ -6,7 +6,6 @@ import Link from "next/link";
 import { PdppCommandBuilder } from "@/components/pdpp-concept/command-tabs.tsx";
 import { PdppConceptDocHeader } from "@/components/pdpp-concept/concept-doc-header.tsx";
 import { PdppConceptDoc, PdppConceptPage } from "@/components/pdpp-concept/concept-page.tsx";
-import { PdppConceptFooter } from "@/components/pdpp-concept/footer.tsx";
 import { GithubIcon } from "@/components/pdpp-concept/icons.tsx";
 import { PdppRail } from "@/components/pdpp-concept/rail.tsx";
 import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
@@ -125,137 +124,133 @@ const implementations = [
 
 export default function ReferencePage() {
   return (
-    <>
-      <PdppConceptPage>
-        <PdppRail toc={SELF_HOST_TOC} />
-        <PdppConceptDoc>
-          <PdppConceptDocHeader
-            lede="Your own personal data server. Ask Claude, ChatGPT, or Codex about your Gmail, GitHub, Notion, and 30 more."
-            title="Self-Host"
-          />
+    <PdppConceptPage>
+      <PdppRail toc={SELF_HOST_TOC} />
+      <PdppConceptDoc>
+        <PdppConceptDocHeader
+          lede="Your own personal data server. Ask Claude, ChatGPT, or Codex about your Gmail, GitHub, Notion, and 30 more."
+          title="Self-Host"
+        />
 
-          <section className="pdpp-section pdpp-section--lead" id="run">
-            <Text as="h2" intent="title" sectionIndex="01">
-              Run it
-            </Text>
-            <PdppCommandBuilder />
+        <section className="pdpp-section pdpp-section--lead" id="run">
+          <Text as="h2" sectionIndex="01" size="title">
+            Run it
+          </Text>
+          <PdppCommandBuilder />
 
-            <Text className="mt-3.5!" intent="callout">
-              A tool running on this machine reaches the node directly. Anything hosted elsewhere, including web
-              assistants, calls from its own servers and needs the public address above.
-            </Text>
-          </section>
+          <Text className="mt-3.5!" size="callout">
+            A tool running on this machine reaches the node directly. Anything hosted elsewhere, including web
+            assistants, calls from its own servers and needs the public address above.
+          </Text>
+        </section>
 
-          <section className="pdpp-section" id="features">
-            <Text as="h2" intent="title" sectionIndex="02">
-              What you get
-            </Text>
-            <ul className="pdpp-features">
-              {features.map((feature) => (
-                <li key={feature.title}>
-                  <Text as="span" color="ink" intent="body" weight="semi">
-                    {feature.title}
-                  </Text>{" "}
-                  <Text as="span" color="ink" intent="body">
-                    {feature.body}
-                  </Text>
-                </li>
+        <section className="pdpp-section" id="features">
+          <Text as="h2" sectionIndex="02" size="title">
+            What you get
+          </Text>
+          <ul className="pdpp-features">
+            {features.map((feature) => (
+              <li key={feature.title}>
+                <Text as="span" color="foreground" size="body" weight="semi">
+                  {feature.title}
+                </Text>{" "}
+                <Text as="span" color="foreground" size="body">
+                  {feature.body}
+                </Text>
+              </li>
+            ))}
+          </ul>
+          <Text size="callout">
+            Data that only lives on your machine, like Claude Code or Codex history, is ingested by the{" "}
+            <a href={GITHUB_LOCAL_COLLECTOR} rel="noopener noreferrer" target="_blank">
+              local collector →
+            </a>
+          </Text>
+        </section>
+
+        <section className="pdpp-section" id="configuration">
+          <Text as="h2" sectionIndex="03" size="title">
+            Advanced configuration
+          </Text>
+          <table className="pdpp-impl-table pdpp-config-table">
+            <thead>
+              <tr>
+                <th scope="col">Setting</th>
+                <th scope="col">Default</th>
+                <th scope="col">Sets</th>
+              </tr>
+            </thead>
+            <tbody>
+              {configuration.map((row) => (
+                <tr key={row.name}>
+                  <td>
+                    <code>{row.name}</code>
+                  </td>
+                  <td>{row.default === "—" ? "—" : <code>{row.default}</code>}</td>
+                  <td>{row.sets}</td>
+                </tr>
               ))}
-            </ul>
-            <Text intent="callout">
-              Data that only lives on your machine, like Claude Code or Codex history, is ingested by the{" "}
-              <a href={GITHUB_LOCAL_COLLECTOR} rel="noopener noreferrer" target="_blank">
-                local collector →
-              </a>
-            </Text>
-          </section>
+            </tbody>
+          </table>
+          <Text size="body">
+            Serving a domain? Put HTTPS in front and set the public origin to match. Full runbook:{" "}
+            <a href={GITHUB_DOCKER_README} rel="noopener noreferrer" target="_blank">
+              deploy/docker/README.md →
+            </a>
+          </Text>
+        </section>
 
-          <section className="pdpp-section" id="configuration">
-            <Text as="h2" intent="title" sectionIndex="03">
-              Advanced configuration
-            </Text>
-            <table className="pdpp-impl-table pdpp-config-table">
-              <thead>
-                <tr>
-                  <th scope="col">Setting</th>
-                  <th scope="col">Default</th>
-                  <th scope="col">Sets</th>
+        <section className="pdpp-section" id="implementations">
+          <Text as="h2" sectionIndex="04" size="title">
+            Other implementations
+          </Text>
+          <table className="pdpp-impl-table">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Type</th>
+                <th scope="col">
+                  <span className="pdpp-visually-hidden">Link</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {implementations.map((impl) => (
+                <tr key={impl.name}>
+                  <td>{impl.name}</td>
+                  <td>{impl.type}</td>
+                  <td>
+                    <a href={impl.href} rel="noopener noreferrer" target="_blank">
+                      {impl.linkLabel} →
+                    </a>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {configuration.map((row) => (
-                  <tr key={row.name}>
-                    <td>
-                      <code>{row.name}</code>
-                    </td>
-                    <td>{row.default === "—" ? "—" : <code>{row.default}</code>}</td>
-                    <td>{row.sets}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <Text intent="body">
-              Serving a domain? Put HTTPS in front and set the public origin to match. Full runbook:{" "}
-              <a href={GITHUB_DOCKER_README} rel="noopener noreferrer" target="_blank">
-                deploy/docker/README.md →
-              </a>
-            </Text>
-          </section>
-
-          <section className="pdpp-section" id="implementations">
-            <Text as="h2" intent="title" sectionIndex="04">
-              Other implementations
-            </Text>
-            <table className="pdpp-impl-table">
-              <thead>
-                <tr>
-                  <th scope="col">Name</th>
-                  <th scope="col">Type</th>
-                  <th scope="col">
-                    <span className="pdpp-visually-hidden">Link</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {implementations.map((impl) => (
-                  <tr key={impl.name}>
-                    <td>{impl.name}</td>
-                    <td>{impl.type}</td>
-                    <td>
-                      <a href={impl.href} rel="noopener noreferrer" target="_blank">
-                        {impl.linkLabel} →
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <Text intent="body">
-              The specification defines conformance by role in{" "}
-              <Link className="link-prose" href="/specification/spec-core#conformance">
-                section 9
-              </Link>
-              .
-            </Text>
-            <p>
-              <a
-                className="group inline-flex items-center gap-1.5 text-teal no-underline hover:text-teal-deep focus-visible:text-teal-deep"
-                href={GITHUB_ISSUES_URL}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                <GithubIcon />
-                <span className="link-prose group-hover:border-teal group-focus-visible:border-teal">
-                  Open an issue on GitHub
-                </span>
-                <span aria-hidden="true">→</span>
-              </a>
-            </p>
-          </section>
-        </PdppConceptDoc>
-      </PdppConceptPage>
-
-      <PdppConceptFooter />
-    </>
+              ))}
+            </tbody>
+          </table>
+          <Text size="body">
+            The specification defines conformance by role in{" "}
+            <Link className="link-prose" href="/specification/spec-core#conformance">
+              section 9
+            </Link>
+            .
+          </Text>
+          <p>
+            <a
+              className="group inline-flex items-center gap-1.5 text-primary no-underline hover:text-primary-emphasis focus-visible:text-primary-emphasis"
+              href={GITHUB_ISSUES_URL}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <GithubIcon />
+              <span className="link-prose group-hover:border-primary group-focus-visible:border-primary">
+                Open an issue on GitHub
+              </span>
+              <span aria-hidden="true">→</span>
+            </a>
+          </p>
+        </section>
+      </PdppConceptDoc>
+    </PdppConceptPage>
   );
 }

@@ -24,7 +24,7 @@ export function SpecRailProvider({ children, frontMatter }: { children: ReactNod
 export function useSpecRailData(): SpecRailData {
   const value = useContext(SpecRailContext);
   if (!value) {
-    throw new Error("useSpecRailData must be used inside SpecRailProvider (see app/specification/layout.tsx).");
+    throw new Error("useSpecRailData must be used inside SpecRailProvider (see components/specification/shell.tsx).");
   }
   return value;
 }

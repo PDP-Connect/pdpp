@@ -14,8 +14,9 @@ import type { ReactNode } from "react";
  *   relate to) a sidebar at the same x coordinate — `/design`, `/`.
  * - `layout="bleeding"` renders a single-column hero that bleeds its copper
  *   left border into the surrounding gutter. Used inside framework-driven
- *   content areas where there is no true cross — currently `/docs` uses a
- *   CSS-only version of this in `docs.css`, sharing the same tokens.
+ *   content areas where there is no true cross — currently `/specification`
+ *   uses a CSS-only version of this in `surfaces/specification.css`, sharing
+ *   the same tokens.
  *
  * Gradient variants:
  * - `warm`: copper wash flows right from the border. The canonical treatment.

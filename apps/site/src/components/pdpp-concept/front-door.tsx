@@ -17,12 +17,12 @@ export function PdppFrontDoor() {
       <div className="flex flex-col gap-5 border-b p-5 pt-4">
         <div className="flex h-12 min-w-0 flex-wrap items-center gap-5">
           <WordmarkIcon className="block h-full w-auto shrink-0" />
-          <hr className="h-full w-px bg-ink-soft" />
-          <Text as="h1" className="min-w-0 text-[44px] leading-none" intent="display" weight="medium">
+          <hr className="h-full w-px bg-muted-foreground" />
+          <Text as="h1" className="min-w-0 text-[44px] leading-none" size="display" weight="medium">
             Personal Data Portability Protocol
           </Text>
         </div>
-        <Text color="soft" intent="stamp" mono weight="normal">
+        <Text color="muted" family="mono" size="stamp" weight="normal">
           {SPEC_STATUS_STAMP}
         </Text>
       </div>
@@ -36,12 +36,12 @@ export function PdppFrontDoor() {
         {/* LHS */}
         <div className="flex min-h-0 min-w-0 flex-col border-r max-[1200px]:border-r-0 max-[1200px]:border-b">
           <div className="flex max-w-measure flex-col gap-5 p-5 pt-4">
-            <Text intent="deck">An open protocol for scoped access to personal data.</Text>
-            <Text className="opacity-60" intent="deck">
+            <Text size="deck">An open protocol for scoped access to personal data.</Text>
+            <Text className="opacity-60" size="deck">
               A grant is how one person approves one application to read chosen records and fields, and a resource
               server enforces it on every request.
             </Text>
-            <Text color="soft" intent="body">
+            <Text color="muted" size="body">
               It profiles{" "}
               <a href="https://oauth.net/2/" rel="noopener noreferrer" target="_blank">
                 OAuth 2.0
@@ -81,24 +81,24 @@ export function PdppFrontDoor() {
               </span>
             </Button>
             <Button
-              className="gap-2.5 rounded-[3px] border-ink-faint px-4 py-3 font-normal text-ink!"
+              className="gap-2.5 rounded-[3px] border-border-subtle px-4 py-3 font-normal text-foreground!"
               nativeButton={false}
               render={<Link href="/self-host" />}
               variant="secondary"
             >
               <span>Implement PDPP</span>
-              <span aria-hidden="true" className="text-ink-faint">
+              <span aria-hidden="true" className="text-foreground-faint">
                 →
               </span>
             </Button>
             <Button
-              className="min-w-0 flex-1 justify-between gap-2.5 rounded-[3px] border-ink-faint px-4 py-3 font-normal text-ink!"
+              className="min-w-0 flex-1 justify-between gap-2.5 rounded-[3px] border-border-subtle px-4 py-3 font-normal text-foreground!"
               nativeButton={false}
               render={<Link href="/participate" />}
               variant="secondary"
             >
               <span>Join the project</span>
-              <span aria-hidden="true" className="text-ink-faint">
+              <span aria-hidden="true" className="text-foreground-faint">
                 →
               </span>
             </Button>
@@ -112,9 +112,9 @@ export function PdppFrontDoor() {
               align="center"
               caps
               className="whitespace-normal! mx-auto max-w-[36ch]"
-              color="ink"
-              intent="stamp"
-              mono
+              color="foreground"
+              family="mono"
+              size="stamp"
             >
               Sleep scores · artists played · your conversations
             </Text>

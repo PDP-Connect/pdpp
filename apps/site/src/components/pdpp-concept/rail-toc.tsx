@@ -52,7 +52,7 @@ export function PdppRailToc({ toc }: PdppRailTocProps) {
 
   return (
     <div className="pt-4" data-slot="pdpp-concept-rail-toc">
-      <Text as="p" className="mb-2.5!" color="faint" intent="eyebrow">
+      <Text as="p" className="mb-2.5!" color="subtle" size="eyebrow">
         Contents
       </Text>
       <nav aria-label="Table of contents">
@@ -65,7 +65,7 @@ export function PdppRailToc({ toc }: PdppRailTocProps) {
                   aria-current={active ? "location" : undefined}
                   className={cn(
                     "block border-b-0 no-underline",
-                    active ? "font-medium text-teal" : "text-ink-soft hover:text-teal"
+                    active ? "font-medium text-primary" : "text-muted-foreground hover:text-primary"
                   )}
                   href={item.href}
                 >

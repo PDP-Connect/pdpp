@@ -196,7 +196,7 @@ export default function DesignSystemPage() {
 
           <div className="px-6 py-8 md:px-12" style={{ borderTop: "1px solid var(--border)" }}>
             <span className="font-mono text-xs" style={{ color: "var(--muted-foreground)", opacity: 0.5 }}>
-              PDPP Design System · globals.css + CONSTITUTION.md
+              PDPP Design System · site.css + CONSTITUTION.md
             </span>
           </div>
         </main>
@@ -889,7 +889,7 @@ function TypographySection() {
                 {[
                   {
                     className: "pdpp-display-lg",
-                    label: "display-lg",
+                    label: "hero",
                     sample: "Personal Data",
                     spec: "60/600/-0.03em",
                     usage: "Splash heroes — the landing page only",
@@ -1022,16 +1022,16 @@ function TypographySection() {
                   {
                     className: "pdpp-title",
                     sample: "Longview",
-                    spec: "14/600",
+                    spec: "14/600 (body rung + 600)",
                     step: "title",
-                    utility: "text-title",
+                    utility: "text-body font-semibold",
                   },
                   {
                     className: "pdpp-body-lg",
                     sample: "An authorization and disclosure protocol.",
                     spec: "18/400",
-                    step: "body-lg",
-                    utility: "text-body-lg",
+                    step: "lede",
+                    utility: "text-lede",
                   },
                   {
                     className: "pdpp-body",
@@ -1043,16 +1043,16 @@ function TypographySection() {
                   {
                     className: "pdpp-label",
                     sample: "What they can access",
-                    spec: "12/500",
+                    spec: "12/500 (small rung + 500)",
                     step: "label",
-                    utility: "text-label",
+                    utility: "text-small font-medium",
                   },
                   {
                     className: "pdpp-caption",
                     sample: "Helper copy.",
                     spec: "12/400",
                     step: "caption",
-                    utility: "text-caption",
+                    utility: "text-small",
                   },
                 ].map(({ step, className, utility, sample, spec }) => (
                   <tr key={step}>
@@ -3561,7 +3561,7 @@ function DocsSection() {
           surface. <code className="font-mono">DocsLayout</code> provides the 13rem sidebar + main grid.{" "}
           <code className="font-mono">ArtifactLink</code> is the canonical linked-row for markdown-backed indexes.{" "}
           <code className="font-mono">ProsePage</code> wraps raw markdown in a tinted reading surface using the{" "}
-          <code className="font-mono">.docs-prose</code> class. <code className="font-mono">SourceLink</code> surfaces
+          <code className="font-mono">.prose-page</code> class. <code className="font-mono">SourceLink</code> surfaces
           repo path + created/updated timestamps + a GitHub link for any artifact.
         </p>
         <div className="flex flex-col gap-6">
@@ -4425,7 +4425,7 @@ const RULE_GROUPS = [
       {
         bad: "Per-component prefers-reduced-motion",
         good: ":root duration reset",
-        why: "One rule in globals.css covers the entire system. No per-component overrides.",
+        why: "One rule in site.css covers the entire system. No per-component overrides.",
       },
     ],
   },

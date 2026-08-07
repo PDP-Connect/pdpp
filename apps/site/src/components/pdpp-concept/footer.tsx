@@ -1,7 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { Suspense } from "react";
 import { cn } from "@/lib/utils.ts";
+import { ColorSchemeMenu } from "./color-scheme-menu.tsx";
 import { DiscordIcon, GithubIcon } from "./icons.tsx";
 import { DISCORD_INVITE_URL, GITHUB_REPO_URL, SITE_LICENSES } from "./site-facts.ts";
 import { Text } from "./text.tsx";
@@ -34,10 +36,10 @@ const githubDisplayText = GITHUB_REPO_URL.replace(GITHUB_URL_SCHEME_RE, "");
 // `pdpp-footer` remains a ::selection cascade hook on teal-deep grounds.
 
 const footerLinkClassName = cn(
-  "text-onteal-deep! no-underline",
-  "border-onteal-deep/30 border-b border-solid",
-  "hover:border-onteal-deep hover:text-white!",
-  "focus-visible:border-onteal-deep focus-visible:text-white!"
+  "text-on-primary-emphasis! no-underline",
+  "border-on-primary-emphasis/30 border-b border-solid",
+  "hover:border-on-primary-emphasis hover:text-white!",
+  "focus-visible:border-on-primary-emphasis focus-visible:text-white!"
 );
 
 const colClassName = "flex max-w-[34ch] flex-col gap-1.5";
@@ -47,9 +49,9 @@ export function PdppConceptFooter() {
     <footer
       className={cn(
         "pdpp-footer",
-        "mt-24 font-sans text-[13px] text-onteal-deep-soft leading-[1.7]",
-        "border-[color-mix(in_srgb,var(--pdpp-concept-teal)_55%,transparent)] border-t",
-        "bg-teal-deep"
+        "mt-24 font-sans text-[13px] text-on-primary-emphasis-soft leading-[1.7]",
+        "border-[color-mix(in_srgb,var(--primary)_55%,transparent)] border-t",
+        "bg-primary-emphasis"
       )}
       data-slot="pdpp-concept-footer"
     >
@@ -57,13 +59,13 @@ export function PdppConceptFooter() {
         className={cn(
           // Same measure as masthead / PdppConceptPage
           "container max-w-page",
-          // Stack by default; four-col row from md
+          // Stack by default; four-col row from 721px (concept surface omits md: theme)
           "flex flex-col gap-6 py-8",
-          "md:flex-row md:flex-wrap md:justify-between md:gap-x-16 md:gap-y-8 md:pt-10 md:pb-24"
+          "min-[721px]:flex-row min-[721px]:flex-wrap min-[721px]:justify-between min-[721px]:gap-x-16 min-[721px]:gap-y-8 min-[721px]:pt-10 min-[721px]:pb-24"
         )}
       >
         <div className={cn(colClassName, "max-w-[40ch] tabular-nums")}>
-          <Text color="onTealDeepLabel" intent="stamp" weight="normal">
+          <Text color="onAccentLabel" size="stamp" weight="normal">
             License
           </Text>
           <dl className="m-0 flex flex-col gap-0.5 tabular-nums">
@@ -81,16 +83,16 @@ export function PdppConceptFooter() {
         </div>
 
         <div className={colClassName}>
-          <Text color="onTealDeepLabel" intent="stamp" weight="normal">
+          <Text color="onAccentLabel" size="stamp" weight="normal">
             Source
           </Text>
           <Text
             as="a"
             className={footerLinkClassName}
-            color="onTealDeep"
+            color="onAccent"
             href={GITHUB_REPO_URL}
-            intent="inherit"
             rel="noopener noreferrer"
+            size="inherit"
             target="_blank"
             withIcon
           >
@@ -100,16 +102,16 @@ export function PdppConceptFooter() {
         </div>
 
         <div className={colClassName}>
-          <Text color="onTealDeepLabel" intent="stamp" weight="normal">
+          <Text color="onAccentLabel" size="stamp" weight="normal">
             Community
           </Text>
           <Text
             as="a"
             className={footerLinkClassName}
-            color="onTealDeep"
+            color="onAccent"
             href={DISCORD_INVITE_URL}
-            intent="inherit"
             rel="noopener noreferrer"
+            size="inherit"
             target="_blank"
             withIcon
           >
@@ -119,10 +121,10 @@ export function PdppConceptFooter() {
         </div>
 
         <div className={colClassName}>
-          <Text color="onTealDeepLabel" intent="stamp" weight="normal">
+          <Text color="onAccentLabel" size="stamp" weight="normal">
             Governance
           </Text>
-          <Text color="onTealDeepSoft" intent="inherit">
+          <Text color="onAccentSoft" size="inherit">
             PDP-Connect is an{" "}
             <a
               className={footerLinkClassName}
@@ -134,6 +136,12 @@ export function PdppConceptFooter() {
             </a>{" "}
             Lab.
           </Text>
+        </div>
+
+        <div className="flex w-full justify-end">
+          <Suspense fallback={<div aria-hidden className="min-h-11 w-40" />}>
+            <ColorSchemeMenu />
+          </Suspense>
         </div>
       </div>
     </footer>
