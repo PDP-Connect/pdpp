@@ -15,6 +15,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PdppRailFrontMatter } from "@/components/pdpp-concept/rail-front-matter.tsx";
+import { PdppRailSectionLabel } from "@/components/pdpp-concept/rail-section-label.tsx";
 import { docsRoute, SUPPORTING_SLUGS } from "@/lib/spec-nav-slugs.ts";
 import { useSpecRailData } from "./rail-context.tsx";
 
@@ -63,7 +64,7 @@ function RailItem({ item }: { item: PageTree.Item }) {
 function RailSeparator({ item }: { item: PageTree.Separator }) {
   const label = typeof item.name === "string" ? item.name : "";
   if (label === "Specification") {
-    return <div className="pdpp-rail__label">{label}</div>;
+    return <PdppRailSectionLabel>{label}</PdppRailSectionLabel>;
   }
   return <hr className="pdpp-rail__rule" />;
 }

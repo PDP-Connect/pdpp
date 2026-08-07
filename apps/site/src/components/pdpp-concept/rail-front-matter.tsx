@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ReactNode } from "react";
+import { pdppRailLabelClassName } from "@/components/pdpp-concept/rail-section-label.tsx";
 import { GITHUB_REPO_URL } from "@/components/pdpp-concept/site-facts.ts";
+import { cn } from "@/lib/utils.ts";
 
 export interface PdppRailFrontMatterProps {
   date: string;
@@ -11,12 +13,10 @@ export interface PdppRailFrontMatterProps {
   version: string;
 }
 
-const githubDisplayText = GITHUB_REPO_URL.replace(/^https?:\/\//, "");
-
 function RailMetaRow({ children, label }: { children: ReactNode; label: string }) {
   return (
     <div className="block p-0 first:[&_dt]:mt-0">
-      <dt className="mt-4 font-mono text-[12px] text-muted-foreground uppercase tracking-[0.04em]">{label}</dt>
+      <dt className={cn("mt-4", pdppRailLabelClassName)}>{label}</dt>
       <dd className="mt-0.5 font-serif text-base text-foreground lining-nums tabular-nums">{children}</dd>
     </div>
   );
@@ -38,13 +38,8 @@ export function PdppRailFrontMatter({ date, editors, status, version }: PdppRail
           ))}
         </RailMetaRow>
         <RailMetaRow label="Source">
-          <a
-            className="link-prose font-sans text-[13px] no-underline"
-            href={GITHUB_REPO_URL}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            {githubDisplayText}
+          <a className="hover:text-primary" href={GITHUB_REPO_URL} rel="noopener noreferrer" target="_blank">
+            View on GitHub
           </a>
         </RailMetaRow>
       </dl>

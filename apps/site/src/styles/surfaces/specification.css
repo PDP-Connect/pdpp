@@ -439,12 +439,13 @@
 
 /* Deferred from the TOC block above so it follows the prose h3 rules. */
 [data-pdpp-doc-theme] #nd-toc h3 {
-  font-family: var(--font-sans);
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--pdpp-concept-ink-faint);
+  margin: 0 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted-foreground);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
 }
 
 /* ─── Left rail (Fumadocs sidebar slot → spec-rail.tsx) ──────────────────── */
@@ -465,10 +466,6 @@
   scrollbar-width: thin;
 }
 
-[data-pdpp-doc-theme] #nd-sidebar a {
-  color: var(--pdpp-concept-ink-soft);
-}
-
 [data-pdpp-doc-theme] #nd-sidebar [data-active="true"] {
   color: var(--pdpp-concept-teal);
   background: none;
@@ -481,21 +478,19 @@
   display: none;
 }
 
-[data-pdpp-doc-theme] #nd-sidebar > div.flex,
-[data-pdpp-doc-theme] #nd-sidebar > div > div > div,
-[data-pdpp-doc-theme] #nd-sidebar [data-radix-scroll-area-viewport] > div {
+[data-pdpp-doc-theme] #nd-sidebar > div.flex.flex-col.gap-3 {
   gap: 0 !important;
-  padding: 64px 0 24px !important;
+  padding: 64px 0 0 !important;
 }
 
-[data-pdpp-doc-theme] .pdpp-rail__label {
-  padding-bottom: 10px;
-  margin: 0;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--pdpp-concept-ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+/* Tree scrollport only — banner above already clears the masthead. */
+[data-pdpp-doc-theme] #nd-sidebar [data-radix-scroll-area-viewport] {
+  padding-inline: 0 !important;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [data-radix-scroll-area-viewport] > div {
+  gap: 0 !important;
+  padding: 0 0 24px !important;
 }
 
 [data-pdpp-doc-theme] .pdpp-rail__doc {
