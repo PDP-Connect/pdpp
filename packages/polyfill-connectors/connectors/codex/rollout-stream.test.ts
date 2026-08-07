@@ -258,14 +258,13 @@ test("iterJsonlLinesFromOffset: resident Buffer memory stays bounded while strea
     assert.equal(count, 64_000, "every line is streamed exactly once");
     assert.equal(lastOffset, fileBytes, "the stream commits the whole file (ends on a terminator)");
 
-    // Absolute ceiling independent of file size. Measured streaming peak on this
-    // shape is ~3 MB (the read stream's internal chunk queue plus one pending
-    // line; higher than a single highWaterMark because `for await` lets the
-    // stream buffer a few chunks between microtask turns). A wholesale
-    // `readFile` of the same file holds ~30 MB. 12 MB sits decisively in that
-    // gap: ~4x the streaming peak (so scheduling jitter never flakes it) and
-    // ~2.5x below a whole-file Buffer load (so the regression fails decisively).
-    const CEILING_BYTES = 12 * 1024 * 1024;
+    // Absolute ceiling independent of file size. Buffer-pool retention differs
+    // across supported Node releases; current runtimes peak around 13 MiB for
+    // this shape even though the iterator retains only a read chunk plus one
+    // partial line. A wholesale `readFile` holds the full ~35 MiB body. The
+    // 16 MiB ceiling leaves runtime headroom while remaining below half the
+    // fixture size, so a whole-file buffering regression still fails clearly.
+    const CEILING_BYTES = 16 * 1024 * 1024;
     assert.ok(
       peakArrayBuffersDelta < CEILING_BYTES,
       `streaming must stay bounded: peak arrayBuffers delta ${peakArrayBuffersDelta} should be < ${CEILING_BYTES} (file ${fileBytes} bytes)`
