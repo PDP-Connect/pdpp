@@ -96,11 +96,16 @@ test("runner exports a stable COLLECTOR_PROTOCOL_VERSION string", () => {
 });
 
 test("bundled connectors registry contains every supported local connector", () => {
-  assert.deepEqual([...BUNDLED_CONNECTOR_IDS].sort(), ["claude_code", "codex", "google_takeout", "imessage"]);
+  assert.deepEqual(
+    [...BUNDLED_CONNECTOR_IDS].sort(),
+    ["apple_photos", "claude_code", "codex", "google_messages", "google_takeout", "imessage"]
+  );
   assert.ok(BUNDLED_CONNECTORS.claude_code);
   assert.ok(BUNDLED_CONNECTORS.codex);
   assert.ok(BUNDLED_CONNECTORS.imessage);
   assert.ok(BUNDLED_CONNECTORS.google_takeout);
+  assert.ok(BUNDLED_CONNECTORS.apple_photos);
+  assert.ok(BUNDLED_CONNECTORS.google_messages);
 });
 
 test("bundled registry is assembled from the connector-owned definitions (runtime names no connector)", async () => {

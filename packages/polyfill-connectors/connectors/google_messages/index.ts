@@ -27,12 +27,37 @@
  * GMCLI_BIN to its absolute path.
  *
  * NEVER SEND-CAPABLE: this connector NEVER invokes `gmcli auth`, `gmcli serve`,
- * `gmcli mcp`, or any send-capable subcommand. It only calls
- * read-only query/sync/backfill subcommands (`gmcli chats list --json`,
- * `gmcli messages search --json`, `gmcli history backfill ...`). Initial
- * QR pairing (`gmcli auth`) is interactive and MUST be run by the user
- * outside this connector — this connector cannot perform it and will not
- * attempt to.
+ * `gmcli mcp`, `gmcli sync --follow`, or any send-capable/streaming
+ * subcommand. It only calls two read-only, single-invocation, bounded
+ * subcommands: `gmcli --json --full chats list` (enumerate conversations)
+ * and, per conversation, `gmcli messages list --conv <id> --json --full
+ * --limit <N> --order asc` (that conversation's messages, oldest-first, up
+ * to the bound). Both open the local SQLite archive, run one query, print,
+ * and exit — there is no daemon/streaming mode for reads; `--follow` exists
+ * only on the separate `gmcli sync` ingest command, which this connector
+ * never invokes. Initial QR pairing (`gmcli auth`) is interactive and MUST
+ * be run by the user outside this connector — this connector cannot
+ * perform it and will not attempt to.
+ *
+ * COMMAND CONTRACT (verified from gmkit source, not guessed): global flags
+ * (`--json`, `--full`, `--store`, `--log-level`, `--read-only`) are Cobra
+ * root persistent flags — this connector places them before the
+ * subcommand for clarity, though Cobra accepts them after too.
+ * `messages search` requires a query term (cobra.MinimumNArgs(1)) and
+ * returns a different struct (RichHit) meant for keyword search, NOT a
+ * complete per-conversation archive — this connector deliberately does
+ * NOT use it for that reason. `messages list --conv <id>` is the correct
+ * complete-listing command and has no query-term requirement.
+ *
+ * BOUNDING: `messages list` exposes only `--limit` (no offset/cursor flag
+ * exists in gmkit's CLI) — there is no built-in pagination beyond a flat
+ * count cap. This connector treats `--limit` as a hard per-conversation
+ * cap (GMCLI_MESSAGES_PER_CHAT_LIMIT, default below) and emits an explicit
+ * `coverage_diagnostics` reason plus a dedicated SKIP_RESULT-adjacent
+ * diagnostic when any conversation hits that cap, rather than silently
+ * returning a partial history as if it were complete. The number of
+ * conversations scanned per run is also capped (GMCLI_MAX_CHATS) so one
+ * archive with hundreds of chats cannot make a single run unbounded.
  *
  * HONEST LIMITATIONS (also surfaced in the manifest):
  *   - The paired Android phone must stay online and reachable for gmcli to
@@ -185,11 +210,20 @@ export function runGmcli(args: readonly string[], opts: { timeoutMs?: number } =
 
 // ─── Parsing ─────────────────────────────────────────────────────────────
 //
-// gmcli's `messages search --json` output is the RichHit struct
-// (github.com/johnlindquist/gmkit, internal/store/search.go — verified
-// from source, see schemas.ts's header comment for the full struct quote):
-// message_id, conversation_id, conversation_name?, sender_name?, body,
-// snippet, timestamp_ms, timestamp_iso?, is_from_me.
+// `gmcli --json --full chats list` and `gmcli messages list --conv <id>
+// --json --full` both serialize gmkit's `store.Message`/`store.Conversation`
+// structs (github.com/johnlindquist/gmkit, internal/store/messages.go +
+// conversations.go — verified from source, see schemas.ts's header comment
+// for the exact struct quotes):
+//   Conversation: conversation_id, name, is_group, last_message_time_ms, ...
+//   Message: message_id, conversation_id, source_platform, sender_id,
+//            body?, timestamp_ms, is_from_me, media_id?, mime_type?,
+//            reactions_json?, reply_to_id?
+
+interface ParsedGmcliChat {
+  readonly id: string;
+  readonly name: string | null;
+}
 
 interface ParsedGmcliMessage {
   readonly body: string;
@@ -197,7 +231,7 @@ interface ParsedGmcliMessage {
   readonly chat_name: string | null;
   readonly direction: "incoming" | "outgoing";
   readonly id: string;
-  readonly sender_name: string | null;
+  readonly sender_id: string | null;
   readonly sent_at: string;
 }
 
@@ -205,33 +239,51 @@ function asNullableString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/**
- * RichHit's `timestamp_iso` is `omitempty` — prefer it when present (it's
- * already a formatted timestamp gmcli computed), else derive ISO-8601 from
- * the always-present `timestamp_ms` epoch-millis field.
- */
-function resolveSentAt(row: Record<string, unknown>): string | null {
-  if (typeof row.timestamp_iso === "string" && row.timestamp_iso.length > 0) {
-    return row.timestamp_iso;
-  }
-  if (typeof row.timestamp_ms === "number" && Number.isFinite(row.timestamp_ms)) {
-    return new Date(row.timestamp_ms).toISOString();
-  }
-  return null;
+function isoFromEpochMs(value: unknown): string | null {
+  return typeof value === "number" && Number.isFinite(value) ? new Date(value).toISOString() : null;
 }
 
 /**
- * Parse gmcli's `--json` output for the messages stream (RichHit rows).
- * Throws on malformed JSON or a shape that lacks the required fields — the
- * caller converts that into a typed error rather than silently emitting a
- * wrong-shape record.
+ * Parse `gmcli --json --full chats list` output into chat ids (+ optional
+ * display name). Throws a typed GmcliError on malformed JSON/shape — never
+ * silently returns a wrong-shape/empty result on a parse failure.
  */
+export function parseGmcliChatsJson(stdout: string): ParsedGmcliChat[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (err) {
+    // biome-ignore lint/style/useErrorCause: GmcliError's 3rd constructor arg forwards to super(message, { cause })
+    throw new GmcliError(
+      `gmcli chats output was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      "query_failed",
+      { cause: err }
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new GmcliError("gmcli chats output was not a JSON array", "query_failed");
+  }
+  return parsed.map((raw) => {
+    if (typeof raw !== "object" || raw === null) {
+      throw new GmcliError("gmcli chats output contained a non-object entry", "query_failed");
+    }
+    const row = raw as Record<string, unknown>;
+    const id = typeof row.conversation_id === "string" ? row.conversation_id : null;
+    if (!id) {
+      throw new GmcliError(
+        "gmcli chat entry is missing conversation_id — schema drift from what this connector expects",
+        "query_failed"
+      );
+    }
+    return { id, name: asNullableString(row.name) };
+  });
+}
+
 /**
- * Convert one raw RichHit JSON row into a ParsedGmcliMessage, or throw a
- * typed GmcliError when a required field is absent/wrong-typed. Split out
- * of parseGmcliMessagesJson to keep the array-level parse loop simple.
+ * Convert one raw Message JSON row into a ParsedGmcliMessage, or throw a
+ * typed GmcliError when a required field is absent/wrong-typed.
  */
-function parseGmcliMessageRow(raw: unknown): ParsedGmcliMessage {
+function parseGmcliMessageRow(raw: unknown, chatName: string | null): ParsedGmcliMessage {
   if (typeof raw !== "object" || raw === null) {
     throw new GmcliError("gmcli messages output contained a non-object entry", "query_failed");
   }
@@ -239,26 +291,30 @@ function parseGmcliMessageRow(raw: unknown): ParsedGmcliMessage {
   const id = typeof row.message_id === "string" ? row.message_id : null;
   const chatId = typeof row.conversation_id === "string" ? row.conversation_id : null;
   const body = typeof row.body === "string" ? row.body : null;
-  const sentAt = resolveSentAt(row);
+  const sentAt = isoFromEpochMs(row.timestamp_ms);
   const isFromMe = typeof row.is_from_me === "boolean" ? row.is_from_me : null;
   if (!(id && chatId && body !== null && sentAt && isFromMe !== null)) {
     throw new GmcliError(
-      "gmcli RichHit entry is missing a required field (message_id, conversation_id, body, timestamp_ms/timestamp_iso, is_from_me) — schema drift from what this connector expects",
+      "gmcli Message entry is missing a required field (message_id, conversation_id, body, timestamp_ms, is_from_me) — schema drift from what this connector expects",
       "query_failed"
     );
   }
   return {
     id,
     chat_id: chatId,
-    chat_name: asNullableString(row.conversation_name),
-    sender_name: asNullableString(row.sender_name),
+    chat_name: chatName,
+    sender_id: asNullableString(row.sender_id),
     body,
     sent_at: sentAt,
     direction: isFromMe ? "outgoing" : "incoming",
   };
 }
 
-export function parseGmcliMessagesJson(stdout: string): ParsedGmcliMessage[] {
+/**
+ * Parse `gmcli messages list --conv <id> --json --full` output (Message
+ * rows) for one conversation into ParsedGmcliMessage records.
+ */
+export function parseGmcliMessagesJson(stdout: string, chatName: string | null = null): ParsedGmcliMessage[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -273,7 +329,29 @@ export function parseGmcliMessagesJson(stdout: string): ParsedGmcliMessage[] {
   if (!Array.isArray(parsed)) {
     throw new GmcliError("gmcli messages output was not a JSON array", "query_failed");
   }
-  return parsed.map(parseGmcliMessageRow);
+  return parsed.map((row) => parseGmcliMessageRow(row, chatName));
+}
+
+// ─── Bounding ────────────────────────────────────────────────────────────
+//
+// gmkit's `messages list` exposes only a flat `--limit` — no offset/cursor
+// pagination flag exists in the CLI. These caps bound total subprocess
+// output/runtime per run; a chat that returns exactly the limit is treated
+// as POSSIBLY truncated (gmcli gives no "there were more" signal), and a
+// dedicated coverage_diagnostics/SKIP-adjacent diagnostic surfaces that
+// honestly rather than silently presenting a partial history as complete.
+
+const DEFAULT_MESSAGES_PER_CHAT_LIMIT = 500;
+const DEFAULT_MAX_CHATS = 200;
+
+function resolveMessagesPerChatLimit(): number {
+  const raw = Number(process.env.GMCLI_MESSAGES_PER_CHAT_LIMIT);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MESSAGES_PER_CHAT_LIMIT;
+}
+
+function resolveMaxChats(): number {
+  const raw = Number(process.env.GMCLI_MAX_CHATS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MAX_CHATS;
 }
 
 // ─── Coverage diagnostics ────────────────────────────────────────────────
@@ -297,6 +375,7 @@ interface GmcliFetchOutcome {
   readonly coverageStatus: CoverageRecord["status"];
   readonly parsed?: ParsedGmcliMessage[];
   readonly skip?: { reason: string; message: string };
+  readonly truncated?: readonly string[];
 }
 
 function classifyGmcliFetchError(err: unknown): GmcliFetchOutcome {
@@ -323,40 +402,106 @@ function classifyGmcliFetchError(err: unknown): GmcliFetchOutcome {
 }
 
 /**
- * Query gmcli for messages and parse its `--json` output, collapsing every
- * failure mode (binary missing, not paired, query failure, schema drift)
- * into one discriminated outcome. `collect()` only has to branch on
- * `outcome.skip` vs `outcome.parsed` — the fine-grained SKIP_RESULT reason
- * and coverage status/reason live here.
+ * Fetch one conversation's messages, bounded by `limit`. Returns the parsed
+ * rows plus whether this chat hit the bound (rows.length === limit) —
+ * gmcli's `--limit` gives no "there were more" signal, so a full page is
+ * the only detectable proxy for "this conversation may have more history
+ * than we fetched."
  */
-async function fetchAndParseGmcliMessages(): Promise<GmcliFetchOutcome> {
-  let result: GmcliResult;
+async function fetchChatMessages(
+  invoke: GmcliInvoker,
+  chat: ParsedGmcliChat,
+  limit: number
+): Promise<{ messages: ParsedGmcliMessage[]; possiblyTruncated: boolean }> {
+  const result = await invoke([
+    "messages",
+    "list",
+    "--conv",
+    chat.id,
+    "--json",
+    "--full",
+    "--limit",
+    String(limit),
+    "--order",
+    "asc",
+  ]);
+  const messages = parseGmcliMessagesJson(result.stdout, chat.name);
+  return { messages, possiblyTruncated: messages.length >= limit };
+}
+
+/**
+ * Enumerate chats (`gmcli --json --full chats list`), then fetch each
+ * chat's messages (`gmcli messages list --conv <id> ...`), bounded by
+ * GMCLI_MAX_CHATS/GMCLI_MESSAGES_PER_CHAT_LIMIT. Collapses every failure
+ * mode (binary missing, not paired, query failure, schema drift) into one
+ * discriminated outcome. `collect()` only has to branch on `outcome.skip`
+ * vs `outcome.parsed` — the fine-grained SKIP_RESULT reason and coverage
+ * status/reason live here.
+ */
+export async function fetchAndParseGmcliMessages(invoke: GmcliInvoker = runGmcli): Promise<GmcliFetchOutcome> {
+  let chatsResult: GmcliResult;
   try {
-    result = await runGmcli(["messages", "search", "--json"]);
+    chatsResult = await invoke(["--json", "--full", "chats", "list"]);
   } catch (err) {
     return classifyGmcliFetchError(err);
   }
 
+  let chats: ParsedGmcliChat[];
   try {
-    const parsed = parseGmcliMessagesJson(result.stdout);
-    return {
-      coverageStatus: "collected",
-      coverageReason: `gmcli reported ${String(parsed.length)} message(s) from the paired-device archive.`,
-      parsed,
-    };
+    chats = parseGmcliChatsJson(chatsResult.stdout);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
       coverageStatus: "unsupported",
-      coverageReason: `gmcli messages output did not match the expected shape: ${message}`,
+      coverageReason: `gmcli chats output did not match the expected shape: ${message}`,
       skip: { reason: "gmcli_schema_drift", message },
     };
   }
+
+  const maxChats = resolveMaxChats();
+  const perChatLimit = resolveMessagesPerChatLimit();
+  const boundedChats = chats.slice(0, maxChats);
+  const chatsTruncated = chats.length > maxChats;
+
+  const parsed: ParsedGmcliMessage[] = [];
+  const truncatedChatIds: string[] = [];
+  for (const chat of boundedChats) {
+    let outcome: { messages: ParsedGmcliMessage[]; possiblyTruncated: boolean };
+    try {
+      outcome = await fetchChatMessages(invoke, chat, perChatLimit);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        coverageStatus: "unsupported",
+        coverageReason: `gmcli messages query failed for a conversation: ${message}`,
+        skip: { reason: "gmcli_query_failed", message },
+      };
+    }
+    parsed.push(...outcome.messages);
+    if (outcome.possiblyTruncated) {
+      truncatedChatIds.push(chat.id);
+    }
+  }
+
+  const truncationNote =
+    truncatedChatIds.length > 0
+      ? ` ${String(truncatedChatIds.length)} conversation(s) hit the per-chat limit (${String(perChatLimit)}) and may have older messages not fetched this run.`
+      : "";
+  const chatsBoundNote = chatsTruncated
+    ? ` Only the first ${String(maxChats)} of ${String(chats.length)} conversations were scanned this run.`
+    : "";
+
+  return {
+    coverageStatus: "collected",
+    coverageReason: `gmcli reported ${String(parsed.length)} message(s) across ${String(boundedChats.length)} conversation(s).${truncationNote}${chatsBoundNote}`,
+    parsed,
+    truncated: truncatedChatIds,
+  };
 }
 
 // ─── Connector ─────────────────────────────────────────────────────────
 
-export type GmcliInvoker = typeof runGmcli;
+export type GmcliInvoker = (args: readonly string[]) => Promise<GmcliResult>;
 
 runConnectorGuarded();
 
@@ -380,6 +525,14 @@ function runConnectorGuarded(): void {
       }
 
       const parsed = outcome.parsed ?? [];
+      if (outcome.truncated && outcome.truncated.length > 0) {
+        await emit({
+          type: "SKIP_RESULT",
+          stream: "messages",
+          reason: "gmcli_per_chat_limit_reached",
+          message: `${String(outcome.truncated.length)} conversation(s) reached the per-chat message limit; older history in those conversations was not fetched this run. Increase GMCLI_MESSAGES_PER_CHAT_LIMIT and re-run to fetch more.`,
+        });
+      }
       if (!requested.has("messages")) {
         return;
       }

@@ -214,7 +214,14 @@ export interface ConnectionSetupPlan {
   readonly validationMode: CredentialValidationMode;
 }
 
-export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex", "google-takeout", "imessage"] as const;
+export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = [
+  "claude_code",
+  "codex",
+  "google_takeout",
+  "imessage",
+  "apple_photos",
+  "google_messages",
+] as const;
 
 export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR_CONNECTORS)[number];
 
@@ -350,9 +357,19 @@ export function connectorKeyFromManifest(manifest: ConnectorManifestLike, fallba
   return raw ? canonicalConnectorKey(raw) : null;
 }
 
+// Two canonical keys have a registry-URL slug that differs from the
+// connector directory / bundled-registry id (LOCAL_COLLECTOR_DEFINITIONS is
+// keyed by `connector_id`, which uses underscores for both): claude-code and
+// google-takeout. Every other bundled connector's canonical key already
+// equals its directory name.
+const HYPHENATED_CANONICAL_KEY_ALIASES: Readonly<Record<string, string>> = {
+  "claude-code": "claude_code",
+  "google-takeout": "google_takeout",
+};
+
 export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
   const key = canonicalConnectorKey(canonicalKey);
-  return key === "claude-code" ? "claude_code" : key;
+  return HYPHENATED_CANONICAL_KEY_ALIASES[key] ?? key;
 }
 
 export function displayNameForConnector(connectorKey: string, manifest?: ConnectorManifestLike | null): string {

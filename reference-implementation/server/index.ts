@@ -1154,6 +1154,8 @@ const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
   ["codex", { displayName: "OpenAI Codex CLI", entryName: "codex.json" }],
   ["google-takeout", { displayName: "Google Takeout", entryName: "google_takeout.json" }],
   ["imessage", { displayName: "iMessage (macOS)", entryName: "imessage.json" }],
+  ["apple_photos", { displayName: "Apple Photos", entryName: "apple_photos.json" }],
+  ["google_messages", { displayName: "Google Messages (via gmcli)", entryName: "google_messages.json" }],
 ]);
 
 function readReferenceLocalConnectorCatalogManifest(connectorId: string) {

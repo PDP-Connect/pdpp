@@ -48,6 +48,9 @@ const requiredFiles = new Set([
   "dist/polyfill-connectors/connectors/claude_code/index.js",
   "dist/polyfill-connectors/connectors/codex/index.js",
   "dist/polyfill-connectors/connectors/imessage/index.js",
+  "dist/polyfill-connectors/connectors/google_takeout/index.js",
+  "dist/polyfill-connectors/connectors/apple_photos/index.js",
+  "dist/polyfill-connectors/connectors/google_messages/index.js",
 ]);
 
 const packInfo = (await npmPackMetadata({ cwd: packageRoot })) as PackMetadata;

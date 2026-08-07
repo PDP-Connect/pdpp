@@ -38,7 +38,8 @@ const BROWSER_COLLECTOR_MONOREPO_COPY =
 const SETUP_TESTID = /data-testid="collector-setup-command"/;
 const ENROLL_TESTID = /data-testid="collector-enroll-command"/;
 const RUN_TESTID_CLAUDE = /data-testid={`collector-run-command-/;
-const SUPPORTED_CONNECTORS = /COLLECTOR_RUN_CONNECTORS\s*=\s*\["claude_code",\s*"codex",\s*"imessage"\]/;
+const SUPPORTED_CONNECTORS =
+  /COLLECTOR_RUN_CONNECTORS\s*=\s*\[\s*"claude_code",\s*"codex",\s*"google_takeout",\s*"imessage",\s*"apple_photos",\s*"google_messages",?\s*\]/;
 
 test("enrollment form derives the canonical local collector commands via shared helpers", async () => {
   const src = await read(FORM_PATH);
@@ -65,12 +66,12 @@ test("guided setup command appears before the advanced enroll/run commands in th
   assert.ok(setupIndex < enrollIndex, "setup must render before the low-level enroll/run commands");
 });
 
-test("enrollment form advertises claude_code, codex, and imessage as the operator-ready npx connectors", async () => {
+test("enrollment form advertises every connector bundled in the published @pdpp/local-collector npx path", async () => {
   const src = await read(FORM_PATH);
   assert.match(
     src,
     SUPPORTED_CONNECTORS,
-    "claude_code, codex, and imessage are all bundled in the published @pdpp/local-collector npx path"
+    "claude_code, codex, google_takeout, imessage, apple_photos, and google_messages are all bundled in the published @pdpp/local-collector npx path"
   );
 });
 

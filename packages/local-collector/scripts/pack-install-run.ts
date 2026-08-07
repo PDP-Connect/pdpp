@@ -220,7 +220,10 @@ async function main(): Promise<void> {
     const advertised = JSON.parse(advertise.stdout);
     assert.equal(advertised.runtime, "collector");
     assert.deepEqual([...advertised.bindings].sort(), ["filesystem", "local_device", "network"]);
-    assert.deepEqual([...advertised.bundled_connectors].sort(), ["claude_code", "codex", "google_takeout", "imessage"]);
+    assert.deepEqual(
+      [...advertised.bundled_connectors].sort(),
+      ["apple_photos", "claude_code", "codex", "google_messages", "google_takeout", "imessage"]
+    );
     // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(advertised.collector_protocol_version, /^\d+$/);
 
@@ -250,10 +253,15 @@ async function main(): Promise<void> {
       await runProtocolMismatchSmoke({ projectDir, env });
       await runImessageSampleSmoke({ projectDir, env });
       await runFixtureBackedGoogleTakeoutEnrollRunSmoke({ projectDir, env });
+      await runApplePhotosSampleSmoke({ projectDir, env });
+      await runGoogleMessagesSampleSmoke({ projectDir, env });
     } else {
       log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.ts not present.");
       log("SKIP collector_protocol_mismatch smoke: reference-implementation/server/index.ts not present.");
       log("SKIP iMessage bounded-sample smoke: reference-implementation/server/index.ts not present.");
+      log("SKIP Google Takeout enroll/run smoke: reference-implementation/server/index.ts not present.");
+      log("SKIP Apple Photos bounded-sample smoke: reference-implementation/server/index.ts not present.");
+      log("SKIP Google Messages bounded-sample smoke: reference-implementation/server/index.ts not present.");
     }
 
     log("PASS pack-install-run local smoke");
@@ -937,5 +945,353 @@ async function runFixtureBackedGoogleTakeoutEnrollRunSmoke({
     await rm(takeoutDir, { recursive: true, force: true });
   }
 }
+
+
+const APPLE_PHOTOS_FIXTURE_FILE_COUNT = 500;
+const APPLE_PHOTOS_SAMPLE_LIMIT = 20;
+
+/**
+ * Build a synthetic Photos.app export directory large enough to exercise
+ * `--sample` truncation (500 files, sampled to 20), using only Node
+ * built-ins (no real image bytes, no native dependency) — the same
+ * primitive the packed apple_photos connector itself uses to walk an
+ * export directory.
+ */
+async function prepareApplePhotosFixture(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "pdpp-local-collector-apple-photos-fixture-"));
+  for (let i = 0; i < APPLE_PHOTOS_FIXTURE_FILE_COUNT; i += 1) {
+    await writeFile(path.join(dir, `IMG_${String(i).padStart(4, "0")}.jpg`), Buffer.from(`fixture-photo-${i}`));
+  }
+  return dir;
+}
+
+/**
+ * Fixture-backed bounded-sample smoke for apple_photos (proves the
+ * large-file / `--sample` path against the actual packed, installed
+ * tarball — not just the connector's own unit tests, which run from
+ * source). Points `APPLE_PHOTOS_EXPORT_DIR` at a 500-file synthetic export
+ * directory and runs the installed `pdpp-local-collector run --connector
+ * apple_photos --streams photos --sample 20`. Asserts the run queues and
+ * sends exactly the sampled 20, not the full 500, then proves a follow-up
+ * full run drains everything.
+ */
+async function runApplePhotosSampleSmoke({
+  projectDir,
+  env,
+}: {
+  projectDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  log("Booting in-process reference server for the Apple Photos bounded-sample smoke...");
+  const { startServer } = await import(`file://${referenceServerEntry}`);
+  const { getDb } = await import(`file://${referenceDbModule}`);
+  // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+  const server = (await (startServer as any)({
+    asPort: 0,
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  })) as ServerInstance;
+  const baseUrl = `http://127.0.0.1:${server.asPort}`;
+  const exportDir = await prepareApplePhotosFixture();
+  try {
+    log("Creating enrollment code for apple_photos...");
+    const codeResp = await postJson(`${baseUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: "apple_photos",
+      local_binding_name: "pack-install-run-apple-photos",
+    });
+    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const enrollmentCode = (codeResp.body as any).enrollment_code;
+
+    log("Running installed pdpp-local-collector enroll for apple_photos...");
+    const enroll = await run(
+      "npx",
+      ["--no-install", "pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode],
+      { cwd: projectDir, env }
+    );
+    const enrollment = JSON.parse(enroll.stdout) as EnrollmentData;
+
+    log(`Running installed pdpp-local-collector run --connector apple_photos --sample ${APPLE_PHOTOS_SAMPLE_LIMIT}...`);
+    const queuePath = path.join(projectDir, "pack-install-run-apple-photos-outbox.json");
+    const runResult = await run(
+      "npx",
+      [
+        "--no-install",
+        "pdpp-local-collector",
+        "run",
+        "--base-url",
+        baseUrl,
+        "--connector",
+        "apple_photos",
+        "--device-id",
+        enrollment.device_id,
+        "--device-token",
+        enrollment.device_token,
+        "--connection-id",
+        enrollment.source_instance_id,
+        "--queue",
+        queuePath,
+        "--streams",
+        "photos",
+        "--sample",
+        String(APPLE_PHOTOS_SAMPLE_LIMIT),
+      ],
+      { cwd: projectDir, env: { ...env, APPLE_PHOTOS_EXPORT_DIR: exportDir } }
+    );
+    const runOutput = JSON.parse(runResult.stdout) as {
+      object?: string;
+      records_seen?: number;
+      status?: { outbox?: { counts?: { pending?: number; sent?: number; total?: number } } };
+    };
+    assert.equal(runOutput.object, "local_collector_sample", `unexpected --sample response shape: ${runResult.stdout}`);
+    assert.ok(
+      typeof runOutput.records_seen === "number" && runOutput.records_seen >= APPLE_PHOTOS_SAMPLE_LIMIT,
+      `--sample ${APPLE_PHOTOS_SAMPLE_LIMIT} must see at least the limit before stopping: ${runResult.stdout}`
+    );
+    assert.ok(
+      runOutput.records_seen < APPLE_PHOTOS_FIXTURE_FILE_COUNT,
+      `--sample ${APPLE_PHOTOS_SAMPLE_LIMIT} must stop well short of the full ${APPLE_PHOTOS_FIXTURE_FILE_COUNT}-file fixture; got ${runOutput.records_seen}: ${runResult.stdout}`
+    );
+    const outboxTotal = runOutput.status?.outbox?.counts?.total ?? 0;
+    assert.ok(outboxTotal > 0, `sample run must leave sampled work in the local outbox: ${runResult.stdout}`);
+
+    log("Running installed pdpp-local-collector run --connector apple_photos (no --sample) to drain the full fixture...");
+    const fullRun = await run(
+      "npx",
+      [
+        "--no-install",
+        "pdpp-local-collector",
+        "run",
+        "--base-url",
+        baseUrl,
+        "--connector",
+        "apple_photos",
+        "--device-id",
+        enrollment.device_id,
+        "--device-token",
+        enrollment.device_token,
+        "--connection-id",
+        enrollment.source_instance_id,
+        "--queue",
+        queuePath,
+        "--streams",
+        "photos",
+      ],
+      { cwd: projectDir, env: { ...env, APPLE_PHOTOS_EXPORT_DIR: exportDir } }
+    );
+    const fullRunOutput = JSON.parse(fullRun.stdout) as RunOutput;
+    assert.equal(
+      fullRunOutput.done?.status,
+      "succeeded",
+      `follow-up full apple_photos run did not report DONE.status=succeeded: ${fullRun.stdout}`
+    );
+
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const persisted = (getDb() as any)
+      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .get("apple_photos", enrollment.connector_instance_id);
+    assert.equal(
+      persisted.n,
+      APPLE_PHOTOS_FIXTURE_FILE_COUNT,
+      `expected the full ${APPLE_PHOTOS_FIXTURE_FILE_COUNT}-file fixture persisted after the non-sampled follow-up run; got ${persisted.n}`
+    );
+    log(
+      `Apple Photos bounded-sample + full-drain smoke PASS: sample stopped at ${runOutput.records_seen} of ${APPLE_PHOTOS_FIXTURE_FILE_COUNT}, follow-up run persisted all ${persisted.n}.`
+    );
+  } finally {
+    await closeServer(server);
+    await rm(exportDir, { recursive: true, force: true });
+  }
+}
+
+const GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT = 500;
+const GOOGLE_MESSAGES_SAMPLE_LIMIT = 20;
+
+/**
+ * Fake `gmcli` binary for the pack-install-run smoke: a single chat, 500
+ * messages, dispatching on the real documented CLI shape (`--json --full
+ * chats list` / `messages list --conv <id> --json --full --limit <N>
+ * --order asc`) so this smoke proves the packed google_messages tarball
+ * spawns exactly this shape against whatever GMCLI_BIN points at — no real
+ * gmcli binary or paired Android device is available in CI, so this script
+ * fixture stands in for it.
+ */
+async function prepareFakeGmcliBinary(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "pdpp-local-collector-gmcli-fixture-"));
+  const binPath = path.join(dir, "fake-gmcli.mjs");
+  const messages = Array.from({ length: GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT }, (_, i) => ({
+    message_id: `msg_${String(i).padStart(4, "0")}`,
+    conversation_id: "chat_fixture",
+    source_platform: "rcs",
+    sender_id: i % 2 === 0 ? "+15551230001" : "me",
+    body: `fixture message ${i}`,
+    timestamp_ms: 1_754_071_452_000 + i * 1000,
+    status: 1,
+    is_from_me: i % 2 === 1,
+  }));
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("chats") && args.includes("list")) {
+  process.stdout.write(JSON.stringify([{ conversation_id: "chat_fixture", source_platform: "rcs", name: "Fixture Chat" }]));
+  process.exit(0);
+}
+if (args[0] === "messages" && args[1] === "list") {
+  const limitIdx = args.indexOf("--limit");
+  const limit = limitIdx >= 0 ? Number(args[limitIdx + 1]) : ${GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT};
+  const all = ${JSON.stringify(messages)};
+  process.stdout.write(JSON.stringify(all.slice(0, limit)));
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await writeFile(binPath, script, { mode: 0o755 });
+  return binPath;
+}
+
+/**
+ * Fixture-backed bounded-sample smoke for google_messages, using a fake
+ * `gmcli` binary (no real gmcli install or paired Android device is
+ * available in this environment) that speaks the same documented CLI
+ * contract (`--json --full chats list`, `messages list --conv <id> --json
+ * --full --limit <N> --order asc`) the real gmcli would. Proves the
+ * `--sample` path against the actual packed, installed tarball.
+ */
+async function runGoogleMessagesSampleSmoke({
+  projectDir,
+  env,
+}: {
+  projectDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  log("Booting in-process reference server for the Google Messages bounded-sample smoke...");
+  const { startServer } = await import(`file://${referenceServerEntry}`);
+  const { getDb } = await import(`file://${referenceDbModule}`);
+  // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+  const server = (await (startServer as any)({
+    asPort: 0,
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  })) as ServerInstance;
+  const baseUrl = `http://127.0.0.1:${server.asPort}`;
+  const gmcliBin = await prepareFakeGmcliBinary();
+  try {
+    log("Creating enrollment code for google_messages...");
+    const codeResp = await postJson(`${baseUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: "google_messages",
+      local_binding_name: "pack-install-run-google-messages",
+    });
+    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const enrollmentCode = (codeResp.body as any).enrollment_code;
+
+    log("Running installed pdpp-local-collector enroll for google_messages...");
+    const enroll = await run(
+      "npx",
+      ["--no-install", "pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode],
+      { cwd: projectDir, env }
+    );
+    const enrollment = JSON.parse(enroll.stdout) as EnrollmentData;
+
+    log(
+      `Running installed pdpp-local-collector run --connector google_messages --sample ${GOOGLE_MESSAGES_SAMPLE_LIMIT}...`
+    );
+    const queuePath = path.join(projectDir, "pack-install-run-google-messages-outbox.json");
+    const runResult = await run(
+      "npx",
+      [
+        "--no-install",
+        "pdpp-local-collector",
+        "run",
+        "--base-url",
+        baseUrl,
+        "--connector",
+        "google_messages",
+        "--device-id",
+        enrollment.device_id,
+        "--device-token",
+        enrollment.device_token,
+        "--connection-id",
+        enrollment.source_instance_id,
+        "--queue",
+        queuePath,
+        "--streams",
+        "messages",
+        "--sample",
+        String(GOOGLE_MESSAGES_SAMPLE_LIMIT),
+      ],
+      { cwd: projectDir, env: { ...env, GMCLI_BIN: gmcliBin } }
+    );
+    const runOutput = JSON.parse(runResult.stdout) as {
+      object?: string;
+      records_seen?: number;
+      status?: { outbox?: { counts?: { pending?: number; sent?: number; total?: number } } };
+    };
+    assert.equal(runOutput.object, "local_collector_sample", `unexpected --sample response shape: ${runResult.stdout}`);
+    assert.ok(
+      typeof runOutput.records_seen === "number" && runOutput.records_seen >= GOOGLE_MESSAGES_SAMPLE_LIMIT,
+      `--sample ${GOOGLE_MESSAGES_SAMPLE_LIMIT} must see at least the limit before stopping: ${runResult.stdout}`
+    );
+    assert.ok(
+      runOutput.records_seen < GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT,
+      `--sample ${GOOGLE_MESSAGES_SAMPLE_LIMIT} must stop well short of the full ${GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT}-message fixture; got ${runOutput.records_seen}: ${runResult.stdout}`
+    );
+    const outboxTotal = runOutput.status?.outbox?.counts?.total ?? 0;
+    assert.ok(outboxTotal > 0, `sample run must leave sampled work in the local outbox: ${runResult.stdout}`);
+
+    log(
+      "Running installed pdpp-local-collector run --connector google_messages (no --sample) to drain the full fixture..."
+    );
+    const fullRun = await run(
+      "npx",
+      [
+        "--no-install",
+        "pdpp-local-collector",
+        "run",
+        "--base-url",
+        baseUrl,
+        "--connector",
+        "google_messages",
+        "--device-id",
+        enrollment.device_id,
+        "--device-token",
+        enrollment.device_token,
+        "--connection-id",
+        enrollment.source_instance_id,
+        "--queue",
+        queuePath,
+        "--streams",
+        "messages",
+      ],
+      { cwd: projectDir, env: { ...env, GMCLI_BIN: gmcliBin } }
+    );
+    const fullRunOutput = JSON.parse(fullRun.stdout) as RunOutput;
+    assert.equal(
+      fullRunOutput.done?.status,
+      "succeeded",
+      `follow-up full google_messages run did not report DONE.status=succeeded: ${fullRun.stdout}`
+    );
+
+    // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
+    const persisted = (getDb() as any)
+      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .get("google_messages", enrollment.connector_instance_id);
+    assert.equal(
+      persisted.n,
+      GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT,
+      `expected the full ${GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT}-message fixture persisted after the non-sampled follow-up run; got ${persisted.n}`
+    );
+    log(
+      `Google Messages bounded-sample + full-drain smoke PASS: sample stopped at ${runOutput.records_seen} of ${GOOGLE_MESSAGES_FIXTURE_MESSAGE_COUNT}, follow-up run persisted all ${persisted.n}.`
+    );
+  } finally {
+    await closeServer(server);
+    await rm(path.dirname(gmcliBin), { recursive: true, force: true });
+  }
+}
+
 
 await main();

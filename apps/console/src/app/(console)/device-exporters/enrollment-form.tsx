@@ -14,12 +14,24 @@ import {
 } from "@/lib/pdpp-cli-command.ts";
 import { createEnrollmentCodeAction } from "./actions.ts";
 
-const COLLECTOR_RUN_CONNECTORS = ["claude_code", "codex", "imessage"] as const;
+const COLLECTOR_RUN_CONNECTORS = [
+  "claude_code",
+  "codex",
+  "google_takeout",
+  "imessage",
+  "apple_photos",
+  "google_messages",
+] as const;
 const SETUP_SAMPLE_SIZE = 20;
-const MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS = ["imessage"] as const;
+const MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS = ["imessage", "apple_photos"] as const;
+const EXTERNAL_TOOL_LOCAL_COLLECTOR_CONNECTORS = ["google_messages"] as const;
 
 function isMacosOnlyLocalCollectorConnector(connectorId: string): boolean {
   return (MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS as readonly string[]).includes(connectorId);
+}
+
+function isExternalToolLocalCollectorConnector(connectorId: string): boolean {
+  return (EXTERNAL_TOOL_LOCAL_COLLECTOR_CONNECTORS as readonly string[]).includes(connectorId);
 }
 
 export function EnrollmentForm({
@@ -43,8 +55,10 @@ export function EnrollmentForm({
   let setupCommand: string | null = null;
   let enrollCommand: string | null = null;
   let isMacosOnly = false;
+  let isExternalTool = false;
   if (state.ok === true) {
     isMacosOnly = isMacosOnlyLocalCollectorConnector(state.code.connector_id);
+    isExternalTool = isExternalToolLocalCollectorConnector(state.code.connector_id);
     setupCommand = pdppLocalCollectorSetupCommand({
       baseUrl: referenceBaseUrl,
       code: state.code.enrollment_code,
@@ -100,14 +114,45 @@ export function EnrollmentForm({
               className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2"
               data-testid="collector-macos-requirements"
             >
+              {state.code.connector_id === "apple_photos" ? (
+                <p className="pdpp-caption text-foreground">
+                  <strong>Requires a physical Mac and a manual export.</strong> First, in Photos.app on the Mac with
+                  your library: select the photos/albums you want, then{" "}
+                  <strong>File &rarr; Export &rarr; Export Unmodified Originals</strong>, and save into{" "}
+                  <code className="font-mono">~/.pdpp/imports/apple_photos/</code> (or set{" "}
+                  <code className="font-mono">APPLE_PHOTOS_EXPORT_DIR</code> to a different folder before running the
+                  command below). This connector reads that exported folder &mdash; it does not read the Photos library
+                  database directly.
+                </p>
+              ) : (
+                <p className="pdpp-caption text-foreground">
+                  <strong>Requires a physical Mac.</strong> iMessage reads{" "}
+                  <code className="font-mono">~/Library/Messages/chat.db</code>, which only exists on macOS &mdash; this
+                  cannot run on Linux/Windows or in a container. It also needs <strong>Full Disk Access</strong> for the
+                  terminal (or Node binary) running the command: System Settings &rarr; Privacy &amp; Security &rarr;
+                  Full Disk Access &rarr; enable your terminal app, then restart it. Without Full Disk Access, chat.db
+                  reads fail with a permissions error even though the file path is correct.
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          {isExternalTool ? (
+            <div
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2"
+              data-testid="collector-external-tool-requirements"
+            >
               <p className="pdpp-caption text-foreground">
-                <strong>Requires a physical Mac.</strong> iMessage reads{" "}
-                <code className="font-mono">~/Library/Messages/chat.db</code>, which only exists on macOS &mdash; this
-                cannot run on Linux/Windows or in a container. It also needs{" "}
-                <strong>Full Disk Access</strong> for the terminal (or Node binary) running the command: System
-                Settings &rarr; Privacy &amp; Security &rarr; Full Disk Access &rarr; enable your terminal app, then
-                restart it. Without Full Disk Access, chat.db reads fail with a permissions error even though the
-                file path is correct.
+                <strong>Requires the external `gmcli` tool and a one-time QR pairing, done by you first.</strong>{" "}
+                Install <code className="font-mono">gmcli</code> from{" "}
+                <code className="font-mono">github.com/johnlindquist/gmkit</code> (AGPL-3.0; this connector spawns it as
+                a subprocess and never bundles or imports its code) and put it on your PATH, or set{" "}
+                <code className="font-mono">GMCLI_BIN</code> to its absolute path. Then run{" "}
+                <code className="font-mono">gmcli auth</code> yourself, interactively, to QR-pair with your Android
+                phone &mdash; this connector cannot do that step for you. The phone must stay online and reachable for
+                gmcli to sync, and pairing expires after roughly 14 days of inactivity (re-run{" "}
+                <code className="font-mono">gmcli auth</code> to re-pair). Only after pairing succeeds will the command
+                below produce real records.
               </p>
             </div>
           ) : null}
@@ -116,9 +161,10 @@ export function EnrollmentForm({
             <div className="pdpp-eyebrow text-muted-foreground">Set up the device that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
               Run this <code className="font-mono">@pdpp/local-collector</code> command on the device with the data
-              (Claude Code, Codex, or iMessage). It exchanges the code, saves your device credentials to a local file
-              only you can read (never printed here or in your terminal), and runs a bounded {SETUP_SAMPLE_SIZE}-record
-              proof pass so you can see it working before it collects everything.
+              (Claude Code, Codex, Google Takeout, iMessage, Apple Photos export, or a gmcli-paired Google Messages
+              archive). It exchanges the code, saves your device credentials to a local file only you can read (never
+              printed here or in your terminal), and runs a bounded {SETUP_SAMPLE_SIZE}-record proof pass so you can
+              see it working before it collects everything.
             </p>
             <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
               <code

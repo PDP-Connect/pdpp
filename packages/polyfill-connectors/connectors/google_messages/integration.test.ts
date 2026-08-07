@@ -108,17 +108,46 @@ test("not paired: SKIP_RESULT reason gmcli_not_paired tells the user to run gmcl
   assert.equal(coverage[0]?.status, "excluded");
 });
 
-test("schema drift: malformed gmcli output produces a typed error, not a silent wrong-shape emit", async () => {
+test("schema drift: malformed chats output produces a typed error, not a silent wrong-shape emit", async () => {
   const result = await runGoogleMessages(["messages", "coverage_diagnostics"], {
     GMCLI_BIN: FAKE_GMCLI,
-    FAKE_GMCLI_MODE: "malformed",
+    FAKE_GMCLI_MODE: "malformed_chats",
   });
   const skip = skips(result.messages).find((s) => s.stream === "messages");
-  assert.ok(skip, "expected a messages SKIP_RESULT for malformed gmcli output");
+  assert.ok(skip, "expected a messages SKIP_RESULT for malformed gmcli chats output");
   assert.equal(skip?.reason, "gmcli_schema_drift");
   assert.equal(records(result.messages, "messages").length, 0);
   const coverage = records(result.messages, "coverage_diagnostics");
   assert.equal(coverage[0]?.status, "unsupported");
+});
+
+test("schema drift: malformed messages output produces a typed error, not a silent wrong-shape emit", async () => {
+  const result = await runGoogleMessages(["messages", "coverage_diagnostics"], {
+    GMCLI_BIN: FAKE_GMCLI,
+    FAKE_GMCLI_MODE: "malformed_messages",
+  });
+  const skip = skips(result.messages).find((s) => s.stream === "messages");
+  assert.ok(skip, "expected a messages SKIP_RESULT for malformed gmcli messages output");
+  assert.equal(skip?.reason, "gmcli_query_failed");
+  assert.equal(records(result.messages, "messages").length, 0);
+  const coverage = records(result.messages, "coverage_diagnostics");
+  assert.equal(coverage[0]?.status, "unsupported");
+});
+
+test("per-chat limit reached: SKIP_RESULT reason gmcli_per_chat_limit_reached, records still emitted", async () => {
+  const result = await runGoogleMessages(["messages", "coverage_diagnostics"], {
+    GMCLI_BIN: FAKE_GMCLI,
+    FAKE_GMCLI_MODE: "full_page",
+    GMCLI_MESSAGES_PER_CHAT_LIMIT: "10",
+  });
+  const messages = records(result.messages, "messages");
+  assert.equal(messages.length, 10);
+  const skip = skips(result.messages).find((s) => s.reason === "gmcli_per_chat_limit_reached");
+  assert.ok(skip, "expected a gmcli_per_chat_limit_reached SKIP_RESULT");
+  assert.match(skip?.message ?? "", /per-chat message limit/);
+  const coverage = records(result.messages, "coverage_diagnostics");
+  assert.equal(coverage[0]?.status, "collected");
+  assert.match(String(coverage[0]?.reason), /hit the per-chat limit/);
 });
 
 test("non-JSON gmcli output produces a typed error", async () => {

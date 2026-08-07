@@ -45,10 +45,10 @@
     {
       "name": "messages",
       "required": true,
-      "description": "Google Messages read from the paired Android device's local gmcli archive, via `gmcli messages search --json` (RichHit rows — the field set here mirrors that Go struct exactly, verified from github.com/johnlindquist/gmkit's internal/store/search.go source: message_id, conversation_id, conversation_name, sender_name, body, timestamp_ms/timestamp_iso, is_from_me). No exotic fields (reactions, read receipts, RCS-vs-SMS transport distinction, attachments, group participant lists) are claimed — RichHit does not expose them. Media attachments are not downloaded (gmcli media download is out of scope). Resume is best-effort only — gmcli's exact resume-cursor semantics were not independently verified from source.",
+      "description": "Google Messages read from the paired Android device's local gmcli archive: `gmcli --json --full chats list` enumerates conversations, then `gmcli messages list --conv <id> --json --full --limit <N> --order asc` fetches each conversation's messages (Message rows — verified from github.com/johnlindquist/gmkit's internal/store/messages.go source: message_id, conversation_id, source_platform, sender_id, body, timestamp_ms, is_from_me). This is a different, complete-listing command from `messages search` (which requires a query term and returns a different struct meant for keyword search) — this connector never uses search for archive collection. No exotic fields (reactions, media, reply-threading, RCS-vs-SMS transport distinction) are claimed. Media attachments are not downloaded (gmcli media download is out of scope). BOUNDED: gmcli's CLI exposes only a flat --limit (no pagination cursor) — this connector caps messages per conversation (GMCLI_MESSAGES_PER_CHAT_LIMIT, default 500) and conversations scanned per run (GMCLI_MAX_CHATS, default 200); a conversation that returns a full page is flagged via a `gmcli_per_chat_limit_reached` SKIP_RESULT and a coverage_diagnostics reason, never silently presented as complete history. Resume is best-effort only — gmcli's exact resume-cursor semantics were not independently verified from source.",
       "display": {
         "label": "Your Google Messages",
-        "detail": "Message id, conversation id/name, sender name, body text, sent timestamp, and direction (from/to you) for each message in the gmcli-synced archive. Requires the Android device to have been QR-paired via `gmcli auth` (run manually by you) and to remain online for gmcli to sync."
+        "detail": "Message id, conversation id/name, sender identifier, body text, sent timestamp, and direction (from/to you) for each message in the gmcli-synced archive, bounded per conversation. Requires the Android device to have been QR-paired via `gmcli auth` (run manually by you) and to remain online for gmcli to sync."
       },
       "semantics": "append_only",
       "schema": {
@@ -63,7 +63,7 @@
           "chat_name": {
             "type": ["string", "null"]
           },
-          "sender_name": {
+          "sender_id": {
             "type": ["string", "null"],
             "x_pdpp_role": "actor"
           },

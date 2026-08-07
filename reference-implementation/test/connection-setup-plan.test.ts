@@ -474,7 +474,7 @@ test("google_takeout's committed manifest classifies as local_collector_enroll (
   // browser-upload or provider-API connector. It is now bundled into
   // @pdpp/local-collector (SUPPORTED_LOCAL_COLLECTOR_CONNECTORS), so it must
   // classify as the proven, actionable disposition, not the unproven one
-  // netflix_export/imessage still correctly get above.
+  // netflix_export still correctly gets above.
   const connectorId = "google_takeout";
   const shippedManifest = (
     await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })
@@ -484,6 +484,28 @@ test("google_takeout's committed manifest classifies as local_collector_enroll (
   assert.equal(plan.catalogDisposition, "local_collector_enroll");
   assert.equal(plan.supportState, "supported");
   assert.notEqual(plan.catalogDisposition, "local_collector_unproven");
+});
+
+test("Apple Photos and Google Messages are supported local_collector_enroll connectors, not proof-gated", async () => {
+  // Both now ship in the published @pdpp/local-collector bundle
+  // (LOCAL_COLLECTOR_DEFINITIONS + SUPPORTED_LOCAL_COLLECTOR_CONNECTORS +
+  // tsconfig.build.json packaging), so Add Source must surface the guided
+  // enroll path, not the proof-gated "classified but not advertised" state.
+  // Real device/account proof (a macOS Photos.app export; a gmcli-paired
+  // Android device) remains separately unverified — this test only asserts
+  // the SETUP PATH is reachable, not that live collection has been proven.
+  for (const connectorId of ["apple_photos", "google_messages"]) {
+    const shippedManifest =
+      // biome-ignore lint/performance/noAwaitInLoops: sequential fixture loads over a fixed short list read clearer than Promise.all here.
+      (await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } }))
+        .default;
+    const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
+    assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
+    assert.equal(plan.catalogDisposition, "local_collector_enroll", `${connectorId}: catalogDisposition`);
+    assert.equal(plan.nextStepKind, "enroll_local_collector", `${connectorId}: nextStepKind`);
+    assert.equal(plan.supportState, "supported", `${connectorId}: supportState`);
+    assert.equal(plan.proofGate, null, `${connectorId}: proofGate`);
+  }
 });
 
 test("wave-0807 GroupMe manifest (manual_action, no credential_capture) stays unsupported", async () => {

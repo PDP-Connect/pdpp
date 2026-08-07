@@ -7,34 +7,51 @@
  *
  * FIELD PROVENANCE (see index.ts header for the full research trail):
  *   gmkit's actual Go source (github.com/johnlindquist/gmkit,
- *   internal/store/search.go) was fetched via
- *   raw.githubusercontent.com/johnlindquist/gmkit/main/internal/store/search.go
+ *   internal/store/messages.go + conversations.go) was fetched via
+ *   raw.githubusercontent.com/johnlindquist/gmkit/main/internal/store/*.go
  *   — NOT the live CLI output (no paired device/binary available in this
- *   environment). `gmcli messages search --json` (the subcommand this
- *   connector invokes) returns the `RichHit` struct:
+ *   environment). `gmcli messages list --conv <id> --json --full` (the
+ *   subcommand this connector invokes per conversation, NOT `messages
+ *   search`, which requires a query term and returns a different struct
+ *   meant for keyword search) returns the `Message` struct:
  *
- *     type RichHit struct {
- *       MessageID        string `json:"message_id"`
- *       ConversationID   string `json:"conversation_id"`
- *       ConversationName string `json:"conversation_name,omitempty"`
- *       SenderName       string `json:"sender_name,omitempty"`
- *       Body             string `json:"body"`
- *       Snippet          string `json:"snippet"`
- *       TimestampMS      int64  `json:"timestamp_ms"`
- *       TimestampISO     string `json:"timestamp_iso,omitempty"`
- *       IsFromMe         bool   `json:"is_from_me"`
+ *     type Message struct {
+ *       ID             string  `json:"message_id"`
+ *       ConversationID string  `json:"conversation_id"`
+ *       SourcePlatform string  `json:"source_platform"`
+ *       SenderID       string  `json:"sender_id"`
+ *       Body           *string `json:"body,omitempty"`
+ *       TimestampMS    int64   `json:"timestamp_ms"`
+ *       Status         int64   `json:"status"`
+ *       IsFromMe       bool    `json:"is_from_me"`
+ *       MediaID        *string `json:"media_id,omitempty"`
+ *       MimeType       *string `json:"mime_type,omitempty"`
+ *       ReactionsJSON  *string `json:"reactions_json,omitempty"`
+ *       ReplyToID      *string `json:"reply_to_id,omitempty"`
+ *       // DecryptionKey, RawProto are json:"-" — never serialized
  *     }
  *
- *   This schema mirrors that struct's fields as emitted (index.ts converts
- *   `timestamp_ms`/`timestamp_iso` to a single ISO `sent_at`, and
- *   `is_from_me` to `direction`). `conversation_name`/`sender_name` are
- *   Go `omitempty` — genuinely absent, not merely empty, on some rows — so
- *   both are nullable here. No field beyond what RichHit actually declares
- *   is claimed: no reactions, read receipts, RCS-vs-SMS transport
- *   distinction (RichHit doesn't carry `source_platform`; only the raw
- *   `Message` struct does, and this connector does not call a subcommand
- *   that returns raw `Message` rows), attachments, or group-chat
- *   participant lists.
+ *   And `gmcli --json --full chats list` returns `Conversation` (only
+ *   `conversation_id`/`name` are used here — Conversation has no top-level
+ *   `display_name`):
+ *
+ *     type Conversation struct {
+ *       ID                string    `json:"conversation_id"`
+ *       SourcePlatform    string    `json:"source_platform"`
+ *       Name              string    `json:"name"`
+ *       ...
+ *     }
+ *
+ *   This schema mirrors Message's fields as emitted (index.ts converts
+ *   `timestamp_ms` to ISO `sent_at`, `is_from_me` to `direction`, and folds
+ *   in the enumerating chat's `name` as `chat_name`). `body`/`media_id`/
+ *   `mime_type`/`reactions_json`/`reply_to_id` are Go `*string`
+ *   (pointer, `omitempty`) — genuinely absent, not merely empty, on some
+ *   rows. This connector emits ONLY id, chat_id, chat_name, sender_id,
+ *   body, sent_at, direction — no reactions, media, reply-threading, or
+ *   RCS-vs-SMS transport distinction (`source_platform` exists on the
+ *   struct but is not surfaced as a typed field; no claim about its
+ *   meaning/values was independently verified).
  */
 
 import { z } from "zod";
@@ -48,8 +65,9 @@ const DIRECTION_RE = /^(incoming|outgoing)$/;
 const isoDateTimeSchema = z.string().regex(ISO_DT_RE, "must be an ISO-8601 datetime");
 
 /**
- * messages stream: one record per gmcli RichHit row (`gmcli messages
- * search --json`). Cursor: sent_at (best-effort — see index.ts's "no
+ * messages stream: one record per gmcli Message row (`gmcli messages list
+ * --conv <id> --json --full`, bounded by GMCLI_MESSAGES_PER_CHAT_LIMIT
+ * per conversation). Cursor: sent_at (best-effort — see index.ts's "no
  * guaranteed exactly-once/gapless resume" note; gmcli's own incremental
  * semantics were not independently verified from source).
  */
@@ -57,7 +75,7 @@ export const messagesSchema = z.object({
   id: pdppSafeText.max(512),
   chat_id: pdppSafeText.max(512),
   chat_name: pdppSafeText.max(512).nullable(),
-  sender_name: pdppSafeText.max(512).nullable(),
+  sender_id: pdppSafeText.max(512).nullable(),
   body: pdppSafeText.max(200_000),
   sent_at: isoDateTimeSchema,
   direction: z.string().regex(DIRECTION_RE),
