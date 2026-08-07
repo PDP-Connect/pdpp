@@ -213,6 +213,7 @@ import {
 import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
 import {
   aggregateRecordsAcrossBindings,
+  assertConnectorInstanceWritable,
   deleteAllRecords,
   deleteConnectionRecordRowsPostgres,
   deleteConnectionRecordRowsSqlite,
@@ -3411,8 +3412,14 @@ async function persistContentAddressedBlob({
   mimeType: string;
   data: Buffer;
 }) {
-  return withConnectorInstanceWrite(connectorInstanceId, (ownership) =>
-    persistContentAddressedBlobWithinFence({
+  return withConnectorInstanceWrite(connectorInstanceId, async (ownership) => {
+    // `persistContentAddressedBlob` is only reached via the HTTP blob-write
+    // route (not called directly by tests, unlike `ingestRecord`), so the
+    // existence re-check runs unconditionally, inside the fence, right
+    // before the write. See `assertConnectorInstanceWritable` in records.ts
+    // for the delete/write TOCTOU this closes.
+    await assertConnectorInstanceWritable(connectorInstanceId);
+    return persistContentAddressedBlobWithinFence({
       connectorId,
       connectorInstanceId,
       coordinatorOwnership: ownership,
@@ -3420,8 +3427,8 @@ async function persistContentAddressedBlob({
       mimeType,
       recordKey,
       stream,
-    })
-  );
+    });
+  });
 }
 
 async function persistContentAddressedBlobWithinFence({
@@ -5250,6 +5257,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
   // enforcement; the adapter owns all route logic.
   const refDeviceExportersContext = {
     acceptedCollectorProtocolVersions,
+    assertConnectorInstanceWritable,
     canonicalConnectorKey,
     createRequestConnectorInstanceStore,
     DeviceBatchConflictError,
@@ -5721,13 +5729,17 @@ function buildRsApp(opts: ServerOpts = {}) {
       )[0] ?? null,
     getSyncState,
     handleError,
-    ingestRecord: (target: unknown, record: unknown, options?: { runId?: string | null }) =>
+    ingestRecord: (
+      target: unknown,
+      record: unknown,
+      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
+    ) =>
       ingestRecord(target as Parameters<typeof ingestRecord>[0], record as Parameters<typeof ingestRecord>[1], options),
     ingestRecords: (
       target: unknown,
       records: readonly unknown[],
       afterRecord: ((record: unknown, outcome: unknown) => Promise<void>) | undefined,
-      options?: { runId?: string | null }
+      options?: { requireConnectionAdmission?: boolean; runId?: string | null }
     ) =>
       ingestRecords(
         target as Parameters<typeof ingestRecords>[0],

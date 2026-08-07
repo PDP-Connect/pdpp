@@ -378,7 +378,7 @@ export interface MountRsMutationContext {
   readonly ingestRecord: (
     target: StorageTargetLike,
     record: unknown,
-    options?: { runId?: string | null }
+    options?: { requireConnectionAdmission?: boolean; runId?: string | null }
   ) => Promise<unknown>;
   /**
    * Optional common-path batch capability; hosts without it use the ordered
@@ -389,7 +389,7 @@ export interface MountRsMutationContext {
     target: StorageTargetLike,
     records: readonly unknown[],
     afterRecord?: (record: unknown, outcome: unknown) => Promise<void>,
-    options?: { runId?: string | null }
+    options?: { requireConnectionAdmission?: boolean; runId?: string | null }
   ) => Promise<readonly unknown[]>;
   // Every other owner-connection mutation route (revoke, reactivate,
   // schedule, run, rename, delete — see routes/owner-connection-*.ts,
@@ -1071,7 +1071,10 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ...draftAdmission(cin),
               connectorInstanceId: cin,
             }));
-          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, { runId });
+          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, {
+            requireConnectionAdmission: Boolean(namespace.connectorInstanceId),
+            runId,
+          });
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
               ctx.getLatestAcquisitionBatchForConnection(namespace.connectorInstanceId)
@@ -1127,7 +1130,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
                   ctx.storageTargetForConnectorNamespace(namespace),
                   records,
                   afterRecord,
-                  { runId }
+                  { requireConnectionAdmission: Boolean(namespace.connectorInstanceId), runId }
                 );
                 return mapBatchIngestOutcomes(records, outcomes);
               },
