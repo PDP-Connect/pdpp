@@ -3,6 +3,7 @@
 
 import Link from "next/link";
 import { Suspense } from "react";
+import { isContributorSurfaceEnabled } from "@/lib/contributor-surface.ts";
 import { cn } from "@/lib/utils.ts";
 import { ColorSchemeMenu } from "./color-scheme-menu.tsx";
 import { DiscordIcon, GithubIcon, WordmarkIcon } from "./icons.tsx";
@@ -54,10 +55,12 @@ export function PdppConceptFooter() {
           "container max-w-page",
           // Stack by default; three-col row from 721px (concept surface omits md: theme)
           "flex flex-col gap-6 py-8",
-          "min-[721px]:flex-row min-[721px]:flex-wrap min-[721px]:justify-between min-[721px]:gap-x-16 min-[721px]:gap-y-8 min-[721px]:pt-10 min-[721px]:pb-24"
+          "min-[721px]:flex-row min-[721px]:flex-wrap min-[721px]:gap-y-8 min-[721px]:pt-10 min-[721px]:pb-24",
+          "min-[721px]:max-xl:justify-between min-[721px]:max-xl:gap-x-16",
+          "xl:gap-x-0"
         )}
       >
-        <div className={colClassName}>
+        <div className={cn(colClassName, "xl:min-w-0 xl:max-w-none xl:flex-1")}>
           <Link
             aria-label="PDPP, home"
             className="text-on-primary-emphasis hover:text-white! focus-visible:text-white!"
@@ -70,87 +73,91 @@ export function PdppConceptFooter() {
           </Text>
         </div>
 
-        <div className={cn(colClassName, "max-w-[40ch] gap-6 tabular-nums")}>
-          <div className="flex flex-col gap-1.5">
-            <Text color="onAccentLabel" size="stamp" weight="normal">
-              License
-            </Text>
-            <dl className="m-0 flex flex-col gap-0.5 tabular-nums">
-              {SITE_LICENSES.map((row) => (
-                <div className="flex gap-1.5 whitespace-nowrap" key={row.artifact}>
-                  <dt className="m-0 opacity-75">{row.artifact}:</dt>
-                  <dd className="m-0">
-                    <a className={footerLinkClassName} href={row.href} rel="noopener noreferrer" target="_blank">
-                      {row.spdx}
-                    </a>
-                  </dd>
-                </div>
-              ))}
-            </dl>
+        <div className="xl:flex xl:shrink-0 xl:gap-x-8 min-[721px]:max-xl:contents">
+          <div className={cn(colClassName, "max-w-[40ch] gap-6 tabular-nums")}>
+            <div className="flex flex-col gap-1.5">
+              <Text color="onAccentLabel" size="stamp" weight="normal">
+                License
+              </Text>
+              <dl className="m-0 flex flex-col gap-0.5 tabular-nums">
+                {SITE_LICENSES.map((row) => (
+                  <div className="flex gap-1.5 whitespace-nowrap" key={row.artifact}>
+                    <dt className="m-0 opacity-75">{row.artifact}:</dt>
+                    <dd className="m-0">
+                      <a className={footerLinkClassName} href={row.href} rel="noopener noreferrer" target="_blank">
+                        {row.spdx}
+                      </a>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Text color="onAccentLabel" size="stamp" weight="normal">
+                Governance
+              </Text>
+              <Text color="onAccentSoft" size="inherit">
+                PDP-Connect is an{" "}
+                <a
+                  className={footerLinkClassName}
+                  href="https://www.lfdecentralizedtrust.org/"
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  LF Decentralized Trust
+                </a>{" "}
+                Lab.
+              </Text>
+            </div>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Text color="onAccentLabel" size="stamp" weight="normal">
-              Governance
-            </Text>
-            <Text color="onAccentSoft" size="inherit">
-              PDP-Connect is an{" "}
-              <a
+
+          <div className={cn(colClassName, "gap-6")}>
+            <div className="flex flex-col gap-1.5">
+              <Text color="onAccentLabel" size="stamp" weight="normal">
+                Community
+              </Text>
+              <Text
+                as="a"
                 className={footerLinkClassName}
-                href="https://www.lfdecentralizedtrust.org/"
+                color="onAccent"
+                href={DISCORD_INVITE_URL}
                 rel="noopener noreferrer"
+                size="inherit"
                 target="_blank"
+                withIcon
               >
-                LF Decentralized Trust
-              </a>{" "}
-              Lab.
-            </Text>
+                <DiscordIcon />
+                #pdp-connect on LFDT Discord
+              </Text>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Text color="onAccentLabel" size="stamp" weight="normal">
+                Source
+              </Text>
+              <Text
+                as="a"
+                className={footerLinkClassName}
+                color="onAccent"
+                href={GITHUB_REPO_URL}
+                rel="noopener noreferrer"
+                size="inherit"
+                target="_blank"
+                withIcon
+              >
+                <GithubIcon />
+                {githubDisplayText}
+              </Text>
+            </div>
           </div>
         </div>
 
-        <div className={cn(colClassName, "gap-6")}>
-          <div className="flex flex-col gap-1.5">
-            <Text color="onAccentLabel" size="stamp" weight="normal">
-              Community
-            </Text>
-            <Text
-              as="a"
-              className={footerLinkClassName}
-              color="onAccent"
-              href={DISCORD_INVITE_URL}
-              rel="noopener noreferrer"
-              size="inherit"
-              target="_blank"
-              withIcon
-            >
-              <DiscordIcon />
-              #pdp-connect on LFDT Discord
-            </Text>
+        {isContributorSurfaceEnabled() && (
+          <div className="absolute right-5 bottom-5">
+            <Suspense fallback={<div aria-hidden className="min-h-11 w-40" />}>
+              <ColorSchemeMenu />
+            </Suspense>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Text color="onAccentLabel" size="stamp" weight="normal">
-              Source
-            </Text>
-            <Text
-              as="a"
-              className={footerLinkClassName}
-              color="onAccent"
-              href={GITHUB_REPO_URL}
-              rel="noopener noreferrer"
-              size="inherit"
-              target="_blank"
-              withIcon
-            >
-              <GithubIcon />
-              {githubDisplayText}
-            </Text>
-          </div>
-        </div>
-
-        <div className="flex w-full justify-end">
-          <Suspense fallback={<div aria-hidden className="min-h-11 w-40" />}>
-            <ColorSchemeMenu />
-          </Suspense>
-        </div>
+        )}
       </div>
     </footer>
   );
