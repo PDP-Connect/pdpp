@@ -199,6 +199,7 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body.prose {
+  --tw-prose-body: var(--pdpp-concept-ink);
   font-size: 17px;
   line-height: 1.65;
   color: var(--pdpp-concept-ink);
@@ -239,12 +240,9 @@
   color: var(--pdpp-concept-ink);
 }
 
-[data-pdpp-doc-theme] .pdpp-docs-body p strong,
-[data-pdpp-doc-theme] .pdpp-docs-body li strong,
-[data-pdpp-doc-theme] .pdpp-docs-body td strong,
-[data-pdpp-doc-theme] .pdpp-docs-body th strong,
-[data-pdpp-doc-theme] .pdpp-docs-body blockquote strong {
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(strong) {
   font-weight: 700;
+  color: inherit;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body li {
@@ -282,6 +280,7 @@
 
 [data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note strong {
   font-weight: 700;
+  color: inherit;
 }
 
 /* No `.prose` on this selector: the table and code-block rules below narrow it
@@ -305,12 +304,10 @@
 }
 
 /* Code blocks: mirror .pdpp-terminal (components.css). Style ONLY the outer
-   Shiki figure — fumadocs renders <figure class="shiki">…<pre>…</figure>;
-   styling both creates a double border. Inner pre/code/spans inherit colour;
-   Shiki token colours are flattened to match the terminal's monochrome block. */
+   Shiki figure — fumadocs renders <figure class="shiki"><div><pre>…</pre></div>;
+   the inner pre must not inherit the shell metrics or spacing doubles. */
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki,
-[data-pdpp-doc-theme] .pdpp-docs-body > pre,
-[data-pdpp-doc-theme] .pdpp-docs-body pre:not(figure.shiki > pre) {
+[data-pdpp-doc-theme] .pdpp-docs-body > pre {
   padding: 24px 28px;
   margin: 28px 0;
   overflow-x: auto;
@@ -325,17 +322,26 @@
     color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
 }
 
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(figure.shiki) {
+  margin-top: 28px;
+  margin-bottom: 28px;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > div,
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki pre {
+  padding: 0;
   margin: 0;
   overflow-wrap: break-word;
   white-space: pre-wrap;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki pre,
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki code,
 [data-pdpp-doc-theme] .pdpp-docs-body figure.shiki span,
-[data-pdpp-doc-theme] .pdpp-docs-body > pre code,
-[data-pdpp-doc-theme] .pdpp-docs-body pre:not(figure.shiki > pre) code {
+[data-pdpp-doc-theme] .pdpp-docs-body > pre code {
   padding: 0;
   font-family: var(--font-mono) !important;
   font-size: 1em;
@@ -344,6 +350,38 @@
   border: 0 !important;
   border-radius: 0;
   box-shadow: none !important;
+}
+
+/* Fumadocs copy chrome uses fd-accent + backdrop-blur; on teal-deep that
+   reads as a dark hover slab. Use on-primary emphasis tokens (text-on-primary-emphasis*
+   in Tailwind) so idle/hover track the code block ground in both themes. */
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > .absolute,
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > div.flex {
+  color: var(--on-primary-emphasis-label);
+  background: transparent;
+  backdrop-filter: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > div.flex {
+  border-color: color-mix(in srgb, var(--on-primary-emphasis) 35%, transparent);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki button[type="button"] {
+  color: inherit;
+  background-color: transparent;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki button[type="button"]:hover,
+[data-pdpp-doc-theme]
+  .pdpp-docs-body
+  figure.shiki
+  button[type="button"]:focus-visible,
+[data-pdpp-doc-theme]
+  .pdpp-docs-body
+  figure.shiki
+  button[type="button"][data-checked] {
+  color: var(--on-primary-emphasis);
+  background-color: transparent;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body table {
@@ -356,8 +394,28 @@
   font-size: 15px;
   font-variant-numeric: tabular-nums;
   border-collapse: collapse;
+  background: transparent;
   border: none;
   border-radius: 0;
+}
+
+/* Fumadocs `.prose` paints tables as fd-card boxes; reset so concept ruled
+   rows inherit paper + ink in both themes. */
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(table) {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(th) {
+  background: transparent !important;
+  border-inline-start: none !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(td) {
+  color: var(--pdpp-concept-ink) !important;
+  border-inline-start: none !important;
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body thead {
