@@ -4,7 +4,7 @@
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import type { ReactNode } from "react";
 import { PdppConceptShell } from "@/components/pdpp-concept/concept-shell.tsx";
-import { baseOptions } from "@/lib/docs-shared.tsx";
+import { specDocsOptions } from "@/lib/docs-shared.tsx";
 import { getSpecNavTree } from "@/lib/docs-source.ts";
 import { getSpecFrontMatter } from "@/lib/spec-front-matter.ts";
 import { specRailSlots } from "./rail.tsx";
@@ -19,7 +19,12 @@ export function SpecificationShell({ children }: { children: ReactNode }) {
       <SpecRailProvider frontMatter={getSpecFrontMatter()}>
         {/* Same page measure as PdppConceptPage / masthead / footer. */}
         <div className="container max-w-page">
-          <DocsLayout sidebar={{ collapsible: false }} slots={specRailSlots} tree={getSpecNavTree()} {...baseOptions()}>
+          <DocsLayout
+            sidebar={{ collapsible: false }}
+            slots={specRailSlots}
+            tree={getSpecNavTree()}
+            {...specDocsOptions()}
+          >
             {children}
           </DocsLayout>
         </div>
