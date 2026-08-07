@@ -6,6 +6,7 @@
 export type { ConnectorDisplayInput, SourceDisplayInput } from "./identity/connector-display.ts";
 // biome-ignore lint/performance/noBarrelFile: this package intentionally provides one stable public import surface.
 export {
+  deriveSourceDisplayNameFallback,
   formatConnectorKeyForDisplay,
   formatConnectorNameForDisplay,
   formatSourceForDisplay,

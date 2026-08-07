@@ -55,7 +55,7 @@ export function formatConnectorKeyForDisplay(connectorId: string | null | undefi
     return fromUrl;
   }
 
-  return raw;
+  return formatUnknownConnectorKey(raw);
 }
 
 export function formatConnectorNameForDisplay(input: ConnectorDisplayInput): string {
@@ -178,4 +178,32 @@ function decodePathPart(value: string | undefined): string | null {
   } catch {
     return value;
   }
+}
+
+function formatUnknownConnectorKey(key: string): string {
+  return key.replace(/[-_]/g, " ").trim();
+}
+
+/**
+ * Derive a fallback source display name when owner has not supplied a
+ * meaningful label. Respects the display precedence: manifest presentation
+ * name (connector_display_name from schema, e.g. "Gmail") takes priority
+ * over bare connector ID formatting.
+ *
+ * This is used ONLY when `isFallbackConnectionLabel()` has already determined
+ * the stored `displayName` is not owner-meaningful (is null, a type alias,
+ * legacy placeholder, or registry URL). The fallback must preserve the
+ * manifest-authored presentation name, not replace it with a re-derived
+ * format.
+ *
+ * Example: Gmail connector with no owner label renders "Gmail source", not
+ * a reformatted "gmail source" or raw key.
+ */
+export function deriveSourceDisplayNameFallback(input: ConnectorDisplayInput): string {
+  const manifestName = normalizeText(input.name);
+  if (manifestName) {
+    return `${manifestName} source`;
+  }
+  const connectorName = formatConnectorKeyForDisplay(input.connectorId);
+  return `${connectorName} source`;
 }

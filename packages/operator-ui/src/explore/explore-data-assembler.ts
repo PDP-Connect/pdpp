@@ -4,11 +4,13 @@
 import {
   buildRecordPreview,
   classifyRecordKind,
+  deriveSourceDisplayNameFallback,
   type DeclaredFieldRoles,
   type DeclaredFieldTypes,
   EMPTY_DECLARED_FIELD_ROLES,
   type FieldRole,
   formatConnectorNameForDisplay,
+  isFallbackConnectionLabel,
   parseFieldRole,
 } from "@pdpp/display";
 import { validateListEnvelope } from "@pdpp/list-envelope";
@@ -197,11 +199,16 @@ function toConnectionFacet(summary: RefConnectorIdentitySummary): ExplorerConnec
 }
 
 function connectorSummaryDisplayName(summary: RefConnectorIdentitySummary): string {
-  return formatConnectorNameForDisplay({
+  const displayInput = {
     connectorId: summary.connector_id,
     displayName: summary.display_name,
     name: summary.connector_display_name,
-  });
+  };
+  const display = formatConnectorNameForDisplay(displayInput);
+  if (isFallbackConnectionLabel(displayInput)) {
+    return deriveSourceDisplayNameFallback(displayInput);
+  }
+  return display;
 }
 
 function summaryByConnectionId(

@@ -27,7 +27,11 @@
  * a false zero or green.
  */
 
-import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/display";
+import {
+  deriveSourceDisplayNameFallback,
+  formatConnectorNameForDisplay,
+  isFallbackConnectionLabel,
+} from "@pdpp/display";
 import {
   type ConnectorManifestLike,
   canonicalConnectorKey,
@@ -504,7 +508,12 @@ export function toSourceInstanceView(
   const listKind = listKindForDisplayName(displayName, kind);
   let accountLine: string;
   if (hasFallbackLabel) {
-    accountLine = `Unnamed source · ${formatSourceListFacts(summary, sourceStreamNames.length)}`;
+    const fallbackName = deriveSourceDisplayNameFallback({
+      connectorId,
+      displayName: summary.display_name,
+      name: summary.connector_display_name,
+    });
+    accountLine = `${fallbackName} · ${formatSourceListFacts(summary, sourceStreamNames.length)}`;
   } else {
     accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
   }
