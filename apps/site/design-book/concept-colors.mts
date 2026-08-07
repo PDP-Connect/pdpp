@@ -18,8 +18,19 @@ interface ConceptSchemeAnchors {
 }
 
 /**
+ * The scheme rendered when no `?scheme=` is set. The generator emits it a
+ * second time under bare `:root` / `[data-theme="dark"]`, and `tokens/index.css`
+ * imports the generated file after `primitive.css`, so those blocks win on
+ * source order and the default needs no attribute on <html> (no first-paint
+ * flash). Set to `null` to hand the default back to `primitive.css`'s teal,
+ * which stays in place underneath either way.
+ */
+export const defaultConceptSchemeName: string | null = "azure";
+
+/**
  * Add experimental schemes here. Generated CSS is inert until the matching
- * `data-pdpp-concept-scheme` value is set on <html>.
+ * `data-pdpp-concept-scheme` value is set on <html> — except for
+ * `defaultConceptSchemeName` above, which is also emitted unqualified.
  */
 export const conceptSchemes: ConceptScheme[] = [
   {
@@ -49,21 +60,22 @@ export const conceptSchemes: ConceptScheme[] = [
     },
   },
   /**
-   * The default concept palette, hue-rotated off green into blue. Unlike plum
-   * and moss this invents nothing: every L and C below is the corresponding
-   * token in `styles/surfaces/concept/tokens/primitive.css` converted to oklch
-   * and rounded. Only the hue moves — teal ~185 → azure 245.
+   * The shipped default (see `defaultConceptSchemeName`): the original concept
+   * palette hue-rotated off green into blue. Unlike plum and moss this invents
+   * nothing — every L and C below is the corresponding token in
+   * `styles/surfaces/concept/tokens/primitive.css` converted to oklch and
+   * rounded. Only the hue moves — teal ~185 → azure 245.
    *
    *   paper  #f5f6f6 -> oklch(0.972 0.0011 197)   ink    #1a1a17 -> oklch(0.217 0.0057 107)
    *   accent #0e5a54 -> oklch(0.423 0.0695 187)   (dark) #4bb3a6 -> oklch(0.702 0.0979 184)
    *
-   * Accent chroma stays at the default's restrained 0.07/0.10 rather than
-   * plum/moss's 0.10-0.13, because matching the default is the point. Contrast
+   * Accent chroma stays at the teal's restrained 0.07/0.10 rather than
+   * plum/moss's 0.10-0.13, because matching the original is the point. Contrast
    * on paper lands at 7.62:1 light and 6.81:1 dark, against the teal's 7.43 and
    * 7.02 — same footing, so no role below needed re-tuning.
    *
-   * Paper and ink carry the default's near-zero chroma (0.001-0.006, invisible)
-   * but at the accent hue instead of the default's incidental 197/107/264/165,
+   * Paper and ink carry the teal's near-zero chroma (0.001-0.006, invisible)
+   * but at the accent hue instead of the teal's incidental 197/107/264/165,
    * which are artefacts of hand-picked hex. Neutrals now agree with the accent.
    */
   {

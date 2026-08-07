@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/popover.tsx";
 import { cn } from "@/lib/utils.ts";
 import { Button } from "./button.tsx";
-import { conceptColorSchemeNames } from "./generated-color-scheme-names.ts";
+import { conceptColorSchemeNames, defaultConceptColorSchemeName } from "./generated-color-scheme-names.ts";
 
 const SCHEME_QUERY_KEY = "scheme";
 const SCHEME_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
@@ -45,25 +45,27 @@ function isSchemeName(value: string | null): value is SchemeName {
   return value !== null && SCHEME_NAME_PATTERN.test(value) && conceptColorSchemeNames.includes(value as SchemeName);
 }
 
-const SCHEME_OPTIONS: ReadonlyArray<{ label: string; value: SchemeName | null }> = [
-  { label: "Original", value: null },
-  ...conceptColorSchemeNames.map((scheme) => ({ label: formatSchemeName(scheme), value: scheme })),
-];
+const SCHEME_OPTIONS: ReadonlyArray<{ label: string; value: SchemeName }> = conceptColorSchemeNames.map((scheme) => ({
+  label: formatSchemeName(scheme),
+  value: scheme,
+}));
 
 export function ColorSchemeMenu() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedScheme = searchParams.get(SCHEME_QUERY_KEY);
-  const activeScheme = isSchemeName(requestedScheme) ? requestedScheme : null;
+  // The default scheme is the unqualified `:root` block in generated-schemes.css,
+  // so it is reached by removing the attribute rather than by setting it.
+  const activeScheme = isSchemeName(requestedScheme) ? requestedScheme : defaultConceptColorSchemeName;
 
   useEffect(() => {
     const root = document.documentElement;
 
-    if (activeScheme) {
-      root.dataset.pdppConceptScheme = activeScheme;
-    } else {
+    if (activeScheme === defaultConceptColorSchemeName) {
       delete root.dataset.pdppConceptScheme;
+    } else {
+      root.dataset.pdppConceptScheme = activeScheme;
     }
 
     return () => {
@@ -71,14 +73,19 @@ export function ColorSchemeMenu() {
     };
   }, [activeScheme]);
 
-  function selectScheme(scheme: SchemeName | null): void {
-    router.replace(buildConceptSchemeHref(pathname, searchParams.toString(), scheme), { scroll: false });
+  function selectScheme(scheme: SchemeName): void {
+    const href = buildConceptSchemeHref(
+      pathname,
+      searchParams.toString(),
+      scheme === defaultConceptColorSchemeName ? null : scheme
+    );
+    router.replace(href, { scroll: false });
   }
 
   return (
     <Popover>
       <PopoverTrigger className="text-[14px]!" render={<Button variant="footer" />}>
-        Colour: {activeScheme ? formatSchemeName(activeScheme) : "Original"}
+        Colour: {formatSchemeName(activeScheme)}
         <ChevronUp data-icon="inline-end" />
       </PopoverTrigger>
       <PopoverPortal>
@@ -90,7 +97,7 @@ export function ColorSchemeMenu() {
                 const isActive = option.value === activeScheme;
                 return (
                   <PopoverClose
-                    key={option.value ?? "original"}
+                    key={option.value}
                     render={
                       <Button
                         aria-current={isActive ? "true" : undefined}

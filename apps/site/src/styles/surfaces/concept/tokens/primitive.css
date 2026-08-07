@@ -4,6 +4,11 @@
  * Runtime concept palette values (theme-flipping). semantic.css owns layout
  * @theme keys and palette/type rebinds under [data-surface="concept"].
  *
+ * The original teal below is no longer what ships: generated-schemes.css is
+ * imported after this file and re-declares these same keys unqualified for
+ * `defaultConceptSchemeName` (design-book/concept-colors.mts, currently azure).
+ * Set that constant to null to hand the default back to the values here.
+ *
  * ink-faint (#6e6b62) clears WCAG AA at 4.92:1 on paper; prior #8a867c was 3.35:1.
  * teal-on-wash stays dark on light wash; flips light on dark wash (not teal-deep).
  * onteal-deep* are pinned light-mode values; teal-deep grounds do not flip with paper/ink.

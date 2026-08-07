@@ -17,7 +17,7 @@ test("adds and replaces the concept colour scheme without dropping other URL sta
   );
 });
 
-test("restores the original scheme by removing only its URL state", () => {
+test("returns to the default scheme by removing only its URL state", () => {
   assert.equal(buildConceptSchemeHref("/", "scheme=plum", null), "/");
   assert.equal(buildConceptSchemeHref("/self-host", "scheme=plum&step=2", null), "/self-host?step=2");
 });
