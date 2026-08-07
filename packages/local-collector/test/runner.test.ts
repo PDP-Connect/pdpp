@@ -20,12 +20,16 @@ import {
   BUNDLED_CONNECTORS,
   buildConnectorSpec,
   buildLocalOutboxDoctor,
+  type CliOptions,
+  CollectorInterruptedAbort,
   classifyLocalCollectorDeploymentPosture,
   compactOutbox,
   findLocalCollectorProfiles,
   getBundledConnector,
   inspectLocalOutboxStatus,
   inspectLocalReferenceRoute,
+  installInterruptAbort,
+  type LocalOutboxStatusOutput,
   normalizeConnectorId,
   parseArgs,
   parseCollectorProfileEnv,
@@ -37,6 +41,10 @@ import {
   resolveLocalCollectorPackageVersion,
   resolveRunProfileOptions,
   retryLocalOutboxDeadLetters,
+  runCollectorOnce,
+  runCollectorSample,
+  runLogout,
+  runSetup,
   scopedDefaultQueuePath,
   summarizeRunResultForCli,
   writeLocalCollectorProfile,
@@ -49,6 +57,7 @@ import {
   buildLocalDeviceOutboxId,
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
+  LocalDeviceHttpError,
   LocalDeviceOutbox,
 } from "../src/runner.ts";
 
@@ -68,6 +77,11 @@ const PUBLISHED_POSTURE = Object.freeze({
 });
 
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
+
+const FRESH_DEVICE_TOKEN_PATTERN = /PDPP_LOCAL_DEVICE_TOKEN="fresh-token"/;
+const FRESH_DEVICE_ID_PATTERN = /PDPP_LOCAL_DEVICE_ID="fresh-device"/;
+const SAMPLE_STOPPED_NOTE_PATTERN = /Sample stopped after/;
+const SAMPLE_COMPLETE_NOTE_PATTERN = /complete pass, not a truncated one/;
 
 test("runner exports the collector runtime capability profile with collector id", () => {
   assert.equal(COLLECTOR_RUNTIME_CAPABILITIES.id, "collector");
@@ -1042,6 +1056,137 @@ test("logout removes the named profile and reports removed:false when absent", (
     }
   }
 });
+
+async function withProfileDir<T>(profileDir: string, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+  process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
+    } else {
+      process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = previous;
+    }
+  }
+}
+
+/**
+ * Table-driven `runLogout` cases. Each seeds a profile (or not), stubs
+ * `selfRevoke`, and asserts the resulting removed/revoked state plus
+ * whether the local profile survives. Covers the required discriminators:
+ * self-only revoke's client contract (success), idempotent retry (401/403
+ * treated as already-revoked), network failure fails closed and preserves
+ * the profile, an unrecognized 5xx also fails closed, --local-only skips
+ * the server entirely, and a missing profile is a no-op.
+ */
+const LOGOUT_CASES: Array<{
+  expectRevokeCalled: boolean;
+  localOnly?: boolean;
+  name: string;
+  rejects?: boolean;
+  seedProfile: boolean;
+  selfRevoke: () => Promise<unknown>;
+  want?: { removed: boolean; revoked: boolean };
+}> = [
+  {
+    expectRevokeCalled: true,
+    name: "success: revokes server-side then deletes the local profile",
+    seedProfile: true,
+    selfRevoke: async () => ({ device_id: "device-1", object: "device_exporter_revocation", revoked_at: "now" }),
+    want: { removed: true, revoked: true },
+  },
+  {
+    expectRevokeCalled: true,
+    name: "idempotent retry: a 401 (already revoked) still deletes locally",
+    seedProfile: true,
+    selfRevoke: () => {
+      throw new LocalDeviceHttpError(401, JSON.stringify({ error: { code: "authentication_error" } }));
+    },
+    want: { removed: true, revoked: true },
+  },
+  {
+    expectRevokeCalled: true,
+    name: "ambiguous network failure: fails closed, local profile preserved",
+    rejects: true,
+    seedProfile: true,
+    selfRevoke: () => {
+      throw new TypeError("fetch failed");
+    },
+  },
+  {
+    expectRevokeCalled: true,
+    name: "5xx: fails closed like a network failure, not treated as already-revoked",
+    rejects: true,
+    seedProfile: true,
+    selfRevoke: () => {
+      throw new LocalDeviceHttpError(500, JSON.stringify({ error: { code: "internal_error" } }));
+    },
+  },
+  {
+    expectRevokeCalled: false,
+    localOnly: true,
+    name: "--local-only: skips the server call and deletes unconditionally",
+    seedProfile: true,
+    selfRevoke: async () => ({ device_id: "device-1", object: "device_exporter_revocation", revoked_at: "now" }),
+    want: { removed: true, revoked: false },
+  },
+  {
+    expectRevokeCalled: false,
+    name: "missing profile: no-op, never calls the server",
+    seedProfile: false,
+    selfRevoke: async () => ({ device_id: "device-1", object: "device_exporter_revocation", revoked_at: "now" }),
+    want: { removed: false, revoked: false },
+  },
+];
+
+for (const testCase of LOGOUT_CASES) {
+  test(`runLogout: ${testCase.name}`, async () => {
+    const profileDir = tempDirSync();
+    const profilePath = join(profileDir, "claude_code.env");
+    if (testCase.seedProfile) {
+      writeLocalCollectorProfile({
+        baseUrl: "https://pdpp.example.com",
+        connectorId: "claude_code",
+        deviceId: "device-1",
+        deviceToken: "token-1",
+        name: "claude_code",
+        profileDir,
+        sourceInstanceId: "dsrc_logout",
+      });
+    }
+    await withProfileDir(profileDir, async () => {
+      let called = false;
+      const options: CliOptions = {
+        baseUrl: "https://pdpp.example.com",
+        command: "logout",
+        connector: "claude_code",
+        ...(testCase.localOnly ? { localOnly: true } : {}),
+        queuePath: "unused.sqlite",
+      };
+      const deps = {
+        selfRevoke: () => {
+          called = true;
+          return testCase.selfRevoke();
+        },
+      };
+      if (testCase.rejects) {
+        await assert.rejects(runLogout(options, deps), CollectorUsageError);
+        assert.equal(existsSync(profilePath), true, "a fail-closed logout must preserve the local profile");
+      } else {
+        const result = await runLogout(options, deps);
+        assert.equal(result.removed, testCase.want?.removed);
+        assert.equal(result.revoked, testCase.want?.revoked);
+        // The profile file must be gone iff this case seeded one AND it was
+        // removed; a case that never seeded a profile has nothing to check.
+        if (testCase.seedProfile) {
+          assert.equal(existsSync(profilePath), !testCase.want?.removed);
+        }
+      }
+      assert.equal(called, testCase.expectRevokeCalled);
+    });
+  });
+}
 
 test("local collector recover dry-run loads the matching source-instance profile queue", async () => {
   const profileDir = await tempDir();
@@ -2728,6 +2873,325 @@ function tempDir() {
 function tempDirSync(): string {
   return mkdtempSync(join(tmpdir(), "pdpp-local-collector-test-"));
 }
+
+/**
+ * Minimal fake reference server for `runCollectorSample`'s real (non-mocked)
+ * pass against a fixture connector child: only state + ingest-batches, the
+ * two routes a sample run actually hits. Not a general harness — keep it
+ * this small; `collector-runner.test.ts` already owns the full route set.
+ */
+async function startSampleTestServer(): Promise<{ close: () => Promise<void>; url: string }> {
+  const server = createServer((req, res) => {
+    if (req.url?.endsWith("/state")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          device_id: "device-1",
+          object: "device_source_instance_state",
+          source_instance_id: "dsrc-1",
+          state: {},
+          updated_at: null,
+        })
+      );
+      return;
+    }
+    res.writeHead(201, { "content-type": "application/json" });
+    res.end(JSON.stringify({ object: "device_ingest_batch_result", status: "accepted" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    url: `http://127.0.0.1:${address.port}`,
+  };
+}
+
+/**
+ * A fixture connector child that emits `count` RECORDs then DONE, one per
+ * event-loop tick. `runCollectorSample`'s sample-limit abort only stops
+ * further child output — it does not discard lines the child already wrote
+ * to its stdout pipe before the parent could react (real connectors stream
+ * as they scan real files, so this race does not arise in practice). A
+ * per-tick delay gives the parent's abort a real chance to land between
+ * records, the same way a genuinely slow filesystem scan would.
+ */
+async function writeCountingFixtureConnector(count: number): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-local-collector-fixture-"));
+  const path = join(dir, "fixture.mjs");
+  const emits = Array.from(
+    { length: count },
+    (_, index) =>
+      `await new Promise((r) => setImmediate(r));\nprocess.stdout.write(${JSON.stringify(
+        JSON.stringify({
+          data: { id: `m-${index}` },
+          emitted_at: new Date(0).toISOString(),
+          key: `m-${index}`,
+          stream: "messages",
+          type: "RECORD",
+        })
+      )} + "\\n");`
+  ).join("\n");
+  await writeFile(
+    path,
+    `(async () => {\n${emits}\nprocess.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: ${count} }) + "\\n");\n})();\n`
+  );
+  return path;
+}
+
+async function runFixtureSample(emit: number, sample: number) {
+  const previous = process.env[ALLOW_CUSTOM_COMMAND_ENV];
+  process.env[ALLOW_CUSTOM_COMMAND_ENV] = "1";
+  const server = await startSampleTestServer();
+  try {
+    const fixture = await writeCountingFixtureConnector(emit);
+    return await runCollectorSample({
+      args: [fixture],
+      baseUrl: server.url,
+      command: "run",
+      connector: "custom",
+      deviceId: "device-1",
+      deviceToken: "token-1",
+      entrypointCommand: "node",
+      quiet: true,
+      queuePath: await tempOutboxPath(),
+      sample,
+      sourceInstanceId: "dsrc-1",
+      streams: ["messages"],
+    });
+  } finally {
+    await server.close();
+    if (previous === undefined) {
+      delete process.env[ALLOW_CUSTOM_COMMAND_ENV];
+    } else {
+      process.env[ALLOW_CUSTOM_COMMAND_ENV] = previous;
+    }
+  }
+}
+
+test("runCollectorSample aborts once the sample limit is reached, reporting a truncated (not complete) pass", async () => {
+  // onMessage still fires for any lines already buffered in the child's
+  // stdout pipe by the time abort() lands (real connectors stream as they
+  // scan real files, so a burst of already-buffered output does not arise
+  // in practice) — so records_seen is only guaranteed to reach the limit,
+  // not stop exactly at it. What must hold: it never stops short of the
+  // limit, and the run is honestly reported as truncated, not complete.
+  const result = await runFixtureSample(10, 3);
+  assert.ok(result.records_seen >= 3, "must not stop before the sample limit");
+  assert.equal(result.sample_limit, 3);
+  assert.match(result.note, SAMPLE_STOPPED_NOTE_PATTERN);
+});
+
+test("runCollectorSample reports a complete pass when the source finishes under the limit", async () => {
+  const result = await runFixtureSample(2, 10);
+  assert.equal(result.records_seen, 2, "the connector only had 2 records to emit, under the 10-record limit");
+  assert.equal(result.sample_limit, 10);
+  assert.match(result.note, SAMPLE_COMPLETE_NOTE_PATTERN);
+});
+
+test("runSetup enrolls, writes a local profile, then runs a sample using the freshly enrolled credentials (not the caller's), in that order", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    const calls: string[] = [];
+    let sampleOptionsSeen: CliOptions | null = null;
+    const output = await runSetup(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "setup",
+        connector: "claude_code",
+        // Deliberately stale/wrong credentials on the input options, to
+        // prove the sample pass uses the enrollment's fresh ones instead.
+        deviceId: "stale-device",
+        deviceToken: "stale-token",
+        json: true,
+        profile: "claude_code",
+        queuePath: "unused.sqlite",
+        sample: 2,
+      } as CliOptions,
+      {
+        enroll: (input) => {
+          calls.push("enroll");
+          assert.equal(input.code, "one-time-code");
+          return Promise.resolve({
+            connector_id: "claude_code",
+            device_id: "fresh-device",
+            device_token: "fresh-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          });
+        },
+        runSample: (sampleOptions) => {
+          calls.push("sample");
+          sampleOptionsSeen = sampleOptions;
+          return Promise.resolve({
+            connector: "claude_code",
+            note: "sampled",
+            object: "local_collector_sample",
+            records_seen: 2,
+            sample_limit: 2,
+            status: {} as LocalOutboxStatusOutput,
+          });
+        },
+      }
+    );
+
+    // enroll -> write profile -> sample, in that dependency order. The
+    // profile file existing by the time `sample` runs is the load-bearing
+    // proof: writeLocalCollectorProfile is synchronous and runs strictly
+    // between the two injected calls.
+    assert.deepEqual(calls, ["enroll", "sample"]);
+    assert.ok(existsSync(output.profile_path), "the profile must be written before setup returns");
+    const profileContents = await readFile(output.profile_path, "utf8");
+    assert.match(profileContents, FRESH_DEVICE_TOKEN_PATTERN);
+    assert.match(profileContents, FRESH_DEVICE_ID_PATTERN);
+
+    assert.equal(sampleOptionsSeen?.deviceId, "fresh-device");
+    assert.equal(sampleOptionsSeen?.deviceToken, "fresh-token");
+    assert.equal(sampleOptionsSeen?.sourceInstanceId, "dsrc-fresh");
+    assert.notEqual(sampleOptionsSeen?.deviceId, "stale-device");
+
+    assert.equal(output.object, "local_collector_setup");
+    assert.equal(output.device_id, "fresh-device");
+    assert.equal(output.source_instance_id, "dsrc-fresh");
+    assert.ok(output.sample);
+    assert.equal(output.sample?.records_seen, 2);
+  });
+});
+
+test("runSetup without --sample enrolls and writes the profile but never runs a proof pass", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    let sampleCalled = false;
+    const output = await runSetup(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "setup",
+        connector: "claude_code",
+        json: true,
+        profile: "claude_code",
+        queuePath: "unused.sqlite",
+      } as CliOptions,
+      {
+        enroll: () =>
+          Promise.resolve({
+            connector_id: "claude_code",
+            device_id: "fresh-device",
+            device_token: "fresh-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          }),
+        runSample: () => {
+          sampleCalled = true;
+          throw new Error("must not be called when --sample is omitted");
+        },
+      }
+    );
+    assert.equal(sampleCalled, false);
+    assert.equal(output.sample, null);
+    assert.ok(existsSync(output.profile_path));
+  });
+});
+
+test("installInterruptAbort registers SIGINT/SIGTERM listeners and aborts with CollectorInterruptedAbort", () => {
+  const beforeInt = process.listenerCount("SIGINT");
+  const beforeTerm = process.listenerCount("SIGTERM");
+  const controller = new AbortController();
+  const remove = installInterruptAbort(controller);
+  try {
+    assert.equal(process.listenerCount("SIGINT"), beforeInt + 1);
+    assert.equal(process.listenerCount("SIGTERM"), beforeTerm + 1);
+    assert.equal(controller.signal.aborted, false);
+
+    const handler = process.listeners("SIGINT").at(-1) as () => void;
+    handler();
+
+    assert.equal(controller.signal.aborted, true);
+    assert.ok(controller.signal.reason instanceof CollectorInterruptedAbort);
+  } finally {
+    remove();
+  }
+  assert.equal(process.listenerCount("SIGINT"), beforeInt);
+  assert.equal(process.listenerCount("SIGTERM"), beforeTerm);
+});
+
+test("installInterruptAbort's SIGTERM handler also aborts, and removal cleans up both listeners", () => {
+  const beforeInt = process.listenerCount("SIGINT");
+  const beforeTerm = process.listenerCount("SIGTERM");
+  const controller = new AbortController();
+  const remove = installInterruptAbort(controller);
+  const handler = process.listeners("SIGTERM").at(-1) as () => void;
+  handler();
+  assert.equal(controller.signal.aborted, true);
+  assert.ok(controller.signal.reason instanceof CollectorInterruptedAbort);
+  remove();
+  assert.equal(process.listenerCount("SIGINT"), beforeInt);
+  assert.equal(process.listenerCount("SIGTERM"), beforeTerm);
+});
+
+test("plain run installs a real SIGINT handler and an interrupt mid-run flushes durably instead of losing records", async () => {
+  const previous = process.env[ALLOW_CUSTOM_COMMAND_ENV];
+  process.env[ALLOW_CUSTOM_COMMAND_ENV] = "1";
+  const server = await startSampleTestServer();
+  try {
+    // Emits one record, then hangs (never sent stdin) so the test can
+    // interrupt deterministically instead of racing a real finish.
+    const dir = await tempDir();
+    const fixture = join(dir, "slow.mjs");
+    await writeFile(
+      fixture,
+      // setInterval (never cleared) keeps the event loop alive; a bare
+      // unresolved Promise does not hold Node open once the microtask queue
+      // drains, so the child would exit on its own instead of hanging.
+      '  process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: new Date(0).toISOString() }) + "\\n");\n  setInterval(() => {}, 1000);\n'
+    );
+    const queuePath = await tempOutboxPath();
+    const beforeInt = process.listenerCount("SIGINT");
+
+    const runPromise = runCollectorOnce({
+      args: [fixture],
+      baseUrl: server.url,
+      command: "run",
+      connector: "custom",
+      deviceId: "device-1",
+      deviceToken: "token-1",
+      entrypointCommand: "node",
+      quiet: true,
+      queuePath,
+      sourceInstanceId: "dsrc-1",
+      streams: ["messages"],
+    });
+
+    // Let the child spawn and emit its record, then interrupt like Ctrl+C
+    // would: invoke the freshly installed SIGINT handler directly (same
+    // technique as installInterruptAbort's tests above).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(process.listenerCount("SIGINT"), beforeInt + 1, "plain run must install a real SIGINT handler");
+    (process.listeners("SIGINT").at(-1) as () => void)();
+
+    await assert.rejects(runPromise);
+    assert.equal(process.listenerCount("SIGINT"), beforeInt, "the handler must be removed once the run settles");
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const status = outbox.summary({ sourceInstanceId: "dsrc-1" });
+      assert.ok(
+        status.ready + status.leased + status.retrying + status.succeeded >= 1,
+        "the record emitted before the interrupt must be durably flushed, not lost"
+      );
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await server.close();
+    if (previous === undefined) {
+      delete process.env[ALLOW_CUSTOM_COMMAND_ENV];
+    } else {
+      process.env[ALLOW_CUSTOM_COMMAND_ENV] = previous;
+    }
+  }
+});
 
 /**
  * Seed a schema-v1 (pre-observed-stream-index) outbox file directly so the CLI
