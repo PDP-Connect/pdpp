@@ -4,11 +4,7 @@
 import { buttonVariants, IcButton, IcInput } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
-import {
-  type ConnectorAcquisitionPath,
-  type ConnectorCatalogEntry,
-  isReadyProviderAuthorizationEntry,
-} from "../lib/connection-catalog.ts";
+import { type ConnectorAcquisitionPath, type ConnectorCatalogEntry } from "../lib/connection-catalog.ts";
 import type { RefCountState } from "../lib/ref-client.ts";
 import {
   sourceSetupAction,
@@ -127,14 +123,13 @@ function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: num
   if (entry.modality === "browser_bound" && entry.setupModality === "static_secret") {
     return "Connect in a secure browser; interactive sign-in is valid, with optional saved details for repair.";
   }
-  if (isReadyProviderAuthorizationEntry(entry)) {
-    return "Authorize this account through the provider.";
-  }
   switch (entry.disposition) {
     case "local_collector_enroll":
       return "Run the local collector on the machine that has this data.";
     case "static_secret_connect":
       return "Enter the provider credential for this account.";
+    case "provider_auth_connect":
+      return "Authorize this account through the provider.";
     case "manual_upload_connect":
       return existingSourceCount > 0
         ? `${existingSourceCount} existing ${existingSourceCount === 1 ? "source" : "sources"} can receive another export; choose on the import page.`
