@@ -113,8 +113,9 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
     }
   });
 
-  // Test 4: Upstream source URL reference is preserved
-  await t.test("Upstream source URL reference preserved", () => {
+  // Test 4: Upstream source URL reference is exact and valid
+  // AGPL section 6(d): Corresponding Source must be resolvable tree/archive URL
+  await t.test("Upstream source URL reference exact and resolvable", () => {
     try {
       const sourceUrl = execFileSync(DOCKER_CMD, [
         "run",
@@ -122,13 +123,14 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
         CORE_IMAGE_TAG,
         "cat",
         "/usr/local/share/slackdump/SOURCE_URL",
-      ], { encoding: "utf8" });
+      ], { encoding: "utf8" }).trim();
 
+      const expectedUrl = "https://github.com/rusq/slackdump/tree/v4.4.2";
       assert(
-        sourceUrl.includes("github.com/rusq/slackdump"),
-        "SOURCE_URL should reference upstream repository"
+        sourceUrl === expectedUrl,
+        `SOURCE_URL must be exact versioned tree URL; expected ${expectedUrl}, got ${sourceUrl}`
       );
-      t.diagnostic(`✓ Upstream source URL: ${sourceUrl.trim()}`);
+      t.diagnostic(`✓ Upstream source URL: ${sourceUrl}`);
     } catch (err) {
       throw new Error(`Source URL check failed: ${err}`);
     }

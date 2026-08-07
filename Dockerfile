@@ -143,8 +143,9 @@ RUN TARBALL=$(cat /tmp/tarball.txt) && \
     ./slackdump version
 
 # Download LICENSE and source reference from upstream
+# AGPL section 6(d): Corresponding Source URL must resolve to exact versioned tree
 RUN curl -fsSL -o LICENSE "https://raw.githubusercontent.com/rusq/slackdump/v4.4.2/LICENSE" && \
-    echo "https://github.com/rusq/slackdump/blob/v4.4.2" > SOURCE_URL && \
+    echo "https://github.com/rusq/slackdump/tree/v4.4.2" > SOURCE_URL && \
     test -f LICENSE && test -s LICENSE
 
 # Dedicated browsers stage. Patchright + bundled Chromium + (on amd64) Google
