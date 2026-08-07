@@ -51,6 +51,8 @@ const CONNECTORS = [
   "google_takeout",
   "google_maps",
   "google_maps_data_portability",
+  "google_calendar",
+  "google_contacts",
   "twitter_archive",
   "imessage",
   "strava",
@@ -60,6 +62,7 @@ const CONNECTORS = [
   "codex",
   "apple_health",
   "ical",
+  "apple_contacts",
   // 'pocket' intentionally excluded — Mozilla shut Pocket down 2025-07-08; the
   // shipped manifest is now public_listing.listed=false /
   // status=deprecated_upstream / recommended_mode=manual. See

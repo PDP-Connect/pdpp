@@ -40,8 +40,27 @@ export interface StreamTimestampState {
   last_timestamp?: string;
 }
 
+export interface PhotoMetadataFile {
+  creationTime?: { timestamp?: string };
+  description?: string;
+  geoData?: {
+    latitude?: number;
+    longitude?: number;
+    altitude?: number;
+  };
+  geoDataExif?: {
+    latitude?: number;
+    longitude?: number;
+    altitude?: number;
+  };
+  imageViews?: number;
+  photoTakenTime?: { timestamp?: string };
+  title?: string;
+}
+
 export interface GoogleTakeoutState {
   location_history?: StreamTimestampState;
+  photos?: StreamTimestampState;
   search_history?: StreamTimestampState;
   youtube_watch_history?: StreamTimestampState;
 }
@@ -71,4 +90,29 @@ export interface SearchRecord {
   product: string | null;
   query: string;
   timestamp: string;
+}
+
+export interface BlobRef {
+  blob_id: string;
+  mime_type: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+export type PhotoHydrationStatus = "failed" | "hydrated" | "skipped_too_large" | "unavailable";
+
+export interface PhotoRecord {
+  altitude: number | null;
+  blob_ref: BlobRef | null;
+  content_sha256: string | null;
+  description: string | null;
+  event_time: string;
+  filename: string;
+  hydration_error: string | null;
+  hydration_status: PhotoHydrationStatus;
+  id: string;
+  latitude: number | null;
+  longitude: number | null;
+  size_bytes: number | null;
+  title: string | null;
 }
