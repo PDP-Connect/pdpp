@@ -84,7 +84,7 @@
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": true,
-      "rationale": "Slack credentials are durable. Slackdump v4.4.2 (AGPL-3.0, https://github.com/rusq/slackdump/blob/v4.4.2) is bundled in core-browser Docker image; refresh moderately."
+      "rationale": "Slack credentials are durable. Slackdump v4.4.2 (AGPL-3.0, https://github.com/rusq/slackdump/tree/v4.4.2) is bundled in core-browser Docker image; refresh moderately."
     },
     "public_listing": {
       "listed": true,
