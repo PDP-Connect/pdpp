@@ -27,7 +27,14 @@ const READY_ENV = Object.freeze({
 const TEST_KEY = "google-data-portability-test-key";
 
 interface Manifest {
+  capabilities?: {
+    public_listing?: {
+      listed?: boolean;
+      proof_gate?: string;
+    };
+  };
   connector_id?: string;
+  streams?: Array<{ name?: string }>;
   [key: string]: unknown;
 }
 
@@ -377,7 +384,7 @@ test("Google Data Portability provider-auth route materializes an active connect
   }
 });
 
-test("Google Maps Data Portability must be unlisted because it only exposes control-plane metadata (archive jobs), not actual Maps data", async () => {
+test("Google Maps Data Portability must be unlisted because it only exposes control-plane metadata (archive jobs), not actual Maps data", () => {
   const manifest = readManifest();
   const publicListing = manifest.capabilities?.public_listing;
 
@@ -387,10 +394,7 @@ test("Google Maps Data Portability must be unlisted because it only exposes cont
     false,
     "google_maps_data_portability must be unlisted: only archive_jobs (control-plane job status) is implemented; no archive download, Maps resource group parsing, or user data exposure."
   );
-  assert.ok(
-    publicListing.proof_gate,
-    "manifest must explain why it is unlisted via proof_gate field"
-  );
+  assert.ok(publicListing.proof_gate, "manifest must explain why it is unlisted via proof_gate field");
 
   const streams = manifest.streams ?? [];
   const archiveJobsStream = streams.find((s) => s.name === "archive_jobs");
