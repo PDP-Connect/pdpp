@@ -501,7 +501,8 @@ async function handleVerificationCodeSubmission({
     throw new Error("heb_verification_code_not_provided");
   }
 
-  const verificationCodeRoot = await resolveUniqueVerificationCodeFormRoot(page);
+  const waitClock = postSubmitWaitClock ?? defaultPostSubmitWaitClock(page);
+  const verificationCodeRoot = await waitForUniqueVerificationCodeFormRoot(page, waitClock);
   if (!verificationCodeRoot) {
     throw new Error("heb_verification_code_input_missing");
   }
@@ -512,12 +513,9 @@ async function handleVerificationCodeSubmission({
   }
 
   await checkpoint?.("heb-verification-code-submitted");
-  const postSubmitSurface = await waitForPostSubmitAuthSurface(
-    page,
-    postSubmitWaitClock ?? defaultPostSubmitWaitClock(page),
-    checkpoint,
-    { ignoreVerificationCode: true }
-  );
+  const postSubmitSurface = await waitForPostSubmitAuthSurface(page, waitClock, checkpoint, {
+    ignoreVerificationCode: true,
+  });
   if (postSubmitSurface.kind === "live") {
     await checkpoint?.("heb-post-submit-live");
     await checkpoint?.("heb-verification-code-reprobe");
@@ -610,4 +608,21 @@ export async function ensureHebSession({
   }
 
   throw new Error("heb_login_unexpected_ui");
+}
+
+async function waitForUniqueVerificationCodeFormRoot(page: Page, clock: PostSubmitWaitClock): Promise<Locator | null> {
+  const deadline = clock.now() + FIELD_TIMEOUT_MS;
+  while (clock.now() <= deadline) {
+    const resolved = await resolveUniqueVerificationCodeFormRoot(page);
+    if (resolved) {
+      return resolved;
+    }
+
+    const remainingMs = deadline - clock.now();
+    if (remainingMs <= 0) {
+      return null;
+    }
+    await clock.wait(Math.min(POST_SUBMIT_POLL_INTERVAL_MS, remainingMs));
+  }
+  return null;
 }
