@@ -63,10 +63,24 @@ a.rr-s-item {
     inset 0 0 0 1px var(--border-strong);
 }
 
-.rr-s-item__name {
-  /* The bold human name is the clear primary identity on row 1. */
+.rr-s-item__identity {
+  /* Wraps the manifest-declared icon (or Monogram fallback) with the name so
+     both share row 1's grid cell without changing rr-s-item__name's own
+     ellipsis/line-height contract. */
+  display: flex;
   grid-row: 1;
   grid-column: 1;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.rr-s-item__icon {
+  flex-shrink: 0;
+}
+
+.rr-s-item__name {
+  /* The bold human name is the clear primary identity on row 1. */
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 0.875rem;

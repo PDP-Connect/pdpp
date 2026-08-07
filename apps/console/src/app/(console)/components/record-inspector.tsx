@@ -17,6 +17,7 @@ import type {
   ExplorerBlobAffordance,
   ExplorerPeekData,
 } from "@pdpp/operator-ui/components/views/records-explorer-view";
+import { formatStorageBytes } from "@pdpp/operator-ui/lib/storage-footprint";
 import type { ParentBackLink, RelatedLink, ReverseChildListLink } from "../sources/lib/relationships.ts";
 
 const IMAGE_MIME_RE = /^image\//i;
@@ -54,6 +55,12 @@ function blobAffordance(record: ExplorerPeekData): ExplorerBlobAffordance | null
   return null;
 }
 
+// `undefined`/`null` (unmeasured, or a record read via a path that does not
+// carry `record_json_bytes`) renders `—`, never a fabricated `0 B`.
+function recordSizeLabel(sizeBytes: number | null | undefined): string {
+  return typeof sizeBytes === "number" ? formatStorageBytes(sizeBytes) : "—";
+}
+
 function declaredBlobMime(body: Record<string, unknown>, fieldName: string): string | undefined {
   const ref = body[fieldName];
   if (!(ref && typeof ref === "object") || Array.isArray(ref)) {
@@ -77,6 +84,9 @@ function BlobAffordanceView({
     return null;
   }
   const isImage = mimeType ? IMAGE_MIME_RE.test(mimeType) : false;
+  // `undefined`/`null` (unmeasured) renders no parenthetical rather than a
+  // fabricated size — never "(0 B)".
+  const sizeLabel = typeof affordance.sizeBytes === "number" ? formatStorageBytes(affordance.sizeBytes) : null;
   return (
     <div className="rr-x-blob">
       {isImage ? (
@@ -84,7 +94,7 @@ function BlobAffordanceView({
         <img alt={affordance.fieldName} className="rr-x-blob__img" src={affordance.href} />
       ) : null}
       <a className="rr-x-blob__open" href={affordance.href}>
-        Open blob →
+        Open blob →{sizeLabel ? ` (${sizeLabel})` : ""}
       </a>
     </div>
   );
@@ -240,6 +250,7 @@ export function RecordInspector({ record, relationships, streamRecordsHref }: Re
             ? `${visibleCount} of ${totalDeclared} fields included in this shared view · enforced on every read`
             : `${totalDeclared} fields · readable by you`}
         </span>
+        <span className="rr-x-facets__note">Record size: {recordSizeLabel(record.recordSizeBytes)}</span>
       </SheetFoot>
     </Sheet>
   );

@@ -171,6 +171,7 @@ export default async function RecordDetailPage({
     fields: buildPeekFields(record.data, fieldCapabilities),
     readUrl: recordReadUrl,
     recordId: record.id,
+    recordSizeBytes: typeof record.record_json_bytes === "number" ? record.record_json_bytes : null,
     // Honest: the authored date only when a semantic field is actually declared;
     // null otherwise (the inspector falls back to showing "Emitted").
     semanticTimestamp: semanticTs

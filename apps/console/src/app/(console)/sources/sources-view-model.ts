@@ -142,6 +142,8 @@ export interface SourceInstanceView {
   displayName: string;
   /** Stable React key + route id. */
   id: string;
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: SourceManifestLike["icon"];
   /** True when this connection's data arrives by device push (sync is inert). */
   isLocalDevicePush: boolean;
   /** True when the latest run is active, so reprocessing should not start again. */
@@ -205,6 +207,12 @@ export interface SourcesRuntimeAdvisory {
 
 type SourceManifestLike = ConnectorManifestLike & {
   connector_id: string;
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: {
+    color?: string | null;
+    kind?: string | null;
+    svg?: string | null;
+  } | null;
   streams?: readonly StreamManifestEntry[];
 };
 
@@ -612,6 +620,7 @@ export function toSourceInstanceView(
     connectorInstanceId,
     detailHref: sourceDetailHrefFor(routeId, summary),
     displayName,
+    icon: manifest?.icon ?? null,
     id: routeId,
     isLocalDevicePush,
     isRunning,

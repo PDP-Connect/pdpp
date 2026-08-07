@@ -1815,6 +1815,83 @@ export async function getDatasetSummary(): Promise<DatasetSummary> {
   return (await refFetch("/_ref/dataset/summary")) as DatasetSummary;
 }
 
+// `GET /_ref/dataset/size` and `GET /_ref/dataset/top` — finer-grain
+// siblings of `getDatasetSummary()`. Both are projection-backed and already
+// server-bounded (top is capped at 25 rows, `MAX_TOP_LIMIT` in
+// `retained-size-read-model.ts`); callers must not paginate past what these
+// return. Mirrors `RetainedSizeRowSchema`/`RetainedSizeTopRowSchema` in
+// `packages/reference-contract/src/reference/index.ts`.
+
+export interface RefRetainedSizeRow {
+  blob_bytes: number;
+  blob_count: number;
+  computed_at?: string | null;
+  connector_id?: string | null;
+  connector_instance_id?: string | null;
+  current_record_json_bytes: number;
+  dirty: boolean;
+  grain: string;
+  record_count: number;
+  record_family?: string | null;
+  record_history_count: number;
+  record_history_json_bytes: number;
+  stream?: string | null;
+  total_retained_bytes: number;
+}
+
+export interface RefRetainedSizeTopRow extends RefRetainedSizeRow {
+  blob_id: string | null;
+  grain_key: string;
+  measure: string;
+  rank: number;
+  record_key: string | null;
+  scope: string;
+}
+
+export interface RefRetainedSizeProjectionMeta {
+  computed_at: string | null;
+  dirty: boolean;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface RefDatasetSizeResponse {
+  grain: "global" | "connection" | "stream";
+  object: "ref_dataset_size";
+  projection: RefRetainedSizeProjectionMeta;
+  rows: RefRetainedSizeRow[];
+}
+
+export interface RefDatasetTopResponse {
+  measure: string;
+  object: "ref_dataset_top";
+  projection: RefRetainedSizeProjectionMeta;
+  rows: RefRetainedSizeTopRow[];
+  scope: "connection" | "stream" | "record" | "blob";
+}
+
+/**
+ * Retained logical bytes at one grain finer than the connector-summary
+ * table. `grain: "stream"` is the sibling the deployment page's per-source
+ * storage table does not answer today.
+ */
+export async function getDatasetSize(
+  grain: "global" | "connection" | "stream" = "global"
+): Promise<RefDatasetSizeResponse> {
+  return (await refFetch("/_ref/dataset/size", { grain })) as RefDatasetSizeResponse;
+}
+
+/**
+ * Bounded (server-capped at 25 rows) retained-size heavy hitters for one
+ * scope/measure pair. Never paginate past what this returns — the bound is
+ * intentional (`MAX_TOP_LIMIT`), not an arbitrary page size.
+ */
+export async function getDatasetTop(
+  scope: "connection" | "stream" | "record" | "blob",
+  measure: string = "total_retained_bytes"
+): Promise<RefDatasetTopResponse> {
+  return (await refFetch("/_ref/dataset/top", { measure, scope })) as RefDatasetTopResponse;
+}
+
 // The reference deployment diagnostics surface. Consumed by the operator-
 // facing /deployment page. Shape matches the report returned by
 // server/deployment-diagnostics.ts; the RS redacts secrets before sending,

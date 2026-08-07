@@ -16,10 +16,14 @@ import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeploymentDiagnostics,
+  getDatasetSize,
   getDatasetSummary,
+  getDatasetTop,
   getDeploymentDiagnostics,
   listConnectorSummaries,
   type RefConnectorSummary,
+  type RefRetainedSizeRow,
+  type RefRetainedSizeTopRow,
 } from "../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
@@ -75,6 +79,26 @@ export default async function DeploymentPage() {
   const sources: readonly RefConnectorSummary[] = sourcePage.kind === "ok" ? sourcePage.items : [];
   const sourcesTruncated = sourcePage.kind === "ok" && sourcePage.hasMore;
 
+  // Stream-grain and record/blob top-N retained bytes. Both are already
+  // computed by the retained-size projection and already exposed over HTTP
+  // (`GET /_ref/dataset/size?grain=stream`, `GET /_ref/dataset/top`) — this
+  // is the first console page to read them. `top` responses are already
+  // bounded server-side (`MAX_TOP_LIMIT = 25`); rendered as-is, no further
+  // pagination or fan-out. Best-effort, in parallel, same posture as the
+  // summary/source fetches above: a failed read hides its section rather
+  // than failing the page.
+  const [streamSizesResult, topRecordsResult, topBlobsResult] = await Promise.allSettled([
+    getDatasetSize("stream"),
+    getDatasetTop("record", "total_retained_bytes"),
+    getDatasetTop("blob", "blob_bytes"),
+  ]);
+  const streamSizes: readonly RefRetainedSizeRow[] =
+    streamSizesResult.status === "fulfilled" ? streamSizesResult.value.rows : [];
+  const topRecords: readonly RefRetainedSizeTopRow[] =
+    topRecordsResult.status === "fulfilled" ? topRecordsResult.value.rows : [];
+  const topBlobs: readonly RefRetainedSizeTopRow[] =
+    topBlobsResult.status === "fulfilled" ? topBlobsResult.value.rows : [];
+
   if (unreachable || !report) {
     return (
       <RecordroomShellWithPalette>
@@ -99,6 +123,9 @@ export default async function DeploymentPage() {
         retainedBytes={retainedBytes}
         sources={sources}
         sourcesTruncated={sourcesTruncated}
+        streamSizes={streamSizes}
+        topBlobs={topBlobs}
+        topRecords={topRecords}
       />
     </RecordroomShellWithPalette>
   );

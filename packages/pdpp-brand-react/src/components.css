@@ -242,6 +242,16 @@
   opacity: 0.5;
 }
 
+/* Opt-in per-instance tint (e.g. ConnectorIcon's no-manifest-icon fallback) —
+   overrides only color/background/border, driven by a caller-supplied
+   deterministic hue custom property. Every other .pdpp-monogram caller is
+   unaffected since --pdpp-monogram-hue and this class are never set by them. */
+.pdpp-monogram--tinted {
+  color: oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h);
+  background: oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h / 12%);
+  box-shadow: inset 0 0 0 1px oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h / 42%);
+}
+
 /* ─── Endorsement — status typed by the protocol ─────────────────
    Spent color lives here. State color must ONLY appear inside .pdpp-endorse.
    The background and border are derived from currentColor so the color

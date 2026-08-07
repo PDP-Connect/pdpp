@@ -6,6 +6,7 @@ import {
   type CredentialValidationMode,
   credentialValidationMode,
 } from "../../packages/polyfill-connectors/src/credential-probe.ts";
+import { legacyLocalAliasMap } from "./connector-key.ts";
 
 export type ConnectorIntentModality = "local_collector" | "browser_bound" | "api_network" | "unknown";
 
@@ -376,12 +377,19 @@ export function connectorKeyFromManifest(manifest: ConnectorManifestLike, fallba
 // keyed by `connector_id`, which uses underscores for both): claude-code and
 // google-takeout. Every other bundled connector's canonical key already
 // equals its directory name.
-const HYPHENATED_CANONICAL_KEY_ALIASES: Readonly<Record<string, string>> = {
-  "claude-code": "claude_code",
-  "google-takeout": "google_takeout",
-  "apple-photos": "apple_photos",
-  "google-messages": "google_messages",
-};
+//
+// Derived from connector-key.ts's legacyLocalAliasMap() (legacy snake_case ->
+// canonical hyphenated key) by inverting it, rather than hand-maintaining a
+// second copy of the same mapping — that second copy had already diverged
+// from a third one in auth.ts. See
+// docs/inbox/report-connector-knowledge-clusters-bc.md. `codex` maps to
+// itself in legacyLocalAliasMap() and is intentionally excluded here (no
+// entry needed for an identity mapping).
+const HYPHENATED_CANONICAL_KEY_ALIASES: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(legacyLocalAliasMap())
+    .filter(([legacyKey, canonicalKey]) => legacyKey !== canonicalKey)
+    .map(([legacyKey, canonicalKey]) => [canonicalKey, legacyKey])
+);
 
 export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
   const key = canonicalConnectorKey(canonicalKey);

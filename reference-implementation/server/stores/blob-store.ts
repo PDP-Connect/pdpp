@@ -19,7 +19,7 @@
  */
 
 import { getMany, getOne, referenceQueries } from "../../lib/db.ts";
-import { postgresListBlobBindings, postgresLoadContentAddressedBlob } from "../postgres-records.ts";
+import { postgresListBlobBindings, postgresLoadBlobSize, postgresLoadContentAddressedBlob } from "../postgres-records.ts";
 import { isPostgresStorageBackend } from "../postgres-storage.ts";
 
 /**
@@ -60,6 +60,14 @@ type MaybeAsync<T> = T | Promise<T>;
 export interface BlobStore {
   listBlobBindings: (blobId: string, opts?: { limit?: number }) => MaybeAsync<readonly BlobBinding[]>;
   loadContentAddressedBlob: (blobId: string) => MaybeAsync<BlobRow | null>;
+  /**
+   * Single indexed point lookup for just `size_bytes`, keyed by `blob_id`
+   * (primary key). Distinct from `loadContentAddressedBlob`, which also
+   * pulls the raw bytes — this is the lean read used to decorate a record's
+   * `blob_ref.size_bytes` without loading the blob's data into memory.
+   * `null` when the blob row does not exist.
+   */
+  loadBlobSize: (blobId: string) => MaybeAsync<number | null>;
 }
 
 /**
@@ -92,6 +100,9 @@ export function createBlobStore(): BlobStore {
       loadContentAddressedBlob(blobId: string): MaybeAsync<BlobRow | null> {
         return postgresLoadContentAddressedBlob(blobId) as unknown as Promise<BlobRow | null>;
       },
+      loadBlobSize(blobId: string): MaybeAsync<number | null> {
+        return postgresLoadBlobSize(blobId);
+      },
     };
   }
 
@@ -106,6 +117,10 @@ export function createBlobStore(): BlobStore {
     loadContentAddressedBlob(blobId: string): BlobRow | null {
       const row = getOne<BlobRow>(referenceQueries.blobsGetRowById, [blobId]);
       return row ?? null;
+    },
+    loadBlobSize(blobId: string): number | null {
+      const row = getOne<{ size_bytes: number }>(referenceQueries.blobsGetSizeById, [blobId]);
+      return row ? row.size_bytes : null;
     },
   };
 }

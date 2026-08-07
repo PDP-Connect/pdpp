@@ -49,6 +49,11 @@ interface ConnectorManifestLike {
   readonly connector_id?: string | null;
   readonly connector_key?: string | null;
   readonly display_name?: string | null;
+  readonly icon?: {
+    readonly color?: string | null;
+    readonly kind?: string | null;
+    readonly svg?: string | null;
+  } | null;
   readonly name?: string | null;
   readonly runtime_requirements?: {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
@@ -282,6 +287,7 @@ function projectTemplate(
     connector_key: connectorKey,
     connector_modality: modality,
     display_name: displayNameForTemplate(connectorKey, manifest),
+    icon: manifest.icon ?? null,
     object: "owner_connector_template",
     public_listing: manifest.capabilities?.public_listing ?? null,
     registration_status: "registered",

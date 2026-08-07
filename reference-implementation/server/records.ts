@@ -309,6 +309,10 @@ interface StoredRecordRow {
   __fk?: unknown;
   emitted_at: string;
   record_json: string;
+  // Only populated by `recordsGetLiveRecordByKey` (the single-record-detail
+  // point read). List/paginated queries against `StoredRecordRow` do not
+  // select this column, so it is `undefined` there — never a fabricated `0`.
+  record_json_bytes?: number;
   record_key: string;
 }
 interface VisibleRecordRow {
@@ -344,6 +348,12 @@ interface ResponseRecord {
   id: string;
   meta?: RecordResponseMeta;
   object: "record";
+  // Logical byte length of this record's current `record_json` (SQLite:
+  // LENGTH(CAST(record_json AS BLOB)); Postgres: octet_length(record_json)).
+  // Only populated on the single-record-detail read path
+  // (`getRecordAcrossBindings`/`postgresGetRecord`) — never on a list
+  // response. `undefined`/absent, not `0`, when unmeasured.
+  record_json_bytes?: number;
   stream: string;
 }
 type EffectiveParentRow = VisibleRecordRow & { responseRecord: ResponseRecord };
@@ -5229,6 +5239,17 @@ export async function getRecord(
     ),
     sortPosition: buildRecordSortPosition(rawData, row.record_key, mStream),
   };
+
+  // Single-row read, single scalar already selected by
+  // `recordsGetLiveRecordByKey` (see queries/records/get-live-record-by-key.sql)
+  // — not a second query. Attached directly to the already-built response
+  // record rather than threaded through `VisibleRecordRow`/`buildResponseRecord`,
+  // whose other call sites (list paging, expansion hydration) do not select
+  // this column. `undefined` stays `undefined` here; the wire layer omits it
+  // rather than fabricating `0`.
+  if (typeof row.record_json_bytes === "number") {
+    responseRow.responseRecord.record_json_bytes = row.record_json_bytes;
+  }
 
   const expansions = normalizeExpandRequest(
     {

@@ -1020,6 +1020,11 @@ const RecordSchema = {
     expanded: { additionalProperties: true, type: "object" },
     id: { type: "string" },
     object: { const: "record" },
+    // Logical byte length of this record's current `record_json`. Only
+    // populated on the single-record-detail read (`GET .../records/{id}`) —
+    // list responses do not carry this field. Absent, never `0`, when
+    // unmeasured.
+    record_json_bytes: { minimum: 0, type: "integer" },
     stream: { type: "string" },
   },
   required: ["object", "id", "stream"],

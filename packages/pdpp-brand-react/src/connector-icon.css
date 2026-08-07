@@ -1,0 +1,22 @@
+/* Copyright The PDP-Connect Contributors */
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* ─── ConnectorIcon — manifest-declared brand mark ───────────────────
+   Only the manifest-icon (inline_svg) render path uses this class; the
+   no-icon fallback renders the shared Monogram primitive (see data-row.tsx
+   and its `--pdpp-monogram-hue` / .pdpp-monogram--tinted styling in
+   components.css) directly, so the two states share one fallback look
+   rather than each defining their own. */
+.pdpp-connector-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.pdpp-connector-icon svg {
+  width: 100%;
+  height: 100%;
+}

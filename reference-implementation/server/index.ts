@@ -3266,7 +3266,31 @@ async function buildConnectorDiscoveryItem({
   return item;
 }
 
-function decorateBlobRefValue(blobRef: unknown): unknown {
+/**
+ * Options threaded through `decorateBlobRefValue`/`decorateRecordBlobRefs`.
+ * `withBlobSize` is opt-in and defaults to false/unchanged behavior:
+ * `decorateRecordBlobRefs` decorates both the records-LIST route
+ * (`buildRecordsListDeps` in `routes/rs-read.ts`, one call per row of a
+ * page) and the single-record-DETAIL route (`mountRsRecordDetail`). Adding
+ * a per-blob DB lookup unconditionally would turn the list route into an
+ * N-per-page fan-out; only the detail route passes `withBlobSize: true`.
+ * See docs/inbox/findings-storage-granularity.md §6 for the bounded-page-
+ * join-is-fine-but-don't-widen-it-further distinction this preserves.
+ *
+ * With `withBlobSize` false/omitted, both functions stay fully synchronous
+ * (return the plain decorated value, not a Promise) — the records-LIST
+ * dependency contract (`RecordsListDependencies.decorateRecord` in
+ * `operations/rs-records-list/index.ts`) is unchanged and does not need to
+ * become async. Only `withBlobSize: true` returns a `Promise`, matching the
+ * `MaybeAsync<T>` convention `BlobStore` already uses.
+ */
+interface DecorateBlobRefOptions {
+  withBlobSize?: boolean;
+}
+
+type MaybeAsync<T> = T | Promise<T>;
+
+function decorateBlobRefValue(blobRef: unknown, options: DecorateBlobRefOptions = {}): MaybeAsync<unknown> {
   if (!blobRef || typeof blobRef !== "object") {
     return blobRef;
   }
@@ -3274,13 +3298,24 @@ function decorateBlobRefValue(blobRef: unknown): unknown {
   if (typeof ref.blob_id !== "string" || !ref.blob_id) {
     return blobRef;
   }
-  return {
+  const blobId = ref.blob_id;
+  const decorated: Record<string, unknown> = {
     ...ref,
-    fetch_url: `/v1/blobs/${encodeURIComponent(ref.blob_id as string)}`,
+    fetch_url: `/v1/blobs/${encodeURIComponent(blobId)}`,
   };
+  if (!options.withBlobSize) {
+    return decorated;
+  }
+  // Single indexed point lookup keyed by `blob_id` (primary key on `blobs`),
+  // already known from the ref — not a table scan, not a join across all
+  // blobs. See `BlobStore.loadBlobSize`.
+  return Promise.resolve(createBlobStore().loadBlobSize(blobId)).then((sizeBytes) => {
+    decorated.size_bytes = sizeBytes;
+    return decorated;
+  });
 }
 
-function decorateRecordBlobRefs(record: unknown): unknown {
+function decorateRecordBlobRefs(record: unknown, options: DecorateBlobRefOptions = {}): MaybeAsync<unknown> {
   if (!record || typeof record !== "object") {
     return record;
   }
@@ -3289,23 +3324,57 @@ function decorateRecordBlobRefs(record: unknown): unknown {
   if (rec.data && typeof rec.data === "object" && !Array.isArray(rec.data)) {
     const data = rec.data as Record<string, unknown>;
     if (data.blob_ref) {
-      next.data = {
-        ...data,
-        blob_ref: decorateBlobRefValue(data.blob_ref),
-      };
+      const decoratedRef = decorateBlobRefValue(data.blob_ref, options);
+      if (decoratedRef instanceof Promise) {
+        const withData = decoratedRef.then((blob_ref) => ({ ...data, blob_ref }));
+        return withData.then((decoratedData) => decorateRecordExpanded(rec, next, decoratedData, options));
+      }
+      next.data = { ...data, blob_ref: decoratedRef };
+      return decorateRecordExpanded(rec, next, next.data, options);
     }
   }
-  if (rec.expanded && typeof rec.expanded === "object" && !Array.isArray(rec.expanded)) {
-    next.expanded = Object.fromEntries(
-      Object.entries(rec.expanded as Record<string, unknown>).map(([name, value]) => {
-        if (value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).data)) {
-          const v = value as Record<string, unknown>;
-          return [name, { ...v, data: (v.data as unknown[]).map(decorateRecordBlobRefs) }];
-        }
-        return [name, decorateRecordBlobRefs(value)];
-      })
-    );
+  return decorateRecordExpanded(rec, next, next.data, options);
+}
+
+/**
+ * Decorate `rec.expanded` sub-records after `data.blob_ref` (if any) has
+ * already been resolved into `next.data`/`resolvedData`. Split out of
+ * `decorateRecordBlobRefs` so that function can return synchronously in the
+ * (default, `withBlobSize: false`) common case without a Promise wrapper —
+ * only entering `async` territory once `options.withBlobSize` is set.
+ */
+function decorateRecordExpanded(
+  rec: Record<string, unknown>,
+  next: Record<string, unknown>,
+  resolvedData: unknown,
+  options: DecorateBlobRefOptions
+): MaybeAsync<unknown> {
+  next.data = resolvedData;
+  if (!(rec.expanded && typeof rec.expanded === "object" && !Array.isArray(rec.expanded))) {
+    return next;
   }
+  const entries = Object.entries(rec.expanded as Record<string, unknown>).map(([name, value]) => {
+    if (value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).data)) {
+      const v = value as Record<string, unknown>;
+      const decoratedItems = (v.data as unknown[]).map((item) => decorateRecordBlobRefs(item, options));
+      if (decoratedItems.some((item) => item instanceof Promise)) {
+        return Promise.all(decoratedItems).then((data) => [name, { ...v, data }] as const);
+      }
+      return [name, { ...v, data: decoratedItems }] as const;
+    }
+    const decorated = decorateRecordBlobRefs(value, options);
+    if (decorated instanceof Promise) {
+      return decorated.then((resolved) => [name, resolved] as const);
+    }
+    return [name, decorated] as const;
+  });
+  if (entries.some((entry) => entry instanceof Promise)) {
+    return Promise.all(entries).then((resolvedEntries) => {
+      next.expanded = Object.fromEntries(resolvedEntries);
+      return next;
+    });
+  }
+  next.expanded = Object.fromEntries(entries as readonly (readonly [string, unknown])[]);
   return next;
 }
 

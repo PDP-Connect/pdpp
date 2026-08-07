@@ -103,6 +103,12 @@ export interface OwnerConnectorTemplateLike {
   connector_key?: string | null;
   connector_modality?: string | null;
   display_name?: string | null;
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: {
+    color?: string | null;
+    kind?: string | null;
+    svg?: string | null;
+  } | null;
   public_listing?: {
     listed?: boolean | null;
     status?: string | null;
@@ -189,6 +195,8 @@ export interface ConnectorCatalogEntry {
   displayName: string;
   /** What the console can honestly do with this connector today. */
   disposition: CatalogDisposition;
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: OwnerConnectorTemplateLike["icon"];
   /**
    * The `?connector=` value to deep-link into the enrollment form, present only
    * for dispositions the console can actually start (`local_collector_enroll`,
@@ -516,6 +524,7 @@ export function buildOwnerConnectorCatalog(
       displayName: cleanManifestText(template.display_name) ?? displayNameFor(manifestForCopy, connectorKey),
       disposition,
       externalDocs: externalDocsFromManifest(manifestForCopy),
+      icon: template.icon ?? null,
       modality: connectorModality,
       nextStepKind,
       ownerActionable: capability.actionable,

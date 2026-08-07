@@ -64,6 +64,13 @@ export interface StreamRecord {
   emitted_at: string;
   id: string;
   object: "record";
+  /**
+   * Logical byte length of this record's current `record_json`. Only
+   * populated on the single-record-detail read (`getRecord()` below) — the
+   * records-list read never carries this field. `undefined` when unmeasured
+   * or when this record came from a list response; render `—`, never `0`.
+   */
+  record_json_bytes?: number;
   stream: string;
   /**
    * Canonical `meta.warnings`, surfaced when this record was fetched via a
@@ -159,6 +166,12 @@ export interface ConnectorManifest {
   connector_id: string;
   connector_key?: string;
   display_name?: string;
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: {
+    color?: string | null;
+    kind?: string | null;
+    svg?: string | null;
+  } | null;
   name?: string;
   provider_id?: string;
   /**

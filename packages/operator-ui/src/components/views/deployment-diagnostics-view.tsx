@@ -4,6 +4,12 @@
 import { formatConnectorKeyForDisplay } from "@pdpp/display";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import {
+  buildDatasetStreamSizeModel,
+  buildDatasetTopModel,
+  type DatasetStreamSizeInput,
+  type DatasetTopRowInput,
+} from "../../lib/dataset-grains.ts";
 import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
 import { buildSourceStorageModel, type SourceStorageInput } from "../../lib/source-storage.ts";
 import { buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
@@ -34,7 +40,16 @@ interface DeploymentDiagnosticsViewProps {
   // beyond it. The table then says so explicitly rather than presenting a
   // truncated list as the whole fleet.
   sourcesTruncated?: boolean;
+  // Stream-grain retained bytes (`GET /_ref/dataset/size?grain=stream`) — one
+  // level finer than the per-source table above. Optional: hidden when
+  // omitted or the read failed, same posture as `sources`.
+  streamSizes?: readonly DatasetStreamSizeInput[];
   title?: string;
+  // Record/blob top-N leaderboards (`GET /_ref/dataset/top`), already
+  // server-bounded to 25 rows each (`MAX_TOP_LIMIT`). Never paginate or
+  // re-sort these client-side — render exactly what the server returned.
+  topBlobs?: readonly DatasetTopRowInput[];
+  topRecords?: readonly DatasetTopRowInput[];
 }
 
 // ─── Section group divider ──────────────────────────────────────────────────
@@ -91,7 +106,10 @@ export function DeploymentDiagnosticsView({
   retainedBytes,
   sources,
   sourcesTruncated,
+  streamSizes,
   title = "Deployment",
+  topBlobs,
+  topRecords,
 }: DeploymentDiagnosticsViewProps) {
   return (
     <>
@@ -118,6 +136,8 @@ export function DeploymentDiagnosticsView({
           retainedBytes={retainedBytes}
         />
         <SourceStorageSection sources={sources} truncated={sourcesTruncated} />
+        <StreamSizeSection rows={streamSizes} />
+        <TopRecordsAndBlobsSection topBlobs={topBlobs} topRecords={topRecords} />
       </div>
       <div className="scroll-mt-16" id="diagnostics">
         <SectionGroupDivider label="Diagnostics" />
@@ -593,6 +613,112 @@ function SourceStorageSection({
         />
       )}
     </Section>
+  );
+}
+
+// Stream-grain retained payload — one level finer than "which source" above.
+// Already computed and exposed at `GET /_ref/dataset/size?grain=stream`; this
+// wires it into the console for the first time. Compact by design (the owner
+// does not need every stream surfaced everywhere, just somewhere reachable).
+function StreamSizeSection({ rows }: { rows?: readonly DatasetStreamSizeInput[] }) {
+  if (!rows || rows.length === 0) {
+    return null;
+  }
+  const model = buildDatasetStreamSizeModel(rows);
+  if (model.rows.length === 0) {
+    return null;
+  }
+  return (
+    <Section
+      description="Retained payload per stream (connector / stream) — a finer grain than the per-source table above. Logical bytes, same as above; does not sum to the on-disk database size."
+      title="Retained payload by stream"
+    >
+      <table className="w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Stream</th>
+            <th className="px-2 py-2 text-right font-medium">Retained (logical)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {model.rows.map((row) => (
+            <tr className="border-border/60 border-t" key={row.key}>
+              <td className="px-2 py-1.5 font-mono text-xs">{row.label}</td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${row.sizeMeasured ? "" : "text-muted-foreground"}`}>
+                {row.sizeLabel}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
+// Record/blob top-N heavy-hitter leaderboards — already bounded server-side
+// to 25 rows each (`MAX_TOP_LIMIT`, `retained-size-read-model.ts:129`).
+// Rendered as two compact side-by-side lists rather than a drill-down UI —
+// the owner explicitly said these do not all need to be surfaced, just
+// reachable. Never paginated further: what the server returns is the whole
+// leaderboard.
+function TopRecordsAndBlobsSection({
+  topRecords,
+  topBlobs,
+}: {
+  topRecords?: readonly DatasetTopRowInput[];
+  topBlobs?: readonly DatasetTopRowInput[];
+}) {
+  const recordsModel = topRecords ? buildDatasetTopModel(topRecords, "record", "total_retained_bytes") : null;
+  const blobsModel = topBlobs ? buildDatasetTopModel(topBlobs, "blob", "blob_bytes") : null;
+  const hasRecords = recordsModel && recordsModel.rows.length > 0;
+  const hasBlobs = blobsModel && blobsModel.rows.length > 0;
+  if (!(hasRecords || hasBlobs)) {
+    return null;
+  }
+  return (
+    <Section
+      description="The largest individual records and blobs across the deployment (top 25 by retained bytes). Logical bytes; a record's own size is separate from any blob it references — see that record's detail page for the split."
+      title="Largest records and blobs"
+    >
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        {hasRecords ? <TopList rows={recordsModel.rows} title="Largest records" /> : null}
+        {hasBlobs ? <TopList rows={blobsModel.rows} title="Largest blobs" /> : null}
+      </div>
+    </Section>
+  );
+}
+
+function TopList({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: ReturnType<typeof buildDatasetTopModel>["rows"];
+}) {
+  return (
+    <div>
+      <p className="pdpp-eyebrow text-muted-foreground">{title}</p>
+      <table className="mt-2 w-full border-border/80 border-y text-left text-sm">
+        <thead>
+          <tr className="text-muted-foreground text-xs uppercase tracking-wide">
+            <th className="px-2 py-2 font-medium">Item</th>
+            <th className="px-2 py-2 text-right font-medium">Size</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr className="border-border/60 border-t" key={row.key}>
+              <td className="px-2 py-1.5 truncate font-mono text-xs" title={row.label}>
+                {row.label}
+              </td>
+              <td className={`px-2 py-1.5 text-right tabular-nums ${row.sizeMeasured ? "" : "text-muted-foreground"}`}>
+                {row.sizeLabel}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

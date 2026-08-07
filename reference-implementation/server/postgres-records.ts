@@ -208,6 +208,11 @@ type ExpansionEntry = ReturnType<typeof normalizeExpandRequest>[number];
 
 interface ResponseRecord extends JsonObject {
   expanded?: JsonObject;
+  // Logical byte length of this record's current `record_json`
+  // (octet_length(record_json)). Only populated on the single-record-detail
+  // read path (`postgresGetRecord`) — never on a list response. Mirrors
+  // `ResponseRecord.record_json_bytes` in `server/records.ts` (SQLite).
+  record_json_bytes?: number;
 }
 
 interface ResponseRow {
@@ -992,13 +997,20 @@ function responseRecord({
   fields: string[] | null;
   identity?: RecordIdentity | null;
 }): ResponseRecord {
-  const record = {
+  const record: ResponseRecord = {
     data: projectFields(row.record_json as JsonObject | null, fields),
     emitted_at: row.emitted_at,
     id: row.record_key,
     object: "record",
     stream,
   };
+  // Only `postgresGetRecord`'s single-row query selects `record_json_bytes`;
+  // list-path callers of this shared helper (queryPostgresChangesSince,
+  // queryPostgresPagedRecords) do not, so `row.record_json_bytes` is
+  // `undefined` there and this is a no-op — never a fabricated `0`.
+  if (row.record_json_bytes !== undefined && row.record_json_bytes !== null) {
+    record.record_json_bytes = Number(row.record_json_bytes);
+  }
   decorateRecordWithConnectionIdentity(record, identity);
   return record;
 }
@@ -2564,7 +2576,15 @@ export async function postgresGetRecord(
     "ASC"
   );
   const result = await postgresQuery(
-    `SELECT record_key, record_json, emitted_at
+    // `record_json_bytes` mirrors the same `octet_length(record_json::text)`
+    // expression the retained-size top-N rebuild already uses
+    // (retained-size-read-model.ts) — the `::text` cast is required because
+    // `record_json` is `jsonb`; bare `octet_length(jsonb)` measures the
+    // internal binary storage representation, not the JSON text length, and
+    // would not be comparable to the SQLite `LENGTH(CAST(... AS BLOB))` byte
+    // count. Single-row read: one scalar added to an existing point query,
+    // not a second query.
+    `SELECT record_key, record_json, emitted_at, octet_length(record_json::text) AS record_json_bytes
      FROM records
      WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE`,
     [connectorInstanceId, stream, recordId]
@@ -3024,6 +3044,19 @@ export async function postgresLoadContentAddressedBlob(blobId: string): Promise<
     [blobId]
   );
   return result.rows[0] || null;
+}
+
+/**
+ * Read only the size of a content-addressed blob by primary key. Single
+ * indexed point lookup — distinct from `postgresLoadContentAddressedBlob`,
+ * which also returns the raw bytes; this is the lean lookup for decorating
+ * a record's `blob_ref.size_bytes` without pulling the blob's bytes into
+ * memory. Mirrors `blobsGetSizeById` (SQLite).
+ */
+export async function postgresLoadBlobSize(blobId: string): Promise<number | null> {
+  const result = await postgresQuery("SELECT size_bytes FROM blobs WHERE blob_id = $1", [blobId]);
+  const row = result.rows[0];
+  return row && row.size_bytes !== undefined && row.size_bytes !== null ? Number(row.size_bytes) : null;
 }
 
 export async function postgresListBlobBindings(

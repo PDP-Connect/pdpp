@@ -565,6 +565,65 @@ export function validateManifestSensitivity(manifest: Record<string, unknown>, c
   }
 }
 
+// ---------------------------------------------------------------------------
+// Manifest icon (optional brand glyph — see packages/pdpp-brand-react/src/connector-icon.tsx)
+// ---------------------------------------------------------------------------
+
+const MANIFEST_ICON_ALLOWED_KEYS = new Set(["kind", "svg", "color"]);
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const BARE_SVG_RE = /^<svg[\s>]/i;
+const SVG_SCRIPT_TAG_RE = /<script[\s>]/i;
+// Matches an ` on<name>=` attribute anywhere in the markup (e.g. onload=,
+// onclick=) — deliberately broad rather than an exhaustive event-name list,
+// since the manifest is untrusted data and this is a reject-list gate, not a
+// sanitizer allowlist.
+const SVG_EVENT_HANDLER_ATTR_RE = /\son\w+\s*=/i;
+
+/**
+ * Validates an optional manifest `icon` declaration. v1 supports exactly one
+ * kind, `inline_svg`: the manifest carries the SVG markup itself, so no
+ * runtime fetch and no connector-id -> icon map exists anywhere in the
+ * console or reference implementation (the console renders whatever `icon`
+ * value it is handed, unconditionally).
+ *
+ * `icon.svg` is untrusted manifest data that reaches the DOM via
+ * dangerouslySetInnerHTML (see ConnectorIcon) — this validator is the sole
+ * XSS defense, so it rejects <script> tags and inline event-handler
+ * attributes and requires the markup to be a bare <svg> element rather than
+ * arbitrary HTML.
+ */
+export function validateManifestIcon(manifest: Record<string, unknown>, code: string): void {
+  // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
+  const icon = manifest.icon;
+  if (icon === undefined) {
+    return;
+  }
+  if (!icon || typeof icon !== "object" || Array.isArray(icon)) {
+    throw invalidConnectorManifest("icon must be an object when declared", code);
+  }
+  const iconObj = icon as Record<string, unknown>;
+  const unknownKeys = Object.keys(iconObj).filter((key) => !MANIFEST_ICON_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(`icon has unsupported keys: ${unknownKeys.join(", ")}`, code);
+  }
+  if (iconObj.kind !== "inline_svg") {
+    throw invalidConnectorManifest('icon.kind must be "inline_svg"', code);
+  }
+  if (!isNonEmptyString(iconObj.svg)) {
+    throw invalidConnectorManifest("icon.svg must be a non-empty string when icon.kind is inline_svg", code);
+  }
+  const svg = iconObj.svg.trim();
+  if (SVG_SCRIPT_TAG_RE.test(svg) || SVG_EVENT_HANDLER_ATTR_RE.test(svg)) {
+    throw invalidConnectorManifest("icon.svg must not contain scripts or event-handler attributes", code);
+  }
+  if (!BARE_SVG_RE.test(svg)) {
+    throw invalidConnectorManifest("icon.svg must be a bare <svg> element", code);
+  }
+  if (iconObj.color !== undefined && !(isNonEmptyString(iconObj.color) && HEX_COLOR_RE.test(iconObj.color))) {
+    throw invalidConnectorManifest("icon.color must be a hex color (e.g. #1ED760) when declared", code);
+  }
+}
+
 export function resolveManifestSensitivity(manifest: Record<string, unknown> = {}): string {
   return manifest.sensitivity === "sensitive" ? "sensitive" : DEFAULT_MANIFEST_SENSITIVITY;
 }
@@ -1413,6 +1472,7 @@ export function validateConnectorManifest(
   validateRuntimeRequirements(manifest, code);
   validateRefreshPolicyCapability(manifest, code);
   validateManifestSensitivity(manifest, code);
+  validateManifestIcon(manifest, code);
 
   const streams = manifest.streams as unknown[];
   const manifestStreamsByName = new Map<string, Record<string, unknown>>(

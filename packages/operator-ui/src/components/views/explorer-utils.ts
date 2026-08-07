@@ -103,6 +103,12 @@ export interface ExplorerPeekData {
   readUrl: string;
   recordId: string;
   /**
+   * Logical byte length of this record's current `record_json`, from the
+   * single-record-detail response's `record_json_bytes`. `undefined`/`null`
+   * when unmeasured — render `—`, never a fabricated `0`.
+   */
+  recordSizeBytes?: number | null;
+  /**
    * The semantic/authored timestamp for this record (from `consent_time_field` or
    * `cursor_field`). `null` when the stream declares no semantic field or when the
    * record body could not be read. Always shown alongside `emittedAt`, never as a
@@ -129,6 +135,13 @@ export interface ExplorerBlobAffordance {
   fieldName: string;
   href?: string;
   reason?: string;
+  /**
+   * Logical byte length of the referenced blob, from the decorated
+   * `blob_ref.size_bytes` the server attaches on the record-detail path.
+   * `undefined`/`null` when unmeasured (or on a surface that does not
+   * request the size decoration) — render nothing extra, never `0`.
+   */
+  sizeBytes?: number | null;
   state: "available" | "unavailable";
 }
 
@@ -621,16 +634,18 @@ function prettyFieldValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function parseBlobRef(value: unknown): { href: string | null } | null {
+function parseBlobRef(value: unknown): { href: string | null; sizeBytes: number | null } | null {
   if (!(value && typeof value === "object") || Array.isArray(value)) {
     return null;
   }
-  const record = value as { blob_id?: unknown; fetch_url?: unknown };
+  const record = value as { blob_id?: unknown; fetch_url?: unknown; size_bytes?: unknown };
+  const sizeBytes =
+    typeof record.size_bytes === "number" && Number.isFinite(record.size_bytes) ? record.size_bytes : null;
   if (typeof record.fetch_url === "string" && record.fetch_url.length > 0) {
-    return { href: record.fetch_url };
+    return { href: record.fetch_url, sizeBytes };
   }
   if (typeof record.blob_id === "string" && record.blob_id.length > 0) {
-    return { href: `/v1/blobs/${encodeURIComponent(record.blob_id)}` };
+    return { href: `/v1/blobs/${encodeURIComponent(record.blob_id)}`, sizeBytes };
   }
   return null;
 }
@@ -657,6 +672,7 @@ export function buildBlobAffordance(
   return {
     fieldName: blobField.name,
     href: parsed.href,
+    sizeBytes: parsed.sizeBytes,
     state: "available",
   };
 }

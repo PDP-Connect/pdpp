@@ -85,6 +85,12 @@ interface MonogramProps {
    * Alternatively pass a 1-2 char string directly.
    */
   name: string;
+  /**
+   * Opt-in per-instance color, derived by the caller from a stable seed
+   * (e.g. `deterministicHue`). Absent by default, which keeps the neutral
+   * `--muted-foreground` look every existing caller already renders.
+   */
+  tinted?: boolean;
 }
 
 const WHITESPACE_RE = /\s+/;
@@ -98,12 +104,22 @@ function toMonogram(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-export function Monogram({ name, className }: MonogramProps) {
-  return (
-    <span
-      aria-hidden="true"
-      className={["pdpp-monogram", className].filter(Boolean).join(" ")}
-      data-initials={toMonogram(name)}
-    />
-  );
+// A small fixed palette of readable, distinguishable hues (not a brand color
+// for any specific connector — purely a deterministic hash target, so distinct
+// names/connectors are visually distinguishable in a list before any icon is
+// declared).
+const MONOGRAM_HUES = [4, 24, 44, 84, 152, 172, 200, 224, 262, 292, 322] as const;
+
+/** Deterministic (not random) hue derived from a stable string seed. */
+function deterministicHue(seed: string): number {
+  const hash = seed.split("").reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) % Number.MAX_SAFE_INTEGER, 0);
+  return MONOGRAM_HUES[hash % MONOGRAM_HUES.length] as number;
+}
+
+export function Monogram({ name, className, tinted }: MonogramProps) {
+  const cls = ["pdpp-monogram", tinted ? "pdpp-monogram--tinted" : undefined, className].filter(Boolean).join(" ");
+  const style = tinted
+    ? ({ "--pdpp-monogram-hue": deterministicHue(name.trim().toLowerCase() || "?") } as CSSProperties)
+    : undefined;
+  return <span aria-hidden="true" className={cls} data-initials={toMonogram(name)} style={style} />;
 }

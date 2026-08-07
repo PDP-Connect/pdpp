@@ -60,6 +60,7 @@
 "use client";
 
 import {
+  ConnectorIcon,
   CopyMono,
   Endorse,
   IcButton,
@@ -320,7 +321,10 @@ function InstanceListItem({
   // Inner content shared by both the mobile <Link> and the desktop <button>.
   const inner = (
     <>
-      <span className="rr-s-item__name">{instance.displayName}</span>
+      <span className="rr-s-item__identity">
+        <ConnectorIcon className="rr-s-item__icon" icon={instance.icon} name={instance.displayName} />
+        <span className="rr-s-item__name">{instance.displayName}</span>
+      </span>
       {/* Keep list rows comparable: connector kind lives in the selected detail
           panel, while the list shows only the owner label, retained facts, and
           health. */}
