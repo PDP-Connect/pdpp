@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export const MOBILE_KEYBOARD_GESTURE_EXPIRY_MS = 1500;
-// Keep a confirmed rect only across the same short trusted-touch window. This
-// covers the common warm follow-up tap without turning a past remote focus
-// into a durable authority to summon the keyboard.
-export const MOBILE_KEYBOARD_EDITABLE_RECT_CACHE_TTL_MS = 1500;
+// Extend to cover mount → first tap window (~2-3.5s): remote page sends focus event
+// at mount, realistic first tap arrives ~2-3s later after page render/user reaction time.
+// Re-confirm at tap time if geometry has drifted since remote-focus; see test case.
+export const MOBILE_KEYBOARD_EDITABLE_RECT_CACHE_TTL_MS = 3500;
 export const MOBILE_KEYBOARD_TAP_SLOP_PX = 12;
 
 export interface RemotePoint {
