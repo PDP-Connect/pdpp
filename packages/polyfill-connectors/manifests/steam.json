@@ -47,7 +47,7 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
@@ -55,7 +55,7 @@
       "rate_limit_sensitivity": "high",
       "bot_detection_sensitivity": "low",
       "background_safe": false,
-      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at 250ms per-request floor; adaptive backoff applies 429/403 throttling. 1-hour polling is conservative to avoid community-reported multi-hour lockouts. background_safe stays false while listed:false/status:unproven — an unlisted connector must not be scheduled unattended before an operator has proven a live run."
+      "rationale": "Steam Web API does not publish rate limits. PDPP policy: start at 250ms per-request floor; adaptive backoff applies 429/403 throttling. 1-hour polling is conservative to avoid community-reported multi-hour lockouts. recommended_mode stays manual and background_safe stays false while listed:false/status:unproven — an unlisted connector must not be scheduled unattended before an operator has proven a live run."
     },
     "public_listing": {
       "listed": false,
