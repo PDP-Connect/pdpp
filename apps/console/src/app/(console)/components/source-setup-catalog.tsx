@@ -128,7 +128,7 @@ function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: num
     return "Connect in a secure browser; interactive sign-in is valid, with optional saved details for repair.";
   }
   if (isReadyProviderAuthorizationEntry(entry)) {
-    return "Owner-mediated provider authorization.";
+    return "Authorize this account through the provider.";
   }
   switch (entry.disposition) {
     case "local_collector_enroll":
