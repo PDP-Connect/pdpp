@@ -317,7 +317,7 @@ export default async function ConnectorPage({
   searchParams,
 }: {
   params: Promise<{ connector: string }>;
-  searchParams: Promise<{ demo?: string; error?: string; message?: string }>;
+  searchParams: Promise<{ connection_id?: string; demo?: string; error?: string; message?: string }>;
 }) {
   const { connector } = await params;
   const routeId = decodeURIComponent(connector);
@@ -329,7 +329,7 @@ export default async function ConnectorPage({
     model = demo.buildRecoveryDemoModel();
   } else {
     try {
-      model = await loadConnectorPageModel(routeId);
+      model = await loadConnectorPageModel(routeId, sp.connection_id ?? null);
     } catch (err) {
       if (err instanceof ReferenceServerUnreachableError) {
         return (
@@ -350,8 +350,14 @@ export default async function ConnectorPage({
   return <ConnectorPageView dangerError={sp.error} dangerMessage={sp.message} model={model} now={now} />;
 }
 
-async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageModel> {
-  const [summary, manifests] = await Promise.all([resolveConnectionForRecordsRoute(routeId), listConnectorManifests()]);
+async function loadConnectorPageModel(
+  routeId: string,
+  explicitConnectionId?: string | null
+): Promise<ConnectorPageModel> {
+  const [summary, manifests] = await Promise.all([
+    resolveConnectionForRecordsRoute(routeId, explicitConnectionId),
+    listConnectorManifests(),
+  ]);
   if (!summary) {
     notFound();
   }

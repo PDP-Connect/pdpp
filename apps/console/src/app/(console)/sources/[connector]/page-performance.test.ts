@@ -44,7 +44,7 @@ test("the first phase (connection + manifests) still resolves before the second-
   const body = modelBody(src);
   // The connector/instance ids the second phase consumes come from this
   // load-bearing first `Promise.all`; it must precede the second-phase race.
-  const firstPhase = body.indexOf("await Promise.all([resolveConnectionForRecordsRoute");
+  const firstPhase = body.indexOf("await Promise.all([\n    resolveConnectionForRecordsRoute");
   const streamProjection = body.indexOf("const streams = streamsFromConnectorSummary(summary)");
   const secondPhase = body.indexOf("const [diagnostics, providerOrigin] = await Promise.all([");
   assert.ok(firstPhase >= 0, "first phase must resolve the connection and manifests together");

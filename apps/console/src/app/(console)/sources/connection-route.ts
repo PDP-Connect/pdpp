@@ -3,7 +3,27 @@
 
 import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
 
-export async function resolveConnectionForRecordsRoute(routeId: string): Promise<RefConnectorSummary | null> {
+export async function resolveConnectionForRecordsRoute(
+  routeId: string,
+  explicitConnectionId?: string | null
+): Promise<RefConnectorSummary | null> {
+  // An explicit connection_id disambiguates a connector-key route (e.g.
+  // /sources/steam?connection_id=cin_...) that would otherwise fall back to
+  // resolveUnambiguousConnectionForConnectorId and 404 whenever the owner has
+  // more than one connection for that connector type — the exact scenario a
+  // stuck draft plus an older/revoked attempt produces. Try the exact id
+  // first; if it does not resolve (wrong owner, deleted, typo'd link), fall
+  // through to the normal route-id resolution rather than failing outright.
+  if (explicitConnectionId) {
+    const scoped = await listConnectorSummaries({ connectionRouteId: explicitConnectionId });
+    const exact = scoped.data.find(
+      (summary) =>
+        summary.connection_id === explicitConnectionId || summary.connector_instance_id === explicitConnectionId
+    );
+    if (exact) {
+      return exact;
+    }
+  }
   // Scope the reference projection to this one route id. The reference resolves
   // exact connection identity first and allows connector-id fallback only when
   // unambiguous. This returns a 0-or-1 list and the record subpage no longer

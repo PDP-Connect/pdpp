@@ -33,6 +33,7 @@ const CATALOG_FILE = `${HERE}../source-setup-catalog.tsx`;
 const MANUAL_UPLOAD_FILE = `${HERE}../../connect/manual-upload/[connectorId]/page.tsx`;
 const MANUAL_UPLOAD_FORM_FILE = `${HERE}../../connect/manual-upload/[connectorId]/manual-upload-form.tsx`;
 const STATUS_FILE = `${HERE}../../connect/status/[connectionId]/page.tsx`;
+const STATUS_LINKS_FILE = `${HERE}../../connect/status/[connectionId]/connect-status-links.ts`;
 
 const ONE_STATUS_AND_ACTION_COPY = /one status and one next action/;
 const COMPACT_METHOD_LINE = /function sourceMethodLine/;
@@ -44,6 +45,12 @@ const EXISTING_SOURCE_REUSE = /data-testid="existing-source-reuse"/;
 const EXISTING_SOURCE_LINKS = /data-testid="existing-source-links"/;
 const SOURCE_RECORDS_HELPER = /function sourceRecordsHref[\s\S]*new URLSearchParams\(\{ connection:/;
 const SOURCE_DETAIL_HELPER = /function sourceDetailHref[\s\S]*new URLSearchParams\(\{ connection_id:/;
+// The status page's own sourceRecordsHref/sourceDetailHref now live in
+// connect-status-links.ts (extracted so setupHref's connection-id regression
+// — the draft-deadlock fix — is directly unit-testable). Same contract, same
+// helper names, different file.
+const STATUS_SOURCE_RECORDS_HELPER = /export function sourceRecordsHref[\s\S]*new URLSearchParams\(\{ connection:/;
+const STATUS_SOURCE_DETAIL_HELPER = /export function sourceDetailHref[\s\S]*new URLSearchParams\(\{ connection_id:/;
 const CATALOG_EXPLORE_LINK = /href=\{sourceRecordsHref\(source\.connectionId\)\}[\s\S]*Open in Explore/;
 const CATALOG_SOURCE_DETAILS_LINK =
   /href=\{sourceDetailHref\(connectorKey, source\.connectionId\)\}[\s\S]*Source details/;
@@ -203,8 +210,9 @@ test("status page never implies provider credential semantics for an import", as
 
 test("status page sends completed setup to the exact source and Explore scope", async () => {
   const src = await readFile(STATUS_FILE, "utf8");
-  assert.match(src, SOURCE_RECORDS_HELPER);
-  assert.match(src, SOURCE_DETAIL_HELPER);
+  const linksSrc = await readFile(STATUS_LINKS_FILE, "utf8");
+  assert.match(linksSrc, STATUS_SOURCE_RECORDS_HELPER);
+  assert.match(linksSrc, STATUS_SOURCE_DETAIL_HELPER);
   assert.match(src, STATUS_EXPLORE_LINK);
   assert.match(src, STATUS_SOURCE_DETAILS_LINK);
   assert.doesNotMatch(src, CONNECTOR_LEVEL_STATUS_RECORDS_LINK);

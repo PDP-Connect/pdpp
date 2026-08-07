@@ -516,7 +516,14 @@ if (isMainModule(import.meta.url)) {
 
       const rawSteamId = credentials.STEAM_USER_ID;
       if (!rawSteamId) {
-        throw new Error("steam_user_id_required: STEAM_USER_ID credential required");
+        // STEAM_USER_ID is a non-secret setup field (the owner's SteamID64 or
+        // vanity URL), captured alongside the API key but injected from the
+        // connection's source_binding_json, not the credential store. If it is
+        // missing here, the connection's setup did not finish — the API key is
+        // fine; retrying with the same credential will not help. Name the real
+        // state so the owner does not "refresh credentials" that were never the
+        // problem. See add-static-secret-owner-session-connect-path Decision 5.
+        throw new Error("steam_setup_incomplete: connection setup did not finish — re-enter the SteamID to continue");
       }
       const steamid = await resolveSteamId(apiKey, rawSteamId);
 

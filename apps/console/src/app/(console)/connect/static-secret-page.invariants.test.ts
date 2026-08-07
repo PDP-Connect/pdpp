@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const PAGE_FILE = fileURLToPath(new URL("./static-secret/[connectorId]/page.tsx", import.meta.url));
 const ACTION_FILE = fileURLToPath(new URL("./static-secret/[connectorId]/actions.ts", import.meta.url));
 const STATUS_PAGE_FILE = fileURLToPath(new URL("./status/[connectionId]/page.tsx", import.meta.url));
+const STATUS_LINKS_FILE = fileURLToPath(new URL("./status/[connectionId]/connect-status-links.ts", import.meta.url));
 const LEGACY_STATUS_PAGE_FILE = fileURLToPath(
   new URL("./static-secret/[connectorId]/status/[connectionId]/page.tsx", import.meta.url)
 );
@@ -93,12 +94,19 @@ const NO_GENERIC_BROWSER_COPY = /Setup material needed|Re-enter credential and r
 const NO_BROWSER_STATIC_SECRET_ROUTE = /\/connect\/static-secret\//;
 const BROWSER_STATUS_START = "function describeBrowserSessionState";
 const BROWSER_STATUS_END = "function describeState";
-const SETUP_HREF_START = "function setupHref";
-const SETUP_HREF_END = "function sourceDetailHref";
+const SETUP_HREF_START = "export function setupHref";
+const SETUP_HREF_END = "export function sourceDetailHref";
 const BROWSER_HREF_START = 'if (status.setup_kind === "browser_session")';
-const BROWSER_HREF_END = "return `/connect/static-secret/";
+const BROWSER_HREF_END =
+  "const params = new URLSearchParams({ connection_id: status.connection_id });\n  return `/connect/static-secret/";
 const RETRY_LABEL_START = "function retryLabel";
 const RETRY_LABEL_END = "function displayValue";
+// The static-secret branch (the default fallthrough of setupHref) MUST carry
+// connection_id, or retry lands on createStaticSecretConnectionAction and
+// mints an orphaned second draft instead of repairing the stuck one — the
+// draft-deadlock regression this file exists to prevent.
+const STATIC_SECRET_HREF_CONNECTION_ID_PARAM = /connection_id:\s*status\.connection_id/;
+const STATIC_SECRET_HREF_RETURN = /return `\/connect\/static-secret\/\$\{encoded\}\?\$\{params\.toString\(\)\}`/;
 
 function sourceBlock(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker);
@@ -195,8 +203,9 @@ test("durable setup-status page reads the connection-scoped status route and sur
 
 test("durable setup-status page carries a browser-session branch with secure-browser copy and a launch-path retry CTA", async () => {
   const src = await readFile(STATUS_PAGE_FILE, "utf8");
+  const linksSrc = await readFile(STATUS_LINKS_FILE, "utf8");
   const browserStatus = sourceBlock(src, BROWSER_STATUS_START, BROWSER_STATUS_END);
-  const setupHref = sourceBlock(src, SETUP_HREF_START, SETUP_HREF_END);
+  const setupHref = sourceBlock(linksSrc, SETUP_HREF_START, SETUP_HREF_END);
   const browserHref = sourceBlock(setupHref, BROWSER_HREF_START, BROWSER_HREF_END);
   const retryLabel = sourceBlock(src, RETRY_LABEL_START, RETRY_LABEL_END);
   assert.match(src, BROWSER_SESSION_KIND_CHECK);
@@ -212,6 +221,8 @@ test("durable setup-status page carries a browser-session branch with secure-bro
   // credential-shaped copy or a static-secret route.
   assert.doesNotMatch(browserStatus, NO_GENERIC_BROWSER_COPY);
   assert.doesNotMatch(browserHref, NO_BROWSER_STATIC_SECRET_ROUTE);
+  assert.match(setupHref, STATIC_SECRET_HREF_CONNECTION_ID_PARAM);
+  assert.match(setupHref, STATIC_SECRET_HREF_RETURN);
 });
 
 test("legacy static-secret setup-status URL redirects to the generic setup-status surface", async () => {

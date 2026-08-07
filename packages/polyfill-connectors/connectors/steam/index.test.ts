@@ -338,7 +338,10 @@ test("STEAM_RETRYABLE_PATTERN - does not match generic bounded HTTP errors", () 
 });
 
 test("STEAM_RETRYABLE_PATTERN - does not match unrelated application errors", () => {
-  assert.doesNotMatch("steam_user_id_required: STEAM_USER_ID credential required", STEAM_RETRYABLE_PATTERN);
+  assert.doesNotMatch(
+    "steam_setup_incomplete: connection setup did not finish — re-enter the SteamID to continue",
+    STEAM_RETRYABLE_PATTERN
+  );
 });
 
 test("STEAM_RETRYABLE_PATTERN - does not match a failed vanity URL resolution (terminal, not retried)", () => {

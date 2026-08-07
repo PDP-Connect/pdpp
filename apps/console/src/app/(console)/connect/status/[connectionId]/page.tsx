@@ -9,6 +9,7 @@ import { notFound } from "next/navigation";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { LivePoller } from "../../../components/live-poller.tsx";
 import { type ConnectionSetupStatus, getConnectionSetupStatus, RefNotFoundError } from "../../../lib/ref-client.ts";
+import { setupHref, sourceDetailHref, sourceRecordsHref } from "./connect-status-links.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -290,37 +291,6 @@ function describeState(status: ConnectionSetupStatus): StatusDescription {
     return describeBrowserSessionState(status);
   }
   return describeConnectionState(status);
-}
-
-function setupHref(status: ConnectionSetupStatus): string {
-  const encoded = encodeURIComponent(status.connector_id);
-  if (status.setup_kind === "manual_upload") {
-    return `/connect/manual-upload/${encoded}?connection_id=${encodeURIComponent(status.connection_id)}`;
-  }
-  if (status.setup_kind === "browser_session") {
-    // A revoked browser-session shell can't be relaunched — send the owner
-    // back to the connect form to start a fresh enrollment instead of the
-    // launch route, which requires a live (draft or active) connection.
-    if (status.status === "revoked") {
-      return `/connect/browser-session/${encoded}`;
-    }
-    const params = new URLSearchParams({
-      connection_id: status.connection_id,
-      draft: status.status === "draft" ? "1" : "0",
-    });
-    return `/connect/browser-session/${encoded}/launch?${params.toString()}`;
-  }
-  return `/connect/static-secret/${encoded}`;
-}
-
-function sourceDetailHref(status: ConnectionSetupStatus): string {
-  const params = new URLSearchParams({ connection_id: status.connection_id });
-  return `/sources/${encodeURIComponent(status.connector_id)}?${params.toString()}`;
-}
-
-function sourceRecordsHref(status: ConnectionSetupStatus): string {
-  const params = new URLSearchParams({ connection: status.connection_id });
-  return `/explore?${params.toString()}`;
 }
 
 function retryLabel(status: ConnectionSetupStatus): string {
