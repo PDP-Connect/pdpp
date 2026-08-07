@@ -1,0 +1,12 @@
+{
+  "title": "Mountain Sunrise",
+  "description": "Beautiful morning view",
+  "photoTakenTime": {
+    "timestamp": "2024-06-05T06:30:00Z"
+  },
+  "geoDataExif": {
+    "latitude": 40.7128,
+    "longitude": -74.006,
+    "altitude": 100
+  }
+}

@@ -1,0 +1,226 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/google-calendar",
+  "connector_key": "google-calendar",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-calendar",
+  "version": "0.1.0",
+  "display_name": "Google Calendar",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "provider_authorization",
+    "deployment_config": [
+      "GOOGLE_OAUTH_CLIENT_ID",
+      "GOOGLE_OAUTH_CLIENT_SECRET"
+    ]
+  },
+  "capabilities": {
+    "auth": {
+      "kind": "oauth",
+      "deployment_config": [
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET"
+      ],
+      "connection_config": ["GOOGLE_CALENDAR_REFRESH_TOKEN"],
+      "scopes": ["https://www.googleapis.com/auth/calendar.readonly"]
+    },
+    "human_interaction": ["manual_action"],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 900,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "Calendar API syncToken incremental sync is a lightweight per-calendar delta; hourly refresh stays well inside the documented 600 req/min/user quota. Automatic refresh is session-reuse-only against a stored refresh token; the owner completes the one-time OAuth grant that this needs_human_auth status reflects."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "external_docs": [
+    {
+      "label": "Google Calendar API sync guide",
+      "url": "https://developers.google.com/calendar/api/guides/sync"
+    },
+    {
+      "label": "Google Calendar API quota",
+      "url": "https://developers.google.com/workspace/calendar/api/guides/quota"
+    },
+    {
+      "label": "Google Calendar vs. the iCal connector",
+      "url": "https://developers.google.com/calendar/api/v3/reference/events"
+    }
+  ],
+  "streams": [
+    {
+      "name": "calendars",
+      "description": "Calendars visible to the owner's Google account, via the official Calendar API — distinct from the generic .ics-based `ical` connector.",
+      "display": {
+        "label": "Your Google calendars",
+        "detail": "Calendar id, display name, time zone, and the owner's access role for each calendar visible on the account."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "time_zone": {
+            "type": ["string", "null"]
+          },
+          "access_role": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "secondary"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string",
+            "enum": ["google_calendar_api"]
+          }
+        },
+        "required": ["id", "primary", "source"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": false
+      },
+      "incremental": false,
+      "required": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["summary"],
+          "semantic_fields": ["summary"]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "events",
+      "description": "Calendar events from the official Google Calendar API: recurrence, attendees, and syncToken-based incremental sync with in-band deletion tombstones (status: cancelled).",
+      "display": {
+        "label": "Your Google Calendar events",
+        "detail": "Event title, description, location, start/end time, all-day flag, organizer, attendees with RSVP status, recurrence rule, and update timestamp. Deleted events are recorded as deletions."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "calendar_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "secondary"
+          },
+          "location": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "start": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "start_date": {
+            "type": ["string", "null"]
+          },
+          "end": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "end_date": {
+            "type": ["string", "null"]
+          },
+          "all_day": {
+            "type": "boolean"
+          },
+          "organizer_email": {
+            "type": ["string", "null"]
+          },
+          "organizer_display_name": {
+            "type": ["string", "null"]
+          },
+          "attendees": {
+            "type": "array"
+          },
+          "recurrence": {
+            "type": ["array", "null"]
+          },
+          "recurring_event_id": {
+            "type": ["string", "null"]
+          },
+          "html_link": {
+            "type": ["string", "null"]
+          },
+          "updated": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "enum": ["google_calendar_api"]
+          }
+        },
+        "required": ["id", "calendar_id", "status", "deleted", "source"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "start",
+      "consent_time_field": "start",
+      "selection": {
+        "fields": true,
+        "resources": false
+      },
+      "incremental": true,
+      "required": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["summary", "description", "location"],
+          "semantic_fields": ["summary", "description"]
+        },
+        "range_filters": {
+          "start": ["gte", "gt", "lte", "lt"],
+          "end": ["gte", "gt", "lte", "lt"],
+          "updated": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["start"],
+          "group_by": ["status", "calendar_id"]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    }
+  ]
+}

@@ -49,6 +49,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { canonicalConnectorKey } from "../server/connector-key.ts";
+import { validateConnectorManifest } from "../server/connector-manifest-validation.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { defaultPolyfillManifestsDir, reconcilePolyfillManifests } from "../server/polyfill-manifest-reconcile.ts";
 import { listConnectorSummaries, listPublicCatalogConnectorIds } from "../server/ref-control.ts";
@@ -122,6 +123,18 @@ test("defaultPolyfillManifestsDir resolves to the shipped first-party manifests 
   // subsequent assertion in this file becomes vacuously true. Pin the
   // expected location so the gap repair stays load-bearing.
   assert.equal(defaultPolyfillManifestsDir(), POLYFILL_MANIFESTS_DIR);
+});
+
+test("every shipped first-party manifest passes the live registration validator", () => {
+  const failures: string[] = [];
+  for (const filename of listFirstPartyManifestNames()) {
+    try {
+      validateConnectorManifest(JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, filename), "utf8")));
+    } catch (error) {
+      failures.push(`${filename}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  assert.deepEqual(failures, [], `shipped manifests rejected by the live registration validator:\n${failures.join("\n")}`);
 });
 
 test(

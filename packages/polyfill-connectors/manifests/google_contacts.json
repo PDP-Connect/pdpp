@@ -1,0 +1,192 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/google-contacts",
+  "connector_key": "google-contacts",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-contacts",
+  "version": "0.1.0",
+  "display_name": "Google Contacts",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "provider_authorization",
+    "deployment_config": [
+      "GOOGLE_OAUTH_CLIENT_ID",
+      "GOOGLE_OAUTH_CLIENT_SECRET"
+    ]
+  },
+  "capabilities": {
+    "auth": {
+      "kind": "oauth",
+      "deployment_config": [
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET"
+      ],
+      "connection_config": ["GOOGLE_CONTACTS_REFRESH_TOKEN"],
+      "scopes": ["https://www.googleapis.com/auth/contacts.readonly"]
+    },
+    "human_interaction": ["manual_action"],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 432000,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "People API syncToken deltas are lightweight; six-hourly refresh keeps well within the syncToken's 7-day validity window so the connector rarely needs a full resync. Automatic refresh is session-reuse-only against a stored refresh token; the owner completes the one-time OAuth grant that this needs_human_auth status reflects."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "external_docs": [
+    {
+      "label": "People API people.connections.list reference",
+      "url": "https://developers.google.com/people/api/rest/v1/people.connections/list"
+    },
+    {
+      "label": "People API quota (project-configurable, no static table)",
+      "url": "https://developers.google.com/people/legacy/limits"
+    }
+  ],
+  "streams": [
+    {
+      "name": "people",
+      "description": "Contacts from the official Google People API: names, emails, phones, addresses, organizations, and syncToken-based incremental sync with in-band deletion tombstones (PersonMetadata.deleted).",
+      "display": {
+        "label": "Your Google contacts",
+        "detail": "Contact name(s), email addresses, phone numbers, physical addresses, organizations, biography, nickname, photo URL, and contact group membership. Deleted contacts are recorded as deletions."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "resource_name": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "display_name": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "names": {
+            "type": "array"
+          },
+          "email_addresses": {
+            "type": "array"
+          },
+          "phone_numbers": {
+            "type": "array"
+          },
+          "addresses": {
+            "type": "array"
+          },
+          "organizations": {
+            "type": "array"
+          },
+          "biography": {
+            "type": ["string", "null"]
+          },
+          "nickname": {
+            "type": ["string", "null"]
+          },
+          "photo_url": {
+            "type": ["string", "null"]
+          },
+          "contact_group_resource_names": {
+            "type": "array"
+          },
+          "updated": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "source": {
+            "type": "string",
+            "enum": ["google_people_api"]
+          }
+        },
+        "required": ["id", "resource_name", "deleted", "source"]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "updated",
+      "consent_time_field": "updated",
+      "selection": {
+        "fields": true,
+        "resources": false
+      },
+      "incremental": true,
+      "required": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["display_name", "biography"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["updated"]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "contact_groups",
+      "description": "Contact groups (labels) from the official Google People API.",
+      "display": {
+        "label": "Your Google contact groups",
+        "detail": "Contact group name and member count."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "resource_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "member_count": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string",
+            "enum": ["google_people_api"]
+          }
+        },
+        "required": ["id", "resource_name", "member_count", "source"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": false
+      },
+      "incremental": false,
+      "required": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["name"]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    }
+  ]
+}

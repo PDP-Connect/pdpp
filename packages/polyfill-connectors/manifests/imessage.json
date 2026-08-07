@@ -9,9 +9,6 @@
     "bindings": {
       "filesystem": {
         "required": true
-      },
-      "local_device": {
-        "required": true
       }
     }
   },
@@ -95,6 +92,122 @@
         }
       },
       "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "participants",
+      "required": false,
+      "description": "Group-chat and one-to-one chat membership from chat_handle_join (undocumented, reverse-engineered chat.db schema). Optional: older macOS chat.db schema versions may not expose chat_handle_join, in which case this stream degrades to a labeled SKIP_RESULT instead of failing the run.",
+      "display": {
+        "label": "Your iMessage chat participants",
+        "detail": "Chat and counterparty handle. is_from_me reports whether that handle has ever sent a message in the chat (a participant-level 'has this contact spoken here' marker) — not the per-message sender flag used in the messages stream, and best-effort only: the device owner's own handle is frequently absent from chat_handle_join entirely."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "handle": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "actor"
+          },
+          "is_from_me": {
+            "type": "boolean"
+          }
+        },
+        "required": ["id", "chat_id"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "attachments",
+      "required": false,
+      "description": "Attachment metadata and bytes from ~/Library/Messages, joined via message_attachment_join (undocumented, reverse-engineered chat.db schema). Bytes are read only from inside a trusted attachments root (default ~/Library/Messages/Attachments, override via IMESSAGE_ATTACHMENTS_ROOT) — the raw path recorded in chat.db is canonicalized and verified to resolve inside that root before any read, rejecting `../` traversal, an absolute path outside the root, and a symlink that escapes the root, and uploaded as a BlobRef when the runtime has blob-upload bindings. The local filesystem path itself never leaves the connector process. Optional: older macOS chat.db schema versions may not expose attachment/message_attachment_join, in which case this stream degrades to a labeled SKIP_RESULT instead of failing the run.",
+      "display": {
+        "label": "Your iMessage attachments",
+        "detail": "Filename, MIME type, size, linked message/chat when detectable, and a blob reference when the local file was hydrated."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": ["string", "null"]
+          },
+          "chat_id": {
+            "type": ["string", "null"]
+          },
+          "filename": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": ["integer", "null"]
+          },
+          "content_sha256": {
+            "type": ["string", "null"]
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": ["deferred", "hydrated", "failed", "too_large", "missing"]
+          },
+          "hydration_error": {
+            "type": ["string", "null"]
+          },
+          "blob_ref": {
+            "type": ["object", "null"],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
+          }
+        },
+        "required": ["id", "filename", "content_type", "hydration_status"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "relationships": [
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
   ]

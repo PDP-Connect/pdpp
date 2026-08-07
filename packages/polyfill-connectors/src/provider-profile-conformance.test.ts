@@ -55,7 +55,19 @@ const CONNECTORS_DIR = join(THIS_DIR, "..", "connectors");
 // added without updating this list FAILS the conformance suite (roster hardening
 // from the adversarial review: the static scan was foolable + the roster was
 // hand-maintained; this closes the "added but unlisted" hole).
-const GOVERNOR_USING_CONNECTORS = ["github", "notion", "oura", "spotify", "strava", "ynab"] as const;
+const GOVERNOR_USING_CONNECTORS = [
+  "github",
+  "google_calendar",
+  "google_contacts",
+  "groupme",
+  "jellyfin",
+  "notion",
+  "oura",
+  "spotify",
+  "steam",
+  "strava",
+  "ynab",
+] as const;
 
 /**
  * Derive the set of connectors that construct the shared HTTP governor by

@@ -1,0 +1,32 @@
+{
+  "response": [
+    {
+      "id": "chat123",
+      "last_message_at": 1609459200,
+      "last_message": "Hey, how are you?",
+      "messages_count": 23,
+      "updated_at": 1609459200,
+      "avatar_url": "https://i.groupme.com/chat123.jpeg",
+      "other_user": {
+        "id": "user456",
+        "name": "Bob",
+        "avatar_url": "https://i.groupme.com/user456.jpeg"
+      },
+      "muted": false
+    },
+    {
+      "id": "chat124",
+      "last_message_at": 1609459210,
+      "last_message": "See you soon!",
+      "messages_count": 15,
+      "updated_at": 1609459210,
+      "avatar_url": "https://i.groupme.com/chat124.jpeg",
+      "other_user": {
+        "id": "user789",
+        "name": "Carol",
+        "avatar_url": "https://i.groupme.com/user789.jpeg"
+      },
+      "muted": false
+    }
+  ]
+}

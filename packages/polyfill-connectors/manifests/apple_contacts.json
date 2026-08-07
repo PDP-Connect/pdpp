@@ -1,0 +1,285 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/apple_contacts",
+  "connector_key": "apple_contacts",
+  "manifest_uri": "https://registry.pdpp.org/connectors/apple_contacts",
+  "version": "0.1.0",
+  "display_name": "Apple Contacts",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "app_password",
+      "label": "Apple ID app-specific password",
+      "description": "Use your Apple ID email and an app-specific password to collect your Contacts via CardDAV. Apple documents app-specific passwords for Contacts access, but does not publish the CardDAV server address — this connector discovers it using the standard RFC 6764 well-known lookup, the same mechanism third-party CardDAV apps use for iCloud.",
+      "submit_label": "Create Apple Contacts connection and start first sync",
+      "fields": [
+        {
+          "name": "account_email",
+          "label": "Apple ID email",
+          "type": "email",
+          "required": true,
+          "secret": false,
+          "identity": true,
+          "autocomplete": "email",
+          "placeholder": "you@icloud.com",
+          "env": ["APPLE_ID", "APPLE_ID_EMAIL"]
+        },
+        {
+          "name": "secret",
+          "label": "App-specific password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "one-time-code",
+          "help_url": "https://support.apple.com/en-us/102654",
+          "help_text": "Create an app-specific password at appleid.apple.com under Sign-In and Security, then paste it here. Apple documents this credential type for mail, contacts, and calendars access.",
+          "env": ["APPLE_APP_SPECIFIC_PASSWORD"]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 172800,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Apple does not publish a CardDAV rate limit. Contacts change infrequently for most owners; a 6-hour cadence is conservative given the undocumented ceiling, and sync-collection (when supported) makes repeat runs cheap regardless of cadence."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "address_books",
+      "description": "CardDAV address book collections discovered under the account's addressbook-home-set.",
+      "display": {
+        "label": "Your address books",
+        "detail": "Address book collection URLs and display names, plus whether the server honors incremental sync-collection for this collection."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "display_name": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "url": { "type": "string" },
+          "supports_sync_collection": { "type": "boolean" },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "url"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": false,
+      "query": {
+        "search": { "lexical_fields": ["display_name", "url"] }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window",
+      "required": true
+    },
+    {
+      "name": "contacts",
+      "description": "Contacts (vCards) within each discovered address book. Full typed fields where the source vCard provides them: emails, phones, addresses, org/title, notes, birthday, and an inline photo where present.",
+      "display": {
+        "label": "Your contacts",
+        "detail": "Name, organization/title, notes, birthday, typed emails/phones/addresses (home/work/etc.), and an embedded photo when the vCard carries one. Group membership is projected separately via the contact_groups stream."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "addressbook_url": { "type": "string" },
+          "uid": { "type": ["string", "null"] },
+          "display_name": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "family_name": { "type": ["string", "null"] },
+          "given_name": { "type": ["string", "null"] },
+          "org": { "type": ["string", "null"] },
+          "title": { "type": ["string", "null"] },
+          "note": { "type": ["string", "null"], "x_pdpp_role": "secondary" },
+          "birthday": { "type": ["string", "null"] },
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "types": { "type": "array", "items": { "type": "string" } },
+                "value": { "type": "string" }
+              }
+            }
+          },
+          "phones": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "types": { "type": "array", "items": { "type": "string" } },
+                "value": { "type": "string" }
+              }
+            }
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "types": { "type": "array", "items": { "type": "string" } },
+                "value": { "type": "string" },
+                "po_box": { "type": ["string", "null"] },
+                "extended": { "type": ["string", "null"] },
+                "street": { "type": ["string", "null"] },
+                "city": { "type": ["string", "null"] },
+                "region": { "type": ["string", "null"] },
+                "postal_code": { "type": ["string", "null"] },
+                "country": { "type": ["string", "null"] }
+              }
+            }
+          },
+          "has_photo": { "type": "boolean" },
+          "photo_media_type": { "type": ["string", "null"] },
+          "photo_base64": { "type": ["string", "null"] },
+          "etag": { "type": ["string", "null"] },
+          "rev": { "type": ["string", "null"] },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "addressbook_url"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "address_book",
+          "stream": "address_books",
+          "foreign_key": "addressbook_url",
+          "cardinality": "has_one"
+        }
+      ],
+      "views": [
+        {
+          "id": "basic",
+          "label": "Names and primary contact fields",
+          "fields": [
+            "id",
+            "addressbook_url",
+            "display_name",
+            "emails",
+            "phones",
+            "org"
+          ]
+        },
+        {
+          "id": "full",
+          "label": "All contact fields",
+          "fields": [
+            "id",
+            "addressbook_url",
+            "uid",
+            "display_name",
+            "family_name",
+            "given_name",
+            "org",
+            "title",
+            "note",
+            "birthday",
+            "emails",
+            "phones",
+            "addresses",
+            "has_photo",
+            "photo_media_type",
+            "photo_base64",
+            "etag",
+            "rev",
+            "deleted"
+          ]
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "display_name",
+            "family_name",
+            "given_name",
+            "org",
+            "title",
+            "note"
+          ],
+          "semantic_fields": ["note", "title"]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window",
+      "required": true
+    },
+    {
+      "name": "contact_groups",
+      "description": "Group membership derived from each contact's standard vCard CATEGORIES field (RFC 6350 §6.7.1). Apple's proprietary group-vCard collection mechanism is not modeled since its iCloud wire behavior is unconfirmed; CATEGORIES is the standards-based signal every CardDAV server honors.",
+      "display": {
+        "label": "Your contact groups",
+        "detail": "Group name and the member contact UIDs, derived from vCard CATEGORIES."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "addressbook_url": { "type": "string" },
+          "name": { "type": "string", "x_pdpp_role": "primary-title" },
+          "member_uids": { "type": "array", "items": { "type": "string" } },
+          "deleted": { "type": "boolean" }
+        },
+        "required": ["id", "addressbook_url", "name"]
+      },
+      "primary_key": ["id"],
+      "selection": { "fields": true, "resources": true },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "address_book",
+          "stream": "address_books",
+          "foreign_key": "addressbook_url",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": { "lexical_fields": ["name"] }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window",
+      "required": true
+    }
+  ],
+  "profiles": [
+    {
+      "id": "full_archive",
+      "label": "Full Apple Contacts archive",
+      "streams": [
+        { "name": "address_books" },
+        { "name": "contacts", "view": "full" },
+        { "name": "contact_groups" }
+      ]
+    }
+  ]
+}

@@ -70,6 +70,21 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   // so the now-stricter scan stays green. Copy stays operator/end-user voice.
   csv_no_data_rows: "The transactions file had no rows to import",
   csv_no_usable_transactions: "We couldn't find any usable transactions in that file",
+  // ─── Netflix viewing-history export diagnostics ───────────────────────────
+  archive_security_violation: "We couldn't safely read that export archive",
+  csv_parse_error: "We couldn't read the viewing history file",
+  // ─── Jellyfin server diagnostics ──────────────────────────────────────────
+  jellyfin_auth_failed: "Your Jellyfin API key or token was rejected",
+  jellyfin_missing_credentials: "Jellyfin needs a server URL and API key to connect",
+  jellyfin_http_error: "We hit a network problem talking to your Jellyfin server",
+  jellyfin_error: "We hit a problem talking to your Jellyfin server",
+  // ─── iMessage local database diagnostics ──────────────────────────────────
+  message_date_unusable: "We skipped a message with a date we couldn't read",
+  chat_handle_join_table_missing: "Your Messages database is missing chat-participant data we need",
+  attachment_tables_missing: "Your Messages database is missing attachment data we need",
+  // ─── Google Takeout Photos diagnostics ────────────────────────────────────
+  photos_not_found: "We couldn't find your Google Photos export",
+  directory_read_failed: "We couldn't read a folder in your Google Takeout export",
   // ─── Amazon order-detail diagnostics ─────────────────────────────────────
   deferred: "We paused this item and will pick it up on the next run",
   deferred_budget: "We saved the current batch and deferred the rest to keep this run bounded",
