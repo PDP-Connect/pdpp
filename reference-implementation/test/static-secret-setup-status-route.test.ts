@@ -529,6 +529,59 @@ test("pending static-secret setup is visible before any records are accepted", a
   });
 });
 
+// fr-setup-status-lifecycle-0806: Slack/YNAB setup read "First sync pending"
+// and never advanced without a manual "Refresh Status" click. Root cause: the
+// route discarded run-history evidence outright whenever it read status
+// `"running"` and no `controller_active_runs` row existed yet for the
+// connection — a real, reachable window between `run.started` writing the
+// `run_history` row (`status: 'running'`) and the controller's active-run
+// table row landing (or after it clears, before the terminal write commits).
+// Every subsequent poll re-derived the same stale `first_sync_pending`
+// forever, because the discarded evidence meant there was nothing to
+// converge on until the run went fully terminal.
+test("first sync in-flight evidence from run_history alone (no active-run row yet) reads first_sync_running, not stuck first_sync_pending", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "gmail");
+      const cookie = await login(asUrl);
+
+      const created = await createDraft(asUrl, cookie, "gmail", { account_email: "inflight@example.com" });
+      assert.equal(created.status, 201);
+      const connectionId = requireString(created.body.connection_id, "created.body.connection_id");
+
+      const captured = await capture(asUrl, cookie, connectionId);
+      assert.equal(captured.status, 201, captured.text);
+
+      // `run.started` writes a `run_history` row with status "running" —
+      // deliberately WITHOUT seeding `controller_active_runs`, modeling the
+      // window where the active-run table has no row for this connection yet
+      // (or no longer does) while the history row still legitimately reads
+      // "running".
+      await emitStartedRunEvent("gmail", "run_status_inflight_no_active_row", undefined, connectionId);
+
+      const status = await getStatus(asUrl, cookie, connectionId);
+      assert.equal(status.status, 200, status.text);
+      assert.notEqual(
+        status.body.setup_state,
+        "first_sync_pending",
+        "an in-flight run must never read as a stuck first_sync_pending"
+      );
+      assert.equal(status.body.setup_state, "first_sync_running");
+      assert.equal(status.body.running, true);
+      assert.equal(status.body.pending, true);
+      assert.equal(subObject(status.body, "run").run_id, "run_status_inflight_no_active_row");
+      assert.equal(subObject(status.body, "run").status, "running");
+
+      // Revisiting (the poller's own re-derivation, not a manual refresh
+      // click) must keep reading the same correct running state — never
+      // regress to first_sync_pending on a later read of the same evidence.
+      const revisited = await getStatus(asUrl, cookie, connectionId);
+      assert.equal(revisited.body.setup_state, "first_sync_running");
+      assert.equal(revisited.body.running, true);
+    });
+  });
+});
+
 test("pending manual/upload setup is visible without credential semantics", async () => {
   await withServer(async ({ asUrl }) => {
     await registerConnector(asUrl, "google_maps");

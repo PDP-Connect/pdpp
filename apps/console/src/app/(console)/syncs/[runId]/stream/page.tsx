@@ -18,6 +18,7 @@ import {
   getCurrentBrowserSurfaceAssistance,
   getCurrentRunAssistance,
   hasActiveBrowserSurface,
+  hasResolvedBrowserSurfaceAssistance,
   requiresBrowserSurfaceAssistance,
 } from "../../../lib/run-assistance.ts";
 import {
@@ -168,6 +169,15 @@ function renderNoAssistanceSurface({
   if (hasActiveBrowserSurface(envelope.events)) {
     return <PreparingBrowserSurface connectionId={connectorInstanceId} runId={runId} />;
   }
+  // The owner already completed a browser step (e.g. H-E-B login) for this
+  // run, and no further browser action is currently open. Say so plainly
+  // instead of reusing the generic "No browser action is waiting" copy,
+  // which reads as a dead end right after a login the owner just finished
+  // (fr-setup-status-lifecycle-0806) — the run keeps going in the
+  // background and this page's job here is done.
+  if (hasResolvedBrowserSurfaceAssistance(envelope.events)) {
+    return <AssistanceCompleteSurface connectionId={connectorInstanceId} runId={runId} />;
+  }
   return <RunContinuingSurface connectionId={connectorInstanceId} runId={runId} />;
 }
 
@@ -309,6 +319,23 @@ function RunContinuingSurface({
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">No browser action is waiting.</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
           The run is still in progress. This page updates automatically when browser input is needed.
+        </p>
+        <SetupStatusLink connectionId={connectionId} runId={runId} />
+      </section>
+    </main>
+  );
+}
+
+function AssistanceCompleteSurface({ connectionId, runId }: { connectionId: string | null; runId: string }) {
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
+      <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
+        <NoAssistanceRunPoller runId={runId} />
+        <p className="pdpp-eyebrow text-muted-foreground">browser step complete</p>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">Browser step complete.</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">
+          Collection is continuing in the background. You can close this page — it updates automatically if browser
+          input is needed again.
         </p>
         <SetupStatusLink connectionId={connectionId} runId={runId} />
       </section>

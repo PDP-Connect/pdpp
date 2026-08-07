@@ -9,6 +9,7 @@ import {
   getCurrentRunAssistance,
   hasActiveBrowserSurface,
   hasAvailableBrowserSurfaceAttachment,
+  hasResolvedBrowserSurfaceAssistance,
   requiresBrowserSurfaceAssistance,
 } from "./run-assistance.ts";
 
@@ -176,4 +177,75 @@ test("terminal browser-surface events do not keep stream fallback in the browser
   ];
 
   assert.equal(hasActiveBrowserSurface(events), false);
+});
+
+// fr-setup-status-lifecycle-0806: an H-E-B-style browser login that already
+// resolved must read as "browser step complete," not the same "nothing has
+// ever happened" signal a fresh run reports before assistance is requested.
+
+test("a never-requested run reports no resolved browser-surface assistance", () => {
+  const events = [event("run.started", { automation_mode: "assisted" })];
+
+  assert.equal(hasResolvedBrowserSurfaceAssistance(events), false);
+});
+
+test("a currently-open browser-surface assistance request is not yet resolved", () => {
+  const events = [
+    event("run.assistance_requested", {
+      assistance_request_id: "assist_1",
+      attachments: [{ kind: "browser_surface", ref: "surface_1", role: "streaming_companion" }],
+      message: "Log in to continue.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "response_required",
+    }),
+  ];
+
+  assert.equal(hasResolvedBrowserSurfaceAssistance(events), false);
+});
+
+test("a resolved structured browser-surface assistance request reports handoff-ready", () => {
+  const events = [
+    event("run.assistance_requested", {
+      assistance_request_id: "assist_1",
+      attachments: [{ kind: "browser_surface", ref: "surface_1", role: "streaming_companion" }],
+      message: "Log in to continue.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "response_required",
+    }),
+    event("run.assistance_resolved", { assistance_request_id: "assist_1" }),
+  ];
+
+  assert.equal(hasResolvedBrowserSurfaceAssistance(events), true);
+  // The run keeps going — this must not read as fully resolved/ended.
+  assert.equal(getCurrentBrowserSurfaceAssistance(events), null);
+});
+
+test("a resolved legacy manual_action interaction reports handoff-ready", () => {
+  const events = [
+    event("run.interaction_required", {
+      interaction_id: "int_1",
+      kind: "manual_action",
+      message: "Log in to continue.",
+    }),
+    event("run.interaction_completed", { interaction_id: "int_1" }),
+  ];
+
+  assert.equal(hasResolvedBrowserSurfaceAssistance(events), true);
+});
+
+test("a resolved non-browser (app-push) assistance request is not treated as browser handoff", () => {
+  const events = [
+    event("run.assistance_requested", {
+      assistance_request_id: "assist_1",
+      message: "Approve the sign-in in the app.",
+      owner_action: "act_elsewhere",
+      progress_posture: "running",
+      response_contract: "none",
+    }),
+    event("run.assistance_resolved", { assistance_request_id: "assist_1" }),
+  ];
+
+  assert.equal(hasResolvedBrowserSurfaceAssistance(events), false);
 });

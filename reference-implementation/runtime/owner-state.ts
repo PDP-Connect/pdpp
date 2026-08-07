@@ -277,6 +277,18 @@ export function ownerStateCausalEvidenceFrom(
  * to exactly one resolver — the exhaustive cross-product test below proves
  * this holds for the fixture matrix.
  */
+/**
+ * A draft connection with no run currently in flight — the generic
+ * "setup in progress" reading is only honest while there is nothing more
+ * specific to report. A draft WITH an active run instead falls through to
+ * the `progress.active` check below (`collecting`), and a draft with an
+ * open owner-attention action already returned `needs_owner` above this
+ * call site — see the design-gate comment there.
+ */
+function isDraftAwaitingFirstActivity(evidence: OwnerStateEvidence): boolean {
+  return evidence.lifecycle?.status === "draft" && !evidence.progress.active;
+}
+
 function resolveOwnerStateResolver(
   verdict: RenderedVerdict,
   snapshot: ConnectionHealthSnapshot,
@@ -291,29 +303,39 @@ function resolveOwnerStateResolver(
     return "retired";
   }
 
-  // Setup in progress: ONLY from explicit lifecycle evidence (the connector-
-  // instance row's own `status`), same discipline as `retired` (design gate
-  // #2's sibling). A `draft` connection has not completed its first
-  // credential capture / browser enrollment and has never ingested, so its
-  // health/schedule/coverage shape is not yet meaningful — checked before
-  // every other resolver so a draft never reads as `needs_owner`,
-  // `not_measured`, or (worse) `healthy`. See
-  // fix-pending-connection-discovery design.
-  if (evidence.lifecycle?.status === "draft") {
-    return "setup_in_progress";
-  }
-
-  // A genuine defect (owner-attention, maintainer code_fix) always outranks
-  // a merely-paused schedule: a disabled schedule must never mask a more
-  // urgent credential failure or maintainer-blocked coverage gap underneath
-  // it. Check these BEFORE `owner_paused` (owner review, 2026-07-09: "a
-  // disabled schedule must not mask a more urgent credential or maintainer
-  // failure").
+  // A genuine owner-attention defect always outranks a draft's generic
+  // "setup in progress" reading: a durable interaction request (e.g. an
+  // OTP challenge mid first-sync) is real, specific, actionable evidence
+  // that must never be masked by the coarser draft-lifecycle fallback below
+  // (fr-setup-status-lifecycle-0806 — a Chase draft mid-OTP-wait was
+  // reading `needs_owner`'s own copy as generic "Finish connecting this
+  // source," discarding the exact required action). Checked before the
+  // draft check, mirroring the existing "attention outranks a paused
+  // schedule" precedent immediately below.
   if (verdict.channel === "attention" && primary && primary.audience === "owner") {
     return "needs_owner";
   }
   if (primary?.audience === "maintainer") {
     return "blocked_maintainer";
+  }
+
+  // Setup in progress: ONLY from explicit lifecycle evidence (the connector-
+  // instance row's own `status`), same discipline as `retired` (design gate
+  // #2's sibling). A `draft` connection has not completed its first
+  // credential capture / browser enrollment and has never ingested, so its
+  // health/schedule/coverage shape is not yet meaningful — checked before
+  // the remaining resolvers so a draft never reads as `not_measured` or
+  // (worse) `healthy`. See fix-pending-connection-discovery design.
+  //
+  // Checked AFTER `needs_owner`/`blocked_maintainer` and BEFORE the
+  // `progress.active` check below: a draft run in flight with no interaction
+  // requested yet must read `collecting` (see the `progress.active` check
+  // below), never a generic "needs you" — but a draft run in flight WITH an
+  // open interaction request must resolve `needs_owner` (already returned
+  // above) with the exact requested action, not `setup_in_progress`'s
+  // generic "Finish connecting this source" copy.
+  if (isDraftAwaitingFirstActivity(evidence)) {
+    return "setup_in_progress";
   }
 
   // Owner-paused schedule: a schedule row exists, was disabled, and the
