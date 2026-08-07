@@ -299,6 +299,43 @@
       },
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "coverage_diagnostics",
+      "description": "Safe coverage status for known Google Takeout local stores.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "stream": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": ["id", "store", "status", "reason"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     }
   ]
 }

@@ -24,6 +24,7 @@
 
 import { claudeCodeCollectorDefinition } from "../connectors/claude_code/collector-definition.ts";
 import { codexCollectorDefinition } from "../connectors/codex/collector-definition.ts";
+import { googleTakeoutCollectorDefinition } from "../connectors/google_takeout/collector-definition.ts";
 import { imessageCollectorDefinition } from "../connectors/imessage/collector-definition.ts";
 import type { LocalCollectorDefinition } from "./collector-definition.ts";
 
@@ -32,7 +33,7 @@ export type { LocalCollectorBinding, LocalCollectorDefinition } from "./collecto
 /**
  * Every connector definition the published local collector bundles, in the
  * supported public order on a fresh host (Claude Code, then Codex
- * transcripts, then iMessage). iMessage reads chat.db via `node:sqlite`
+ * transcripts, then Google Takeout and iMessage). iMessage reads chat.db via `node:sqlite`
  * (built into Node.js, not a native npm module), so it carries no native
  * compiled dependency and can ship in this bundle like any other
  * filesystem-class connector.
@@ -40,5 +41,6 @@ export type { LocalCollectorBinding, LocalCollectorDefinition } from "./collecto
 export const LOCAL_COLLECTOR_DEFINITIONS: readonly LocalCollectorDefinition[] = Object.freeze([
   claudeCodeCollectorDefinition,
   codexCollectorDefinition,
+  googleTakeoutCollectorDefinition,
   imessageCollectorDefinition,
 ]);

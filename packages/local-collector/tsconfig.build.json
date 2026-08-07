@@ -25,6 +25,7 @@
     "../polyfill-connectors/connectors/claude_code/**/*.ts",
     "../polyfill-connectors/connectors/codex/**/*.ts",
     "../polyfill-connectors/connectors/imessage/**/*.ts",
+    "../polyfill-connectors/connectors/google_takeout/**/*.ts",
     "../polyfill-connectors/src/collector-definition.ts",
     "../polyfill-connectors/src/collector-registry.ts",
     "../polyfill-connectors/src/auth.ts",

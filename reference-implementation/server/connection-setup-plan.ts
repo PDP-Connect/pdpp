@@ -214,7 +214,7 @@ export interface ConnectionSetupPlan {
   readonly validationMode: CredentialValidationMode;
 }
 
-export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex", "imessage"] as const;
+export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = ["claude_code", "codex", "google-takeout", "imessage"] as const;
 
 export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR_CONNECTORS)[number];
 

@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     const advertised = JSON.parse(advertise.stdout);
     assert.equal(advertised.runtime, "collector");
     assert.deepEqual([...advertised.bindings].sort(), ["filesystem", "local_device", "network"]);
-    assert.deepEqual([...advertised.bundled_connectors].sort(), ["claude_code", "codex", "imessage"]);
+    assert.deepEqual([...advertised.bundled_connectors].sort(), ["claude_code", "codex", "google_takeout", "imessage"]);
     // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(advertised.collector_protocol_version, /^\d+$/);
 
@@ -249,6 +249,7 @@ async function main(): Promise<void> {
       });
       await runProtocolMismatchSmoke({ projectDir, env });
       await runImessageSampleSmoke({ projectDir, env });
+      await runFixtureBackedGoogleTakeoutEnrollRunSmoke({ projectDir, env });
     } else {
       log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.ts not present.");
       log("SKIP collector_protocol_mismatch smoke: reference-implementation/server/index.ts not present.");
@@ -838,6 +839,102 @@ async function runImessageSampleSmoke({
   } finally {
     await closeServer(server);
     await rm(path.dirname(chatDbPath), { recursive: true, force: true });
+  }
+}
+
+async function prepareGoogleTakeoutFixture(): Promise<string> {
+  const takeoutDir = await mkdtemp(path.join(tmpdir(), "pdpp-local-collector-google-takeout-fixture-"));
+  const searchDir = path.join(takeoutDir, "My Activity", "Search");
+  await mkdir(searchDir, { recursive: true });
+  await writeFile(
+    path.join(searchDir, "MyActivity.json"),
+    JSON.stringify([
+      {
+        header: "Search",
+        title: "Searched for pack-install-run fixture",
+        titleUrl: "https://www.google.com/search?q=pack-install-run+fixture",
+        time: "2026-01-01T00:00:00.000Z",
+        products: ["Search"],
+      },
+    ])
+  );
+  return takeoutDir;
+}
+
+async function runFixtureBackedGoogleTakeoutEnrollRunSmoke({
+  projectDir,
+  env,
+}: {
+  projectDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  log("Booting in-process reference server for Google Takeout fixture-backed enroll/run smoke...");
+  const { startServer } = await import(`file://${referenceServerEntry}`);
+  const { getDb } = await import(`file://${referenceDbModule}`);
+  // biome-ignore lint/suspicious/noExplicitAny: The reference server is dynamically imported from its packed runtime entrypoint.
+  const server = (await (startServer as any)({
+    asPort: 0,
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  })) as ServerInstance;
+  const baseUrl = `http://127.0.0.1:${server.asPort}`;
+  const takeoutDir = await prepareGoogleTakeoutFixture();
+  try {
+    const codeResp = await postJson(`${baseUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: "google-takeout",
+      local_binding_name: "pack-install-run-laptop",
+    });
+    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    // biome-ignore lint/suspicious/noExplicitAny: The route response is validated at this dynamic package boundary.
+    const enrollmentCode = (codeResp.body as any).enrollment_code;
+    assert.ok(typeof enrollmentCode === "string" && enrollmentCode.length > 0);
+
+    const enroll = await run(
+      "npx",
+      ["--no-install", "pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode],
+      { cwd: projectDir, env }
+    );
+    const enrollment = JSON.parse(enroll.stdout) as EnrollmentData;
+    const queuePath = path.join(projectDir, "pack-install-run-google-takeout-outbox.json");
+    const runResult = await run(
+      "npx",
+      [
+        "--no-install",
+        "pdpp-local-collector",
+        "run",
+        "--base-url",
+        baseUrl,
+        "--connector",
+        "google_takeout",
+        "--device-id",
+        enrollment.device_id,
+        "--device-token",
+        enrollment.device_token,
+        "--connection-id",
+        enrollment.source_instance_id,
+        "--queue",
+        queuePath,
+        "--streams",
+        "search_history",
+      ],
+      { cwd: projectDir, env: { ...env, GOOGLE_TAKEOUT_DIR: takeoutDir } }
+    );
+    const runOutput = JSON.parse(runResult.stdout) as RunOutput;
+    assert.equal(runOutput.done?.status, "succeeded");
+    assert.ok((runOutput.recordsQueued ?? 0) > 0);
+    assert.ok((runOutput.sentBatches ?? 0) > 0);
+
+    // biome-ignore lint/suspicious/noExplicitAny: The test reads the dynamically imported reference database.
+    const persisted = (getDb() as any)
+      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .get("google-takeout", enrollment.connector_instance_id);
+    assert.ok(persisted.n > 0);
+    log(`Google Takeout fixture-backed enroll/run smoke PASS: ${persisted.n} record(s) persisted at ingest.`);
+  } finally {
+    await closeServer(server);
+    await rm(takeoutDir, { recursive: true, force: true });
   }
 }
 

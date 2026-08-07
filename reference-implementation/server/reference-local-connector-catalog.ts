@@ -15,6 +15,7 @@ import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
   ["claude-code", { displayName: "Claude Code", entryName: "claude_code.json" }],
   ["codex", { displayName: "OpenAI Codex CLI", entryName: "codex.json" }],
+  ["google-takeout", { displayName: "Google Takeout", entryName: "google_takeout.json" }],
   ["imessage", { displayName: "iMessage (macOS)", entryName: "imessage.json" }],
 ]);
 

@@ -59,6 +59,12 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
     { store: "cache", stream: "cache_inventory" },
     { store: "auth", stream: null },
   ],
+  google_takeout: [
+    { store: "location_history", stream: "location_history" },
+    { store: "youtube_watch_history", stream: "youtube_watch_history" },
+    { store: "search_history", stream: "search_history" },
+    { store: "photos", stream: "photos" },
+  ],
 } as const;
 
 type LocalCoverageStoreNamesByConnector = {

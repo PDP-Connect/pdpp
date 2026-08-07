@@ -468,6 +468,24 @@ test("iMessage is a supported local_collector_enroll connector, not proof-gated"
   assert.equal(plan.proofGate, null, `${connectorId}: proofGate`);
 });
 
+test("google_takeout's committed manifest classifies as local_collector_enroll (bundled into @pdpp/local-collector)", async () => {
+  // Google Takeout reads an already-extracted GOOGLE_TAKEOUT_DIR from the
+  // local filesystem it runs on — exactly the local-collector shape, not a
+  // browser-upload or provider-API connector. It is now bundled into
+  // @pdpp/local-collector (SUPPORTED_LOCAL_COLLECTOR_CONNECTORS), so it must
+  // classify as the proven, actionable disposition, not the unproven one
+  // netflix_export/imessage still correctly get above.
+  const connectorId = "google_takeout";
+  const shippedManifest = (
+    await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })
+  ).default;
+  const plan = buildConnectionSetupPlan({ connectorKey: "google-takeout", manifest: shippedManifest });
+  assert.equal(plan.connectorModality, "local_collector");
+  assert.equal(plan.catalogDisposition, "local_collector_enroll");
+  assert.equal(plan.supportState, "supported");
+  assert.notEqual(plan.catalogDisposition, "local_collector_unproven");
+});
+
 test("wave-0807 GroupMe manifest (manual_action, no credential_capture) stays unsupported", async () => {
   const groupmeManifest = (
     await import("../../packages/polyfill-connectors/manifests/groupme.json", { with: { type: "json" } })
