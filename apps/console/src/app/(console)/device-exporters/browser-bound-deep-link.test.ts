@@ -40,7 +40,7 @@ const RENDERS_NOTICE = /browserBoundRequest\s*\?\s*<BrowserBoundEnrollmentNotice
 const PENDING_BROWSER_TITLE = /Browser setup not available yet/;
 const PACKAGED_PENDING_COPY = /Browser setup is not available in this dashboard yet/;
 const ADD_SOURCE_LINK = /href="\/sources\/add"[\s\S]{0,120}>\s*Add source\s*<\/Link>/;
-const CONNECT_APPS_LINK = /href="\/connect"[\s\S]{0,120}>\s*Connect Apps\s*<\/Link>/;
+const CONNECT_APPS_LINK = /href="\/connect"[\s\S]{0,120}>\s*Connect apps\s*<\/Link>/;
 const FORBIDDEN_MONOREPO_COPY = /PDPP monorepo checkout|generated monorepo commands|Manual browser setup/;
 
 test("page classifies a browser-bound deep-link via the shared modality classifier (no scattered key checks)", async () => {
@@ -71,7 +71,7 @@ test("browser-bound deep-link renders packaged-path-pending guidance, not monore
   assert.match(src, PENDING_BROWSER_TITLE, "the notice must name the dashboard-browser setup boundary");
   assert.match(src, PACKAGED_PENDING_COPY, "the notice must say browser setup is not available yet");
   assert.match(src, ADD_SOURCE_LINK, "the notice must link to the Sources add page");
-  assert.doesNotMatch(src, CONNECT_APPS_LINK, "browser setup must not send owners to Connect Apps");
+  assert.doesNotMatch(src, CONNECT_APPS_LINK, "browser setup must not send owners to Connect apps");
   assert.doesNotMatch(src, FORBIDDEN_MONOREPO_COPY, "normal dashboard copy must not send owners to monorepo commands");
 });
 

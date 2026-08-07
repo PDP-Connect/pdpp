@@ -12,7 +12,7 @@
  *      Reauthorize, and Revoke as separate, clearly-labeled actions.
  *   3. The normal Sources UI shows no developer-only strings (monorepo paths,
  *      unpublished CLI, per-account env-var jargon, internal id placeholders).
- *   4. "Connect Apps" is a clearly separate read-access surface, not
+ *   4. "Connect apps" is a clearly separate read-access surface, not
  *      confused with adding a data source.
  *
  * Source-regex over the shipped components (sources-view.tsx + surrounding
@@ -101,8 +101,8 @@ const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
 const FORBIDDEN_DEV_STRINGS_RE =
   /pnpm --dir|packages\/[a-z]|PDPP monorepo checkout|env var per account|pdpp owner-agent connectors|connector_instance_id|source_instance_id|device_token/;
 const NAV_SOURCES_RE = /label: "Sources", match: \(a\) => a === "records"/;
-const NAV_CONNECT_APPS_RE = /label: "Connect Apps", match: \(a\) => a === "connect"/;
-const CONNECT_PAGE_TITLE_RE = /title="Connect Apps"/;
+const NAV_CONNECT_APPS_RE = /label: "Connect apps", match: \(a\) => a === "connect"/;
+const CONNECT_PAGE_TITLE_RE = /title="Connect apps"/;
 const CONNECT_PAGE_DESCRIPTION_RE = /grant-scoped read access[\s\S]*?go to Sources/;
 
 // ── 1. Blank/partial dashboard has an obvious Add-source path ───────────────
@@ -230,9 +230,9 @@ test("source setup presentation has no connector-specific copy or examples", asy
   assert.doesNotMatch(src, FORBIDDEN_DEV_STRINGS_RE);
 });
 
-// ── 4. "Connect Apps" is a separate read-access surface ─────────────────────
+// ── 4. "Connect apps" is a separate read-access surface ─────────────────────
 
-test("the nav names the inbound client surface 'Connect Apps', distinct from Sources", async () => {
+test("the nav names the inbound client surface 'Connect apps', distinct from Sources", async () => {
   const src = await readFile(SHELL_FILE, "utf8");
   // The data on-ramp nav item is "Sources" (→ records).
   assert.match(src, NAV_SOURCES_RE);

@@ -172,7 +172,7 @@ function buildLiveOnlyNavigationCommands(basePath: string): DashboardCommand[] {
       keywords: ["connect", "ai apps", "read access", "mcp", "claude", "codex", "chatgpt", "agent", "client", "setup"],
       kind: "jump",
       section: "Navigate",
-      title: "Connect Apps",
+      title: "Connect apps",
     },
     {
       description: "Manage device-bound exporters for this PDPP instance.",

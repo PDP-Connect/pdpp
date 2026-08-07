@@ -58,7 +58,7 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
           { href: dashboardRoutes.section.records, label: "Sources" },
           { label: "Add source" },
         ]}
-        description="Add sources that populate this PDPP instance. App and local-client access is configured separately under Connect Apps."
+        description="Add sources that populate this PDPP instance. App and local-client access is configured separately under Connect apps."
         title="Add source"
       />
       <SourceSetupCatalog
