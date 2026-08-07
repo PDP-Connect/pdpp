@@ -441,9 +441,6 @@ importers:
       '@streamparser/json':
         specifier: ^0.0.22
         version: 0.0.22
-      better-sqlite3:
-        specifier: ^13.0.2
-        version: 13.0.2
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -481,9 +478,15 @@ importers:
       '@biomejs/biome':
         specifier: 2.5.6
         version: 2.5.6
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      better-sqlite3:
+        specifier: ^13.0.2
+        version: 13.0.2
       ultracite:
         specifier: 7.9.4
         version: 7.9.4(eslint@10.7.0(jiti@2.7.0))(typescript@7.0.2)
