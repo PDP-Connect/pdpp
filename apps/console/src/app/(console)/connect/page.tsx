@@ -378,7 +378,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
       <Callout
         action={
           <Link className="underline-offset-2 hover:underline" href="/deployment/tokens">
-            Owner-agent access →
+            Owner credentials →
           </Link>
         }
         title="Owner credentials stay out of ordinary MCP setup"

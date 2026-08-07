@@ -111,7 +111,7 @@ function describeTerminalSetupDisposition(status: ConnectionSetupStatus): Status
     case "unverified_missing_counts":
       return {
         detail: "The first sync completed without durable count evidence. Review the connection before retrying.",
-        headline: "Yield evidence missing",
+        headline: "First sync incomplete",
         tone: "pending",
       };
     case "unverified_zero":

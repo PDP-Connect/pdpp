@@ -134,7 +134,7 @@ function UnavailableSetupCard({ displayName }: { displayName: string }) {
     <div className="rounded-xl border border-border/70 bg-card/60 p-5 shadow-sm">
       <h2 className="pdpp-title text-foreground">Adding a new {displayName} source is not available here</h2>
       <p className="pdpp-body mt-3 text-muted-foreground">
-        This console can reconnect an existing source, but it cannot add a new one yet. Return to Sources to choose an
+        This dashboard can reconnect an existing source, but it cannot add a new one yet. Return to Sources to choose an
         available setup path.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
@@ -267,8 +267,7 @@ export default async function BrowserSessionConnectPage({
               </li>
               <li>
                 Sign in to <strong className="text-foreground">{displayName}</strong> in that browser. PDPP stores the
-                browser session state needed for this source.{" "}
-                {browserFormContract.repairLoginDescription}
+                browser session state needed for this source. {browserFormContract.repairLoginDescription}
               </li>
               <li>Once login is detected, the browser closes and collection resumes automatically.</li>
             </ol>
