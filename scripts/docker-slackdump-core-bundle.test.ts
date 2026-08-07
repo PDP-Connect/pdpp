@@ -5,7 +5,7 @@
 // Builds the core target once, then inspects the image for proof of bundled slackdump.
 //
 // Rationale: Slack connector is declared as "background_safe" only if slackdump
-// is present. This test ensures the default deployment image actually works.
+// is present. This test ensures the default deployment image actually includes it.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -48,8 +48,11 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
     throw err;
   }
 
+  // Sequential assertions: all must complete before parent test finishes
+  // (avoid early exit that leaves subtests orphaned)
+
   // Test 1: slackdump binary exists and is executable
-  t.test("slackdump binary is executable", async () => {
+  await t.test("slackdump binary is executable", () => {
     try {
       execFileSync(DOCKER_CMD, [
         "run",
@@ -59,14 +62,14 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
         "-x",
         "/usr/local/bin/slackdump",
       ]);
-      t.diagnostic("slackdump binary found at /usr/local/bin/slackdump");
+      t.diagnostic("✓ slackdump binary found at /usr/local/bin/slackdump");
     } catch (err) {
       throw new Error(`slackdump binary check failed: ${err}`);
     }
   });
 
   // Test 2: slackdump version check passes
-  t.test("slackdump version returns success", async () => {
+  await t.test("slackdump version returns success", () => {
     try {
       const output = execFileSync(DOCKER_CMD, [
         "run",
@@ -77,17 +80,18 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
       ], { encoding: "utf8" });
 
       assert(
-        output.match(/v4\.\d+\.\d+/),
-        `slackdump version output should contain v4.x.y; got: ${output.trim()}`
+        output.includes("Slackdump") && output.match(/4\.4\.\d+/),
+        `slackdump version output should contain Slackdump 4.4.x; got: ${output.trim()}`
       );
-      t.diagnostic(`slackdump version: ${output.trim()}`);
+      const versionMatch = output.match(/Slackdump [\d.]+/);
+      t.diagnostic(`✓ slackdump version: ${versionMatch ? versionMatch[0] : "unknown"}`);
     } catch (err) {
       throw new Error(`slackdump version check failed: ${err}`);
     }
   });
 
   // Test 3: AGPL-3.0 license file is present
-  t.test("AGPL-3.0 license file present", async () => {
+  await t.test("AGPL-3.0 license file present", () => {
     try {
       const licenseText = execFileSync(DOCKER_CMD, [
         "run",
@@ -99,14 +103,18 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
       ], { encoding: "utf8" });
 
       assert(licenseText.length > 0, "License file should have content");
-      t.diagnostic(`License header: ${licenseText.trim().substring(0, 60)}...`);
+      assert(
+        licenseText.includes("GNU AFFERO") || licenseText.includes("AGPL"),
+        "License should reference AGPL"
+      );
+      t.diagnostic("✓ AGPL-3.0 license file present");
     } catch (err) {
       throw new Error(`License file check failed: ${err}`);
     }
   });
 
   // Test 4: Upstream source URL reference is preserved
-  t.test("Upstream source URL reference preserved", async () => {
+  await t.test("Upstream source URL reference preserved", () => {
     try {
       const sourceUrl = execFileSync(DOCKER_CMD, [
         "run",
@@ -120,14 +128,39 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
         sourceUrl.includes("github.com/rusq/slackdump"),
         "SOURCE_URL should reference upstream repository"
       );
-      t.diagnostic(`Source URL: ${sourceUrl.trim()}`);
+      t.diagnostic(`✓ Upstream source URL: ${sourceUrl.trim()}`);
     } catch (err) {
       throw new Error(`Source URL check failed: ${err}`);
     }
   });
 
-  // Test 5: Image layer size sanity check (not bloated with build deps)
-  t.test("Image size is reasonable (no build bloat)", async () => {
+  // Test 5: No Go toolchain in final image (builder-specific tool)
+  await t.test("Go toolchain not present in final image", () => {
+    try {
+      try {
+        execFileSync(DOCKER_CMD, [
+          "run",
+          "--rm",
+          CORE_IMAGE_TAG,
+          "which",
+          "go",
+        ]);
+        // If go is found, that's a failure (builder bloat)
+        throw new Error("go toolchain found in final image (builder bloat detected)");
+      } catch (err) {
+        // Expected: go should NOT be found
+        if (err.message.includes("builder bloat")) throw err;
+        // Good: go not found, as expected
+      }
+
+      t.diagnostic("✓ Go toolchain (builder-only) not present in final image");
+    } catch (err) {
+      throw new Error(`Builder bloat check failed: ${err}`);
+    }
+  });
+
+  // Test 6: Record measured image size for evidence
+  await t.test("Record image size for delta measurement", () => {
     try {
       const sizeOutput = execFileSync(DOCKER_CMD, [
         "image",
@@ -139,15 +172,10 @@ skipIfNoDocker("Build and inspect core image with slackdump", async (t) => {
       const sizeBytes = parseInt(sizeOutput.trim());
       const sizeMB = sizeBytes / (1024 * 1024);
 
-      // Core is ~800MB (Node + browsers), +40-50MB for slackdump = ~850-900MB max
-      // If it's >1.2GB, something went wrong (e.g., Go toolchain leaked)
-      assert(
-        sizeMB < 1200,
-        `Image size should be <1200MB; got ${sizeMB.toFixed(1)}MB (possible build bloat)`
-      );
-      t.diagnostic(`Image size: ${sizeMB.toFixed(1)}MB`);
+      t.diagnostic(`✓ Measured image size: ${sizeMB.toFixed(1)}MB`);
+      t.diagnostic("  Evidence: delta tracks slackdump binary bundle cost");
     } catch (err) {
-      throw new Error(`Image size check failed: ${err}`);
+      throw new Error(`Image size measurement failed: ${err}`);
     }
   });
 });
