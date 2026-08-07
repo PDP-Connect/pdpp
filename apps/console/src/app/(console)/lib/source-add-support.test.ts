@@ -24,6 +24,7 @@ const STATIC_SECRET_ROUTE_RE = /\/connect\/static-secret\/gmail/;
 const DEVICE_EXPORTER_ROUTE_RE = /\/device-exporters\?connector=/;
 const MANUAL_UPLOAD_ROUTE_RE = /\/connect\/manual-upload\/google-maps/;
 const NOT_SELF_SERVICE_RE = /^Adding another account is not available here$/;
+const PACKAGED_PATH_PENDING_RE = /^Adding another account is not available yet$/;
 const DEMOTION_COPY_RE = /not self-service|not supported|track only|developer proof/i;
 const DEV_JARGON_RE = /pnpm --dir|packages\/|monorepo|env var|connector_instance_id|PDPP_/;
 
@@ -160,9 +161,9 @@ test("unshipped manual upload path stays unavailable for self-service setup", ()
   const map = buildSourceAddSupport([manualUploadPendingManifest("google-maps-pending")]);
   const support = resolveSourceAddSupport(map, "google-maps-pending");
   assert.ok(support);
-  assert.equal(support.support, "not_self_service");
+  assert.equal(support.support, "packaged_path_pending");
   assert.equal(support.action, null);
-  assert.match(support.supportLabel, NOT_SELF_SERVICE_RE);
+  assert.match(support.supportLabel, PACKAGED_PATH_PENDING_RE);
   assert.doesNotMatch(support.supportLabel, DEMOTION_COPY_RE);
 });
 
