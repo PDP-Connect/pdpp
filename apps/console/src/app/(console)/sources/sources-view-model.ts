@@ -27,13 +27,13 @@
  * a false zero or green.
  */
 
+import type { StreamManifestEntry } from "@pdpp/display";
 import {
   deriveSourceDisplayNameFallback,
   formatConnectorNameForDisplay,
   isFallbackConnectionLabel,
   streamDisplayLabel,
 } from "@pdpp/display";
-import type { StreamManifestEntry } from "@pdpp/display";
 import {
   type ConnectorManifestLike,
   canonicalConnectorKey,
@@ -203,7 +203,10 @@ export interface SourcesRuntimeAdvisory {
   note: string;
 }
 
-type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
+type SourceManifestLike = ConnectorManifestLike & {
+  connector_id: string;
+  streams?: readonly StreamManifestEntry[];
+};
 
 const DUPLICATE_SOURCE_GROUP_MIN_UNNAMED = 3;
 

@@ -1187,7 +1187,7 @@ test("toSourceInstanceView: Google Maps timeline_points displays human label, no
       },
     ],
   };
-  const sum = summary({ streams: ["timeline_points"] });
+  const sum = summary({ connector_id: "google-maps", streams: ["timeline_points"] });
   const view = toSourceInstanceView(sum, { manifests: [manifest] });
   assert.equal(view.streams[0]?.displayLabel, "Your Google Maps location points");
   assert.notEqual(view.streams[0]?.displayLabel, "timeline_points");
