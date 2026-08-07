@@ -12,7 +12,6 @@ import {
   formatConnectorNameForDisplay,
   isFallbackConnectionLabel,
   parseFieldRole,
-  streamDisplayLabel,
 } from "@pdpp/display";
 import { validateListEnvelope } from "@pdpp/list-envelope";
 /**
@@ -1643,14 +1642,21 @@ function detectSingleStreamDoor(
   }
   const [summary] = matchingSummaries;
   const connectorKey = manifestConnectorKey({ connector_id: sharedConnector } as { connector_id: string });
-  const labelKey = `${connectorKey}::${sharedStream}`;
-  const streamLabel = streamDisplayLabels.get(labelKey) ?? sharedStream;
+  const streamLabel = resolveStreamDisplayLabel(streamDisplayLabels, connectorKey, sharedStream);
   return {
     connectionId: summary.connection_id,
     connectorId: sharedConnector,
     displayName: `${connectorSummaryDisplayName(summary)} - ${streamLabel}`,
     stream: sharedStream,
   };
+}
+
+export function resolveStreamDisplayLabel(
+  streamDisplayLabels: ReadonlyMap<string, string>,
+  connectorId: string,
+  streamName: string
+): string {
+  return streamDisplayLabels.get(searchTimestampMetadataKey(connectorId, streamName)) ?? streamName;
 }
 
 /**
@@ -2080,7 +2086,7 @@ async function loadSearchFeed(
         stream: hit.stream,
       };
     });
-    const fallbackDoor = detectSingleStreamDoor(fallbackFiltered, filteredSummaries);
+    const fallbackDoor = detectSingleStreamDoor(fallbackFiltered, filteredSummaries, streamDisplayLabels);
     const fallbackNextCursor = fallbackPage.next_cursor ?? null;
     return {
       // keyword_pageable ordered by time: multi-stream Most-recent path uses
@@ -2196,6 +2202,8 @@ async function dispatchFeed(args: {
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>;
   /** Declared presentation ROLES per connector::stream (parallel to declaredFieldTypes). */
   declaredFieldRoles: ReadonlyMap<string, DeclaredFieldRoles>;
+  /** Human stream labels keyed by connector::stream. */
+  streamDisplayLabels: ReadonlyMap<string, string>;
   filterConnectionSet: ReadonlySet<string>;
   /** EXCLUDED connection ids (facet "is not" / `-con:`). Applied on the recent lens. */
   excludeConnectionSet: ReadonlySet<string>;
@@ -2226,6 +2234,7 @@ async function dispatchFeed(args: {
     manifestFieldNames,
     declaredFieldTypes,
     declaredFieldRoles,
+    streamDisplayLabels,
     filterConnectionSet,
     excludeConnectionSet,
     excludeStreamSet,
@@ -2255,7 +2264,7 @@ async function dispatchFeed(args: {
       declaredFieldTypes,
       declaredFieldRoles,
       filterConnectionSet,
-      manifestMetadata.streamDisplayLabels,
+      streamDisplayLabels,
       exclude,
       dataSource
     );
@@ -2336,6 +2345,7 @@ interface ManifestMetadata {
 interface ManifestStream {
   consent_time_field?: unknown;
   cursor_field?: unknown;
+  display?: { label?: string };
   fields?: unknown;
   name: string;
   schema?: { properties?: Record<string, unknown>; fields?: unknown };
@@ -2496,10 +2506,14 @@ function indexManifestStream(
     declaredFieldTypes: Map<string, DeclaredFieldTypes>;
     manifestFieldNames: Map<string, readonly string[]>;
     serverFilterableFields: Map<string, Set<string>>;
+    streamDisplayLabels: Map<string, string>;
     timestampMetadata: Map<string, SearchTimestampMetadata>;
   }
 ): void {
   const key = searchTimestampMetadataKey(connectorId, stream.name);
+  if (stream.display?.label) {
+    maps.streamDisplayLabels.set(key, stream.display.label);
+  }
   maps.timestampMetadata.set(key, {
     consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
     cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
@@ -2562,11 +2576,6 @@ async function buildManifestMetadata(dataSource: DashboardDataSource): Promise<M
     const connectorKey = manifestConnectorKey(manifest);
     for (const stream of (manifest.streams ?? []) as ManifestStream[]) {
       indexManifestStream(connectorKey, stream, maps);
-      const key = `${connectorKey}::${stream.name}`;
-      const displayLabel = (stream as { display?: { label?: string } }).display?.label;
-      if (displayLabel) {
-        maps.streamDisplayLabels.set(key, displayLabel);
-      }
     }
   }
   return maps;
@@ -3099,6 +3108,7 @@ export async function assembleExplorerData(
       since,
       snapshotAnchorParam: rawAnchor,
       summaries,
+      streamDisplayLabels: manifestMetadata.streamDisplayLabels,
       timestampMetadata,
       until,
       upcomingTrail,

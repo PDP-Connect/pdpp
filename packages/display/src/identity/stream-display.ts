@@ -12,23 +12,18 @@
  */
 
 export interface StreamManifestEntry {
-  name: string;
   display?: {
-    label?: string;
     detail?: string;
+    label?: string;
   };
+  name: string;
   [k: string]: unknown;
 }
 
-export function streamDisplayLabel(
-  streamName: string,
-  streamDecl: StreamManifestEntry | undefined
-): string {
+export function streamDisplayLabel(streamName: string, streamDecl: StreamManifestEntry | undefined): string {
   return streamDecl?.display?.label ?? streamName;
 }
 
-export function streamDisplayDetail(
-  streamDecl: StreamManifestEntry | undefined
-): string | undefined {
+export function streamDisplayDetail(streamDecl: StreamManifestEntry | undefined): string | undefined {
   return streamDecl?.display?.detail;
 }
