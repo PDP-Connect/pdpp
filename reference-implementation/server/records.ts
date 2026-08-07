@@ -236,6 +236,7 @@ type RecordIngestBatchOutcome = RecordIngestOutcome & {
   /** Present when the durable write or its derived-index phase failed. */
   error?: string;
 };
+type RecordIngestAfterRecord = (record: RecordEnvelope, outcome: RecordIngestBatchOutcome) => void | Promise<void>;
 interface JsonSchema {
   format?: string;
   properties?: Record<string, JsonSchema>;
@@ -1113,17 +1114,19 @@ export async function ingestRecord(
  * per-record phase as `ingestRecord`. The only optimization is reusing one
  * connector-instance ownership capability for the whole request, removing
  * repeated admission/key/advisory-lock setup while keeping the durable
- * checkpoint boundary at the HTTP response.
+ * checkpoint boundary at the HTTP response. When supplied, `afterRecord` is
+ * awaited between a record's storage completion and the next record.
  */
 export async function ingestRecords(
   storageTarget: RecordStorageTarget,
-  records: readonly RecordEnvelope[]
+  records: readonly RecordEnvelope[],
+  afterRecord?: RecordIngestAfterRecord
 ): Promise<RecordIngestBatchOutcome[]> {
   const coordinationConnectorId = connectorIdForStorageTarget(storageTarget);
   const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
   return await withConnectorInstanceWrite(
     coordinationInstanceId,
-    (coordinatorOwnership) => ingestRecordsWithinCoordinator(storageTarget, records, coordinatorOwnership),
+    (coordinatorOwnership) => ingestRecordsWithinCoordinator(storageTarget, records, coordinatorOwnership, afterRecord),
     undefined
   );
 }
@@ -1131,27 +1134,43 @@ export async function ingestRecords(
 async function ingestRecordsWithinCoordinator(
   storageTarget: RecordStorageTarget,
   records: readonly RecordEnvelope[],
-  coordinatorOwnership: ConnectorInstanceWriteOwnership
+  coordinatorOwnership: ConnectorInstanceWriteOwnership,
+  afterRecord?: RecordIngestAfterRecord
 ): Promise<RecordIngestBatchOutcome[]> {
   const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
 
   for (const [index, record] of records.entries()) {
+    let outcome: RecordIngestBatchOutcome;
     try {
       // Versions, current-state transitions, history, summaries, derived
       // indexes, and after-commit notifications keep the same one-record
       // semantics as `ingestRecord`; only coordinator ownership is reused.
       // biome-ignore lint/performance/noAwaitInLoops: Durable version allocation and same-instance state transitions are intentionally ordered.
-      const outcome = await ingestRecordWithinCoordinator(storageTarget, record, {
+      outcome = await ingestRecordWithinCoordinator(storageTarget, record, {
         coordinatorOwnership,
       });
-      outcomes[index] = outcome;
     } catch (err) {
-      outcomes[index] = {
+      outcome = {
         accepted: false,
         changed: false,
         error: err instanceof Error ? err.message : String(err),
       };
     }
+    if (afterRecord && outcome.accepted) {
+      try {
+        // The callback is part of the per-record completion boundary. It must
+        // finish before the next record enters storage so host-side provenance
+        // and similar effects preserve the established store->effect order.
+        await afterRecord(record, outcome);
+      } catch (err) {
+        outcome = {
+          accepted: false,
+          changed: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    outcomes[index] = outcome;
   }
 
   return outcomes.map(
