@@ -121,6 +121,9 @@ function SourceAcquisitionPaths({ paths }: { paths: readonly ConnectorAcquisitio
 }
 
 function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: number): string {
+  if (sourceSetupAvailability(entry) === "not_available_here") {
+    return "No proven setup path is available in this dashboard.";
+  }
   if (entry.modality === "browser_bound" && entry.setupModality === "static_secret") {
     return "Connect in a secure browser; interactive sign-in is valid, with optional saved details for repair.";
   }

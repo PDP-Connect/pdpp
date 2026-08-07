@@ -82,7 +82,8 @@ const SOURCES_PAGE_STATUS_HELPER_IMPORT_RE =
   /isActiveConnectorRunSummaryStatus[\s\S]*from "\.\.\/lib\/connector-run-summary-status\.ts"/;
 const SOURCES_PAGE_STATUS_HELPER_CALL_RE = /isActiveConnectorRunSummaryStatus\(\s*s\.last_run\.status\s*\)/;
 const LIST_CONNECTOR_MANIFESTS_RE = /listConnectorManifests\(\)/;
-const BUILD_CONNECTOR_CATALOG_RE = /buildConnectorCatalog\(manifests\)/;
+const LIST_OWNER_CONNECTOR_TEMPLATES_RE = /listOwnerConnectorTemplates\(\)/;
+const BUILD_CONNECTOR_CATALOG_RE = /buildOwnerConnectorCatalog\(manifests, templates\)/;
 const SOURCE_SETUP_CATALOG_RE = /<SourceSetupCatalog/;
 const SOURCE_SETUP_SECTION_RE = /title="Add data"/;
 const SOURCE_SEARCH_RE = /name="source_q"[\s\S]*?Search source name or connector key/;
@@ -130,6 +131,7 @@ test("Sources owns the add-source catalog route", async () => {
   const page = await readFile(RECORDS_ADD_PAGE_FILE, "utf8");
   const catalog = await readFile(SOURCE_SETUP_CATALOG_FILE, "utf8");
   assert.match(page, LIST_CONNECTOR_MANIFESTS_RE);
+  assert.match(page, LIST_OWNER_CONNECTOR_TEMPLATES_RE);
   assert.match(page, BUILD_CONNECTOR_CATALOG_RE);
   assert.match(page, SOURCE_SETUP_CATALOG_RE);
   assert.match(catalog, SOURCE_SETUP_SECTION_RE);

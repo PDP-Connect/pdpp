@@ -39,6 +39,7 @@ export type ConnectorCatalogDisposition =
   | "manual_upload_connect"
   | "manual_upload_pending"
   | "provider_auth_deployment_blocked"
+  | "provider_auth_connect"
   | "provider_auth_proof_gated"
   | "api_network_unsupported"
   | "unknown_unsupported";
@@ -775,7 +776,7 @@ function buildProviderAuthorizationSetupPlan(ctx: ConnectionSetupPlanContext): C
   const lifecycleProven = !deploymentBlocked && isProviderAuthLifecycleProven(ctx.connectorKey);
   if (lifecycleProven) {
     return {
-      catalogDisposition: "provider_auth_proof_gated",
+      catalogDisposition: "provider_auth_connect",
       connectorKey: ctx.connectorKey,
       connectorModality: ctx.connectorModality,
       deploymentReadiness: ctx.deploymentReadiness,

@@ -25,6 +25,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, "..");
 const OWNER_SUBJECT_ID = "owner_local";
 const NOW = "2026-06-01T00:00:00.000Z";
+const OWNER_INTENT_URL_RE = /\/v1\/owner\/connections\/intents$/;
 
 interface TestHttpServer {
   close: (callback: () => void) => void;
@@ -225,6 +226,12 @@ function actionByFamily(row: Record<string, unknown>, family: string): Record<st
 test("owner-agent bearer lists connector templates with related connection summaries", async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const amazonManifest = await registerConnector(asUrl, loadManifest("amazon"));
+    const listedUnprovenManifest = loadManifest("doordash");
+    listedUnprovenManifest.capabilities = {
+      ...asRecord(listedUnprovenManifest.capabilities),
+      public_listing: { listed: true, status: "unproven" },
+    };
+    await registerConnector(asUrl, listedUnprovenManifest);
     const amazonKey = canonicalConnectorKey(amazonManifest.connector_id);
     assert.ok(amazonKey, "amazon manifest must resolve a canonical connector key");
     await seedInstance({
@@ -247,11 +254,14 @@ test("owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazon.connector_id, "amazon");
     assert.equal(amazon.display_name, "Amazon");
     assert.equal(amazon.connector_modality, "browser_bound");
+    assert.equal(amazon.registration_status, "registered");
+    assert.deepEqual(amazon.public_listing, { listed: true, status: "needs_human_auth" });
     const amazonSetupPlan = asRecord(amazon.setup_plan);
     assert.equal(amazonSetupPlan.setup_modality, "static_secret");
     assert.equal(amazonSetupPlan.support_state, "proof_gated");
     assert.equal(amazonSetupPlan.next_step_kind, "capture_static_secret");
     assert.equal(amazonSetupPlan.proof_gate, "static_secret_live_proof_missing");
+    assert.equal(amazonSetupPlan.owner_actionable, false);
     assert.equal(amazonSetupPlan.runbook_path, null);
     assert.equal(amazon.connection_count, 1);
     const amazonConnections = amazon.connections;
@@ -270,19 +280,22 @@ test("owner-agent bearer lists connector templates with related connection summa
     // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
     assert.match(String(amazonInitiate.reason), /static provider secret|static-secret/i);
 
-    // Local-collector templates are discoverable even before a connection is
-    // registered, because they live in the reference local-collector catalog.
-    const codex = byConnector(body, "codex");
-    assert.equal(codex.connector_modality, "local_collector");
-    const codexSetupPlan = asRecord(codex.setup_plan);
-    assert.equal(codexSetupPlan.support_state, "supported");
-    assert.equal(codexSetupPlan.next_step_kind, "enroll_local_collector");
-    assert.equal(codex.connection_count, 0);
-    const codexInitiate = actionByFamily(codex, "initiate_connection");
-    assert.equal(codexInitiate.status, "supported");
-    assert.equal(codexInitiate.method, "POST");
-    // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
-    assert.match(String(codexInitiate.url), /\/v1\/owner\/connections\/intents$/);
+    const templates = asRecord(body).data;
+    assert.ok(Array.isArray(templates));
+    assert.equal(
+      templates.some((item) => asRecord(item).connector_key === "codex"),
+      false,
+      "a local-only manifest must not create a server catalog entry"
+    );
+
+    const doordash = byConnector(body, "doordash");
+    assert.deepEqual(doordash.public_listing, { listed: true, status: "unproven" });
+    const doordashSetupPlan = asRecord(doordash.setup_plan);
+    assert.equal(doordashSetupPlan.owner_actionable, false);
+    const doordashInitiate = actionByFamily(doordash, "initiate_connection");
+    assert.equal(doordashInitiate.status, "unsupported");
+    assert.equal(doordashInitiate.method, null);
+    assert.equal(doordashInitiate.url, null);
   });
 });
 
@@ -301,13 +314,17 @@ test("owner-template readiness reflects configured provider authorization", asyn
 
       const google = byConnector(body, "google-maps-data-portability");
       const setupPlan = asRecord(google.setup_plan);
+      assert.equal(setupPlan.catalog_disposition, "provider_auth_connect");
       const deploymentReadiness = asRecord(setupPlan.deployment_readiness);
       assert.equal(deploymentReadiness.state, "ready");
       assert.equal(setupPlan.next_step_kind, "open_provider_auth");
       assert.equal(setupPlan.support_state, "supported");
+      assert.equal(setupPlan.proof_gate, null);
+      assert.equal(setupPlan.owner_actionable, true);
       const initiate = actionByFamily(google, "initiate_connection");
       assert.equal(initiate.method, "POST");
       assert.equal(initiate.status, "supported");
+      assert.match(String(initiate.url), OWNER_INTENT_URL_RE);
     },
     { configuredProviderAuthConnectorKeys: ["google-maps-data-portability"] }
   );

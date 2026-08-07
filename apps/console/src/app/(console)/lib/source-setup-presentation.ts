@@ -23,7 +23,11 @@
  * `owner-journey-slvp-realignment-plan-2026-06-10.md`.
  */
 
-import { type ConnectorCatalogEntry, isReadyProviderAuthorizationEntry } from "./connection-catalog.ts";
+import {
+  type ConnectorCatalogEntry,
+  isOwnerActionableEntry,
+  isReadyProviderAuthorizationEntry,
+} from "./connection-catalog.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -60,6 +64,13 @@ function browserBoundWithStoredCredentials(entry: ConnectorCatalogEntry): boolea
   return entry.modality === "browser_bound" && entry.setupModality === "static_secret";
 }
 
+function isUnavailableSetupEntry(entry: ConnectorCatalogEntry): boolean {
+  return (
+    (entry.ownerActionable === false && entry.disposition !== "provider_auth_deployment_blocked") ||
+    (entry.setupModality === "static_secret" && !isOwnerActionableEntry(entry))
+  );
+}
+
 /**
  * Whether adding a new account for this disposition is self-service today.
  *
@@ -85,6 +96,9 @@ export type SourceSetupAvailability = "available_now" | "requires_server_setup" 
 
 /** Owner-facing picker order: actionable dispositions first, unsupported last. */
 export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
+  if (isUnavailableSetupEntry(entry)) {
+    return 8;
+  }
   if (isReadyProviderAuthorizationEntry(entry)) {
     return 5;
   }
@@ -115,6 +129,9 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
 
 /** The owner-facing status label + tone for first-account setup. */
 export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStatus {
+  if (isUnavailableSetupEntry(entry)) {
+    return { label: "Not available here", tone: "border-border bg-muted/30 text-muted-foreground" };
+  }
   if (browserBoundWithStoredCredentials(entry)) {
     return {
       label: "Connect account",
@@ -174,6 +191,9 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
 
 /** One short owner-facing guidance line for first-account setup. */
 export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
+  if (isUnavailableSetupEntry(entry)) {
+    return "This dashboard cannot add this source yet.";
+  }
   if (browserBoundWithStoredCredentials(entry)) {
     return "Sign in in the secure browser. Saving sign-in details is optional and may help with setup or repair, but one-time codes, passkeys, and other human steps still happen in the browser. Automatic reconnection is not guaranteed.";
   }
@@ -212,6 +232,9 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
 
 /** The primary next action for first-account setup, or null when none exists. */
 export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
+  if (!isOwnerActionableEntry(entry)) {
+    return null;
+  }
   // Browser-bound connectors that also declare credential capture still start
   // from the one browser-session path. The optional saved-sign-in-details
   // fields live inside that page rather than becoming a second picker choice.
@@ -261,6 +284,9 @@ export function sourceSetupSecondaryAction(_entry: ConnectorCatalogEntry): Sourc
 }
 
 export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSetupAvailability {
+  if (isUnavailableSetupEntry(entry)) {
+    return "not_available_here";
+  }
   if (isReadyProviderAuthorizationEntry(entry)) {
     return "available_now";
   }
@@ -284,6 +310,9 @@ export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSet
  * self-service add-another-account (the browser-bound dispositions).
  */
 export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSupport {
+  if (isUnavailableSetupEntry(entry)) {
+    return "not_self_service";
+  }
   if (isReadyProviderAuthorizationEntry(entry)) {
     return "self_service";
   }

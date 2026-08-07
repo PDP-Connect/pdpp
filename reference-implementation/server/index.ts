@@ -1160,12 +1160,6 @@ function readReferenceLocalConnectorCatalogManifest(connectorId: string) {
   }
 }
 
-function listReferenceLocalConnectorCatalogManifests() {
-  return Array.from(REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.keys())
-    .map((connectorId) => readReferenceLocalConnectorCatalogManifest(connectorId))
-    .filter(Boolean);
-}
-
 async function ensureReferenceConnectorCatalogEntry(
   connectorId: string,
   connectorDisplayName: string | null | undefined
@@ -6244,10 +6238,9 @@ function buildRsApp(opts: ServerOpts = {}) {
   // GET /v1/owner/connector-templates is the bearer-authed owner-agent template
   // catalog. It separates connector implementation metadata from configured
   // connection instances, embeds related connection summaries, and reports
-  // template-level `initiate_connection` support truthfully: proven
-  // local-collector templates can create an enrollment intent; browser-bound and
-  // API/network-only templates name the missing primitive instead of pretending
-  // an owner bearer can add a provider account.
+  // template-level `initiate_connection` support truthfully: only registered
+  // templates whose server-owned listing, proof, readiness, and planner
+  // contract support an owner action receive a supported intent.
   mountOwnerConnectorTemplates(app, {
     canonicalConnectorKey,
     configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
@@ -6255,7 +6248,6 @@ function buildRsApp(opts: ServerOpts = {}) {
     getConnectorManifest: (connectorId: string) => getConnectorManifest(connectorId),
     getOwnerTokenSubjectId,
     handleError,
-    listReferenceLocalConnectorCatalogManifests,
     listRegisteredConnectorIds,
     projectStorageDisplayName,
     requireOwner,

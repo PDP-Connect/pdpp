@@ -4,12 +4,10 @@
 /**
  * Pure connector-catalog model for the console add-connection surface.
  *
- * The add-connection surface is a server component, so it can read every shipped
- * connector manifest cookie-side via `listConnectorManifests()` — each manifest
- * carries `runtime_requirements.bindings`, which is all the binding-derived
- * modality classifier needs. This module turns that manifest list into a catalog
- * the picker renders: every connector, grouped by modality, routed to the honest
- * next step the reference can complete today.
+ * The live add-connection surface consumes the authenticated owner-template
+ * projection. Local manifests are joined only for manifest-authored display,
+ * help, acquisition, and documentation fields; they never supply capability,
+ * listing, registration, proof, readiness, or action truth.
  *
  * This module introduces NO new classification truth. It projects the shared
  * reference setup planner (`pdpp-reference-implementation/connection-setup-plan`)
@@ -92,6 +90,42 @@ export interface CatalogManifestLike {
   } | null;
 }
 
+/**
+ * Server-owned capability projection returned by the owner-template route.
+ * Local manifests are joined only for display/help/documentation fields; these
+ * fields are the authority for registration, listing, setup capability, proof,
+ * readiness, and owner action.
+ */
+export interface OwnerConnectorTemplateLike {
+  connector_key?: string | null;
+  connector_modality?: string | null;
+  display_name?: string | null;
+  public_listing?: {
+    listed?: boolean | null;
+    status?: string | null;
+  } | null;
+  registration_status?: string | null;
+  setup_plan?: {
+    catalog_disposition?: string | null;
+    deployment_readiness?: ConnectorSetupDeploymentReadiness | null;
+    enrollment_key?: string | null;
+    next_step_kind?: string | null;
+    owner_actionable?: boolean | null;
+    proof_gate?: string | null;
+    runbook_path?: string | null;
+    setup_modality?: string | null;
+    support_state?: string | null;
+  } | null;
+  supported_actions?:
+    | readonly {
+        family?: string | null;
+        method?: string | null;
+        status?: string | null;
+        url?: string | null;
+      }[]
+    | null;
+}
+
 /** Binding-derived modality, matching the backend intent route's taxonomy. */
 export type CatalogModality = ConnectorIntentModality;
 
@@ -107,11 +141,9 @@ export type CatalogModality = ConnectorIntentModality;
  *   path (deep-links to mint a code; the owner finishes the run locally).
  * - `browser_bound_runbook` — a browser-bound connector with no generated console
  *   path yet; visible and pointed at the runbook, but NOT deep-linked.
- * - `static_secret_connect` — a network-class connector whose first connection
- *   is created via the owner-session static-secret draft path.
- *   A real owner connect route exists; the picker links to that owner-session
- *   capture form, not to local-device enrollment, and the connection stays
- *   hidden until first ingest accepts records.
+ * - `static_secret_connect` — a network-class connector whose manifest declares
+ *   static-secret capture. The live owner catalog supplies the proof/action
+ *   gate; a capture form alone never makes this disposition actionable.
  * - `manual_upload_connect` — a manifest-declared file/import connector whose
  *   owner-session upload route is packaged; the picker links to the generic
  *   file-capture form and the connection stays hidden until first ingest
@@ -163,10 +195,20 @@ export interface ConnectorCatalogEntry {
   modality: CatalogModality;
   /** The next owner step selected by the shared planner. */
   nextStepKind: ConnectorSetupNextStepKind;
+  /** Server-authorized owner setup action; live owner catalogs always set it. */
+  ownerActionable?: boolean;
+  /** Projected action method, retained so the console can reject incomplete actions. */
+  ownerActionMethod?: string | null;
+  /** Projected action URL, retained so the console can reject incomplete actions. */
+  ownerActionUrl?: string | null;
   /** Proof gate blocking support, if any. */
   proofGate: string | null;
+  /** Server-owned public-listing state. */
+  publicListingStatus?: string | null;
   /** Existing capability rationale used for owner context where no setup copy exists. */
   refreshPolicyRationale: string | null;
+  /** Server-owned registration state. */
+  registrationStatus?: string | null;
   /** Optional runbook path surfaced in advanced/details copy. */
   runbookPath: string | null;
   /** Manifest-authored setup description, when the setup modality provides one. */
@@ -242,10 +284,9 @@ function acquisitionPathsFromManifest(manifest: CatalogManifestLike): ConnectorA
 }
 
 /**
- * Build the connector catalog from the shipped manifests. One entry per manifest
- * with a `connector_id`, sorted by display name so the picker is stable across
- * renders. Entries only carry an `enrollmentKey` for dispositions the console can
- * actually start, so a caller cannot accidentally deep-link a gated connector.
+ * Build the pure manifest/planner projection used by tests and demo data. The
+ * live Add Source page uses `buildOwnerConnectorCatalog` so local manifests
+ * cannot supply registration, listing, proof, readiness, or action authority.
  */
 export function buildConnectorCatalog(
   manifests: readonly CatalogManifestLike[],
@@ -287,22 +328,205 @@ export function buildConnectorCatalog(
   return entries;
 }
 
+const OWNER_ACTIONABLE_PUBLIC_LISTING_STATUSES = new Set(["proven", "needs_human_auth"]);
+const CATALOG_INTENT_MODALITIES = new Set<ConnectorIntentModality>([
+  "local_collector",
+  "browser_bound",
+  "api_network",
+  "unknown",
+]);
+const CATALOG_MODALITIES = new Set<ConnectorSetupModality>([
+  "local_collector",
+  "browser_bound",
+  "static_secret",
+  "provider_authorization",
+  "manual_or_upload",
+  "unsupported",
+  "unknown",
+]);
+const CATALOG_NEXT_STEPS = new Set<ConnectorSetupNextStepKind>([
+  "enroll_local_collector",
+  "enroll_browser_collector",
+  "capture_static_secret",
+  "open_provider_auth",
+  "needs_deployment_config",
+  "provide_import_file",
+  "manual_runbook",
+  "unsupported",
+]);
+const CATALOG_SUPPORT_STATES = new Set<ConnectorSetupSupportState>([
+  "supported",
+  "proof_gated",
+  "unsupported",
+  "needs_deployment_config",
+]);
+const CATALOG_READINESS_STATES = new Set<ConnectorSetupDeploymentReadiness["state"]>([
+  "not_applicable",
+  "ready",
+  "needs_config",
+]);
+const CATALOG_DISPOSITIONS = new Set<CatalogDisposition>([
+  "local_collector_enroll",
+  "local_collector_unproven",
+  "browser_collector_manual",
+  "browser_bound_runbook",
+  "static_secret_connect",
+  "manual_upload_connect",
+  "manual_upload_pending",
+  "provider_auth_deployment_blocked",
+  "provider_auth_connect",
+  "provider_auth_proof_gated",
+  "api_network_unsupported",
+  "unknown_unsupported",
+]);
+
+function isCatalogValue<T extends string>(values: ReadonlySet<T>, value: unknown): value is T {
+  return typeof value === "string" && values.has(value as T);
+}
+
+function actionableOwnerActionFromTemplate(
+  template: OwnerConnectorTemplateLike,
+  entry: {
+    disposition: CatalogDisposition;
+    enrollmentKey?: string;
+    nextStepKind: ConnectorSetupNextStepKind;
+    proofGate: string | null;
+    supportState: ConnectorSetupSupportState;
+  }
+): { actionable: boolean; method: string | null; url: string | null } {
+  const action = template.supported_actions?.find((candidate) => candidate.family === "initiate_connection");
+  const method = typeof action?.method === "string" ? action.method : null;
+  const url = typeof action?.url === "string" && action.url.trim() ? action.url : null;
+  const actionable =
+    template.registration_status === "registered" &&
+    template.public_listing?.listed === true &&
+    typeof template.public_listing.status === "string" &&
+    OWNER_ACTIONABLE_PUBLIC_LISTING_STATUSES.has(template.public_listing.status) &&
+    template.setup_plan?.owner_actionable === true &&
+    entry.supportState === "supported" &&
+    entry.proofGate === null &&
+    entry.nextStepKind === template.setup_plan?.next_step_kind &&
+    action?.status === "supported" &&
+    method !== null &&
+    url !== null &&
+    (entry.disposition !== "local_collector_enroll" || typeof entry.enrollmentKey === "string");
+  return { actionable, method, url };
+}
+
 /**
- * The owner picker only lists connectors whose manifest explicitly opts into
- * public listing. Registered-but-unlisted manifests remain available to the
- * backend registry and conformance tests without implying an owner setup path.
+ * Build the live catalog from the authenticated server projection. A template
+ * with missing authority fields is dropped rather than reconstructed from a
+ * local manifest. Local data is a display/help/docs join only.
  */
-export function ownerCatalogManifests(manifests: readonly CatalogManifestLike[]): CatalogManifestLike[] {
-  return manifests.filter((manifest) => manifest.capabilities?.public_listing?.listed === true);
+export function buildOwnerConnectorCatalog(
+  manifests: readonly CatalogManifestLike[],
+  templates: readonly OwnerConnectorTemplateLike[]
+): ConnectorCatalogEntry[] {
+  const manifestsByKey = new Map<string, CatalogManifestLike>();
+  for (const manifest of manifests) {
+    if (manifest.connector_id) {
+      manifestsByKey.set(canonicalConnectorKey(manifest.connector_id), manifest);
+    }
+  }
+
+  const entries: ConnectorCatalogEntry[] = [];
+  for (const template of templates) {
+    const connectorKey = cleanManifestText(template.connector_key);
+    const setupPlan = template.setup_plan;
+    if (!connectorKey || template.registration_status !== "registered" || template.public_listing?.listed !== true) {
+      continue;
+    }
+    const disposition = setupPlan?.catalog_disposition;
+    const connectorModality = template.connector_modality;
+    const setupModality = setupPlan?.setup_modality;
+    const nextStepKind = setupPlan?.next_step_kind;
+    const supportState = setupPlan?.support_state;
+    const deploymentReadiness = setupPlan?.deployment_readiness;
+    if (
+      !(
+        isCatalogValue(CATALOG_DISPOSITIONS, disposition) &&
+        isCatalogValue(CATALOG_INTENT_MODALITIES, connectorModality) &&
+        isCatalogValue(CATALOG_MODALITIES, setupModality) &&
+        isCatalogValue(CATALOG_NEXT_STEPS, nextStepKind) &&
+        isCatalogValue(CATALOG_SUPPORT_STATES, supportState) &&
+        deploymentReadiness &&
+        isCatalogValue(CATALOG_READINESS_STATES, deploymentReadiness.state)
+      )
+    ) {
+      continue;
+    }
+
+    const localManifest = manifestsByKey.get(canonicalConnectorKey(connectorKey));
+    const manifestForCopy = localManifest ?? { connector_id: connectorKey };
+    const proofGate = typeof setupPlan.proof_gate === "string" ? setupPlan.proof_gate : null;
+    const enrollmentKey = cleanManifestText(setupPlan.enrollment_key) ?? undefined;
+    const capability = actionableOwnerActionFromTemplate(template, {
+      disposition,
+      enrollmentKey,
+      nextStepKind,
+      proofGate,
+      supportState,
+    });
+    const setupCopy = setupCopyFromManifest(manifestForCopy);
+    const entry: ConnectorCatalogEntry = {
+      acquisitionPaths: acquisitionPathsFromManifest(manifestForCopy),
+      connectorKey: canonicalConnectorKey(connectorKey),
+      deploymentReadiness,
+      displayName: cleanManifestText(template.display_name) ?? displayNameFor(manifestForCopy, connectorKey),
+      disposition,
+      externalDocs: externalDocsFromManifest(manifestForCopy),
+      modality: connectorModality,
+      nextStepKind,
+      ownerActionable: capability.actionable,
+      ownerActionMethod: capability.method,
+      ownerActionUrl: capability.url,
+      proofGate,
+      publicListingStatus: cleanManifestText(template.public_listing?.status),
+      refreshPolicyRationale: cleanManifestText(localManifest?.capabilities?.refresh_policy?.rationale),
+      registrationStatus: template.registration_status,
+      runbookPath: cleanManifestText(setupPlan.runbook_path),
+      setupDescription: setupCopy.description,
+      setupHelpText: setupCopy.helpText,
+      setupModality,
+      supportState,
+    };
+    if (enrollmentKey) {
+      entry.enrollmentKey = enrollmentKey;
+    }
+    entries.push(entry);
+  }
+  entries.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  return entries;
+}
+
+export function isOwnerActionableEntry(entry: ConnectorCatalogEntry): boolean {
+  if (entry.ownerActionable !== undefined) {
+    return (
+      entry.ownerActionable &&
+      entry.supportState === "supported" &&
+      entry.proofGate === null &&
+      typeof entry.ownerActionMethod === "string" &&
+      typeof entry.ownerActionUrl === "string"
+    );
+  }
+  // `buildConnectorCatalog` remains a pure manifest/planner projection for
+  // tests and demo data. Its static-secret and provider branches still fail
+  // closed on the planner's proof fields; live pages must use the owner
+  // projection above, which also supplies registration and listing authority.
+  if (entry.setupModality === "static_secret" || entry.disposition === "provider_auth_connect") {
+    return entry.supportState === "supported" && entry.proofGate === null;
+  }
+  return entry.supportState === "supported" || entry.disposition === "browser_collector_manual";
 }
 
 /** A ready provider-auth plan has the same action contract as the backend route. */
 export function isReadyProviderAuthorizationEntry(entry: ConnectorCatalogEntry): boolean {
   return (
-    entry.setupModality === "provider_authorization" &&
+    entry.disposition === "provider_auth_connect" &&
     entry.nextStepKind === "open_provider_auth" &&
-    entry.supportState === "supported" &&
-    entry.deploymentReadiness.state === "ready"
+    entry.setupModality === "provider_authorization" &&
+    entry.deploymentReadiness.state === "ready" &&
+    isOwnerActionableEntry(entry)
   );
 }
 
