@@ -1,29 +1,26 @@
-# Seam-Spike Vector Corpus (Draft)
+# Seam-Spike Vector Corpus
 
-Status: draft, prepares but does not run the gate
+Status: draft
 Owner: reference implementation owner
 Captured: 2026-08-07
 
 ## Purpose
 
-This document drafts the 13-vector corpus that the seam-spike protocol
-requires before the Core/binding decomposition and the nine 0.2 common
-schemas can move from deferred to normative (gate requirement: "The
-Core/binding decomposition and the closed 0.2 common schemas SHALL remain
-gated on the repaired seam-spike protocol",
+The vector corpus for the seam-spike, for use when the spike runs. It drafts
+the 13-vector corpus that the seam-spike protocol requires before the
+Core/binding decomposition and the nine 0.2 common schemas can move from
+deferred to normative (gate requirement: "The Core/binding decomposition and
+the closed 0.2 common schemas SHALL remain gated on the repaired seam-spike
+protocol",
 `openspec/changes/harden-pdpp-authorization-and-0-1-migration/specs/pdpp-authorization-hardening/spec.md`).
 That gate requires exactly 13 vectors, with the 13th being a v0.1 grant served
 through a `legacy_0_1` authorization context by a 0.2 resource server (gate
-item 1).
-
-This is a drafting exercise, not the spike run. Nothing here executes the
-spike, assigns implementation teams, or claims independence for any
-threshold. Every vector marked `[BLOCKED-ON-PINS]` depends on normative text
-that has not landed yet: the canonical timestamp/duration profile and the
-JSON Schema dialect pin, both required to be resolved before the spike's
-first phase begins (gate item 5, and the two preceding requirements in the
-gate spec, "PDPP SHALL pin one JSON Schema dialect..." and "PDPP SHALL pin
-one canonical timestamp and duration string profile...").
+item 1). Vectors marked `[BLOCKED-ON-PINS]` depend on normative text that has
+not landed yet: the canonical timestamp/duration profile and the JSON Schema
+dialect pin, both required to be resolved before the spike's first phase
+begins (gate item 5, and the two preceding requirements in the gate spec,
+"PDPP SHALL pin one JSON Schema dialect..." and "PDPP SHALL pin one canonical
+timestamp and duration string profile...").
 
 Grant and selection-request shapes below are drawn from spec-core.md Section
 5 (Selection Request) and Section 6 (Grant). Introspection-response shapes
@@ -652,13 +649,10 @@ toward the gate.
   `expires_at` where spec-core.md marks them required-but-not-relevant to the
   behavior under test; a real spike run fills in every required field from
   Section 6's Grant fields table, not just the fields this draft highlights.
-- `[BLOCKED-ON-PINS]` markers above (vectors 4 and 8) are not exhaustive of
-  every timestamp-bearing field in the corpus; any vector carrying an
-  RFC 3339 timestamp inherits the same dependency on the canonical
-  timestamp/duration profile pin once that vector is turned into an
-  executable fixture, because two implementations producing the same instant
-  in different fractional-second forms must canonicalize identically before
+- Any vector carrying an RFC 3339 timestamp inherits the same dependency on
+  the canonical timestamp/duration profile pin once turned into an executable
+  fixture, because two implementations producing the same instant in
+  different fractional-second forms must canonicalize identically before
   their outputs can be diffed byte-for-byte.
-- This corpus does not assign the "independent" evaluators the gate requires
-  (gate item 2). Assigning who runs each independent leg is a subsequent
-  planning step, not part of this draft.
+- Assigning the "independent" evaluators the gate requires (gate item 2) is a
+  subsequent planning step.

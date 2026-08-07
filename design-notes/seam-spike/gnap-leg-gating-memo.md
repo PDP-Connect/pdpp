@@ -1,24 +1,23 @@
 # GNAP-Leg Gating Decision Memo
 
-Status: draft decision memo, awaiting owner call
+Status: awaiting owner call
 Owner: reference implementation owner
 Captured: 2026-08-07
 
 ## The decision this memo asks for
 
-The seam-spike gate requires one of two things for the GNAP adapter leg of
-the spike (gate requirement "The Core/binding decomposition and the closed
-0.2 common schemas SHALL remain gated on the repaired seam-spike protocol",
-item 3):
+The GNAP-leg gating decision for the seam-spike, for the owner to accept or
+reject. The seam-spike gate requires one of two things for the GNAP adapter
+leg of the spike (gate requirement "The Core/binding decomposition and the
+closed 0.2 common schemas SHALL remain gated on the repaired seam-spike
+protocol", item 3):
 
 > Either give the GNAP adapter leg binding pass/fail criteria...or explicitly
 > and textually declare the GNAP leg non-gating for the decomposition-
 > commitment decision. A mapping-completeness report alone SHALL NOT serve
 > as the GNAP leg's pass criterion if the GNAP leg is declared gating.
 
-The spec text does not yet make this call. This memo lays out both options
-so the owner can pick one and the gate text can carry the required
-declaration.
+The spec text does not yet make this call.
 
 ## The three criteria, if the GNAP leg is gating
 
@@ -81,8 +80,7 @@ already inform. The risk this creates (deciding the seam on OAuth evidence
 alone) is real but bounded: the decomposition-commitment decision is not
 irreversible, and a future GNAP adapter can still be built and judged
 against the same three criteria without having to redo the OAuth-leg
-evidence. This is a prior to accept or reject, not a settled call; the
-owner may weigh the coupling risk in Option 1 differently.
+evidence.
 
 ## If Option 2 is chosen: the declaration to paste into the gate text
 
