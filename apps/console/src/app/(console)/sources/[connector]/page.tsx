@@ -37,7 +37,7 @@ import {
   syncActionIdleLabel,
 } from "../../lib/connection-evidence.ts";
 import { isBrowserBoundConnector, isBrowserSessionBoundConnection } from "../../lib/connection-modality.ts";
-import { isActiveConnectorRunSummaryStatus } from "../../lib/connector-run-summary-status.ts";
+import { connectorRunSummaryId, isActiveConnectorRunSummaryStatus } from "../../lib/connector-run-summary-status.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import {
@@ -164,7 +164,8 @@ export interface ConnectorPageModel {
 }
 
 function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
-  if (!summary) {
+  const runId = connectorRunSummaryId(summary?.run_id);
+  if (!(summary && runId)) {
     return null;
   }
   return {
@@ -173,7 +174,7 @@ function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
     first_at: summary.first_at,
     known_gaps: summary.known_gaps ?? [],
     last_at: summary.last_at,
-    run_id: summary.run_id,
+    run_id: runId,
     status: summary.status,
   };
 }
@@ -185,6 +186,10 @@ function toRunSummaryForConnection(
   collectionReport: readonly RefCollectionReportEntry[] | null | undefined
 ): RunSummary | null {
   if (!summary) {
+    return null;
+  }
+  const runId = connectorRunSummaryId(summary.run_id);
+  if (!runId) {
     return null;
   }
   const status = runStatusWithCollectionReportGaps(summary.status, collectionReport);
@@ -200,7 +205,7 @@ function toRunSummaryForConnection(
     last_at: summary.last_at,
     needs_input: false,
     object: "run_summary",
-    run_id: summary.run_id,
+    run_id: runId,
     status,
   };
 }

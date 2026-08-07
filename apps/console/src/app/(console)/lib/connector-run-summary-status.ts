@@ -7,3 +7,8 @@ const ACTIVE_RUN_SUMMARY_STATUSES = new Set(["pending", "started", "in_progress"
 export function isActiveConnectorRunSummaryStatus(status: string): boolean {
   return ACTIVE_RUN_SUMMARY_STATUSES.has(status);
 }
+
+/** Synthetic scheduler gate decisions have no run id and are not navigable syncs. */
+export function connectorRunSummaryId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
