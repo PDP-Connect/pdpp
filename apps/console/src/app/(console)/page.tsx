@@ -181,6 +181,7 @@ async function loadStandingInputs(): Promise<StandingInputs> {
     overviewLoadIssues,
     pendingApprovals: pendingRes.value.data,
     sourceIssues: sourceIssueConnectionsFromConnectors(connectors),
+    sourceCount: connectors.length,
     sourceWork: sourceWorkFromConnectors(connectors),
     summary: summary.value,
     traces: tracesRes.value.data,

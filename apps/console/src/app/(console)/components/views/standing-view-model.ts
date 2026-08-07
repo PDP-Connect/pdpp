@@ -230,6 +230,8 @@ export interface StandingData {
   /** Aggregate server verdict; source rows retain their existing detail contract. */
   fleetHealth: RefFleetHealthVerdict | null;
   grantPackages: GrantPackagesView | null;
+  /** Exact healthy-source count when the overview loaded the complete source fleet. */
+  healthySourceCount: number | null;
   hero: StandingHero;
   lately: LatelyView[];
   overviewIssues: AttentionRowView[];
@@ -281,6 +283,8 @@ export interface StandingInputs {
    * anything. These must still suppress "everything is syncing" all-clears.
    */
   sourceIssues: SourceIssueConnection[];
+  /** Exact number of configured sources in the complete overview page. */
+  sourceCount?: number;
   /**
    * Mutually-exclusive owner-console source work. This is the actionability
    * model the Overview renders; legacy arrays remain only for compatibility
@@ -1120,12 +1124,18 @@ export function buildStandingData(input: StandingInputs): StandingData {
   const sourceWork = activeSourceWork(input);
   const allBearers = toBearers(input.bearerClients, input.hrefs);
   const bearers = allBearers.slice(0, BEARER_PREVIEW_LIMIT);
+  const sourceWorkCount = Object.values(sourceWork).reduce((sum, rows) => sum + rows.length, 0);
+  const healthySourceCount =
+    input.overviewLoadIssues.length === 0 && input.sourceCount !== undefined
+      ? Math.max(0, input.sourceCount - sourceWorkCount)
+      : null;
   return {
     advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
     attention: toAttention(input.attentionConnections, input.hrefs),
     bearers,
     bearersOverflow: allBearers.length - bearers.length,
     grantPackages: toGrantPackages(input.grants, input.hrefs, input.grantPackageCount),
+    healthySourceCount,
     hero: computeHero(input),
     lately: toLately(input.traces, input.now),
     overviewIssues,

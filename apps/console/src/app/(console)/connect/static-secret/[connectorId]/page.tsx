@@ -182,7 +182,7 @@ export default async function StaticSecretConnectPage({
       {isReplaceMode ? (
         <Callout
           className="mt-5"
-          description="Reconnect uses the submitted credential for this connection."
+          description="Reconnect uses the submitted credential for this connection. It does not change collected records, the schedule, or history."
           surface="human"
           title="This keeps the same connection"
         />

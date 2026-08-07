@@ -218,14 +218,21 @@ function LatelyBlock({ lately, tracesHref }: { lately: StandingData["lately"]; t
 function AttentionBlock({
   sections,
   fleetHealth,
+  healthySourceCount,
 }: {
   sections: StandingData["sourceWorkSections"];
   fleetHealth: StandingData["fleetHealth"];
+  healthySourceCount: StandingData["healthySourceCount"];
 }) {
   const rowCount = sections.reduce((sum, section) => sum + section.rows.length, 0);
   return (
     <section className="rr-stand-block">
       <h2 className="rr-stand-block__title">Source attention</h2>
+      {healthySourceCount !== null && healthySourceCount > 0 ? (
+        <p className="rr-stand-empty">
+          {healthySourceCount} {healthySourceCount === 1 ? "source is" : "sources are"} healthy and need no action.
+        </p>
+      ) : null}
       {rowCount > 0 ? (
         <div className="rr-attn" data-row-count={rowCount}>
           {sections.map((section) => (
@@ -309,7 +316,11 @@ export function StandingOverview({
         />
         <LatelyBlock lately={data.lately} tracesHref={tracesHref} />
       </div>
-      <AttentionBlock fleetHealth={data.fleetHealth} sections={data.sourceWorkSections} />
+      <AttentionBlock
+        fleetHealth={data.fleetHealth}
+        healthySourceCount={data.healthySourceCount}
+        sections={data.sourceWorkSections}
+      />
       <NotificationsBlock href={notificationsHref} />
     </div>
   );
