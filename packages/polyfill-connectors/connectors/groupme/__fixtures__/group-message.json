@@ -1,0 +1,35 @@
+{
+  "response": {
+    "count": 2,
+    "messages": [
+      {
+        "id": "msg.1234567890",
+        "user_id": "user123",
+        "created_at": 1609459200,
+        "text": "Hello everyone!",
+        "name": "Alice",
+        "avatar_url": "https://i.groupme.com/user123.jpeg",
+        "attachments": [
+          {
+            "type": "image",
+            "url": "https://i.groupme.com/image123.jpeg",
+            "picture_url": "https://i.groupme.com/image123.jpeg"
+          }
+        ],
+        "favorited_by": ["user456", "user789"],
+        "system": false
+      },
+      {
+        "id": "msg.1234567891",
+        "user_id": "user456",
+        "created_at": 1609459210,
+        "text": "Thanks for sharing!",
+        "name": "Bob",
+        "avatar_url": "https://i.groupme.com/user456.jpeg",
+        "attachments": [],
+        "favorited_by": [],
+        "system": false
+      }
+    ]
+  }
+}
