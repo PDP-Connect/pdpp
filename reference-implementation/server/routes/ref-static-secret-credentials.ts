@@ -560,8 +560,6 @@ async function claimProbedStaticSecretIdentity(
     identity,
     identityFieldName: input.identityFieldName,
     sourceBinding: current.sourceBinding,
-    sourceBindingKey,
-    sourceBindingKeyBeforeClaim: current.sourceBindingKey,
     status: current.status,
   });
   binding.verified_identity = identity;

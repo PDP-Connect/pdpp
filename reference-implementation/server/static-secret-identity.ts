@@ -216,26 +216,22 @@ export function assertStaticSecretActiveIdentityCanClaim(input: {
   identity: string;
   identityFieldName?: string | undefined;
   sourceBinding: unknown;
-  sourceBindingKey: string;
-  sourceBindingKeyBeforeClaim: string;
   status: string;
 }): void {
   if (input.status !== "active") {
     return;
   }
-  assertVerifiedIdentityKeyCanChange(input);
+  assertVerifiedIdentityCanChange(input);
   assertSetupIdentityCanChange(input);
 }
 
-function assertVerifiedIdentityKeyCanChange(input: {
-  sourceBindingKey: string;
-  sourceBindingKeyBeforeClaim: string;
-  status: string;
-}): void {
-  if (
-    isStaticSecretVerifiedIdentityBindingKey(input.sourceBindingKeyBeforeClaim) &&
-    input.sourceBindingKeyBeforeClaim !== input.sourceBindingKey
-  ) {
+function assertVerifiedIdentityCanChange(input: { identity: string; sourceBinding: unknown }): void {
+  // A legacy active row can retain a historical identity key after its
+  // binding metadata is missing. Only an explicit verified_identity makes the
+  // active retarget guard authoritative; the database key still enforces
+  // uniqueness when the repaired binding is written.
+  const storedIdentity = staticSecretVerifiedIdentityFromBinding(input.sourceBinding);
+  if (storedIdentity && normalizeStaticSecretIdentity(storedIdentity) !== input.identity) {
     throw staticSecretIdentityConflictError(
       "This active connection is already verified for a different provider identity. Create a separate connection for the other account.",
       "static_secret_identity_mismatch"
