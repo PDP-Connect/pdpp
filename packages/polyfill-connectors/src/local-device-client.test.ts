@@ -83,6 +83,23 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
   }
 });
 
+test("LocalDeviceClient sends bearer-authenticated self-revoke with no body", async () => {
+  const seen: SeenRequest[] = [];
+  const server = await startJsonServer(seen);
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await client.selfRevoke();
+
+    assert.equal(seen[0]?.method, "POST");
+    assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.selfRevoke("device-1"));
+    assert.equal(seen[0]?.authorization, "Bearer device-token");
+    assert.equal(seen[0]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
+    assert.equal(seen[0]?.body, null);
+  } finally {
+    await server.close();
+  }
+});
+
 test("LocalDeviceClient GET source-instance state hits the device-scoped state route with the bearer", async () => {
   const seen: SeenRequest[] = [];
   const server = await startJsonServer(seen);
