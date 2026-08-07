@@ -23,7 +23,7 @@
  * `owner-journey-slvp-realignment-plan-2026-06-10.md`.
  */
 
-import { type ConnectorCatalogEntry, isOwnerActionableEntry } from "./connection-catalog.ts";
+import { type ConnectorCatalogEntry, isExperimentalEntry, isOwnerActionableEntry } from "./connection-catalog.ts";
 
 export interface SourceSetupStatus {
   /** One short owner-facing status label. */
@@ -62,7 +62,9 @@ function browserBoundWithStoredCredentials(entry: ConnectorCatalogEntry): boolea
 
 function isUnavailableSetupEntry(entry: ConnectorCatalogEntry): boolean {
   return (
-    !isOwnerActionableEntry(entry) && entry.disposition !== "provider_auth_deployment_blocked"
+    !isOwnerActionableEntry(entry) &&
+    entry.disposition !== "provider_auth_deployment_blocked" &&
+    !isExperimentalEntry(entry)
   );
 }
 
@@ -78,6 +80,9 @@ function isUnavailableSetupEntry(entry: ConnectorCatalogEntry): boolean {
  *   copy.
  * `deployment_prerequisite` — add-new is blocked on instance-level provider
  *   app config, not a per-account step.
+ * `experimental_opt_in` — a real setup path exists, but no owner has completed
+ *   a live proof run yet. Requires an explicit owner opt-in; never shown in
+ *   the normal self-service list.
  * `not_self_service` — no shipped owner add path yet (proof-gated / unsupported
  *   / unknown). Visible so it never reads as omission.
  */
@@ -85,9 +90,14 @@ export type AddAccountSupport =
   | "self_service"
   | "packaged_path_pending"
   | "deployment_prerequisite"
+  | "experimental_opt_in"
   | "not_self_service";
 
-export type SourceSetupAvailability = "available_now" | "requires_server_setup" | "not_available_here";
+export type SourceSetupAvailability =
+  | "available_now"
+  | "requires_server_setup"
+  | "experimental_opt_in"
+  | "not_available_here";
 
 /** Owner-facing picker order: actionable dispositions first, unsupported last. */
 export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
@@ -113,6 +123,8 @@ export function sourceSetupRank(entry: ConnectorCatalogEntry): number {
     case "local_collector_unproven":
     case "provider_auth_proof_gated":
       return 7;
+    case "static_secret_experimental":
+      return 9;
     case "api_network_unsupported":
     case "unknown_unsupported":
       return 8;
@@ -154,6 +166,11 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
       return {
         label: "Authorize account",
         tone: "border-[color:var(--success)]/30 bg-status-success-bg text-status-success-fg",
+      };
+    case "static_secret_experimental":
+      return {
+        label: "Experimental",
+        tone: "border-[color:var(--warning)]/30 bg-status-warning-bg text-status-warning-fg",
       };
     case "manual_upload_pending":
       return {
@@ -207,6 +224,8 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
       return `Finish the server setup first: ${entry.deploymentReadiness.blockers
         .map((blocker) => blocker.label || blocker.key)
         .join(", ")}.`;
+    case "static_secret_experimental":
+      return "Experimental. This setup path has not completed live validation. Continue to test it with your own data.";
     case "browser_bound_runbook":
       return "This source can collect through a logged-in browser, but this dashboard cannot start a new account from here yet.";
     case "local_collector_unproven":
@@ -224,7 +243,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
 
 /** The primary next action for first-account setup, or null when none exists. */
 export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupAction | null {
-  if (!isOwnerActionableEntry(entry)) {
+  if (!(isOwnerActionableEntry(entry) || isExperimentalEntry(entry))) {
     return null;
   }
   // Browser-bound connectors that also declare credential capture still start
@@ -246,6 +265,11 @@ export function sourceSetupAction(entry: ConnectorCatalogEntry): SourceSetupActi
       return {
         href: `/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
         label: "Add account",
+      };
+    case "static_secret_experimental":
+      return {
+        href: `/connect/static-secret/${encodeURIComponent(entry.connectorKey)}`,
+        label: "Continue anyway",
       };
     case "manual_upload_connect":
       return {
@@ -287,6 +311,8 @@ export function sourceSetupAvailability(entry: ConnectorCatalogEntry): SourceSet
       return "available_now";
     case "provider_auth_deployment_blocked":
       return "requires_server_setup";
+    case "static_secret_experimental":
+      return "experimental_opt_in";
     default:
       return "not_available_here";
   }
@@ -314,6 +340,8 @@ export function addAccountSupport(entry: ConnectorCatalogEntry): AddAccountSuppo
       return "packaged_path_pending";
     case "provider_auth_deployment_blocked":
       return "deployment_prerequisite";
+    case "static_secret_experimental":
+      return "experimental_opt_in";
     default:
       return "not_self_service";
   }

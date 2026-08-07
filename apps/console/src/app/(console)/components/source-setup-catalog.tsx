@@ -128,6 +128,8 @@ function sourceMethodLine(entry: ConnectorCatalogEntry, existingSourceCount: num
       return "Run the local collector on the machine that has this data.";
     case "static_secret_connect":
       return "Enter the provider credential for this account.";
+    case "static_secret_experimental":
+      return "Enter the provider credential for this account. Experimental: not yet live-validated.";
     case "provider_auth_connect":
       return "Authorize this account through the provider.";
     case "manual_upload_connect":
@@ -357,6 +359,29 @@ function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEnt
   );
 }
 
+function ExperimentalSetupSummary({
+  entries,
+  existingSourcesByConnector,
+}: {
+  entries: readonly ConnectorCatalogEntry[];
+  existingSourcesByConnector?: Readonly<Record<string, readonly ExistingSourceSetupLink[]>>;
+}) {
+  if (entries.length === 0) {
+    return null;
+  }
+  return (
+    <details className="rounded-sm border border-border/80 bg-muted/20 p-3" data-testid="experimental-setup-summary">
+      <summary className="pdpp-caption cursor-pointer text-muted-foreground">Experimental ({entries.length})</summary>
+      <div className="mt-3 grid gap-3">
+        <p className="pdpp-caption text-muted-foreground">
+          These setup paths are implemented but have not completed live validation. Opt in to test with your own data.
+        </p>
+        <SourceSetupCardList entries={entries} existingSourcesByConnector={existingSourcesByConnector} />
+      </div>
+    </details>
+  );
+}
+
 function UnavailableSourceSummary({ entries }: { entries: readonly ConnectorCatalogEntry[] }) {
   if (entries.length === 0) {
     return null;
@@ -423,6 +448,7 @@ export function SourceSetupCatalog({
   const filtered = filterSourceCatalog(catalog, query);
   const available = filtered.filter((entry) => sourceSetupAvailability(entry) === "available_now");
   const serverSetup = filtered.filter((entry) => sourceSetupAvailability(entry) === "requires_server_setup");
+  const experimental = filtered.filter((entry) => sourceSetupAvailability(entry) === "experimental_opt_in");
   const unavailable = filtered.filter((entry) => sourceSetupAvailability(entry) === "not_available_here");
   const hasQuery = query.trim().length > 0;
   return (
@@ -450,6 +476,8 @@ export function SourceSetupCatalog({
           )}
 
           <ServerSetupSummary entries={serverSetup} />
+
+          <ExperimentalSetupSummary entries={experimental} existingSourcesByConnector={existingSourcesByConnector} />
 
           {unavailable.length > 0 ? (
             <details className="rounded-md border border-border/80 bg-muted/20 p-3" open={hasQuery}>

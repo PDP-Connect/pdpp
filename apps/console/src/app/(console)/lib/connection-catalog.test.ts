@@ -23,6 +23,7 @@ import {
   type CatalogManifestLike,
   catalogModalityFromManifest,
   deploymentBlockedEntries,
+  experimentalEntries,
   isOwnerActionableEntry,
   localCollectorEntries,
   localCollectorUnprovenEntries,
@@ -85,6 +86,7 @@ function ownerTemplate(
     connectorModality?: string;
     disposition?: string;
     enrollmentKey?: string | null;
+    listed?: boolean;
     listingStatus?: string;
     nextStepKind?: string;
     ownerActionable?: boolean;
@@ -98,7 +100,7 @@ function ownerTemplate(
     connector_key: connectorKey,
     connector_modality: args.connectorModality ?? "api_network",
     display_name: connectorKey,
-    public_listing: { listed: true, status: args.listingStatus ?? "proven" },
+    public_listing: { listed: args.listed ?? true, status: args.listingStatus ?? "proven" },
     registration_status: "registered",
     setup_plan: {
       catalog_disposition: args.disposition ?? "provider_auth_connect",
@@ -286,6 +288,7 @@ test("no browser-bound or API/network connector is one-click-creatable", async (
       assert.ok(
         entry.disposition === "api_network_unsupported" ||
           entry.disposition === "static_secret_connect" ||
+          entry.disposition === "static_secret_experimental" ||
           entry.disposition === "provider_auth_deployment_blocked" ||
           entry.disposition === "provider_auth_proof_gated",
         `${entry.connectorKey} must be a non-deeplink network disposition, got ${entry.disposition}`
@@ -344,13 +347,14 @@ function manualUploadConnectManifest(connectorId: string): CatalogManifestLike {
   };
 }
 
-test("static-secret manifests are connect entries, not flatly unsupported", async () => {
+test("static-secret manifests are connect or experimental entries, never flatly unsupported", async () => {
   // Static-secret connectors declare their setup form in the connector manifest.
-  // The catalog must route every such manifest to the static_secret_connect
-  // disposition — never an unsupported or enrollment bucket — without naming the
-  // current providers in Console code. Runtime modality can still be filesystem
-  // for hybrid connectors such as Slack; setup is the owner credential-capture
-  // path, not local-device enrollment.
+  // The catalog must route every such manifest to static_secret_connect (live
+  // proven) or static_secret_experimental (real form, unproven) — never an
+  // unsupported or enrollment bucket — without naming the current providers in
+  // Console code. Runtime modality can still be filesystem for hybrid
+  // connectors such as Slack; setup is the owner credential-capture path, not
+  // local-device enrollment.
   const manifests = await loadCommittedManifests();
   const staticSecretKeys = staticSecretManifestKeys(manifests);
   assert.ok(staticSecretKeys.length >= 1, "expected at least one committed static-secret manifest");
@@ -358,8 +362,36 @@ test("static-secret manifests are connect entries, not flatly unsupported", asyn
   for (const key of staticSecretKeys) {
     const entry = catalog.find((e) => e.connectorKey === key);
     assert.ok(entry, `${key} must be in the catalog`);
-    assert.equal(entry.disposition, "static_secret_connect");
+    assert.ok(
+      entry.disposition === "static_secret_connect" || entry.disposition === "static_secret_experimental",
+      `${key}: expected static_secret_connect or static_secret_experimental, got ${entry.disposition}`
+    );
     assert.equal(entry.enrollmentKey, undefined, `${key} must not deep-link into enrollment`);
+  }
+});
+
+test("wave-0807 static-secret connectors (Steam, Jellyfin, Apple Contacts) are experimental, not calm-list supported", async () => {
+  // Direct regression guard: these three ship with a real credential_capture
+  // block but no live proof run yet. They must appear as experimental — never
+  // silently promoted to the same "supported" bucket as gmail/github/slack/ynab,
+  // and never demoted to "not available here" hiding a working form.
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+  for (const key of ["steam", "jellyfin", "apple_contacts"]) {
+    const entry = catalog.find((e) => e.connectorKey === key);
+    assert.ok(entry, `${key} must be in the catalog`);
+    assert.equal(entry.disposition, "static_secret_experimental", `${key}: disposition`);
+    assert.equal(entry.supportState, "experimental", `${key}: supportState`);
+    assert.notEqual(entry.supportState, "supported", `${key}: must not read as a normal supported source`);
+    assert.equal(sourceSetupAvailability(entry), "experimental_opt_in", `${key}: sourceSetupAvailability`);
+    assert.notEqual(
+      sourceSetupAvailability(entry),
+      "available_now",
+      `${key}: must not appear in the calm "available now" list`
+    );
+    const action = sourceSetupAction(entry);
+    assert.ok(action, `${key}: experimental entry must still have a real opt-in action`);
+    assert.equal(action.href, `/connect/static-secret/${key}`, `${key}: reuses the existing generic capture route`);
   }
 });
 
@@ -717,6 +749,7 @@ test("the grouping helpers partition the catalog without overlap or loss", async
     browserCollectorEntries(catalog),
     browserBoundRunbookEntries(catalog),
     staticSecretConnectEntries(catalog),
+    experimentalEntries(catalog),
     manualUploadConnectEntries(catalog),
     manualUploadPendingEntries(catalog),
     deploymentBlockedEntries(catalog),
@@ -729,10 +762,11 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   assert.ok(localCollectorEntries(catalog).length >= 2, "claude_code + codex");
   assert.equal(browserCollectorEntries(catalog).length, 0, "heb now routes through browser-bound static-secret setup");
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
+  assert.ok(experimentalEntries(catalog).length >= 1, "wave-0807 experimental static-secret connectors");
   assert.equal(
-    staticSecretConnectEntries(catalog).length,
+    staticSecretConnectEntries(catalog).length + experimentalEntries(catalog).length,
     staticSecretManifestKeys(await loadCommittedManifests()).length,
-    "every manifest-authored static-secret connector"
+    "every manifest-authored static-secret connector is either live-proven or experimental"
   );
   assert.ok(manualUploadConnectEntries(catalog).length >= 1, "file/import connectors");
   assert.ok(deploymentBlockedEntries(catalog).length >= 1, "provider-auth API connectors");
@@ -756,6 +790,50 @@ test("filesystem connectors outside the proven set are local-collector-unproven,
   for (const entry of network) {
     assert.notEqual(entry.modality, "local_collector");
   }
+});
+
+test("owner catalog admits an unlisted (listed:false) template only when support_state is experimental", () => {
+  // Regression guard for the Steam UAT gap: Steam ships public_listing.listed
+  // false today, but its static-secret credential-capture form is real. The
+  // Experimental section is itself the explicit opt-in, so an unlisted
+  // experimental template must still surface there — while an unlisted
+  // template with any OTHER support_state must stay dropped exactly as
+  // before, so the normal picker never gains a silent extra source.
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "steam",
+        disposition: "static_secret_experimental",
+        listed: false,
+        nextStepKind: "capture_static_secret",
+        ownerActionable: false,
+        setupModality: "static_secret",
+        supportState: "experimental",
+        actionMethod: null,
+        actionStatus: "experimental",
+        actionUrl: null,
+      }),
+      ownerTemplate({
+        connectorKey: "unlisted-proof-gated",
+        disposition: "static_secret_connect",
+        listed: false,
+        nextStepKind: "capture_static_secret",
+        ownerActionable: false,
+        setupModality: "static_secret",
+        supportState: "proof_gated",
+        actionMethod: null,
+        actionStatus: "unsupported",
+        actionUrl: null,
+      }),
+    ]
+  );
+  const steam = catalog.find((e) => e.connectorKey === "steam");
+  assert.ok(steam, "an unlisted experimental template must still be admitted into the catalog");
+  assert.equal(steam.supportState, "experimental");
+  assert.equal(sourceSetupAvailability(steam), "experimental_opt_in");
+  const unlistedProofGated = catalog.find((e) => e.connectorKey === "unlisted-proof-gated");
+  assert.equal(unlistedProofGated, undefined, "an unlisted non-experimental template must stay dropped");
 });
 
 test("ownerActionable field is the sole authority for live owner catalogs", () => {
@@ -830,12 +908,25 @@ test("isOwnerActionableEntry respects demo/test fallback rules when ownerActiona
 test("presentation consistency: helper functions agree with ownerActionable authority", async () => {
   // Every fixture in the presentation test suite must have presentation functions
   // that agree with isOwnerActionableEntry. This is the core maintainability check.
+  //
+  // Exception: an experimental entry (supportState === "experimental") always
+  // has a real action (the same generic capture form a proven connector uses)
+  // even though isOwnerActionableEntry is deliberately false for it — that
+  // false is what keeps it out of the calm "available now" list and every
+  // owner-agent REST/actionability surface; the explicit Experimental opt-in
+  // section is the only place its action renders.
   const manifests = await loadCommittedManifests();
   const catalog = buildConnectorCatalog(manifests);
 
   for (const entry of catalog) {
     const isActionable = isOwnerActionableEntry(entry);
     const hasAction = sourceSetupAction(entry) !== null;
+
+    if (entry.supportState === "experimental") {
+      assert.equal(isActionable, false, `${entry.connectorKey}: experimental must not be owner-actionable`);
+      assert.equal(hasAction, true, `${entry.connectorKey}: experimental must still expose its opt-in action`);
+      continue;
+    }
 
     // The invariant: if isOwnerActionableEntry returns true, sourceSetupAction
     // must have a non-null result. Mutations to either would break this.

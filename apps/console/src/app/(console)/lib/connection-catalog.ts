@@ -147,6 +147,9 @@ export type CatalogModality = ConnectorIntentModality;
  * - `static_secret_connect` — a network-class connector whose manifest declares
  *   static-secret capture. The live owner catalog supplies the proof/action
  *   gate; a capture form alone never makes this disposition actionable.
+ * - `static_secret_experimental` — same capture form as `static_secret_connect`,
+ *   but no owner has completed a live proof run yet. Shown only behind an
+ *   explicit "Experimental" opt-in, never mixed into the normal picker.
  * - `manual_upload_connect` — a manifest-declared file/import connector whose
  *   owner-session upload route is packaged; the picker links to the generic
  *   file-capture form and the connection stays hidden until first ingest
@@ -359,6 +362,7 @@ const CATALOG_NEXT_STEPS = new Set<ConnectorSetupNextStepKind>([
 ]);
 const CATALOG_SUPPORT_STATES = new Set<ConnectorSetupSupportState>([
   "supported",
+  "experimental",
   "proof_gated",
   "unsupported",
   "needs_deployment_config",
@@ -374,6 +378,7 @@ const CATALOG_DISPOSITIONS = new Set<CatalogDisposition>([
   "browser_collector_manual",
   "browser_bound_runbook",
   "static_secret_connect",
+  "static_secret_experimental",
   "manual_upload_connect",
   "manual_upload_pending",
   "provider_auth_deployment_blocked",
@@ -450,7 +455,17 @@ export function buildOwnerConnectorCatalog(
   for (const template of templates) {
     const connectorKey = cleanManifestText(template.connector_key);
     const setupPlan = template.setup_plan;
-    if (!connectorKey || template.registration_status !== "registered" || template.public_listing?.listed !== true) {
+    // Normal (non-experimental) entries require an explicit operator opt-in
+    // into public listing (`listed === true`). An experimental support_state
+    // is admitted even when `listed !== true` — a wave-0807 connector such as
+    // Steam ships `public_listing.listed: false` (the operator has not opted
+    // it into the normal picker) but the same manifest-driven credential
+    // capture form is real and runnable; the Experimental section is itself
+    // the explicit opt-in gate, so it must not be blocked a second time by
+    // the listing flag. Every OTHER support_state still requires listed=true.
+    const isListed = template.public_listing?.listed === true;
+    const isExperimental = setupPlan?.support_state === "experimental";
+    if (!connectorKey || template.registration_status !== "registered" || !(isListed || isExperimental)) {
       continue;
     }
     const disposition = setupPlan?.catalog_disposition;
@@ -540,6 +555,17 @@ export function isOwnerActionableEntry(entry: ConnectorCatalogEntry): boolean {
   return entry.supportState === "supported" || entry.disposition === "browser_collector_manual";
 }
 
+/**
+ * Whether this entry is an experimental setup path: implemented and
+ * reachable, but not yet proven against a live run. Kept as its own check
+ * (never folded into `isOwnerActionableEntry`) so a normal picker never
+ * treats an unproven path as equal-footing with a proven one; the console
+ * must render experimental entries behind an explicit, separate opt-in.
+ */
+export function isExperimentalEntry(entry: ConnectorCatalogEntry): boolean {
+  return entry.supportState === "experimental";
+}
+
 /** Catalog entries the console can start as a one-click local-collector enroll. */
 export function localCollectorEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
   return catalog.filter((e) => e.disposition === "local_collector_enroll");
@@ -601,4 +627,13 @@ export function unsupportedNetworkEntries(catalog: readonly ConnectorCatalogEntr
       e.disposition === "provider_auth_proof_gated" ||
       e.disposition === "unknown_unsupported"
   );
+}
+
+/**
+ * Entries with an implemented setup path that has not completed live
+ * validation. Kept separate from every "available now" list so a normal
+ * owner never mistakes an experimental path for a proven one.
+ */
+export function experimentalEntries(catalog: readonly ConnectorCatalogEntry[]): ConnectorCatalogEntry[] {
+  return catalog.filter(isExperimentalEntry);
 }

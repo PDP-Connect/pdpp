@@ -18,7 +18,12 @@ export type ConnectorSetupModality =
   | "unsupported"
   | "unknown";
 
-export type ConnectorSetupSupportState = "supported" | "proof_gated" | "unsupported" | "needs_deployment_config";
+export type ConnectorSetupSupportState =
+  | "supported"
+  | "experimental"
+  | "proof_gated"
+  | "unsupported"
+  | "needs_deployment_config";
 
 export type ConnectorSetupNextStepKind =
   | "enroll_local_collector"
@@ -36,6 +41,7 @@ export type ConnectorCatalogDisposition =
   | "browser_collector_manual"
   | "browser_bound_runbook"
   | "static_secret_connect"
+  | "static_secret_experimental"
   | "manual_upload_connect"
   | "manual_upload_pending"
   | "provider_auth_deployment_blocked"
@@ -285,6 +291,30 @@ export type StaticSecretLiveProvenConnector = (typeof STATIC_SECRET_LIVE_PROVEN_
 
 export function isStaticSecretLiveProven(connectorKey: string): boolean {
   return (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(canonicalConnectorKey(connectorKey));
+}
+
+/**
+ * Whether a static-secret connector qualifies for owner opt-in UAT today.
+ *
+ * Capability-derived, not a hardcoded per-connector list: any connector whose
+ * manifest declares a real `credential_capture` block (a secret field, a
+ * label, a submit action — the same shape the live-proven connectors use)
+ * reaches the exact same generic capture-form → draft-connection →
+ * first-sync route already proven for gmail/github/slack/ynab. The only
+ * thing distinguishing "experimental" from "supported" is that no owner has
+ * completed a live run yet, which `STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS`
+ * still tracks.
+ *
+ * This check does NOT consult `capabilities.public_listing` — that flag is a
+ * separate, console-side gate (see `buildOwnerConnectorCatalog` in
+ * apps/console/.../connection-catalog.ts): normal ("supported") entries still
+ * require `listed === true`, but an `experimental` support_state is admitted
+ * into the console's Experimental section even when `listed === false` (e.g.
+ * Steam ships `listed: false` today). The Experimental section is itself the
+ * explicit opt-in; the listing flag is not a second gate on top of it.
+ */
+export function isStaticSecretExperimentalEligible(manifest: ConnectorManifestLike | null): boolean {
+  return staticSecretCredentialCaptureFromManifest(manifest) !== null;
 }
 
 const NOT_APPLICABLE_DEPLOYMENT_READINESS: ConnectorSetupDeploymentReadiness = Object.freeze({
@@ -748,6 +778,58 @@ function buildBrowserBoundSetupPlan(ctx: ConnectionSetupPlanContext): Connection
 
 function buildStaticSecretSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionSetupPlan {
   const liveProven = isStaticSecretLiveProven(ctx.connectorKey);
+  if (liveProven) {
+    return {
+      catalogDisposition: "static_secret_connect",
+      connectorKey: ctx.connectorKey,
+      connectorModality: ctx.connectorModality,
+      deploymentReadiness: ctx.deploymentReadiness,
+      displayName: ctx.displayName,
+      nextStepKind: "capture_static_secret",
+      ownerAgentIntent: {
+        method: "POST",
+        nextStepKind: "capture_static_secret",
+        reason:
+          "Initiate static-secret credential capture from the owner session. The connection activates after the secret is validated and first ingest succeeds.",
+        status: "supported",
+      },
+      proofGate: null,
+      runbookPath: null,
+      setupModality: ctx.setupModality,
+      supportState: "supported",
+      validationMode: ctx.validationMode,
+    };
+  }
+  // Browser-bound connectors with stored-credential capture (e.g. amazon) keep
+  // their existing static_secret_connect/browser-session presentation — that
+  // path already has its own dedicated UI treatment
+  // (`browserBoundWithStoredCredentials`) independent of live-proof status,
+  // and promoting it to "experimental" here would just be new, unrequested
+  // scope on a connector this task never asked to touch.
+  const experimentalEligible =
+    ctx.connectorModality !== "browser_bound" && isStaticSecretExperimentalEligible(ctx.manifest);
+  if (experimentalEligible) {
+    return {
+      catalogDisposition: "static_secret_experimental",
+      connectorKey: ctx.connectorKey,
+      connectorModality: ctx.connectorModality,
+      deploymentReadiness: ctx.deploymentReadiness,
+      displayName: ctx.displayName,
+      nextStepKind: "capture_static_secret",
+      ownerAgentIntent: {
+        method: "POST",
+        nextStepKind: "capture_static_secret",
+        reason:
+          "Experimental. This setup path has not completed live validation. Continue to test it with your own data.",
+        status: "experimental",
+      },
+      proofGate: "static_secret_live_proof_missing",
+      runbookPath: null,
+      setupModality: ctx.setupModality,
+      supportState: "experimental",
+      validationMode: ctx.validationMode,
+    };
+  }
   return {
     catalogDisposition: "static_secret_connect",
     connectorKey: ctx.connectorKey,
@@ -756,17 +838,15 @@ function buildStaticSecretSetupPlan(ctx: ConnectionSetupPlanContext): Connection
     displayName: ctx.displayName,
     nextStepKind: "capture_static_secret",
     ownerAgentIntent: {
-      method: liveProven ? "POST" : null,
+      method: null,
       nextStepKind: "capture_static_secret",
-      reason: liveProven
-        ? "Initiate static-secret credential capture from the owner session. The connection activates after the secret is validated and first ingest succeeds."
-        : unsupportedReason(ctx.setupModality),
-      status: liveProven ? "supported" : "proof_gated",
+      reason: unsupportedReason(ctx.setupModality),
+      status: "proof_gated",
     },
-    proofGate: liveProven ? null : "static_secret_live_proof_missing",
+    proofGate: "static_secret_live_proof_missing",
     runbookPath: null,
     setupModality: ctx.setupModality,
-    supportState: liveProven ? "supported" : "proof_gated",
+    supportState: "proof_gated",
     validationMode: ctx.validationMode,
   };
 }
