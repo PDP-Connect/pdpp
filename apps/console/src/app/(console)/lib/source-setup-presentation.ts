@@ -64,6 +64,8 @@ function isUnavailableSetupEntry(entry: ConnectorCatalogEntry): boolean {
   return (
     !isOwnerActionableEntry(entry) &&
     entry.disposition !== "provider_auth_deployment_blocked" &&
+    entry.disposition !== "provider_auth_proof_gated" &&
+    entry.disposition !== "manual_upload_pending" &&
     !isExperimentalEntry(entry)
   );
 }
@@ -231,7 +233,7 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "local_collector_unproven":
       return "This source needs a local collection setup before it can start from this dashboard.";
     case "provider_auth_proof_gated":
-      return "Provider authorization is not available in this dashboard yet.";
+      return "Server setup is complete, but this dashboard does not yet ship the owner authorization flow for this provider account. Provider authorization is not available here yet.";
     case "api_network_unsupported":
       return "This dashboard cannot add this source yet.";
     default:

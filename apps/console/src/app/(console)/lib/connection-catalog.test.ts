@@ -395,6 +395,85 @@ test("wave-0807 static-secret connectors (Steam, Jellyfin, Apple Contacts) are e
   }
 });
 
+test("requested-connector reachability: Steam/Jellyfin/Apple Contacts/GroupMe never render actionless or unavailable", async () => {
+  // Discrimination guard for the static-secret injection-registry fix: these
+  // four connectors declare a real static_secret setup and are present in
+  // STATIC_SECRET_CONNECTOR_REGISTRY (packages/polyfill-connectors/src/
+  // static-secret-injection.ts). If either the manifest or the registry drift,
+  // Add Source must not silently strand them with no route or a "not
+  // available" verdict.
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+  const { STATIC_SECRET_CONNECTOR_REGISTRY } = await import(
+    "../../../../../../packages/polyfill-connectors/src/static-secret-injection.ts"
+  );
+  for (const key of ["steam", "jellyfin", "apple_contacts", "groupme"]) {
+    const entry = catalog.find((e) => e.connectorKey === key);
+    assert.ok(entry, `${key} must be in the catalog`);
+    assert.ok(
+      Object.hasOwn(STATIC_SECRET_CONNECTOR_REGISTRY, key),
+      `${key} must be present in STATIC_SECRET_CONNECTOR_REGISTRY for credential injection to work`
+    );
+    assert.notEqual(sourceSetupAvailability(entry), "not_available_here", `${key}: must not render as unavailable`);
+    const action = sourceSetupAction(entry);
+    assert.ok(action, `${key}: must have a real, non-null setup action`);
+    assert.ok(action.href.length > 0, `${key}: setup action must target a real route`);
+  }
+  // GroupMe is the pre-existing regression control. In this synthetic
+  // (no-owner-proof-state) catalog build it lands in the same experimental
+  // bucket as steam/jellyfin/apple_contacts; the live owner catalog is what
+  // ultimately decides "proven" vs "experimental" from real proof state. The
+  // guard here is narrower: GroupMe must never regress to unreachable.
+  const groupme = catalog.find((e) => e.connectorKey === "groupme");
+  assert.ok(groupme);
+  assert.ok(
+    groupme.disposition === "static_secret_connect" || groupme.disposition === "static_secret_experimental",
+    `groupme: expected an actionable static-secret disposition, got '${groupme.disposition}'`
+  );
+});
+
+test("requested-connector reachability: Google Takeout Photos is honestly import-pending, not local-collector-unproven", async () => {
+  const manifests = await loadCommittedManifests();
+  const catalog = buildConnectorCatalog(manifests);
+  const entry = catalog.find((e) => e.connectorKey === "google-takeout");
+  assert.ok(entry, "google-takeout must be in the catalog");
+  assert.equal(entry.setupModality, "manual_or_upload");
+  assert.equal(entry.disposition, "manual_upload_pending");
+  assert.notEqual(entry.disposition, "local_collector_unproven");
+  // Either the CTA targets the generic manual-upload route, or there is no
+  // CTA at all paired with honest guidance — never a dead link.
+  const action = sourceSetupAction(entry);
+  if (action) {
+    assert.equal(action.href, "/connect/manual-upload/google-takeout");
+  } else {
+    assert.notEqual(sourceSetupGuidance(entry), "This dashboard cannot add this source yet.");
+    assert.match(sourceSetupGuidance(entry), /file import is not available/i);
+  }
+});
+
+test("requested-connector reachability: Google Calendar/Contacts show honest non-dead-end guidance, no rejecting CTA", async () => {
+  const manifests = await loadCommittedManifests();
+  for (const key of ["google-calendar", "google-contacts"]) {
+    const manifest = manifests.find((m) => m.connector_id.endsWith(`/${key}`) || m.connector_key === key);
+    assert.ok(manifest, `${key} manifest must be committed`);
+    for (const configured of [[], [key]]) {
+      const catalog = buildConnectorCatalog(manifests, configured);
+      const entry = catalog.find((e) => e.connectorKey === key);
+      assert.ok(entry, `${key} must be in the catalog`);
+      assert.ok(
+        entry.disposition === "provider_auth_deployment_blocked" || entry.disposition === "provider_auth_proof_gated",
+        `${key}: expected a provider-auth gated disposition, got '${entry.disposition}'`
+      );
+      // No CTA — a route that would reject the connector (assertConnector in
+      // google-data-portability.ts only accepts google-maps-data-portability).
+      assert.equal(sourceSetupAction(entry), null, `${key}: must not offer a CTA into an adapter that will reject it`);
+      const guidance = sourceSetupGuidance(entry);
+      assert.notEqual(guidance, "This dashboard cannot add this source yet.", `${key}: must not be silently generic`);
+      assert.ok(guidance.length > 0, `${key}: guidance must be non-empty`);
+    }
+  }
+});
+
 test("manual/upload manifests are import-pending entries, not unproven local collectors", () => {
   const catalog = buildConnectorCatalog([manualUploadManifest("google-maps")]);
   const [entry] = catalog;
