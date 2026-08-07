@@ -30,7 +30,7 @@ const DEFAULT_FEEDBACK_MS = 1200;
 
 export function CopyMono({ text, copyValue, className, feedbackMs = DEFAULT_FEEDBACK_MS }: CopyMonoProps) {
   const [copied, setCopied] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const onCopy = useCallback(() => {
     const value = copyValue ?? text;
@@ -43,9 +43,8 @@ export function CopyMono({ text, copyValue, className, feedbackMs = DEFAULT_FEED
       });
     }
     setCopied(true);
-    if (timer.current) {
-      clearTimeout(timer.current);
-    }
+    // `clearTimeout(undefined)` is a spec no-op, so the first click needs no guard.
+    clearTimeout(timer.current);
     timer.current = setTimeout(() => setCopied(false), feedbackMs);
   }, [copyValue, text, feedbackMs]);
 

@@ -58,7 +58,7 @@ const REPO_RELATIVE_COMPOSE_RE = /-f\s+deploy\/docker/;
 // was never published and never will be, because `core` itself carries
 // /usr/bin/google-chrome. `reference-browser` is the superseded pairing.
 const UNPUBLISHED_ARTIFACT_RE = /pdpp\/(core-browser|reference-browser|reference):/;
-const PAGE = readFileSync(join(import.meta.dirname, "../src/app/self-host/page.tsx"), "utf8");
+const PAGE = readFileSync(join(import.meta.dirname, "../src/app/(concept)/self-host/page.tsx"), "utf8");
 
 /** Every combination of choices the builder can produce. */
 function allChoices(): SelfHostChoices[] {

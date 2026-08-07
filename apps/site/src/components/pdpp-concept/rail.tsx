@@ -20,19 +20,18 @@ export function PdppRail({ toc }: PdppRailProps) {
       aria-label="Document apparatus"
       className={cn(
         // Page grid col 1; self-start so sticky works (page also items-start)
-        "col-1 self-start font-sans",
-        // Stick under masthead; pt matches .pdpp-doc track pad
-        "sticky top-[72px] pt-16",
-        // Scrollbar thumb idle → ink on hover/focus
+        "col-1 hidden self-start font-sans lg:block",
+        "lg:sticky lg:top-[72px] lg:pt-[calc(var(--spacing-section-gap)/1.5)]",
+        // Scrollbar thumb idle → ink on hover/focus.
+        // --foreground, not --color-foreground: an arbitrary value is emitted
+        // as authored, and --color-foreground is frozen to brand ink at :root.
+        // See pdpp-brand tokens/semantic.css header.
         "transition-[scrollbar-color] duration-200 ease-in-out [scrollbar-color:transparent_transparent]",
-        "hover:[scrollbar-color:color-mix(in_srgb,var(--color-ink)_28%,transparent)_transparent]",
-        "focus-within:[scrollbar-color:color-mix(in_srgb,var(--color-ink)_28%,transparent)_transparent]",
-        "hover:[&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--color-ink)_28%,transparent)]",
-        "focus-within:[&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--color-ink)_28%,transparent)]",
-        "[&::-webkit-scrollbar-thumb:hover]:bg-[color-mix(in_srgb,var(--color-ink)_45%,transparent)]",
-        // Page stacks to 1 col <720px; rail becomes ruled strip above doc
-        "max-[720px]:static max-[720px]:mb-2 max-[720px]:flex max-[720px]:flex-wrap max-[720px]:items-start",
-        "max-[720px]:gap-x-8 max-[720px]:gap-y-5 max-[720px]:border-rule max-[720px]:border-b max-[720px]:pt-8 max-[720px]:pb-2"
+        "hover:[scrollbar-color:color-mix(in_srgb,var(--foreground)_28%,transparent)_transparent]",
+        "focus-within:[scrollbar-color:color-mix(in_srgb,var(--foreground)_28%,transparent)_transparent]",
+        "hover:[&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--foreground)_28%,transparent)]",
+        "focus-within:[&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--foreground)_28%,transparent)]",
+        "[&::-webkit-scrollbar-thumb:hover]:bg-[color-mix(in_srgb,var(--foreground)_45%,transparent)]"
       )}
       data-slot="pdpp-concept-rail"
     >

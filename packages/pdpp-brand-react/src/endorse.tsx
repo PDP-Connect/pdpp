@@ -21,7 +21,6 @@
  * The badge background and border are derived from currentColor
  * via color-mix so the variant modifier drives the entire badge.
  */
-// biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5 cannot resolve pnpm's package directory; pnpm's Node resolver and tsc both resolve this declared dependency.
 import { cva } from "class-variance-authority";
 import "./components.css";
 

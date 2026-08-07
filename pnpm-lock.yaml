@@ -160,15 +160,12 @@ importers:
       '@base-ui/react':
         specifier: ^1.6.0
         version: 1.6.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@fumadocs/mdx-remote':
-        specifier: ^1.4.0
-        version: 1.5.1(@types/mdx@2.0.14)(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(react@19.2.8)
-      '@fumadocs/satteri':
-        specifier: ^0.3.1
-        version: 0.3.1(ed7d2d88bbcb2408d097aa1fe27c9a02)
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
+      '@pdpp/brand-react':
+        specifier: workspace:*
+        version: link:../../packages/pdpp-brand-react
       '@pdpp/display':
         specifier: workspace:*
         version: link:../../packages/display
@@ -254,6 +251,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.4
         version: 19.2.4(@types/react@19.2.18)
+      design-book:
+        specifier: 0.5.0
+        version: 0.5.0
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -401,9 +401,15 @@ importers:
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
       next:
         specifier: 16.3.0-canary.93
         version: 16.3.0-canary.93(@babel/core@7.29.7)(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      tailwind-merge:
+        specifier: ^3.6.0
+        version: 3.6.0
     devDependencies:
       '@types/node':
         specifier: ^26.1.2
@@ -1308,19 +1314,6 @@ packages:
       react:
         optional: true
       vite:
-        optional: true
-
-  '@fumadocs/mdx-remote@1.5.1':
-    resolution: {integrity: sha512-5PaW5QYUWkudLHo7FqI/S3aDe3fOmG8SrCTPm8HKcLCh7XyqQmG/9m942Y80qoSDDnCp1VAa9DDtBOcILPsSxA==}
-    peerDependencies:
-      '@types/mdx': '*'
-      '@types/react': '*'
-      fumadocs-core: ^15.0.0 || ^16.0.0
-      react: 18.x.x || 19.x.x
-    peerDependenciesMeta:
-      '@types/mdx':
-        optional: true
-      '@types/react':
         optional: true
 
   '@fumadocs/satteri@0.3.1':
@@ -3484,6 +3477,10 @@ packages:
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
+  culori@4.0.2:
+    resolution: {integrity: sha512-1+BhOB8ahCn4O0cep0Sh2l9KCOfOdY+BXJnKMHFFzDEouSr/el18QwXEMRlOj9UY5nCeA8UN3a/82rUWRBeyBw==}
+    engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
+
   data-urls@7.0.0:
     resolution: {integrity: sha512-23XHcCF+coGYevirZceTVD7NdJOqVn+49IHyxgszm+JIiHLoB2TkmPtsYkNWT1pvRSGkc35L6NHs0yHkN2SumA==}
     engines: {node: ^20.19.0 || ^22.12.0 || >=24.0.0}
@@ -3565,6 +3562,9 @@ packages:
     resolution: {integrity: sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==}
     engines: {node: '>=6'}
 
+  design-book@0.5.0:
+    resolution: {integrity: sha512-HgZ/ThQ6osQe2ZkmvwuRySvFOOsxmKCIVc/qKZxgFGhcbpefS0rCCID/4wcuiVvS2ZXdefE2SWyPlImkSmX7uA==}
+
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
@@ -3585,6 +3585,9 @@ packages:
   dir-glob@3.0.1:
     resolution: {integrity: sha512-WkrWp9GR4KXfKGYzOLmTuGVi1UWFfws377n9cc55/tb6DuqyF6pcQ5AbiHEshaDpY9v6oaSr2XCDidGmMwdzIA==}
     engines: {node: '>=8'}
+
+  dittotones@0.12.0:
+    resolution: {integrity: sha512-4LZSJDyOZTFdXziOHWjKpjH5kqp9Upv2Lt6rTYMvx+aEUnfGP3bAh0Hotm1ALI1Z27JquZZcWPk1k8HctwEmKw==}
 
   dom-serializer@2.0.0:
     resolution: {integrity: sha512-wIkAryiqt/nV5EQKqQpo3SToSOV9J0DnbJqwK7Wv/Trc92zIAYZ4FlMu+JPFW1DfGFt81ZTCGgDEabffXeLyJg==}
@@ -7577,20 +7580,7 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
-
-  '@fumadocs/mdx-remote@1.5.1(@types/mdx@2.0.14)(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(react@19.2.8)':
-    dependencies:
-      '@mdx-js/mdx': 3.1.1
-      fumadocs-core: 16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
-      react: 19.2.8
-      unified: 11.0.5
-      vfile: 6.0.3
-      yaml: 2.9.0
-    optionalDependencies:
-      '@types/mdx': 2.0.14
-      '@types/react': 19.2.18
-    transitivePeerDependencies:
-      - supports-color
+    optional: true
 
   '@fumadocs/satteri@0.3.1(ed7d2d88bbcb2408d097aa1fe27c9a02)':
     dependencies:
@@ -7623,6 +7613,7 @@ snapshots:
       - supports-color
       - utf-8-validate
       - vite
+    optional: true
 
   '@fumadocs/tailwind@0.1.1(tailwindcss@4.3.3)':
     optionalDependencies:
@@ -8749,6 +8740,7 @@ snapshots:
       minimatch: 10.2.6
       path-browserify: 1.0.1
       tinyglobby: 0.2.17
+    optional: true
 
   '@tybys/wasm-util@0.10.3':
     dependencies:
@@ -9050,7 +9042,8 @@ snapshots:
   '@yuku-parser/binding-win32-x64@0.7.4':
     optional: true
 
-  '@yuku-toolchain/types@0.7.4': {}
+  '@yuku-toolchain/types@0.7.4':
+    optional: true
 
   '@yuku-toolchain/types@0.8.3': {}
 
@@ -9386,7 +9379,8 @@ snapshots:
 
   commander@15.0.0: {}
 
-  commander@8.3.0: {}
+  commander@8.3.0:
+    optional: true
 
   compare-func@2.0.0:
     dependencies:
@@ -9508,6 +9502,8 @@ snapshots:
 
   csstype@3.2.3: {}
 
+  culori@4.0.2: {}
+
   data-urls@7.0.0(@noble/hashes@1.8.0):
     dependencies:
       whatwg-mimetype: 5.0.0
@@ -9568,6 +9564,11 @@ snapshots:
 
   dequal@2.0.3: {}
 
+  design-book@0.5.0:
+    dependencies:
+      culori: 4.0.2
+      dittotones: 0.12.0
+
   detect-libc@2.1.2: {}
 
   detect-node-es@1.1.0: {}
@@ -9583,6 +9584,10 @@ snapshots:
   dir-glob@3.0.1:
     dependencies:
       path-type: 4.0.0
+
+  dittotones@0.12.0:
+    dependencies:
+      culori: 4.0.2
 
   dom-serializer@2.0.0:
     dependencies:
@@ -10230,6 +10235,7 @@ snapshots:
       fumadocs-ui: 16.14.0(@types/mdx@2.0.14)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)
     transitivePeerDependencies:
       - supports-color
+    optional: true
 
   fumadocs-ui@16.14.0(@types/mdx@2.0.14)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(fumadocs-core@16.14.0(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.18)(algoliasearch@5.50.1)(lucide-react@1.28.0(react@19.2.8))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3))(next@16.3.0-preview.10(@playwright/test@1.61.1)(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3):
     dependencies:
@@ -10394,6 +10400,7 @@ snapshots:
       parse5: 7.3.0
       vfile: 6.0.3
       vfile-message: 4.0.3
+    optional: true
 
   hast-util-from-parse5@8.0.3:
     dependencies:
@@ -10574,7 +10581,8 @@ snapshots:
 
   ignore@5.3.2: {}
 
-  image-size@2.0.2: {}
+  image-size@2.0.2:
+    optional: true
 
   imapflow@1.6.5:
     dependencies:
@@ -10803,6 +10811,7 @@ snapshots:
   katex@0.18.1:
     dependencies:
       commander: 8.3.0
+    optional: true
 
   keyv@4.5.4:
     dependencies:
@@ -12396,6 +12405,7 @@ snapshots:
       '@bruits/satteri-wasm32-wasi': 0.9.5
       '@bruits/satteri-win32-arm64-msvc': 0.9.5
       '@bruits/satteri-win32-x64-msvc': 0.9.5
+    optional: true
 
   saxes@6.0.0:
     dependencies:
@@ -12904,6 +12914,7 @@ snapshots:
     dependencies:
       '@ts-morph/common': 0.29.0
       code-block-writer: 13.0.3
+    optional: true
 
   tsconfig-paths@4.2.0:
     dependencies:
@@ -13264,6 +13275,7 @@ snapshots:
   yuku-ast@0.7.4:
     dependencies:
       '@yuku-toolchain/types': 0.7.4
+    optional: true
 
   yuku-ast@0.8.3:
     dependencies:
@@ -13284,6 +13296,7 @@ snapshots:
       '@yuku-codegen/binding-linux-x64-musl': 0.7.4
       '@yuku-codegen/binding-win32-arm64': 0.7.4
       '@yuku-codegen/binding-win32-x64': 0.7.4
+    optional: true
 
   yuku-parser@0.7.4:
     dependencies:
@@ -13301,6 +13314,7 @@ snapshots:
       '@yuku-parser/binding-linux-x64-musl': 0.7.4
       '@yuku-parser/binding-win32-arm64': 0.7.4
       '@yuku-parser/binding-win32-x64': 0.7.4
+    optional: true
 
   zbsearch@3.3.4: {}
 

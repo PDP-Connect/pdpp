@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Standing links and license facts, declared once so no page hand-types them.
+// Standing metadata, links, and license facts, declared once so no page hand-types them.
 // The owner's rule for this pass: anything that can go stale must be wired so
 // it cannot. These are the values that appear on more than one surface.
 
@@ -10,6 +10,9 @@
 // canonical host cannot drift between pages (SEO/GEO standard MUST #1.2: one
 // intended absolute canonical URL, used consistently).
 export const SITE_ORIGIN = "https://pdpp.dev";
+export const SITE_TITLE = "PDPP: Personal Data Portability Protocol";
+export const SITE_DESCRIPTION =
+  "An authorization and disclosure protocol for personal data. You decide what to share, with whom, for how long, for what purpose.";
 
 export const GITHUB_REPO_URL = "https://github.com/PDP-Connect/pdpp";
 export const GITHUB_ISSUES_URL = `${GITHUB_REPO_URL}/issues`;

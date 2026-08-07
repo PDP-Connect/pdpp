@@ -7,7 +7,7 @@
  *
  * Design intent:
  *   - reuse the PDPP brand language (tokens, typography classes, semantic
- *     surfaces) from `packages/pdpp-brand/base.css`
+ *     surfaces) from `packages/pdpp-brand/styles/base.css`
  *   - no framework, no hydration — plain strings and one stylesheet
  *   - do not fork the design system for hosted pages; keep the hosted-ui
  *     layer minimal and clearly prefixed (`hosted-ui-*`)
@@ -48,7 +48,7 @@ export function renderPdppMark({ size = 28, title = 'PDPP' } = {}) {
 }
 
 // ─── Shared CSS ──────────────────────────────────────────────────────────────
-// Minimal PDPP subset derived from packages/pdpp-brand/base.css plus a tiny
+// Minimal PDPP subset derived from packages/pdpp-brand/styles/base.css plus a tiny
 // hosted-ui layer. No fontsource imports — these pages fall back to system UI
 // until font weights load from the website. Reference-only by design.
 

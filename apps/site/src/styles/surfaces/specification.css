@@ -1,0 +1,596 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Fumadocs shell + spec prose for /specification only.
+ *
+ * Every rule is scoped to [data-pdpp-doc-theme] (SpecificationShell). The route
+ * does not load this file without that hook — no parallel operator register.
+ *
+ * Owns: #nd-docs-layout, #nd-subnav, sidebar/rail, TOC breakpoints, and
+ * .pdpp-docs-* prose inside Fumadocs' generated DOM.
+ *
+ * Not ProsePage markdown typography or the concept component register.
+ */
+
+[data-pdpp-doc-theme] {
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-paper);
+}
+
+/* ─── Fumadocs layout grid ───────────────────────────────────────────────── */
+
+[data-pdpp-doc-theme] #nd-docs-layout {
+  --fd-banner-height: 3rem;
+  --fd-docs-height: calc(100dvh - 3rem);
+  /* Match the `container max-w-page` wrapper in specification/shell.tsx —
+     not --container-page directly: the grid lives inside container padding. */
+  --fd-layout-width: 100%;
+  --fd-sidebar-width: var(--spacing-rail);
+  /* TOC lives in the left rail; keep the right column closed. */
+  --fd-toc-width: 0px;
+  font-family: var(--font-sans);
+  background: transparent;
+}
+
+@media (min-width: 1280px) and (max-width: 1439.98px) {
+  [data-pdpp-doc-theme] #nd-docs-layout aside[class*="[grid-area:toc]"] {
+    display: none;
+  }
+}
+
+[data-pdpp-doc-theme] #nd-subnav {
+  height: 3rem;
+  background: var(--pdpp-concept-paper);
+  border-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
+}
+
+@media (min-width: 768px) {
+  [data-pdpp-doc-theme] #nd-subnav button[aria-label="Open Sidebar"] {
+    display: none;
+  }
+
+  [data-pdpp-doc-theme] #nd-sidebar button[aria-label="Open Sidebar"] {
+    display: none;
+  }
+}
+
+/* Masthead owns desktop search; this row's duplicate trigger is hidden. The
+   sidebar-open trigger stays — below the rail unmount width it is the only way
+   to reach #nd-sidebar / the TOC popover. */
+[data-pdpp-doc-theme] #nd-subnav [data-search] {
+  display: none;
+}
+
+[data-pdpp-doc-theme] #nd-page {
+  font-family: var(--font-serif);
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
+  --pdpp-docs-gutter: 1rem;
+  gap: 0;
+  width: 100%;
+  max-width: none;
+  /* Fumadocs #nd-page ships py-6 / md:pt-8 / xl:pt-14 — zero so hero top
+     matches PdppConceptDoc pt (see .pdpp-docs-hero__content below). */
+  padding-top: 0 !important;
+  margin-inline: 0;
+}
+
+@media (min-width: 768px) {
+  [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
+    --pdpp-docs-gutter: 1.5rem;
+    padding-inline-start: var(--spacing-gutter);
+    padding-inline-end: 0;
+  }
+}
+
+@media (min-width: 1280px) {
+  [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
+    --pdpp-docs-gutter: 2rem;
+  }
+}
+
+[data-pdpp-doc-theme] #nd-toc {
+  padding-top: 6.5rem;
+  font-family: var(--font-sans);
+  color: var(--pdpp-concept-ink-soft);
+}
+
+/* The TOC's own h3 label is styled further down, after the prose h3 rules:
+   an id outranks them, so declaring it here reads as a descending-specificity
+   override even though the two subtrees never overlap. */
+
+[data-pdpp-doc-theme] #nd-toc a.data-\[active\=true\],
+[data-pdpp-doc-theme] #nd-toc [data-active="true"] {
+  color: var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] [data-toc-popover] header {
+  background: var(--pdpp-concept-paper);
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--pdpp-concept-ink) 18%,
+    var(--pdpp-concept-paper)
+  );
+}
+
+/* ─── Doc hero (front matter) ────────────────────────────────────────────── */
+
+[data-pdpp-doc-theme] .pdpp-docs-hero {
+  margin-inline: 0;
+  margin-bottom: 2.75rem;
+  background: none;
+  border: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-hero__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0;
+  /* Match PdppConceptDoc vertical start (concept-page.tsx). */
+  padding-top: calc(var(--spacing-section-gap) / 3);
+}
+
+@media (min-width: 1024px) {
+  [data-pdpp-doc-theme] .pdpp-docs-hero__content {
+    padding-top: calc(var(--spacing-section-gap) / 1.5);
+  }
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-hero__content [data-slot="pdpp-concept-text"] {
+  margin: 0;
+}
+
+@media (min-width: 768px) {
+  [data-pdpp-doc-theme] .pdpp-docs-hero {
+    margin-bottom: 3.5rem;
+  }
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-hero__content h1,
+[data-pdpp-doc-theme] #nd-page h1 {
+  font-family: var(--font-serif);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-description {
+  max-width: 56ch;
+  margin-bottom: 0;
+  font-family: var(--font-serif);
+  font-size: clamp(0.96rem, 1.8vw, 1.05rem);
+  line-height: 1.7;
+  color: var(--pdpp-concept-ink-soft);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+  align-items: center;
+  padding-top: 1rem;
+  margin-top: 1.25rem;
+  border-top: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 18%, var(--pdpp-concept-paper));
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-actions a,
+[data-pdpp-doc-theme] .pdpp-docs-actions button {
+  border-radius: 2px;
+}
+
+/* ─── Prose body ─────────────────────────────────────────────────────────── */
+
+/* Track is full column; measure lives on prose nodes — same split as .pdpp-doc. */
+[data-pdpp-doc-theme] .pdpp-docs-body {
+  width: 100%;
+  max-width: none;
+  font-family: var(--font-serif);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body :where(h1, h2, h3, h4, p, li, blockquote),
+[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
+  max-width: var(--container-measure);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose {
+  --tw-prose-body: var(--pdpp-concept-ink);
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body :where(h2, h3, h4) {
+  font-family: var(--font-serif);
+  color: var(--pdpp-concept-ink);
+  letter-spacing: normal;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body h2 {
+  margin-top: 3.25rem;
+  margin-bottom: 1rem;
+  font-size: clamp(1.45rem, 2vw, 1.82rem);
+  line-height: 1.08;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body > h2:first-child,
+[data-pdpp-doc-theme] .pdpp-docs-body > :first-child h2:first-child {
+  margin-top: 0;
+}
+
+/* Spec sources use `---` between major sections; hide the rendered <hr>. */
+[data-pdpp-doc-theme] .pdpp-docs-body hr {
+  display: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.12rem;
+  line-height: 1.2;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body p,
+[data-pdpp-doc-theme] .pdpp-docs-body li {
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(strong) {
+  font-weight: 700;
+  color: inherit;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body li {
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body a {
+  color: var(--pdpp-concept-teal);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body a:hover,
+[data-pdpp-doc-theme] .pdpp-docs-body a:focus-visible {
+  color: var(--pdpp-concept-teal-deep);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body blockquote {
+  padding: 1rem 1.1rem;
+  margin: 1.75rem 0;
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-teal-wash);
+  border-left: 2px solid var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note {
+  padding: 12px 16px;
+  margin: 20px 0;
+  font-size: 15.5px;
+  color: var(--pdpp-concept-ink);
+  background: var(--pdpp-concept-teal-wash);
+  border-left: 2px solid var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body .pdpp-note strong {
+  font-weight: 700;
+  color: inherit;
+}
+
+/* No `.prose` on this selector: the table and code-block rules below narrow it
+   and are lower specificity, so adding a third class here silently wins over
+   them (inline padding leaks into <pre>, nowrap stops applying in cells). */
+[data-pdpp-doc-theme] .pdpp-docs-body :not(pre) > code {
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--foreground);
+  overflow-wrap: break-word;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body th :not(pre) > code,
+[data-pdpp-doc-theme] .pdpp-docs-body td :not(pre) > code {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+/* Code blocks: mirror .pdpp-terminal (components.css). Style ONLY the outer
+   Shiki figure — fumadocs renders <figure class="shiki"><div><pre>…</pre></div>;
+   the inner pre must not inherit the shell metrics or spacing doubles. */
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki,
+[data-pdpp-doc-theme] .pdpp-docs-body > pre {
+  padding: 24px 28px;
+  margin: 28px 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--pdpp-concept-onteal-deep) !important;
+  background: var(--pdpp-concept-teal-deep) !important;
+  border: 1px solid var(--pdpp-concept-teal-deep) !important;
+  border-radius: 0 !important;
+  box-shadow: 1px 1px 0
+    color-mix(in srgb, var(--pdpp-concept-ink) 22%, transparent);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(figure.shiki) {
+  margin-top: 28px;
+  margin-bottom: 28px;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > div,
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki pre {
+  padding: 0;
+  margin: 0;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki pre,
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki code,
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki span,
+[data-pdpp-doc-theme] .pdpp-docs-body > pre code {
+  padding: 0;
+  font-family: var(--font-mono) !important;
+  font-size: 1em;
+  color: inherit !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0;
+  box-shadow: none !important;
+}
+
+/* Fumadocs copy chrome uses fd-accent + backdrop-blur; on teal-deep that
+   reads as a dark hover slab. Use on-primary emphasis tokens (text-on-primary-emphasis*
+   in Tailwind) so idle/hover track the code block ground in both themes. */
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > .absolute,
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > div.flex {
+  color: var(--on-primary-emphasis-label);
+  background: transparent;
+  backdrop-filter: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki > div.flex {
+  border-color: color-mix(in srgb, var(--on-primary-emphasis) 35%, transparent);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki button[type="button"] {
+  color: inherit;
+  background-color: transparent;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body figure.shiki button[type="button"]:hover,
+[data-pdpp-doc-theme]
+  .pdpp-docs-body
+  figure.shiki
+  button[type="button"]:focus-visible,
+[data-pdpp-doc-theme]
+  .pdpp-docs-body
+  figure.shiki
+  button[type="button"][data-checked] {
+  color: var(--on-primary-emphasis);
+  background-color: transparent;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 24px 0;
+  overflow-x: auto;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  border-collapse: collapse;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+/* Fumadocs `.prose` paints tables as fd-card boxes; reset so concept ruled
+   rows inherit paper + ink in both themes. */
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(table) {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(th) {
+  background: transparent !important;
+  border-inline-start: none !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body.prose :where(td) {
+  color: var(--pdpp-concept-ink) !important;
+  border-inline-start: none !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body thead {
+  background: transparent;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body tbody,
+[data-pdpp-doc-theme] .pdpp-docs-body tr,
+[data-pdpp-doc-theme] .pdpp-docs-body td {
+  color: var(--pdpp-concept-ink);
+  background: transparent;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body th {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pdpp-concept-ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body th,
+[data-pdpp-doc-theme] .pdpp-docs-body td {
+  padding: 10px 14px 10px 0;
+  line-height: 1.45;
+  vertical-align: top;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body thead th {
+  border-bottom: 1px solid var(--pdpp-concept-ink-faint);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body th:first-child,
+[data-pdpp-doc-theme] .pdpp-docs-body td:first-child {
+  padding-right: 1.5rem;
+  white-space: nowrap;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] {
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  transition: background-color 120ms ease;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:last-child {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"]:hover {
+  background: var(--pdpp-concept-teal-wash);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] h3 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--pdpp-concept-ink);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body + div a {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body + div a:hover {
+  background: var(--pdpp-concept-teal-wash);
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-body + div a p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
+
+/* Deferred from the TOC block above so it follows the prose h3 rules. */
+[data-pdpp-doc-theme] #nd-toc h3 {
+  margin: 0 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ─── Left rail (Fumadocs sidebar slot → spec-rail.tsx) ──────────────────── */
+
+[data-pdpp-doc-theme] #nd-sidebar {
+  --fd-sidebar-width: var(--spacing-rail);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  background: none;
+  border-right: none;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [data-sidebar-placeholder] {
+  top: 0;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar .fd-scroll-container {
+  scrollbar-width: thin;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [data-active="true"] {
+  color: var(--pdpp-concept-teal);
+  background: none;
+}
+
+/* Masthead owns theme; rail front matter owns GitHub — drop fumadocs' footer
+   tray (icon links + duplicate theme switch). */
+[data-pdpp-doc-theme] #nd-sidebar > div.flex > div.flex.flex-col.p-4.pt-2,
+[data-pdpp-doc-theme] #nd-sidebar [data-sidebar-panel] {
+  display: none;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar > div.flex.flex-col.gap-3 {
+  gap: 0 !important;
+  padding: 64px 0 0 !important;
+}
+
+/* Tree scrollport only — banner above already clears the masthead. */
+[data-pdpp-doc-theme] #nd-sidebar [data-radix-scroll-area-viewport] {
+  padding-inline: 0 !important;
+}
+
+[data-pdpp-doc-theme] #nd-sidebar [data-radix-scroll-area-viewport] > div {
+  gap: 0 !important;
+  padding: 0 0 24px !important;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__doc {
+  display: block;
+  padding: 0;
+  margin-bottom: 9px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--pdpp-concept-ink-soft);
+  text-decoration: none;
+  background: none;
+  border-radius: 0;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__doc:hover {
+  color: var(--pdpp-concept-teal);
+  background: none;
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__doc[data-active="true"] {
+  font-weight: 500;
+  color: var(--pdpp-concept-teal);
+  background: none;
+  box-shadow: -9px 0 0 -6px var(--pdpp-concept-teal);
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__rule {
+  margin: 32px 0 20px;
+  border: 0;
+  border-top: 1px solid
+    color-mix(in srgb, var(--pdpp-concept-ink) 14%, transparent);
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"] {
+  font-size: 12px;
+  color: var(--pdpp-concept-ink-faint);
+}
+
+[data-pdpp-doc-theme] .pdpp-rail__doc[data-supporting="true"]:hover,
+[data-pdpp-doc-theme]
+  .pdpp-rail__doc[data-supporting="true"][data-active="true"] {
+  color: var(--pdpp-concept-teal);
+}

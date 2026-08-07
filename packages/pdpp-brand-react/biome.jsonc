@@ -41,6 +41,32 @@
   },
   "overrides": [
     {
+      // Upstream Biome resolver false-positive waiver — NOT a doctrine change.
+      //
+      // Biome's noUnresolvedImports misreports declared deps with an `exports`
+      // field (class-variance-authority, and the same clsx / tailwind-merge
+      // class of packages) while tsc (moduleResolution: "bundler"), pnpm's
+      // Node resolver, and the consuming Next bundler all resolve them.
+      //
+      // Tracked upstream:
+      //   - https://github.com/biomejs/biome/issues/9143
+      //   - https://github.com/biomejs/biome/issues/6464
+      //
+      // Exit condition: remove once Biome resolves package `exports` cleanly.
+      // Re-run `pnpm --dir packages/pdpp-brand-react check`; if the rule stays
+      // clean, drop this entire overrides block entry.
+      //
+      // Scoped to src/** only. NOTHING ELSE IS RELAXED.
+      "includes": ["src/**/*.ts", "src/**/*.tsx"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
+    },
+    {
       // Ink Carbon design-system barrel — a single index.ts that re-exports
       // every component in the library. This is intentional: the barrel is the
       // public API surface of a bounded component library (the `.` export of

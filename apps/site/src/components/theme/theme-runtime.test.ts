@@ -21,11 +21,12 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 // packages/operator-ui so that both apps share one source of truth.
 const PROVIDER_FILE = `${HERE}../../../../../packages/operator-ui/src/components/theme/theme-provider.tsx`;
 const LAYOUT_FILE = `${HERE}../../app/layout.tsx`;
-const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/tokens/primitive.css`;
-const BRAND_SEMANTIC_FILE = `${HERE}../../../../../packages/pdpp-brand/tokens/semantic.css`;
-const BRAND_INDEX_FILE = `${HERE}../../../../../packages/pdpp-brand/index.css`;
-const BRAND_TAILWIND_ALIASES_FILE = `${HERE}../../../../../packages/pdpp-brand/tokens/tailwind-aliases.css`;
-const BRAND_TYPOGRAPHY_FILE = `${HERE}../../../../../packages/pdpp-brand/typography.css`;
+const SITE_PROVIDERS_FILE = `${HERE}../site/site-providers.tsx`;
+const BRAND_PRIMITIVE_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/primitive.css`;
+const BRAND_SEMANTIC_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/semantic.css`;
+const BRAND_INDEX_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/index.css`;
+const BRAND_TAILWIND_ALIASES_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/tokens/tailwind-aliases.css`;
+const BRAND_TYPOGRAPHY_FILE = `${HERE}../../../../../packages/pdpp-brand/styles/typography.css`;
 const BRAND_REACT_COMPONENTS_FILE = `${HERE}../../../../../packages/pdpp-brand-react/src/components.css`;
 const STATUS_BADGE_CSS_FILE = `${HERE}../../../../../packages/operator-ui/src/components/status-badge.css`;
 
@@ -37,7 +38,8 @@ const DISABLE_TRANSITIONS = /disableTransitionOnChange/;
 const DISABLE_COLOR_SCHEME = /enableColorScheme=\{false\}/;
 const ENABLE_SYSTEM = /enableSystem/;
 const STORAGE_KEY = /storageKey="pdpp-theme"/;
-const ROOT_PROVIDER = /<ThemeProvider>/;
+const ROOT_PROVIDER = /<SiteProviders>/;
+const SITE_THEME_PROVIDER = /<ThemeProvider>/;
 const SUPPRESS_HYDRATION = /suppressHydrationWarning/;
 const THEME_COOKIE_IMPORT = /components\/theme\/theme-state/;
 const THEME_FOUC_GUARD = /launchFoucGuardCss|dangerouslySetInnerHTML/;
@@ -49,26 +51,26 @@ const STATUS_BADGE_RING_TOKENS =
 const STATUS_BADGE_TONE_CLASSES =
   /\.pdpp-status-badge\s*{[\s\S]*color: var\(--status-badge-fg\);[\s\S]*background-color: var\(--status-badge-bg\);[\s\S]*box-shadow: inset 0 0 0 1px var\(--status-badge-ring\);[\s\S]*\.pdpp-status-success\s*{[\s\S]*--status-badge-fg: var\(--status-success-fg\);[\s\S]*\.pdpp-status-danger\s*{[\s\S]*--status-badge-fg: var\(--status-danger-fg\);[\s\S]*\.pdpp-status-warning\s*{[\s\S]*--status-badge-fg: var\(--status-warning-fg\);[\s\S]*\.pdpp-status-neutral\s*{[\s\S]*--status-badge-fg: var\(--status-neutral-fg\);/;
 const SEMANTIC_TYPE_SCALE =
-  /@theme\s*{[\s\S]*--text-caption:\s*12px;[\s\S]*--text-body:\s*14px;[\s\S]*--text-heading:\s*20px;[\s\S]*--text-display-lg:\s*60px;/;
-const TYPE_SCALE_DECLARATION = /--text-(?:caption|label|body|title|body-lg|heading|display|display-lg):/;
+  /@theme\s*{[\s\S]*--text-small:\s*12px;[\s\S]*--text-body:\s*14px;[\s\S]*--text-heading:\s*20px;[\s\S]*--text-hero:\s*60px;/;
+const TYPE_SCALE_DECLARATION = /--text-(?:eyebrow|small|body|lede|heading|title|display|hero):/;
 const TAILWIND_COLOR_DECLARATION = /^\s*--color-[\w-]+:/m;
 const LITERAL_COMPATIBILITY_FONT_SIZE = /font-size:\s*[\d.]+(?:px|rem)/;
 const DUPLICATE_COMPATIBILITY_SELECTOR =
   /^\.pdpp-(?:display-lg|display|heading|title|body-lg|body|label|caption|eyebrow)\s*{/m;
 const TAILWIND_TEXT_ALIAS_TARGETS = {
-  xs: "caption",
+  xs: "small",
   sm: "body",
   base: "body",
-  lg: "body-lg",
+  lg: "lede",
   xl: "heading",
   "2xl": "heading",
   "3xl": "heading",
   "4xl": "display",
   "5xl": "display",
-  "6xl": "display-lg",
-  "7xl": "display-lg",
-  "8xl": "display-lg",
-  "9xl": "display-lg",
+  "6xl": "hero",
+  "7xl": "hero",
+  "8xl": "hero",
+  "9xl": "hero",
 } as const;
 const STATIC_RADIUS_ALIASES = {
   rounded: "radius-sm",
@@ -79,12 +81,13 @@ test("theme storage key stays stable", () => {
   assert.equal(THEME_KEY, "pdpp-theme");
 });
 
-test("root layout delegates theme state to next-themes", async () => {
-  const src = await readFile(LAYOUT_FILE, "utf8");
-  assert.match(src, ROOT_PROVIDER);
-  assert.match(src, SUPPRESS_HYDRATION);
-  assert.equal(THEME_COOKIE_IMPORT.test(src), false, "root layout must not read a theme cookie");
-  assert.equal(THEME_FOUC_GUARD.test(src), false, "root layout must not own a theme FOUC guard");
+test("root layout delegates theme state to site providers", async () => {
+  const [layout, providers] = await Promise.all([readFile(LAYOUT_FILE, "utf8"), readFile(SITE_PROVIDERS_FILE, "utf8")]);
+  assert.match(layout, ROOT_PROVIDER);
+  assert.match(layout, SUPPRESS_HYDRATION);
+  assert.match(providers, SITE_THEME_PROVIDER);
+  assert.equal(THEME_COOKIE_IMPORT.test(layout), false, "root layout must not read a theme cookie");
+  assert.equal(THEME_FOUC_GUARD.test(layout), false, "root layout must not own a theme FOUC guard");
 });
 
 test("shared provider configures the required next-themes runtime", async () => {

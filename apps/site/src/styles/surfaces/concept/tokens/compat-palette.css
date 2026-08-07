@@ -1,0 +1,34 @@
+/* Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Deprecated editorial palette utilities → shadcn semantic slots.
+ * Aliases derive from the semantic tokens (never from --pdpp-concept-*), so
+ * dark theme and ?scheme= follow primitive → tokens/semantic.css rebind.
+ * Delete each line when grep for the legacy util hits zero.
+ *
+ * `inline` and `var(--background)`, NOT `var(--color-background)` — both halves
+ * are required. A plain @theme key freezes its var() at :root, and so does a
+ * key pointing at another --color-* alias, because that alias was itself
+ * emitted at :root. Either mistake pins these utilities to the brand palette
+ * and the concept rebind on [data-surface="concept"] (a div) never lands.
+ * Rule and the regression it encodes: pdpp-brand tokens/semantic.css header.
+ *
+ * @see docs/design-system/styling-in-apps.md § Enforcement (tests)
+ */
+
+@theme inline {
+  --color-paper: var(--background);
+  --color-paper-deep: var(--card);
+  --color-paper-panel: var(--secondary);
+  --color-ink: var(--foreground);
+  --color-ink-soft: var(--muted-foreground);
+  --color-ink-faint: var(--foreground-faint);
+  --color-teal: var(--primary);
+  --color-teal-deep: var(--primary-emphasis);
+  --color-teal-wash: var(--primary-wash);
+  --color-teal-on-wash: var(--primary-on-wash);
+  --color-onteal-deep: var(--on-primary-emphasis);
+  --color-onteal-deep-soft: var(--on-primary-emphasis-soft);
+  --color-onteal-deep-label: var(--on-primary-emphasis-label);
+  --color-onteal-deep-wash: var(--on-primary-emphasis-wash);
+}

@@ -3,9 +3,9 @@
 
 // Pure data, deliberately split out of docs-source.ts: that module imports
 // .source/server.ts (fumadocs-mdx, node:path) and is server-only, but
-// spec-rail.tsx is a "use client" component that also needs to know which
+// components/specification/rail.tsx is a "use client" component that also needs to know which
 // slugs are "supporting" so it can mark their links data-supporting. Importing
-// docs-source.ts from spec-rail.tsx pulled the server module into the client
+// docs-source.ts from rail.tsx pulled the server module into the client
 // bundle and failed the build (UnhandledSchemeError on node:path).
 
 // The nav label is "Specification", so the route is /specification. A label and
@@ -34,7 +34,7 @@ export const PRIMARY_SLUGS = [
 
 // The supporting documents, in the order the specification-set table states
 // them. These render as a quiet, unlabeled cluster at the foot of the rail
-// (see spec-rail.tsx): reachable in one click, visibly subordinate, never a
+// (see components/specification/rail.tsx): reachable in one click, visibly subordinate, never a
 // second peer list. A heading over them would make them a rival to the
 // specification and put all ten documents back on equal footing.
 export const SUPPORTING_SLUGS = [

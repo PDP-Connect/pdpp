@@ -16,6 +16,13 @@ Framework-independent connector identity, record presentation, and timestamp pol
 - **THEN** that stylesheet SHALL be owned and imported by that deployable or route
 - **AND** the shared brand package SHALL NOT expose it as a cross-surface contract
 
+#### Scenario: A React surface renders semantic text under its active theme
+
+- **WHEN** a shared React text component renders a semantic type size or foreground tone
+- **THEN** the React component and its component-specific styling SHALL be owned by the React brand package
+- **AND** the active Tailwind theme SHALL resolve presentation through shared semantic variables rather than a runtime React theme binding
+- **AND** deployable-specific typography, palette names, and compound editorial treatments SHALL remain in the owning application
+
 #### Scenario: Both web deployables resolve theme state
 
 - **WHEN** the public site and operator console initialize or change light, dark, or system theme choice

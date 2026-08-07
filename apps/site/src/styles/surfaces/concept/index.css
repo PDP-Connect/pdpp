@@ -1,0 +1,19 @@
+/* Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Public-site concept surface. Tailwind utilities are generated here so the
+ * route-owned concept theme never leaks into the root or sandbox surface.
+ * Root already owns Preflight; this entrypoint imports utilities only.
+ */
+
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "./tokens/index.css";
+@import "./components.css";
+
+/* Theme-only: makes brand's @theme (fonts, the eight type rungs, shadcn colors)
+   resolvable for `@apply` here without re-emitting brand's CSS — site.css
+   already emits it. Without this, `@apply font-serif text-foreground` in
+   components.css cannot resolve, because this is a separate Tailwind entrypoint.
+   Kept below the @import block so it stays a valid at-rule position.
+   @see https://tailwindcss.com/docs/functions-and-directives#reference-directive */
+@reference "@pdpp/brand/styles.css";

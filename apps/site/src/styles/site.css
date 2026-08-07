@@ -1,0 +1,16 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Root-owned site foundations only: shared brand tokens and Fumadocs defaults.
+ * Route and component surfaces import their own stylesheets.
+ */
+
+@import "@pdpp/brand/styles.css";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Tailwind scans operator-ui because the site renders that package directly. */
+@source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
+/* Same for brand-react: `Text`'s variant classes are class strings in that package. */
+@source "../../../../packages/pdpp-brand-react/src/**/*.{ts,tsx}";
