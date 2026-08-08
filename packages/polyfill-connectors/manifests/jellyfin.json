@@ -15,9 +15,9 @@
   "setup": {
     "modality": "static_secret",
     "credential_capture": {
-      "kind": "api_key",
-      "label": "Jellyfin API Key",
-      "description": "Generate an API key from your Jellyfin instance's admin dashboard and paste it here.",
+      "kind": "username_password",
+      "label": "Jellyfin sign-in details",
+      "description": "Sign in with your normal Jellyfin username and password — you do not need to be a server admin. An admin API key is also accepted as an advanced/secondary option below, but a personal account cannot create one, so username+password is the option almost everyone should use.",
       "submit_label": "Create Jellyfin connection and start first sync",
       "fields": [
         {
@@ -30,22 +30,42 @@
           "env": ["JELLYFIN_BASE_URL"]
         },
         {
-          "name": "secret",
-          "label": "Jellyfin API Key",
+          "name": "username",
+          "label": "Jellyfin Username",
+          "type": "text",
+          "required": false,
+          "secret": true,
+          "autocomplete": "username",
+          "help_text": "Your normal Jellyfin sign-in username — the same one you use at /web/#/login on your server. Any account works, not just an admin. Leave both this and Password blank only if you're using the advanced API Key option below instead.",
+          "env": ["JELLYFIN_USERNAME"]
+        },
+        {
+          "name": "password",
+          "label": "Jellyfin Password",
           "type": "password",
-          "required": true,
+          "required": false,
+          "secret": true,
+          "autocomplete": "current-password",
+          "help_text": "Your normal Jellyfin sign-in password. Sealed as a secret and used only to obtain a per-user access token — never logged or stored in plain text.",
+          "env": ["JELLYFIN_PASSWORD"]
+        },
+        {
+          "name": "secret",
+          "label": "Jellyfin API Key (advanced, admin-only)",
+          "type": "password",
+          "required": false,
           "secret": true,
           "autocomplete": "off",
-          "help_text": "Generate a new API key in your Jellyfin instance's admin dashboard under Dashboard > Advanced > API Keys (path: /web/#/dashboard/keys on your server).",
+          "help_text": "Advanced/secondary option: only a server administrator can generate this, under Dashboard > Advanced > API Keys (path: /web/#/dashboard/keys on your server). Most owners should use Username/Password above instead — a non-admin account cannot create an API key at all.",
           "env": ["JELLYFIN_API_KEY"]
         },
         {
           "name": "jellyfin_user_id",
-          "label": "Jellyfin User ID or Username",
+          "label": "Jellyfin User ID or Username (advanced API Key option only)",
           "type": "text",
           "required": false,
           "autocomplete": "off",
-          "help_text": "An API key authenticates to your server but does not identify a user, so if your server has more than one account you must say which one to collect as. Find your user id or username under Dashboard > Users (path: /web/#/dashboard/users on your server), or in your own profile page's URL. Leave blank if your server has exactly one user.",
+          "help_text": "Only needed with the advanced API Key option: an API key authenticates to your server but does not identify a user, so if your server has more than one account you must say which one to collect as. Find your user id or username under Dashboard > Users (path: /web/#/dashboard/users on your server), or in your own profile page's URL. Not needed when signing in with Username/Password above — that already identifies you.",
           "env": ["JELLYFIN_USER_ID"]
         }
       ]

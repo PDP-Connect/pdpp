@@ -6,11 +6,21 @@
  * PDPP Jellyfin Connector (v0.1.0)
  *
  * Polyfills Jellyfin's v10.11.11+ REST API into the PDPP Collection Profile.
- * Reads JELLYFIN_BASE_URL and JELLYFIN_API_KEY from the environment, plus an
- * optional JELLYFIN_USER_ID (owner-supplied user id or username) used to
- * disambiguate which of the server's users to collect as — an API key is a
- * server-level credential and identifies no user on its own. Emits
- * RECORD/STATE/DONE messages over stdout; reads START from stdin.
+ *
+ * Two coexisting auth paths, resolved in collect():
+ *   PRIMARY (JELLYFIN_USERNAME + JELLYFIN_PASSWORD): POST
+ *     /Users/AuthenticateByName. Available to ANY Jellyfin account — an API
+ *     key is admin-dashboard-only and locks non-admins out of their own
+ *     library entirely. The auth response carries both AccessToken and
+ *     User.Id, so identity is never guessed.
+ *   SECONDARY/ADVANCED (JELLYFIN_API_KEY, optional JELLYFIN_USER_ID): the
+ *     original server-level API key path. Kept working for existing
+ *     connections and for owners who already have an admin key. An API key
+ *     authenticates the server but identifies no user, so a multi-user
+ *     server additionally needs JELLYFIN_USER_ID (owner-supplied user id or
+ *     username) or fails honestly rather than guessing.
+ *
+ * Emits RECORD/STATE/DONE messages over stdout; reads START from stdin.
  *
  * Streams:
  *   libraries (Views, full inventory), items (paginated full inventory per run)
@@ -22,9 +32,15 @@
  *   }
  *
  * Core API surfaces (REST):
+ *   POST /Users/AuthenticateByName — primary-path auth; returns AccessToken
+ *     and User.Id together, so the credential and the identity arrive in one
+ *     call. Requires a well-formed `MediaBrowser Client=..., Device=...,
+ *     DeviceId=..., Version=...` Authorization header — see
+ *     buildMediaBrowserAuthHeader and jellyfin/jellyfin#11484 (a malformed
+ *     header on this exact endpoint wipes the server's Devices table).
  *   GET /System/Info — auth probe, server details
  *   GET /Users — list users; used both to validate an owner-supplied user id
- *     or username, and as the exactly-one-user fallback
+ *     or username, and as the exactly-one-user fallback (secondary path only)
  *   GET /Users/Me — the key's own "current user", if any (a dashboard API
  *     key has no such context and 400s here — see jellyfin/jellyfin#14559 —
  *     but a user-scoped token might succeed)
@@ -43,8 +59,12 @@
  *   - JSON responses bounded by Content-Length before parsing (max 50MB per response)
  *   - Pagination termination guarded by max-page limit (1000 pages per stream)
  *   - TotalRecordCount must be finite nonnegative integer, fail closed on missing/malformed
+ *   - The password is never logged or persisted; only the resulting AccessToken
+ *     is used for subsequent requests, via the header form (never ApiKey=/api_key=
+ *     query params, which leak through server logs and browser history)
  */
 
+import { createHash } from "node:crypto";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
@@ -96,6 +116,40 @@ function validateBaseUrl(urlStr: string): URL {
   }
 
   return url;
+}
+
+// ─── MediaBrowser Auth Header ─────────────────────────────────────────────
+
+const MEDIA_BROWSER_CLIENT = "PDP-Connect";
+const MEDIA_BROWSER_VERSION = "0.1.0";
+
+/**
+ * Build the well-formed `MediaBrowser Client=..., Device=..., DeviceId=...,
+ * Version=...` Authorization header AuthenticateByName requires.
+ *
+ * NON-NEGOTIABLE SAFETY CONSTRAINT: a malformed header on this exact
+ * endpoint is a known Jellyfin defect (jellyfin/jellyfin#11484) that wipes
+ * the server's ENTIRE Devices table, and does not require admin rights to
+ * trigger. Every field must be present and non-empty — pinned by
+ * authenticate-by-name.test.ts so a future edit cannot silently drop one.
+ */
+function buildMediaBrowserAuthHeader(deviceId: string): string {
+  if (!deviceId) {
+    throw new Error("jellyfin_media_browser_device_id_empty");
+  }
+  return `MediaBrowser Client="${MEDIA_BROWSER_CLIENT}", Device="${MEDIA_BROWSER_CLIENT}", DeviceId="${deviceId}", Version="${MEDIA_BROWSER_VERSION}"`;
+}
+
+/**
+ * Derive a stable per-connection DeviceId rather than a fresh random one per
+ * run. AuthenticateByName registers a Devices-table row per distinct
+ * DeviceId; a fresh UUID every run would grow that table unboundedly for a
+ * connector that authenticates on a recurring schedule. The caller seeds
+ * this with the connection's base URL + username, so repeated runs of the
+ * same connection consistently reuse one device entry.
+ */
+function deriveStableDeviceId(seed: string): string {
+  return createHash("sha256").update(seed).digest("hex").slice(0, 32);
 }
 
 /**
@@ -201,6 +255,104 @@ async function jellyfinRequest<T>(baseUrl: string, path: string, apiKey: string)
     throw new Error(`jellyfin_http_${String(result.value.status)}: ${result.value.body.slice(0, 200)}`);
   }
   return JSON.parse(result.value.body) as T;
+}
+
+interface AuthenticateByNameResult {
+  accessToken: string;
+  userId: string;
+}
+
+function userHasId(user: Record<string, unknown> | undefined): user is Record<string, unknown> & { Id: string } {
+  return user !== undefined && typeof user.Id === "string" && user.Id.length > 0;
+}
+
+async function postAuthenticateByName(
+  url: URL,
+  username: string,
+  password: string,
+  mediaBrowserHeader: string
+): Promise<{ body: string; status: number }> {
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: mediaBrowserHeader,
+    },
+    // Header auth only. Never the ApiKey=/api_key= query form, which leaks
+    // through server logs and browser history.
+    body: JSON.stringify({ Username: username, Pw: password }),
+    redirect: "error",
+  });
+
+  rejectOversizedContentLengthHeader(res);
+  const body = res.body === null ? "" : await readBodyWithStreamingCap(res.body);
+  return { body, status: res.status };
+}
+
+/**
+ * Primary auth path: POST /Users/AuthenticateByName. Available to ANY
+ * Jellyfin account (unlike an API key, which only an admin can generate).
+ * The response carries both AccessToken and User.Id in one call, so identity
+ * resolution is never a separate guess.
+ *
+ * SAFETY: always sends a well-formed MediaBrowser Authorization header — a
+ * malformed one on this exact endpoint wipes the server's Devices table
+ * (jellyfin/jellyfin#11484), and that defect does not require admin rights.
+ * See buildMediaBrowserAuthHeader.
+ *
+ * Never swallows a failed auth into a fabricated identity: a non-2xx
+ * response throws jellyfin_auth_failed carrying the real HTTP status, and a
+ * response with a valid status but a missing AccessToken/User.Id throws
+ * rather than proceeding with an absent credential.
+ */
+async function authenticateByName(
+  baseUrl: string,
+  username: string,
+  password: string,
+  deviceId: string
+): Promise<AuthenticateByNameResult> {
+  const base = validateBaseUrl(baseUrl);
+  const url = new URL("Users/AuthenticateByName", base);
+  if (url.origin !== base.origin) {
+    throw new Error("jellyfin_ssrf_rejected_cross_origin");
+  }
+
+  const mediaBrowserHeader = buildMediaBrowserAuthHeader(deviceId);
+
+  const result = await httpGovernor.request<{ body: string; status: number }, { body: string; status: number }>(
+    () => postAuthenticateByName(url, username, password, mediaBrowserHeader),
+    (raw) => ({ status: raw.status, value: raw })
+  );
+
+  if (result.value.status === 401 || result.value.status === 403) {
+    throw new Error("jellyfin_auth_failed");
+  }
+  if (result.value.status < 200 || result.value.status >= 300) {
+    throw new Error(`jellyfin_http_${String(result.value.status)}: ${result.value.body.slice(0, 200)}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.value.body);
+  } catch {
+    // biome-ignore lint/style/useErrorCause: intentional — JSON.parse's error can echo a snippet of the response body, which is not useful beyond the message below
+    throw new Error("jellyfin_authenticate_by_name_response_malformed: response was not valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("jellyfin_authenticate_by_name_response_malformed: response was not an object");
+  }
+  const resp = parsed as Record<string, unknown>;
+  const accessToken = typeof resp.AccessToken === "string" ? resp.AccessToken : "";
+  const user = resp.User as Record<string, unknown> | undefined;
+  if (!accessToken) {
+    throw new Error("jellyfin_authenticate_by_name_no_access_token: response had no AccessToken");
+  }
+  if (!userHasId(user)) {
+    throw new Error("jellyfin_authenticate_by_name_no_user_id: response had no User.Id");
+  }
+
+  return { accessToken, userId: user.Id };
 }
 
 /**
@@ -319,10 +471,6 @@ interface JellyfinConn {
 /** Max number of display names to include in an ambiguous-user error, to avoid dumping the whole roster. */
 const AMBIGUOUS_USER_SAMPLE_SIZE = 5;
 
-function userHasId(user: Record<string, unknown> | undefined): user is Record<string, unknown> & { Id: string } {
-  return user !== undefined && typeof user.Id === "string" && user.Id.length > 0;
-}
-
 /**
  * Build the improved ambiguous-user error: names a bounded sample of display
  * names (never IDs — those can be sensitive) so the owner knows what to type
@@ -336,7 +484,9 @@ function ambiguousUserError(users: readonly Record<string, unknown>[]): Error {
   const sampleText = sampleNames.length > 0 ? ` Available users include: ${sampleNames.join(", ")}.` : "";
   return new Error(
     `jellyfin_ambiguous_user: Users list returned ${users.length} users; an API key does not identify which one to collect as.${sampleText} ` +
-      "Set the 'Jellyfin User ID or Username' field on this connection to the user you want to collect as."
+      "Recommended fix: switch this connection to Username/Password sign-in instead — it identifies you " +
+      "automatically and needs no extra field. Or, to keep using the API key, set the 'Jellyfin User ID or " +
+      "Username' field on this connection to the user you want to collect as."
   );
 }
 
@@ -584,10 +734,18 @@ async function collectItems(
 /** Map a collect() failure to a SKIP_RESULT reason for both streams. */
 function skipReasonFor(message: string): { reason: string; message: string } {
   if (message === "jellyfin_auth_failed") {
-    return { reason: "jellyfin_auth_failed", message: "Jellyfin API key or token invalid" };
+    return { reason: "jellyfin_auth_failed", message: "Jellyfin username/password or API key invalid" };
   }
   if (message === "jellyfin_missing_credentials") {
-    return { reason: "jellyfin_missing_credentials", message: "Missing JELLYFIN_BASE_URL and/or JELLYFIN_API_KEY" };
+    return {
+      reason: "jellyfin_missing_credentials",
+      message:
+        "Missing JELLYFIN_BASE_URL and either JELLYFIN_USERNAME+JELLYFIN_PASSWORD (recommended — works for " +
+        "any account) or JELLYFIN_API_KEY (admin-only, advanced)",
+    };
+  }
+  if (message.startsWith("jellyfin_authenticate_by_name_")) {
+    return { reason: "jellyfin_auth_failed", message: `Jellyfin sign-in failed: ${message}` };
   }
   if (message.startsWith("jellyfin_http_")) {
     // HTTP errors during libraries fetch affect both; during items affect only items.
@@ -605,28 +763,70 @@ async function emitErrorSkipResults(emit: CollectContext["emit"], error: unknown
   }
 }
 
-async function collect(ctx: CollectContext): Promise<void> {
-  const { credentials, requested, emit, progress } = ctx;
-
-  const baseUrl = (credentials.base_url as string | undefined) ?? process.env.JELLYFIN_BASE_URL;
-  const apiKey = (credentials.secret as string | undefined) ?? process.env.JELLYFIN_API_KEY;
-  const ownerSuppliedUserId = (credentials.jellyfin_user_id as string | undefined) ?? process.env.JELLYFIN_USER_ID;
-
-  if (!(baseUrl && apiKey)) {
-    throw new Error("jellyfin_missing_credentials");
+/**
+ * Resolve which of the two credential paths to use and produce the
+ * connection to collect with. Never fabricates a token or a user: an
+ * incomplete primary-path pair (only one of username/password present) is
+ * treated as absent rather than silently falling through to the api_key
+ * path with half the intended credential ignored.
+ *
+ * PRIMARY (username + password present): AuthenticateByName. The response
+ * carries both the access token and User.Id, so userId comes free — the
+ * owner never supplies one for this path.
+ *
+ * SECONDARY/ADVANCED (api_key present, primary absent): the original
+ * server-level API key path. Since an API key does not identify a user,
+ * resolveUserId still runs its owner-supplied-id / Users-Me / single-user
+ * resolution chain, and fails honestly (pointing at the primary path as the
+ * remedy) when the server has more than one user and none of those signals
+ * resolve.
+ */
+async function resolveConnection(
+  baseUrl: string,
+  username: string | undefined,
+  password: string | undefined,
+  apiKey: string | undefined,
+  ownerSuppliedUserId: string | undefined,
+  progress: CollectContext["progress"]
+): Promise<JellyfinConn> {
+  if (username && password) {
+    await progress("Signing in to Jellyfin with username and password");
+    const deviceId = deriveStableDeviceId(`${baseUrl} ${username}`);
+    const { accessToken, userId } = await authenticateByName(baseUrl, username, password, deviceId);
+    await progress("Signed in to Jellyfin");
+    return { baseUrl, apiKey: accessToken, userId };
   }
 
-  const now = nowIso();
-
-  try {
-    // Auth probe: GET /System/Info
+  if (apiKey) {
     await progress("Probing Jellyfin server");
     const sysInfo = await jellyfinRequest(baseUrl, "System/Info", apiKey);
     validateSystemInfo(sysInfo);
     await progress("Connected to Jellyfin server");
 
     const userId = await resolveUserId(baseUrl, apiKey, ownerSuppliedUserId);
-    const conn: JellyfinConn = { baseUrl, apiKey, userId };
+    return { baseUrl, apiKey, userId };
+  }
+
+  throw new Error("jellyfin_missing_credentials");
+}
+
+async function collect(ctx: CollectContext): Promise<void> {
+  const { credentials, requested, emit, progress } = ctx;
+
+  const baseUrl = (credentials.base_url as string | undefined) ?? process.env.JELLYFIN_BASE_URL;
+  const username = (credentials.username as string | undefined) ?? process.env.JELLYFIN_USERNAME;
+  const password = (credentials.password as string | undefined) ?? process.env.JELLYFIN_PASSWORD;
+  const apiKey = (credentials.secret as string | undefined) ?? process.env.JELLYFIN_API_KEY;
+  const ownerSuppliedUserId = (credentials.jellyfin_user_id as string | undefined) ?? process.env.JELLYFIN_USER_ID;
+
+  if (!(baseUrl && ((username && password) || apiKey))) {
+    throw new Error("jellyfin_missing_credentials");
+  }
+
+  const now = nowIso();
+
+  try {
+    const conn = await resolveConnection(baseUrl, username, password, apiKey, ownerSuppliedUserId, progress);
 
     if (requested.has("libraries")) {
       await collectLibraries(conn, ctx, now);
@@ -652,3 +852,4 @@ export const __setMaxPagesPerStream = (n: number) => {
 export const __setMaxJsonBytes = (n: number) => {
   MAX_JSON_BYTES = n;
 };
+export { buildMediaBrowserAuthHeader, deriveStableDeviceId };

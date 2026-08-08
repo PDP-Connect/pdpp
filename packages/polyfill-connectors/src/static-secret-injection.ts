@@ -46,6 +46,16 @@ interface StaticSecretInjectionMapping {
   /** Credential kind this connector authenticates with. */
   readonly credentialKind: StaticSecretCredentialKind;
   /**
+   * Names from `secretFieldEnvVars` that may be absent from the recovered
+   * bundle without failing injection. Every other `secretFieldEnvVars` name
+   * remains required. Used when one connector accepts more than one
+   * credential shape sealed into the SAME bundle (e.g. jellyfin's
+   * username+password OR a bare api_key) rather than two mutually exclusive
+   * `acceptedCredentialVariants`, because the manifest's `credential_kind` is
+   * one fixed string and cannot switch between variants at capture time.
+   */
+  readonly optionalSecretBundleFields?: ReadonlySet<string>;
+  /**
    * Env var name(s) the connector reads the secret from. The connector resolves
    * the first non-empty; the injection sets all of them to the same recovered
    * value so the connector finds it regardless of which alias it prefers.
@@ -104,6 +114,9 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
     }
     Object.freeze(descriptor.setupFieldEnvVars);
   }
+  if (descriptor.optionalSecretBundleFields) {
+    Object.freeze(descriptor.optionalSecretBundleFields);
+  }
   if (descriptor.acceptedCredentialVariants) {
     for (const variant of descriptor.acceptedCredentialVariants) {
       freezeMapping(variant);
@@ -129,7 +142,9 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
  *   - chase/auto-login/chase.ts: CHASE_USERNAME / CHASE_PASSWORD
  *   - usaa/auto-login/usaa.ts: USAA_USERNAME / USAA_PASSWORD
  *   - steam/index.ts auth.required: STEAM_API_KEY, STEAM_USER_ID
- *   - jellyfin/index.ts: JELLYFIN_BASE_URL / JELLYFIN_API_KEY / JELLYFIN_USER_ID (read via process.env fallback)
+ *   - jellyfin/index.ts: JELLYFIN_USERNAME / JELLYFIN_PASSWORD (primary, AuthenticateByName) or
+ *     JELLYFIN_API_KEY (secondary/advanced, admin-only) — JELLYFIN_BASE_URL / JELLYFIN_USER_ID are
+ *     non-secret setup fields (read via process.env fallback)
  *   - apple_contacts/index.ts: APPLE_ID / APPLE_ID_EMAIL, APPLE_APP_SPECIFIC_PASSWORD
  *   - groupme/index.ts auth: GROUPME_ACCESS_TOKEN
  *
@@ -228,12 +243,39 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
       },
     }),
     jellyfin: freezeStaticSecretDescriptor({
-      credentialKind: "api_key",
-      secretEnvVars: ["JELLYFIN_API_KEY"],
+      // A single fixed credential_kind is sealed at capture time (see
+      // expectedStaticSecretCredentialKind), so both the primary path
+      // (username+password, AuthenticateByName) and the secondary/advanced
+      // path (a bare admin api_key, bundle field name "secret" to match the
+      // manifest's field) must fit in ONE bundle shape rather than two
+      // acceptedCredentialVariants — the manifest cannot switch kinds
+      // per-submission. username/password/secret are therefore all optional
+      // bundle fields; jellyfin/index.ts's collect() is what actually
+      // enforces "at least one complete path was supplied".
+      credentialKind: "username_password",
+      secretFieldEnvVars: {
+        username: ["JELLYFIN_USERNAME"],
+        password: ["JELLYFIN_PASSWORD"],
+        secret: ["JELLYFIN_API_KEY"],
+      },
+      optionalSecretBundleFields: new Set(["username", "password", "secret"]),
       setupFieldEnvVars: {
         base_url: ["JELLYFIN_BASE_URL"],
         jellyfin_user_id: ["JELLYFIN_USER_ID"],
       },
+      // Backward compat: connections captured before this change stored a
+      // bare api_key string (credentialKind "api_key", not a JSON bundle).
+      // Keep that shape runnable without forcing a re-capture.
+      acceptedCredentialVariants: [
+        {
+          credentialKind: "api_key",
+          secretEnvVars: ["JELLYFIN_API_KEY"],
+          setupFieldEnvVars: {
+            base_url: ["JELLYFIN_BASE_URL"],
+            jellyfin_user_id: ["JELLYFIN_USER_ID"],
+          },
+        },
+      ],
     }),
     apple_contacts: freezeStaticSecretDescriptor({
       credentialKind: "app_password",
@@ -349,7 +391,8 @@ function injectSecretBundle(
   fragment: Record<string, string>,
   connectorId: string,
   secret: string,
-  secretFieldEnvVars: StaticSecretConnectorDescriptor["secretFieldEnvVars"]
+  secretFieldEnvVars: StaticSecretConnectorDescriptor["secretFieldEnvVars"],
+  optionalSecretBundleFields: StaticSecretInjectionMapping["optionalSecretBundleFields"]
 ) {
   if (!secretFieldEnvVars) {
     return;
@@ -358,6 +401,9 @@ function injectSecretBundle(
   for (const [fieldName, envVars] of Object.entries(secretFieldEnvVars)) {
     const value = bundle[fieldName];
     if (!value) {
+      if (optionalSecretBundleFields?.has(fieldName)) {
+        continue;
+      }
       throw new StaticSecretInjectionError(
         "recovered_secret_bundle_field_missing",
         `Connector '${connectorId}' credential bundle is missing required field '${fieldName}'.`
@@ -417,7 +463,13 @@ export function buildConnectionScopedSecretEnv(
   const mapping = injectionMappingForRecoveredSecret(connectorId, descriptor, recovered);
   const fragment: Record<string, string> = {};
   injectSingleSecret(fragment, mapping.secretEnvVars, recovered.secret);
-  injectSecretBundle(fragment, connectorId, recovered.secret, mapping.secretFieldEnvVars);
+  injectSecretBundle(
+    fragment,
+    connectorId,
+    recovered.secret,
+    mapping.secretFieldEnvVars,
+    mapping.optionalSecretBundleFields
+  );
   injectSetupFields(fragment, mapping.setupFieldEnvVars, sourceBinding);
   return fragment;
 }

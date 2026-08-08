@@ -52,22 +52,26 @@ test("steam injection sets the API key secret and Steam ID setup field", () => {
   });
 });
 
-test("jellyfin injection sets the API key secret and base URL setup field", () => {
+test("jellyfin injection sets the username+password secrets and base URL setup field (primary path)", () => {
   const env = buildConnectionScopedSecretEnv(
     "jellyfin",
-    { secret: "synthetic-jellyfin-api-key", credentialKind: "api_key" },
+    {
+      secret: JSON.stringify({ username: "alice", password: "synthetic-password" }),
+      credentialKind: "username_password",
+    },
     { kind: "static_secret_draft", setup_fields: { base_url: "https://jellyfin.example.com" } }
   );
   assert.deepEqual(env, {
-    JELLYFIN_API_KEY: "synthetic-jellyfin-api-key",
+    JELLYFIN_USERNAME: "alice",
+    JELLYFIN_PASSWORD: "synthetic-password",
     JELLYFIN_BASE_URL: "https://jellyfin.example.com",
   });
 });
 
-test("jellyfin injection also sets the owner-supplied user id setup field when present", () => {
+test("jellyfin injection sets only the api_key secret when username/password are absent (secondary path)", () => {
   const env = buildConnectionScopedSecretEnv(
     "jellyfin",
-    { secret: "synthetic-jellyfin-api-key", credentialKind: "api_key" },
+    { secret: JSON.stringify({ secret: "synthetic-jellyfin-api-key" }), credentialKind: "username_password" },
     {
       kind: "static_secret_draft",
       setup_fields: { base_url: "https://jellyfin.example.com", jellyfin_user_id: "alice" },
@@ -101,10 +105,9 @@ test("groupme injection sets the access token secret", () => {
   assert.deepEqual(env, { GROUPME_ACCESS_TOKEN: "synthetic-groupme-token" });
 });
 
-test("steam/jellyfin/apple_contacts/groupme registry env vars match their connector manifests", () => {
+test("steam/apple_contacts/groupme registry env vars match their connector manifests", () => {
   const cases = [
     { connectorId: "steam", secretField: "secret", setupFields: ["steamid"] },
-    { connectorId: "jellyfin", secretField: "secret", setupFields: ["base_url", "jellyfin_user_id"] },
     { connectorId: "apple_contacts", secretField: "secret", setupFields: ["account_email"] },
     { connectorId: "groupme", secretField: "secret", setupFields: [] },
   ];
@@ -123,6 +126,33 @@ test("steam/jellyfin/apple_contacts/groupme registry env vars match their connec
         `${connectorId} setup field env mismatch (${setupField})`
       );
     }
+  }
+});
+
+test("jellyfin registry secret-bundle and setup-field env vars match its connector manifest", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifests/jellyfin.json", import.meta.url), "utf8"));
+  const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[] }>;
+  const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY.jellyfin;
+  assert.ok(descriptor, "registry must include jellyfin");
+  for (const bundleField of ["username", "password", "secret"]) {
+    const manifestField = fields.find((field) => field.name === bundleField);
+    assert.deepEqual(
+      descriptor.secretFieldEnvVars?.[bundleField],
+      manifestField?.env,
+      `jellyfin secret bundle env mismatch (${bundleField})`
+    );
+    assert.ok(
+      descriptor.optionalSecretBundleFields?.has(bundleField),
+      `jellyfin secret bundle field '${bundleField}' must be optional so either credential path can be sealed alone`
+    );
+  }
+  for (const setupField of ["base_url", "jellyfin_user_id"]) {
+    const manifestField = fields.find((field) => field.name === setupField);
+    assert.deepEqual(
+      descriptor.setupFieldEnvVars?.[setupField],
+      manifestField?.env,
+      `jellyfin setup field env mismatch (${setupField})`
+    );
   }
 });
 
