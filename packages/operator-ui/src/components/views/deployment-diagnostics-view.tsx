@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import {
   buildDatasetStreamSizeModel,
   buildDatasetTopModel,
+  buildStreamConnectionLabels,
   type DatasetStreamSizeInput,
   type DatasetTopRowInput,
 } from "../../lib/dataset-grains.ts";
@@ -162,7 +163,7 @@ export function DeploymentDiagnosticsView({
           retainedBytes={retainedBytes}
         />
         <SourceStorageSection sources={sources} truncated={sourcesTruncated} />
-        <StreamSizeSection rows={streamSizes} />
+        <StreamSizeSection connections={sources} rows={streamSizes} />
         <TopRecordsAndBlobsSection topBlobs={topBlobs} topRecords={topRecords} />
       </div>
       <div className="scroll-mt-16" id="diagnostics">
@@ -702,11 +703,22 @@ function SourceStorageSection({
 // Already computed and exposed at `GET /_ref/dataset/size?grain=stream`; this
 // wires it into the console for the first time. Compact by design (the owner
 // does not need every stream surfaced everywhere, just somewhere reachable).
-function StreamSizeSection({ rows }: { rows?: readonly DatasetStreamSizeInput[] }) {
+function StreamSizeSection({
+  connections,
+  rows,
+}: {
+  connections?: readonly SourceStorageInput[];
+  rows?: readonly DatasetStreamSizeInput[];
+}) {
   if (!rows || rows.length === 0) {
     return null;
   }
-  const model = buildDatasetStreamSizeModel(rows);
+  // Disambiguates rows that would otherwise share an identical
+  // `connector / stream` label (e.g. three ChatGPT connections). Built from
+  // the same connector-summary list the per-source table above already
+  // fetched — no new endpoint or query.
+  const connectionLabels = buildStreamConnectionLabels(connections ?? []);
+  const model = buildDatasetStreamSizeModel(rows, connectionLabels);
   if (model.rows.length === 0) {
     return null;
   }
@@ -770,13 +782,7 @@ function TopRecordsAndBlobsSection({
   );
 }
 
-function TopList({
-  title,
-  rows,
-}: {
-  title: string;
-  rows: ReturnType<typeof buildDatasetTopModel>["rows"];
-}) {
+function TopList({ title, rows }: { title: string; rows: ReturnType<typeof buildDatasetTopModel>["rows"] }) {
   return (
     <div>
       <p className="pdpp-eyebrow text-muted-foreground">{title}</p>
@@ -790,7 +796,7 @@ function TopList({
         <tbody>
           {rows.map((row) => (
             <tr className="border-border/60 border-t" key={row.key}>
-              <td className="px-2 py-1.5 truncate font-mono text-xs" title={row.label}>
+              <td className="truncate px-2 py-1.5 font-mono text-xs" title={row.label}>
                 {row.label}
               </td>
               <td className={`px-2 py-1.5 text-right tabular-nums ${row.sizeMeasured ? "" : "text-muted-foreground"}`}>

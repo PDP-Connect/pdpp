@@ -24,10 +24,37 @@ test("only the first kind on a trace determines the label", () => {
   assert.equal(traceKindLabel(["disclosure.served", "query.received"]), "Data read");
 });
 
-test("unrecognized, empty, or missing kinds are Unclassified, never guessed", () => {
-  assert.equal(traceKindLabel(["some_kind_the_console_has_never_seen"]), "Unclassified");
+test("empty or missing kinds are Unclassified, never guessed", () => {
   assert.equal(traceKindLabel([]), "Unclassified");
   assert.equal(traceKindLabel(null), "Unclassified");
   assert.equal(traceKindLabel(undefined), "Unclassified");
   assert.equal(traceKindLabel([""]), "Unclassified");
+});
+
+test("an unmapped kind surfaces the raw kind string, not a blank Unclassified", () => {
+  assert.equal(traceKindLabel(["some_kind_the_console_has_never_seen"]), "some_kind_the_console_has_never_seen");
+});
+
+test("a pathologically long unmapped kind is truncated, not left to blow out the column", () => {
+  const longKind = `custom.${"x".repeat(80)}`;
+  const label = traceKindLabel([longKind]);
+  assert.ok(label.length <= 40);
+  assert.ok(label.endsWith("…"));
+});
+
+test("live mutation kinds are labeled, not left Unclassified (regression: 28% of /audit page 1 was groupme mutation traffic)", () => {
+  assert.equal(traceKindLabel(["mutation.requested"]), "Data write");
+  assert.equal(traceKindLabel(["mutation.completed"]), "Data write");
+  assert.equal(traceKindLabel(["mutation.rejected"]), "Data write rejected");
+});
+
+test("every kind actually emitted by the reference implementation has a label (fails when live data outruns the map)", () => {
+  // Mirrors the emitMutationEvent(...) call sites in
+  // reference-implementation/server — keep in sync if a new mutation kind
+  // is introduced there, the same way the audit's Type column should track
+  // any other newly emitted event kind.
+  const liveEmittedKinds = ["mutation.requested", "mutation.completed", "mutation.rejected"];
+  for (const kind of liveEmittedKinds) {
+    assert.notEqual(traceKindLabel([kind]), "Unclassified", `expected a label for live kind "${kind}"`);
+  }
 });

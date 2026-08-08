@@ -117,6 +117,27 @@ const TARGETS = [
     expect: "served",
   },
   {
+    connector: "jellyfin",
+    name: "Users/AuthenticateByName (root-served, NOT /api, POST)",
+    url: (base) => `${base.replace(/\/+$/, "")}/Users/AuthenticateByName`,
+    baseEnv: "JELLYFIN_BASE_URL",
+    method: "POST",
+    body: { Username: "reachability-probe-nonexistent-user", Pw: "" },
+    // A well-formed MediaBrowser header, matching connectors/jellyfin/index.ts
+    // buildMediaBrowserAuthHeader() exactly. NEVER send a malformed one here —
+    // a malformed Authorization header on this exact endpoint wipes the
+    // server's entire Devices table (jellyfin/jellyfin#11484) and does not
+    // require admin rights. This reachability check needs the real shape
+    // anyway: an ABSENT header 400s (inconclusive), but a well-formed header
+    // with bogus credentials 401s cleanly, confirmed live against
+    // jellyfin.vivid.fish — see the primary-path research entry.
+    headers: {
+      Authorization:
+        'MediaBrowser Client="PDP-Connect-Reachability-Probe", Device="PDP-Connect-Reachability-Probe", DeviceId="reachability-probe", Version="0.1.0"',
+    },
+    expect: "refused",
+  },
+  {
     connector: "google_calendar",
     name: "calendar/v3/users/me/calendarList",
     url: "https://www.googleapis.com/calendar/v3/users/me/calendarList",
@@ -151,11 +172,17 @@ const TARGETS = [
   },
 ];
 
-async function probe(url, method) {
+async function probe(url, method, body, headers) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(url, { method: method ?? "GET", redirect: "manual", signal: controller.signal });
+    const res = await fetch(url, {
+      method: method ?? "GET",
+      redirect: "manual",
+      signal: controller.signal,
+      headers: { ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
     return { status: res.status };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err), status: 0 };
@@ -204,7 +231,7 @@ for (const target of TARGETS) {
     url = url(base);
   }
   // biome-ignore lint/performance/noAwaitInLoops: sequential on purpose — parallel probes against many providers read as scanning.
-  const { status } = await probe(url, target.method);
+  const { status } = await probe(url, target.method, target.body, target.headers);
   const { note, verdict } = classify(target, status);
   results.push({ connector: target.connector, name: target.name, note, status, verdict, url });
 }

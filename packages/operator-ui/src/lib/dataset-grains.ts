@@ -30,6 +30,46 @@ export interface DatasetStreamSizeInput {
   readonly total_retained_bytes?: number | null;
 }
 
+/**
+ * The `connector_instance_id -> human connection label` lookup this module
+ * needs to disambiguate stream rows. Built by the caller from the same
+ * connector-summary list (`GET /_ref/connectors`) that already backs
+ * `buildSourceStorageModel` — no new endpoint. Declared locally (not
+ * importing `RefConnectorSummary`) for the same reuse reason as
+ * `SourceStorageInput`.
+ */
+export interface StreamConnectionLabelInput {
+  readonly connector_instance_id?: string | null;
+  readonly display_name?: string | null;
+  readonly revoked_at?: string | null;
+}
+
+/**
+ * Build a `connector_instance_id -> label` map for disambiguating stream
+ * rows that share a `connector_id`. Falls back to the bare
+ * `connector_instance_id` when a connection has no display name — never a
+ * fabricated or guessed label. A revoked connection is marked "(revoked)" so
+ * a duplicate `chatgpt / messages` row doesn't read as three equally-live
+ * connections when two are gone.
+ */
+export function buildStreamConnectionLabels(
+  connections: readonly StreamConnectionLabelInput[]
+): ReadonlyMap<string, string> {
+  const labels = new Map<string, string>();
+  for (const connection of connections) {
+    if (typeof connection.connector_instance_id !== "string" || connection.connector_instance_id.length === 0) {
+      continue;
+    }
+    const display =
+      typeof connection.display_name === "string" && connection.display_name.length > 0
+        ? connection.display_name
+        : connection.connector_instance_id;
+    const label = connection.revoked_at ? `${display} (revoked)` : display;
+    labels.set(connection.connector_instance_id, label);
+  }
+  return labels;
+}
+
 export interface DatasetStreamSizeRow {
   /** Stable React key. */
   readonly key: string;
@@ -58,13 +98,40 @@ function streamLabel(item: DatasetStreamSizeInput): string {
 /**
  * Build the render-model for the stream-grain size table
  * (`GET /_ref/dataset/size?grain=stream`).
+ *
+ * `connectionLabels` (from {@link buildStreamConnectionLabels}) disambiguates
+ * rows that would otherwise share an identical `connector / stream` label —
+ * e.g. three ChatGPT connections all producing a `chatgpt / messages` row.
+ * The connection label is appended ONLY when the base label is a real
+ * duplicate within this row set, so a stream with just one connection stays
+ * as clean as before. Rows whose `connector_instance_id` isn't in the map
+ * (connector deleted, or map omitted) fall back to the bare
+ * `connector_instance_id` — never fabricated, never silently merged.
  */
-export function buildDatasetStreamSizeModel(rows: readonly DatasetStreamSizeInput[]): DatasetStreamSizeModel {
-  const withBytes = rows.map((row, index) => ({
-    bytes: isFiniteNonNegative(row.total_retained_bytes) ? row.total_retained_bytes : null,
-    key: `${row.connector_instance_id ?? row.connector_id ?? "unknown"}::${row.stream ?? "unknown"}::${index}`,
-    label: streamLabel(row),
-  }));
+export function buildDatasetStreamSizeModel(
+  rows: readonly DatasetStreamSizeInput[],
+  connectionLabels?: ReadonlyMap<string, string>
+): DatasetStreamSizeModel {
+  const baseLabelCounts = new Map<string, number>();
+  for (const row of rows) {
+    const label = streamLabel(row);
+    baseLabelCounts.set(label, (baseLabelCounts.get(label) ?? 0) + 1);
+  }
+
+  const withBytes = rows.map((row, index) => {
+    const base = streamLabel(row);
+    const isDuplicate = (baseLabelCounts.get(base) ?? 0) > 1;
+    const instanceId = typeof row.connector_instance_id === "string" ? row.connector_instance_id : null;
+    let disambiguator: string | null = null;
+    if (isDuplicate && instanceId) {
+      disambiguator = connectionLabels?.get(instanceId) ?? instanceId;
+    }
+    return {
+      bytes: isFiniteNonNegative(row.total_retained_bytes) ? row.total_retained_bytes : null,
+      key: `${row.connector_instance_id ?? row.connector_id ?? "unknown"}::${row.stream ?? "unknown"}::${index}`,
+      label: disambiguator ? `${base} (${disambiguator})` : base,
+    };
+  });
 
   // Bytes descending; unmeasured rows sort last as a block. Ties (including
   // the all-unmeasured tail) break by label for a stable order, matching

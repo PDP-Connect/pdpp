@@ -94,7 +94,7 @@ export function RenameConnection({ connectionId, currentLabel, displayName, type
       <span className="inline-flex flex-col items-start gap-1">
         <button
           aria-label={`Rename ${displayName}`}
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors before:absolute before:inset-[-10px] before:content-[''] hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           onClick={() => setEditing(true)}
           title="Rename"
           type="button"

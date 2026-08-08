@@ -249,7 +249,8 @@
 .pdpp-monogram--tinted {
   color: oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h);
   background: oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h / 12%);
-  box-shadow: inset 0 0 0 1px oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h / 42%);
+  box-shadow: inset 0 0 0 1px
+    oklch(from oklch(0.55 0.12 var(--pdpp-monogram-hue)) l c h / 42%);
 }
 
 /* ─── Endorsement — status typed by the protocol ─────────────────
@@ -311,6 +312,8 @@
   display: inline-flex;
   gap: 6px;
   align-items: center;
+  justify-content: center;
+  min-height: 44px;
   padding: 9px 18px;
   font-family: var(--font-sans);
   font-size: 0.84rem;
@@ -369,6 +372,10 @@
   background: var(--destructive-tint);
 }
 .pdpp-btn--sm {
+  /* Deliberately opts out of the default size's 44px touch-target floor —
+     `sm` is for compact inline contexts (e.g. Save/Cancel beside a rename
+     field), not a bar violation the P2 touch-target fix targets. */
+  min-height: 0;
   padding: 6px 12px;
   font-size: 0.75rem;
 }
@@ -2406,8 +2413,12 @@
   min-width: 0;
 }
 /* The "is not" exclude toggle (⊘). Quiet by default; turns warning-colored when
-   active so an exclusion reads as a distinct, intentional negative scope. */
+   active so an exclusion reads as a distinct, intentional negative scope.
+   The visible glyph stays small (grid-sized, ~21x20px) but `::before` grows
+   the actual hit area to >=44px in each dimension without changing visual
+   weight or the grid track it sits in. */
 .rr-x-facet-not {
+  position: relative;
   padding: 4px 5px;
   font-family: var(--font-sans);
   font-size: 12px;
@@ -2420,6 +2431,11 @@
   transition:
     opacity var(--duration-state) var(--ease-standard),
     color var(--duration-state) var(--ease-standard);
+}
+.rr-x-facet-not::before {
+  position: absolute;
+  inset: -12px;
+  content: "";
 }
 .rr-x-facet-row:hover .rr-x-facet-not {
   opacity: 0.8;

@@ -41,12 +41,19 @@ import { formatTotalRecordsLabel } from "./total-records-label.ts";
 export interface SourceStorageInput {
   readonly connection_id: string;
   readonly connector_display_name?: string;
+  /**
+   * Present so the deployment view's stream-size disambiguator
+   * ({@link StreamConnectionLabelInput} in `dataset-grains.ts`) can reuse
+   * this same connector-summary list without a second fetch.
+   */
+  readonly connector_instance_id?: string | null;
   readonly display_name?: string;
   readonly retained_bytes?: {
     readonly blob_bytes?: number | null;
     readonly record_changes_json_bytes?: number | null;
     readonly record_json_bytes?: number | null;
   } | null;
+  readonly revoked_at?: string | null;
   readonly total_records?: number;
   readonly total_records_state?: RefCountState;
   readonly total_retained_bytes?: number | null;

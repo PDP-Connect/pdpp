@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildDatasetStreamSizeModel, buildDatasetTopModel } from "./dataset-grains.ts";
+import { buildDatasetStreamSizeModel, buildDatasetTopModel, buildStreamConnectionLabels } from "./dataset-grains.ts";
 
 // ─── stream-grain model ─────────────────────────────────────────────────────
 
@@ -56,6 +56,77 @@ test("buildDatasetStreamSizeModel sorts measured rows before unmeasured rows, by
     model.rows.map((r) => r.label),
     ["c / large", "a / small", "b / unmeasured"]
   );
+});
+
+// ─── stream disambiguation (regression: 3 ChatGPT connections all rendered
+// as an identical "chatgpt / messages" row, indistinguishable) ─────────────
+
+test("buildDatasetStreamSizeModel disambiguates rows that share a connector/stream label", () => {
+  const connectionLabels = buildStreamConnectionLabels([
+    { connector_instance_id: "cin_chatgpt_1", display_name: "ChatGPT" },
+    { connector_instance_id: "cin_chatgpt_2", display_name: "ChatGPT (work)" },
+    { connector_instance_id: "cin_chatgpt_3", display_name: "ChatGPT (old)" },
+  ]);
+  const model = buildDatasetStreamSizeModel(
+    [
+      {
+        connector_id: "chatgpt",
+        connector_instance_id: "cin_chatgpt_1",
+        stream: "messages",
+        total_retained_bytes: 58_000_000,
+      },
+      {
+        connector_id: "chatgpt",
+        connector_instance_id: "cin_chatgpt_2",
+        stream: "messages",
+        total_retained_bytes: 57_300_000,
+      },
+      {
+        connector_id: "chatgpt",
+        connector_instance_id: "cin_chatgpt_3",
+        stream: "messages",
+        total_retained_bytes: 44_900_000,
+      },
+    ],
+    connectionLabels
+  );
+  const labels = model.rows.map((r) => r.label);
+  assert.deepEqual(labels, [
+    "chatgpt / messages (ChatGPT)",
+    "chatgpt / messages (ChatGPT (work))",
+    "chatgpt / messages (ChatGPT (old))",
+  ]);
+  // Never identical — the whole point of the disambiguator.
+  assert.equal(new Set(labels).size, labels.length);
+});
+
+test("buildDatasetStreamSizeModel does not disambiguate a stream with only one connection", () => {
+  const connectionLabels = buildStreamConnectionLabels([
+    { connector_instance_id: "cin_gmail_1", display_name: "Gmail" },
+  ]);
+  const model = buildDatasetStreamSizeModel(
+    [{ connector_id: "gmail", connector_instance_id: "cin_gmail_1", stream: "threads", total_retained_bytes: 1000 }],
+    connectionLabels
+  );
+  assert.equal(model.rows[0]?.label, "gmail / threads");
+});
+
+test("buildDatasetStreamSizeModel falls back to the bare connector_instance_id, never a fabricated label, when a duplicate row has no display name", () => {
+  const model = buildDatasetStreamSizeModel([
+    { connector_id: "reddit", connector_instance_id: "cin_reddit_1", stream: "saved", total_retained_bytes: 10 },
+    { connector_id: "reddit", connector_instance_id: "cin_reddit_2", stream: "saved", total_retained_bytes: 20 },
+  ]);
+  const labels = model.rows.map((r) => r.label);
+  assert.deepEqual(labels, ["reddit / saved (cin_reddit_2)", "reddit / saved (cin_reddit_1)"]);
+});
+
+test("buildStreamConnectionLabels marks a revoked connection so a duplicate row does not read as equally live", () => {
+  const labels = buildStreamConnectionLabels([
+    { connector_instance_id: "cin_chatgpt_1", display_name: "ChatGPT", revoked_at: null },
+    { connector_instance_id: "cin_chatgpt_2", display_name: "ChatGPT (old)", revoked_at: "2026-01-01T00:00:00Z" },
+  ]);
+  assert.equal(labels.get("cin_chatgpt_1"), "ChatGPT");
+  assert.equal(labels.get("cin_chatgpt_2"), "ChatGPT (old) (revoked)");
 });
 
 // ─── top-N model ────────────────────────────────────────────────────────────

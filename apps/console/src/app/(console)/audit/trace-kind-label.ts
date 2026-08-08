@@ -11,8 +11,11 @@
  * human label, same spirit as `traceEndorseStatus` turning a raw status into
  * an `Endorse` chip.
  *
- * An unrecognized kind is genuinely unclassified, so it MUST say so plainly
- * rather than guessing or falling back to a misleading definite label.
+ * A kind with no entry below has no human label yet, so it MUST surface the
+ * raw kind string itself (bounded) rather than a blank "Unclassified" or a
+ * guessed definite label — an unmapped kind stays visible as a coverage gap
+ * instead of disappearing into an indistinguishable bucket. Only an entirely
+ * missing/empty `kinds` array is truly Unclassified.
  */
 const TRACE_KIND_LABELS: Record<string, string> = {
   "cimd.transport_failure": "Transport error",
@@ -27,6 +30,9 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   "grant_package.issued": "Access granted",
   "grant_package.revoke_partial": "Access partially revoked",
   "grant_package.revoked": "Access revoked",
+  "mutation.completed": "Data write",
+  "mutation.rejected": "Data write rejected",
+  "mutation.requested": "Data write",
   "pdpp.subscription.verify": "Device login",
   "query.received": "Data read",
   "query.rejected": "Data read rejected",
@@ -36,10 +42,22 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   "token.revoked": "Session ended",
 };
 
+/** Cap on a surfaced-raw-kind fallback label so a pathological kind string can't blow out the column. */
+const RAW_KIND_LABEL_MAX_LENGTH = 40;
+
 export function traceKindLabel(kinds: string[] | null | undefined): string {
   const firstKind = (kinds ?? []).map((k) => (typeof k === "string" ? k.trim() : "")).find(Boolean);
   if (!firstKind) {
     return "Unclassified";
   }
-  return TRACE_KIND_LABELS[firstKind] ?? "Unclassified";
+  const known = TRACE_KIND_LABELS[firstKind];
+  if (known) {
+    return known;
+  }
+  // Genuinely unmapped: surface the raw kind (bounded) instead of a blank
+  // "Unclassified" so the next coverage gap is visible on the page instead
+  // of silently collapsing into one indistinguishable bucket.
+  return firstKind.length > RAW_KIND_LABEL_MAX_LENGTH
+    ? `${firstKind.slice(0, RAW_KIND_LABEL_MAX_LENGTH - 1)}…`
+    : firstKind;
 }
