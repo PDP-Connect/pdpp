@@ -250,7 +250,15 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           {/* Identity */}
           <div className="min-w-0 flex-1">
-            <Link className="pdpp-body font-medium text-foreground hover:underline" href={recordsHref}>
+            {/* The row title is the row's primary navigation link but stays
+                text-tight visually (it sits directly above the mono connector
+                key, not in a padded button row); the hit area grows to the
+                44px floor via an invisible inset ::before, same technique as
+                .rr-s-link / .rr-x-facet-not. */}
+            <Link
+              className="pdpp-body relative font-medium text-foreground before:absolute before:-inset-3 before:content-[''] hover:underline"
+              href={recordsHref}
+            >
               {displayName}
             </Link>
             <div className="pdpp-caption mt-0.5 truncate font-mono text-muted-foreground">{connectorKey}</div>

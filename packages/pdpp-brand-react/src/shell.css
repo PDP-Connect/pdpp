@@ -42,8 +42,8 @@
   border-right: 1px solid var(--border);
 }
 .rr-side__brand {
-  display: flex;
   box-sizing: border-box;
+  display: flex;
   gap: 12px;
   align-items: center;
   height: var(--rr-masthead-height);
@@ -102,6 +102,10 @@
   grid-template-columns: 1fr auto;
   gap: 10px;
   align-items: center;
+  /* The primary navigation, present on every route — a real touch target,
+     not a decorative chrome control. min-height (not more padding) hits the
+     44px bar without changing the row's visual density. */
+  min-height: 44px;
   /* Left padding leaves room for the 2px active accent bar so text never
      shifts between resting/hover/active states (the bar paints in the gutter). */
   padding: 9px 10px 9px 12px;
@@ -172,8 +176,8 @@
   min-height: 0;
 }
 .rr-head {
-  display: flex;
   box-sizing: border-box;
+  display: flex;
   flex-shrink: 0;
   gap: 16px;
   align-items: center;

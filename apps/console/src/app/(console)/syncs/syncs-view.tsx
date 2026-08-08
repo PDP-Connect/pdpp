@@ -28,6 +28,7 @@ import {
   TableHeader,
   TableHeaderRow,
 } from "@pdpp/brand-react";
+import { humanizeFieldLabel } from "@pdpp/display";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { formatCoverageAxis } from "../lib/connection-evidence.ts";
@@ -528,7 +529,9 @@ function SyncTableRow({ row }: { row: SyncRow }) {
       <summary
         className={["pdpp-table__row", "rr-sync-row", row.failed ? "is-failed" : null].filter(Boolean).join(" ")}
       >
-        <TableCell className="rr-sync-row__stream">{row.stream}</TableCell>
+        <TableCell className="rr-sync-row__stream">
+          <span title={row.stream}>{humanizeFieldLabel(row.stream)}</span>
+        </TableCell>
         <TableCell className={deltaClass}>
           {collectedText === null ? <span className="rr-sync-row__empty">—</span> : <span>{collectedText}</span>}
           {coverageSuffix(row.coverageCondition) ? (

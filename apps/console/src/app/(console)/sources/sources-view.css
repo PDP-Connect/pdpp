@@ -70,9 +70,9 @@ a.rr-s-item {
   display: flex;
   grid-row: 1;
   grid-column: 1;
+  gap: 6px;
   align-items: center;
   min-width: 0;
-  gap: 6px;
 }
 
 .rr-s-item__icon {
@@ -165,6 +165,7 @@ a.rr-s-item {
   padding: 14px 0 0;
 }
 .rr-s-link {
+  position: relative;
   width: fit-content;
   padding: 0;
   font: inherit;
@@ -175,6 +176,15 @@ a.rr-s-item {
   cursor: pointer;
   background: none;
   border: 0;
+}
+/* The link's visual size/position stay text-tight (it sits directly below the
+   source-access note, not a padded button row); the hit area grows to the
+   44px floor via an invisible inset ::before, the same technique already used
+   for .rr-x-facet-not's exclude toggle. */
+.rr-s-link::before {
+  position: absolute;
+  inset: -12px;
+  content: "";
 }
 .rr-s-link:hover {
   text-decoration: underline;

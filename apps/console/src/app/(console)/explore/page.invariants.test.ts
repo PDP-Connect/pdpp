@@ -197,7 +197,10 @@ const ASSEMBLER_PASSES_ROLES_RE = /buildRecordPreview\(kind, data, dtypes, drole
 // first humanized declared key/value, else a NEUTRAL fallback — never a guessed title
 // from a stream/kind name OR the timeline `entry.summary`. Pin the import of the honest
 // projection and the content-first call whose fallback is ONLY the neutral record id.
-const CANVAS_GENERIC_KV_LEAD_RE = /import \{ rowPrimary, rowSecondary \} from "@pdpp\/display";/;
+// Import-line pin, not import-set pin: match rowPrimary/rowSecondary imported
+// from @pdpp/display regardless of what other named imports share that one
+// import statement (e.g. a jargon-humanizer added to the same line).
+const CANVAS_GENERIC_KV_LEAD_RE = /import \{[^}]*\browPrimary\b[^}]*\browSecondary\b[^}]*\} from "@pdpp\/display";/;
 const CANVAS_GENERIC_TITLE_LINE_RE = /const primaryLine = rowPrimary\(entry\.preview \?\? null, entry\.recordId\);/;
 // RL1 hardening (end-review P0): the row primary must NEVER fall back to
 // `entry.summary` (the timeline summary heuristic), even for retrieval/search rows.

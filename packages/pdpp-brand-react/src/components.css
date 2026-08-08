@@ -2343,7 +2343,7 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: baseline;
-  min-height: 34px;
+  min-height: 44px;
   padding: 6px 0;
   color: var(--muted-foreground);
   text-align: left;
@@ -2506,6 +2506,17 @@
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+}
+/* The page's real title. Small and quiet — the search bar right below it is
+   the primary affordance, not a headline — but a visible, non-duplicate h1. */
+.rr-x-h1 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .rr-x-controls {
   display: flex;
@@ -4798,7 +4809,6 @@ a.rr-x-row {
     overflow: visible;
   }
   .rr-x-facet {
-    min-height: 42px;
     padding-block: 8px;
   }
   /* D12 mobile: the command bar is a 2-row layout.

@@ -298,17 +298,18 @@ export default async function StreamPage({
             breadcrumbs={[
               { href: "/sources", label: "Sources" },
               { href: `/sources/${encodeURIComponent(connectionId)}`, label: sourceLabel },
-              { label: streamName },
+              { label: humanizeFieldLabel(streamName) },
             ]}
-            title={<code className="font-mono">{streamName}</code>}
+            title={<span title={streamName}>{humanizeFieldLabel(streamName)}</span>}
           />
           <div className="rounded-md border border-border/70 bg-muted/30 p-4">
             <p className="pdpp-caption text-foreground">
-              This stream is not available for <code className="font-mono">{connectionId}</code>.
+              This stream is not available for <span title={connectionId}>{sourceLabel}</span>.
             </p>
             <p className="pdpp-caption mt-2 text-muted-foreground">
-              The connector's current manifest no longer lists <code className="font-mono">{streamName}</code> — it was
-              likely renamed or retired, or this link is a stale entry. Open{" "}
+              The connector's current manifest no longer lists{" "}
+              <span title={streamName}>{humanizeFieldLabel(streamName)}</span> — it was likely renamed or retired, or
+              this link is a stale entry. Open{" "}
               <Link className="underline underline-offset-2" href={`/sources/${encodeURIComponent(connectionId)}`}>
                 the connection page
               </Link>{" "}
@@ -447,7 +448,7 @@ export default async function StreamPage({
         breadcrumbs={[
           { href: "/sources", label: "Sources" },
           { href: `/sources/${encodeURIComponent(connectionId)}`, label: sourceLabel },
-          { label: streamName },
+          { label: humanizeFieldLabel(streamName) },
         ]}
         count={headerCount}
         description={
@@ -455,7 +456,7 @@ export default async function StreamPage({
             Source <span className="text-foreground">{sourceLabel}</span>
           </>
         }
-        title={<code className="font-mono">{streamName}</code>}
+        title={<span title={streamName}>{humanizeFieldLabel(streamName)}</span>}
       />
 
       <StreamEvidenceSection
@@ -569,7 +570,11 @@ export default async function StreamPage({
                         const display = cellText(r, c);
                         return (
                           <td className={`${TD} align-top`} key={c}>
-                            <Link className="block" href={recordHref(r.id)}>
+                            <Link
+                              aria-label={display ? undefined : `Open record, ${humanizeFieldLabel(c)} not set`}
+                              className="block"
+                              href={recordHref(r.id)}
+                            >
                               <span className="block max-w-[24rem] truncate" title={display}>
                                 {display}
                               </span>
@@ -631,7 +636,7 @@ function StreamEvidenceSection({
     >
       <DataList ariaLabel="Stream evidence">
         <StreamEvidenceRow
-          detail={`Source ${sourceLabel} · stream ${streamName}`}
+          detail={`Source ${sourceLabel} · stream ${humanizeFieldLabel(streamName)}`}
           href={sourceHref}
           label="Scope"
           value="Open source"

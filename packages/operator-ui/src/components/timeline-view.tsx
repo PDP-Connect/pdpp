@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { humanizeFieldLabel } from "@pdpp/display";
 import Link from "next/link";
 // biome-ignore lint/correctness/noUnresolvedImports: React 19 exports Fragment; tsc validates the import and Biome 2.5.5 misreads the package export map.
 import { Fragment } from "react";
@@ -123,7 +124,9 @@ function EventRow({ event, index }: { event: SpineEvent; index: number }) {
           <span className="pdpp-caption text-muted-foreground/70 tabular-nums">
             {String(index + 1).padStart(2, "0")}
           </span>
-          <code className="pdpp-caption font-medium font-mono">{event.event_type}</code>
+          <code className="pdpp-caption font-medium font-mono" title={event.event_type}>
+            {humanizeFieldLabel(event.event_type)}
+          </code>
           <span
             className={`pdpp-eyebrow rounded px-1.5 py-0.5 font-medium ${
               event.status === "failed" || event.status === "rejected"
@@ -142,7 +145,7 @@ function EventRow({ event, index }: { event: SpineEvent; index: number }) {
         <span className="font-mono">
           {event.actor_type}/{event.actor_id}
         </span>
-        {event.stream_id ? ` · stream ${event.stream_id}` : ""}
+        {event.stream_id ? ` · stream ${humanizeFieldLabel(event.stream_id)}` : ""}
         {event.request_id ? ` · req ${event.request_id}` : ""}
       </div>
       <details className="mt-1">
@@ -219,7 +222,9 @@ function ProgressGroupRow({ events, startIndex }: { events: SpineEvent[]; startI
           <span className="pdpp-caption text-muted-foreground/70 tabular-nums">
             {String(startIndex + 1).padStart(2, "0")}–{String(endIndex + 1).padStart(2, "0")}
           </span>
-          <code className="pdpp-caption font-medium font-mono">run.progress_reported</code>
+          <code className="pdpp-caption font-medium font-mono" title="run.progress_reported">
+            {humanizeFieldLabel("run.progress_reported")}
+          </code>
           <span className="pdpp-eyebrow rounded bg-muted px-1.5 py-0.5 font-medium text-muted-foreground">
             {events.length.toLocaleString()} reports
           </span>
@@ -231,7 +236,11 @@ function ProgressGroupRow({ events, startIndex }: { events: SpineEvent[]; startI
         </span>
       </div>
       <div className="pdpp-caption mt-1 text-muted-foreground">
-        {streams.length === 1 ? <span>stream {streams[0]?.stream}</span> : <span>{streams.length} streams</span>}
+        {streams[0] && streams.length === 1 ? (
+          <span>stream {humanizeFieldLabel(streams[0].stream)}</span>
+        ) : (
+          <span>{streams.length} streams</span>
+        )}
         {" · latest: "}
         <span className="text-foreground">{typeof last.data?.message === "string" ? last.data.message : "—"}</span>
       </div>
@@ -239,7 +248,9 @@ function ProgressGroupRow({ events, startIndex }: { events: SpineEvent[]; startI
         <dl className="pdpp-caption mt-2 grid grid-cols-[auto_1fr_auto] gap-x-3 gap-y-0.5">
           {streams.map((s) => (
             <Fragment key={s.stream}>
-              <dt className="font-mono text-muted-foreground">{s.stream}</dt>
+              <dt className="font-mono text-muted-foreground" title={s.stream}>
+                {humanizeFieldLabel(s.stream)}
+              </dt>
               <dd className="truncate text-muted-foreground">{s.latestMessage ?? "—"}</dd>
               <dd className="text-right text-muted-foreground tabular-nums">
                 {s.count.toLocaleString()}

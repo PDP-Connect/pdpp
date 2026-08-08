@@ -275,8 +275,54 @@ async function checkOverflow(page, path) {
 }
 
 // Check 3 — TOUCH TARGETS: every interactive element >= 44x44.
+//
+// WCAG 2.5.5 itself exempts "a control [that] is in a sentence or block of
+// text" from the 44px minimum — inline links carry the text's line-height,
+// not their own hit-area budget, and resizing them would mean padding
+// individual words inside a paragraph. The structural tell used here instead
+// of a maintained selector allowlist: does the link's own rect vertically
+// OVERLAP a plain-text sibling's rect — i.e. do they sit on the same visual
+// line (a breadcrumb "/" separator, a link embedded mid-sentence)? This is
+// deliberately a geometry check, not "has a text sibling in the DOM": a
+// standalone CTA can sit in a flex-column next to an unrelated caption
+// (different line, no vertical overlap) and must still be measured.
 async function checkTouchTargets(page, path) {
   const undersized = await page.evaluate((min) => {
+    function textNodeRect(node) {
+      if (node.textContent.trim().length === 0) {
+        return null;
+      }
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return range.getBoundingClientRect();
+    }
+    function plainElementRect(node) {
+      const isInteractive = node.matches("button, a, [role='button'], input");
+      const hasText = (node.textContent?.trim().length ?? 0) > 0;
+      return !isInteractive && hasText ? node.getBoundingClientRect() : null;
+    }
+    function plainTextSiblingRect(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return textNodeRect(node);
+      }
+      return node.nodeType === Node.ELEMENT_NODE ? plainElementRect(node) : null;
+    }
+    function rectsShareLine(a, b) {
+      return b.width > 0 && a.top < b.bottom && b.top < a.bottom;
+    }
+    function isInlineInText(el, elRect) {
+      const parent = el.parentElement;
+      if (!parent) {
+        return false;
+      }
+      for (const node of parent.childNodes) {
+        const siblingRect = node === el ? null : plainTextSiblingRect(node);
+        if (siblingRect && rectsShareLine(elRect, siblingRect)) {
+          return true; // shares a visual line with plain text
+        }
+      }
+      return false;
+    }
     const els = document.querySelectorAll('button, a, [role="button"], input');
     const found = [];
     for (const el of els) {
@@ -293,6 +339,9 @@ async function checkTouchTargets(page, path) {
       const style = getComputedStyle(el);
       if (style.display === "none" || style.visibility === "hidden") {
         continue;
+      }
+      if (el.tagName === "A" && isInlineInText(el, rect)) {
+        continue; // WCAG 2.5.5 exception: inline link in a sentence/breadcrumb trail
       }
       if (rect.width < min || rect.height < min) {
         const cls =
@@ -322,9 +371,32 @@ async function checkTouchTargets(page, path) {
 }
 
 // Check 4 — RAW JARGON IN RENDERED TEXT: snake_case identifiers, bare JSON.
+//
+// This check can only see rendered TEXT, never provenance — it cannot tell a
+// UI-authored label from the owner's own record data by construction. Rather
+// than guess, it skips exactly the DOM positions the codebase already uses to
+// mark non-chrome text, so it stays honest (silence, not a false PASS, on
+// what it still can't classify):
+//   - <script>/<style>: never rendered content; a flight-payload <script> in
+//     <body> is not a UI defect no matter what identifiers it contains.
+//   - <code>/<pre>: the codebase's own convention for "this is a raw
+//     technical value shown deliberately" (record-render.tsx's wire-key
+//     mono spans, JSON/PR-body dumps) — never prose copy.
+//   - [data-rr-x="primary"|"secondary"|"key"]: RecordIdentity's own markers
+//     for record-derived preview text and the raw record key — the ONE
+//     shared identity cell every surface composes, already labeled at the
+//     source.
+// What this does NOT cover: owner data folded into a plain-text UI sentence
+// with no distinguishing wrapper (e.g. "brennan.txt · whatsapp_chat_export ·
+// ...", a real imported filename + real stream id in a connection summary
+// line). No DOM signal distinguishes that from UI-authored jargon, so it can
+// still surface here — triage by reading the string, not by trusting FAIL.
+const JARGON_SKIP_SELECTOR =
+  'code, pre, script, style, [data-rr-x="primary"], [data-rr-x="secondary"], [data-rr-x="key"]';
+
 async function checkJargon(page, path) {
   const hits = await page.evaluate(
-    ({ bareJson, snakeCase }) => {
+    ({ bareJson, snakeCase, skipSelector }) => {
       const snakeRe = new RegExp(snakeCase);
       const jsonRe = new RegExp(bareJson);
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -336,7 +408,8 @@ async function checkJargon(page, path) {
           const parentEl = node.parentElement;
           const rect = parentEl?.getBoundingClientRect();
           const visible = parentEl && (typeof parentEl.checkVisibility !== "function" || parentEl.checkVisibility());
-          if (rect && rect.width > 0 && rect.height > 0 && visible) {
+          const skipped = parentEl?.closest(skipSelector);
+          if (rect && rect.width > 0 && rect.height > 0 && visible && !skipped) {
             found.push({ text: text.slice(0, 120) });
           }
         }
@@ -344,7 +417,7 @@ async function checkJargon(page, path) {
       }
       return found;
     },
-    { bareJson: BARE_JSON_RE.source, snakeCase: SNAKE_CASE_RE.source }
+    { bareJson: BARE_JSON_RE.source, skipSelector: JARGON_SKIP_SELECTOR, snakeCase: SNAKE_CASE_RE.source }
   );
   if (hits.length === 0) {
     record(`jargon.${path}`, "PASS", "no snake_case identifiers or bare JSON in visible text");

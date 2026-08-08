@@ -40,7 +40,7 @@
 "use client";
 
 import { IcInput } from "@pdpp/brand-react";
-import { rowPrimary, rowSecondary } from "@pdpp/display";
+import { humanizeFieldLabel, rowPrimary, rowSecondary } from "@pdpp/display";
 import { kindGlyph, RecordIdentity } from "@pdpp/operator-ui/components/record-identity";
 import { feedDescription, feedSectionTitle } from "@pdpp/operator-ui/components/views/explorer-utils";
 import {
@@ -1592,8 +1592,8 @@ function StreamSeeAllLink({ link, recordsBasePath }: { link: ExplorerStreamSeeAl
   });
   const totalLabel = typeof link.total === "number" ? ` - ${link.total.toLocaleString()} records` : "";
   return (
-    <a className="rr-x-see-all" href={streamHref}>
-      {link.displayName} - {link.stream}
+    <a className="rr-x-see-all" href={streamHref} title={link.stream}>
+      {link.displayName} - {humanizeFieldLabel(link.stream)}
       {totalLabel} - See all
     </a>
   );
@@ -1771,8 +1771,7 @@ function SourceFacetGroup({
             count={s.loadedCount}
             excluded={s.excluded}
             key={s.stream}
-            label={s.stream}
-            mono
+            label={humanizeFieldLabel(s.stream)}
             on={s.selected}
             onToggle={() => onToggle(s.stream)}
             onToggleExclude={() => onToggleExclude(s.stream)}
@@ -3822,6 +3821,11 @@ export function ExploreCanvas({
           more load. The loading signal is the top progress bar + the Load-more
           control, never a dim/disable on the interactive content. */}
       <div aria-busy={feedAriaBusy(isPending)} className="rr-x-main">
+        {/* The rail's "Explore" span (rr-x-views__name) is a view-selector label,
+            not a page title — it never renders as an h1 and the page had none,
+            failing the single-h1 a11y bar. This is the page's real, visible
+            title, not a visually-hidden duplicate. */}
+        <h1 className="rr-x-h1">Explore</h1>
         <FeedControls
           activeRange={activeRange}
           chips={chips}
