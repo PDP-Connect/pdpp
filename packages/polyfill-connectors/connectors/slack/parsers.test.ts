@@ -64,10 +64,22 @@ test("tsToIso: Slack ts 'seconds.micros' → ISO, null for missing", () => {
   assert.equal(tsToIso(undefined), null);
 });
 
+test("tsToIso: zero/unparseable ts is absence, never 1970 and never a throw", () => {
+  assert.equal(tsToIso("0.000000"), null);
+  assert.equal(tsToIso("0"), null);
+  assert.equal(tsToIso("not-a-ts"), null);
+  assert.equal(tsToIso("-1.000000"), null);
+});
+
 test("epochToIso: only finite seconds produce an ISO string", () => {
   assert.equal(epochToIso(1_700_000_000), new Date(1_700_000_000 * 1000).toISOString());
   assert.equal(epochToIso(null), null);
   assert.equal(epochToIso(Number.NaN), null);
+});
+
+test("epochToIso: zero seconds is Slack's 'unset', not 1970", () => {
+  assert.equal(epochToIso(0), null);
+  assert.equal(epochToIso(-1), null);
 });
 
 test("toSlackTime: strips fractional seconds + trailing Z", () => {

@@ -82,6 +82,26 @@ test("parseGmcliMessagesJson throws a typed GmcliError on missing required field
   );
 });
 
+test("parseGmcliMessagesJson rejects a zero timestamp_ms rather than stamping 1970 on sent_at", () => {
+  const zeroTs = JSON.stringify([
+    {
+      message_id: "m1",
+      conversation_id: "c1",
+      body: "hi",
+      timestamp_ms: 0,
+      is_from_me: true,
+    },
+  ]);
+  assert.throws(
+    () => parseGmcliMessagesJson(zeroTs),
+    (err: unknown) => {
+      assert.ok(err instanceof GmcliError);
+      assert.equal(err.kind, "query_failed");
+      return true;
+    }
+  );
+});
+
 test("parseGmcliMessagesJson throws a typed GmcliError on non-JSON output", () => {
   assert.throws(
     () => parseGmcliMessagesJson(buildNotJsonFixture()),

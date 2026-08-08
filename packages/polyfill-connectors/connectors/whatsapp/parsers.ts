@@ -315,11 +315,16 @@ export function parseWhatsAppChatFile(filename: string, content: string): Parsed
 
   for (const line of lines) {
     const match = LINE_RE.exec(line);
-    if (match) {
+    // A line can match LINE_RE's shape yet carry an impossible date (31/02,
+    // year < 1970). Stamping nowIso() there would date the message to the run
+    // — non-deterministic, and `sent_at` is the manifest's semantic-time
+    // source. Fold it into the preceding message instead, exactly as a
+    // non-matching continuation line: the text survives, no date is invented.
+    const sentAt = match ? parseWhatsAppDateTime(match[1] ?? "", match[2] ?? "") : null;
+    if (match && sentAt) {
       if (current) {
         messages.push(current);
       }
-      const sentAt = parseWhatsAppDateTime(match[1] ?? "", match[2] ?? "") || nowIso();
       const author = (match[3] ?? "").trim();
       participants.add(author);
       current = { author, content: match[4] || "", sent_at: sentAt };

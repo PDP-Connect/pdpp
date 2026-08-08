@@ -66,8 +66,17 @@ const POCKET_PAGE_SIZE = 500;
 const SERVER_ERROR_PATTERN = /5\d\d/;
 const POCKET_URL = "https://getpocket.com/v3/get";
 
-const isoFromUnix = (u: string | number | undefined | null): string | null =>
-  u ? new Date(Number(u) * 1000).toISOString() : null;
+// Pocket sends "0" for an unset timestamp (never read, never favorited) and
+// occasionally a non-numeric string. Both are absence: converting them would
+// stamp 1970-01-01 on `time_added`, the manifest's semantic-time source, or
+// throw on the Invalid Date.
+const isoFromUnix = (u: string | number | undefined | null): string | null => {
+  if (u === undefined || u === null || u === "") {
+    return null;
+  }
+  const sec = Number(u);
+  return Number.isFinite(sec) && sec > 0 ? new Date(sec * 1000).toISOString() : null;
+};
 
 function itemRecord(it: PocketItem): RecordData {
   // Pocket status: '0' = unread, '1' = archived, '2' = deleted (tombstone).
