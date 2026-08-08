@@ -156,6 +156,16 @@ const MAX_PERSISTED_TOP_CONNECTOR_CANDIDATES = 32;
 // the next pass and the projection metadata reports the deferral
 // honestly.
 const MAX_RECONCILE_BATCH = 256;
+// A rebuild that stamps rebuild_status='running' and then never returns
+// (process crash, OOM kill, hard restart) leaves that status persisted in
+// the database with nothing left alive to ever resolve it -- there is no
+// in-memory lock to lose on restart. Without an expiry, every delta on a
+// continuously-collecting instance fences itself against that dead lease
+// forever: markDatasetSummaryProjectionStale preserves rebuild_status
+// as-is, so "running" survives indefinitely and rebuild_status never
+// returns to idle/failed on its own. Treat a "running" stamp older than
+// this timeout as an orphaned lease rather than a live rebuild.
+const REBUILD_LEASE_TIMEOUT_MS = 5 * 60 * 1000;
 const SAFE_CONSENT_TIME_FIELD = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const EMPTY_SUMMARY = Object.freeze({
   counts: { connector_count: 0, record_count: 0, stream_count: 0 },
@@ -171,6 +181,54 @@ const EMPTY_SUMMARY = Object.freeze({
 
 function nowIso(): IsoTimestamp {
   return new Date().toISOString();
+}
+
+// A "running" rebuild_status only fences deltas while its lease is
+// plausibly live. `stale_since` is stamped once when the rebuild starts
+// (markDatasetSummaryProjectionRebuilding) and carried through unchanged
+// by every subsequent stale-mark, so its age is the lease's age. Past
+// REBUILD_LEASE_TIMEOUT_MS, no real rebuild -- even one contending with
+// heavy concurrent writes -- is plausibly still the same in-flight
+// attempt; treat the lease as orphaned so deltas stop deferring to it.
+function isRebuildLeaseActive(metadata: ProjectionMetadata, at: IsoTimestamp = nowIso()): boolean {
+  if (metadata.rebuild_status !== "running") {
+    return false;
+  }
+  if (!metadata.stale_since) {
+    return true;
+  }
+  const leaseAgeMs = Date.parse(at) - Date.parse(metadata.stale_since);
+  if (!Number.isFinite(leaseAgeMs)) {
+    return true;
+  }
+  return leaseAgeMs < REBUILD_LEASE_TIMEOUT_MS;
+}
+
+// If `projection` carries an orphaned rebuild lease (rebuild_status
+// 'running' past REBUILD_LEASE_TIMEOUT_MS with nothing left alive to
+// finish it), record the honest outcome -- the rebuild died mid-flight,
+// it did not succeed -- and return the projection that reflects that
+// write. Callers can then treat rebuild_status as no-longer-running
+// without special-casing the timeout logic themselves. When the lease is
+// still active (or there is no lease), returns `projection` unchanged.
+function reclaimExpiredRebuildLease(projection: DatasetSummaryProjection): DatasetSummaryProjection {
+  if (projection.metadata.rebuild_status !== "running" || isRebuildLeaseActive(projection.metadata)) {
+    return projection;
+  }
+  const reclaimedAt = nowIso();
+  writeDatasetSummaryProjectionPreservingSummary(
+    projection,
+    {
+      computed_at: projection.metadata.computed_at,
+      last_error: "dataset summary projection rebuild lease expired without completing",
+      rebuild_status: "failed",
+      source_high_watermark: projection.metadata.source_high_watermark || null,
+      stale_since: projection.metadata.stale_since || reclaimedAt,
+      state: "failed",
+    },
+    reclaimedAt
+  );
+  return getDatasetSummaryProjection();
 }
 
 function runSequentially<T>(
@@ -358,7 +416,7 @@ export function applyDatasetSummaryRecordDelta(delta: DatasetSummaryRecordDelta)
   try {
     maybeProjectionFault("before-record-delta", delta);
     const db = getDb();
-    const current = getDatasetSummaryProjection();
+    const current = reclaimExpiredRebuildLease(getDatasetSummaryProjection());
 
     // Fence against an in-flight rebuild BEFORE the "has been rebuilt"
     // guard. During a first-ever rebuild, computed_at is still null and
@@ -367,8 +425,9 @@ export function applyDatasetSummaryRecordDelta(delta: DatasetSummaryRecordDelta)
     // "not rebuilt" failure in that window would mark the projection
     // failed instead of stale/deferred, even though the right outcome
     // is to leave the rebuild to win or detect the conflict via its
-    // generation guard.
-    if (current.metadata.rebuild_status === "running") {
+    // generation guard. A "running" status past its lease timeout has
+    // already been reclaimed above and no longer reaches this branch.
+    if (isRebuildLeaseActive(current.metadata)) {
       markDatasetSummaryProjectionStale("record delta arrived during projection rebuild");
       return;
     }
@@ -441,14 +500,15 @@ export function applyDatasetSummaryBlobDelta(delta: DatasetSummaryBlobDelta): vo
   assertSqliteBackendForDatasetSummary("applyDatasetSummaryBlobDelta");
   try {
     maybeProjectionFault("before-blob-delta", delta);
-    const current = getDatasetSummaryProjection();
+    const current = reclaimExpiredRebuildLease(getDatasetSummaryProjection());
     // Fence against an in-flight rebuild BEFORE the "has been rebuilt"
     // guard. Same reasoning as applyDatasetSummaryRecordDelta: during a
     // first-ever rebuild, computed_at is null and rebuild_status is
     // 'running', so the rebuild itself populates the projection. The
     // honest signal for a concurrent blob delta is stale/deferred, not
-    // failed.
-    if (current.metadata.rebuild_status === "running") {
+    // failed. A "running" status past its lease timeout has already been
+    // reclaimed above and no longer reaches this branch.
+    if (isRebuildLeaseActive(current.metadata)) {
       markDatasetSummaryProjectionStale("blob delta arrived during projection rebuild");
       return;
     }
@@ -498,77 +558,113 @@ export function markDatasetSummaryProjectionStale(reason: string): void {
   }
 }
 
+// A single rebuild pass reads dependencies (counts, bytes, candidates,
+// stream seeds) and then commits under a generation guard. On a
+// continuously-collecting instance, a delta can land in the gap between
+// "read dependencies" and "commit" on every single attempt -- a rebuild
+// that only tries once therefore never converges; that is the mechanism
+// behind the owner's stuck projection (rebuild_status stuck at 'running',
+// computed_at null, stream projection empty). Retrying re-reads fresh
+// dependencies each time, so every attempt reflects real current state --
+// this is not fabricating convergence, it is giving the rebuild enough
+// attempts to catch a quiet moment the way any CAS-based writer must.
+const MAX_REBUILD_ATTEMPTS = 8;
+
 export async function rebuildDatasetSummaryProjection(
   dependencies: RebuildDatasetSummaryDependencies,
   { signal }: { signal?: AbortSignal } = {}
 ): Promise<DatasetSummaryProjection | (DatasetSummary & { metadata: ProjectionMetadata })> {
   assertSqliteBackendForDatasetSummary("rebuildDatasetSummaryProjection");
   const startedAt = nowIso();
-  // Advance generation and stamp rebuild_status='running'. Capture the
-  // post-advance generation so the final commit can detect a concurrent
-  // delta or competing rebuild that bumped the counter further.
-  const rebuildGeneration = markDatasetSummaryProjectionRebuilding(startedAt);
 
   try {
-    throwIfAborted(signal);
-    const [counts, bytes, candidates] = await Promise.all([
-      dependencies.getCounts(),
-      dependencies.getRetainedBytes(),
-      dependencies.listTopConnectorCandidates(),
-    ]);
-    throwIfAborted(signal);
-    const recordCount = Number(counts.record_count || 0);
-    const [recordTimeBounds, ingestedTimeBounds] =
-      recordCount > 0
-        ? await Promise.all([dependencies.getRecordTimeBounds(), dependencies.getIngestedTimeBounds()])
-        : [
-            { earliest: null, latest: null },
-            { earliest: null, latest: null },
-          ];
-    throwIfAborted(signal);
-
-    const computedAt = nowIso();
-    const summary = {
-      counts,
-      ingested_time_bounds: ingestedTimeBounds,
-      record_time_bounds: recordTimeBounds,
-      retained_bytes: bytes,
-      top_connector_candidates: boundedTopConnectorCandidates(candidates),
-    };
-    const metadata = {
-      computed_at: computedAt,
-      last_error: null,
-      rebuild_status: "idle",
-      source_high_watermark: `rebuilt:${computedAt}`,
-      stale_since: null,
-      state: "fresh",
-    };
-    const seeds = dependencies.listStreamProjectionSeeds ? await dependencies.listStreamProjectionSeeds() : [];
-    throwIfAborted(signal);
-    const committed = writeDatasetSummaryProjectionWithStreamSeedsGuarded(
-      summary,
-      metadata,
-      computedAt,
-      seeds,
-      rebuildGeneration
-    );
-    if (!committed) {
+    for (let attempt = 1; attempt <= MAX_REBUILD_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      const result = await attemptDatasetSummaryRebuild(dependencies, startedAt, signal);
+      if (result.committed) {
+        return result.value;
+      }
       // A concurrent delta or competing rebuild advanced the generation
-      // past rebuildGeneration. Honest behavior is to leave the projection
-      // explicitly stale, not to claim freshness from values that no
-      // longer match the live tables.
-      const conflictAt = nowIso();
-      const after = getDatasetSummaryProjection();
-      writeDatasetSummaryProjectionPreservingSummary(after, supersededRebuildMetadata(after, conflictAt), conflictAt);
-      return getDatasetSummaryProjection();
+      // past this attempt's expected value. Loop back and try again with
+      // freshly re-read dependencies rather than accepting the loss --
+      // sustained writes must not be able to starve every attempt
+      // indefinitely just by outrunning a single pass.
     }
-    return { ...summary, metadata };
+    // Exhausted every attempt without a clean commit: honest behavior is
+    // to leave the projection explicitly stale, not to claim freshness
+    // from values that no longer match the live tables.
+    const conflictAt = nowIso();
+    const after = getDatasetSummaryProjection();
+    writeDatasetSummaryProjectionPreservingSummary(after, supersededRebuildMetadata(after, conflictAt), conflictAt);
+    return getDatasetSummaryProjection();
   } catch (err) {
     const endedAt = nowIso();
     const current = getDatasetSummaryProjection();
     writeDatasetSummaryProjectionPreservingSummary(current, rebuildFailureMetadata(current, err, startedAt), endedAt);
     throw err;
   }
+}
+
+async function attemptDatasetSummaryRebuild(
+  dependencies: RebuildDatasetSummaryDependencies,
+  startedAt: IsoTimestamp,
+  signal: AbortSignal | undefined
+): Promise<
+  { committed: true; value: DatasetSummary & { metadata: ProjectionMetadata } } | { committed: false; value: null }
+> {
+  // Advance generation and stamp rebuild_status='running'. Capture the
+  // post-advance generation so this attempt's commit can detect a
+  // concurrent delta or competing rebuild that bumped the counter
+  // further.
+  const rebuildGeneration = markDatasetSummaryProjectionRebuilding(startedAt);
+
+  throwIfAborted(signal);
+  const [counts, bytes, candidates] = await Promise.all([
+    dependencies.getCounts(),
+    dependencies.getRetainedBytes(),
+    dependencies.listTopConnectorCandidates(),
+  ]);
+  throwIfAborted(signal);
+  const recordCount = Number(counts.record_count || 0);
+  const [recordTimeBounds, ingestedTimeBounds] =
+    recordCount > 0
+      ? await Promise.all([dependencies.getRecordTimeBounds(), dependencies.getIngestedTimeBounds()])
+      : [
+          { earliest: null, latest: null },
+          { earliest: null, latest: null },
+        ];
+  throwIfAborted(signal);
+
+  const computedAt = nowIso();
+  const summary = {
+    counts,
+    ingested_time_bounds: ingestedTimeBounds,
+    record_time_bounds: recordTimeBounds,
+    retained_bytes: bytes,
+    top_connector_candidates: boundedTopConnectorCandidates(candidates),
+  };
+  const metadata = {
+    computed_at: computedAt,
+    last_error: null,
+    rebuild_status: "idle",
+    source_high_watermark: `rebuilt:${computedAt}`,
+    stale_since: null,
+    state: "fresh",
+  };
+  const seeds = dependencies.listStreamProjectionSeeds ? await dependencies.listStreamProjectionSeeds() : [];
+  throwIfAborted(signal);
+  const committed = writeDatasetSummaryProjectionWithStreamSeedsGuarded(
+    summary,
+    metadata,
+    computedAt,
+    seeds,
+    rebuildGeneration
+  );
+  if (!committed) {
+    return { committed: false, value: null };
+  }
+  return { committed: true, value: { ...summary, metadata } };
 }
 
 // Metadata for a rebuild whose guarded commit lost the generation race:
