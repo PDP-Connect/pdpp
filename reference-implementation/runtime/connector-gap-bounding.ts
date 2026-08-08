@@ -15,7 +15,10 @@
 //              boundConnectorErrorMessage, boundConsideredCount,
 //              normalizeRecoveryHint, normalizeGapScope,
 //              buildCollectionFacts, buildKnownGap
-//   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS
+//   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS,
+//              BROWSER_SURFACE_KINDS (exported read-only for the manifest
+//              parity test only — see test/connector-gap-bounding-browser-
+//              surface-kind-manifest-parity.test.ts; no runtime consumer)
 //
 // Private (not exported): projectDiagnosticsNode, classifyKnownGapSeverity,
 //   normalizeConsideredInDiagnostics, GAP_SEVERITIES, INFORMATIONAL_GAP_REASONS,
@@ -58,7 +61,16 @@ const BROWSER_SURFACE_FIELDS = [
   "verified_empty_marker_count",
   "wait_outcome",
 ];
-const BROWSER_SURFACE_KINDS = new Set(["chase_current_activity", "usaa_transaction_export"]);
+// Manifest-derived: each entry equals a shipped connector manifest's
+// `capabilities.browser_surface_kind`. Kept as a hand-maintained Set (not a
+// live manifest scan) because this module must stay free of node:fs — it is
+// on the connector-evidence spine-validation hot path (runtime/index.ts).
+// test/connector-gap-bounding-browser-surface-kind-manifest-parity.test.ts
+// pins this Set against the real manifests directory, so a manifest gaining
+// or losing this field without updating the Set fails CI. Same shape as
+// BROWSER_BOUND_CONNECTORS in server/connection-setup-plan.ts — see
+// docs/inbox/report-clusters-bc-completion.md.
+export const BROWSER_SURFACE_KINDS = new Set(["chase_current_activity", "usaa_transaction_export"]);
 const BROWSER_SURFACE_MANAGED_STATES = new Set(["isolated", "legacy_remote", "managed", "unknown"]);
 const BROWSER_SURFACE_POSTURES = new Set(["recognized", "verified_empty", "parser_zero", "unexpected"]);
 const BROWSER_SURFACE_ROUTES = new Set(["expected", "interstitial", "unknown"]);

@@ -3124,8 +3124,7 @@ function isExternalToolUnavailableReason(normalized: string): boolean {
   return (
     normalized.includes("binary_missing") ||
     normalized.includes("external_tool_missing") ||
-    normalized.includes("external_tool_unavailable") ||
-    normalized.includes("slackdump_missing")
+    normalized.includes("external_tool_unavailable")
   );
 }
 
