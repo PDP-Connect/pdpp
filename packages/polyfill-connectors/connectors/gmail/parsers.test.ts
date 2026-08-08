@@ -697,6 +697,7 @@ test("buildMessageBodyRecord: text_plain path populates full fields + bytes", ()
     bodyTextFull: "plain body text",
     bodyHtmlFull: "<p>html body</p>",
     gmMsgid: "msg-1",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: "utf-8",
     htmlCharset: null,
   });
@@ -717,6 +718,7 @@ test("buildMessageBodyRecord: truncates body_text past MAX_BODY_FIELD_CHARS and 
     bodyTextFull: huge,
     bodyHtmlFull: null,
     gmMsgid: "m",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: null,
     htmlCharset: null,
   });
@@ -734,6 +736,7 @@ test("buildMessageBodyRecord: CR/LF escaped in place for JSONL safety", () => {
     bodyTextFull: "line 1\nline 2\rline 3",
     bodyHtmlFull: null,
     gmMsgid: "m",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: "utf-8",
     htmlCharset: null,
   });
@@ -744,11 +747,39 @@ test("buildMessageBodyRecord: CR/LF escaped in place for JSONL safety", () => {
   assert.equal(body.includes("\r"), false);
 });
 
+test("buildMessageBodyRecord: carries the parent message's received time as its semantic time", () => {
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: "body",
+    bodyHtmlFull: null,
+    gmMsgid: "m",
+    receivedAt: "2024-03-01T10:00:00.000Z",
+    textCharset: null,
+    htmlCharset: null,
+  });
+  // A body has no timestamp of its own; semantic-time resolution reads only
+  // the record's own fields, so the parent time must be denormalized here or
+  // the stream falls back to ingest time.
+  assert.equal(rec.message_received_at, "2024-03-01T10:00:00.000Z");
+});
+
+test("buildMessageBodyRecord: unknown received time stays null, never an ingest stamp", () => {
+  const rec = buildMessageBodyRecord({
+    bodyTextFull: "body",
+    bodyHtmlFull: null,
+    gmMsgid: "m",
+    receivedAt: null,
+    textCharset: null,
+    htmlCharset: null,
+  });
+  assert.equal(rec.message_received_at, null);
+});
+
 test("buildMessageBodyRecord: empty body → null + body_source='empty'", () => {
   const rec = buildMessageBodyRecord({
     bodyTextFull: null,
     bodyHtmlFull: null,
     gmMsgid: "m",
+    receivedAt: "2024-03-01T10:00:00.000Z",
     textCharset: null,
     htmlCharset: null,
   });

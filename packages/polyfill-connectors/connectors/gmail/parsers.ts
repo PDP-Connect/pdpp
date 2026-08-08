@@ -698,18 +698,26 @@ function truncateField(value: string | null, max: number): string | null {
  *   - Emit body_*_bytes from the FULL (pre-truncation) decoded body
  *   - Fall back to html_stripped when text/plain is absent/empty
  *   - charset = textCharset || htmlCharset || null
+ *
+ * `message_received_at` denormalizes the parent message's received time onto
+ * the body so the row can carry a semantic time of its own. A body has no
+ * timestamp in its IMAP payload, and semantic-time resolution reads only the
+ * record's own fields — no join — so without this the stream would fall back
+ * to ingest time. Mirrors the same denormalization on `attachments`.
  */
 export function buildMessageBodyRecord(params: {
   bodyHtmlFull: string | null;
   bodyTextFull: string | null;
   gmMsgid: string;
   htmlCharset: string | null;
+  receivedAt: string | null;
   textCharset: string | null;
 }): Record<string, unknown> {
   const { bodyText, bodySource } = classifyBodySource(params.bodyTextFull, params.bodyHtmlFull);
   return {
     id: params.gmMsgid,
     message_id: params.gmMsgid,
+    message_received_at: params.receivedAt,
     body_text: truncateField(bodyText, MAX_BODY_FIELD_CHARS),
     body_html: truncateField(params.bodyHtmlFull, MAX_BODY_FIELD_CHARS),
     body_text_bytes: bodyText ? Buffer.byteLength(bodyText, "utf8") : null,

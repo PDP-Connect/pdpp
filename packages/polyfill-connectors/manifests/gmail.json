@@ -421,6 +421,10 @@
           "message_id": {
             "type": "string"
           },
+          "message_received_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
           "body_text": {
             "type": ["string", "null"],
             "x_pdpp_role": "primary-title"
@@ -448,6 +452,8 @@
         "required": ["id", "message_id", "body_source"]
       },
       "primary_key": ["id"],
+      "consent_time_field": "message_received_at",
+      "required": false,
       "selection": {
         "fields": true,
         "resources": true
@@ -467,8 +473,13 @@
           "semantic_fields": ["body_text"]
         },
         "range_filters": {
+          "message_received_at": ["gte", "gt", "lte", "lt"],
           "body_text_bytes": ["gte", "gt", "lte", "lt"],
           "body_html_bytes": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": ["message_received_at"]
         }
       },
       "coverage_strategy": "checkpoint_window",

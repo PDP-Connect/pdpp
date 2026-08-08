@@ -37,10 +37,10 @@ import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import {
   buildDetailCoverageMessage,
   buildDetailGap,
-  describeUnexpectedFailure,
   type DetailCoverageMessage,
   type DetailGapMessage,
   type DetailGapStartEntry,
+  describeUnexpectedFailure,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
@@ -704,6 +704,7 @@ export async function processMessage(deps: PerMessageDeps, msg: FetchMessageObje
         bodyTextFull,
         gmMsgid,
         htmlCharset: selection.htmlCharset,
+        receivedAt,
         textCharset: selection.plainCharset,
       })
     );

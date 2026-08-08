@@ -216,7 +216,10 @@ const KNOWN_MISSING_REQUIRED = new Map([
   ["gmail.messages", "88c18d102254ecd8"],
   ["gmail.threads", "10a2882dc2287b8c"],
   ["gmail.labels", "7b5c8aad799a9641"],
-  ["gmail.message_bodies", "b5728d074ffa2170"],
+  // gmail.message_bodies left this map by declaring `required: false`
+  // explicitly (the encouraged shrink path) when it gained a semantic-time
+  // field. It is separately grantable and optional, so a body failure must
+  // not fail the whole connector run.
   ["gmail.attachments", "3883a623c52d9879"],
   ["google_maps.timeline_points", "8bb6f3a0b2f01651"],
   ["google_maps.timeline_segments", "1f331e7b299d5569"],

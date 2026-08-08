@@ -26,6 +26,10 @@ import type {
 /**
  * ChatGPT times are unix seconds (number). Some responses use ISO strings.
  * Normalize both to ISO-8601; swallow malformed inputs.
+ *
+ * A non-positive epoch is a sentinel for "no time", not the instant
+ * 1970-01-01 — returning null keeps "unknown" falsifiable downstream instead
+ * of sorting a timeless record to the beginning of time.
  */
 export function tsToIso(v: unknown): string | null {
   if (v === null || v === undefined) {
@@ -33,6 +37,9 @@ export function tsToIso(v: unknown): string | null {
   }
   try {
     if (typeof v === "number" && Number.isFinite(v)) {
+      if (v <= 0) {
+        return null;
+      }
       const d = new Date(v * 1000);
       return Number.isNaN(d.getTime()) ? null : d.toISOString();
     }

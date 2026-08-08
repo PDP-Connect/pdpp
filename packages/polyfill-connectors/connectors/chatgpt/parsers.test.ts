@@ -56,6 +56,13 @@ test("tsToIso: null / nonsense / NaN → null", () => {
   assert.equal(tsToIso({} as unknown), null);
 });
 
+test("tsToIso: non-positive epoch is a sentinel → null, not 1970-01-01", () => {
+  // 0 means "no time", not the Unix epoch. Converting it would sort a
+  // timeless record to the beginning of time while looking like real data.
+  assert.equal(tsToIso(0), null);
+  assert.equal(tsToIso(-1), null);
+});
+
 // ─── flattenTreeCurrentBranch + countBranchMessages ────────────────────
 
 test("flattenTreeCurrentBranch: walks root → tip for current branch only", () => {
