@@ -1815,6 +1815,23 @@ export async function getDatasetSummary(): Promise<DatasetSummary> {
   return (await refFetch("/_ref/dataset/summary")) as DatasetSummary;
 }
 
+/**
+ * Force a synchronous rebuild of the dataset-summary projection via the
+ * existing owner-authenticated `POST /_ref/dataset/summary/rebuild` route.
+ * This is the owner recovery path for a projection auto-heal has given up
+ * on (`failed` after exhausting its bounded consecutive-failure cap in
+ * `dataset-summary-read-model.ts`) — it calls the same bounded-retry
+ * rebuild directly, independent of the read path's own cooldown/cap, so an
+ * owner is never blocked from trying again immediately.
+ */
+export async function rebuildDatasetSummary(): Promise<DatasetSummary> {
+  return (await refFetch("/_ref/dataset/summary/rebuild", undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as DatasetSummary;
+}
+
 // `GET /_ref/dataset/size` and `GET /_ref/dataset/top` — finer-grain
 // siblings of `getDatasetSummary()`. Both are projection-backed and already
 // server-bounded (top is capped at 25 rows, `MAX_TOP_LIMIT` in

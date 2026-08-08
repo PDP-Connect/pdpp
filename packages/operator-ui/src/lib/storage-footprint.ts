@@ -21,8 +21,7 @@
 // Spec: openspec/changes/surface-database-physical-footprint/specs/
 //       reference-implementation-architecture/spec.md
 
-import type { DatasetSummary, DatasetSummaryProjectionMetadata } from "./ref-client.ts";
-import type { DeploymentDiagnostics } from "./ref-client.ts";
+import type { DatasetSummary, DatasetSummaryProjectionMetadata, DeploymentDiagnostics } from "./ref-client.ts";
 
 export interface StorageRelationRow {
   readonly bytes: number;
@@ -128,18 +127,18 @@ export function buildDatasetSummaryProjectionStatusModel(
   if (!projection) {
     return { needsAttention: false, statusLine: "Projection status unavailable." };
   }
-  const state = projection.state;
+  const { computed_at: computedAt, last_error: lastError, state } = projection;
   if (state === "fresh") {
     return { needsAttention: false, statusLine: "Up to date." };
   }
   if (state === "failed") {
-    const reason = projection.last_error ? ` Last error: ${projection.last_error}` : "";
+    const reason = lastError ? ` Last error: ${lastError}` : "";
     return {
       needsAttention: true,
       statusLine: `Rebuild failed and stopped retrying automatically.${reason}`,
     };
   }
-  if (projection.computed_at == null) {
+  if (computedAt === null || computedAt === undefined) {
     return {
       needsAttention: true,
       statusLine: "Never computed. This deployment has not rebuilt the dataset summary yet.",

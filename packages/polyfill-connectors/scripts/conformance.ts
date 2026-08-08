@@ -40,6 +40,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { KNOWN_SCAFFOLD_CONNECTORS } from "../src/connector-conformance-roster.ts";
 import { isMainModule } from "../src/is-main-module.ts";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -162,7 +163,13 @@ function checkMockMutation(connector: string): Step {
   try {
     const out = execFileSync(
       process.execPath,
-      ["--import", "tsx", join(PACKAGE_ROOT, "scripts", "mock-mutation-check.ts"), `--connector=${connector}`, "--json"],
+      [
+        "--import",
+        "tsx",
+        join(PACKAGE_ROOT, "scripts", "mock-mutation-check.ts"),
+        `--connector=${connector}`,
+        "--json",
+      ],
       { cwd: PACKAGE_ROOT, encoding: "utf8", stdio: "pipe", timeout: 600_000 }
     );
     const parsed = JSON.parse(out) as Array<{ detail: string; verdict: string }>;
@@ -171,12 +178,13 @@ function checkMockMutation(connector: string): Step {
       return { advisory: true, detail: "no result", name: "mock mutation", verdict: "UNKNOWN" };
     }
     const verdict = first.verdict as Verdict;
-    const nextAction =
-      verdict === "UNKNOWN"
-        ? `this connector's test(s) have no request-path-matching literal (identifier === "/foo", .startsWith("/foo"), .includes("/foo")) — if it makes real HTTP requests, add a fake-server/route assertion that checks the actual path, not just query params or headers`
-        : verdict === "WEAK"
-          ? "one or more path literals are decorative (the suite still passes when corrupted) — see the literal(s) named in the detail above and add an assertion that fails when that exact path is wrong"
-          : undefined;
+    let nextAction: string | undefined;
+    if (verdict === "UNKNOWN") {
+      nextAction = `this connector's test(s) have no request-path-matching literal (identifier === "/foo", .startsWith("/foo"), .includes("/foo")) — if it makes real HTTP requests, add a fake-server/route assertion that checks the actual path, not just query params or headers`;
+    } else if (verdict === "WEAK") {
+      nextAction =
+        "one or more path literals are decorative (the suite still passes when corrupted) — see the literal(s) named in the detail above and add an assertion that fails when that exact path is wrong";
+    }
     return { advisory: true, detail: first.detail, name: "mock mutation", nextAction, verdict };
   } catch (err) {
     return {
@@ -196,7 +204,8 @@ function checkReachability(connector: string): Step {
       advisory: true,
       detail: "probe script not found",
       name: "reachability",
-      nextAction: "scripts/connector-reachability.mjs is missing from the repo root — this is a repo-wide problem, not specific to this connector",
+      nextAction:
+        "scripts/connector-reachability.mjs is missing from the repo root — this is a repo-wide problem, not specific to this connector",
       verdict: "UNKNOWN",
     };
   }
@@ -223,7 +232,13 @@ export function runConformance(connector: string): Step[] {
   if (manifest.verdict === "FAIL") {
     return [manifest];
   }
-  return [manifest, checkTests(connector), checkPilotFixture(connector), checkMockMutation(connector), checkReachability(connector)];
+  return [
+    manifest,
+    checkTests(connector),
+    checkPilotFixture(connector),
+    checkMockMutation(connector),
+    checkReachability(connector),
+  ];
 }
 
 const GLYPH: Record<Verdict, string> = { ADVISORY: "·", FAIL: "✖", PASS: "✔", UNKNOWN: "?", WEAK: "⚠" };
@@ -238,11 +253,17 @@ function main(): void {
   }
 
   const steps = runConformance(connector);
+  const isKnownScaffold = (KNOWN_SCAFFOLD_CONNECTORS as readonly string[]).includes(connector);
 
   if (jsonOut) {
-    console.log(JSON.stringify({ connector, steps }, null, 2));
+    console.log(JSON.stringify({ connector, isKnownScaffold, steps }, null, 2));
   } else {
     console.log(`\nconformance: ${connector}\n`);
+    if (isKnownScaffold) {
+      console.log(
+        `NOTE: ${connector} is a KNOWN SCAFFOLD (src/connector-conformance-roster.ts) — it emits an unconditional SKIP_RESULT and does not collect yet. The pilot-fixture/mock-mutation/reachability gaps below are expected until real collection is wired up; they are not this connector's next action. Wiring the collector is.\n`
+      );
+    }
     for (const s of steps) {
       console.log(`${GLYPH[s.verdict]} ${s.name.padEnd(16)} ${s.detail}`);
       if (s.nextAction) {
@@ -262,7 +283,7 @@ function main(): void {
           ? `\nNo blocking failures, but ${unknown.length + softGaps.length} check(s) could not run or found soft spots. That is a gap, not a pass.`
           : softGaps.length > 0
             ? `\nNo blocking failures, but ${softGaps.length} advisory gap(s) above mean the suite has soft spots. This does NOT mean it works against a real account.`
-            : `\nNothing mechanical is wrong. This does NOT mean it works against a real account — only a real run shows that.`
+            : "\nNothing mechanical is wrong. This does NOT mean it works against a real account — only a real run shows that."
     );
   }
 

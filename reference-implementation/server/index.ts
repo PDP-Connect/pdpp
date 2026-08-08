@@ -143,6 +143,7 @@ import {
 import { createConnectorSummaryReconcileObservationSink } from "./connector-summary-reconcile-observability.ts";
 import {
   applyDatasetSummaryBlobDelta,
+  ensureDatasetSummaryProjectionHealthy,
   getDatasetSummaryProjection,
   listStreamProjections,
   rebuildDatasetSummaryProjection,
@@ -4943,6 +4944,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
     buildRecordVersionStatsEnvelope,
     createRequestAbortSignal,
     createRequestConnectorInstanceStore,
+    ensureDatasetSummaryProjectionHealthy,
     getDatasetBlobBytes,
     getDatasetRecordChangesBytes,
     getDatasetRecordsAggregate,

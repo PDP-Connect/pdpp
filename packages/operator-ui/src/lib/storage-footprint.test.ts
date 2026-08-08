@@ -20,8 +20,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { DatasetSummary, DeploymentDiagnostics } from "./ref-client.ts";
-import { buildStorageFootprintModel, formatStorageBytes, retainedBytesFromDatasetSummary } from "./storage-footprint.ts";
+import type { DatasetSummary, DatasetSummaryProjectionMetadata, DeploymentDiagnostics } from "./ref-client.ts";
+import {
+  buildDatasetSummaryProjectionStatusModel,
+  buildStorageFootprintModel,
+  formatStorageBytes,
+  retainedBytesFromDatasetSummary,
+} from "./storage-footprint.ts";
+
+const NEVER_COMPUTED_RE = /never computed/i;
+const DISK_FULL_RE = /disk full/;
 
 type DatabaseBlock = DeploymentDiagnostics["database"];
 
@@ -235,4 +243,64 @@ test("end-to-end: unconverged summary renders the deployment page's 0 B fabricat
   const model = buildStorageFootprintModel(pgDatabase(), retainedBytes);
   assert.notEqual(model.retainedLabel, "0 B");
   assert.equal(model.retainedLabel, null, "unmeasured global payload renders as hidden (—), not 0 B");
+});
+
+// ─── buildDatasetSummaryProjectionStatusModel (owner recovery affordance) ──
+//
+// The projection had exactly one caller (an owner-authenticated HTTP route
+// with no boot hook, scheduler, or UI affordance) — a failed or
+// never-converged projection was invisible and unrecoverable from the
+// console. This pins the render-model that decides when to surface a
+// status line + recovery action on the deployment page's storage section.
+
+function projectionMetadata(
+  overrides: Partial<DatasetSummaryProjectionMetadata> = {}
+): DatasetSummaryProjectionMetadata {
+  return {
+    computed_at: "2026-08-07T00:00:00.000Z",
+    last_error: null,
+    rebuild_status: "idle",
+    stale_since: null,
+    state: "fresh",
+    ...overrides,
+  };
+}
+
+test("absent projection renders unmeasured with no recovery action", () => {
+  const model = buildDatasetSummaryProjectionStatusModel(null);
+  assert.equal(model.needsAttention, false);
+});
+
+test("fresh projection needs no attention", () => {
+  const model = buildDatasetSummaryProjectionStatusModel(projectionMetadata({ state: "fresh" }));
+  assert.equal(model.needsAttention, false);
+});
+
+test("never-converged projection (computed_at null) needs attention", () => {
+  const model = buildDatasetSummaryProjectionStatusModel(
+    projectionMetadata({ computed_at: null, rebuild_status: "running", state: "rebuilding" })
+  );
+  assert.equal(model.needsAttention, true);
+  assert.match(model.statusLine, NEVER_COMPUTED_RE);
+});
+
+test("failed projection needs attention and surfaces the last error", () => {
+  const model = buildDatasetSummaryProjectionStatusModel(
+    projectionMetadata({
+      last_error: "disk full",
+      rebuild_status: "failed",
+      state: "failed",
+    })
+  );
+  assert.equal(model.needsAttention, true);
+  assert.match(model.statusLine, DISK_FULL_RE);
+});
+
+test("refreshing/stale projections do not surface an action — the system is already handling them", () => {
+  const refreshing = buildDatasetSummaryProjectionStatusModel(projectionMetadata({ state: "refreshing" }));
+  const stale = buildDatasetSummaryProjectionStatusModel(
+    projectionMetadata({ stale_since: "2026-08-07T00:00:00.000Z", state: "stale" })
+  );
+  assert.equal(refreshing.needsAttention, false);
+  assert.equal(stale.needsAttention, false);
 });

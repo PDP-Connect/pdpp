@@ -213,6 +213,10 @@ function retainedSizeRouteContext(overrides: Partial<MountRefDatasetContext> = {
       // biome-ignore lint/suspicious/noEmptyBlockStatements: skipped test callback is intentionally empty
       createRequestAbortSignal: () => ({ cleanup() {}, signal: new AbortController().signal }),
       createRequestConnectorInstanceStore: () => ({}),
+      // biome-ignore lint/suspicious/useAwait: mock preserves the production Promise contract and rejection timing
+      ensureDatasetSummaryProjectionHealthy: async () => {
+        throw new Error("read path must not auto-heal the SQLite dataset summary projection in retained-size mode");
+      },
       getDatasetBlobBytes: async () => 0,
       getDatasetRecordChangesBytes: async () => 13,
       getDatasetRecordsAggregate: async () => ({

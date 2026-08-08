@@ -16,6 +16,7 @@ import { LivePoller } from "../components/live-poller.tsx";
 import { ServerUnreachable } from "../components/server-unreachable.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
+  type DatasetSummaryProjectionMetadata,
   type DeploymentDiagnostics,
   getDatasetSize,
   getDatasetSummary,
@@ -26,8 +27,14 @@ import {
   type RefRetainedSizeRow,
   type RefRetainedSizeTopRow,
 } from "../lib/ref-client.ts";
+import { rebuildDatasetSummaryAction } from "./actions.ts";
 
 export const dynamic = "force-dynamic";
+
+interface DeploymentPageParams {
+  error?: string;
+  notice?: string;
+}
 
 // Operator-facing diagnostics for the reference deployment. Not a PDPP
 // protocol surface — this page consumes /_ref/deployment and renders the
@@ -36,7 +43,12 @@ export const dynamic = "force-dynamic";
 //
 // Spec: openspec/changes/make-semantic-retrieval-operational/
 //       specs/reference-implementation-architecture/spec.md
-export default async function DeploymentPage() {
+export default async function DeploymentPage({
+  searchParams,
+}: {
+  searchParams: Promise<DeploymentPageParams>;
+}) {
+  const params = await searchParams;
   let report: DeploymentDiagnostics | null = null;
   let unreachable = false;
   try {
@@ -59,12 +71,19 @@ export default async function DeploymentPage() {
   // model already guards against (`connector-summary-read-model.ts`,
   // `retained_bytes_state`): an unconverged projection must render as
   // unknown, never as "0 B".
+  //
+  // `projection` (the full metadata, not just the derived byte count) is
+  // threaded through separately so the storage section can say WHY the
+  // number is missing and offer a recovery action, rather than a bare "—".
   let retainedBytes: number | null = null;
+  let projection: DatasetSummaryProjectionMetadata | null = null;
   try {
     const summary = await getDatasetSummary();
     retainedBytes = retainedBytesFromDatasetSummary(summary);
+    projection = summary.projection ?? null;
   } catch {
     retainedBytes = null;
+    projection = null;
   }
 
   // Per-source retained payload. The `database` block answers "how big is the
@@ -126,6 +145,10 @@ export default async function DeploymentPage() {
         beforeDiagnostics={<DeploymentReadinessPanel inputs={extractReadinessInputs(report)} />}
         breadcrumbs={[{ href: "/", label: "Overview" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
+        projection={projection}
+        projectionActionError={params.error ?? null}
+        projectionActionNotice={params.notice === "dataset_summary_rebuilt" ? "Dataset summary rebuilt." : null}
+        rebuildDatasetSummaryAction={rebuildDatasetSummaryAction}
         report={report}
         retainedBytes={retainedBytes}
         sources={sources}

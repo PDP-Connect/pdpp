@@ -127,14 +127,15 @@ export interface MountRefDatasetContext {
   ) => Promise<unknown>;
   createRequestAbortSignal: (req: unknown, message: string) => { signal: AbortSignal; cleanup: () => void };
   createRequestConnectorInstanceStore: () => unknown;
+
+  // dataset-summary-read-model.js
+  ensureDatasetSummaryProjectionHealthy: (deps: unknown) => Promise<unknown>;
   getDatasetBlobBytes: () => Promise<number>;
   getDatasetRecordChangesBytes: () => Promise<number>;
 
   // records.js substrate reads
   getDatasetRecordsAggregate: () => Promise<DatasetRecordsAggregate>;
   getDatasetRecordTimeBounds: () => Promise<{ earliest: string | null; latest: string | null }>;
-
-  // dataset-summary-read-model.js
   getDatasetSummaryProjection: () => RefDatasetSummaryProjection;
   getDatasetSummaryStreamRecordTimeBounds: (
     connectorId: string,
@@ -275,6 +276,21 @@ async function buildRetainedSizeProjection(ctx: MountRefDatasetContext): Promise
   };
 }
 
+// SQLite counterpart to `buildAutoReconciledRetainedSizeProjection` below.
+// The dataset-summary read model owns its own cooldown/failure-cap state
+// (`ensureDatasetSummaryProjectionHealthy` in dataset-summary-read-model.ts);
+// this adapter only wires the read path's already-built dependency bag
+// (including `listStreamProjectionSeeds`, required for a rebuild to
+// populate the per-stream table) into that call.
+async function buildAutoHealedDatasetSummaryProjection(
+  ctx: MountRefDatasetContext,
+  aggregate: () => Promise<DatasetRecordsAggregate>
+): Promise<RefDatasetSummaryProjection> {
+  const deps = buildDatasetSummaryDeps(ctx, aggregate, { streamSeeds: true });
+  const healed = await ctx.ensureDatasetSummaryProjectionHealthy(deps);
+  return healed as RefDatasetSummaryProjection;
+}
+
 function retainedProjectionNeedsReconcile(projection: RefDatasetSummaryProjection): boolean {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const state = projection.metadata.state;
@@ -380,7 +396,7 @@ export function mountRefDatasetSummary(app: AppLike, ctx: MountRefDatasetContext
           buildDatasetSummaryDeps(ctx, aggregate, {
             projection: ctx.isPostgresStorageBackend()
               ? () => buildAutoReconciledRetainedSizeProjection(ctx)
-              : () => ctx.getDatasetSummaryProjection(),
+              : () => buildAutoHealedDatasetSummaryProjection(ctx, aggregate),
           })
         );
         res.json(summary);

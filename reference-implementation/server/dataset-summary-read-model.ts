@@ -715,6 +715,135 @@ function rebuildFailureMetadata(
   };
 }
 
+// Auto-heal throttling. Process-local, not persisted -- a restart resets
+// both counters, which is the right default: a fresh process deserves a
+// fresh attempt rather than inheriting a failure streak from a build that
+// may no longer apply (new code, new data, or the underlying cause fixed
+// out of band). This mirrors the existing retained-size auto-reconcile
+// throttle in server/routes/ref-dataset.ts (same shape, applied to the
+// SQLite dataset-summary rebuild instead of the Postgres reconcile).
+//
+// Two bounds, not one:
+//   - A floor between attempts (cooldown) so a hot read path (every GET
+//     /_ref/dataset/summary) cannot fire a 456k-record table scan on every
+//     request while a rebuild is legitimately in flight or just failed.
+//   - A cap on CONSECUTIVE failures so a rebuild that fails for a durable
+//     reason (corrupt data, disk full, a bug) does not retry forever and
+//     burn CPU on every read. Once the cap is hit, auto-heal stops trying
+//     and the projection stays honestly "failed" until an owner acts
+//     (manual rebuild via the console action clears the counter by
+//     succeeding, or the process restarts).
+const DATASET_SUMMARY_AUTO_HEAL_COOLDOWN_MS = 30_000;
+const DATASET_SUMMARY_AUTO_HEAL_MAX_CONSECUTIVE_FAILURES = 5;
+
+let datasetSummaryAutoHealRetryAfterMs = 0;
+let datasetSummaryAutoHealConsecutiveFailures = 0;
+let datasetSummaryAutoHealNow = () => Date.now();
+
+export function __resetDatasetSummaryAutoHealThrottleForTest(): void {
+  datasetSummaryAutoHealRetryAfterMs = 0;
+  datasetSummaryAutoHealConsecutiveFailures = 0;
+  datasetSummaryAutoHealNow = () => Date.now();
+}
+
+export function __setDatasetSummaryAutoHealNowForTest(now: () => number): void {
+  datasetSummaryAutoHealNow = now;
+}
+
+function datasetSummaryAutoHealInCooldown(): boolean {
+  return datasetSummaryAutoHealNow() < datasetSummaryAutoHealRetryAfterMs;
+}
+
+function datasetSummaryAutoHealExhausted(): boolean {
+  return datasetSummaryAutoHealConsecutiveFailures >= DATASET_SUMMARY_AUTO_HEAL_MAX_CONSECUTIVE_FAILURES;
+}
+
+function noteDatasetSummaryAutoHealFailure(): void {
+  datasetSummaryAutoHealConsecutiveFailures += 1;
+  datasetSummaryAutoHealRetryAfterMs = datasetSummaryAutoHealNow() + DATASET_SUMMARY_AUTO_HEAL_COOLDOWN_MS;
+}
+
+function noteDatasetSummaryAutoHealSuccess(): void {
+  datasetSummaryAutoHealConsecutiveFailures = 0;
+  datasetSummaryAutoHealRetryAfterMs = 0;
+}
+
+// A projection needs auto-heal when it has never converged (`computed_at`
+// null) or when a prior rebuild left it in the terminal `failed` state --
+// both are the "honestly unknown, and nothing is going to fix that on its
+// own" states the owner's stuck instance was in. `stale`/`refreshing` are
+// NOT included: those already carry a last-known-good value and either a
+// live rebuild lease (refreshing) or a delta-driven staleness that the
+// normal delta/reconcile paths already keep moving -- forcing a full
+// rebuild there would be exactly the "thrash" the task warns against.
+function datasetSummaryProjectionNeedsHeal(projection: DatasetSummaryProjection): boolean {
+  return projection.metadata.computed_at === null || projection.metadata.state === "failed";
+}
+
+/**
+ * Read-path auto-heal: if the projection has never converged, or a prior
+ * rebuild landed in the terminal `failed` state, kick off a rebuild using
+ * the same bounded-retry `rebuildDatasetSummaryProjection` that already
+ * tolerates concurrent deltas -- no second convergence mechanism.
+ *
+ * This is the fix for "why wouldn't the projection heal automatically":
+ * `rebuildDatasetSummaryProjection` had exactly one caller, an
+ * owner-authenticated HTTP route with no boot hook, scheduler, or UI
+ * affordance. Hanging the trigger off the OWNER'S OWN READ of the summary
+ * (`GET /_ref/dataset/summary`, already called every time the dashboard or
+ * deployment page loads) means the projection heals the next time anyone
+ * looks at it, without a general-purpose scheduler and without touching
+ * the synchronous per-record ingest path (`applyDatasetSummaryRecordDelta`
+ * is called from inside every record write in records.js; hanging an
+ * async multi-second table scan off that path would block ingestion).
+ *
+ * Never fabricates convergence: on failure the prior (getDatasetSummaryProjection())
+ * value is returned unchanged, `rebuildDatasetSummaryProjection`'s own
+ * failure path already stamps `state: 'failed'` honestly, and this
+ * function's cooldown/cap only decide WHEN to retry, never what to report.
+ */
+export async function ensureDatasetSummaryProjectionHealthy(
+  dependencies: RebuildDatasetSummaryDependencies
+): Promise<DatasetSummaryProjection> {
+  assertSqliteBackendForDatasetSummary("ensureDatasetSummaryProjectionHealthy");
+  const before = getDatasetSummaryProjection();
+  if (!datasetSummaryProjectionNeedsHeal(before)) {
+    return before;
+  }
+  // `before.generation === 0` means no projection row has EVER been
+  // written (getDatasetSummaryProjection's `!row` branch) -- the exact
+  // shape of a brand-new/never-rebuilt instance. That branch fabricates a
+  // `rebuild_status: "running"` / `stale_since: now()` placeholder purely
+  // so the summary envelope's shape stays honest ("something must still
+  // compute this") -- it is not a real lease left by a concurrent rebuild,
+  // since a real rebuild's first write (markDatasetSummaryProjectionRebuilding)
+  // always creates the row and bumps generation to 1+. Treating that
+  // placeholder as a live lease would permanently defer auto-heal on
+  // exactly the case it exists to fix. Only a rebuild with a real
+  // persisted row (generation > 0) can hold a live lease.
+  if (before.generation > 0 && isRebuildLeaseActive(before.metadata)) {
+    // A rebuild (this auto-heal or the owner's manual action) is already
+    // in flight. Do not start a second one -- the generation guard inside
+    // rebuildDatasetSummaryProjection would just make the loser retry for
+    // nothing, and a 456k-record scan is real work worth not duplicating.
+    return before;
+  }
+  if (datasetSummaryAutoHealInCooldown() || datasetSummaryAutoHealExhausted()) {
+    return before;
+  }
+  try {
+    const healed = await rebuildDatasetSummaryProjection(dependencies);
+    noteDatasetSummaryAutoHealSuccess();
+    return healed as DatasetSummaryProjection;
+  } catch {
+    // rebuildDatasetSummaryProjection already persisted the honest failed
+    // metadata; this function only tracks whether to try again on the next
+    // read.
+    noteDatasetSummaryAutoHealFailure();
+    return getDatasetSummaryProjection();
+  }
+}
+
 export async function reconcileDirtyDatasetSummaryRecordTimeBounds(
   dependencies: ReconcileDatasetSummaryDependencies,
   { signal }: { signal?: AbortSignal } = {}
