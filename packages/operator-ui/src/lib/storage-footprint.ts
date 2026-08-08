@@ -21,6 +21,7 @@
 // Spec: openspec/changes/surface-database-physical-footprint/specs/
 //       reference-implementation-architecture/spec.md
 
+import type { DatasetSummary } from "./ref-client.ts";
 import type { DeploymentDiagnostics } from "./ref-client.ts";
 
 export interface StorageRelationRow {
@@ -78,6 +79,24 @@ export function formatStorageBytes(bytes: number): string {
 
 function isFiniteNonNegative(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * Extract the logical retained-payload figure from a `dataset_summary`
+ * envelope, honoring the global projection's convergence state the same way
+ * the per-connection read model already treats `retained_bytes_state`
+ * (`connector-summary-read-model.ts`): a projection that has never
+ * converged carries no measured value, so `total_retained_bytes` is the
+ * schema default (`0`), not a real zero. `projection.computed_at` is the
+ * global convergence signal — `null`/absent means "never measured" and the
+ * number must not be trusted. Once a projection has converged at least once
+ * (fresh/refreshing/stale/failed all carry a `computed_at`), its last-known
+ * number is real and renders even while a refresh is in flight, matching the
+ * physical-footprint "last known" precedent.
+ */
+export function retainedBytesFromDatasetSummary(summary: DatasetSummary): number | null {
+  const hasConverged = summary.projection?.computed_at != null;
+  return hasConverged && typeof summary.total_retained_bytes === "number" ? summary.total_retained_bytes : null;
 }
 
 /**

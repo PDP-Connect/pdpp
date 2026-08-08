@@ -6,6 +6,7 @@ import {
   DeploymentDiagnosticsView,
   isDeploymentIndexing,
 } from "@pdpp/operator-ui/components/views/deployment-diagnostics-view";
+import { retainedBytesFromDatasetSummary } from "@pdpp/operator-ui/lib/storage-footprint";
 import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { loadConnectorSummaryPage } from "../components/connector-summary-page.tsx";
@@ -52,10 +53,16 @@ export default async function DeploymentPage() {
   // a labeled comparison. It is a best-effort fetch — a failed summary read
   // hides the comparison line rather than failing the deployment page, which
   // is primarily a retrieval-diagnostics surface.
+  //
+  // `retainedBytesFromDatasetSummary` gates on the global projection's
+  // convergence state — the same fabrication class the per-connection read
+  // model already guards against (`connector-summary-read-model.ts`,
+  // `retained_bytes_state`): an unconverged projection must render as
+  // unknown, never as "0 B".
   let retainedBytes: number | null = null;
   try {
     const summary = await getDatasetSummary();
-    retainedBytes = typeof summary.total_retained_bytes === "number" ? summary.total_retained_bytes : null;
+    retainedBytes = retainedBytesFromDatasetSummary(summary);
   } catch {
     retainedBytes = null;
   }

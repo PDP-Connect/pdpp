@@ -20,10 +20,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { DeploymentDiagnostics } from "./ref-client.ts";
-import { buildStorageFootprintModel, formatStorageBytes } from "./storage-footprint.ts";
+import type { DatasetSummary, DeploymentDiagnostics } from "./ref-client.ts";
+import { buildStorageFootprintModel, formatStorageBytes, retainedBytesFromDatasetSummary } from "./storage-footprint.ts";
 
 type DatabaseBlock = DeploymentDiagnostics["database"];
+
+function datasetSummary(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
+  return {
+    blob_bytes: 0,
+    connector_count: 0,
+    earliest_ingested_at: null,
+    earliest_record_time: null,
+    latest_ingested_at: null,
+    latest_record_time: null,
+    object: "dataset_summary",
+    record_changes_json_bytes: 0,
+    record_count: 0,
+    record_json_bytes: 0,
+    stream_count: 0,
+    top_connectors: [],
+    total_retained_bytes: 0,
+    ...overrides,
+  };
+}
 
 function pgDatabase(overrides: Partial<DatabaseBlock> = {}): DatabaseBlock {
   return {
@@ -137,4 +156,83 @@ test("missing retained payload hides the comparison rather than guessing", () =>
   const model = buildStorageFootprintModel(pgDatabase(), undefined);
   assert.equal(model.measured, true);
   assert.equal(model.retainedLabel, null, "undefined retained → null label, not 0");
+});
+
+// ─── retainedBytesFromDatasetSummary (global projection convergence) ───────
+//
+// Live UAT: the global `dataset_summary_projection` had never converged
+// (counts.record_count = 0, retained_bytes.* = 0) while the connector fleet
+// held ~430k records. The deployment page rendered "0 B" for the logical
+// retained payload — the same fabrication class already fixed at the
+// per-connection grain (`connector-summary-read-model.ts`,
+// `retained_bytes_state`). These pin the fix at the global grain.
+
+test("unconverged projection (never computed) renders as unknown, never a fabricated 0", () => {
+  // No `projection` block at all — an old server or a projection that has
+  // never run. `total_retained_bytes` is still the schema default `0`.
+  const summary = datasetSummary({ total_retained_bytes: 0 });
+  assert.equal(
+    retainedBytesFromDatasetSummary(summary),
+    null,
+    "a projection with no computed_at must not be trusted, even though the wire value is 0"
+  );
+});
+
+test("projection explicitly rebuilding (computed_at null) renders as unknown", () => {
+  const summary = datasetSummary({
+    projection: {
+      computed_at: null,
+      last_error: null,
+      rebuild_status: "running",
+      stale_since: "2026-08-07T00:00:00.000Z",
+      state: "rebuilding",
+    },
+    total_retained_bytes: 0,
+  });
+  assert.equal(retainedBytesFromDatasetSummary(summary), null);
+});
+
+test("converged-but-stale projection still renders its last-known real number", () => {
+  // Matches the physical-footprint "last known" precedent: a projection
+  // that HAS computed at least once keeps showing that number while stale,
+  // rather than blanking a value the operator already had.
+  const summary = datasetSummary({
+    projection: {
+      computed_at: "2026-08-01T00:00:00.000Z",
+      last_error: null,
+      rebuild_status: "idle",
+      stale_since: "2026-08-06T00:00:00.000Z",
+      state: "stale",
+    },
+    total_retained_bytes: 703_856_000,
+  });
+  assert.equal(retainedBytesFromDatasetSummary(summary), 703_856_000);
+});
+
+test("fresh converged projection with a genuine zero renders as measured 0, not suppressed", () => {
+  // A real empty dataset (fresh install, no connectors yet) must still show
+  // 0 B — blanket-suppressing every zero would be the opposite defect.
+  const summary = datasetSummary({
+    projection: {
+      computed_at: "2026-08-07T00:00:00.000Z",
+      last_error: null,
+      rebuild_status: "idle",
+      stale_since: null,
+      state: "fresh",
+    },
+    total_retained_bytes: 0,
+  });
+  assert.equal(retainedBytesFromDatasetSummary(summary), 0);
+});
+
+test("end-to-end: unconverged summary renders the deployment page's 0 B fabrication as em-dash", () => {
+  // Reproduces the exact owner-visible defect: feed the raw fabricated-0
+  // summary through both stages the deployment page composes —
+  // retainedBytesFromDatasetSummary then buildStorageFootprintModel — and
+  // assert the rendered label is never "0 B".
+  const summary = datasetSummary({ total_retained_bytes: 0 });
+  const retainedBytes = retainedBytesFromDatasetSummary(summary);
+  const model = buildStorageFootprintModel(pgDatabase(), retainedBytes);
+  assert.notEqual(model.retainedLabel, "0 B");
+  assert.equal(model.retainedLabel, null, "unmeasured global payload renders as hidden (—), not 0 B");
 });
