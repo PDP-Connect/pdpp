@@ -32,7 +32,8 @@
     "fix": "ultracite fix",
     "test": "node --test --import tsx --test-concurrency=2 --test-timeout=120000 \"bin/**/*.test.ts\" \"connectors/**/*.test.ts\" \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm typecheck && pnpm check && pnpm check:noAwaitInLoops-conformance && pnpm check:noUnnecessaryConditions-expiry"
+    "verify": "pnpm typecheck && pnpm check && pnpm check:noAwaitInLoops-conformance && pnpm check:noUnnecessaryConditions-expiry",
+    "conformance": "tsx scripts/conformance.ts"
   },
   "type": "module",
   "version": "0.0.1",
