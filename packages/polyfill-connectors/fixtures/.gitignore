@@ -4,3 +4,14 @@
 # the fixtures stay committable and survive a clean checkout / CI.
 !claude_code/source-home/**
 !codex/source-home/**
+
+# Raw captures hold UNSCRUBBED provider data — real names, emails, message
+# bodies. PDPP_CAPTURE_FIXTURES=1 writes them here during a real run, and a
+# DOM-capture connector leaks names by default (a bare name in an HTML text
+# node matches no structured field, so the deterministic scrubber cannot see
+# it). Only the SCRUBBED output is committable. Ignore raw at every depth so a
+# capture can never reach a commit by accident, and so this survives a clean
+# checkout rather than depending on .git/info/exclude, which is per-clone and
+# silently absent in a fresh worktree.
+**/raw/
+fixture_capture*/
