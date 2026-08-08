@@ -72,17 +72,17 @@ const PATH_MATCHER_RE = /(?:\.(?:startsWith|includes)\("(\/[^"]*)"\)|===\s*"(\/[
 
 export interface PathLiteralSite {
   readonly file: string;
-  readonly literal: string;
   readonly line: number;
+  readonly literal: string;
 }
 
 export interface ConnectorMutationResult {
   readonly connector: string;
-  readonly verdict: "PASS" | "WEAK" | "UNKNOWN";
-  readonly sites: readonly PathLiteralSite[];
-  readonly loadBearing: number;
   readonly decorative: readonly PathLiteralSite[];
   readonly detail: string;
+  readonly loadBearing: number;
+  readonly sites: readonly PathLiteralSite[];
+  readonly verdict: "PASS" | "WEAK" | "UNKNOWN";
 }
 
 function listConnectors(): string[] {
@@ -99,23 +99,25 @@ function listTestFiles(connector: string): string[] {
   if (!existsSync(dir)) {
     return [];
   }
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".test.ts"))
-    // Scratch copies are written alongside the original (relative imports must
-    // resolve) and therefore also end in `.test.ts`. Without this filter a
-    // leftover scratch from an interrupted run is collected as a real test
-    // file, and the next trial reads a path that its own `finally` already
-    // deleted — the run dies with ENOENT on a filename it invented itself.
-    .filter((f) => !f.startsWith(SCRATCH_PREFIX))
-    .map((f) => join(dir, f))
-    .sort();
+  return (
+    readdirSync(dir)
+      .filter((f) => f.endsWith(".test.ts"))
+      // Scratch copies are written alongside the original (relative imports must
+      // resolve) and therefore also end in `.test.ts`. Without this filter a
+      // leftover scratch from an interrupted run is collected as a real test
+      // file, and the next trial reads a path that its own `finally` already
+      // deleted — the run dies with ENOENT on a filename it invented itself.
+      .filter((f) => !f.startsWith(SCRATCH_PREFIX))
+      .map((f) => join(dir, f))
+      .sort()
+  );
 }
 
 /** Find every path-literal matcher site in a test file's source text. */
 export function findPathLiteralSites(filePath: string, source: string): PathLiteralSite[] {
   const sites: PathLiteralSite[] = [];
   const lines = source.split("\n");
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? "";
     // Skip comment lines: a regression-guard comment quoting a path (jellyfin's
     // "Jellyfin serves its REST API at the root, NOT under /api/" style notes)
@@ -238,7 +240,7 @@ function checkConnector(connector: string): ConnectorMutationResult {
   for (const site of uniqueSites) {
     const { loadBearing: isLoadBearing } = runMutationTrial(site);
     if (isLoadBearing) {
-      loadBearing++;
+      loadBearing += 1;
     } else {
       decorative.push(site);
     }

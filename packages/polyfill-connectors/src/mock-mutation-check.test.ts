@@ -56,8 +56,8 @@ test("findPathLiteralSites: detects .startsWith and .includes path matchers", ()
 test("findPathLiteralSites: ignores comment lines quoting a path", () => {
   const source = [
     "// Jellyfin serves its REST API at the root, NOT under /api/ — a request",
-    '// path with that prefix indicates a regression to a URL shape that 404s.',
-    ' * See /api/ for background.',
+    "// path with that prefix indicates a regression to a URL shape that 404s.",
+    " * See /api/ for background.",
     'if (path === "/System/Info") {',
     "  respond();",
     "}",
@@ -81,9 +81,10 @@ test("findPathLiteralSites: ignores non-path string literals and non-matcher com
 });
 
 test("findPathLiteralSites: returns empty for a file with zero path literals (the UNKNOWN case)", () => {
-  const source = ["const fetchStub = () => Promise.resolve({ ok: true });", "test('does nothing HTTP-shaped', () => {});"].join(
-    "\n"
-  );
+  const source = [
+    "const fetchStub = () => Promise.resolve({ ok: true });",
+    "test('does nothing HTTP-shaped', () => {});",
+  ].join("\n");
   assert.deepEqual(findPathLiteralSites("fake.test.ts", source), []);
 });
 
