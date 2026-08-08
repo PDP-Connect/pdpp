@@ -13,6 +13,26 @@
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ─── Frame ───────────────────────────────────────────────────────── */
+/* `.rr-app` sizes itself to the viewport and clips, but that alone does NOT
+   stop the DOCUMENT from scrolling. `overflow: hidden` clips PAINT; it does
+   not remove the clipped content from the root scroller's scrollable extent,
+   and html/body keep the UA default `overflow: visible`. So on a phone the
+   owner scrolls `.rr-content` (the intended scroller) AND can then drag the
+   whole document down into dead space — measured on /sources at 375×667:
+   a real wheel over the page background moved window.scrollY to 436px of
+   empty space below the frame. Two competing scroll contexts, one of them
+   scrolling into nothing.
+
+   Locking the root scroller off the shell's own PRESENCE (rather than
+   unconditionally on html) keeps the rule scoped to pages that actually
+   render this fixed-viewport frame — routes without it, and the print
+   stylesheet, still scroll the document normally. Same selector grammar as
+   the stream dialog's `html:has(.pdpp-stream-dialog)` lock in
+   syncs/[runId]/stream/stream.css, which fixed this same defect class for
+   one route; the shell owns the general case. */
+html:has(.rr-app) {
+  overflow: hidden;
+}
 .rr-app {
   /* The sidebar brand block and the main header both draw a bottom rule, and
      they meet at the sidebar's right border. They only read as ONE line when

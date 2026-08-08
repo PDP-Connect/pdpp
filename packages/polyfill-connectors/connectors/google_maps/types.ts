@@ -8,7 +8,14 @@ export type GoogleMapsPointKind =
   | "visit_location"
   | "activity_start"
   | "activity_end";
-export type GoogleMapsSegmentKind = "path" | "visit" | "activity";
+/**
+ * `unrecognized` is the honest fallback for a semanticSegments entry whose
+ * payload key we do not model (Google ships `timelineMemory` today, and the
+ * format is undocumented, so more will follow). It is a PDPP-internal label
+ * meaning "retained, not understood" — never a guess at what the segment was.
+ * The provider's own key is preserved verbatim in `unrecognized_kind`.
+ */
+export type GoogleMapsSegmentKind = "path" | "visit" | "activity" | "unrecognized";
 
 export interface StreamTimestampState {
   last_start_time?: string;
@@ -46,6 +53,8 @@ export interface TimelineSegmentRecord {
   semantic_type: string | null;
   source_format: GoogleMapsSourceFormat;
   start_time: string;
+  /** Provider's own payload key when segment_kind is `unrecognized`; null otherwise. */
+  unrecognized_kind: string | null;
 }
 
 export interface ParseResult {
