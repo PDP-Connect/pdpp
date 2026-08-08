@@ -253,29 +253,39 @@ async function resolveSidecarMetadata(
  * Resolve a media file's event timestamp. Prefers sidecar metadata; falls
  * back to filesystem mtime (stable across re-runs) rather than "now" when
  * no sidecar or usable timestamp exists — a missing sidecar is expected
- * (edited variants, export gaps), not an error.
+ * (edited variants, export gaps), not an error. Returns null when the file
+ * can't be stat'd either: `event_time` is the manifest's semantic-time
+ * source, so the run clock would date the photo to the import, not the
+ * moment it was taken. Caller skips the file.
  */
-async function resolvePhotoEventTimeMs(file: DiscoveredPhotoFile, metadata: PhotoMetadataFile | null): Promise<number> {
+async function resolvePhotoEventTimeMs(
+  file: DiscoveredPhotoFile,
+  metadata: PhotoMetadataFile | null
+): Promise<number | null> {
   const fromMetadata = metadata ? photoEventTimeMs(metadata) : null;
   if (fromMetadata) {
     return fromMetadata;
   }
   const stats = await stat(join(file.dir, file.name)).catch(() => null);
-  return stats?.mtimeMs ?? Date.now();
+  return stats?.mtimeMs ?? null;
 }
 
 /**
  * Build one photos record for a discovered media file: locate its sidecar
  * (best-effort, tolerant of missing/mismatched-suffix sidecars), resolve
- * event time, and hydrate bytes to a blob within the size cap.
+ * event time, and hydrate bytes to a blob within the size cap. Null when the
+ * file has no resolvable event time (see resolvePhotoEventTimeMs).
  */
 async function buildPhotoRecordForFile(
   file: DiscoveredPhotoFile,
   jsonFilenamesByDir: Map<string, string[]>,
   maxBytes: number
-): Promise<PhotoRecord> {
+): Promise<PhotoRecord | null> {
   const metadata = await resolveSidecarMetadata(file, jsonFilenamesByDir);
   const tsMs = await resolvePhotoEventTimeMs(file, metadata);
+  if (tsMs === null) {
+    return null;
+  }
   const ts = new Date(tsMs).toISOString();
   const hydration = await hydrateMediaBytes({
     connectorId: "https://registry.pdpp.org/connectors/google-takeout",
@@ -311,6 +321,9 @@ async function emitPhotos(
   for (const file of mediaEntries) {
     processedItems += 1;
     const record = await buildPhotoRecordForFile(file, jsonFilenamesByDir, maxBytes);
+    if (!record) {
+      continue;
+    }
 
     if (since && record.event_time <= since) {
       continue;

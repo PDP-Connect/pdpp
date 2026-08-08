@@ -31,6 +31,20 @@ test("parseGoogleMapsExport: parses legacy Takeout Records.json points", () => {
   assert.equal(result.points[0]?.source_kind, "raw_location");
 });
 
+test("parseGoogleMapsExport: skips a zero timestampMs instead of dating the point to 1970", () => {
+  const result = parseGoogleMapsExport({
+    locations: [
+      {
+        timestampMs: "0",
+        latitudeE7: 377_749_000,
+        longitudeE7: -1_224_194_000,
+      },
+    ],
+  });
+
+  assert.deepEqual(result, { points: [], segments: [] });
+});
+
 test("parseGoogleMapsExport: skips invalid legacy coordinates", () => {
   const result = parseGoogleMapsExport({
     locations: [

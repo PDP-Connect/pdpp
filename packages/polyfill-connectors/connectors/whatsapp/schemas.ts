@@ -22,7 +22,9 @@
  *   - `title`, `author`, `content` are free-form human text → pdppSafeText.
  *     `author` is a trimmed regex capture and can be empty string; `content`
  *     can be empty (e.g. an attachment-only line) — pdppSafeText permits "".
- *   - `sent_at` is always an ISO string: parseDateTime() or nowIso() fallback.
+ *   - `sent_at` is always an ISO string, and always a real parsed export
+ *     timestamp — a line whose date won't parse folds into the preceding
+ *     message rather than being stamped with the run's clock.
  *   - date-range fields on `chats` are the first/last message sent_at, so
  *     they are ISO strings or null (empty chat).
  */

@@ -239,8 +239,11 @@ function asNullableString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+// A zero/negative timestamp_ms is gmcli reporting "no timestamp", not the
+// epoch — returning null routes it to the missing-required-field throw below
+// rather than stamping 1970-01-01 on `sent_at` (the semantic-time source).
 function isoFromEpochMs(value: unknown): string | null {
-  return typeof value === "number" && Number.isFinite(value) ? new Date(value).toISOString() : null;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? new Date(value).toISOString() : null;
 }
 
 /**
