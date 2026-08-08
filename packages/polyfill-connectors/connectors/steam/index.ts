@@ -502,6 +502,23 @@ async function collectSteamLevel(
   await deps.emit({ type: "STATE", stream: "steam_level", cursor: newState.steam_level });
 }
 
+// STEAM_USER_ID is a non-secret setup field (the owner's SteamID64 or vanity
+// URL), injected into the spawn env from the connection's
+// source_binding_json, not the credential store. It is deliberately absent
+// from this connector's `auth.required` (adding it there would route a
+// missing value through the blocking INTERACTION credentials prompt, which
+// is the wrong UX for a non-secret setup field and would hang a draft run
+// for up to 30 minutes) — so it never reaches `credentials` and must be read
+// directly from process.env, matching the jellyfin/gmail pattern for their
+// own setup fields. See add-static-secret-owner-session-connect-path
+// Decision 5.
+export function resolveRawSteamIdFromCredentials(
+  credentials: Record<string, string | undefined>,
+  env: NodeJS.ProcessEnv
+): string | undefined {
+  return credentials.STEAM_USER_ID || env.STEAM_USER_ID;
+}
+
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "steam",
@@ -514,16 +531,15 @@ if (isMainModule(import.meta.url)) {
         throw new Error("steam_auth_failed");
       }
 
-      const rawSteamId = credentials.STEAM_USER_ID;
+      const rawSteamId = resolveRawSteamIdFromCredentials(credentials, process.env);
       if (!rawSteamId) {
-        // STEAM_USER_ID is a non-secret setup field (the owner's SteamID64 or
-        // vanity URL), captured alongside the API key but injected from the
-        // connection's source_binding_json, not the credential store. If it is
-        // missing here, the connection's setup did not finish — the API key is
-        // fine; retrying with the same credential will not help. Name the real
-        // state so the owner does not "refresh credentials" that were never the
-        // problem. See add-static-secret-owner-session-connect-path Decision 5.
-        throw new Error("steam_setup_incomplete: connection setup did not finish — re-enter the SteamID to continue");
+        // Genuinely missing: no SteamID was ever captured for this
+        // connection. Name the real state — the API key is fine, and
+        // nothing here was "re-entered" and lost; setup simply never
+        // finished.
+        throw new Error(
+          "steam_setup_incomplete: no SteamID is on file for this connection yet — finish setup by entering the SteamID to continue"
+        );
       }
       const steamid = await resolveSteamId(apiKey, rawSteamId);
 

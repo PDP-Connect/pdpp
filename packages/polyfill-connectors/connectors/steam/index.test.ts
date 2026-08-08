@@ -3,7 +3,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifySteamHttpResponse, isSteamId64, STEAM_RETRYABLE_PATTERN } from "./index.ts";
+import {
+  classifySteamHttpResponse,
+  isSteamId64,
+  resolveRawSteamIdFromCredentials,
+  STEAM_RETRYABLE_PATTERN,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 // ─── Schema validation tests ───────────────────────────────────────────────
@@ -244,6 +249,42 @@ test("steam - auth failure error handling", () => {
   assert.strictEqual(result.ok, false, "incomplete profile should fail");
 });
 
+// ─── resolveRawSteamIdFromCredentials: the injector-to-connector gap ───────
+//
+// A draft connection's STEAM_USER_ID is injected into the connector's spawn
+// env (proven correct by static-secret-injection.test.ts and the reference
+// server's controller-run-injection suite) but the `env` auth strategy
+// (auth.ts) only copies vars listed in this connector's `auth.required` into
+// the `credentials` object collect() receives — and STEAM_USER_ID is
+// deliberately NOT in `required` (see the comment above
+// resolveRawSteamIdFromCredentials). Before this fix, collect() read ONLY
+// `credentials.STEAM_USER_ID`, which was always undefined regardless of a
+// correctly-injected env var — this test fails against that prior behavior.
+
+test("resolveRawSteamIdFromCredentials - falls back to process.env when absent from the credentials bundle", () => {
+  // Simulates a correctly-injected draft setup field: present in the spawn
+  // env, absent from the auth-strategy-filtered credentials bundle (because
+  // STEAM_USER_ID is not in steam's auth.required).
+  const credentials: Record<string, string | undefined> = { STEAM_API_KEY: "fake-api-key" };
+  const env = { STEAM_USER_ID: "76561198000788935" };
+
+  assert.equal(resolveRawSteamIdFromCredentials(credentials, env), "76561198000788935");
+});
+
+test("resolveRawSteamIdFromCredentials - prefers the credentials bundle when both are present", () => {
+  const credentials: Record<string, string | undefined> = { STEAM_USER_ID: "76561198000000001" };
+  const env = { STEAM_USER_ID: "76561198000000002" };
+
+  assert.equal(resolveRawSteamIdFromCredentials(credentials, env), "76561198000000001");
+});
+
+test("resolveRawSteamIdFromCredentials - returns undefined when genuinely absent from both", () => {
+  const credentials: Record<string, string | undefined> = { STEAM_API_KEY: "fake-api-key" };
+  const env = {};
+
+  assert.equal(resolveRawSteamIdFromCredentials(credentials, env), undefined);
+});
+
 test("steam - malformed response handling", () => {
   // Malformed responses in HTTP layer are caught before schema validation.
   // Schema validation tests here ensure the deserializer rejects bad data.
@@ -339,7 +380,7 @@ test("STEAM_RETRYABLE_PATTERN - does not match generic bounded HTTP errors", () 
 
 test("STEAM_RETRYABLE_PATTERN - does not match unrelated application errors", () => {
   assert.doesNotMatch(
-    "steam_setup_incomplete: connection setup did not finish — re-enter the SteamID to continue",
+    "steam_setup_incomplete: no SteamID is on file for this connection yet — finish setup by entering the SteamID to continue",
     STEAM_RETRYABLE_PATTERN
   );
 });
