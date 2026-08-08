@@ -72,9 +72,11 @@ function discoverRoutes() {
   const streamCounts = sql(
     "select connector_instance_id, stream, count(*) n from records where deleted=0 group by connector_instance_id, stream order by n desc"
   );
-  // Prefer instances whose connector_id diverges from display_name (the class
-  // that exposed the /sources/claude-test alias bug) alongside the largest
-  // streams by record count, several per class rather than the first.
+  // Prefer instances whose connector_id diverges from display_name (the
+  // class that exposed the /sources/claude-test alias bug) plus the streams
+  // with the MOST records (the more fields/records rendered, the more
+  // surface for a jargon/overlap defect) — several per class, not the
+  // alphabetically-first handful.
   const streamsByInstance = new Map();
   for (const row of streamCounts) {
     if (!streamsByInstance.has(row.connector_instance_id)) {
@@ -82,14 +84,34 @@ function discoverRoutes() {
     }
     streamsByInstance.get(row.connector_instance_id).push(row);
   }
-  const sourceSample = sources.slice(0, 6);
+  const divergentFirst = [...sources].sort((a, b) => {
+    const aDiv = a.connector_id === a.display_name.toLowerCase() ? 1 : 0;
+    const bDiv = b.connector_id === b.display_name.toLowerCase() ? 1 : 0;
+    return aDiv - bDiv;
+  });
+  const sourceSample = divergentFirst.slice(0, 6);
+
+  // One stream-detail target per instance, taking that instance's LARGEST
+  // stream (most records = most rendered fields), then instances themselves
+  // ordered by their biggest stream's record count — covers connectors most
+  // likely to expose a raw-field/overlap defect, not just the first 5 ids.
+  const biggestStreamByInstance = [...streamsByInstance.entries()]
+    .map(([connector_instance_id, streams]) => ({
+      connector_instance_id,
+      n: streams[0].n,
+      stream: streams[0].stream,
+    }))
+    .sort((a, b) => b.n - a.n);
   const streamDetailTargets = [];
-  for (const src of sources) {
-    const streams = streamsByInstance.get(src.connector_instance_id) ?? [];
-    if (streams.length > 0) {
-      streamDetailTargets.push({ ...src, stream: streams[0].stream });
+  for (const target of biggestStreamByInstance) {
+    const src = sources.find((s) => s.connector_instance_id === target.connector_instance_id);
+    if (!src) {
+      continue;
     }
-    if (streamDetailTargets.length >= 5) break;
+    streamDetailTargets.push({ ...src, stream: target.stream });
+    if (streamDetailTargets.length >= 6) {
+      break;
+    }
   }
   let recordDetail = null;
   for (const target of streamDetailTargets) {
@@ -122,7 +144,9 @@ async function login(page) {
   await page.fill('input[type="password"]', ownerPassword());
   await Promise.all([page.waitForLoadState("networkidle"), page.click('button[type="submit"]')]);
   if (await isSignedOut(page)) {
-    throw new Error("login did not authenticate — password field still present after submit (bad password or CSRF mismatch)");
+    throw new Error(
+      "login did not authenticate — password field still present after submit (bad password or CSRF mismatch)"
+    );
   }
 }
 
@@ -146,7 +170,9 @@ async function checkOverlap(page, path) {
   const overlaps = await page.evaluate(() => {
     function hasOwnText(el) {
       for (const node of el.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0) return true;
+        if (node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0) {
+          return true;
+        }
       }
       return false;
     }
@@ -154,7 +180,8 @@ async function checkOverlap(page, path) {
       return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
     }
     function describe(el) {
-      const cls = typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : "";
+      const cls =
+        typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : "";
       return `${el.tagName.toLowerCase()}${cls}`;
     }
 
@@ -171,25 +198,39 @@ async function checkOverlap(page, path) {
     const candidates = document.querySelectorAll("body *");
     const leaves = [];
     for (const el of candidates) {
-      if (!hasOwnText(el)) continue;
+      if (!hasOwnText(el)) {
+        continue;
+      }
       const hasTextDescendant = Array.from(el.querySelectorAll("*")).some(hasOwnText);
-      if (hasTextDescendant) continue;
-      if (el.getClientRects().length === 0) continue;
-      if (typeof el.checkVisibility === "function" && !el.checkVisibility()) continue;
+      if (hasTextDescendant) {
+        continue;
+      }
+      if (el.getClientRects().length === 0) {
+        continue;
+      }
+      if (typeof el.checkVisibility === "function" && !el.checkVisibility()) {
+        continue;
+      }
       const style = getComputedStyle(el);
-      if (style.visibility === "hidden" || style.display === "none") continue;
+      if (style.visibility === "hidden" || style.display === "none") {
+        continue;
+      }
       leaves.push(el);
     }
 
     const found = [];
-    for (let i = 0; i < leaves.length; i++) {
-      for (let j = i + 1; j < leaves.length; j++) {
+    for (let i = 0; i < leaves.length; i += 1) {
+      for (let j = i + 1; j < leaves.length; j += 1) {
         const elA = leaves[i];
         const elB = leaves[j];
-        if (elA.contains(elB) || elB.contains(elA)) continue; // containment, not overlap
+        if (elA.contains(elB) || elB.contains(elA)) {
+          continue; // containment, not overlap
+        }
         const a = elA.getBoundingClientRect();
         const b = elB.getBoundingClientRect();
-        if (a.width === 0 || a.height === 0 || b.width === 0 || b.height === 0) continue;
+        if (a.width === 0 || a.height === 0 || b.width === 0 || b.height === 0) {
+          continue;
+        }
         if (rectsIntersect(a, b)) {
           found.push({
             rectA: { bottom: a.bottom, left: a.left, right: a.right, top: a.top },
@@ -240,15 +281,22 @@ async function checkTouchTargets(page, path) {
     const found = [];
     for (const el of els) {
       const rect = el.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) continue; // not rendered
+      if (rect.width === 0 && rect.height === 0) {
+        continue; // not rendered
+      }
       // checkVisibility() catches content in a CLOSED <details> panel,
       // which keeps a stale non-zero rect in Chromium despite rendering
       // nothing (see the overlap check's comment for the same gotcha).
-      if (typeof el.checkVisibility === "function" && !el.checkVisibility()) continue;
+      if (typeof el.checkVisibility === "function" && !el.checkVisibility()) {
+        continue;
+      }
       const style = getComputedStyle(el);
-      if (style.display === "none" || style.visibility === "hidden") continue;
+      if (style.display === "none" || style.visibility === "hidden") {
+        continue;
+      }
       if (rect.width < min || rect.height < min) {
-        const cls = typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : "";
+        const cls =
+          typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : "";
         const label = el.getAttribute("aria-label") || el.textContent?.trim().slice(0, 40) || "(no label)";
         found.push({
           height: Math.round(rect.height * 10) / 10,
@@ -287,8 +335,7 @@ async function checkJargon(page, path) {
         if (text.length > 0 && (snakeRe.test(text) || jsonRe.test(text))) {
           const parentEl = node.parentElement;
           const rect = parentEl?.getBoundingClientRect();
-          const visible =
-            parentEl && (typeof parentEl.checkVisibility !== "function" || parentEl.checkVisibility());
+          const visible = parentEl && (typeof parentEl.checkVisibility !== "function" || parentEl.checkVisibility());
           if (rect && rect.width > 0 && rect.height > 0 && visible) {
             found.push({ text: text.slice(0, 120) });
           }
@@ -305,10 +352,14 @@ async function checkJargon(page, path) {
   }
   const seen = new Set();
   for (const h of hits) {
-    if (seen.has(h.text)) continue;
+    if (seen.has(h.text)) {
+      continue;
+    }
     seen.add(h.text);
     record(`jargon.${path}`, "FAIL", `visible text: "${h.text}"`);
-    if (seen.size >= 15) break;
+    if (seen.size >= 15) {
+      break;
+    }
   }
 }
 
@@ -318,14 +369,17 @@ async function checkAccessibility(page, path) {
     const iconOnlyNoName = [];
     for (const el of document.querySelectorAll('button, a, [role="button"]')) {
       const rect = el.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) continue;
+      if (rect.width === 0 && rect.height === 0) {
+        continue;
+      }
       const textContent = el.textContent?.trim() ?? "";
       const ariaLabel = el.getAttribute("aria-label")?.trim();
       const ariaLabelledBy = el.getAttribute("aria-labelledby");
       const title = el.getAttribute("title")?.trim();
       const hasAccessibleName = Boolean(ariaLabel || ariaLabelledBy || title || textContent);
       if (!hasAccessibleName) {
-        const cls = typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : "";
+        const cls =
+          typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : "";
         iconOnlyNoName.push(`${el.tagName.toLowerCase()}${cls}`);
       }
     }
@@ -339,11 +393,7 @@ async function checkAccessibility(page, path) {
       ? "every interactive element has an accessible name"
       : `no accessible name: ${a11y.iconOnlyNoName.slice(0, 10).join(", ")}`
   );
-  record(
-    `a11y.single-h1.${path}`,
-    a11y.h1Count === 1 ? "PASS" : "FAIL",
-    `h1 count on page: ${a11y.h1Count}`
-  );
+  record(`a11y.single-h1.${path}`, a11y.h1Count === 1 ? "PASS" : "FAIL", `h1 count on page: ${a11y.h1Count}`);
 
   // Visible focus after tabbing: focus the first interactive element and
   // check the browser actually rendered a visible focus indicator (outline
@@ -352,15 +402,15 @@ async function checkAccessibility(page, path) {
     await page.keyboard.press("Tab");
     const focusState = await page.evaluate(() => {
       const el = document.activeElement;
-      if (!el || el === document.body) return { focused: false };
+      if (!el || el === document.body) {
+        return { focused: false };
+      }
       const style = getComputedStyle(el);
       const hasOutline = style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) > 0;
       const hasBoxShadow = style.boxShadow !== "none" && style.boxShadow !== "";
       return { focused: true, hasOutline: hasOutline || hasBoxShadow, tag: el.tagName.toLowerCase() };
     });
-    if (!focusState.focused) {
-      record(`a11y.visible-focus.${path}`, "UNKNOWN", "Tab did not move focus off <body>");
-    } else {
+    if (focusState.focused) {
       record(
         `a11y.visible-focus.${path}`,
         focusState.hasOutline ? "PASS" : "FAIL",
@@ -368,6 +418,8 @@ async function checkAccessibility(page, path) {
           ? `${focusState.tag} shows a visible focus indicator`
           : `${focusState.tag} has no outline/box-shadow after Tab`
       );
+    } else {
+      record(`a11y.visible-focus.${path}`, "UNKNOWN", "Tab did not move focus off <body>");
     }
   } catch (err) {
     record(`a11y.visible-focus.${path}`, "UNKNOWN", `focus probe threw: ${err.message}`);
@@ -412,7 +464,9 @@ try {
     ...routes.streamDetailTargets.map((s) => `/sources/${s.connector_instance_id}/${s.stream}`),
   ];
   if (routes.recordDetail) {
-    targets.push(`/sources/${routes.recordDetail.connector_instance_id}/${routes.recordDetail.stream}/${routes.recordDetail.recordKey}`);
+    targets.push(
+      `/sources/${routes.recordDetail.connector_instance_id}/${routes.recordDetail.stream}/${routes.recordDetail.recordKey}`
+    );
   } else {
     record("coverage.record-detail", "UNKNOWN", "no record with a stream+recordKey found to sample");
   }
@@ -433,7 +487,11 @@ try {
   browser = null;
 } catch (err) {
   record("harness", "FAIL", err instanceof Error ? err.message : String(err));
-  if (browser) await browser.close().catch(() => {});
+  if (browser) {
+    // Best-effort cleanup after an already-reported failure — a close error
+    // here would only mask the real one already recorded above.
+    await browser.close().catch(() => undefined);
+  }
 }
 
 // ── report ───────────────────────────────────────────────────────────────
@@ -448,6 +506,8 @@ if (JSON_OUT) {
   for (const r of results) {
     console.log(`${r.status.padEnd(7)} ${r.id.padEnd(50)} ${r.detail}`);
   }
-  console.log(`\n${passed.length} pass, ${failed.length} fail, ${unknown.length} unknown (${results.length} total checks)`);
+  console.log(
+    `\n${passed.length} pass, ${failed.length} fail, ${unknown.length} unknown (${results.length} total checks)`
+  );
 }
 process.exit(STRICT && failed.length > 0 ? 1 : 0);
