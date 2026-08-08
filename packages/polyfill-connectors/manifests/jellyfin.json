@@ -38,6 +38,15 @@
           "autocomplete": "off",
           "help_text": "Generate a new API key in your Jellyfin instance's admin dashboard under Dashboard > Advanced > API Keys (path: /web/#/dashboard/keys on your server).",
           "env": ["JELLYFIN_API_KEY"]
+        },
+        {
+          "name": "jellyfin_user_id",
+          "label": "Jellyfin User ID or Username",
+          "type": "text",
+          "required": false,
+          "autocomplete": "off",
+          "help_text": "An API key authenticates to your server but does not identify a user, so if your server has more than one account you must say which one to collect as. Find your user id or username under Dashboard > Users (path: /web/#/dashboard/users on your server), or in your own profile page's URL. Leave blank if your server has exactly one user.",
+          "env": ["JELLYFIN_USER_ID"]
         }
       ]
     }

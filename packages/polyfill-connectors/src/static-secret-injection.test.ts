@@ -64,6 +64,22 @@ test("jellyfin injection sets the API key secret and base URL setup field", () =
   });
 });
 
+test("jellyfin injection also sets the owner-supplied user id setup field when present", () => {
+  const env = buildConnectionScopedSecretEnv(
+    "jellyfin",
+    { secret: "synthetic-jellyfin-api-key", credentialKind: "api_key" },
+    {
+      kind: "static_secret_draft",
+      setup_fields: { base_url: "https://jellyfin.example.com", jellyfin_user_id: "alice" },
+    }
+  );
+  assert.deepEqual(env, {
+    JELLYFIN_API_KEY: "synthetic-jellyfin-api-key",
+    JELLYFIN_BASE_URL: "https://jellyfin.example.com",
+    JELLYFIN_USER_ID: "alice",
+  });
+});
+
 test("apple_contacts injection sets the app-specific password and both Apple ID aliases", () => {
   const env = buildConnectionScopedSecretEnv(
     "apple_contacts",
@@ -87,24 +103,24 @@ test("groupme injection sets the access token secret", () => {
 
 test("steam/jellyfin/apple_contacts/groupme registry env vars match their connector manifests", () => {
   const cases = [
-    { connectorId: "steam", secretField: "secret", setupField: "steamid" },
-    { connectorId: "jellyfin", secretField: "secret", setupField: "base_url" },
-    { connectorId: "apple_contacts", secretField: "secret", setupField: "account_email" },
-    { connectorId: "groupme", secretField: "secret", setupField: null },
+    { connectorId: "steam", secretField: "secret", setupFields: ["steamid"] },
+    { connectorId: "jellyfin", secretField: "secret", setupFields: ["base_url", "jellyfin_user_id"] },
+    { connectorId: "apple_contacts", secretField: "secret", setupFields: ["account_email"] },
+    { connectorId: "groupme", secretField: "secret", setupFields: [] },
   ];
-  for (const { connectorId, secretField, setupField } of cases) {
+  for (const { connectorId, secretField, setupFields } of cases) {
     const manifest = JSON.parse(readFileSync(new URL(`../manifests/${connectorId}.json`, import.meta.url), "utf8"));
     const fields = manifest.setup.credential_capture.fields as Array<{ name: string; env: string[] }>;
     const secretDescriptorField = fields.find((field) => field.name === secretField);
     const descriptor = STATIC_SECRET_CONNECTOR_REGISTRY[connectorId];
     assert.ok(descriptor, `registry must include ${connectorId}`);
     assert.deepEqual(descriptor.secretEnvVars, secretDescriptorField?.env, `${connectorId} secret env mismatch`);
-    if (setupField) {
+    for (const setupField of setupFields) {
       const setupDescriptorField = fields.find((field) => field.name === setupField);
       assert.deepEqual(
         descriptor.setupFieldEnvVars?.[setupField],
         setupDescriptorField?.env,
-        `${connectorId} setup field env mismatch`
+        `${connectorId} setup field env mismatch (${setupField})`
       );
     }
   }

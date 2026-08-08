@@ -91,10 +91,23 @@ const TARGETS = [
   },
   {
     connector: "jellyfin",
+    name: "Users (list, root-served, NOT /api)",
+    url: (base) => `${base.replace(/\/+$/, "")}/Users`,
+    baseEnv: "JELLYFIN_BASE_URL",
+    expect: "refused",
+    // connectors/jellyfin/index.ts resolveUserId(): the list endpoint used to
+    // validate an owner-supplied user id/username and as the exactly-one-user
+    // fallback when a server-level API key identifies no user on its own.
+  },
+  {
+    connector: "jellyfin",
     name: "Users/Me (root-served, NOT /api)",
     url: (base) => `${base.replace(/\/+$/, "")}/Users/Me`,
     baseEnv: "JELLYFIN_BASE_URL",
     expect: "refused",
+    // connectors/jellyfin/index.ts tryUsersMe(): tried first for a
+    // user-scoped token; a dashboard-issued API key 400s here (treated as
+    // "no signal", not a hard failure) per jellyfin/jellyfin#14559.
   },
   {
     connector: "jellyfin",

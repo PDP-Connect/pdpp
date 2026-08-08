@@ -6,8 +6,11 @@
  * PDPP Jellyfin Connector (v0.1.0)
  *
  * Polyfills Jellyfin's v10.11.11+ REST API into the PDPP Collection Profile.
- * Reads JELLYFIN_BASE_URL and JELLYFIN_API_KEY from the environment. Emits RECORD/STATE/DONE
- * messages over stdout; reads START from stdin.
+ * Reads JELLYFIN_BASE_URL and JELLYFIN_API_KEY from the environment, plus an
+ * optional JELLYFIN_USER_ID (owner-supplied user id or username) used to
+ * disambiguate which of the server's users to collect as — an API key is a
+ * server-level credential and identifies no user on its own. Emits
+ * RECORD/STATE/DONE messages over stdout; reads START from stdin.
  *
  * Streams:
  *   libraries (Views, full inventory), items (paginated full inventory per run)
@@ -20,9 +23,11 @@
  *
  * Core API surfaces (REST):
  *   GET /System/Info — auth probe, server details
- *   GET /Users — resolve the collecting user's ID (not /Users/Me: a
- *     dashboard API key has no "current user" context and 400s there —
- *     see jellyfin/jellyfin#14559 — but the same key can list users)
+ *   GET /Users — list users; used both to validate an owner-supplied user id
+ *     or username, and as the exactly-one-user fallback
+ *   GET /Users/Me — the key's own "current user", if any (a dashboard API
+ *     key has no such context and 400s here — see jellyfin/jellyfin#14559 —
+ *     but a user-scoped token might succeed)
  *   GET /Users/{userId}/Views — libraries
  *   GET /Users/{userId}/Items — paginated items (StartIndex, Limit=500 max)
  *
@@ -311,47 +316,132 @@ interface JellyfinConn {
   userId: string;
 }
 
+/** Max number of display names to include in an ambiguous-user error, to avoid dumping the whole roster. */
+const AMBIGUOUS_USER_SAMPLE_SIZE = 5;
+
+function userHasId(user: Record<string, unknown> | undefined): user is Record<string, unknown> & { Id: string } {
+  return user !== undefined && typeof user.Id === "string" && user.Id.length > 0;
+}
+
 /**
- * Pick the user ID a static API key should collect as. Jellyfin's `Users/Me`
- * requires a resolved "current user" that a dashboard-issued API key does not
- * carry — it 400s even though the same key authenticates fine elsewhere
- * (confirmed against jellyfin/jellyfin#14559; System/Info succeeds, Users/Me
- * does not). `Users` (the list endpoint) works with an API key because
- * creating one already requires admin authorization. A single-user server has
- * one unambiguous answer; a multi-user server has no signal for which user a
- * bare API key represents, so this fails rather than guessing one owner's
- * data out of several.
+ * Build the improved ambiguous-user error: names a bounded sample of display
+ * names (never IDs — those can be sensitive) so the owner knows what to type
+ * into the new setup field, and names the field itself.
+ */
+function ambiguousUserError(users: readonly Record<string, unknown>[]): Error {
+  const sampleNames = users
+    .map((user) => (typeof user.Name === "string" ? user.Name : null))
+    .filter((name): name is string => name !== null)
+    .slice(0, AMBIGUOUS_USER_SAMPLE_SIZE);
+  const sampleText = sampleNames.length > 0 ? ` Available users include: ${sampleNames.join(", ")}.` : "";
+  return new Error(
+    `jellyfin_ambiguous_user: Users list returned ${users.length} users; an API key does not identify which one to collect as.${sampleText} ` +
+      "Set the 'Jellyfin User ID or Username' field on this connection to the user you want to collect as."
+  );
+}
+
+/**
+ * Resolve a user ID from an owner-supplied identifier against the Users
+ * list. Accepts either a user ID (matched against Id) or a username
+ * (matched against Name, case-insensitively) — the manifest field's help
+ * text tells the owner either is acceptable. Never guesses: an identifier
+ * that doesn't match any user fails the run rather than silently falling
+ * through to a different resolution branch.
+ */
+function resolveOwnerSuppliedUserId(ownerSupplied: string, users: readonly Record<string, unknown>[]): string {
+  const byId = users.find((user) => user.Id === ownerSupplied);
+  if (userHasId(byId)) {
+    return byId.Id;
+  }
+  const needle = ownerSupplied.toLowerCase();
+  const byName = users.find((user) => typeof user.Name === "string" && user.Name.toLowerCase() === needle);
+  if (userHasId(byName)) {
+    return byName.Id;
+  }
+  throw new Error(
+    `jellyfin_configured_user_not_found: no user with id or username '${ownerSupplied}' was found on this server; ` +
+      "check the 'Jellyfin User ID or Username' field on this connection"
+  );
+}
+
+/**
+ * Pick the user ID to collect as from the Users list alone (no owner-supplied
+ * hint, no usable Users/Me). A single-user server has one unambiguous
+ * answer; a multi-user server has no signal for which user a bare API key
+ * represents, so this fails rather than guessing one owner's data out of
+ * several.
  */
 function pickUserId(users: readonly Record<string, unknown>[]): string {
   if (users.length === 0) {
     throw new Error("jellyfin_no_users: Users list returned no users");
   }
   if (users.length > 1) {
-    throw new Error(
-      `jellyfin_ambiguous_user: Users list returned ${users.length} users; an API key does not identify which one to collect as`
-    );
+    throw ambiguousUserError(users);
   }
   const [user] = users;
-  if (user === undefined || typeof user.Id !== "string" || user.Id.length === 0) {
+  if (!userHasId(user)) {
     throw new Error("jellyfin_user_id_missing: Users response had no Id field");
   }
   return user.Id;
 }
 
 /**
- * Resolve the user ID to collect as. Never fabricates an ID: if the request
- * fails or the response has no usable Id, the run must fail carrying that
- * real reason — a placeholder ID would make every downstream
- * Users/{id}/Views and Users/{id}/Items call 400, replacing the true cause
- * (auth shape, unsupported endpoint, malformed response) with a misleading
- * generic error from a fabricated identity.
+ * Try `Users/Me`. Dashboard-issued API keys have no "current user" context
+ * and 400 here even though the same key authenticates fine elsewhere
+ * (confirmed against jellyfin/jellyfin#14559; System/Info succeeds, Users/Me
+ * does not) — that specific shape is treated as "no concrete user available"
+ * rather than a hard failure, since a user-scoped token might succeed here
+ * where a server-level key cannot. Any other failure (auth, network, 5xx)
+ * propagates, since those are real problems, not an absent-signal case.
  */
-async function resolveUserId(baseUrl: string, apiKey: string): Promise<string> {
+async function tryUsersMe(baseUrl: string, apiKey: string): Promise<string | undefined> {
+  let resp: unknown;
+  try {
+    resp = await jellyfinRequest<unknown>(baseUrl, "Users/Me", apiKey);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("jellyfin_http_400") || message.startsWith("jellyfin_http_404")) {
+      return;
+    }
+    throw error;
+  }
+  if (resp === null || typeof resp !== "object") {
+    return;
+  }
+  const user = resp as Record<string, unknown>;
+  return userHasId(user) ? user.Id : undefined;
+}
+
+/**
+ * Resolve the user ID to collect as, most helpful first:
+ *   (a) owner-supplied id/username, matched against the Users list
+ *   (b) Users/Me, if it returns a concrete user (rare for a server-level key)
+ *   (c) the Users list, if it has exactly one user — unambiguous
+ *   (d) otherwise fail honestly, naming a sample of users and the field to set
+ *
+ * Never fabricates an ID: any path that can't produce a confirmed real user
+ * ID fails the run carrying that real reason — a placeholder ID would make
+ * every downstream Users/{id}/Views and Users/{id}/Items call 400, replacing
+ * the true cause (auth shape, unsupported endpoint, malformed response, no
+ * matching user) with a misleading generic error from a fabricated identity.
+ */
+async function resolveUserId(baseUrl: string, apiKey: string, ownerSuppliedUserId?: string): Promise<string> {
   const usersResp = await jellyfinRequest<unknown>(baseUrl, "Users", apiKey);
   if (!Array.isArray(usersResp)) {
     throw new Error("jellyfin_users_response_malformed: Users response was not an array");
   }
-  return pickUserId(usersResp as Record<string, unknown>[]);
+  const users = usersResp as Record<string, unknown>[];
+
+  if (ownerSuppliedUserId) {
+    return resolveOwnerSuppliedUserId(ownerSuppliedUserId, users);
+  }
+
+  const meUserId = await tryUsersMe(baseUrl, apiKey);
+  if (meUserId !== undefined) {
+    return meUserId;
+  }
+
+  return pickUserId(users);
 }
 
 async function fetchLibraries(conn: JellyfinConn): Promise<Record<string, unknown>[]> {
@@ -520,6 +610,7 @@ async function collect(ctx: CollectContext): Promise<void> {
 
   const baseUrl = (credentials.base_url as string | undefined) ?? process.env.JELLYFIN_BASE_URL;
   const apiKey = (credentials.secret as string | undefined) ?? process.env.JELLYFIN_API_KEY;
+  const ownerSuppliedUserId = (credentials.jellyfin_user_id as string | undefined) ?? process.env.JELLYFIN_USER_ID;
 
   if (!(baseUrl && apiKey)) {
     throw new Error("jellyfin_missing_credentials");
@@ -534,7 +625,7 @@ async function collect(ctx: CollectContext): Promise<void> {
     validateSystemInfo(sysInfo);
     await progress("Connected to Jellyfin server");
 
-    const userId = await resolveUserId(baseUrl, apiKey);
+    const userId = await resolveUserId(baseUrl, apiKey, ownerSuppliedUserId);
     const conn: JellyfinConn = { baseUrl, apiKey, userId };
 
     if (requested.has("libraries")) {

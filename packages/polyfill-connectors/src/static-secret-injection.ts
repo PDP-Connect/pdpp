@@ -129,7 +129,7 @@ function freezeStaticSecretDescriptor(descriptor: StaticSecretConnectorDescripto
  *   - chase/auto-login/chase.ts: CHASE_USERNAME / CHASE_PASSWORD
  *   - usaa/auto-login/usaa.ts: USAA_USERNAME / USAA_PASSWORD
  *   - steam/index.ts auth.required: STEAM_API_KEY, STEAM_USER_ID
- *   - jellyfin/index.ts: JELLYFIN_BASE_URL / JELLYFIN_API_KEY (read via process.env fallback)
+ *   - jellyfin/index.ts: JELLYFIN_BASE_URL / JELLYFIN_API_KEY / JELLYFIN_USER_ID (read via process.env fallback)
  *   - apple_contacts/index.ts: APPLE_ID / APPLE_ID_EMAIL, APPLE_APP_SPECIFIC_PASSWORD
  *   - groupme/index.ts auth: GROUPME_ACCESS_TOKEN
  *
@@ -232,6 +232,7 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY: Readonly<Record<string, StaticSec
       secretEnvVars: ["JELLYFIN_API_KEY"],
       setupFieldEnvVars: {
         base_url: ["JELLYFIN_BASE_URL"],
+        jellyfin_user_id: ["JELLYFIN_USER_ID"],
       },
     }),
     apple_contacts: freezeStaticSecretDescriptor({
