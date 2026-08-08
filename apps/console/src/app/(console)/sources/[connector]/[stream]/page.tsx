@@ -8,6 +8,8 @@ import {
   type DeclaredFieldTypes,
   deriveDeclaredFieldTypes,
   formatDeclaredAmount,
+  formatStructuredCell,
+  humanizeFieldLabel,
   type RecordPreview,
 } from "@pdpp/display";
 import { DataList, PageHeader, Pager, Section } from "@pdpp/operator-ui/components/primitives";
@@ -374,13 +376,19 @@ export default async function StreamPage({
     return null;
   };
 
-  // Format a non-linked cell, preferring declared-currency formatting (chase
-  // `amount` → `$30.00`) over plain stringification. Returns "" for absent
-  // values, matching `stringifyCell` so the existing empty-cell handling holds.
+  // Format a non-linked cell: declared-currency formatting (chase `amount` ->
+  // `$30.00`) first, then a readable array/object rendering (a `cc` array of
+  // `{name,email}` reads as names, not raw JSON) before falling back to plain
+  // stringification. Returns "" for absent values, matching `stringifyCell` so
+  // the existing empty-cell handling holds.
   const cellText = (record: StreamRecord, column: string): string => {
     const value = record.data?.[column];
     const amount = formatDeclaredAmount(value, declaredFieldTypes[column]);
-    return amount ? amount.text : stringifyCell(value);
+    if (amount) {
+      return amount.text;
+    }
+    const structured = formatStructuredCell(value);
+    return structured ? structured.text : stringifyCell(value);
   };
 
   // The declared role map for this stream (constant per page) — the ONE seam that
@@ -511,8 +519,8 @@ export default async function StreamPage({
                       quiet mono token + the row link. */}
                   <th className={TH}>record</th>
                   {columns.map((c) => (
-                    <th className={TH} key={c}>
-                      {c}
+                    <th className={TH} key={c} title={c}>
+                      {humanizeFieldLabel(c)}
                     </th>
                   ))}
                   {hasReverseChildEdges && <th className={TH}>related</th>}
@@ -833,15 +841,28 @@ function RecordCard({
           </>
         ) : null}
         {columns.map((c) => {
-          const amount = formatDeclaredAmount(record.data?.[c], declaredFieldTypes[c]);
-          const v = amount ? amount.text : stringifyCell(record.data?.[c]);
+          const raw = record.data?.[c];
+          const amount = formatDeclaredAmount(raw, declaredFieldTypes[c]);
+          const structured = amount ? null : formatStructuredCell(raw);
+          let v: string;
+          if (amount) {
+            v = amount.text;
+          } else if (structured) {
+            v = structured.text;
+          } else {
+            v = stringifyCell(raw);
+          }
           if (!v) {
             return null;
           }
           return (
             <Fragment key={c}>
-              <dt className="truncate text-muted-foreground">{c}</dt>
-              <dd className="break-words">{truncate(v, 120)}</dd>
+              <dt className="truncate text-muted-foreground" title={c}>
+                {humanizeFieldLabel(c)}
+              </dt>
+              <dd className="break-words" title={structured?.detail}>
+                {truncate(v, 120)}
+              </dd>
             </Fragment>
           );
         })}

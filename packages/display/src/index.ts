@@ -46,6 +46,8 @@ export type {
 export { classifyRecordKind } from "./record/record-kind.ts";
 export type { GenericField, RecordPreview } from "./record/record-preview.ts";
 export { buildRecordPreview, rowPrimary, rowSecondary } from "./record/record-preview.ts";
+export type { StructuredCell } from "./record/structured-value.ts";
+export { formatStructuredCell } from "./record/structured-value.ts";
 export type {
   ParsedTimestamp,
   TimestampPrecision,

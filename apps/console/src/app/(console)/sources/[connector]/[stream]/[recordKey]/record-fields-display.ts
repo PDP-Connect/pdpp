@@ -11,7 +11,7 @@
  * cannot load under the test runner). It inlines the same non-null
  * stringification `stringifyCell` performs so the two stay behavior-identical.
  */
-import { formatDeclaredAmount } from "@pdpp/display";
+import { formatDeclaredAmount, formatStructuredCell } from "@pdpp/display";
 
 export const ROW_DT = "pdpp-caption truncate text-muted-foreground font-mono";
 export const ROW_DD = "pdpp-caption break-words";
@@ -34,6 +34,8 @@ function stringifyValue(value: unknown): string {
 }
 
 export interface RenderedValue {
+  /** Full untruncated detail for a hover title (set for a truncated structured value). */
+  detail?: string;
   /** True when the value carries no content (null/undefined/empty string). */
   empty: boolean;
   /** True when the value was formatted as a monetary amount. */
@@ -48,6 +50,7 @@ export interface RenderedValue {
  *     missing page content); `undefined` → an em dash.
  *   - a declared-currency minor-unit number → formatted money (`3000` → `$30.00`).
  *   - an empty string → an explicit `"empty"` token.
+ *   - an array/object → a readable rendering (`formatStructuredCell`), never raw JSON.
  *   - anything else → the same `stringifyCell` the stream table uses.
  */
 export function renderValue(value: unknown, declaredType: string | undefined): RenderedValue {
@@ -60,6 +63,10 @@ export function renderValue(value: unknown, declaredType: string | undefined): R
   }
   if (typeof value === "string" && value.length === 0) {
     return { empty: true, money: false, text: "empty" };
+  }
+  const structured = formatStructuredCell(value);
+  if (structured) {
+    return { detail: structured.detail, empty: false, money: false, text: structured.text };
   }
   return { empty: false, money: false, text: stringifyValue(value) };
 }

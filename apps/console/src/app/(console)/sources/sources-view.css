@@ -334,7 +334,18 @@ a.rr-s-item {
   text-decoration: none;
 }
 
+/* Grid items default to a min-width equal to their content's min-content size,
+   which for `white-space: nowrap` text is the full unwrapped line width — so
+   without this, a long stream name ignores its `minmax(0, 1fr)` track and
+   grows the "stream" column past its share, overlapping the "records" column
+   next to it. `min-width: 0` on the cell lets the track's own 0-minimum win,
+   so `.rr-s-stream`'s overflow/ellipsis can actually engage. */
+.rr-s-cols .pdpp-table__row > *:first-child {
+  min-width: 0;
+}
+
 .rr-s-stream {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-mono);

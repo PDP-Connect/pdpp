@@ -5,6 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderValue, valueClassName } from "./record-fields-display.ts";
 
+// Hoisted per the project's `useTopLevelRegex` lint rule.
+const JSON_SYNTAX_RE = /[{}[\]"]/;
+
 test("a declared-currency integer renders as money (the live chase bug)", () => {
   // chase current_activity `amount: 3000` (declared `currency`) must read
   // `$30.00`, never the raw `3000`.
@@ -47,8 +50,24 @@ test("a plain string renders verbatim and is not marked empty or money", () => {
   assert.equal(valueClassName(rendered), "pdpp-caption break-words");
 });
 
-test("an object value is stringified as JSON", () => {
+test("an object with no string-valued field falls back to compact JSON", () => {
   const rendered = renderValue({ a: 1 }, undefined);
   assert.equal(rendered.text, '{"a":1}');
   assert.equal(rendered.money, false);
+});
+
+test("an array of {name, email} objects renders readable names, not raw JSON — the live Gmail `cc` bug", () => {
+  const cc = [
+    { email: "mmarco@law.harvard.edu", name: "Meg Marco" },
+    { email: "anna@opendatalabs.xyz", name: "Anna Kazlauskas" },
+  ];
+  const rendered = renderValue(cc, undefined);
+  assert.equal(rendered.text, "Meg Marco, Anna Kazlauskas");
+  assert.doesNotMatch(rendered.text, JSON_SYNTAX_RE, "must never contain JSON syntax characters");
+  assert.equal(rendered.empty, false);
+});
+
+test("an empty array renders an explicit empty state, not blank or '[]'", () => {
+  const rendered = renderValue([], undefined);
+  assert.equal(rendered.text, "None");
 });

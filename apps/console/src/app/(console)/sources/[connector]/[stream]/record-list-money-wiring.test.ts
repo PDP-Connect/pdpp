@@ -39,7 +39,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { type DeclaredFieldTypes, formatDeclaredAmount } from "@pdpp/display";
+import { type DeclaredFieldTypes, formatDeclaredAmount, formatStructuredCell } from "@pdpp/display";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const LIST_PAGE = `${HERE}page.tsx`;
@@ -49,11 +49,14 @@ const LIST_PAGE = `${HERE}page.tsx`;
 // `relationship-navigation-smoke.test.ts` convention.
 const LIST_IMPORTS_FORMAT = /formatDeclaredAmount[\s\S]*from "@pdpp\/display"/;
 // Both cell surfaces must derive the amount from the value + the declared type
-// for that column, then fall back to plain stringification.
+// for that column, then fall back to plain stringification (via the readable
+// structured-value tier for arrays/objects, `formatStructuredCell` from
+// `@pdpp/display`).
 const LIST_FORMATS_CELL_AMOUNT = /formatDeclaredAmount\(value, declaredFieldTypes\[column\]\)/;
-const LIST_CELL_FALLS_BACK = /amount \? amount\.text : stringifyCell\(value\)/;
-const LIST_CARD_FORMATS_AMOUNT = /formatDeclaredAmount\(record\.data\?\.\[c\], declaredFieldTypes\[c\]\)/;
-const LIST_CARD_FALLS_BACK = /amount \? amount\.text : stringifyCell\(record\.data\?\.\[c\]\)/;
+const LIST_CELL_FALLS_BACK = /structured\.text : stringifyCell\(value\)/;
+const LIST_CARD_FORMATS_AMOUNT = /formatDeclaredAmount\(raw, declaredFieldTypes\[c\]\)/;
+const LIST_CARD_FALLS_BACK = /v = stringifyCell\(raw\)/;
+const JSON_SYNTAX_RE = /[{}[\]"]/;
 
 // Local mirror of `rs-client.ts`'s `stringifyCell` empty/plain contract. The real
 // function can't be imported here without dragging in `next/headers` via the
@@ -74,10 +77,16 @@ function stringifyCellReplica(v: unknown): string {
   return JSON.stringify(v);
 }
 
-// The exact one-line composition both `cellText` and the `RecordCard` map perform.
+// The exact composition both `cellText` and the `RecordCard` map perform:
+// declared-currency first, then the readable structured-value rendering for
+// arrays/objects, then plain stringification.
 function displayCell(value: unknown, declaredType: string | undefined): string {
   const amount = formatDeclaredAmount(value, declaredType);
-  return amount ? amount.text : stringifyCellReplica(value);
+  if (amount) {
+    return amount.text;
+  }
+  const structured = formatStructuredCell(value);
+  return structured ? structured.text : stringifyCellReplica(value);
 }
 
 const CHASE_AMOUNT_CAPS: DeclaredFieldTypes = { amount: "currency" };
@@ -103,6 +112,16 @@ test("BEHAVIOR an UNDECLARED numeric cell is left as the plain integer (no magni
 test("BEHAVIOR null/absent cell values render empty, matching stringifyCell", () => {
   assert.equal(displayCell(null, CHASE_AMOUNT_CAPS.amount), "", "null renders empty even under a currency cap");
   assert.equal(displayCell(undefined, undefined), "", "absent renders empty");
+});
+
+test("BEHAVIOR an array-of-objects cell (e.g. a Gmail `cc` field) renders readable names, never raw JSON", () => {
+  const cc = [
+    { email: "mmarco@law.harvard.edu", name: "Meg Marco" },
+    { email: "anna@opendatalabs.xyz", name: "Anna Kazlauskas" },
+  ];
+  const text = displayCell(cc, undefined);
+  assert.equal(text, "Meg Marco, Anna Kazlauskas");
+  assert.doesNotMatch(text, JSON_SYNTAX_RE, "must never contain JSON syntax characters");
 });
 
 test("WIRING list page imports the declared-currency formatter", async () => {
