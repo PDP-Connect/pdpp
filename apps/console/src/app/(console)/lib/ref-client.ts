@@ -13,6 +13,7 @@ import { isOwnerSessionRequiredBody } from "./auth-errors.ts";
 import { describeErrorText } from "./describe-error.ts";
 import { redirectToOwnerLogin } from "./login-redirect.ts";
 import { getAsInternalUrl, ReferenceServerUnreachableError, withOwnerSessionCookie } from "./owner-token.ts";
+import { isCredentialRefusal, refErrorCode } from "./static-secret-refusal.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface SourceObject {
@@ -1359,30 +1360,36 @@ export async function initiateProviderAuthorization(connectorId: string): Promis
 
 export { RefNotFoundError, RefRequestError };
 
-// Thrown when the owner-session static-secret capture route rejects a credential
-// at the synchronous validation moment (HTTP 400, code
-// `static_secret_credential_rejected`). The message is the provider-named,
-// owner-causal reason; nothing was stored. The Console action catches this to
-// keep the owner on the form with their non-secret context preserved, rather
-// than redirecting to a setup-status page for a connection that never started a
-// run.
+// Thrown when the owner-session static-secret capture route REFUSES a
+// credential and stores nothing. Two refusal classes reach this type:
+//
+//   * the synchronous validation moment (HTTP 400,
+//     `static_secret_credential_rejected`) — the provider itself rejected the
+//     secret; and
+//   * the replacement-authority guards (HTTP 409, the `static_secret_*` codes
+//     in the reference's `ref-error-status.ts`) — the secret may be valid, but
+//     replacing the credential on THIS connection cannot be proven safe.
+//
+// Both share the only property the Console needs: nothing was written, no run
+// started, and the owner must see why and act. `message` is the reference
+// server's own owner-causal copy, surfaced verbatim — it already names the
+// provider and the next step, so the Console never paraphrases it. `code` is
+// carried for callers that branch on the specific refusal.
+//
+// Deliberately connector-agnostic: the class is selected by HTTP status and the
+// error envelope, never by connector id. Gmail, Jellyfin, Steam, and GroupMe
+// all travel this one path.
 export class StaticSecretValidationError extends Error {
-  readonly code = "static_secret_credential_rejected";
-  constructor(message: string, cause?: unknown) {
+  readonly code: string;
+  constructor(message: string, code: string, cause?: unknown) {
     super(message, { cause });
     this.name = "StaticSecretValidationError";
+    this.code = code;
   }
 }
 
-function isCredentialRejectionBody(bodyText: string): boolean {
-  try {
-    const parsed = JSON.parse(bodyText) as { error?: { code?: unknown } | string };
-    const code = typeof parsed.error === "object" && parsed.error ? parsed.error.code : parsed.error;
-    return code === "static_secret_credential_rejected";
-  } catch {
-    return false;
-  }
-}
+// The refusal classification lives in static-secret-refusal.ts so it is
+// directly executable under node:test — this module imports `server-only`.
 
 export async function getTraceTimeline(
   traceId: string,
@@ -2299,15 +2306,19 @@ export async function captureStaticSecretCredential(input: {
       }
     )) as StaticSecretCredentialCapture;
   } catch (err) {
-    // A synchronous validation rejection (400 static_secret_credential_rejected)
-    // becomes a typed error so the action keeps the owner on the form. The
-    // message is the provider-named, owner-causal reason from the route.
-    if (err instanceof RefRequestError && err.status === 400 && isCredentialRejectionBody(err.bodyText)) {
-      // StaticSecretValidationError threads `err` through to Error's native
-      // `cause` (see its constructor above); Biome's syntactic check doesn't
-      // look inside a custom class to see that.
-      // biome-ignore lint/style/useErrorCause: see comment above.
-      throw new StaticSecretValidationError(err.message, err);
+    // A capture refusal — the 400 synchronous validation rejection, or a 409
+    // replacement-authority conflict — becomes a typed error so the action
+    // keeps the owner on the form. Nothing was stored either way. The message
+    // is the reference server's own owner-causal reason, carried verbatim.
+    if (err instanceof RefRequestError) {
+      const code = refErrorCode(err.bodyText);
+      if (isCredentialRefusal(err.status, code)) {
+        // StaticSecretValidationError threads `err` through to Error's native
+        // `cause` (see its constructor above); Biome's syntactic check doesn't
+        // look inside a custom class to see that.
+        // biome-ignore lint/style/useErrorCause: see comment above.
+        throw new StaticSecretValidationError(err.message, code ?? "static_secret_credential_rejected", err);
+      }
     }
     throw err;
   }

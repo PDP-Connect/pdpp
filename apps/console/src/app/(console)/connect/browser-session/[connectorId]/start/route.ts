@@ -158,6 +158,10 @@ async function captureOptionalCredentialOrRedirect(
         // Best effort; the shell TTL retires any orphaned draft.
       }
     }
+    // A refusal (400 provider rejection / 409 replacement conflict) carries the
+    // reference server's own owner-causal copy — surface it verbatim rather
+    // than flattening every failure into one generic line the owner cannot act
+    // on. The fallback stays for transport-level failures with no envelope.
     const message =
       err instanceof StaticSecretValidationError ? err.message : "Could not save the optional sign-in details.";
     return redirectToPublicPath(
