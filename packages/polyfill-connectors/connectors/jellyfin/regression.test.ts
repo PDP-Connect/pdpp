@@ -69,7 +69,7 @@ function makeContext({
   };
 }
 
-/** Minimal Jellyfin-shaped fake server: System/Info, Users/Me, one library's Views, and a
+/** Minimal Jellyfin-shaped fake server: System/Info, Users, one library's Views, and a
  *  paginated Items endpoint driven by an injected page-producing function. */
 function startPagedServer(
   pageForStartIndex: (startIndex: number) => { items: { Id: string; Name: string }[]; total: number }
@@ -87,9 +87,9 @@ function startPagedServer(
         return;
       }
 
-      if (path === "/Users/Me") {
+      if (path === "/Users") {
         res.writeHead(200);
-        res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
+        res.end(JSON.stringify([{ Id: "user-123", Name: "Test" }]));
         return;
       }
 

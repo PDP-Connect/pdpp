@@ -46,6 +46,7 @@
   },
   "capabilities": {
     "human_interaction": ["manual_action"],
+    "browser_surface_kind": "usaa_transaction_export",
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,

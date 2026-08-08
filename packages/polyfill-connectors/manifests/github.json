@@ -36,6 +36,14 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "proven": {
+      "static_secret_live": {
+        "proven": true,
+        "run_id": "run_1781131195649",
+        "date": "2026-06-10",
+        "note": "completed/succeeded, env-free container; plus run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records)"
+      }
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,

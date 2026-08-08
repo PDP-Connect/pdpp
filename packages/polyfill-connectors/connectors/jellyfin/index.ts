@@ -20,7 +20,9 @@
  *
  * Core API surfaces (REST):
  *   GET /System/Info — auth probe, server details
- *   GET /Users/Me — fetch current user ID
+ *   GET /Users — resolve the collecting user's ID (not /Users/Me: a
+ *     dashboard API key has no "current user" context and 400s there —
+ *     see jellyfin/jellyfin#14559 — but the same key can list users)
  *   GET /Users/{userId}/Views — libraries
  *   GET /Users/{userId}/Items — paginated items (StartIndex, Limit=500 max)
  *
@@ -310,19 +312,46 @@ interface JellyfinConn {
 }
 
 /**
- * Resolve the current user's ID from Users/Me. Never fabricates an ID: if
- * the request fails or the response has no Id, the run must fail carrying
- * that real reason — a placeholder ID would make every downstream
+ * Pick the user ID a static API key should collect as. Jellyfin's `Users/Me`
+ * requires a resolved "current user" that a dashboard-issued API key does not
+ * carry — it 400s even though the same key authenticates fine elsewhere
+ * (confirmed against jellyfin/jellyfin#14559; System/Info succeeds, Users/Me
+ * does not). `Users` (the list endpoint) works with an API key because
+ * creating one already requires admin authorization. A single-user server has
+ * one unambiguous answer; a multi-user server has no signal for which user a
+ * bare API key represents, so this fails rather than guessing one owner's
+ * data out of several.
+ */
+function pickUserId(users: readonly Record<string, unknown>[]): string {
+  if (users.length === 0) {
+    throw new Error("jellyfin_no_users: Users list returned no users");
+  }
+  if (users.length > 1) {
+    throw new Error(
+      `jellyfin_ambiguous_user: Users list returned ${users.length} users; an API key does not identify which one to collect as`
+    );
+  }
+  const [user] = users;
+  if (user === undefined || typeof user.Id !== "string" || user.Id.length === 0) {
+    throw new Error("jellyfin_user_id_missing: Users response had no Id field");
+  }
+  return user.Id;
+}
+
+/**
+ * Resolve the user ID to collect as. Never fabricates an ID: if the request
+ * fails or the response has no usable Id, the run must fail carrying that
+ * real reason — a placeholder ID would make every downstream
  * Users/{id}/Views and Users/{id}/Items call 400, replacing the true cause
  * (auth shape, unsupported endpoint, malformed response) with a misleading
  * generic error from a fabricated identity.
  */
 async function resolveUserId(baseUrl: string, apiKey: string): Promise<string> {
-  const userResp = await jellyfinRequest<Record<string, unknown>>(baseUrl, "Users/Me", apiKey);
-  if (typeof userResp.Id !== "string" || userResp.Id.length === 0) {
-    throw new Error("jellyfin_user_id_missing: Users/Me response had no Id field");
+  const usersResp = await jellyfinRequest<unknown>(baseUrl, "Users", apiKey);
+  if (!Array.isArray(usersResp)) {
+    throw new Error("jellyfin_users_response_malformed: Users response was not an array");
   }
-  return userResp.Id;
+  return pickUserId(usersResp as Record<string, unknown>[]);
 }
 
 async function fetchLibraries(conn: JellyfinConn): Promise<Record<string, unknown>[]> {

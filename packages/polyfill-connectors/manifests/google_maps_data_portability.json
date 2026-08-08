@@ -63,6 +63,9 @@
       ]
     },
     "human_interaction": ["manual_action"],
+    "proven": {
+      "provider_auth_lifecycle": true
+    },
     "refresh_policy": {
       "recommended_mode": "manual",
       "interaction_posture": "manual_action_likely",

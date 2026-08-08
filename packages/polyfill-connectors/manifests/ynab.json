@@ -36,6 +36,14 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "proven": {
+      "static_secret_live": {
+        "proven": true,
+        "run_id": null,
+        "date": "2026-06-10",
+        "note": "store path proven; captured credentials validated successfully"
+      }
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,

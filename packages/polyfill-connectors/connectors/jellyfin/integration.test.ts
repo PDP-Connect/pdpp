@@ -127,7 +127,7 @@ class FakeJellyfinServer {
         }
 
         // User endpoint
-        if (path === "/Users/Me") {
+        if (path === "/Users") {
           if (!headers["x-emby-token"]) {
             res.writeHead(401);
             res.end("Unauthorized");
@@ -135,10 +135,12 @@ class FakeJellyfinServer {
           }
           res.writeHead(200);
           res.end(
-            JSON.stringify({
-              Id: "test-user-123",
-              Name: "TestUser",
-            })
+            JSON.stringify([
+              {
+                Id: "test-user-123",
+                Name: "TestUser",
+              },
+            ])
           );
           return;
         }
@@ -459,7 +461,7 @@ test("adversarial: oversized Content-Length is rejected before body read", async
 test("e2e: subpath-hosted server (base URL with a path segment) is reachable", async () => {
   // Jellyfin is commonly reverse-proxied under a subpath (e.g. https://host/jellyfin/).
   // Request paths are joined onto the base with new URL(path, base); a leading-slash
-  // path (e.g. "/Users/Me") would resolve against the host root and silently drop
+  // path (e.g. "/Users") would resolve against the host root and silently drop
   // the "/jellyfin" prefix. This server only answers under /jellyfin/, so the test
   // fails if that prefix gets dropped during path construction.
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -478,9 +480,9 @@ test("e2e: subpath-hosted server (base URL with a path segment) is reachable", a
       res.end(JSON.stringify({ Id: "test", ServerName: "Test", Version: "10.11.11" }));
       return;
     }
-    if (subpath === "/Users/Me") {
+    if (subpath === "/Users") {
       res.writeHead(200);
-      res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
+      res.end(JSON.stringify([{ Id: "user-123", Name: "Test" }]));
       return;
     }
     if (subpath === "/Users/user-123/Views") {

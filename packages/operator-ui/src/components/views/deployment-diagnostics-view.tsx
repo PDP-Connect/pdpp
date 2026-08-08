@@ -10,9 +10,10 @@ import {
   type DatasetStreamSizeInput,
   type DatasetTopRowInput,
 } from "../../lib/dataset-grains.ts";
-import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
+import type { DatasetSummaryProjectionMetadata, DeploymentDiagnostics } from "../../lib/ref-client.ts";
 import { buildSourceStorageModel, type SourceStorageInput } from "../../lib/source-storage.ts";
-import { buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
+import { buildDatasetSummaryProjectionStatusModel, buildStorageFootprintModel } from "../../lib/storage-footprint.ts";
+import { Button } from "../../ui/button.tsx";
 import { Timestamp } from "../../ui/timestamp.tsx";
 import { EmptyState } from "../empty-state.tsx";
 import { Callout, PageHeader, Section } from "../primitives.tsx";
@@ -23,6 +24,23 @@ interface DeploymentDiagnosticsViewProps {
   beforeDiagnostics?: ReactNode;
   breadcrumbs?: { href?: string; label: string }[];
   description: string;
+  // The dataset-summary projection metadata (`/_ref/dataset/summary`'s
+  // `projection` field). Optional: when omitted, the storage section
+  // renders the retained-payload comparison with no status/recovery
+  // affordance, same as before this field existed. Used to tell the
+  // operator WHY `retainedBytes` is unknown when it is, and to offer the
+  // manual-rebuild recovery action when the projection is not `fresh`.
+  projection?: DatasetSummaryProjectionMetadata | null;
+  // Server-action result banners for the rebuild action below, threaded in
+  // as plain strings (from a redirect query param) rather than client
+  // state — this is a server-rendered page, not a client form.
+  projectionActionError?: string | null;
+  projectionActionNotice?: string | null;
+  // Server action bound to a `<form action={...}>` that calls
+  // `POST /_ref/dataset/summary/rebuild`. Optional: when omitted, the
+  // projection status line renders with no action button (e.g. a host that
+  // hasn't wired the action yet).
+  rebuildDatasetSummaryAction?: () => Promise<void>;
   report: DeploymentDiagnostics;
   // The logical retained payload (`total_retained_bytes` from
   // `/_ref/dataset/summary`), rendered beside the physical footprint as a
@@ -102,6 +120,10 @@ export function DeploymentDiagnosticsView({
   beforeDiagnostics,
   breadcrumbs,
   description,
+  projection,
+  projectionActionError,
+  projectionActionNotice,
+  rebuildDatasetSummaryAction,
   report,
   retainedBytes,
   sources,
@@ -133,6 +155,10 @@ export function DeploymentDiagnosticsView({
         <DatabaseSection
           database={report.database}
           indexKind={report.semantic.index.kind}
+          projection={projection}
+          projectionActionError={projectionActionError}
+          projectionActionNotice={projectionActionNotice}
+          rebuildDatasetSummaryAction={rebuildDatasetSummaryAction}
           retainedBytes={retainedBytes}
         />
         <SourceStorageSection sources={sources} truncated={sourcesTruncated} />
@@ -483,13 +509,22 @@ function ManifestsSection({ manifests }: { manifests: DeploymentDiagnostics["man
 function DatabaseSection({
   database,
   indexKind,
+  projection,
+  projectionActionError,
+  projectionActionNotice,
+  rebuildDatasetSummaryAction,
   retainedBytes,
 }: {
   database: DeploymentDiagnostics["database"];
   indexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
+  projection?: DatasetSummaryProjectionMetadata | null;
+  projectionActionError?: string | null;
+  projectionActionNotice?: string | null;
+  rebuildDatasetSummaryAction?: () => Promise<void>;
   retainedBytes?: number | null;
 }) {
   const footprint = buildStorageFootprintModel(database, retainedBytes);
+  const projectionStatus = buildDatasetSummaryProjectionStatusModel(projection);
   return (
     <Section
       description="On-disk database size is operator diagnostics. It is a different measurement from the retained payload (the JSON/blob byte length of records, history, and blobs) and is never summed with it: the physical size also includes index storage, the event log, TOAST, page bloat, and free space."
@@ -512,7 +547,54 @@ function DatabaseSection({
           title="On-disk size unmeasured"
         />
       )}
+
+      <DatasetSummaryProjectionStatus
+        notice={projectionActionNotice}
+        rebuildAction={rebuildDatasetSummaryAction}
+        status={projectionStatus}
+      />
+      {projectionActionError ? (
+        <Callout className="mt-3" description={projectionActionError} title="Rebuild failed" tone="warning" />
+      ) : null}
     </Section>
+  );
+}
+
+// Status line + recovery action for the dataset-summary projection. Kept
+// deliberately small — one line and one button, not a new page or panel —
+// per the "give the owner a visible path" requirement: today a failed
+// projection is invisible (no boot hook, scheduler, or UI affordance calls
+// its one rebuild route) and unrecoverable short of an API client. This
+// renders nothing when the projection is already fresh, so a healthy
+// deployment sees no change.
+function DatasetSummaryProjectionStatus({
+  notice,
+  rebuildAction,
+  status,
+}: {
+  notice?: string | null;
+  rebuildAction?: () => Promise<void>;
+  status: ReturnType<typeof buildDatasetSummaryProjectionStatusModel>;
+}) {
+  if (!status.needsAttention) {
+    return notice ? <Callout className="mt-3" description={notice} title="Dataset summary" tone="info" /> : null;
+  }
+  return (
+    <Callout
+      action={
+        rebuildAction ? (
+          <form action={rebuildAction}>
+            <Button size="sm" type="submit" variant="outline">
+              Recompute now
+            </Button>
+          </form>
+        ) : undefined
+      }
+      className="mt-3"
+      description={status.statusLine}
+      title="Dataset summary needs attention"
+      tone="warning"
+    />
   );
 }
 

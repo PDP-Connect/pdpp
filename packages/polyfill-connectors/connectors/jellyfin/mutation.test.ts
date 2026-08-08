@@ -82,9 +82,9 @@ class TestServer {
           return;
         }
 
-        if (path === "/Users/Me") {
+        if (path === "/Users") {
           res.writeHead(200);
-          res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
+          res.end(JSON.stringify([{ Id: "user-123", Name: "Test" }]));
           return;
         }
 
@@ -228,9 +228,9 @@ test("mutation: max-pages guard is testable with injected config", async () => {
             return;
           }
 
-          if (path === "/Users/Me") {
+          if (path === "/Users") {
             res.writeHead(200);
-            res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
+            res.end(JSON.stringify([{ Id: "user-123", Name: "Test" }]));
             return;
           }
 

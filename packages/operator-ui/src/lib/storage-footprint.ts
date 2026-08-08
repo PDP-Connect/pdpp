@@ -21,7 +21,7 @@
 // Spec: openspec/changes/surface-database-physical-footprint/specs/
 //       reference-implementation-architecture/spec.md
 
-import type { DatasetSummary } from "./ref-client.ts";
+import type { DatasetSummary, DatasetSummaryProjectionMetadata } from "./ref-client.ts";
 import type { DeploymentDiagnostics } from "./ref-client.ts";
 
 export interface StorageRelationRow {
@@ -97,6 +97,60 @@ function isFiniteNonNegative(value: number | null | undefined): value is number 
 export function retainedBytesFromDatasetSummary(summary: DatasetSummary): number | null {
   const hasConverged = summary.projection?.computed_at != null;
   return hasConverged && typeof summary.total_retained_bytes === "number" ? summary.total_retained_bytes : null;
+}
+
+export interface DatasetSummaryProjectionStatusModel {
+  // True when the projection is not `fresh` and the operator should be
+  // told why the retained-payload figure is missing or stale, with a way
+  // to fix it. `refreshing`/`stale` (a rebuild already in flight, or a
+  // last-known value the normal delta/reconcile paths keep moving) do not
+  // surface an action -- the system is already handling those on its own.
+  readonly needsAttention: boolean;
+  // One-line, plain-language explanation of the current state. Never
+  // claims convergence the projection does not have.
+  readonly statusLine: string;
+}
+
+/**
+ * Render-model for the dataset-summary projection status line on the
+ * deployment page's storage section. The projection is reference/operator
+ * surface (see `ref-dataset-summary` operation docs), so this is plain
+ * language, not a raw state enum dump -- the operator asking "why is this
+ * blank" should get an answer, not a string to look up.
+ *
+ * `null`/absent `projection` (summary read failed, or the operation ran
+ * without the projection dependency at all) renders as unmeasured with no
+ * action -- there is nothing to recompute if the read itself failed.
+ */
+export function buildDatasetSummaryProjectionStatusModel(
+  projection: DatasetSummaryProjectionMetadata | null | undefined
+): DatasetSummaryProjectionStatusModel {
+  if (!projection) {
+    return { needsAttention: false, statusLine: "Projection status unavailable." };
+  }
+  const state = projection.state;
+  if (state === "fresh") {
+    return { needsAttention: false, statusLine: "Up to date." };
+  }
+  if (state === "failed") {
+    const reason = projection.last_error ? ` Last error: ${projection.last_error}` : "";
+    return {
+      needsAttention: true,
+      statusLine: `Rebuild failed and stopped retrying automatically.${reason}`,
+    };
+  }
+  if (projection.computed_at == null) {
+    return {
+      needsAttention: true,
+      statusLine: "Never computed. This deployment has not rebuilt the dataset summary yet.",
+    };
+  }
+  if (state === "refreshing" || state === "rebuilding") {
+    return { needsAttention: false, statusLine: "Rebuilding now — showing the last known value." };
+  }
+  // "stale": a last-known value exists and normal delta/reconcile traffic
+  // is expected to move it forward on its own; no action needed yet.
+  return { needsAttention: false, statusLine: "Stale — catching up from recent activity." };
 }
 
 /**

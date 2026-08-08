@@ -27,6 +27,9 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "proven": {
+      "local_collector": true
+    },
     "refresh_policy": {
       "recommended_mode": "manual",
       "interaction_posture": "manual_action_likely",

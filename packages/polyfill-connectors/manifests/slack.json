@@ -75,6 +75,14 @@
   },
   "capabilities": {
     "human_interaction": ["credentials"],
+    "proven": {
+      "static_secret_live": {
+        "proven": true,
+        "run_id": "run_1781131204868",
+        "date": "2026-06-10",
+        "note": "completed/succeeded, env-free container"
+      }
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 1800,

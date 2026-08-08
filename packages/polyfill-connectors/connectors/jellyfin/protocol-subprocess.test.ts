@@ -36,9 +36,9 @@ function startFakeServer(): Promise<{ stop: () => Promise<void>; url: string }> 
         res.end(JSON.stringify({ Id: "test", ServerName: "Test Jellyfin", Version: "10.11.11" }));
         return;
       }
-      if (path === "/Users/Me") {
+      if (path === "/Users") {
         res.writeHead(200);
-        res.end(JSON.stringify({ Id: "user-123", Name: "Test" }));
+        res.end(JSON.stringify([{ Id: "user-123", Name: "Test" }]));
         return;
       }
       if (path === "/Users/user-123/Views") {

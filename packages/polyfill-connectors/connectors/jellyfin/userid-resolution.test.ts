@@ -2,14 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Regression tests for P0 correctness bug: an unresolvable user ID (Users/Me
- * fails, or succeeds with no Id field) must FAIL the run carrying the real
- * Users/Me error, never proceed with a fabricated placeholder user ID.
+ * Regression tests for user-ID resolution.
  *
- * A fabricated ID ("00000000000000000000000000000000") makes every
- * downstream Users/{id}/Views and Users/{id}/Items call 400, which surfaces
- * a generic "Error processing request" that hides the real Users/Me failure
- * (auth shape, unsupported endpoint, malformed response).
+ * P0 correctness bug (still guarded here): an unresolvable user ID must FAIL
+ * the run carrying the real error, never proceed with a fabricated
+ * placeholder user ID. A fabricated ID ("00000000000000000000000000000000")
+ * makes every downstream Users/{id}/Views and Users/{id}/Items call 400,
+ * which surfaces a generic "Error processing request" that hides the real
+ * failure (auth shape, unsupported endpoint, malformed response).
+ *
+ * Resolution uses GET /Users (list), not GET /Users/Me: a dashboard-issued
+ * Jellyfin API key has no "current user" context, so /Users/Me returns 400
+ * even though the same key authenticates fine against /System/Info and
+ * /Users (confirmed against jellyfin/jellyfin#14559). /Users works because
+ * creating an API key already requires admin authorization.
  */
 
 import assert from "node:assert/strict";
@@ -70,8 +76,8 @@ function makeContext({
   };
 }
 
-/** Fake server whose /Users/Me response is fully controlled by the test. */
-function startServer(usersMeHandler: (res: ServerResponse) => void): Promise<{
+/** Fake server whose /Users response is fully controlled by the test. */
+function startServer(usersHandler: (res: ServerResponse) => void): Promise<{
   stop: () => Promise<void>;
   url: Promise<string>;
 }> {
@@ -87,13 +93,13 @@ function startServer(usersMeHandler: (res: ServerResponse) => void): Promise<{
         return;
       }
 
-      if (path === "/Users/Me") {
-        usersMeHandler(res);
+      if (path === "/Users") {
+        usersHandler(res);
         return;
       }
 
       // Any Users/{id}/... request means resolveUserId proceeded past a bad
-      // Users/Me response — exactly the fabrication bug under test.
+      // Users response — exactly the fabrication bug under test.
       res.writeHead(404);
       res.end();
     });
@@ -115,7 +121,7 @@ function startServer(usersMeHandler: (res: ServerResponse) => void): Promise<{
   });
 }
 
-test("regression: Users/Me 401 must fail the run with the real auth error, not a placeholder user id", async () => {
+test("regression: Users 401 must fail the run with the real auth error, not a placeholder user id", async () => {
   const server = await startServer((res) => {
     res.writeHead(401);
     res.end(JSON.stringify({ Message: "Unauthenticated" }));
@@ -136,22 +142,22 @@ test("regression: Users/Me 401 must fail the run with the real auth error, not a
       errorMsg = (e as any).message || String(e);
     });
 
-    assert.ok(threwError, "Must fail the run when Users/Me fails, not silently substitute a fallback user id");
+    assert.ok(threwError, "Must fail the run when Users fails, not silently substitute a fallback user id");
     assert.ok(
       errorMsg.includes("jellyfin_auth_failed"),
-      `Error must carry the real Users/Me failure reason, got: ${errorMsg}`
+      `Error must carry the real Users failure reason, got: ${errorMsg}`
     );
   } finally {
     await server.stop();
   }
 });
 
-test("regression: Users/Me 400 with a body must fail the run carrying that body, not a fabricated 400 from a fake user id", async () => {
+test("regression: Users 400 with a body must fail the run carrying that body, not a fabricated 400 from a fake user id", async () => {
   // 400 is non-retryable (unlike 5xx/429/408), so this exercises resolveUserId's
   // own error-propagation directly rather than the http governor's retry/backoff path.
   const server = await startServer((res) => {
     res.writeHead(400);
-    res.end(JSON.stringify({ Message: "Error processing request for Users/Me" }));
+    res.end(JSON.stringify({ Message: "Error processing request for Users" }));
   });
   const baseUrl = await server.url;
 
@@ -169,21 +175,20 @@ test("regression: Users/Me 400 with a body must fail the run carrying that body,
       errorMsg = (e as any).message || String(e);
     });
 
-    assert.ok(threwError, "Must fail the run when Users/Me fails");
+    assert.ok(threwError, "Must fail the run when Users fails");
     assert.ok(
-      errorMsg.includes("jellyfin_http_400") && errorMsg.includes("Error processing request for Users/Me"),
-      `Error must carry Users/Me's real status and body, got: ${errorMsg}`
+      errorMsg.includes("jellyfin_http_400") && errorMsg.includes("Error processing request for Users"),
+      `Error must carry Users' real status and body, got: ${errorMsg}`
     );
   } finally {
     await server.stop();
   }
 });
 
-test("regression: Users/Me success with no Id field must fail the run, not substitute a placeholder user id", async () => {
+test("regression: Users success with no users must fail the run, not substitute a placeholder user id", async () => {
   const server = await startServer((res) => {
     res.writeHead(200);
-    // Malformed/unexpected shape: 200 OK but no Id field.
-    res.end(JSON.stringify({ Name: "Someone" }));
+    res.end(JSON.stringify([]));
   });
   const baseUrl = await server.url;
 
@@ -201,7 +206,72 @@ test("regression: Users/Me success with no Id field must fail the run, not subst
       errorMsg = (e as any).message || String(e);
     });
 
-    assert.ok(threwError, "Must fail the run when Users/Me returns no Id, not fabricate one");
+    assert.ok(threwError, "Must fail the run when Users returns no users, not fabricate one");
+    assert.ok(errorMsg.includes("jellyfin_no_users"), `Error must name the no-users condition, got: ${errorMsg}`);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("regression: Users success with more than one user must fail the run, not guess which one to collect as", async () => {
+  const server = await startServer((res) => {
+    res.writeHead(200);
+    res.end(
+      JSON.stringify([
+        { Id: "user-a", Name: "A" },
+        { Id: "user-b", Name: "B" },
+      ])
+    );
+  });
+  const baseUrl = await server.url;
+
+  try {
+    let threwError = false;
+    let errorMsg = "";
+
+    const { ctx } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await collect(ctx).catch((e) => {
+      threwError = true;
+      errorMsg = (e as any).message || String(e);
+    });
+
+    assert.ok(threwError, "Must fail the run when multiple users exist, not guess one");
+    assert.ok(
+      errorMsg.includes("jellyfin_ambiguous_user"),
+      `Error must name the ambiguous-user condition, got: ${errorMsg}`
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("regression: Users success with a user entry missing Id must fail the run, not substitute a placeholder user id", async () => {
+  const server = await startServer((res) => {
+    res.writeHead(200);
+    // Malformed/unexpected shape: 200 OK, one user, but no Id field.
+    res.end(JSON.stringify([{ Name: "Someone" }]));
+  });
+  const baseUrl = await server.url;
+
+  try {
+    let threwError = false;
+    let errorMsg = "";
+
+    const { ctx } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await collect(ctx).catch((e) => {
+      threwError = true;
+      errorMsg = (e as any).message || String(e);
+    });
+
+    assert.ok(threwError, "Must fail the run when the sole user has no Id, not fabricate one");
     assert.ok(
       errorMsg.includes("jellyfin_user_id_missing"),
       `Error must name the missing-Id condition, got: ${errorMsg}`
@@ -211,7 +281,38 @@ test("regression: Users/Me success with no Id field must fail the run, not subst
   }
 });
 
-test("regression: successful Users/Me with a real Id must still work end-to-end", async () => {
+test("regression: Users success with a non-array body must fail the run, not substitute a placeholder user id", async () => {
+  const server = await startServer((res) => {
+    res.writeHead(200);
+    res.end(JSON.stringify({ not: "an array" }));
+  });
+  const baseUrl = await server.url;
+
+  try {
+    let threwError = false;
+    let errorMsg = "";
+
+    const { ctx } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await collect(ctx).catch((e) => {
+      threwError = true;
+      errorMsg = (e as any).message || String(e);
+    });
+
+    assert.ok(threwError, "Must fail the run when Users response is not an array");
+    assert.ok(
+      errorMsg.includes("jellyfin_users_response_malformed"),
+      `Error must name the malformed-response condition, got: ${errorMsg}`
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("regression: successful single-user Users response must still work end-to-end", async () => {
   let server: any;
   const urlPromise = new Promise<string>((resolve, reject) => {
     server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -221,9 +322,9 @@ test("regression: successful Users/Me with a real Id must still work end-to-end"
         res.end(JSON.stringify({ Id: "test", ServerName: "Test", Version: "10.11.11" }));
         return;
       }
-      if (path === "/Users/Me") {
+      if (path === "/Users") {
         res.writeHead(200);
-        res.end(JSON.stringify({ Id: "real-user-id", Name: "Test" }));
+        res.end(JSON.stringify([{ Id: "real-user-id", Name: "Test" }]));
         return;
       }
       if (path === "/Users/real-user-id/Views") {

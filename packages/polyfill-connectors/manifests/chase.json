@@ -46,6 +46,7 @@
   },
   "capabilities": {
     "human_interaction": ["otp", "manual_action"],
+    "browser_surface_kind": "chase_current_activity",
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
