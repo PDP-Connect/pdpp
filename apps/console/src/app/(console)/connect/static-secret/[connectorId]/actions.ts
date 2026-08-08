@@ -5,6 +5,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { rethrowControlFlow } from "../../../lib/control-flow.ts";
 import { requireDashboardAccess } from "../../../lib/dashboard-access.ts";
 import { runConnectionNow } from "../../../lib/operator-runs.ts";
 import {
@@ -120,11 +121,15 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
     // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     target = statusHref(capturedConnectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
-    if (err instanceof StaticSecretValidationError) {
-      target = formRetryHrefWithConnectionId(connectorId, connectionId, err.message, setupFields);
-    } else {
-      target = formRetryHrefWithConnectionId(connectorId, connectionId, errorMessage(err), setupFields);
-    }
+    // The capture path runs `verifyDashboardSession()`, which redirects to
+    // /owner/login by THROWING. Let that control-flow signal out before
+    // treating anything as a credential failure, or an expired session renders
+    // as a bogus form error instead of a sign-in.
+    rethrowControlFlow(err);
+    // Every non-2xx lands here, refusal or not: the owner stays on this form
+    // with the server's reason. No success state, no navigation away, and the
+    // secret is never round-tripped.
+    target = formRetryHrefWithConnectionId(connectorId, connectionId, errorMessage(err), setupFields);
   }
   redirect(target);
 }
@@ -198,11 +203,14 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
     // biome-ignore lint/suspicious/noUnnecessaryConditions: the receiver here is a genuinely optional/nullable type per its declared interface; tsc rejects removing this guard.
     target = statusHref(capturedConnectionId, runId, captured.identity?.account_identity ?? null);
   } catch (err) {
+    // See the note in replaceStaticSecretCredentialAction: an owner-session
+    // redirect is thrown, and must not be mistaken for a credential failure.
+    rethrowControlFlow(err);
     if (err instanceof StaticSecretValidationError) {
-      // Synchronous validation rejected the credential — nothing was stored, no
-      // run started. Keep the owner on the same resumable draft with the
-      // provider-named reason and non-secret context. The secret is never
-      // round-tripped.
+      // The capture was refused — the provider rejected the secret (400), or a
+      // replacement guard refused it (409). Nothing was stored, no run started.
+      // Keep the owner on the same resumable draft with the server's reason and
+      // non-secret context. The secret is never round-tripped.
       target = draftConnectionId
         ? formRetryHrefWithConnectionId(connectorId, draftConnectionId, err.message, setupFields, {
             displayName,
