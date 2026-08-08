@@ -94,6 +94,31 @@ function listConnectors(): string[] {
 
 const SCRATCH_PREFIX = "__mutation_scratch_";
 
+/**
+ * Delete any scratch copies left behind by an interrupted run.
+ *
+ * The trial writes its scratch alongside the original (relative imports must
+ * resolve) and removes it in a `finally`. A hard kill — Ctrl-C, an OOM, a CI
+ * timeout — skips that `finally`, and the orphan then looks like a real test
+ * file to every later run AND to `npx tsx --test connectors/<c>/*.test.ts`,
+ * where it fails as a duplicate of the test it was copied from. Sweeping at
+ * startup makes an interrupted run self-healing instead of poisoning the next
+ * one.
+ */
+function sweepOrphanedScratchFiles(): number {
+  let removed = 0;
+  for (const connector of listConnectors()) {
+    const dir = join(CONNECTORS_DIR, connector);
+    for (const entry of readdirSync(dir)) {
+      if (entry.startsWith(SCRATCH_PREFIX)) {
+        rmSync(join(dir, entry), { force: true });
+        removed += 1;
+      }
+    }
+  }
+  return removed;
+}
+
 function listTestFiles(connector: string): string[] {
   const dir = join(CONNECTORS_DIR, connector);
   if (!existsSync(dir)) {
@@ -278,6 +303,11 @@ function main(): void {
   const args = process.argv.slice(2);
   const jsonOut = args.includes("--json");
   const connectorArg = args.find((a) => a.startsWith("--connector="))?.split("=")[1];
+
+  const swept = sweepOrphanedScratchFiles();
+  if (swept > 0 && !jsonOut) {
+    console.log(`swept ${swept} orphaned scratch file(s) from an interrupted run\n`);
+  }
 
   const results = runAllConnectors(connectorArg);
 

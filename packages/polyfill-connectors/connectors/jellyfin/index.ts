@@ -309,15 +309,20 @@ interface JellyfinConn {
   userId: string;
 }
 
+/**
+ * Resolve the current user's ID from Users/Me. Never fabricates an ID: if
+ * the request fails or the response has no Id, the run must fail carrying
+ * that real reason — a placeholder ID would make every downstream
+ * Users/{id}/Views and Users/{id}/Items call 400, replacing the true cause
+ * (auth shape, unsupported endpoint, malformed response) with a misleading
+ * generic error from a fabricated identity.
+ */
 async function resolveUserId(baseUrl: string, apiKey: string): Promise<string> {
-  const fallbackUserId = "00000000000000000000000000000000";
-  try {
-    const userResp = await jellyfinRequest<Record<string, unknown>>(baseUrl, "Users/Me", apiKey);
-    return (userResp.Id as string) ?? fallbackUserId;
-  } catch {
-    // Fallback to default admin user if /Users/Me fails
-    return fallbackUserId;
+  const userResp = await jellyfinRequest<Record<string, unknown>>(baseUrl, "Users/Me", apiKey);
+  if (typeof userResp.Id !== "string" || userResp.Id.length === 0) {
+    throw new Error("jellyfin_user_id_missing: Users/Me response had no Id field");
   }
+  return userResp.Id;
 }
 
 async function fetchLibraries(conn: JellyfinConn): Promise<Record<string, unknown>[]> {
