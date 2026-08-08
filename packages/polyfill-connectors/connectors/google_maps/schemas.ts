@@ -34,7 +34,12 @@ export const timelineSegmentSchema = z.object({
   id: recordIdSchema,
   start_time: isoTimestampSchema,
   end_time: isoTimestampSchema.nullable(),
-  segment_kind: z.enum(["path", "visit", "activity"]),
+  // `unrecognized` retains a semanticSegments entry whose payload key we do
+  // not model (Google's `timelineMemory`, and whatever the undocumented
+  // format ships next) instead of mislabeling it as a location-bearing
+  // `path`. The provider's own key is preserved verbatim in
+  // `unrecognized_kind`.
+  segment_kind: z.enum(["path", "visit", "activity", "unrecognized"]),
   source_format: z.enum(["legacy_records", "semantic_segments", "timeline_objects"]),
   latitude: nullableLatitudeSchema,
   longitude: nullableLongitudeSchema,
@@ -42,6 +47,7 @@ export const timelineSegmentSchema = z.object({
   semantic_type: pdppSafeText.max(160).nullable(),
   activity_type: pdppSafeText.max(120).nullable(),
   probability: z.number().min(0).max(1).nullable(),
+  unrecognized_kind: pdppSafeText.max(200).nullable(),
 });
 
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {

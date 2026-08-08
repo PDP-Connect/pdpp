@@ -190,6 +190,20 @@ async function emitSegments(
       );
     }
   }
+  // Surface unrecognized segment shapes rather than letting them pass as
+  // ordinary records. The format is undocumented and Google changes it
+  // without notice, so a nonzero count here is the signal that a new payload
+  // key has shipped and needs modeling. The records are still emitted — the
+  // owner's data is retained, just honestly labeled.
+  const unrecognized = segments.filter((s) => s.segment_kind === "unrecognized");
+  if (unrecognized.length > 0) {
+    const kinds = [...new Set(unrecognized.map((s) => s.unrecognized_kind ?? "(no payload key)"))].sort().join(",");
+    await ctx.progress(
+      `Google Maps phase=emit pass=emit stream=timeline_segments unrecognized_segments=${unrecognized.length} unrecognized_kinds=${kinds}`,
+      { stream: "timeline_segments" }
+    );
+  }
+
   await ctx.emit({
     type: "STATE",
     stream: "timeline_segments",

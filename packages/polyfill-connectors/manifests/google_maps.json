@@ -173,6 +173,7 @@
     },
     {
       "name": "timeline_segments",
+      "required": false,
       "description": "Google Maps Timeline visits, activities, and path segments.",
       "display": {
         "label": "Your Google Maps visits and activities",
@@ -196,7 +197,7 @@
           },
           "segment_kind": {
             "type": "string",
-            "enum": ["path", "visit", "activity"],
+            "enum": ["path", "visit", "activity", "unrecognized"],
             "x_pdpp_role": "primary-title"
           },
           "source_format": {
@@ -221,6 +222,9 @@
           },
           "probability": {
             "type": ["number", "null"]
+          },
+          "unrecognized_kind": {
+            "type": ["string", "null"]
           }
         },
         "required": ["id", "start_time", "segment_kind", "source_format"]

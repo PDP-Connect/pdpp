@@ -219,7 +219,6 @@ const KNOWN_MISSING_REQUIRED = new Map([
   ["gmail.message_bodies", "b5728d074ffa2170"],
   ["gmail.attachments", "3883a623c52d9879"],
   ["google_maps.timeline_points", "8bb6f3a0b2f01651"],
-  ["google_maps.timeline_segments", "1f331e7b299d5569"],
   ["google_maps_data_portability.archive_jobs", "1bdf641fe46f4606"],
   ["google_takeout.location_history", "4541b67d9dca3a75"],
   ["google_takeout.youtube_watch_history", "a457e03d943b3122"],

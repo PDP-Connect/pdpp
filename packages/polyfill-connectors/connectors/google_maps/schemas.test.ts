@@ -62,6 +62,45 @@ test("timeline_points schema rejects out-of-range latitude", () => {
   assert.equal(parsed.success, false);
 });
 
+// A shape-check failure becomes a SKIP_RESULT and the record never reaches
+// the owner's store, so this is the test that proves the unmodelled segment
+// survives the whole path rather than just the parser.
+test("timeline_segments schema accepts an unrecognized segment and keeps the provider key", () => {
+  const result = parseGoogleMapsExport({
+    semanticSegments: [
+      {
+        startTime: "2024-06-05T13:00:00Z",
+        timelineMemory: { trip: { destinations: [{ identifier: "places/ChIJ-test" }] } },
+      },
+    ],
+  });
+  const [segment] = result.segments;
+  assert.ok(segment);
+
+  const parsed = timelineSegmentSchema.safeParse(segment);
+  assert.ok(parsed.success, JSON.stringify(parsed.error?.issues));
+  assert.equal(validateRecord("timeline_segments", { ...segment }).ok, true);
+  assert.equal(parsed.data?.unrecognized_kind, "timelineMemory");
+});
+
+test("timeline_segments schema still rejects a wrong-typed segment_kind", () => {
+  const parsed = timelineSegmentSchema.safeParse({
+    id: "0123456789abcdef01234567",
+    start_time: "2024-06-05T13:00:00.000Z",
+    end_time: null,
+    segment_kind: 7,
+    source_format: "semantic_segments",
+    latitude: null,
+    longitude: null,
+    place_id: null,
+    semantic_type: null,
+    activity_type: null,
+    probability: null,
+    unrecognized_kind: null,
+  });
+  assert.equal(parsed.success, false);
+});
+
 test("validateRecord routes known streams and passes unknown streams through", () => {
   const result = parseGoogleMapsExport({
     locations: [
