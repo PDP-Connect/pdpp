@@ -39,6 +39,17 @@ function isRenderableInlineSvgIcon(icon: ConnectorIconLike): icon is ConnectorIc
   return icon.kind === "inline_svg" && typeof icon.svg === "string" && icon.svg.trim().length > 0;
 }
 
+// The SOLE choke point for icon.svg is assertSvgIsAllowlisted in
+// reference-implementation/server/connector-manifest-validation.ts
+// (validateManifestIcon). It is a strict ALLOWLIST of shape-only elements
+// and attributes — no script, foreignObject, iframe, use, image, animate,
+// set, style, a, or any href/xlink:href; see its doc comment for the full
+// vocabulary — not a denylist, so there is no attack-vector list to keep
+// exhaustive. It also re-runs on every read of a stored manifest
+// (server/auth.ts's parseAndValidateConnectorManifestRow calls
+// validateConnectorManifest, which calls validateManifestIcon, on every
+// fetch), so icon.svg is validated immediately before this component ever
+// sees it, not merely once at registration time.
 export function ConnectorIcon({ icon, name, className }: ConnectorIconProps) {
   if (icon && isRenderableInlineSvgIcon(icon)) {
     const cls = ["pdpp-connector-icon", className].filter(Boolean).join(" ");
@@ -46,7 +57,7 @@ export function ConnectorIcon({ icon, name, className }: ConnectorIconProps) {
       <span
         aria-hidden="true"
         className={cls}
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: manifest icon.svg is validated server-side (validateManifestIcon) to be a bare, script-free, event-handler-free <svg> element before it ever reaches this component.
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: see the allowlist choke-point comment above ConnectorIcon.
         dangerouslySetInnerHTML={{ __html: icon.svg }}
         style={icon.color ? ({ color: icon.color } as CSSProperties) : undefined}
       />

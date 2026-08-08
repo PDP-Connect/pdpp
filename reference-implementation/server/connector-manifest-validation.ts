@@ -571,13 +571,186 @@ export function validateManifestSensitivity(manifest: Record<string, unknown>, c
 
 const MANIFEST_ICON_ALLOWED_KEYS = new Set(["kind", "svg", "color"]);
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-const BARE_SVG_RE = /^<svg[\s>]/i;
-const SVG_SCRIPT_TAG_RE = /<script[\s>]/i;
-// Matches an ` on<name>=` attribute anywhere in the markup (e.g. onload=,
-// onclick=) — deliberately broad rather than an exhaustive event-name list,
-// since the manifest is untrusted data and this is a reject-list gate, not a
-// sanitizer allowlist.
-const SVG_EVENT_HANDLER_ATTR_RE = /\son\w+\s*=/i;
+
+// A brand glyph is shapes, not behavior: this is the complete element and
+// attribute vocabulary an icon needs. Everything else — script, foreignObject,
+// iframe, use, image, animate/animateTransform/set, style, a, and every
+// href/xlink:href variant — is deliberately absent. There is no fetch, no
+// script execution, and no navigation surface reachable from an SVG built
+// only from this vocabulary.
+const SVG_ALLOWED_ELEMENTS = new Set([
+  "svg",
+  "g",
+  "path",
+  "circle",
+  "rect",
+  "ellipse",
+  "line",
+  "polyline",
+  "polygon",
+  "title",
+  "defs",
+]);
+const SVG_ALLOWED_ATTRIBUTES = new Set([
+  "viewbox",
+  "xmlns",
+  "width",
+  "height",
+  "fill",
+  "stroke",
+  "stroke-width",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "d",
+  "cx",
+  "cy",
+  "r",
+  "rx",
+  "ry",
+  "x",
+  "y",
+  "x1",
+  "y1",
+  "x2",
+  "y2",
+  "points",
+  "opacity",
+  "fill-rule",
+  "clip-rule",
+  "transform",
+]);
+// Any of these substrings inside an attribute value is grounds for outright
+// rejection regardless of which attribute carries it — a shape-only icon has
+// no legitimate use for a URL scheme or a CSS url() reference.
+const SVG_ATTRIBUTE_VALUE_DENY_RE = /javascript:|data:|url\(/i;
+const SVG_MAX_LENGTH = 10_000;
+
+// Tokenizes top-level XML/SVG markup into tags and the text between them.
+// Deliberately dumb: this only needs to walk `<tag ...>`, `<tag ... />`, and
+// `</tag>` shapes far enough to hand each one to the allowlist checks below —
+// it is not a general XML parser and does not need to be, since anything it
+// cannot make sense of is rejected rather than passed through.
+const SVG_TAG_RE = /<([^>]*)>/g;
+// A single `name="value"` or `name='value'` pair inside a tag's attribute list.
+const SVG_ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+// The element/tag name at the start of a tag body (after any leading `/`).
+const SVG_TAG_NAME_RE = /^([a-zA-Z_:][-a-zA-Z0-9_:.]*)/;
+
+interface ParsedSvgTag {
+  attrs: Map<string, string>;
+  attrsExhaustive: boolean;
+  closing: boolean;
+  name: string;
+  selfClosing: boolean;
+}
+
+function parseSvgTag(raw: string): ParsedSvgTag | null {
+  let body = raw.trim();
+  const closing = body.startsWith("/");
+  if (closing) {
+    body = body.slice(1).trim();
+  }
+  const selfClosing = body.endsWith("/");
+  if (selfClosing) {
+    body = body.slice(0, -1).trim();
+  }
+  const nameMatch = SVG_TAG_NAME_RE.exec(body);
+  const rawName = nameMatch?.[1];
+  if (!rawName) {
+    return null;
+  }
+  const name = rawName.toLowerCase();
+  const attrSource = body.slice(rawName.length);
+  const attrs = new Map<string, string>();
+  SVG_ATTR_RE.lastIndex = 0;
+  let match = SVG_ATTR_RE.exec(attrSource);
+  while (match) {
+    const [, rawAttrName, doubleQuoted, singleQuoted] = match;
+    if (rawAttrName) {
+      attrs.set(rawAttrName.toLowerCase(), doubleQuoted ?? singleQuoted ?? "");
+    }
+    match = SVG_ATTR_RE.exec(attrSource);
+  }
+  // Anything left over after stripping every recognized `name="value"` pair
+  // means the attribute list contains something the tokenizer could not
+  // classify (an unmatched `<`/`>`, a stray quote, an unquoted value) — that
+  // markup is rejected rather than silently dropped.
+  const attrsExhaustive = attrSource.replace(SVG_ATTR_RE, "").trim().length === 0;
+  return { attrs, attrsExhaustive, closing, name, selfClosing };
+}
+
+// Validates one already-tokenized tag against the element/attribute
+// allowlist (order-preserving). Split out of assertSvgIsAllowlisted so the
+// latter only handles tokenizing the markup and tracking the bare-<svg>-root
+// invariant; this handles the per-tag allowlist gate.
+function assertTagIsAllowlisted(parsed: ParsedSvgTag, code: string): void {
+  if (!parsed.attrsExhaustive) {
+    throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+  }
+  if (!SVG_ALLOWED_ELEMENTS.has(parsed.name)) {
+    throw invalidConnectorManifest(`icon.svg contains a disallowed element: ${parsed.name}`, code);
+  }
+  for (const [attrName, attrValue] of parsed.attrs) {
+    if (!SVG_ALLOWED_ATTRIBUTES.has(attrName)) {
+      throw invalidConnectorManifest(`icon.svg contains a disallowed attribute: ${attrName}`, code);
+    }
+    if (SVG_ATTRIBUTE_VALUE_DENY_RE.test(attrValue)) {
+      throw invalidConnectorManifest(`icon.svg attribute ${attrName} contains a disallowed value`, code);
+    }
+  }
+}
+
+/**
+ * Validates that `svg` uses only the shape-only element/attribute vocabulary
+ * declared above. This is the SOLE XSS defense for manifest-declared icons —
+ * `icon.svg` reaches the DOM via dangerouslySetInnerHTML in
+ * packages/pdpp-brand-react/src/connector-icon.tsx, and this function is the
+ * single choke point that markup must pass through first. It is a strict
+ * ALLOWLIST (reject anything not explicitly permitted), not a denylist —
+ * nothing here enumerates attack vectors, because there is no elements/
+ * attributes vocabulary through which script execution, external fetches, or
+ * navigation are reachable in the first place.
+ */
+function assertSvgIsAllowlisted(svg: string, code: string): void {
+  if (svg.length > SVG_MAX_LENGTH) {
+    throw invalidConnectorManifest(`icon.svg must not exceed ${SVG_MAX_LENGTH} characters`, code);
+  }
+  SVG_TAG_RE.lastIndex = 0;
+  const tags: ParsedSvgTag[] = [];
+  let sawSvgRoot = false;
+  let cursor = 0;
+  let match = SVG_TAG_RE.exec(svg);
+  while (match) {
+    // Text strictly between tags is inert (SVG has no text-execution sink in
+    // this vocabulary — <title> content is the only text ever rendered, and
+    // it is not markup), but a bare `<` or `>` outside a well-formed tag is
+    // grounds for rejection rather than silent tolerance.
+    if (match.index !== cursor && svg.slice(cursor, match.index).includes("<")) {
+      throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+    }
+    cursor = SVG_TAG_RE.lastIndex;
+    const parsed = parseSvgTag(match[1] ?? "");
+    if (!parsed) {
+      throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+    }
+    assertTagIsAllowlisted(parsed, code);
+    if (parsed.name === "svg" && !parsed.closing) {
+      sawSvgRoot = true;
+    }
+    tags.push(parsed);
+    match = SVG_TAG_RE.exec(svg);
+  }
+  if (cursor < svg.length && svg.slice(cursor).includes("<")) {
+    throw invalidConnectorManifest("icon.svg contains malformed markup", code);
+  }
+  if (!sawSvgRoot) {
+    throw invalidConnectorManifest("icon.svg must be a bare <svg> element", code);
+  }
+  const [rootTag] = tags;
+  if (rootTag?.name !== "svg" || rootTag.closing) {
+    throw invalidConnectorManifest("icon.svg must be a bare <svg> element", code);
+  }
+}
 
 /**
  * Validates an optional manifest `icon` declaration. v1 supports exactly one
@@ -586,11 +759,8 @@ const SVG_EVENT_HANDLER_ATTR_RE = /\son\w+\s*=/i;
  * console or reference implementation (the console renders whatever `icon`
  * value it is handed, unconditionally).
  *
- * `icon.svg` is untrusted manifest data that reaches the DOM via
- * dangerouslySetInnerHTML (see ConnectorIcon) — this validator is the sole
- * XSS defense, so it rejects <script> tags and inline event-handler
- * attributes and requires the markup to be a bare <svg> element rather than
- * arbitrary HTML.
+ * `icon.svg` is untrusted manifest data — see assertSvgIsAllowlisted for the
+ * XSS defense this delegates to.
  */
 export function validateManifestIcon(manifest: Record<string, unknown>, code: string): void {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
@@ -613,12 +783,7 @@ export function validateManifestIcon(manifest: Record<string, unknown>, code: st
     throw invalidConnectorManifest("icon.svg must be a non-empty string when icon.kind is inline_svg", code);
   }
   const svg = iconObj.svg.trim();
-  if (SVG_SCRIPT_TAG_RE.test(svg) || SVG_EVENT_HANDLER_ATTR_RE.test(svg)) {
-    throw invalidConnectorManifest("icon.svg must not contain scripts or event-handler attributes", code);
-  }
-  if (!BARE_SVG_RE.test(svg)) {
-    throw invalidConnectorManifest("icon.svg must be a bare <svg> element", code);
-  }
+  assertSvgIsAllowlisted(svg, code);
   if (iconObj.color !== undefined && !(isNonEmptyString(iconObj.color) && HEX_COLOR_RE.test(iconObj.color))) {
     throw invalidConnectorManifest("icon.color must be a hex color (e.g. #1ED760) when declared", code);
   }
