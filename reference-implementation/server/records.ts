@@ -106,6 +106,7 @@ import {
   markRetainedSizeConnectionDirty,
   markRetainedSizeStreamDirty,
 } from "./retained-size-read-model.ts";
+import { firstSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-coercion.ts";
 import { createStorageBackend } from "./storage-backend.ts";
 import {
   getChangeHistoryLimit,
@@ -1695,13 +1696,12 @@ async function ingestSqliteRecord(
   const effectiveEmittedAt = emitted_at || nowIso();
   // SEMANTIC time (when the thing happened) for the Explore merged-timeline sort.
   // Resolved from the manifest consent_time_field/cursor_field of `data`,
-  // epoch-aware, falling back to emitted_at. Only meaningful for upserts (a
-  // delete keeps the row's existing semantic_time); computed unconditionally for
-  // a simpler, branch-free bind below — the delete path does not write it.
+  // epoch-aware, or SEMANTIC_TIME_UNKNOWN when the record carries no real date.
+  // Only meaningful for upserts (a delete keeps the row's existing
+  // semantic_time); computed unconditionally for a simpler, branch-free bind
+  // below — the delete path does not write it.
   const semanticTime =
-    op === "delete"
-      ? effectiveEmittedAt
-      : computeIngestSemanticTime(connectorId, stream, data, effectiveEmittedAt, attemptStreamFacts);
+    op === "delete" ? SEMANTIC_TIME_UNKNOWN : computeIngestSemanticTime(connectorId, stream, data, attemptStreamFacts);
   const changeHistoryLimit = getChangeHistoryLimit();
 
   // Durable mutation unit: returns the operation outcome so derived index
@@ -1981,13 +1981,7 @@ async function prepareDeviceFinalRecordsWithinCoordinator(
       const resolved = authoritativeFinalRecord(entry, current);
       if (current && !current.deleted) {
         const facts = attemptContext?.streams?.[input.stream] ?? null;
-        const semanticTime = computeIngestSemanticTime(
-          connectorId,
-          input.stream,
-          resolved.record.data,
-          current.emitted_at ?? input.emitted_at ?? nowIso(),
-          facts
-        );
+        const semanticTime = computeIngestSemanticTime(connectorId, input.stream, resolved.record.data, facts);
         exec(referenceQueries.recordsIngestRepairCurrentDerivedFacts, [
           semanticTime,
           connectorInstanceId,
@@ -7471,82 +7465,46 @@ function getManifestConsentTimeField(connectorId: string, streamName: string): s
   return SAFE_JSON_FIELD_NAME.test(field) ? field : null;
 }
 
-// Below this, a numeric timestamp is treated as Unix SECONDS; at or above it, as
-// Unix MILLISECONDS. 1e12 seconds is the year 33658 and 1e12 ms is 2001 — any
-// real record date is unambiguous against this boundary. Mirrors the constant in
-// packages/operator-ui/src/lib/search-record-timestamps.ts so ingest and search
-// coerce timestamps identically.
-const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
-
-// Coerce a manifest-declared timestamp field value to a clean ISO-8601 string,
-// matching coerceTimestampValue in search-record-timestamps.ts: an ISO string
-// passes through (trimmed); a positive finite NUMBER is a Unix epoch (seconds
-// below the threshold, ms at/above) -> ISO. Anything else -> null so the caller
-// falls back to emitted_at.
-function coerceSemanticTimeValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    const ms = value >= SEMANTIC_TIME_EPOCH_MS_THRESHOLD ? value : value * 1000;
-    const date = new Date(ms);
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
-  }
-  return null;
-}
-
-function firstSemanticTime(data: RecordData, fields: readonly unknown[]): string | null {
-  for (const field of fields) {
-    if (typeof field !== "string") {
-      continue;
-    }
-    const coerced = coerceSemanticTimeValue(data[field]);
-    if (coerced) {
-      return coerced;
-    }
-  }
-  return null;
-}
-
 // Compute the SEMANTIC time (when the thing happened) to stamp on a record at
 // ingest. Resolves the stream's manifest consent_time_field (preferred) then
 // cursor_field, reads that field from the record `data`, and coerces it
-// epoch-aware. Falls back to `effectiveEmittedAt` when no semantic field is
-// declared or the value is missing/unparseable — so semantic_time is never
-// empty and the merged-timeline sort degrades gracefully to ingest order. Loads
-// the manifest via the same query getManifestConsentTimeField uses.
+// epoch-aware. Yields SEMANTIC_TIME_UNKNOWN (empty string) when no semantic
+// field is declared or the value is missing/unparseable: an unknown date is
+// stored as ABSENT rather than backfilled with ingest time, which would record
+// "I do not know when this happened" as "it happened now" and be
+// indistinguishable downstream from a real timestamp. Readers COALESCE to
+// emitted_at, so the merged-timeline sort still degrades gracefully. Loads the
+// manifest via the same query getManifestConsentTimeField uses.
 function computeIngestSemanticTime(
   connectorId: string,
   streamName: string,
   data: unknown,
-  effectiveEmittedAt: string,
   attemptStreamFacts: AttemptStreamFacts | null = null
 ): string {
   if (!isRecordData(data)) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   if (attemptStreamFacts) {
     return (
-      firstSemanticTime(data, [attemptStreamFacts.consentTimeField, attemptStreamFacts.cursorField]) ??
-      effectiveEmittedAt
+      firstSemanticTimeValue(data, [attemptStreamFacts.consentTimeField, attemptStreamFacts.cursorField]) ??
+      SEMANTIC_TIME_UNKNOWN
     );
   }
   const row = getOne<ConnectorManifestRow>(referenceQueries.authConnectorsGetManifestById, [connectorId]);
   if (!row?.manifest) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   let manifest: StoredManifest;
   try {
     manifest = JSON.parse(row.manifest);
   } catch {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   const stream = Array.isArray(manifest?.streams)
     ? manifest.streams.find((candidate) => candidate?.name === streamName)
     : null;
   if (!stream) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   // consent_time_field is the declared semantic/authored time; cursor_field is
   // the incremental sort field (often the same authored time). Prefer the former.
@@ -7554,7 +7512,7 @@ function computeIngestSemanticTime(
     (field, index, candidates): field is string =>
       typeof field === "string" && field !== "" && candidates.indexOf(field) === index
   );
-  return firstSemanticTime(data, fields) ?? effectiveEmittedAt;
+  return firstSemanticTimeValue(data, fields) ?? SEMANTIC_TIME_UNKNOWN;
 }
 
 // Registration changes can alter the manifest-derived sort facts of already
@@ -7624,8 +7582,7 @@ export async function backfillSqliteRecordSemanticTimesForManifest(manifest: Sto
           );
           for (const row of rows) {
             const data = JSON.parse((row as { record_json: string }).record_json);
-            const emittedAt = (row as { emitted_at: string }).emitted_at;
-            const semanticTime = computeIngestSemanticTime(connectorId, facts.stream, data, emittedAt, facts);
+            const semanticTime = computeIngestSemanticTime(connectorId, facts.stream, data, facts);
             const currentSemanticTime = (row as { semantic_time: string | null }).semantic_time;
             if (semanticTime === currentSemanticTime) {
               continue;

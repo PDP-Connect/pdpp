@@ -21,7 +21,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { coerceSemanticTimeValue, SEMANTIC_TIME_EPOCH_MS_THRESHOLD } from "../server/record-ingest-semantic-time.ts";
+import { coerceSemanticTimeValue, SEMANTIC_TIME_EPOCH_MS_THRESHOLD } from "../server/semantic-time-coercion.ts";
 
 test("coerceSemanticTimeValue: ISO strings pass through trimmed; blank/non-string -> null", () => {
   assert.equal(coerceSemanticTimeValue("2026-03-15T12:00:00Z"), "2026-03-15T12:00:00Z");

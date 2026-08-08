@@ -70,6 +70,7 @@ import type {
   InteractionResponse,
   ProgressExtra,
   RecordData,
+  ShapeAnomaly,
   StartMessage,
   StreamScope,
   ValidateRecord,
@@ -111,6 +112,7 @@ export type {
   ProgressExtra,
   ProviderBudgetProgress,
   RecordData,
+  ShapeAnomaly,
   StartMessage,
   StreamScope,
   ValidateRecord,
@@ -446,6 +448,32 @@ function makeShapeCheckSkip(
     reason: "shape_check_failed",
     message,
     diagnostics: { id: data.id, issues, record: data },
+  };
+}
+
+/**
+ * Build the SKIP_RESULT-shaped diagnostic for a record that was RETAINED
+ * despite carrying a value the schema does not model (see `makeValidateRecord`).
+ *
+ * This is a report, not a skip: the record emits normally and this rides
+ * alongside it. It reuses the SKIP_RESULT envelope because that is the existing
+ * per-record diagnostic channel the console already surfaces, and carries a
+ * distinct `reason` so a reader can tell "we kept this and here is the drift"
+ * from "we dropped this". Values are reported verbatim so the operator can see
+ * what the vendor actually sent and widen the schema against real data.
+ */
+function makeShapeAnomalyReport(
+  stream: string,
+  data: RecordData,
+  anomalies: readonly ShapeAnomaly[]
+): Extract<EmittedMessage, { type: "SKIP_RESULT" }> {
+  const detail = anomalies.map((a) => `${a.path}: unmodeled value ${JSON.stringify(a.value)}`).join("; ");
+  return {
+    type: "SKIP_RESULT",
+    stream,
+    reason: "shape_check_unmodeled_value",
+    message: `${String(data.id)}: retained with ${detail}`,
+    diagnostics: { id: data.id, anomalies, retained: true },
   };
 }
 
@@ -1017,10 +1045,12 @@ function makeEmitRecord(deps: {
   timeRangeFieldFor: (stream: string) => string;
 }): {
   emit: (stream: string, data: RecordData) => Promise<void>;
-  counters: { totalEmitted: number; totalSkipped: number };
+  counters: { totalEmitted: number; totalSkipped: number; totalAnomalous: number };
 } {
   const { requested, emit, emittedAt, validateRecord, isTombstone, timeRangeFieldFor } = deps;
-  const counters = { totalEmitted: 0, totalSkipped: 0 };
+  // `totalAnomalous` counts records RETAINED despite unmodeled values; it is a
+  // subset of totalEmitted, not a sibling of totalSkipped.
+  const counters = { totalEmitted: 0, totalSkipped: 0, totalAnomalous: 0 };
   const resFilters = new Map<string, ReadonlySet<string> | null>();
   for (const [streamName, scope] of requested) {
     resFilters.set(streamName, resourceSet(scope));
@@ -1054,21 +1084,31 @@ function makeEmitRecord(deps: {
       return Promise.resolve();
     }
 
-    if (validateRecord) {
-      const result = validateRecord(stream, data);
-      if (!result.ok) {
-        counters.totalSkipped += 1;
-        return emit(makeShapeCheckSkip(stream, data, result.issues));
-      }
+    const validation = validateRecord?.(stream, data);
+    if (validation && !validation.ok) {
+      counters.totalSkipped += 1;
+      return emit(makeShapeCheckSkip(stream, data, validation.issues));
     }
+    // Present only when the record was RETAINED despite carrying a value the
+    // schema does not model (see makeValidateRecord in schema-registry.ts).
+    const anomalies = validation?.anomalies;
     counters.totalEmitted += 1;
-    return emit({
+    const record: EmittedMessage = {
       type: "RECORD",
       stream,
       key: data.id,
       data,
       emitted_at: emittedAt,
-    });
+    };
+    // A retained-with-drift record still emits; its diagnostic rides alongside
+    // so the unmodeled value is visible rather than silently tolerated. Reported
+    // BEFORE the RECORD so a truncated stream never shows the record without the
+    // caveat attached to it.
+    if (anomalies?.length) {
+      counters.totalAnomalous += 1;
+      return emit(makeShapeAnomalyReport(stream, data, anomalies)).then(() => emit(record));
+    }
+    return emit(record);
   };
 
   return { emit: emitRecord, counters };
@@ -1636,12 +1676,20 @@ function attachBrowserDisconnectedDiagnostic(browser: Browser, onDisconnected: (
 
 /** Emit the final PROGRESS summary (if any skips) and the succeeded DONE. */
 async function finalizeRun(
-  counters: { totalEmitted: number; totalSkipped: number },
+  counters: { totalEmitted: number; totalSkipped: number; totalAnomalous?: number },
   progress: BaseCollectContext["progress"],
   emit: (msg: EmittedMessage) => Promise<void>
 ): Promise<void> {
   if (counters.totalSkipped > 0) {
     await progress(`shape-check skipped ${String(counters.totalSkipped)} record(s); see SKIP_RESULT events above`);
+  }
+  // Retained-with-drift records are emitted, so they are absent from the skip
+  // line above; surfacing the count keeps schema drift from going unnoticed
+  // simply because nothing was lost to it.
+  if (counters.totalAnomalous) {
+    await progress(
+      `shape-check retained ${String(counters.totalAnomalous)} record(s) carrying unmodeled values; see SKIP_RESULT events above`
+    );
   }
   await emit({
     type: "DONE",

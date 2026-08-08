@@ -19,7 +19,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { coerceSemanticTimeValue, SEMANTIC_TIME_EPOCH_MS_THRESHOLD } from "../server/record-ingest-semantic-time.ts";
+import { coerceSemanticTimeValue, SEMANTIC_TIME_EPOCH_MS_THRESHOLD } from "../server/semantic-time-coercion.ts";
 
 test("SEMANTIC_TIME_EPOCH_MS_THRESHOLD is 1e12", () => {
   assert.equal(SEMANTIC_TIME_EPOCH_MS_THRESHOLD, 1e12);

@@ -47,6 +47,7 @@ import {
   normalizeWindowSelector,
 } from "./record-field-window.ts";
 import { compileRequestFilters, nonNullSchemaTypes, passesRequestFilters, passesTimeRange } from "./record-filters.ts";
+import { firstSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-coercion.ts";
 import {
   getChangeHistoryLimit,
   nowIso,
@@ -611,48 +612,22 @@ function cursorValue(data: JsonObject | null, manifestStream: ManifestStream | n
   return value === undefined || value === null ? null : String(value);
 }
 
-// Below this, a numeric timestamp is treated as Unix SECONDS; at or above it, as
-// Unix MILLISECONDS. Mirrors search-record-timestamps.ts and the SQLite ingest
-// path in records.ts so all three coerce timestamps identically.
-const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
-
-function coerceSemanticTimeValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    const ms = value >= SEMANTIC_TIME_EPOCH_MS_THRESHOLD ? value : value * 1000;
-    const date = new Date(ms);
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
-  }
-  return null;
-}
-
 // SEMANTIC time (when the thing happened) to stamp on a record at ingest, for
 // the Explore merged-timeline sort. Resolves the manifest consent_time_field
-// (preferred) then cursor_field from `data`, coerced epoch-aware, falling back
-// to `effectiveEmittedAt` when no semantic field is declared or the value is
-// missing/unparseable. Never empty. Mirrors computeIngestSemanticTime in the
-// SQLite path (records.ts).
-function semanticTimeValue(data: unknown, manifestStream: ManifestStream | null, effectiveEmittedAt: string): string {
+// (preferred) then cursor_field from `data`, coerced epoch-aware, yielding
+// SEMANTIC_TIME_UNKNOWN (empty string) when no semantic field is declared or the
+// value is missing/unparseable/a sentinel. An unknown date is stored as ABSENT
+// rather than backfilled with ingest time; readers COALESCE to emitted_at for
+// ordering. Mirrors computeIngestSemanticTime in the SQLite path (records.ts)
+// via the shared coercion leaf, so the two backends cannot drift apart.
+function semanticTimeValue(data: unknown, manifestStream: ManifestStream | null): string {
   if (!data || typeof data !== "object") {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
-  const dataObject = data as JsonObject;
-  const candidates: string[] = [];
-  for (const field of [manifestStream?.consent_time_field, manifestStream?.cursor_field]) {
-    if (typeof field === "string" && field && !candidates.includes(field)) {
-      candidates.push(field);
-    }
-  }
-  for (const field of candidates) {
-    const coerced = coerceSemanticTimeValue(dataObject[field]);
-    if (coerced) {
-      return coerced;
-    }
-  }
-  return effectiveEmittedAt;
+  return (
+    firstSemanticTimeValue(data as JsonObject, [manifestStream?.consent_time_field, manifestStream?.cursor_field]) ??
+    SEMANTIC_TIME_UNKNOWN
+  );
 }
 
 const manifestStreamCache = new Map<string, ManifestStream | null>();
@@ -828,7 +803,7 @@ export async function postgresBackfillRecordSortPositionsForManifest(
         const data = typeof row.record_json === "string" ? JSON.parse(row.record_json) : row.record_json;
         const cursor = cursorValue(data, manifestStream);
         const primary = primaryKeyText(data, row.record_key, manifestStream);
-        const semanticTime = semanticTimeValue(data, manifestStream, row.emitted_at);
+        const semanticTime = semanticTimeValue(data, manifestStream);
         const result = await postgresQuery(
           `UPDATE records
               SET cursor_value = $5, primary_key_text = $6, semantic_time = $7
@@ -948,7 +923,7 @@ export function postgresPrepareDeviceFinalRecords(
       ) as JsonObject;
       const facts = attemptContext?.streams?.[input.stream] ?? null;
       const manifestStream = facts ? manifestStreamFromFacts(facts) : null;
-      const semanticTime = semanticTimeValue(data, manifestStream, current.emitted_at || input.emitted_at || nowIso());
+      const semanticTime = semanticTimeValue(data, manifestStream);
       const cursor = cursorValue(data, manifestStream);
       const primary = primaryKeyText(data, recordKey, manifestStream);
       await client.query(
@@ -1848,8 +1823,7 @@ export async function postgresIngestRecord(
   const storedPrimaryKeyText = op === "delete" ? recordKey : primaryKeyText(data ?? null, recordKey, manifestStream);
   // SEMANTIC time for the Explore merged-timeline sort (upserts only; a delete
   // keeps the row's existing semantic_time). Falls back to emitted_at.
-  const storedSemanticTime =
-    op === "delete" ? null : semanticTimeValue(data ?? null, manifestStream, effectiveEmittedAt);
+  const storedSemanticTime = op === "delete" ? null : semanticTimeValue(data ?? null, manifestStream);
 
   const outcome = await withPostgresTransaction<DurableIngestOutcome>(async (client) => {
     await assertPostgresRunStillAdmitted(client, options.runId, connectorInstanceId);

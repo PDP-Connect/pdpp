@@ -366,7 +366,24 @@ export interface InteractionRequest {
 
 // ─── Shape-check validator ──────────────────────────────────────────────
 
+/**
+ * A field whose value the schema did not model, on a record that is otherwise
+ * structurally sound. Reported alongside `ok: true` so the record still emits
+ * with its unrecognized value intact while the drift stays visible — see
+ * `makeValidateRecord` (schema-registry.ts) for the policy that raises these.
+ */
+export interface ShapeAnomaly {
+  /** The values the schema does model, for the diagnostic reader. */
+  expected: readonly unknown[];
+  /** Dot-joined path to the field, e.g. `attachments.0.type`. */
+  path: string;
+  /** The unrecognized value, verbatim, exactly as the source sent it. */
+  value: unknown;
+}
+
 export type ValidateRecord = (
   stream: string,
   data: RecordData
-) => { ok: true; data: RecordData } | { ok: false; issues: Array<{ path: string; message: string }> };
+) =>
+  | { ok: true; data: RecordData; anomalies?: readonly ShapeAnomaly[] }
+  | { ok: false; issues: Array<{ path: string; message: string }> };

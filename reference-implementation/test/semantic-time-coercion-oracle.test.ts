@@ -8,11 +8,13 @@
 // (SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12): a number at/above it is treated as
 // epoch MILLISECONDS, below it as epoch SECONDS (x1000). An ISO string passes
 // through trimmed; anything non-positive / non-finite / non-string-non-number
-// yields null so the caller falls back to emitted_at. No DB.
+// yields null so the caller stores SEMANTIC_TIME_UNKNOWN (absence) rather than
+// backfilling ingest time. No DB. Sentinel handling is pinned separately in
+// semantic-time-absence-oracle.test.ts.
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { coerceSemanticTimeValue, SEMANTIC_TIME_EPOCH_MS_THRESHOLD } from "../server/record-ingest-semantic-time.ts";
+import { coerceSemanticTimeValue, SEMANTIC_TIME_EPOCH_MS_THRESHOLD } from "../server/semantic-time-coercion.ts";
 
 test("the epoch ms/seconds threshold is 1e12", () => {
   assert.equal(SEMANTIC_TIME_EPOCH_MS_THRESHOLD, 1e12);

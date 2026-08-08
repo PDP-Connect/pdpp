@@ -22,6 +22,23 @@ export function formatSemanticTimestamp(value: string): string {
   return formatTimestamp(value);
 }
 
+// Zero-shaped dates and epoch-adjacent instants providers send to mean "no
+// date". A `0` (Steam's rtime_last_played for a never-played game) renders as
+// 1970-01-01, which reads as real data and sorts to the beginning of the
+// owner's timeline — worse than showing no semantic date at all. Mirrors the
+// ingest-side guard in reference-implementation/server/semantic-time-coercion.ts.
+const SENTINEL_DATE_PREFIXES = ["0000-", "0001-01-01"];
+const EPOCH_SENTINEL_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function isSentinelTimestamp(value: string): boolean {
+  const lowered = value.toLowerCase();
+  if (SENTINEL_DATE_PREFIXES.some((prefix) => lowered.startsWith(prefix))) {
+    return true;
+  }
+  const parsed = Date.parse(value);
+  return !Number.isNaN(parsed) && Math.abs(parsed) <= EPOCH_SENTINEL_WINDOW_MS;
+}
+
 export function pickSemanticTimestamp(
   metadata: { consent_time_field?: string | null; cursor_field?: string | null } | null | undefined,
   data: Record<string, unknown> | null | undefined
@@ -35,7 +52,7 @@ export function pickSemanticTimestamp(
   );
   for (const field of candidates) {
     const value = data[field];
-    if (typeof value === "string" && value.trim()) {
+    if (typeof value === "string" && value.trim() && !isSentinelTimestamp(value.trim())) {
       return { field, value: value.trim() };
     }
   }

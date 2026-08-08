@@ -4,8 +4,36 @@
 import { z } from "zod";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
+/**
+ * Attachment types GroupMe actually sends, widened from real captured runs.
+ *
+ * The original four (image/file/location/emoji) were transcribed from GroupMe's
+ * published docs, and the docs undercount what the API emits: a measured corpus
+ * carried ten distinct values, and the six undocumented ones — led by `mentions`
+ * and `event` — accounted for far more attachments than the documented ones. The
+ * mismatch runs both ways: `file` and `location` are documented but appeared
+ * zero times, so this list is ordered by observed frequency with the two
+ * never-observed-but-documented members kept at the end.
+ *
+ * Widening here is the precise fix; the runtime's tolerance for unmodeled enum
+ * values (see makeValidateRecord in src/schema-registry.ts) is the general one,
+ * and covers the eleventh type GroupMe ships after this comment is written.
+ */
 const AttachmentSchema = z.object({
-  type: z.enum(["image", "file", "location", "emoji"]),
+  type: z.enum([
+    "mentions",
+    "event",
+    "reply",
+    "image",
+    "linked_image",
+    "video",
+    "emoji",
+    "poll",
+    "autokicked_member",
+    "postprocessing",
+    "file",
+    "location",
+  ]),
   url: z.string().nullable(),
   blob_id: z.string().nullable().optional(),
   name: z.string().nullable(),

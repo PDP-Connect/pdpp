@@ -16,19 +16,24 @@
  * bottom of records.js.
  *
  * Entry points called by the SQLite ingest path in records.js:
- *   computeIngestSemanticTime  — returns the ISO semantic timestamp to stamp
+ *   computeIngestSemanticTime  — the semantic timestamp to stamp, or
+ *                                SEMANTIC_TIME_UNKNOWN when the record has none
  *   validateRecordIdentity     — asserts primary-key field/value consistency
  *
  * Additional exports (used by the SQLite dataset-summary read-model + stream
  * projections in records.js):
  *   getManifestConsentTimeField
  *   getManifestPrimaryKeyFields
- *   coerceSemanticTimeValue
- *   SEMANTIC_TIME_EPOCH_MS_THRESHOLD
+ *
+ * The pure coercion primitives (coerceSemanticTimeValue,
+ * SEMANTIC_TIME_EPOCH_MS_THRESHOLD, SEMANTIC_TIME_UNKNOWN) live in the leaf
+ * module semantic-time-coercion.ts so the SQLite and Postgres ingest paths
+ * share ONE definition; import them from there.
  */
 
 import { getOne, referenceQueries } from "../lib/db.ts";
 import { assertRecordIdentity, normalizePrimaryKey } from "./record-expand-helpers.ts";
+import { coerceSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-coercion.ts";
 
 // Row shape returned by the manifest lookup query: a single `manifest`
 // column holding the JSON-serialized connector manifest (or absent).
@@ -47,13 +52,6 @@ interface ManifestStreamShape {
 interface ParsedManifest {
   streams?: unknown;
 }
-
-// Below this, a numeric timestamp is treated as Unix SECONDS; at or above it,
-// as Unix MILLISECONDS. 1e12 seconds is the year 33658 and 1e12 ms is 2001 —
-// any real record date is unambiguous against this boundary. Mirrors the
-// constant in packages/operator-ui/src/lib/search-record-timestamps.ts so
-// ingest and search coerce timestamps identically.
-export const SEMANTIC_TIME_EPOCH_MS_THRESHOLD = 1e12;
 
 // A valid SQL/manifest field identifier: a letter or underscore followed by
 // word characters. Used to reject injection-shaped consent_time_field names.
@@ -82,56 +80,34 @@ export function getManifestConsentTimeField(connectorId: string, streamName: str
   return FIELD_IDENTIFIER_PATTERN.test(field) ? field : null;
 }
 
-// Coerce a manifest-declared timestamp field value to a clean ISO-8601 string,
-// matching coerceTimestampValue in search-record-timestamps.ts: an ISO string
-// passes through (trimmed); a positive finite NUMBER is a Unix epoch (seconds
-// below the threshold, ms at/above) -> ISO. Anything else -> null so the
-// caller falls back to emitted_at.
-export function coerceSemanticTimeValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    const ms = value >= SEMANTIC_TIME_EPOCH_MS_THRESHOLD ? value : value * 1000;
-    const date = new Date(ms);
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
-  }
-  return null;
-}
-
 // Compute the SEMANTIC time (when the thing happened) to stamp on a record at
 // ingest. Resolves the stream's manifest consent_time_field (preferred) then
 // cursor_field, reads that field from the record `data`, and coerces it
-// epoch-aware. Falls back to `effectiveEmittedAt` when no semantic field is
-// declared or the value is missing/unparseable — so semantic_time is never
-// empty and the merged-timeline sort degrades gracefully to ingest order. Loads
-// the manifest via the same query getManifestConsentTimeField uses.
-export function computeIngestSemanticTime(
-  connectorId: string,
-  streamName: string,
-  data: unknown,
-  effectiveEmittedAt: string
-): string {
+// epoch-aware. Yields SEMANTIC_TIME_UNKNOWN when no semantic field is declared
+// or the value is missing/unparseable, so an unknown date is stored as absent
+// rather than backfilled with ingest time; readers COALESCE to emitted_at for
+// ordering. Loads the manifest via the same query getManifestConsentTimeField
+// uses. `effectiveEmittedAt` is no longer consulted and is not a parameter.
+export function computeIngestSemanticTime(connectorId: string, streamName: string, data: unknown): string {
   if (!data || typeof data !== "object") {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   const row = getOne<ManifestRow>(referenceQueries.authConnectorsGetManifestById, [connectorId]);
   if (!row?.manifest) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   let manifest: ParsedManifest;
   try {
     manifest = JSON.parse(row.manifest) as ParsedManifest;
   } catch {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   // biome-ignore lint/suspicious/noUnnecessaryConditions: TypeScript boundary permits nullish input; this guard preserves runtime behavior.
   const stream = Array.isArray(manifest?.streams)
     ? (manifest.streams as ManifestStreamShape[]).find((candidate) => candidate?.name === streamName)
     : null;
   if (!stream) {
-    return effectiveEmittedAt;
+    return SEMANTIC_TIME_UNKNOWN;
   }
   // consent_time_field is the declared semantic/authored time; cursor_field is
   // the incremental sort field (often the same authored time). Prefer the former.
@@ -148,7 +124,7 @@ export function computeIngestSemanticTime(
       return coerced;
     }
   }
-  return effectiveEmittedAt;
+  return SEMANTIC_TIME_UNKNOWN;
 }
 
 // Returns the manifest-declared primary_key field names for a stream, or null

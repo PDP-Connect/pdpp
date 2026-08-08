@@ -91,14 +91,14 @@
     "server/package-rs-client.ts": 122,
     "server/pending-pressure-gap-map.ts": 1,
     "server/polyfill-manifest-reconcile.ts": 17,
-    "server/postgres-records.ts": 196,
+    "server/postgres-records.ts": 195,
     "server/postgres-search.ts": 15,
     "server/postgres-storage.ts": 90,
     "server/queries/index.ts": 23,
     "server/record-aggregation.ts": 5,
     "server/record-expand-helpers.ts": 12,
     "server/record-filters.ts": 50,
-    "server/record-ingest-semantic-time.ts": 13,
+    "server/record-ingest-semantic-time.ts": 9,
     "server/record-projection-read-model.ts": 6,
     "server/record-query-helpers.ts": 22,
     "server/record-version-stats.ts": 36,
@@ -189,7 +189,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 6959,
+  "total": 6954,
   "meta": {
     "biomeVersion": "2.5.6",
     "maxAllowedComplexity": 5

@@ -59,6 +59,22 @@ test("pickSemanticTimestamp: non-record data or no usable field -> null", () => 
   assert.equal(pickSemanticTimestamp({ cursor_field: "cf" }, { other: "x" }), null, "no matching field -> null");
 });
 
+test("pickSemanticTimestamp: a provider sentinel is NOT resurrected on the read path", () => {
+  // The read path must not surface what ingest correctly rejected. Steam sends
+  // rtime_last_played = 0 for a never-played game; reporting 1970-01-01 reads as
+  // real data and sorts to the beginning of the owner's timeline.
+  assert.equal(pickSemanticTimestamp({ consent_time_field: "ct" }, { ct: "1970-01-01T00:00:00.000Z" }), null);
+  assert.equal(pickSemanticTimestamp({ consent_time_field: "ct" }, { ct: "0000-00-00" }), null);
+});
+
+test("pickSemanticTimestamp: a sentinel in the consent field falls through to a real cursor field", () => {
+  const out = pickSemanticTimestamp(
+    { consent_time_field: "ct", cursor_field: "cf" },
+    { cf: "2024-02-02", ct: "1970-01-01T00:00:00.000Z" }
+  );
+  assert.deepEqual(out, { field: "cf", value: "2024-02-02" }, "a real later date beats a sentinel");
+});
+
 // ---------------------------------------------------------------------------
 // compareTimestampValues
 // ---------------------------------------------------------------------------
