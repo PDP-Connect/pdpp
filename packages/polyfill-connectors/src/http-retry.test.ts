@@ -8,6 +8,7 @@ import {
   jitteredExponentialDelayMs,
   parseRetryAfterMs,
   RetryExhaustedError,
+  redactTransportDetail,
   retryAfterMsFromHeaders,
   retryHttp,
   TerminalHttpStatusError,
@@ -355,4 +356,92 @@ test("retryHttp: a thrown transport error carries its cause into the exhaustion 
       return true;
     }
   );
+});
+
+// ─── Redaction is an ENFORCED invariant, not a documented intention ─────────
+//
+// A cause link is arbitrary text authored by a transport we do not control, and
+// undici/TLS layers routinely embed the request URL — which can carry userinfo,
+// an `access_token` query parameter, or a signed-URL signature. The first cut of
+// this fix only BOUNDED that text while its doc comment claimed no URL or header
+// could reach terminal text. Bounding is not redacting: a 120-char cut through a
+// credential leaves a usable prefix behind. These are the counterweights for the
+// enforcement (RI owner REVISE, pre-integration).
+
+test("redactTransportDetail: a URL's userinfo, path, and query-string secret cannot survive", () => {
+  const redacted = redactTransportDetail(
+    "connect ECONNREFUSED to https://user:pass@example.com/path?access_token=SECRETVALUE now"
+  );
+  assert.doesNotMatch(redacted, /SECRETVALUE/, "a query-string token must not survive");
+  assert.doesNotMatch(redacted, /user:pass/, "URL userinfo must not survive");
+  assert.doesNotMatch(redacted, /example\.com/, "the host and path must not survive");
+  assert.doesNotMatch(redacted, /access_token/);
+  assert.match(redacted, /\[redacted-url]/);
+  // The whole point of keeping the link: the transport class must stay legible.
+  assert.match(redacted, /ECONNREFUSED/, "the safe transport class must remain visible");
+});
+
+test("redactTransportDetail: Authorization headers and bare auth schemes cannot survive", () => {
+  const header = redactTransportDetail("request failed (Authorization: Bearer abc123SECRETVALUE) ECONNRESET");
+  assert.doesNotMatch(header, /abc123SECRETVALUE/);
+  assert.match(header, /\[redacted-authorization]/);
+  assert.match(header, /ECONNRESET/, "the safe transport code must remain visible");
+
+  const bare = redactTransportDetail("upstream said Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig then ETIMEDOUT");
+  assert.doesNotMatch(bare, /eyJhbGciOiJIUzI1NiJ9/);
+  assert.doesNotMatch(bare, /Bearer\s+\S/i, "no bare bearer token may remain");
+  assert.match(bare, /\[redacted-authorization]/);
+  assert.match(bare, /ETIMEDOUT/);
+});
+
+test("redactTransportDetail: loose secret key-value forms and emails cannot survive", () => {
+  const secrets = redactTransportDetail(
+    'ENOTFOUND api_key=AKIAsecretvalue, password: "hunter2", cookie=session=abc, token=t0kenvalue'
+  );
+  for (const leak of ["AKIAsecretvalue", "hunter2", "t0kenvalue"]) {
+    assert.doesNotMatch(secrets, new RegExp(leak), `${leak} must not survive`);
+  }
+  assert.match(secrets, /ENOTFOUND/, "the safe transport class must remain visible");
+
+  const email = redactTransportDetail("auth failed for owner@example.com UND_ERR_HEADERS_TIMEOUT");
+  assert.doesNotMatch(email, /owner@example\.com/);
+  assert.match(email, /\[redacted-email]/);
+  assert.match(email, /UND_ERR_HEADERS_TIMEOUT/, "the safe transport code must remain visible");
+});
+
+test("redactTransportDetail: control characters and newlines collapse to one legible line", () => {
+  const messy = redactTransportDetail("line one\n\tline  two\u0000\u0007 ECONNRESET");
+  // Asserted by code point rather than a regex character class: the lint rule
+  // (correctly) bans control characters inside a regex literal.
+  const controlCodePoints = [...messy].map((ch) => ch.codePointAt(0) ?? 0).filter((cp) => cp < 0x20 || cp === 0x7f);
+  assert.deepEqual(controlCodePoints, [], "no control chars — including newline and tab — reach the DB row");
+  assert.doesNotMatch(messy, / {2}/, "runs of whitespace collapse to one space");
+  assert.match(messy, /ECONNRESET/);
+});
+
+test("describeThrownTransportError: redacts BEFORE bounding, so no secret survives as a truncated fragment", () => {
+  // The URL sits past the 120-char per-link bound: if truncation ran first, the
+  // slice would cut through the token and leave a usable prefix behind.
+  const err = new TypeError("fetch failed");
+  err.cause = Object.assign(
+    new Error(`${"padding ".repeat(20)}https://user:pass@example.com/p?access_token=SUPERSECRETVALUE`),
+    { code: "ECONNRESET" }
+  );
+  const described = describeThrownTransportError(err);
+  assert.doesNotMatch(described, /SUPERSECRETVALUE/, "no whole secret");
+  assert.doesNotMatch(described, /SUPER/, "not even a truncated fragment of the secret");
+  assert.doesNotMatch(described, /user:pass/);
+  assert.doesNotMatch(described, /example\.com/);
+  assert.match(described, /ECONNRESET/, "the transport code still classifies the fault");
+  // Bounded chain behavior is preserved.
+  assert.ok(described.length < 300, `expected a bounded description, got ${described.length}`);
+});
+
+test("describeThrownTransportError: a redacted-to-empty link is dropped rather than emitting stray colons", () => {
+  const err = new Error("https://example.com/only-a-url");
+  err.cause = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  const described = describeThrownTransportError(err);
+  assert.doesNotMatch(described, /example\.com/);
+  assert.doesNotMatch(described, /::/, "no empty segments left behind by redaction");
+  assert.match(described, /ECONNRESET/);
 });

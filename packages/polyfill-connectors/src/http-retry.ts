@@ -1,6 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { stripForbiddenControlChars } from "./safe-text-preview.ts";
+
 export interface HttpRetryResponse {
   headers?: Record<string, string | undefined>;
   status: number;
@@ -106,6 +108,64 @@ export class RetryExhaustedError extends Error {
  */
 const THROWN_CAUSE_DETAIL_MAX = 120;
 
+// ─── Redaction of third-party transport text ────────────────────────────────
+//
+// A cause link is an arbitrary string authored by a transport we do not control
+// (undici, Node's TLS/DNS layers, a browser fetch shim). Those layers routinely
+// embed the request URL in the message — and a URL can carry userinfo, an
+// `access_token` query parameter, or a signed-URL signature. Bounding the length
+// does not make that safe: truncation is not redaction, and slicing mid-token
+// can leave a usable credential prefix behind.
+//
+// So the invariant "no URL or header reaches terminal text" is ENFORCED here
+// rather than asserted in a doc comment. Redaction runs BEFORE truncation, so a
+// secret can never survive as a partial fragment of a cut string.
+//
+// The rules are deliberately blunt and over-broad: for a transport diagnostic,
+// losing a URL costs nothing (the caller attaches its own redacted endpoint,
+// and the fault CLASS lives in the code) while leaking one costs a credential.
+// What must survive is the transport vocabulary the operator and the connector's
+// `retryablePattern` both read — `ECONNRESET`, `ENOTFOUND`,
+// `UND_ERR_HEADERS_TIMEOUT` — and none of these rules touch a bare token like
+// that.
+
+/** `scheme://…` up to the first whitespace, quote, or closing bracket. Covers
+ *  userinfo, query strings, and signed-URL signatures in one bite. */
+const ABSOLUTE_URL = /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"<>)\]}]+/gi;
+/** `Authorization: <scheme> <token>` — the scheme AND its token, since a rule
+ *  that stopped at the first space would redact the word "Bearer" and leave the
+ *  credential itself in the clear. Also bare `Bearer <token>` with no header. */
+const AUTH_HEADER = /\bauthorization\s*[:=]\s*(?:[a-z]+\s+)?[^\s,;)\]}]+/gi;
+const AUTH_SCHEME = /\b(?:bearer|basic|digest)\s+[^\s,;)\]}]+/gi;
+/** `key=value` / `key: value` for secret-bearing key names, quoted or not. */
+const SECRET_KEY_VALUE =
+  /\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|token|password|passwd|pwd|secret|cookie|set-cookie|session|auth)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&)]+)/gi;
+const EMAIL_ADDRESS = /\b[^\s@,;:<>()[\]]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi;
+/** Any run of whitespace (incl. the \t\n\r that control-stripping keeps) → one
+ *  space, so a multi-line transport dump stays one legible DB row. */
+const WHITESPACE_RUN = /\s+/g;
+
+/**
+ * Redact credential-bearing and identifying text out of one third-party cause
+ * link. Applied to every link before it is bounded or joined.
+ *
+ * Order is load-bearing: URL first (so a token inside a URL is removed with the
+ * whole URL rather than half-matched by a later rule), then explicit auth
+ * headers/schemes, then loose `key=value` secrets, then emails. Control
+ * characters go through the shared `stripForbiddenControlChars` primitive — this
+ * module does not author a second control-char policy.
+ */
+export function redactTransportDetail(text: string): string {
+  return stripForbiddenControlChars(text)
+    .replace(ABSOLUTE_URL, "[redacted-url]")
+    .replace(AUTH_HEADER, "[redacted-authorization]")
+    .replace(AUTH_SCHEME, "[redacted-authorization]")
+    .replace(SECRET_KEY_VALUE, "[redacted-secret]")
+    .replace(EMAIL_ADDRESS, "[redacted-email]")
+    .replace(WHITESPACE_RUN, " ")
+    .trim();
+}
+
 /**
  * Describe a THROWN transport failure well enough to act on it.
  *
@@ -123,25 +183,36 @@ const THROWN_CAUSE_DETAIL_MAX = 120;
  * connector's pattern, and a retryable blip terminals the run as permanent.
  *
  * Walks the `.cause` chain (bounded) because undici nests one level deep and a
- * future transport may nest further. Never includes a URL or header — the caller
- * owns adding a redacted endpoint.
+ * future transport may nest further. Every link — including the outer message,
+ * which is equally third-party text — is passed through
+ * {@link redactTransportDetail} BEFORE it is bounded, so a URL, credential, or
+ * email cannot reach terminal text either whole or as a truncated fragment. The
+ * caller owns attaching its own redacted endpoint.
  */
 export function describeThrownTransportError(error: unknown): string {
   if (!(error instanceof Error)) {
-    return String(error);
+    return redactTransportDetail(String(error));
   }
-  const parts: string[] = [error.message];
+  const parts: string[] = [redactTransportDetail(error.message)];
   let cause: unknown = error.cause;
   for (let depth = 0; depth < 3 && cause instanceof Error; depth += 1) {
     const { code, message: causeMessage } = cause as Error & { code?: unknown };
-    const codeSuffix = typeof code === "string" && code.length > 0 && !causeMessage.includes(code) ? ` (${code})` : "";
-    const link = `${causeMessage}${codeSuffix}`;
+    // Redact first, bound second: a mid-token slice of a secret is still a leak.
+    const body = redactTransportDetail(causeMessage);
+    const bounded = body.length > THROWN_CAUSE_DETAIL_MAX ? `${body.slice(0, THROWN_CAUSE_DETAIL_MAX)}…` : body;
+    // The `code` is appended AFTER bounding and is never truncated: it is the
+    // highest-value part of the link (it classifies the fault and is what the
+    // connector's retryablePattern matches), so a long redacted message must not
+    // be able to push it out of the string. Codes are short, fixed transport
+    // constants (`ECONNRESET`, `UND_ERR_HEADERS_TIMEOUT`), never owner data.
+    const codeSuffix = typeof code === "string" && code.length > 0 && !bounded.includes(code) ? ` (${code})` : "";
+    const link = `${bounded}${codeSuffix}`.trim();
     if (link && !parts.includes(link)) {
-      parts.push(link.length > THROWN_CAUSE_DETAIL_MAX ? `${link.slice(0, THROWN_CAUSE_DETAIL_MAX)}…` : link);
+      parts.push(link);
     }
     ({ cause } = cause);
   }
-  return parts.join(": ");
+  return parts.filter((part) => part.length > 0).join(": ");
 }
 
 const DEFAULT_SLEEP = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
