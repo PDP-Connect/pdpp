@@ -44,11 +44,33 @@ export const CONNECTOR_CONFORMANCE_TEST_FILES = [
   "src/connector-conformance.test.ts",
 ];
 
+// The zero-connector-knowledge conformance guard and the helper it scans
+// with. A change to either must prove the guard still runs and still
+// detects what it claims to detect, so both are gate-self paths too.
+export const ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE = "test/ri-zero-connector-knowledge-conformance.test.ts";
+export const ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE = "test/helpers/ri-zero-connector-knowledge-scan.ts";
+
 export const CI_GATE_SELF_PATHS = [
   "scripts/ci-mode.ts",
   "scripts/ci-mode.test.ts",
   "package.json",
   ...CONNECTOR_CONFORMANCE_TEST_FILES.map((path) => `packages/polyfill-connectors/${path}`),
+  `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`,
+  `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`,
+];
+
+// RI production code — everything the zero-connector-knowledge guard scans.
+// `reference-implementation/connectors/` (connector-authored code) and
+// `reference-implementation/test/` (tests/helpers, including the guard
+// itself — covered separately via CI_GATE_SELF_PATHS) are excluded, matching
+// the guard's own scan scope in ri-zero-connector-knowledge-scan.ts.
+export const RI_PRODUCTION_PATH_PREFIXES = [
+  "reference-implementation/cli/",
+  "reference-implementation/lib/",
+  "reference-implementation/operations/",
+  "reference-implementation/runtime/",
+  "reference-implementation/scripts/",
+  "reference-implementation/server/",
 ];
 
 // The generated inventory is source-derived evidence over both shipped
@@ -73,6 +95,10 @@ export function streamEvidenceInventoryGateRequired(changedFiles: string[]): boo
     changeTouchesConnectorSurface(changedFiles) ||
     changedFiles.some((path) => STREAM_EVIDENCE_INVENTORY_PATHS.includes(path))
   );
+}
+
+export function changeTouchesRiProduction(changedFiles: string[]): boolean {
+  return changedFiles.some((path) => RI_PRODUCTION_PATH_PREFIXES.some((prefix) => path.startsWith(prefix)));
 }
 
 type CiMode = "hosted" | "local";
@@ -107,6 +133,11 @@ touches either shipped manifest root
 suite (${CONNECTOR_CONFORMANCE_TEST_FILES.join(", ")}) and the source-derived
 stream-evidence inventory check. Changes to the inventory producer/artifact
 (${STREAM_EVIDENCE_INVENTORY_PATHS.join(", ")}) also run that inventory check.
+If the diff touches RI production code (${RI_PRODUCTION_PATH_PREFIXES.join(", ")})
+or either shipped manifest root, signoff also runs the zero-connector-knowledge
+conformance guard (${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}), proving RI production
+code carries no hardcoded connector/provider identity, endpoint, scope, or
+credential-env-var knowledge.
 For a gate-self change (${CI_GATE_SELF_PATHS.join(", ")}), signoff also runs
 ci:mode:test — failing closed if any required check does not pass. There is no
 opt-out: if the diff cannot be computed (missing base ref, shallow clone),
@@ -490,10 +521,29 @@ export function ciModeSelfTestRequired(changedFiles: string[]): boolean {
   return changeTouchesCiGateSelf(changedFiles);
 }
 
+/**
+ * Decide whether the zero-connector-knowledge conformance guard must pass
+ * before this signoff can post success. Required when RI production code or
+ * either manifest root changed (a manifest change can newly satisfy or newly
+ * violate the guard's manifest-derived identity set) OR when the guard's own
+ * implementation changed. There is no opt-out, matching connectorGateRequired.
+ */
+export function zeroConnectorKnowledgeGateRequired(changedFiles: string[]): boolean {
+  return changeTouchesRiProduction(changedFiles) || changeTouchesConnectorSurface(changedFiles) || changeTouchesCiGateSelf(changedFiles);
+}
+
 function runConnectorConformanceGate(): void {
   console.log("a shipped manifest root or this gate changed — running the connector-conformance gate...");
   execFileSync("node", ["--test", "--test-timeout=30000", "--import", "tsx", ...CONNECTOR_CONFORMANCE_TEST_FILES], {
     cwd: "packages/polyfill-connectors",
+    stdio: "inherit",
+  });
+}
+
+function runZeroConnectorKnowledgeGate(): void {
+  console.log("RI production code or a shipped manifest root changed — running the zero-connector-knowledge guard...");
+  execFileSync("node", ["--test", "--test-timeout=30000", ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE], {
+    cwd: "reference-implementation",
     stdio: "inherit",
   });
 }
@@ -528,6 +578,9 @@ function signoff(args: string[]): void {
   }
   if (connectorGateRequired(changedFiles)) {
     runConnectorConformanceGate();
+  }
+  if (zeroConnectorKnowledgeGateRequired(changedFiles)) {
+    runZeroConnectorKnowledgeGate();
   }
   if (ciModeSelfTestRequired(changedFiles)) {
     runCiModeSelfTest();

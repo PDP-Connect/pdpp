@@ -26,16 +26,21 @@ import {
   CONNECTOR_CONFORMANCE_TEST_FILES,
   changeTouchesCiGateSelf,
   changeTouchesConnectorSurface,
+  changeTouchesRiProduction,
   ciModeSelfTestRequired,
   connectorGateRequired,
   detectCiMode,
   getRequiredStatusContexts,
   HOSTED_CONTEXT,
   LOCAL_CONTEXT,
+  RI_PRODUCTION_PATH_PREFIXES,
   rulesetWithRequiredStatusContexts,
   STREAM_EVIDENCE_INVENTORY_PATHS,
   streamEvidenceInventoryGateRequired,
   workflowUpdatesForMode,
+  ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE,
+  ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE,
+  zeroConnectorKnowledgeGateRequired,
 } from "./ci-mode.ts";
 
 const CI_MODE_SCRIPT = fileURLToPath(new URL("./ci-mode.ts", import.meta.url));
@@ -240,12 +245,16 @@ test("changeTouchesCiGateSelf pins the gate implementation and every conformance
     "packages/polyfill-connectors/src/stream-evidence-strategy-manifest.test.ts",
     "packages/polyfill-connectors/src/coverage-policy-manifest-honesty.test.ts",
     "packages/polyfill-connectors/src/connector-conformance.test.ts",
+    "reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts",
+    "reference-implementation/test/helpers/ri-zero-connector-knowledge-scan.ts",
   ];
   assert.deepEqual(CI_GATE_SELF_PATHS, expectedSelfPaths);
   assert.deepEqual(
     CONNECTOR_CONFORMANCE_TEST_FILES,
-    expectedSelfPaths.slice(3).map((path) => path.replace("packages/polyfill-connectors/", ""))
+    expectedSelfPaths.slice(3, 6).map((path) => path.replace("packages/polyfill-connectors/", ""))
   );
+  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`, expectedSelfPaths[6]);
+  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`, expectedSelfPaths[7]);
   for (const path of expectedSelfPaths) {
     assert.equal(changeTouchesCiGateSelf([path]), true);
     assert.equal(ciModeSelfTestRequired([path]), true);
@@ -253,6 +262,31 @@ test("changeTouchesCiGateSelf pins the gate implementation and every conformance
   assert.equal(changeTouchesCiGateSelf(["scripts/other-script.ts"]), false);
   assert.equal(changeTouchesCiGateSelf(["packages/polyfill-connectors/package.json"]), false);
   assert.equal(changeTouchesCiGateSelf([]), false);
+});
+
+test("changeTouchesRiProduction flags RI production paths but not connectors/tests/manifests", () => {
+  for (const prefix of RI_PRODUCTION_PATH_PREFIXES) {
+    assert.equal(changeTouchesRiProduction([`${prefix}some-file.ts`]), true);
+  }
+  assert.equal(changeTouchesRiProduction(["reference-implementation/connectors/seed/index.ts"]), false);
+  assert.equal(changeTouchesRiProduction(["reference-implementation/test/some.test.ts"]), false);
+  assert.equal(changeTouchesRiProduction(["reference-implementation/manifests/github.json"]), false);
+  assert.equal(changeTouchesRiProduction(["CONTRIBUTING.md"]), false);
+  assert.equal(changeTouchesRiProduction([]), false);
+});
+
+test("zeroConnectorKnowledgeGateRequired triggers on RI production, connector-surface, and gate-self changes", () => {
+  assert.equal(zeroConnectorKnowledgeGateRequired(["reference-implementation/server/connector-key.ts"]), true);
+  assert.equal(zeroConnectorKnowledgeGateRequired(["reference-implementation/manifests/github.json"]), true);
+  assert.equal(zeroConnectorKnowledgeGateRequired(["packages/polyfill-connectors/manifests/gmail.json"]), true);
+  assert.equal(zeroConnectorKnowledgeGateRequired(["scripts/ci-mode.ts"]), true);
+  assert.equal(
+    zeroConnectorKnowledgeGateRequired([`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`]),
+    true
+  );
+  assert.equal(zeroConnectorKnowledgeGateRequired(["reference-implementation/connectors/seed/index.ts"]), false);
+  assert.equal(zeroConnectorKnowledgeGateRequired(["CONTRIBUTING.md"]), false);
+  assert.equal(zeroConnectorKnowledgeGateRequired([]), false);
 });
 
 test("ciModeSelfTestRequired does not over-trigger outside the pinned gate paths", () => {
