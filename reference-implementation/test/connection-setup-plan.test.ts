@@ -333,9 +333,15 @@ test("setup planner distinguishes provider app readiness from owner authorizatio
   // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
   assert.match(blocked.ownerAgentIntent.reason, /provider application/i);
 
+  // Readiness follows the manifest's declared settings against the observed
+  // deployment, so a ready deployment is described by supplying them.
   const readyButUnproven = buildConnectionSetupPlan({
     configuredProviderAuthConnectorKeys: ["fitness-oauth"],
     connectorKey: "fitness-oauth",
+    deploymentEnv: {
+      FITNESS_OAUTH_CLIENT_ID: "test-client-id",
+      FITNESS_OAUTH_CLIENT_SECRET: "test-client-secret",
+    },
     manifest: providerManifest,
   });
   assert.equal(readyButUnproven.deploymentReadiness.state, "ready");
@@ -528,7 +534,15 @@ test("wave-0807 Google Calendar/Contacts keep the deployment-app vs owner-accoun
       // biome-ignore lint/performance/noAwaitInLoops: sequential fixture loads over a fixed short list read clearer than Promise.all here.
       (await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } }))
         .default;
-    const blocked = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
+    // Both halves state the deployment explicitly: readiness is measured
+    // against the manifest's declared settings, so an empty environment is
+    // what "no deployment config" means and the assertion cannot be flipped
+    // by whatever the host machine happens to export.
+    const blocked = buildConnectionSetupPlan({
+      connectorKey: connectorId,
+      deploymentEnv: {},
+      manifest: shippedManifest,
+    });
     assert.equal(blocked.setupModality, "provider_authorization", `${connectorId}: setupModality`);
     assert.equal(
       blocked.supportState,
@@ -540,6 +554,10 @@ test("wave-0807 Google Calendar/Contacts keep the deployment-app vs owner-accoun
     const configured = buildConnectionSetupPlan({
       configuredProviderAuthConnectorKeys: [connectorId],
       connectorKey: connectorId,
+      deploymentEnv: {
+        GOOGLE_OAUTH_CLIENT_ID: "test-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "test-client-secret",
+      },
       manifest: shippedManifest,
     });
     assert.equal(configured.deploymentReadiness.state, "ready", `${connectorId}: deployment app configured`);

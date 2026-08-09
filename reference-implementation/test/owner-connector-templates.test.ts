@@ -349,37 +349,57 @@ test("owner-template projection separates browser owner-session setup from owner
 });
 
 test("owner-template readiness reflects configured provider authorization", async () => {
-  await withServer(
-    async ({ asUrl, rsUrl }) => {
-      const manifest = await registerConnector(asUrl, loadManifest("google_maps_data_portability"));
-      const connectorKey = canonicalConnectorKey(manifest.connector_id);
-      assert.equal(connectorKey, "google-maps-data-portability");
+  // Readiness is measured against the settings the manifest declares, so a
+  // "configured" deployment is described by supplying those settings rather
+  // than by naming the connector.
+  const declaredSettings = {
+    GOOGLE_DATAPORTABILITY_CLIENT_ID: "test-client-id",
+    GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "test-client-secret",
+    GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://example.test/callback",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(
+      async ({ asUrl, rsUrl }) => {
+        const manifest = await registerConnector(asUrl, loadManifest("google_maps_data_portability"));
+        const connectorKey = canonicalConnectorKey(manifest.connector_id);
+        assert.equal(connectorKey, "google-maps-data-portability");
 
-      const ownerToken = await issueOwnerToken(asUrl);
-      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
-        headers: { Authorization: `Bearer ${ownerToken}` },
-      });
-      assert.equal(status, 200);
+        const ownerToken = await issueOwnerToken(asUrl);
+        const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+          headers: { Authorization: `Bearer ${ownerToken}` },
+        });
+        assert.equal(status, 200);
 
-      const google = byConnector(body, "google-maps-data-portability");
-      const publicListing = asRecord(google.public_listing);
-      assert.equal(publicListing.listed, false);
-      assert.equal(publicListing.status, "unproven");
-      const setupPlan = asRecord(google.setup_plan);
-      assert.equal(setupPlan.catalog_disposition, "provider_auth_connect");
-      const deploymentReadiness = asRecord(setupPlan.deployment_readiness);
-      assert.equal(deploymentReadiness.state, "ready");
-      assert.equal(setupPlan.next_step_kind, "open_provider_auth");
-      assert.equal(setupPlan.support_state, "supported");
-      assert.equal(setupPlan.proof_gate, null);
-      assert.equal(setupPlan.owner_actionable, false);
-      const initiate = actionByFamily(google, "initiate_connection");
-      assert.equal(initiate.method, null);
-      assert.equal(initiate.status, "unsupported");
-      assert.equal(initiate.url, null);
-    },
-    { configuredProviderAuthConnectorKeys: ["google-maps-data-portability"] }
-  );
+        const google = byConnector(body, "google-maps-data-portability");
+        const publicListing = asRecord(google.public_listing);
+        assert.equal(publicListing.listed, false);
+        assert.equal(publicListing.status, "unproven");
+        const setupPlan = asRecord(google.setup_plan);
+        assert.equal(setupPlan.catalog_disposition, "provider_auth_connect");
+        const deploymentReadiness = asRecord(setupPlan.deployment_readiness);
+        assert.equal(deploymentReadiness.state, "ready");
+        assert.equal(setupPlan.next_step_kind, "open_provider_auth");
+        assert.equal(setupPlan.support_state, "supported");
+        assert.equal(setupPlan.proof_gate, null);
+        assert.equal(setupPlan.owner_actionable, false);
+        const initiate = actionByFamily(google, "initiate_connection");
+        assert.equal(initiate.method, null);
+        assert.equal(initiate.status, "unsupported");
+        assert.equal(initiate.url, null);
+      },
+      { configuredProviderAuthConnectorKeys: ["google-maps-data-portability"] }
+    );
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 });
 
 test("GET /v1/owner/control advertises list_connector_templates with the template route", async () => {

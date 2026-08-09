@@ -635,7 +635,15 @@ test("Google Maps Timeline keeps its import/API distinction visible in the catal
 });
 
 test("configured Google provider readiness exposes the existing owner authorization action", async () => {
-  const catalog = buildConnectorCatalog(await loadCommittedManifests(), ["google-maps-data-portability"]);
+  // "Configured" means the manifest's declared deployment settings are
+  // actually present in the environment — readiness is measured, not asserted
+  // by connector identity.
+  const catalog = buildConnectorCatalog(await loadCommittedManifests(), ["google-maps-data-portability"], {
+    GOOGLE_DATAPORTABILITY_CLIENT_ID: "test-client-id",
+    GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "test-client-secret",
+    GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://example.test/callback",
+  });
+  
   const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps-data-portability");
   assert.ok(entry, "google-maps-data-portability must be in the committed catalog");
   assert.equal(entry.deploymentReadiness.state, "ready");
@@ -1147,4 +1155,92 @@ test("an unclassified disposition carrying real deployment blockers names those 
   assert.ok(guidance.includes("PDPP_FUTURE_CLIENT_ID"), "guidance must name the exact setting that is missing");
   assert.match(guidance, ENV_VARS_RE, "guidance must say where the setting goes");
   assert.match(guidance, RESTART_RE, "guidance must say what makes the setting take effect");
+});
+
+test("deployment readiness is measured from manifest-declared settings against the observed environment", () => {
+  // The unavailability of a provider-authorization source must derive from
+  // what its manifest DECLARES plus what the deployment actually SUPPLIES, so
+  // any future connector with unmet prerequisites behaves identically without
+  // the reference implementation learning its name. A synthetic connector key
+  // is used here precisely because no connector may be special-cased.
+  const manifest: CatalogManifestLike = {
+    capabilities: {
+      auth: { deployment_config: ["ACME_OAUTH_CLIENT_ID", "ACME_OAUTH_CLIENT_SECRET"], kind: "oauth" },
+      public_listing: { listed: true, status: "needs_human_auth" },
+    },
+    connector_id: "acme-widgets",
+    display_name: "Acme Widgets",
+    runtime_requirements: { bindings: { network: { required: true } } },
+    setup: {
+      deployment_config: ["ACME_OAUTH_CLIENT_ID", "ACME_OAUTH_CLIENT_SECRET"],
+      modality: "provider_authorization",
+    },
+  } as CatalogManifestLike;
+  const readinessFor = (deploymentEnv: Readonly<Record<string, string | undefined>>) => {
+    const entry = buildConnectorCatalog([manifest], [], deploymentEnv).find(
+      (candidate) => candidate.connectorKey === "acme-widgets"
+    );
+    assert.ok(entry, "a listed provider-authorization manifest must reach the catalog");
+    return entry;
+  };
+
+  // Nothing supplied: blocked, and BOTH declared settings are named so the
+  // owner can see exactly what this deployment is missing.
+  const missing = readinessFor({});
+  assert.equal(missing.deploymentReadiness.state, "needs_config");
+  assert.deepEqual(
+    missing.deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_ID", "ACME_OAUTH_CLIENT_SECRET"]
+  );
+  assert.equal(sourceSetupAvailability(missing), "requires_server_setup");
+  assert.ok(
+    sourceSetupGuidance(missing).includes("ACME_OAUTH_CLIENT_SECRET"),
+    "guidance must name the exact settings this deployment is waiting on"
+  );
+
+  // Partially supplied: only the setting still absent is reported, never a
+  // blanket re-listing of every declared key.
+  assert.deepEqual(
+    readinessFor({ ACME_OAUTH_CLIENT_ID: "supplied" }).deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_SECRET"]
+  );
+
+  // Present but blank is not supplied.
+  assert.deepEqual(
+    readinessFor({
+      ACME_OAUTH_CLIENT_ID: "supplied",
+      ACME_OAUTH_CLIENT_SECRET: "   ",
+    }).deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_SECRET"]
+  );
+
+  // Fully supplied: ready, with no allowlist entry anywhere for this key.
+  const ready = readinessFor({ ACME_OAUTH_CLIENT_ID: "supplied", ACME_OAUTH_CLIENT_SECRET: "supplied" });
+  assert.equal(ready.deploymentReadiness.state, "ready");
+  assert.deepEqual(ready.deploymentReadiness.blockers, []);
+});
+
+test("a connector-key allowlist cannot declare readiness a deployment has not supplied", () => {
+  // The inverse guard: naming a connector in the provider-auth allowlist must
+  // NOT make it read ready while its declared settings are absent, or the
+  // catalog would offer a source that cannot complete setup.
+  const manifest: CatalogManifestLike = {
+    capabilities: {
+      auth: { deployment_config: ["ACME_OAUTH_CLIENT_ID"], kind: "oauth" },
+      public_listing: { listed: true, status: "needs_human_auth" },
+    },
+    connector_id: "acme-widgets",
+    display_name: "Acme Widgets",
+    runtime_requirements: { bindings: { network: { required: true } } },
+    setup: { deployment_config: ["ACME_OAUTH_CLIENT_ID"], modality: "provider_authorization" },
+  } as CatalogManifestLike;
+  const entry = buildConnectorCatalog([manifest], ["acme-widgets"], {}).find(
+    (candidate) => candidate.connectorKey === "acme-widgets"
+  );
+  assert.ok(entry);
+  assert.equal(entry.deploymentReadiness.state, "needs_config", "an unsupplied setting must stay blocked");
+  assert.deepEqual(
+    entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_ID"]
+  );
 });

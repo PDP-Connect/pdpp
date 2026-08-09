@@ -195,8 +195,6 @@ export interface ConnectorCatalogEntry {
   displayName: string;
   /** What the console can honestly do with this connector today. */
   disposition: CatalogDisposition;
-  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
-  icon?: OwnerConnectorTemplateLike["icon"];
   /**
    * The `?connector=` value to deep-link into the enrollment form, present only
    * for dispositions the console can actually start (`local_collector_enroll`,
@@ -206,6 +204,8 @@ export interface ConnectorCatalogEntry {
   enrollmentKey?: string;
   /** Manifest-authored external documentation links. */
   externalDocs: readonly ConnectorExternalDoc[];
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: OwnerConnectorTemplateLike["icon"];
   /** Binding-derived modality. */
   modality: CatalogModality;
   /** The next owner step selected by the shared planner. */
@@ -305,7 +305,8 @@ function acquisitionPathsFromManifest(manifest: CatalogManifestLike): ConnectorA
  */
 export function buildConnectorCatalog(
   manifests: readonly CatalogManifestLike[],
-  configuredProviderAuthConnectorKeys: readonly string[] = []
+  configuredProviderAuthConnectorKeys: readonly string[] = [],
+  deploymentEnv?: Readonly<Record<string, string | undefined>>
 ): ConnectorCatalogEntry[] {
   const entries: ConnectorCatalogEntry[] = [];
   for (const manifest of manifests) {
@@ -319,7 +320,12 @@ export function buildConnectorCatalog(
     // (connector_id) when connector_key is absent, the same precedence
     // buildConnectionSetupPlan itself uses internally.
     const connectorKey = connectorKeyFromManifest(manifest, manifest.connector_id) ?? "unknown";
-    const plan = buildConnectionSetupPlan({ connectorKey, configuredProviderAuthConnectorKeys, manifest });
+    const plan = buildConnectionSetupPlan({
+      connectorKey,
+      configuredProviderAuthConnectorKeys,
+      manifest,
+      ...(deploymentEnv ? { deploymentEnv } : {}),
+    });
     const setupCopy = setupCopyFromManifest(manifest);
     const entry: ConnectorCatalogEntry = {
       acquisitionPaths: acquisitionPathsFromManifest(manifest),

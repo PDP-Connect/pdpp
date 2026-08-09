@@ -299,6 +299,11 @@ test("Google Data Portability provider-auth route materializes an active connect
     ...READY_ENV,
     GOOGLE_DATAPORTABILITY_REDIRECT_URI: `${asPublicUrl}/_ref/provider-auth/callback`,
   };
+  // The setup planner measures deployment readiness from the manifest's
+  // declared settings against the process environment, so this route test
+  // supplies them for its duration the way a configured deployment would.
+  const priorDeploymentEnv = new Map(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
   const transport = makeFetch([
     jsonResponse({
       access_token: "ya29.route-access",
@@ -382,6 +387,13 @@ test("Google Data Portability provider-auth route materializes an active connect
     assert.equal(credential.status, "active");
   } finally {
     await closeServer(server);
+    for (const [key, value] of priorDeploymentEnv) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   }
 });
 
