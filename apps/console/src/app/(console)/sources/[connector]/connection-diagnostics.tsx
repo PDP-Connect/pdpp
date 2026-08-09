@@ -16,6 +16,7 @@ import {
   formatDominantCondition,
   formatForwardDisposition,
   formatProjectionFreshness,
+  formatSourceHeartbeat,
   formatSourceOutboxState,
   formatSupportingCondition,
   summarizeAxisChips,
@@ -802,17 +803,7 @@ function SourceInstanceDiagnostics({ source }: { source: DeviceSourceInstance })
             </>
           )}
         </span>
-        <span className="pdpp-caption text-muted-foreground tabular-nums">
-          Heartbeat: {source.last_heartbeat_status ?? "status unknown"}
-          {source.last_heartbeat_at ? (
-            <>
-              {" · "}
-              <IcTimestamp value={source.last_heartbeat_at} />
-            </>
-          ) : (
-            " · never seen"
-          )}
-        </span>
+        <SourceHeartbeat source={source} />
         <span className="pdpp-caption text-muted-foreground tabular-nums">{recordsPending}</span>
         <SourceOutboxState source={source} />
         <LocalCollectorGapDiagnostics source={source} />
@@ -895,6 +886,39 @@ function localCollectorGapToneClass(gaps: NonNullable<DeviceSourceInstance["loca
     return "text-[color:var(--warning)]";
   }
   return "text-muted-foreground";
+}
+
+/**
+ * Heartbeat line for one source instance.
+ *
+ * Renders the server-derived `heartbeat_health`, never the raw
+ * `last_heartbeat_status`. The collector is one-shot, so nothing rewrites that
+ * column when the process dies: a collector killed mid-run left `starting`
+ * there and this line reported a healthy, actively-starting collector for 38
+ * hours. Past the lease the line says the check-in is stale and how old it is,
+ * and keeps what the collector last said as clearly-labelled evidence.
+ */
+function SourceHeartbeat({ source }: { source: DeviceSourceInstance }) {
+  const heartbeat = formatSourceHeartbeat(source);
+  const beyondLease = heartbeat.value === "stale";
+  return (
+    <span
+      className={["pdpp-caption tabular-nums", sourceOutboxToneClass(heartbeat.tone)].join(" ")}
+      data-testid="diagnostics-source-heartbeat"
+      title={heartbeat.title}
+    >
+      {heartbeat.label}
+      {source.last_heartbeat_at ? (
+        <>
+          {" · "}
+          <IcTimestamp value={source.last_heartbeat_at} />
+        </>
+      ) : (
+        " · never seen"
+      )}
+      {beyondLease && source.last_heartbeat_status ? ` · last reported "${source.last_heartbeat_status}"` : ""}
+    </span>
+  );
 }
 
 function SourceOutboxState({ source }: { source: DeviceSourceInstance }) {

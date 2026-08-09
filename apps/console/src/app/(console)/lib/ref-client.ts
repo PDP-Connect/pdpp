@@ -2103,6 +2103,20 @@ export type DeviceSourceInstanceOutboxState =
   | "stale"
   | "unknown";
 
+/**
+ * Presented heartbeat health for a device source instance. Mirrors
+ * `PresentedHeartbeatHealth` in
+ * `reference-implementation/server/heartbeat-lease.ts`.
+ */
+export type DeviceSourceInstanceHeartbeatHealth =
+  | "blocked"
+  | "healthy"
+  | "retrying"
+  | "stale"
+  | "starting"
+  | "stopped"
+  | "unknown";
+
 export interface DeviceSourceInstance {
   accepted_record_count?: number;
   connector_id: string;
@@ -2110,8 +2124,18 @@ export interface DeviceSourceInstance {
   created_at: string;
   device_id: string;
   display_name?: string | null;
+  heartbeat_age_ms?: number | null;
+  /**
+   * Presented health, derived server-side from heartbeat age against
+   * `heartbeat_lease_ms`. `stale` and `unknown` are derivations, never
+   * statuses a collector reports. Render THIS — a one-shot collector that was
+   * killed leaves its last status in `last_heartbeat_status` forever.
+   */
+  heartbeat_health?: DeviceSourceInstanceHeartbeatHealth;
+  heartbeat_lease_ms?: number;
   last_error?: Record<string, unknown> | null;
   last_heartbeat_at?: string | null;
+  /** Last status the collector reported. Evidence, not current health. */
   last_heartbeat_status?: string | null;
   last_ingest_at?: string | null;
   local_binding_name: string;

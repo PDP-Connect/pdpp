@@ -12,6 +12,7 @@ import {
 import { registerConnector } from "../server/auth.ts";
 import { COLLECTOR_PROTOCOL_VERSION } from "../server/collector-protocol.ts";
 import { getDb } from "../server/db.ts";
+import { HEARTBEAT_LEASE_MS } from "../server/heartbeat-lease.ts";
 import { startServer } from "../server/index.ts";
 import {
   __setIngestFaultHookForTest,
@@ -1487,6 +1488,18 @@ test("device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
       "second device diagnostics must exist"
     );
     assert.equal(secondDiagnostics.agent_version, null);
+    // Presented health is DERIVED from heartbeat age against the declared
+    // lease, not read off `last_heartbeat_status`. A just-sent heartbeat is
+    // within lease, so the collector's own status passes through — and the
+    // age and the lease it was judged against travel with it, which is what
+    // lets a reader tell a live `starting` from a 38-hour-dead one.
+    const firstSource = mustExist(firstDiagnostics.source_instances[0], "first source instance must exist");
+    assert.equal(firstSource.heartbeat_health, "healthy", "a heartbeat sent moments ago is within lease");
+    assert.equal(firstSource.heartbeat_lease_ms, HEARTBEAT_LEASE_MS, "the projection declares the lease it applied");
+    assert.ok(
+      typeof firstSource.heartbeat_age_ms === "number" && firstSource.heartbeat_age_ms < HEARTBEAT_LEASE_MS,
+      "and reports the measured age that produced the verdict"
+    );
     assert.equal(
       mustExist(firstDiagnostics.source_instances[0], "first source instance must exist").connector_instance_id,
       first.connector_instance_id
@@ -2791,6 +2804,9 @@ interface DiagnosticsSourceInstance extends Row {
   connector_id: string;
   connector_instance_id: string;
   device_id: string;
+  heartbeat_age_ms: number | null;
+  heartbeat_health: string;
+  heartbeat_lease_ms: number;
   last_heartbeat_at: string | null;
   last_heartbeat_status: string | null;
   last_ingest_at: string | null;
