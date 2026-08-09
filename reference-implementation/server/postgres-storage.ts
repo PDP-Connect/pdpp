@@ -2277,6 +2277,21 @@ export async function bootstrapPostgresSchema({
       CREATE INDEX IF NOT EXISTS idx_pg_client_event_attempts_queue
         ON client_event_attempts(queue_id, attempt_id);
     `);
+
+    // Deployment-scoped provider app config (e.g. a shared OAuth client
+    // id/secret), keyed generically by (identity_group, logical_key) --
+    // never by an env-var literal. Mirrors the SQLite `provider_app_config`
+    // table (server/db.ts). See provider-app-config-store.ts.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS provider_app_config (
+        identity_group TEXT NOT NULL,
+        logical_key    TEXT NOT NULL,
+        sealed_value   TEXT NOT NULL,
+        updated_at     TEXT NOT NULL,
+        PRIMARY KEY (identity_group, logical_key)
+      );
+    `);
+
     await ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client);
     await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
     await migratePostgresBrowserSurfaceLeasePriority(client);

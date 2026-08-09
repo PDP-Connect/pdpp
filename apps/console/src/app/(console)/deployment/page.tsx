@@ -43,11 +43,7 @@ interface DeploymentPageParams {
 //
 // Spec: openspec/changes/make-semantic-retrieval-operational/
 //       specs/reference-implementation-architecture/spec.md
-export default async function DeploymentPage({
-  searchParams,
-}: {
-  searchParams: Promise<DeploymentPageParams>;
-}) {
+export default async function DeploymentPage({ searchParams }: { searchParams: Promise<DeploymentPageParams> }) {
   const params = await searchParams;
   let report: DeploymentDiagnostics | null = null;
   let unreachable = false;
@@ -138,9 +134,14 @@ export default async function DeploymentPage({
       <LivePoller enabled={isDeploymentIndexing(report)} />
       <DeploymentDiagnosticsView
         actions={
-          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment/tokens">
-            Tokens
-          </Link>
+          <>
+            <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment/provider-apps">
+              Provider authorization
+            </Link>
+            <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment/tokens">
+              Tokens
+            </Link>
+          </>
         }
         beforeDiagnostics={<DeploymentReadinessPanel inputs={extractReadinessInputs(report)} />}
         breadcrumbs={[{ href: "/", label: "Overview" }, { label: "Deployment" }]}

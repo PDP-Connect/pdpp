@@ -7,10 +7,11 @@ import test from "node:test";
 import { startServer } from "../server/index.ts";
 
 /**
- * Both Google provider-auth adapters must be independently mountable and
- * simultaneously active in one process — the composite dispatcher in
- * `buildCompositeProviderAuthExchanger` (server/index.ts) must route by
- * connectorId to the right underlying exchanger without either provider-auth
+ * Both Google-family connectors (Data Portability, Calendar, Contacts) must
+ * be independently reachable and simultaneously active in one process
+ * through the ONE generic, manifest-driven dispatcher (`buildGenericProviderAuthExchanger`
+ * / `generic-dispatch.ts`, server/index.ts) — it routes each connector to
+ * its own manifest-declared adapter (`exchanger_kind`) without either
  * adapter knowing the other exists. This exercises the real production
  * wiring path (no injected `providerAuthExchanger`), unlike the
  * single-adapter test files which inject a deterministic exchanger directly.
@@ -130,7 +131,7 @@ test("both Google provider-auth adapters are simultaneously reachable through on
   }
 });
 
-test("composite dispatcher is absent (null) when neither Google provider-auth family has deployment config", async () => {
+test("generic dispatcher is always mounted; an unconfigured Google-family connector is blocked by deployment readiness (503), not route absence (404)", async () => {
   const originalEnv = { ...process.env };
   for (const key of [
     "GOOGLE_DATAPORTABILITY_CLIENT_ID",
@@ -170,9 +171,15 @@ test("composite dispatcher is absent (null) when neither Google provider-auth fa
     const initiate = await fetchJson(`${asUrl}/_ref/connectors/google-calendar/provider-auth-initiate`, {
       method: "POST",
     });
-    // No exchanger mounted at all -> the route itself is never reachable
-    // (mountRefProviderAuthInitiate only mounts when ctx.exchanger is truthy).
-    assert.equal(initiate.status, 404);
+    // The generic dispatcher (server/provider-auth/generic-dispatch.ts) is
+    // manifest-driven, never null, and always mounted — readiness is decided
+    // per-connector by connection-setup-plan.ts's deployment-readiness check
+    // (manifest deployment_config against env / the provider-app-config
+    // store), not by whether ANY provider happens to be configured at
+    // process start. An unconfigured connector is a 503, not a 404.
+    const body = initiate.body as { error?: { code?: string } };
+    assert.equal(initiate.status, 503, JSON.stringify(initiate.body));
+    assert.equal(body.error?.code, "provider_app_deployment_config_missing");
   } finally {
     await closeServer(server);
     process.env = originalEnv;

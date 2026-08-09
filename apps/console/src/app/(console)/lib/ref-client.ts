@@ -1358,6 +1358,64 @@ export async function initiateProviderAuthorization(connectorId: string): Promis
   })) as ProviderAuthInitiateResponse;
 }
 
+// Deployment-time provider-app configuration (e.g. a shared OAuth app's
+// client id/secret). Grouped by `identity_group` — a manifest-declared
+// grouping token for connectors that share one provider-app registration
+// (e.g. Calendar + Contacts under the same Google OAuth app) — never by
+// connector id, since the credential itself is not per-connector.
+//
+// Every field is manifest-declared for owner display: `label` (per field) and
+// `provider_identity_label` (per group) are the only copy the Console ever
+// shows — `identity_group` itself is an opaque grouping token (e.g.
+// "shared-google-oauth-app") and must never be rendered. `logical_key` is
+// similarly an opaque row identifier for posting a value back, not something
+// rendered. The env-var alias a manifest may declare for infra-as-code
+// deploys is a server-internal resolution detail and never appears in this
+// response shape at all — grep-verifiable, see provider-app-config
+// invariants tests.
+export interface ProviderAppConfigField {
+  configured: boolean;
+  label: string;
+  logical_key: string;
+  secret: boolean;
+}
+
+export interface ProviderAppConfigGroup {
+  fields: ProviderAppConfigField[];
+  identity_group: string;
+  /** Human-facing label for the group, e.g. "Google account access". Render this, never `identity_group`. */
+  provider_identity_label: string;
+}
+
+export interface ProviderAppConfigListResponse {
+  groups: ProviderAppConfigGroup[];
+  object: "provider_app_config_list";
+}
+
+export async function getProviderAppConfig(): Promise<ProviderAppConfigListResponse> {
+  return (await refFetch("/_ref/provider-app-config")) as ProviderAppConfigListResponse;
+}
+
+// Batch write for one identity group. `values` carries only the logical keys
+// the owner actually typed a new value for — a blank field in the form means
+// "leave the existing stored value alone," so the Console never sends a blank
+// string that would overwrite (or be rejected as an attempt to clear) an
+// already-configured secret. First-setup and later-rotation are the same
+// call shape; the only difference is how many keys `values` happens to carry.
+export async function setProviderAppConfig(args: {
+  identityGroup: string;
+  values: Record<string, string>;
+}): Promise<void> {
+  await refFetch("/_ref/provider-app-config", undefined, {
+    body: JSON.stringify({
+      identity_group: args.identityGroup,
+      values: args.values,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+}
+
 export { RefNotFoundError, RefRequestError };
 
 // Thrown when the owner-session static-secret capture route REFUSES a

@@ -361,7 +361,7 @@ test("setup planner classifies Google Maps Data Portability as deployment-blocke
   ).default;
   const plan = buildConnectionSetupPlan({
     connectorKey: "google-maps-data-portability",
-    manifest: googleMapsManifest,
+    manifest: googleMapsManifest as unknown as ConnectorManifestLike,
   });
 
   assert.equal(plan.connectorModality, "api_network");

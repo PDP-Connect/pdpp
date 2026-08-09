@@ -64,7 +64,69 @@ export interface DeploymentConfigKeyLike {
   readonly secret?: boolean | null;
 }
 
-export type DeploymentConfigDeclarationLike = readonly (string | DeploymentConfigKeyLike)[];
+/**
+ * The current, generic deployment-config entry shape: a manifest-declared
+ * logical role name (`client_id`, `client_secret`, ...), never a
+ * provider-specific literal. `env_alias` is optional and exists only so an
+ * operator can satisfy this entry via an env var instead of the DB-backed
+ * config store for infra-as-code deploys — it is resolved server-side only
+ * and is never surfaced to the operator UI (which renders `label`).
+ */
+export interface DeploymentConfigLogicalKeyLike {
+  readonly env_alias?: string | null;
+  readonly label?: string | null;
+  readonly logical_key: string;
+  readonly secret?: boolean | null;
+}
+
+export type DeploymentConfigDeclarationLike = readonly (
+  | string
+  | DeploymentConfigKeyLike
+  | DeploymentConfigLogicalKeyLike
+)[];
+
+/**
+ * One `connection_config` entry: the per-connection runtime env var a
+ * connector already reads, paired with the generic bundle field name that
+ * supplies its value. `single_field` manifests (one refresh token) and
+ * `multi_field` manifests (e.g. an access-type/resource-group bundle) both
+ * express themselves the same way — the RI never special-cases either shape.
+ */
+export interface ConnectionConfigEntryLike {
+  readonly bundle_field: string;
+  readonly env_var: string;
+  readonly required?: boolean | null;
+}
+
+/** Normalizes `connection_config` to the plain-object shape
+ * `provider-auth-run-credentials.ts` consumes, accepting only the current
+ * `{env_var,bundle_field,required?}` entry shape (no legacy bare-string form
+ * exists for this field — it was added generic from the start). */
+export function connectionConfigEntriesFromManifest(
+  manifest: ConnectorManifestLike | null
+): readonly { readonly envVar: string; readonly bundleField: string; readonly required?: boolean }[] {
+  const declared = manifest?.capabilities?.auth?.connection_config;
+  if (!Array.isArray(declared)) {
+    return [];
+  }
+  const out: { envVar: string; bundleField: string; required?: boolean }[] = [];
+  for (const entry of declared) {
+    if (typeof entry === "string" || !entry) {
+      continue;
+    }
+    const envVar = typeof entry.env_var === "string" ? entry.env_var.trim() : "";
+    const bundleField = typeof entry.bundle_field === "string" ? entry.bundle_field.trim() : "";
+    if (!(envVar && bundleField)) {
+      continue;
+    }
+    out.push({
+      bundleField,
+      envVar,
+      ...(typeof entry.required === "boolean" ? { required: entry.required } : {}),
+    });
+  }
+  return out;
+}
 
 export interface ConnectorManifestLike {
   readonly capabilities?: {
@@ -74,12 +136,35 @@ export interface ConnectorManifestLike {
       readonly type?: string | null;
       readonly required?: readonly string[] | null;
       readonly deployment_config?: DeploymentConfigDeclarationLike | null;
-      readonly connection_config?: readonly string[] | null;
+      readonly connection_config?: readonly (string | ConnectionConfigEntryLike)[] | null;
       readonly scopes?: readonly string[] | null;
       readonly exchanger_kind?: string | null;
       readonly authorization_url?: string | null;
       readonly token_url?: string | null;
       readonly userinfo_url?: string | null;
+      /** Opaque grouping token — manifests sharing this value share one
+       * deployment-config app registration and get scope-union at
+       * authorization time. Never treated as a provider name by the RI, and
+       * never rendered as display copy — the client-facing GET surface may
+       * return it verbatim as a hidden addressing token (so the client can
+       * make the matching POST call), but never as UI text; only
+       * `provider_identity_label` is display-safe. */
+      readonly provider_identity_group?: string | null;
+      /** Human-readable copy for the identity group, e.g. "Shared Google
+       * OAuth App". Opaque display text the RI passes through verbatim,
+       * exactly like `deployment_config[].label` — never parsed or branched
+       * on. This is the ONLY identity-group-related value ever rendered as
+       * UI copy. */
+      readonly provider_identity_label?: string | null;
+      /** Static query params merged onto the authorization URL. The RI/its
+       * adapters apply exactly what is declared here — no implicit defaults. */
+      readonly authorization_params?: Readonly<Record<string, string>> | null;
+      /** Closed enum of generic provider-token bundle shapes. */
+      readonly env_bundle_kind?: "single_field" | "multi_field" | null;
+      /** Connector-owned declarative migration metadata: generic bundle
+       * field name -> legacy field name written by a since-retired exchanger.
+       * The RI reads this mechanically; it never hardcodes a legacy name. */
+      readonly legacy_bundle_field_aliases?: Readonly<Record<string, string>> | null;
     } | null;
   } | null;
   readonly connector_id?: string | null;
@@ -639,49 +724,125 @@ export function classifyConnectorSetupModality(
   return connectorModality;
 }
 
-// Accepts both the legacy bare-string-array shape and the enriched
-// {key,label,secret} object shape declared by DeploymentConfigDeclarationLike,
-// normalizing either to a plain key-string array.
-function deploymentConfigKeyStrings(
+/**
+ * One normalized `deployment_config` entry. `logicalKey` is always the
+ * operator-facing/blocker identity (never `envAlias`, never leaked to any
+ * client-visible surface). `envAlias`, when the manifest declares one, is
+ * the *only* env var name this module will ever read for that entry — a
+ * legacy bare-string or `{key,label,secret}` entry has no separate alias, so
+ * its own key string doubles as the env lookup name (preserves today's
+ * behavior for any manifest not yet migrated to the logical-key shape).
+ */
+interface NormalizedDeploymentConfigEntry {
+  readonly envAlias: string | null;
+  readonly label: string | null;
+  readonly logicalKey: string;
+  readonly secret: boolean | null;
+}
+
+// Accepts the legacy bare-string-array shape, the {key,label,secret} object
+// shape, and the current {logical_key,label,secret,env_alias} shape declared
+// by DeploymentConfigDeclarationLike, normalizing all three to one record
+// shape. The RI never re-derives label/secret by guessing at a legacy shape
+// when the manifest already declares them.
+function trimmedOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function trimmedOrEmpty(value: unknown): string {
+  return trimmedOrNull(value) ?? "";
+}
+
+function secretFlagOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizedBareStringEntry(entry: string): NormalizedDeploymentConfigEntry | null {
+  const logicalKey = entry.trim();
+  return logicalKey ? { envAlias: null, label: null, logicalKey, secret: null } : null;
+}
+
+function normalizedLogicalKeyEntry(entry: DeploymentConfigLogicalKeyLike): NormalizedDeploymentConfigEntry | null {
+  const logicalKey = trimmedOrEmpty(entry.logical_key);
+  if (!logicalKey) {
+    return null;
+  }
+  return {
+    envAlias: trimmedOrNull(entry.env_alias),
+    label: trimmedOrNull(entry.label),
+    logicalKey,
+    secret: secretFlagOrNull(entry.secret),
+  };
+}
+
+function normalizedLegacyKeyEntry(entry: DeploymentConfigKeyLike): NormalizedDeploymentConfigEntry | null {
+  const logicalKey = trimmedOrEmpty(entry.key);
+  if (!logicalKey) {
+    return null;
+  }
+  return { envAlias: null, label: trimmedOrNull(entry.label), logicalKey, secret: secretFlagOrNull(entry.secret) };
+}
+
+function normalizedDeploymentConfigEntry(
+  entry: string | DeploymentConfigKeyLike | DeploymentConfigLogicalKeyLike | null
+): NormalizedDeploymentConfigEntry | null {
+  if (typeof entry === "string") {
+    return normalizedBareStringEntry(entry);
+  }
+  if (!entry) {
+    return null;
+  }
+  return "logical_key" in entry ? normalizedLogicalKeyEntry(entry) : normalizedLegacyKeyEntry(entry);
+}
+
+function normalizedDeploymentConfigEntries(
   declaration: DeploymentConfigDeclarationLike | null | undefined
-): readonly string[] {
+): readonly NormalizedDeploymentConfigEntry[] {
   if (!Array.isArray(declaration)) {
     return [];
   }
   return declaration
-    .map((entry) => (typeof entry === "string" ? entry : entry?.key))
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    .map(normalizedDeploymentConfigEntry)
+    .filter((entry): entry is NormalizedDeploymentConfigEntry => entry !== null);
 }
 
-function deploymentConfigKeysFromManifest(manifest: ConnectorManifestLike | null): readonly string[] {
-  const setupKeys = deploymentConfigKeyStrings(manifest?.setup?.deployment_config);
-  if (setupKeys.length > 0) {
-    return setupKeys;
+function deploymentConfigEntriesFromManifest(
+  manifest: ConnectorManifestLike | null
+): readonly NormalizedDeploymentConfigEntry[] {
+  const setupEntries = normalizedDeploymentConfigEntries(manifest?.setup?.deployment_config);
+  if (setupEntries.length > 0) {
+    return setupEntries;
   }
-  const authDeploymentKeys = deploymentConfigKeyStrings(manifest?.capabilities?.auth?.deployment_config);
-  if (authDeploymentKeys.length > 0) {
-    return authDeploymentKeys;
+  const authEntries = normalizedDeploymentConfigEntries(manifest?.capabilities?.auth?.deployment_config);
+  if (authEntries.length > 0) {
+    return authEntries;
   }
-  return (manifest?.capabilities?.auth?.required ?? []).filter(
-    (value): value is string => typeof value === "string" && value.trim().length > 0
-  );
+  return (manifest?.capabilities?.auth?.required ?? [])
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((key) => ({ envAlias: null, label: null, logicalKey: key, secret: null }));
 }
 
 /**
  * The observed deployment environment. Injected rather than read directly so
  * this module stays a pure function of its inputs and a test can describe a
- * deployment without mutating the process.
+ * deployment without mutating the process. Callers ahead of a
+ * provider-auth-relevant response pre-resolve this by merging `process.env`
+ * with a DB-backed provider-app-config lookup (env-first, then DB) for any
+ * declared `env_alias` missing from the process environment — this module
+ * itself never talks to that store, keeping it a pure sync function.
  */
 export interface DeploymentEnvLike {
   readonly [key: string]: string | undefined;
 }
 
-function needsDeploymentConfig(missingKeys: readonly string[]): ConnectorSetupDeploymentReadiness {
+function needsDeploymentConfig(
+  missingEntries: readonly NormalizedDeploymentConfigEntry[]
+): ConnectorSetupDeploymentReadiness {
   return {
-    blockers: missingKeys.map((key) => ({
-      key,
-      label: key,
-      secret: SECRET_DEPLOYMENT_KEY_RE.test(key),
+    blockers: missingEntries.map((entry) => ({
+      key: entry.logicalKey,
+      label: entry.label ?? entry.logicalKey,
+      secret: entry.secret ?? SECRET_DEPLOYMENT_KEY_RE.test(entry.logicalKey),
     })),
     guidance:
       "Configure the instance-level provider application first. After that, each owner authorizes their own account through an owner-mediated provider authorization step.",
@@ -700,25 +861,34 @@ function buildDeploymentReadiness(args: {
   if (args.setupModality !== "provider_authorization") {
     return NOT_APPLICABLE_DEPLOYMENT_READINESS;
   }
-  const requiredKeys = args.requiredKeys?.length ? args.requiredKeys : deploymentConfigKeysFromManifest(args.manifest);
+  const requiredEntries = args.requiredKeys?.length
+    ? args.requiredKeys.map((key) => ({ envAlias: null, label: null, logicalKey: key, secret: null }))
+    : deploymentConfigEntriesFromManifest(args.manifest);
   // A manifest that declares its deployment prerequisites is answered from
-  // those keys against the observed environment. Readiness is then a property
-  // of the DEPLOYMENT, not of the connector's identity: any connector whose
-  // declared settings are all present reads ready, and any connector missing
-  // one reads needs_config with that exact setting named. Only a manifest
-  // declaring NO keys falls back to the adapter allowlist below, which is the
-  // one case where this module has nothing to measure.
-  if (requiredKeys.length > 0) {
+  // those entries against the observed environment. Readiness is then a
+  // property of the DEPLOYMENT, not of the connector's identity: any
+  // connector whose declared settings are all present reads ready, and any
+  // connector missing one reads needs_config with that exact setting named.
+  // Only a manifest declaring NO entries falls back to the adapter allowlist
+  // below, which is the one case where this module has nothing to measure.
+  if (requiredEntries.length > 0) {
     const env = args.deploymentEnv ?? process.env;
-    // A setting counts as supplied only when it holds a non-blank value.
-    const missing = requiredKeys.filter((key) => (env[key] ?? "").trim().length === 0);
+    // A setting counts as supplied only when it holds a non-blank value,
+    // read by its declared env_alias (or its own key, for legacy entries
+    // with no separate alias) — never by logicalKey directly, since
+    // logicalKey is an operator-facing role name, not an env var name.
+    const missing = requiredEntries.filter(
+      (entry) => (env[entry.envAlias ?? entry.logicalKey] ?? "").trim().length === 0
+    );
     return missing.length === 0 ? READY_DEPLOYMENT_READINESS : needsDeploymentConfig(missing);
   }
   const configured = new Set((args.configuredProviderAuthConnectorKeys ?? []).map(canonicalConnectorKey));
   if (configured.has(args.connectorKey)) {
     return READY_DEPLOYMENT_READINESS;
   }
-  return needsDeploymentConfig([`${args.connectorKey.toUpperCase()}_OAUTH_CLIENT`]);
+  return needsDeploymentConfig([
+    { envAlias: null, label: null, logicalKey: `${args.connectorKey.toUpperCase()}_OAUTH_CLIENT`, secret: null },
+  ]);
 }
 
 export function unsupportedReason(modality: ConnectorIntentModality | ConnectorSetupModality): string {

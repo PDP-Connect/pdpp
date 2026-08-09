@@ -9,14 +9,28 @@
  * adapter deliberately keeps provider-token mapping out of the static-secret
  * registry while still returning the same per-run env fragment consumed by the
  * runtime spawn seam.
+ *
+ * This module carries zero connector/provider-specific knowledge. Every env
+ * var name it writes, every bundle field it reads, and every legacy-field
+ * fallback it tries comes from the manifest's `capabilities.auth` declaration
+ * (`connection_config`, `env_bundle_kind`, `legacy_bundle_field_aliases`) —
+ * never a hardcoded provider literal. A generic secret_bundle field name
+ * (`refresh_token`, `access_token`, ...) is provider-neutral by construction;
+ * a *legacy* field name (written by a since-retired provider-specific
+ * exchanger) is connector-owned migration metadata, declared on the manifest,
+ * not embedded in this file.
  */
 
-const GOOGLE_MAPS_DATA_PORTABILITY_CONNECTOR_KEY = "google-maps-data-portability";
-
-const GOOGLE_OWNER_ACCOUNT_REFRESH_TOKEN_ENV_VAR_BY_CONNECTOR: Readonly<Record<string, string>> = Object.freeze({
-  "google-calendar": "GOOGLE_CALENDAR_REFRESH_TOKEN",
-  "google-contacts": "GOOGLE_CONTACTS_REFRESH_TOKEN",
-});
+export interface ConnectionConfigEntry {
+  readonly bundleField: string;
+  readonly envVar: string;
+  /** Defaults to `true`. An entry declared `required: false` is populated
+   * only when the bundle field resolves to a non-blank value — e.g. a
+   * multi-field bundle whose field legitimately serializes to an empty
+   * list on a valid authorization (nothing denied, nothing one-time). This
+   * is manifest-declared, not an RI guess at which fields "matter". */
+  readonly required?: boolean;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -59,87 +73,80 @@ function parseSecretBundle(connectorId: string, secret: string): Record<string, 
   return fields;
 }
 
-function requireField(connectorId: string, fields: Record<string, string>, key: string): string {
-  const value = fields[key];
+/**
+ * True for any provider-auth-originated source binding, regardless of which
+ * provider or exchanger produced it — this module never branches on a
+ * `sourceBinding.provider` value.
+ */
+function sourceBindingIsProviderAuthAccount(sourceBinding: unknown): boolean {
+  return isRecord(sourceBinding) && sourceBinding.kind === "provider_auth_account";
+}
+
+/**
+ * Reads one generic bundle field, falling back to a manifest-declared legacy
+ * field name only when the generic field is absent. `legacyAliases` is
+ * connector-owned declarative migration metadata (manifest data), never a
+ * literal this module hardcodes — a manifest with no aliases declared simply
+ * never falls back, which is correct for any connector with no pre-existing
+ * legacy-shaped bundles.
+ */
+function readBundleField(
+  fields: Record<string, string>,
+  genericField: string,
+  legacyAliases: Readonly<Record<string, string>> | null | undefined
+): string | undefined {
+  if (fields[genericField]) {
+    return fields[genericField];
+  }
+  const legacyName = legacyAliases?.[genericField];
+  return legacyName ? fields[legacyName] : undefined;
+}
+
+function requireBundleField(
+  connectorId: string,
+  fields: Record<string, string>,
+  genericField: string,
+  legacyAliases: Readonly<Record<string, string>> | null | undefined
+): string {
+  const value = readBundleField(fields, genericField, legacyAliases);
   if (!value) {
     throw new ProviderAuthRunCredentialError(
       "provider_auth_secret_bundle_field_missing",
-      `Connector '${connectorId}' provider-token bundle is missing required field '${key}'.`
+      `Connector '${connectorId}' provider-token bundle is missing required field '${genericField}'.`
     );
   }
   return value;
 }
 
-function sourceBindingUsesGoogleDataPortability(sourceBinding: unknown): boolean {
-  return (
-    isRecord(sourceBinding) &&
-    sourceBinding.kind === "provider_auth_account" &&
-    sourceBinding.provider === "google_data_portability"
-  );
-}
-
-function sourceBindingUsesGoogleOwnerAccount(sourceBinding: unknown): boolean {
-  return (
-    isRecord(sourceBinding) &&
-    sourceBinding.kind === "provider_auth_account" &&
-    sourceBinding.provider === "google_owner_account"
-  );
-}
-
-function googleDataPortabilityEnvFromBundle(fields: Record<string, string>): Record<string, string> {
-  return {
-    GOOGLE_DATAPORTABILITY_ACCESS_TOKEN: requireField(
-      GOOGLE_MAPS_DATA_PORTABILITY_CONNECTOR_KEY,
-      fields,
-      "google_dataportability_access_token"
-    ),
-    ...(fields.google_dataportability_refresh_token
-      ? { GOOGLE_DATAPORTABILITY_REFRESH_TOKEN: fields.google_dataportability_refresh_token }
-      : {}),
-    ...(fields.google_dataportability_token_kind
-      ? { GOOGLE_DATAPORTABILITY_TOKEN_KIND: fields.google_dataportability_token_kind }
-      : {}),
-    ...(fields.google_dataportability_expires_at
-      ? { GOOGLE_DATAPORTABILITY_TOKEN_EXPIRES_AT: fields.google_dataportability_expires_at }
-      : {}),
-    ...(fields.google_dataportability_authorized_resource_groups
-      ? {
-          GOOGLE_DATAPORTABILITY_AUTHORIZED_RESOURCE_GROUPS: fields.google_dataportability_authorized_resource_groups,
-        }
-      : {}),
-    ...(fields.google_dataportability_one_time_resource_groups
-      ? { GOOGLE_DATAPORTABILITY_ONE_TIME_RESOURCE_GROUPS: fields.google_dataportability_one_time_resource_groups }
-      : {}),
-    ...(fields.google_dataportability_time_based_resource_groups
-      ? { GOOGLE_DATAPORTABILITY_TIME_BASED_RESOURCE_GROUPS: fields.google_dataportability_time_based_resource_groups }
-      : {}),
-    ...(fields.google_dataportability_denied_resource_groups
-      ? { GOOGLE_DATAPORTABILITY_DENIED_RESOURCE_GROUPS: fields.google_dataportability_denied_resource_groups }
-      : {}),
-  };
-}
-
 /**
- * Maps a captured google_owner_account secret_bundle to the exact env var
- * each Calendar/Contacts connector already expects
- * (packages/polyfill-connectors/src/google-oauth.ts's
- * resolveGoogleOAuthCredentials): the connector-specific refresh token env
- * var name, resolved from GOOGLE_OWNER_ACCOUNT_REFRESH_TOKEN_ENV_VAR_BY_CONNECTOR.
- * GOOGLE_OAUTH_CLIENT_ID/SECRET stay deployment-level env, unchanged — this
- * bundle carries only the per-connection refresh token, not the shared app
- * registration.
+ * Maps a captured generic secret_bundle to the exact per-run env vars a
+ * connector already expects, per the manifest's `connection_config`
+ * declaration (`{env_var, bundle_field, required?}` entries). Every declared
+ * entry is populated from the same resolved bundle: a `required` (default)
+ * entry throws if its field can't be resolved, an entry declared
+ * `required: false` is populated only when present — e.g. a multi-field
+ * bundle whose field legitimately serializes to nothing on a valid
+ * authorization (nothing denied, nothing one-time). Whether a field is
+ * required is manifest data, never an RI guess about which fields matter.
  */
-function googleOwnerAccountEnvFromBundle(connectorId: string, fields: Record<string, string>): Record<string, string> {
-  const refreshTokenEnvVar = GOOGLE_OWNER_ACCOUNT_REFRESH_TOKEN_ENV_VAR_BY_CONNECTOR[connectorId];
-  if (!refreshTokenEnvVar) {
-    throw new ProviderAuthRunCredentialError(
-      "provider_auth_connector_unsupported",
-      `Google owner-account run-env resolution does not handle connector '${connectorId}'.`
-    );
+function envFromBundle(
+  connectorId: string,
+  fields: Record<string, string>,
+  connectionConfig: readonly ConnectionConfigEntry[],
+  legacyAliases: Readonly<Record<string, string>> | null | undefined
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const entry of connectionConfig) {
+    if (entry.required === false) {
+      const value = readBundleField(fields, entry.bundleField, legacyAliases);
+      if (value) {
+        env[entry.envVar] = value;
+      }
+      continue;
+    }
+    env[entry.envVar] = requireBundleField(connectorId, fields, entry.bundleField, legacyAliases);
   }
-  return {
-    [refreshTokenEnvVar]: requireField(connectorId, fields, "google_owner_account_refresh_token"),
-  };
+  return env;
 }
 
 export interface ProviderAuthCredentialStore {
@@ -155,19 +162,22 @@ export async function resolveProviderAuthRunEnv({
   ownerSubjectId,
   sourceBinding,
   credentialStore,
+  connectionConfig,
+  legacyBundleFieldAliases,
 }: {
   connectorId: string;
   connectorInstanceId: string;
   credentialStore: ProviderAuthCredentialStore | null | undefined;
   ownerSubjectId?: string;
   sourceBinding?: unknown;
+  /** From `manifest.capabilities.auth.connection_config`, normalized to
+   * `{envVar, bundleField}` pairs by the caller. Absent/empty means this
+   * connector has no provider-auth-sourced runtime env to inject. */
+  connectionConfig?: readonly ConnectionConfigEntry[];
+  /** From `manifest.capabilities.auth.legacy_bundle_field_aliases`. */
+  legacyBundleFieldAliases?: Readonly<Record<string, string>> | null;
 }): Promise<Record<string, string> | null> {
-  const isDataPortability =
-    connectorId === GOOGLE_MAPS_DATA_PORTABILITY_CONNECTOR_KEY && sourceBindingUsesGoogleDataPortability(sourceBinding);
-  const isOwnerAccount =
-    connectorId in GOOGLE_OWNER_ACCOUNT_REFRESH_TOKEN_ENV_VAR_BY_CONNECTOR &&
-    sourceBindingUsesGoogleOwnerAccount(sourceBinding);
-  if (!(isDataPortability || isOwnerAccount)) {
+  if (!(connectionConfig?.length && sourceBindingIsProviderAuthAccount(sourceBinding))) {
     return null;
   }
   if (!credentialStore) {
@@ -184,5 +194,5 @@ export async function resolveProviderAuthRunEnv({
     );
   }
   const fields = parseSecretBundle(connectorId, recovered.secret);
-  return isDataPortability ? googleDataPortabilityEnvFromBundle(fields) : googleOwnerAccountEnvFromBundle(connectorId, fields);
+  return envFromBundle(connectorId, fields, connectionConfig, legacyBundleFieldAliases);
 }

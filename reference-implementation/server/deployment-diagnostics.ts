@@ -34,6 +34,13 @@ export interface DiagnosticsManifest {
     readonly name?: string;
     readonly query?: { readonly search?: { readonly semantic_fields?: readonly string[] } };
   }>;
+  readonly capabilities?: {
+    readonly auth?: {
+      readonly deployment_config?: ReadonlyArray<
+        string | { readonly logical_key?: string; readonly secret?: boolean | null; readonly env_alias?: string | null }
+      > | null;
+    } | null;
+  } | null;
 }
 
 export interface DiagnosticsManifestEntry {
@@ -390,11 +397,21 @@ export interface DeploymentDiagnosticsReport {
 //
 // The dashboard shows a curated list of env vars that shape reference
 // behavior. The list is conservative; anything matching a secret-ish name
-// pattern is redacted even if it is also on the allowlist. New vars must
-// be added here explicitly — an allowlist is safer than a blocklist for
+// pattern is redacted even if it is also on the allowlist. New RI-infra vars
+// must be added here explicitly — an allowlist is safer than a blocklist for
 // a surface that renders to HTML.
+//
+// Connector/provider deployment-config env vars are NOT hand-typed here —
+// this module has zero knowledge of which providers exist. They are derived
+// at report-build time from every registered manifest's
+// `capabilities.auth.deployment_config[].env_alias` (see
+// `manifestDerivedEnvAllowlistEntries` below), the same sanctioned manifest
+// channel every other provider-auth-generic surface in the RI already reads.
+// Redaction is decided identically regardless of which list a candidate name
+// came from: `SECRET_NAME_RE` plus a declared `secret` flag, never anything
+// provider-specific.
 
-const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: boolean }> = [
+const STATIC_ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: boolean }> = [
   { name: "AS_PORT" },
   { name: "RS_PORT" },
   { name: "AS_PUBLIC_URL" },
@@ -419,10 +436,6 @@ const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: bo
   { name: "PDPP_EMBEDDING_CACHE_DIR" },
   { name: "PDPP_EMBEDDING_DOWNLOAD_ALLOWED" },
   { name: "PDPP_RS_SEARCH_POSTGRES_BM25_BACKEND" },
-  { name: "GOOGLE_DATAPORTABILITY_CLIENT_ID" },
-  { name: "GOOGLE_DATAPORTABILITY_CLIENT_SECRET", secret: true },
-  { name: "GOOGLE_DATAPORTABILITY_REDIRECT_URI" },
-  { name: "GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS" },
   { name: "PDPP_DCR_INITIAL_ACCESS_TOKENS", secret: true },
   { name: "PDPP_FORCE_CONTAINER" },
   { name: "PDPP_ALLOW_HEADED_CONTAINER_BROWSER" },
@@ -431,8 +444,41 @@ const ENV_ALLOWLIST: ReadonlyArray<{ readonly name: string; readonly secret?: bo
 
 const SECRET_NAME_RE = /(SECRET|TOKEN|PASSWORD|KEY|CRED|COOKIE|PRIVATE)/i;
 
-export function buildEnvironmentReport(env: DiagnosticsEnv): readonly EnvValueReport[] {
-  return ENV_ALLOWLIST.map((entry): EnvValueReport => {
+/**
+ * Every `env_alias` declared across the given manifests' `deployment_config`
+ * entries, deduplicated by name. This is the sole channel through which a
+ * provider's deployment-config env var name reaches this module — it is
+ * never hardcoded here.
+ */
+function manifestDerivedEnvAllowlistEntries(
+  manifests: readonly DiagnosticsManifestEntry[]
+): ReadonlyArray<{ readonly name: string; readonly secret?: boolean }> {
+  const byName = new Map<string, { readonly name: string; readonly secret?: boolean }>();
+  for (const entry of manifests) {
+    const declared = entry.manifest.capabilities?.auth?.deployment_config;
+    if (!Array.isArray(declared)) {
+      continue;
+    }
+    for (const configEntry of declared) {
+      if (typeof configEntry === "string" || !configEntry) {
+        continue;
+      }
+      const envAlias = typeof configEntry.env_alias === "string" ? configEntry.env_alias.trim() : "";
+      if (!envAlias || byName.has(envAlias)) {
+        continue;
+      }
+      byName.set(envAlias, { name: envAlias, secret: configEntry.secret === true });
+    }
+  }
+  return [...byName.values()];
+}
+
+export function buildEnvironmentReport(
+  env: DiagnosticsEnv,
+  manifests: readonly DiagnosticsManifestEntry[] = []
+): readonly EnvValueReport[] {
+  const allowlist = [...STATIC_ENV_ALLOWLIST, ...manifestDerivedEnvAllowlistEntries(manifests)];
+  return allowlist.map((entry): EnvValueReport => {
     const raw = env[entry.name];
     if (raw === undefined || raw === "") {
       return { name: entry.name, provenance: "absent", secret: Boolean(entry.secret), value: null };
@@ -1100,7 +1146,7 @@ export function buildDeploymentDiagnostics(input: DeploymentDiagnosticsInput): D
       ...normalizePhysicalFootprint(input.physicalFootprint),
     },
     disk_headroom: normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom),
-    environment: buildEnvironmentReport(input.env),
+    environment: buildEnvironmentReport(input.env, input.manifests),
     lexical: {
       backend: lexicalBackend,
       index: {

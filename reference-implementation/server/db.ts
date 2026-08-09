@@ -1966,6 +1966,22 @@ CREATE TABLE IF NOT EXISTS search_index_dirty (
 );
 CREATE INDEX IF NOT EXISTS idx_search_index_dirty_pending
   ON search_index_dirty(dirty);
+
+-- Deployment-scoped provider app config (e.g. a shared OAuth client
+-- id/secret), keyed generically by (identity_group, logical_key) -- never
+-- by an env-var literal. sealed_value is ALWAYS the AES-256-GCM token from
+-- credential-encryption.js, for every entry -- there is no plaintext path
+-- here, even for a non-secret entry (e.g. a client id). The
+-- manifest-declared 'secret' flag is read only by the caller (to decide
+-- masked-vs-visible display), never by this table. See
+-- provider-app-config-store.ts.
+CREATE TABLE IF NOT EXISTS provider_app_config (
+  identity_group TEXT NOT NULL,
+  logical_key    TEXT NOT NULL,
+  sealed_value   TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (identity_group, logical_key)
+);
 `;
 
 /**

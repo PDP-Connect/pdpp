@@ -23,17 +23,46 @@
     "auth": {
       "kind": "oauth",
       "exchanger_kind": "oauth2_generic",
+      "provider_identity_group": "shared-google-oauth-app",
+      "provider_identity_label": "Shared Google OAuth App",
       "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
       "token_url": "https://oauth2.googleapis.com/token",
       "userinfo_url": "https://www.googleapis.com/oauth2/v2/userinfo",
+      "authorization_params": {
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true"
+      },
       "deployment_config": [
-        "GOOGLE_OAUTH_CLIENT_ID",
-        "GOOGLE_OAUTH_CLIENT_SECRET"
+        {
+          "logical_key": "client_id",
+          "label": "Google OAuth client ID",
+          "secret": false,
+          "env_alias": "GOOGLE_OAUTH_CLIENT_ID"
+        },
+        {
+          "logical_key": "client_secret",
+          "label": "Google OAuth client secret",
+          "secret": true,
+          "env_alias": "GOOGLE_OAUTH_CLIENT_SECRET"
+        }
       ],
-      "connection_config": ["GOOGLE_CALENDAR_REFRESH_TOKEN"],
+      "connection_config": [
+        {
+          "env_var": "GOOGLE_CALENDAR_REFRESH_TOKEN",
+          "bundle_field": "refresh_token"
+        }
+      ],
+      "env_bundle_kind": "single_field",
+      "legacy_bundle_field_aliases": {
+        "refresh_token": "google_owner_account_refresh_token"
+      },
       "scopes": ["https://www.googleapis.com/auth/calendar.readonly"]
     },
     "human_interaction": ["manual_action"],
+    "proven": {
+      "provider_auth_lifecycle": true
+    },
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 3600,

@@ -127,6 +127,7 @@ import {
   listGrantedConnectionsForStream,
   projectBindingForWire,
 } from "./connection-identity.ts";
+import { connectionConfigEntriesFromManifest } from "./connection-setup-plan.ts";
 import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
@@ -207,15 +208,8 @@ import {
   postgresQuery,
   resolveStorageBackend,
 } from "./postgres-storage.ts";
-import {
-  configuredGoogleDataPortabilityProviderAuthConnectorKeys,
-  createGoogleDataPortabilityProviderAuthExchanger,
-} from "./provider-auth/google-data-portability.ts";
-import {
-  configuredGoogleOwnerAccountProviderAuthConnectorKeys,
-  createGoogleOwnerAccountProviderAuthExchanger,
-  GOOGLE_OWNER_ACCOUNT_CONNECTOR_KEYS,
-} from "./provider-auth/google-oauth-account.ts";
+import type { ProviderAuthManifestLike } from "../../packages/polyfill-connectors/src/provider-auth-adapter.ts";
+import { createGenericProviderAuthDispatch } from "./provider-auth/generic-dispatch.ts";
 import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
 import {
   aggregateRecordsAcrossBindings,
@@ -393,6 +387,11 @@ import {
   promoteManualUploadDraftBinding,
 } from "./routes/ref-manual-upload-draft-connection.ts";
 import {
+  mountRefProviderAppConfigGet,
+  mountRefProviderAppConfigPost,
+  type ProviderIdentityGroupDescriptor,
+} from "./routes/ref-provider-app-config.ts";
+import {
   createInProcessPendingAuthStore,
   mountRefProviderAuthCallback,
   mountRefProviderAuthInitiate,
@@ -493,6 +492,11 @@ import {
   createPresentationScreenStateStore,
   type PresentationScreenStateStore,
 } from "./stores/presentation-screen-state-store.ts";
+import {
+  createDeploymentConfigResolver,
+  createPostgresProviderAppConfigStore,
+  createSqliteProviderAppConfigStore,
+} from "./stores/provider-app-config-store.ts";
 import { resolveProviderAuthRunEnv } from "./stores/provider-auth-run-credentials.ts";
 import {
   createResumableRunHistoryBackfillStage,
@@ -1838,6 +1842,10 @@ function createRequestAcquisitionBatchStore() {
   return isPostgresStorageBackend() ? createPostgresAcquisitionBatchStore() : createSqliteAcquisitionBatchStore();
 }
 
+function createRequestProviderAppConfigStore() {
+  return isPostgresStorageBackend() ? createPostgresProviderAppConfigStore() : createSqliteProviderAppConfigStore();
+}
+
 function createRequestManualUploadArtifactStore() {
   return isPostgresStorageBackend()
     ? createPostgresManualUploadArtifactStore()
@@ -1956,48 +1964,201 @@ function buildControllerManualUploadRunEnvResolver() {
 }
 
 /**
- * Compose the Google Data Portability and Google owner-account (Calendar,
- * Contacts) exchangers into one `ProviderAuthExchanger` that dispatches by
- * `connectorId`, so both can be mounted simultaneously without either
- * provider-auth route knowing there's more than one provider behind it.
- * Each underlying exchanger is built (deployment-config-gated) only when its
- * own required env is present; the family is not represented at all when
- * neither is configured, matching the pre-existing single-exchanger-or-null
- * pattern this replaces.
+ * Every registered manifest, keyed by canonical connector key. Shared by
+ * both the identity-group resolvers below and mirrors
+ * `collectConnectorTemplates`'s (owner-connector-templates.ts) enumerate-
+ * then-tolerate-invalid-manifests pattern: one connector's malformed
+ * manifest must not hide every other connector's provider-app config group.
  */
-function buildCompositeProviderAuthExchanger(
-  credentialStoreFactory: () => ReturnType<typeof createRequestConnectorInstanceCredentialStore>
-): ProviderAuthExchanger | null {
-  const dataPortabilityKeys = configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env);
-  const ownerAccountKeys = configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env);
-  const dataPortabilityExchanger =
-    dataPortabilityKeys.length > 0
-      ? createGoogleDataPortabilityProviderAuthExchanger({ credentialStoreFactory })
-      : null;
-  const ownerAccountExchanger =
-    ownerAccountKeys.length > 0 ? createGoogleOwnerAccountProviderAuthExchanger({ credentialStoreFactory }) : null;
-  if (!(dataPortabilityExchanger || ownerAccountExchanger)) {
-    return null;
+async function collectRegisteredManifestsByConnectorKey(): Promise<Map<string, ConnectorManifest>> {
+  const byConnectorKey = new Map<string, ConnectorManifest>();
+  for (const connectorId of await listRegisteredConnectorIds()) {
+    const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+    try {
+      // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+      const manifest = await getConnectorManifest(connectorKey);
+      if (manifest) {
+        byConnectorKey.set(connectorKey, manifest as unknown as ConnectorManifest);
+      }
+    } catch {
+      // A malformed registered manifest should not hide every other
+      // connector's provider-app config group.
+    }
   }
-  function resolve(connectorId: string): ProviderAuthExchanger {
-    if (dataPortabilityExchanger && dataPortabilityKeys.includes(connectorId)) {
-      return dataPortabilityExchanger as unknown as ProviderAuthExchanger;
+  return byConnectorKey;
+}
+
+function providerIdentityGroupDescriptorFromManifests(
+  identityGroup: string,
+  manifests: readonly ConnectorManifest[]
+): ProviderIdentityGroupDescriptor {
+  const fieldsByLogicalKey = new Map<string, ProviderIdentityGroupDescriptor["fields"][number]>();
+  let providerIdentityLabel: string | null = null;
+  for (const manifest of manifests) {
+    const auth = (manifest as unknown as { capabilities?: { auth?: Record<string, unknown> | null } }).capabilities
+      ?.auth;
+    if (!providerIdentityLabel && typeof auth?.provider_identity_label === "string") {
+      providerIdentityLabel = auth.provider_identity_label.trim() || null;
     }
-    if (ownerAccountExchanger && GOOGLE_OWNER_ACCOUNT_CONNECTOR_KEYS.includes(connectorId)) {
-      return ownerAccountExchanger as unknown as ProviderAuthExchanger;
+    for (const entry of connectionConfigDeploymentFieldsFromManifest(manifest)) {
+      if (!fieldsByLogicalKey.has(entry.logicalKey)) {
+        fieldsByLogicalKey.set(entry.logicalKey, entry);
+      }
     }
-    throw new Error(`No provider-auth exchanger is configured for connector '${connectorId}'.`);
   }
   return {
-    exchangeCode: (args: Parameters<ProviderAuthExchanger["exchangeCode"]>[0]) =>
-      resolve(args.connectorId).exchangeCode(args),
-    initiateAuthorization: (args: Parameters<ProviderAuthExchanger["initiateAuthorization"]>[0]) =>
-      resolve(args.connectorId).initiateAuthorization(args),
-    runInventoryOrTest: (args: Parameters<ProviderAuthExchanger["runInventoryOrTest"]>[0]) =>
-      resolve(args.connectorId).runInventoryOrTest(args),
-    storeTokens: (args: Parameters<ProviderAuthExchanger["storeTokens"]>[0]) =>
-      resolve(args.connectorId).storeTokens(args),
-  } as unknown as ProviderAuthExchanger;
+    fields: Array.from(fieldsByLogicalKey.values()),
+    identityGroup,
+    providerIdentityLabel,
+  };
+}
+
+/** `deployment_config` normalized to the route's field shape, reusing
+ * connection-setup-plan.ts's manifest-shape acceptance (bare string, legacy
+ * `{key,...}`, or current `{logical_key,...}`) so this never re-derives its
+ * own parsing of the same manifest data. */
+function connectionConfigDeploymentFieldsFromManifest(
+  manifest: ConnectorManifest
+): readonly { envAlias: string | null; label: string; logicalKey: string; secret: boolean }[] {
+  const declared = (
+    manifest as unknown as { capabilities?: { auth?: { deployment_config?: unknown } | null } }
+  ).capabilities?.auth?.deployment_config;
+  if (!Array.isArray(declared)) {
+    return [];
+  }
+  const out: { envAlias: string | null; label: string; logicalKey: string; secret: boolean }[] = [];
+  for (const entry of declared) {
+    if (typeof entry === "string") {
+      if (entry.trim()) {
+        out.push({ envAlias: null, label: entry.trim(), logicalKey: entry.trim(), secret: false });
+      }
+      continue;
+    }
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const logicalKey =
+      typeof record.logical_key === "string" && record.logical_key.trim()
+        ? record.logical_key.trim()
+        : typeof record.key === "string" && record.key.trim()
+          ? record.key.trim()
+          : null;
+    if (!logicalKey) {
+      continue;
+    }
+    out.push({
+      envAlias: typeof record.env_alias === "string" && record.env_alias.trim() ? record.env_alias.trim() : null,
+      label: typeof record.label === "string" && record.label.trim() ? record.label.trim() : logicalKey,
+      logicalKey,
+      secret: record.secret === true,
+    });
+  }
+  return out;
+}
+
+function manifestProviderIdentityGroup(manifest: ConnectorManifest): string | null {
+  const raw = (manifest as unknown as { capabilities?: { auth?: { provider_identity_group?: unknown } | null } })
+    .capabilities?.auth?.provider_identity_group;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+/**
+ * Resolves every manifest sharing the given `provider_identity_group` into
+ * one descriptor (union of declared `deployment_config` fields, first
+ * non-empty `provider_identity_label` wins). Absent/unknown group -> null.
+ * This is the ONLY place the RI groups connectors by identity_group — the
+ * route itself carries no connector/provider-specific knowledge, per
+ * ref-provider-app-config.ts's own contract.
+ */
+async function resolveProviderIdentityGroup(identityGroup: string): Promise<ProviderIdentityGroupDescriptor | null> {
+  const manifests = Array.from((await collectRegisteredManifestsByConnectorKey()).values()).filter(
+    (manifest) => manifestProviderIdentityGroup(manifest) === identityGroup
+  );
+  return manifests.length > 0 ? providerIdentityGroupDescriptorFromManifests(identityGroup, manifests) : null;
+}
+
+/** Every distinct `provider_identity_group` any registered manifest
+ * declares, each already resolved to its descriptor. */
+async function listProviderIdentityGroups(): Promise<readonly ProviderIdentityGroupDescriptor[]> {
+  const manifestsByGroup = new Map<string, ConnectorManifest[]>();
+  for (const manifest of (await collectRegisteredManifestsByConnectorKey()).values()) {
+    const group = manifestProviderIdentityGroup(manifest);
+    if (!group) {
+      continue;
+    }
+    const existing = manifestsByGroup.get(group);
+    if (existing) {
+      existing.push(manifest);
+    } else {
+      manifestsByGroup.set(group, [manifest]);
+    }
+  }
+  return Array.from(manifestsByGroup.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([identityGroup, manifests]) => providerIdentityGroupDescriptorFromManifests(identityGroup, manifests));
+}
+
+/**
+ * Builds the one generic, manifest-driven `ProviderAuthExchanger` every
+ * OAuth connector routes through — replaces the retired per-provider
+ * exchangers (google-data-portability.ts, google-oauth-account.ts). Never
+ * returns null: readiness is decided per-connector by
+ * connection-setup-plan.ts's deployment-readiness check (manifest
+ * deployment_config against env + the provider-app-config store), not by
+ * whether ANY provider happens to be configured at process start.
+ */
+function buildGenericProviderAuthExchanger(
+  credentialStoreFactory: () => ReturnType<typeof createRequestConnectorInstanceCredentialStore>
+): ProviderAuthExchanger {
+  const deploymentConfigResolver = createDeploymentConfigResolver({ store: createRequestProviderAppConfigStore() });
+  return createGenericProviderAuthDispatch({
+    credentialStoreFactory,
+    deploymentConfigResolver,
+    resolveManifest: async (connectorId: string) =>
+      (await getConnectorManifest(connectorId)) as unknown as ProviderAuthManifestLike | null,
+  });
+}
+
+/**
+ * Resolves a manifest's declared deployment_config entries against the SAME
+ * DB-first, env-fallback resolver the real OAuth exchange uses
+ * (createDeploymentConfigResolver), merged OVER process.env (never
+ * replacing it — a manifest with no provider_identity_group, or a
+ * deployment_config entry neither the store nor the resolver's env fallback
+ * has anything for, must still read from the real process environment
+ * exactly as it did before this resolver existed). Keyed the way
+ * connection-setup-plan.ts's buildDeploymentReadiness reads it
+ * (`env[entry.envAlias ?? entry.logicalKey]`). Used only for the initiate
+ * route's readiness check, so a Console-configured provider-app-config store
+ * value satisfies deployment readiness exactly as it will win at
+ * token-exchange time — DB overrides env, not the other way around, so this
+ * resolver must always consult the store even when the env var is already
+ * set.
+ */
+async function resolveProviderAuthDeploymentEnv(
+  manifest: unknown
+): Promise<Readonly<Record<string, string | undefined>>> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  const identityGroup = manifestProviderIdentityGroup(manifest as ConnectorManifest);
+  if (!identityGroup) {
+    return env;
+  }
+  const entries = connectionConfigDeploymentFieldsFromManifest(manifest as ConnectorManifest);
+  if (entries.length === 0) {
+    return env;
+  }
+  const resolver = createDeploymentConfigResolver({ store: createRequestProviderAppConfigStore() });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const key = entry.envAlias ?? entry.logicalKey;
+      const value = await resolver({ envAlias: entry.envAlias, identityGroup, logicalKey: entry.logicalKey });
+      if (value) {
+        env[key] = value;
+      }
+    })
+  );
+  return env;
 }
 
 function buildControllerProviderAuthRunEnvResolver() {
@@ -2010,13 +2171,23 @@ function buildControllerProviderAuthRunEnvResolver() {
     connectorInstanceId: string;
     ownerSubjectId: string;
   }) => {
-    const connectorInstance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
+    const [connectorInstance, manifest] = await Promise.all([
+      createRequestConnectorInstanceStore().get(connectorInstanceId),
+      resolveRegisteredConnectorManifest(connectorId).catch(() => null),
+    ]);
+    const connectionConfig = connectionConfigEntriesFromManifest(
+      manifest as unknown as Parameters<typeof connectionConfigEntriesFromManifest>[0]
+    );
     return resolveProviderAuthRunEnv({
       connectorId,
       connectorInstanceId,
       credentialStore: createRequestConnectorInstanceCredentialStore(),
       ownerSubjectId,
       sourceBinding: connectorInstance?.sourceBinding ?? null,
+      connectionConfig,
+      legacyBundleFieldAliases:
+        (manifest as { capabilities?: { auth?: { legacy_bundle_field_aliases?: Record<string, string> | null } } })
+          ?.capabilities?.auth?.legacy_bundle_field_aliases ?? null,
     });
   };
 }
@@ -5329,16 +5500,17 @@ export function buildAsApp(opts: ServerOpts = {}) {
   // The in-process pending-auth store is scoped to this RS process instance and
   // survives only for the PENDING_AUTH_TTL_SECONDS window (10 minutes).
   const pendingAuthStore = createInProcessPendingAuthStore();
-  const defaultProviderAuthConnectorKeys = [
-    ...configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env),
-    ...configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env),
-  ];
   const providerAuthExchanger =
-    opts.providerAuthExchanger ?? buildCompositeProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
+    opts.providerAuthExchanger ?? buildGenericProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
   const providerAuthCtx = {
     canonicalConnectorKey,
     // Connector keys for which provider-app deployment config is in place.
-    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? defaultProviderAuthConnectorKeys,
+    // Every provider-authorization connector today declares its own
+    // manifest deployment_config, so connection-setup-plan.ts's readiness
+    // check is always answered from the manifest/env/provider-app-config
+    // store — this allowlist is the fallback for a manifest declaring NONE,
+    // which no registered connector currently does.
+    configuredProviderAuthConnectorKeys: opts.configuredProviderAuthConnectorKeys ?? [],
     createRequestConnectorInstanceStore: () => {
       const store = createRequestConnectorInstanceStore();
       return {
@@ -5370,6 +5542,7 @@ export function buildAsApp(opts: ServerOpts = {}) {
       const explicitAsBaseUrl = opts.asPublicUrl || (opts.ignoreAmbientPublicUrls ? null : process.env.AS_PUBLIC_URL);
       return resolvePublicUrl(req as Parameters<typeof resolvePublicUrl>[0], explicitAsBaseUrl);
     },
+    resolveDeploymentEnv: resolveProviderAuthDeploymentEnv,
     resolveRegisteredConnectorManifest,
     setReferenceTraceId,
   };
@@ -5377,6 +5550,43 @@ export function buildAsApp(opts: ServerOpts = {}) {
     mountRefProviderAuthInitiate(app, providerAuthCtx as unknown as Parameters<typeof mountRefProviderAuthInitiate>[1]);
     mountRefProviderAuthCallback(app, providerAuthCtx as unknown as Parameters<typeof mountRefProviderAuthCallback>[1]);
   }
+
+  // Deployment-level provider-app registration config (e.g. a shared OAuth
+  // client id/secret), grouped by manifest-declared provider_identity_group.
+  // Zero connector/provider-specific knowledge here — resolveProviderIdentityGroup
+  // and listProviderIdentityGroups are the only place the RI groups
+  // connectors by manifest data; the route itself just reads/writes
+  // logical_key/label pairs the manifest declared.
+  const providerAppConfigCtx = {
+    // The route's injected ProviderAppConfigStore interface takes setMany's
+    // values as a plain Record<logicalKey, value> (its own client-facing
+    // shape); the real store takes an array of {logicalKey,value} entries
+    // (its own write-path shape, shared with the single-entry `set`). This
+    // adapter is the only place that bridges the two.
+    createRequestProviderAppConfigStore: () => {
+      const store = createRequestProviderAppConfigStore();
+      return {
+        listConfiguredKeys: (identityGroup: string) => store.listConfiguredKeys(identityGroup),
+        setMany: (args: { identityGroup: string; values: Readonly<Record<string, string>>; updatedAt: string }) =>
+          store.setMany({
+            identityGroup: args.identityGroup,
+            updatedAt: args.updatedAt,
+            values: Object.entries(args.values).map(([logicalKey, value]) => ({ logicalKey, value })),
+          }),
+      };
+    },
+    handleError,
+    isEnvAliasSatisfied: (envAlias: string) => Boolean(process.env[envAlias]?.trim()),
+    listProviderIdentityGroups,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolveProviderIdentityGroup,
+  };
+  mountRefProviderAppConfigGet(app, providerAppConfigCtx as unknown as Parameters<typeof mountRefProviderAppConfigGet>[1]);
+  mountRefProviderAppConfigPost(
+    app,
+    providerAppConfigCtx as unknown as Parameters<typeof mountRefProviderAppConfigPost>[1]
+  );
 
   mountRefDeployment(app, refAdminContext as unknown as Parameters<typeof mountRefDeployment>[1]);
 
@@ -7100,12 +7310,12 @@ export async function startServer(opts: ServerOpts = {}) {
   // (it lazily imports the connector package's probe + live transport). Tests
   // may inject their own via `opts.staticSecretCredentialProber`.
   const staticSecretCredentialProber = opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
-  const configuredProviderAuthConnectorKeys = opts.configuredProviderAuthConnectorKeys ?? [
-    ...configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env),
-    ...configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env),
-  ];
+  // See the sibling AS-app construction above: every provider-authorization
+  // connector today declares its own manifest deployment_config, so this
+  // allowlist is only the fallback for a manifest declaring none.
+  const configuredProviderAuthConnectorKeys = opts.configuredProviderAuthConnectorKeys ?? [];
   const providerAuthExchanger =
-    opts.providerAuthExchanger ?? buildCompositeProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
+    opts.providerAuthExchanger ?? buildGenericProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
 
   const asApp = buildAsApp({
     acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
