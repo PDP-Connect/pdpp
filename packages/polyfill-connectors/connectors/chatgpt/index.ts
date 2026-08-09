@@ -34,7 +34,6 @@ import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
   buildDetailGap,
-  buildFullScanCoverageMessage,
   type CollectContext,
   type CollectionRateProgress,
   type DetailCoverageMessage,
@@ -1860,20 +1859,21 @@ const MEMORIES_PATH = "/memories?include_memory_entries=true";
  *
  * Invariants:
  *   - On http !== 200, emits a SKIP_RESULT and no records, no STATE, no coverage.
- *   - On a 200 whose body fails to parse, emits a `parse_error` SKIP_RESULT —
- *     distinct from `http_error` — and no records, no STATE, no coverage: an
- *     unreadable body is not a proven-empty list.
+ *   - On a 200 whose body fails to parse or has the wrong shape, emits a
+ *     `parse_error` SKIP_RESULT — distinct from `http_error` — and no
+ *     records, no STATE, no coverage: an unreadable/wrong-shape body is not a
+ *     proven-empty list.
  *   - On success, emits records in list order, then a STATE heartbeat and a
- *     full-scan DETAIL_COVERAGE. `/memories` is a single-shot, unpaginated full
- *     list with no fingerprint suppression (every run re-lists and re-emits
- *     every entry), so its enumerated boundary honestly supports the same
- *     considered === covered contract as `custom_gpts`/`shared_conversations`:
- *     `considered` is the listed entry count, `covered` mirrors it because
- *     nothing here is suppressed as unchanged — a listed entry is either
- *     emitted or dropped by buildMemoryRecord's own id filter, and either way
- *     it was genuinely observed on the wire.
- *   - buildMemoryRecord filters entries with no id; those drop silently but
- *     still count toward `considered`.
+ *     DETAIL_COVERAGE. `considered` counts every raw entry the source listed;
+ *     `covered` counts only entries actually emitted — a listed entry with no
+ *     usable id (`buildMemoryRecord` returns `null`) is neither emitted nor
+ *     suppressed-as-unchanged (there is no fingerprint gate here), so it is
+ *     NOT counted toward `covered`. This deliberately leaves
+ *     `considered > covered` on a run with any rejected entry, so the run
+ *     reads `partial` rather than falsely `complete`
+ *     (`DetailCoverageParams.covered`'s documented contract) — a bounded
+ *     `shape_check_failed` SKIP_RESULT is also emitted per rejected entry so
+ *     the drop is diagnosable, not silent.
  */
 export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
   deps.emit({
@@ -1881,22 +1881,25 @@ export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
     stream: "memories",
     message: "Fetching memories",
   });
-  const classified = classifyChatGptListPage(await deps.api.fetch(MEMORIES_PATH), {
+  const classified = classifyChatGptListPage<RawMemoryEntry>(await deps.api.fetch(MEMORIES_PATH), {
     stream: "memories",
     endpointLabel: "memories fetch",
     page: 0,
-    extractItems: (json) =>
-      (json.memories as RawMemoryEntry[] | undefined) || (json.items as RawMemoryEntry[] | undefined) || [],
+    listKeys: ["memories", "items"],
   });
   if (!classified.ok) {
     deps.emit(classified.skip);
     return;
   }
   const { items: entries } = classified;
+  let covered = 0;
   for (const m of entries) {
     const rec = buildMemoryRecord(m);
     if (rec) {
       await deps.emitRecord("memories", rec);
+      covered += 1;
+    } else {
+      emitChatGptShapeCheckFailed(deps, "memories", m, "missing id");
     }
   }
   deps.emit({
@@ -1904,7 +1907,7 @@ export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
     stream: "memories",
     cursor: { fetched_at: nowIso() },
   });
-  deps.emit(buildFullScanCoverageMessage("memories", entries.length));
+  deps.emit(buildChatGptRejectAwareFullScanCoverageMessage("memories", entries.length, covered));
 }
 
 /**
@@ -2086,24 +2089,57 @@ type ChatGptListPage<T> =
   | { ok: false; skip: Extract<EmittedMessage, { type: "SKIP_RESULT" }> };
 
 /**
+ * True when `value` is a JSON object — not `null`, not an array, not a bare
+ * string/number/boolean. `res.json` is typed as `ChatGptJson | null`, but that
+ * type is an unchecked cast over whatever `JSON.parse` actually returned (see
+ * `chatGptBackendFetchInBrowser`) — a 200 response can legitimately parse to
+ * any JSON value, and reading `.items` off a string/number/array/boolean does
+ * NOT throw in JS (it silently evaluates to `undefined`), so without this
+ * guard those shapes would sail through the same `?? []` fallback a genuinely
+ * empty `{ items: [] }` page does.
+ */
+function isChatGptJsonObject(value: ChatGptJson): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Bounded, non-PII description of what kind of JSON value a body parsed to. */
+function chatGptJsonBodyType(value: ChatGptJson | null): string {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  return typeof value;
+}
+
+/**
  * Classify one fetch result from a ChatGPT list endpoint. Shared by every
  * caller that reads `res.json` off a `ChatGptFetchResult` and lists items off
  * it — `custom_gpts`, `shared_conversations`, `conversations`/`messages`
- * listing, and `memories` all hit the same three failure shapes:
+ * listing, and `memories` all hit the same failure shapes:
  *
  *   - 404/403 → `not_available` (feature disabled for this account), only
  *     when the endpoint supports that distinction (`notAvailableOn404`).
  *   - any other non-200 → `http_error`.
  *   - a 200 whose body failed to parse arrives as `json: null` (the browser
- *     fetch shim swallows the parse error). Reading any key off `null` is
- *     `undefined`, and `undefined || []` is `[]` — byte-identical to a
- *     genuinely empty page. Without this guard an unreadable body would be
- *     indistinguishable from a proven-empty enumeration and would emit
- *     zero-coverage proof, or a cursor advance, it has not earned. This is a
- *     `parse_error` SKIP_RESULT, not a genuinely empty page.
+ *     fetch shim swallows the parse error) → `parse_error`.
+ *   - a 200 whose body parsed to valid JSON of the WRONG SHAPE — a bare
+ *     string/number/boolean, a top-level array, or an object missing every
+ *     key in `listKeys`, or where the first present `listKeys` entry is not
+ *     itself an array — is ALSO `parse_error`, not a genuinely empty page.
+ *     `res.json === null` is only one way an "unreadable body" can arrive;
+ *     `res.json === "maintenance"` or `res.json === {}` (a key rename, an
+ *     upstream contract change, a maintenance-mode body) are others, and all
+ *     three previously collapsed to the same `[]` a real empty list produces.
+ *     Genuine empty requires the expected array key to be PRESENT and equal
+ *     to `[]` — an object missing the key entirely is a shape mismatch, not
+ *     evidence of zero items.
  *
- * `extractItems` supplies only the per-endpoint key(s) to read off a parsed
- * body; it never runs when the body failed to parse.
+ * `listKeys` is the per-endpoint ordered list of acceptable container keys
+ * (e.g. `["items", "gizmos"]` for `/gizmos/mine`, which uses either name
+ * depending on tenant); the first key present on the object wins. It only
+ * runs after the object-shape check above passes.
  */
 function classifyChatGptListPage<T>(
   res: ChatGptFetchResult,
@@ -2112,10 +2148,10 @@ function classifyChatGptListPage<T>(
     endpointLabel: string;
     page: number;
     notAvailableOn404?: boolean;
-    extractItems: (json: ChatGptJson) => T[];
+    listKeys: readonly string[];
   }
 ): ChatGptListPage<T> {
-  const { stream, endpointLabel, page, notAvailableOn404, extractItems } = opts;
+  const { stream, endpointLabel, page, notAvailableOn404, listKeys } = opts;
   if (notAvailableOn404 && (res.status === 404 || res.status === 403)) {
     return {
       ok: false,
@@ -2139,7 +2175,8 @@ function classifyChatGptListPage<T>(
       },
     };
   }
-  if (!res.json) {
+  const { json } = res;
+  if (!(json && isChatGptJsonObject(json))) {
     return {
       ok: false,
       skip: {
@@ -2147,11 +2184,91 @@ function classifyChatGptListPage<T>(
         stream,
         reason: "parse_error",
         message: `${endpointLabel} http 200 with an unreadable body`,
-        diagnostics: { http_status: res.status, page },
+        diagnostics: {
+          http_status: res.status,
+          page,
+          // Bounded, non-PII shape fact: what kind of value arrived, never
+          // its content (a bare string/number body could itself carry
+          // upstream-echoed request data).
+          body_type: chatGptJsonBodyType(json),
+        },
       },
     };
   }
-  return { ok: true, items: extractItems(res.json) };
+  const listKey = listKeys.find((key) => key in json);
+  if (listKey === undefined || !Array.isArray(json[listKey])) {
+    return {
+      ok: false,
+      skip: {
+        type: "SKIP_RESULT",
+        stream,
+        reason: "parse_error",
+        message:
+          listKey === undefined
+            ? `${endpointLabel} http 200 body is missing every expected list key (${listKeys.join(", ")})`
+            : `${endpointLabel} http 200 body's "${listKey}" key is not an array`,
+        diagnostics: {
+          http_status: res.status,
+          page,
+          expected_keys: listKeys,
+          present_keys: Object.keys(json),
+        },
+      },
+    };
+  }
+  return { ok: true, items: json[listKey] as T[] };
+}
+
+/**
+ * Emit a bounded, non-PII `shape_check_failed` diagnostic for a raw list item
+ * a full-scan stream's builder rejected (returned `null` for — typically a
+ * missing/unusable id). This is a CONNECTOR-OWNED diagnostic, not routed
+ * through `emitRecord`/`validateRecord`: `emitRecord` silently no-ops on
+ * `data.id == null` (see `makeEmitRecord` in `connector-runtime.ts`), so a
+ * genuinely id-less record can never reach the runtime's shape-check gate —
+ * the very case this diagnostic exists to surface would otherwise produce
+ * zero signal of any kind. `rawKeys` carries only the STRUCTURE of the
+ * rejected item (its top-level key names), never its values — raw ChatGPT
+ * list items can carry free-text content (`content`, `title`,
+ * `highlighted_text`, display names), so the diagnostic must not echo the
+ * item body.
+ */
+function emitChatGptShapeCheckFailed(deps: StreamDeps, stream: string, raw: unknown, reason: string): void {
+  const rawKeys =
+    raw && typeof raw === "object" && !Array.isArray(raw) ? Object.keys(raw as Record<string, unknown>) : null;
+  deps.emit({
+    type: "SKIP_RESULT",
+    stream,
+    reason: "shape_check_failed",
+    message: `${stream} list item rejected: ${reason}`,
+    diagnostics: { reason, raw_keys: rawKeys, raw_type: raw === null ? "null" : typeof raw },
+  });
+}
+
+/**
+ * Build the per-run DETAIL_COVERAGE for a full-scan stream whose builder can
+ * REJECT a listed item (return `null`) — a third outcome
+ * `buildFullScanCoverageMessage`'s `covered: considered` model cannot express
+ * (see that helper's doc comment: it assumes every considered item is either
+ * emitted or suppressed-as-unchanged; a builder reject is neither). `covered`
+ * here is the caller-tracked count of items that were actually emitted or
+ * fingerprint-suppressed-as-unchanged — NOT `considered` — so a rejected item
+ * correctly leaves `considered > covered` and the runtime reads the run
+ * `partial`, per `DetailCoverageParams.covered`'s documented contract.
+ */
+function buildChatGptRejectAwareFullScanCoverageMessage(
+  stream: string,
+  considered: number,
+  covered: number
+): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream,
+    stateStream: stream,
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered,
+    covered,
+  });
 }
 
 export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
@@ -2169,15 +2286,20 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   // aliasing the two would let a run that dropped everything read as complete
   // (`DetailCoverageParams.considered`).
   let considered = 0;
+  // Items actually emitted. A rejected item (no usable id) is neither emitted
+  // nor suppressed-as-unchanged (no fingerprint gate on this stream), so it
+  // does NOT count toward `covered` — leaving `considered > covered` on any
+  // run with a reject, per `DetailCoverageParams.covered`'s contract.
+  let covered = 0;
   do {
     const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=100` : "?limit=100";
     const res = await deps.api.fetch(`/gizmos/mine${qs}`);
-    const page = classifyChatGptListPage(res, {
+    const page = classifyChatGptListPage<unknown>(res, {
       stream: "custom_gpts",
       endpointLabel: "gizmos/mine",
       page: pages,
       notAvailableOn404: true,
-      extractItems: (json) => (json.items as unknown[] | undefined) || (json.gizmos as unknown[] | undefined) || [],
+      listKeys: ["items", "gizmos"],
     });
     if (!page.ok) {
       deps.emit(page.skip);
@@ -2189,6 +2311,9 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
       const rec = buildGizmoRecord(raw);
       if (rec) {
         await deps.emitRecord("custom_gpts", rec);
+        covered += 1;
+      } else {
+        emitChatGptShapeCheckFailed(deps, "custom_gpts", raw, "missing id");
       }
     }
     // Cursor pagination is gizmo-specific (the other list endpoints in this
@@ -2197,6 +2322,24 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
     cursor = (res.json?.cursor as string | null | undefined) ?? null;
     pages += 1;
     if (pages > GIZMO_MAX_PAGES) {
+      if (cursor !== null) {
+        // The source handed back another cursor — there is genuinely more to
+        // list — and the cap stopped the walk before following it. Treated
+        // identically to a fetch/parse failure: the enumerated boundary is a
+        // truncated prefix, not the whole account, so it must not prove
+        // coverage or commit STATE below.
+        deps.emit({
+          type: "SKIP_RESULT",
+          stream: "custom_gpts",
+          reason: "pagination_cap_truncated",
+          message: `gizmos/mine pagination stopped at the ${GIZMO_MAX_PAGES}-page safety cap with more pages remaining`,
+          diagnostics: { pages, considered },
+        });
+        anyError = true;
+      }
+      // cursor === null here means the last page ALSO happened to be the
+      // final one (no more cursor to follow) — the cap and natural
+      // completion coincided, so this is honest completion, not truncation.
       break;
     }
     if (!page.items.length) {
@@ -2214,8 +2357,10 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
     // pass is the point: an account that owns zero gizmos then proves
     // considered === covered === 0 instead of leaving a committed checkpoint
     // with no positive evidence behind it, while every failure path above
-    // breaks out before reaching here and proves nothing.
-    deps.emit(buildFullScanCoverageMessage("custom_gpts", considered));
+    // breaks out before reaching here and proves nothing. `covered` may be
+    // strictly less than `considered` when a listed gizmo was rejected for a
+    // missing id — see the reject-tracking comment above.
+    deps.emit(buildChatGptRejectAwareFullScanCoverageMessage("custom_gpts", considered, covered));
   }
 }
 
@@ -2247,15 +2392,21 @@ export async function runSharedConversationsStream(
   // still genuinely observed, and aliasing the two would make a byte-identical
   // no-op re-list read as an incomplete scan (`DetailCoverageParams.considered`).
   let considered = 0;
+  // Items accounted for: emitted OR fingerprint-suppressed-as-unchanged (both
+  // are genuinely observed outcomes). A share `buildSharedConversationRecord`
+  // rejects (no usable id) is neither and does NOT count toward `covered` —
+  // leaving `considered > covered` on any run with a reject, per
+  // `DetailCoverageParams.covered`'s contract.
+  let covered = 0;
   for (;;) {
-    const classified = classifyChatGptListPage(
+    const classified = classifyChatGptListPage<RawSharedConversation>(
       await deps.api.fetch(`/shared_conversations?offset=${offset}&limit=${limit}&order=created`),
       {
         stream: "shared_conversations",
         endpointLabel: "shared_conversations",
         page,
         notAvailableOn404: true,
-        extractItems: (json) => (json.items as RawSharedConversation[] | undefined) || [],
+        listKeys: ["items"],
       }
     );
     page += 1;
@@ -2271,7 +2422,12 @@ export async function runSharedConversationsStream(
     }
     for (const s of items) {
       const rec = buildSharedConversationRecord(s);
-      if (rec && fingerprintCursor.shouldEmit(rec)) {
+      if (!rec) {
+        emitChatGptShapeCheckFailed(deps, "shared_conversations", s, "missing id/share_id");
+        continue;
+      }
+      covered += 1;
+      if (fingerprintCursor.shouldEmit(rec)) {
         await deps.emitRecord("shared_conversations", rec);
       }
     }
@@ -2280,6 +2436,20 @@ export async function runSharedConversationsStream(
     }
     offset += items.length;
     if (offset > PAGINATION_SAFETY_LIMIT) {
+      // Reaching this line means the just-fetched page was a FULL page
+      // (`items.length === limit`, or the `items.length < limit` check above
+      // would already have broken the loop) — the source has more to give
+      // and the cap stopped the walk short of it. Treated identically to a
+      // fetch/parse failure: the enumerated boundary is a truncated prefix,
+      // not the whole account.
+      deps.emit({
+        type: "SKIP_RESULT",
+        stream: "shared_conversations",
+        reason: "pagination_cap_truncated",
+        message: `shared_conversations pagination stopped at the ${PAGINATION_SAFETY_LIMIT}-item safety cap with more items remaining`,
+        diagnostics: { offset, considered },
+      });
+      sawError = true;
       break;
     }
   }
@@ -2297,8 +2467,10 @@ export async function runSharedConversationsStream(
     // clean pass is the point: an account with zero shares then proves
     // considered === covered === 0 instead of leaving a committed checkpoint
     // with no positive evidence behind it, while every failure path above
-    // breaks out before reaching here and proves nothing.
-    deps.emit(buildFullScanCoverageMessage("shared_conversations", considered));
+    // breaks out before reaching here and proves nothing. `covered` may be
+    // strictly less than `considered` when a listed share was rejected for a
+    // missing id/share_id — see the reject-tracking comment above.
+    deps.emit(buildChatGptRejectAwareFullScanCoverageMessage("shared_conversations", considered, covered));
   }
 }
 
@@ -2347,13 +2519,13 @@ async function listConversationsSinceCursor(
     message: priorCursor ? `Listing conversations updated after ${priorCursor}` : "Listing conversations (full pass)",
   });
   while (!stopPaging) {
-    const classified = classifyChatGptListPage(
+    const classified = classifyChatGptListPage<ConversationListItem>(
       await deps.api.fetch(`/conversations?offset=${offset}&limit=${limit}&order=updated`),
       {
         stream: "conversations",
         endpointLabel: "conversations list",
         page,
-        extractItems: (json) => (json.items as ConversationListItem[] | undefined) || [],
+        listKeys: ["items"],
       }
     );
     page += 1;
@@ -2378,7 +2550,24 @@ async function listConversationsSinceCursor(
     }
     offset += items.length;
     if (offset > PAGINATION_SAFETY_LIMIT) {
-      break;
+      // Reaching this line means the just-fetched page was FULL and no item
+      // on it was old enough to hit `priorCursor` yet (`stopPaging` is still
+      // false, or the `items.length < limit` check above would already have
+      // broken the loop) — there are genuinely more, older conversations the
+      // walk never reached. Returning `truncated: false` here would let the
+      // caller advance the cursor to this partial prefix's max `update_time`
+      // (always the newest value, since pages are `order=updated` desc),
+      // silently and permanently skipping every un-listed conversation older
+      // than that — the walk never gets another chance at them because the
+      // cursor is a `>` "since" watermark. Treated as truncation.
+      deps.emit({
+        type: "SKIP_RESULT",
+        stream: "conversations",
+        reason: "pagination_cap_truncated",
+        message: `conversations list pagination stopped at the ${PAGINATION_SAFETY_LIMIT}-item safety cap with more items remaining`,
+        diagnostics: { offset, collected: convosToSync.length },
+      });
+      return { items: convosToSync, truncated: true };
     }
   }
   return { items: convosToSync, truncated: false };

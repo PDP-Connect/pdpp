@@ -912,6 +912,71 @@ test("runMemoriesStream: http 200 with an unreadable body is a parse_error, not 
   assert.notEqual(skip.reason, "http_error");
 });
 
+/**
+ * Deliberately mislabels a non-`ChatGptJson` runtime value as `ChatGptJson`
+ * for test fixtures only: `ChatGptFetchResult.json` is typed
+ * `ChatGptJson | null`, but that type is an unchecked cast over whatever
+ * `JSON.parse` actually produced (see `chatGptBackendFetchInBrowser`) — a 200
+ * response can genuinely parse to a bare string/number/boolean or a top-level
+ * array at runtime, which this file's tests need to construct to prove the
+ * shape-classifier guards against them.
+ */
+function asWrongShapeChatGptJson(value: string | number | unknown[] | Record<string, unknown>): ChatGptJson {
+  return value as ChatGptJson;
+}
+
+/**
+ * `res.json` is typed `ChatGptJson | null`, but that type is an unchecked
+ * cast over whatever `JSON.parse` actually produced (see
+ * `chatGptBackendFetchInBrowser`) — a 200 response can genuinely parse to a
+ * bare string/number/boolean, a top-level array, or an object missing the
+ * expected list key, none of which throw when a caller reads `.items` off
+ * them (they silently evaluate to `undefined`). Each entry pairs a wrong
+ * JSON shape with a human label for the assertion messages below.
+ */
+const CHATGPT_WRONG_SHAPE_BODIES: ReadonlyArray<readonly [string, ChatGptJson]> = [
+  ["a bare string", asWrongShapeChatGptJson("service temporarily unavailable")],
+  ["a bare number", asWrongShapeChatGptJson(42)],
+  ["a top-level array", asWrongShapeChatGptJson([1, 2, 3])],
+  ["an object missing the list key", asWrongShapeChatGptJson({ unrelated_field: true })],
+  ["an object whose list key is not an array", asWrongShapeChatGptJson({ items: "not-an-array" })],
+];
+
+for (const [label, body] of CHATGPT_WRONG_SHAPE_BODIES) {
+  test(`runMemoriesStream: http 200 with ${label} as the body is a parse_error, not a proven-empty scan`, async () => {
+    const { deps, emitted, messages } = makeHarness({
+      fetchQueue: [{ status: 200, json: body }],
+    });
+
+    await runMemoriesStream(deps);
+
+    assert.equal(emitted.length, 0, `${label}: no records`);
+    assert.equal(messages.filter((m) => m.type === "STATE").length, 0, `${label}: must not commit a cursor`);
+    assert.equal(memoriesCoverage(messages), undefined, `${label}: must not prove an empty boundary`);
+    const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+    assert.ok(skip, `${label}: must emit a SKIP_RESULT`);
+    assert.equal(skip.reason, "parse_error", `${label}: is a shape error, not genuine empty`);
+  });
+}
+
+test("runMemoriesStream: COUNTERWEIGHT — genuine empty requires the expected array key present with []", async () => {
+  // The precise boundary Finding 3 draws: an object WITH `memories: []` (key
+  // present, value is an array) is the only shape that legitimately proves
+  // zero items. Every wrong-shape case above must not be confused with this.
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { memories: [] } }],
+  });
+
+  await runMemoriesStream(deps);
+
+  assert.equal(emitted.length, 0);
+  const coverage = memoriesCoverage(messages);
+  assert.ok(coverage, "the array key being present and empty IS genuine, provable emptiness");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+  assert.equal(messages.filter((m) => m.type === "SKIP_RESULT").length, 0);
+});
+
 test("runMemoriesStream: successful EMPTY list proves zero coverage (genuine empty stays valid)", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [{ status: 200, json: { memories: [] } }],
@@ -950,6 +1015,40 @@ test("runMemoriesStream: COUNTERWEIGHT — a populated list still emits records 
   assert.equal(coverage.considered, 2, "considered counts what the source listed");
   assert.equal(coverage.covered, 2);
   assert.equal(messages.filter((m) => m.type === "STATE").length, 1);
+});
+
+test("runMemoriesStream: a rejected entry counts toward considered but NOT covered, with a bounded shape_check_failed diagnostic", async () => {
+  // buildMemoryRecord rejects an entry with no id. It is neither emitted nor
+  // suppressed-as-unchanged (memories has no fingerprint gate), so it must
+  // not inflate `covered` — considered > covered here, reading `partial`.
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      {
+        status: 200,
+        json: {
+          memories: [{ id: "mem-1", content: "likes tabs over spaces" }, { content: "no id on this one" }],
+        },
+      },
+    ],
+  });
+
+  await runMemoriesStream(deps);
+
+  assert.equal(emitted.filter((r) => r.stream === "memories").length, 1, "only the well-formed entry emits");
+  const coverage = memoriesCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 2, "both listed entries were weighed");
+  assert.equal(coverage.covered, 1, "covered excludes the rejected entry");
+
+  const shapeCheckSkip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.reason === "shape_check_failed"
+  );
+  assert.ok(shapeCheckSkip, "the drop must be diagnosable, not silent");
+  assert.equal(shapeCheckSkip.stream, "memories");
+  const diag = shapeCheckSkip.diagnostics as { raw_keys?: string[] } | undefined;
+  assert.ok(diag?.raw_keys?.includes("content"), "diagnostic carries structural keys, not values");
+  assert.equal(shapeCheckSkip.message.includes("no id on this one"), false, "diagnostic must not leak entry content");
 });
 
 // ─── Invariant 4: null-enrichment fallback ───────────────────────────────
@@ -3145,6 +3244,59 @@ test("runConversationsAndMessagesStreams: a backlog-gap re-list that comes back 
   );
 });
 
+for (const [label, body] of CHATGPT_WRONG_SHAPE_BODIES) {
+  test(`runConversationsAndMessagesStreams: a /conversations 200 body that is ${label} is a typed parse_error, not a proven-empty scan`, async () => {
+    const harness = makeRecordingEmit(validateRecord);
+    const api: ChatGptApi = {
+      auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+      fetch: async (path: string): Promise<ChatGptFetchResult> => {
+        await Promise.resolve();
+        if (path.startsWith("/conversations?")) {
+          return { status: 200, json: body };
+        }
+        throw new Error(`unexpected fetch ${path}`);
+      },
+    };
+    const deps: StreamDeps = {
+      api,
+      emit: harness.emit,
+      emitRecord: harness.emitRecord,
+      progress: (): Promise<void> => Promise.resolve(),
+      requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+    };
+    const priorCursor = "2026-06-15T00:00:00.000Z";
+
+    await runConversationsAndMessagesStreams(
+      deps,
+      {
+        conversations: { last_update_time: priorCursor },
+        messages: { last_update_time: priorCursor },
+      } as CollectContext["state"],
+      { detailPacing: { random: () => 0, sleep: () => undefined } }
+    );
+
+    assert.equal(harness.emitted.length, 0, `${label}: no records`);
+    const coverages = harness.protocolMessages.filter((m) => m.type === "DETAIL_COVERAGE");
+    assert.deepEqual(coverages, [], `${label}: must not claim coverage for either stream`);
+    const skip = harness.protocolMessages.find(
+      (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT"
+    );
+    assert.ok(skip, `${label}: must emit a SKIP_RESULT`);
+    assert.equal(skip.reason, "parse_error", `${label}: is a shape error, not genuine empty`);
+    const states = harness.protocolMessages.filter(
+      (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE"
+    );
+    assert.deepEqual(
+      states.map((state) => [state.stream, (state.cursor as { last_update_time?: unknown }).last_update_time]),
+      [
+        ["messages", priorCursor],
+        ["conversations", priorCursor],
+      ],
+      `${label}: neither cursor may advance`
+    );
+  });
+}
+
 test("runConversationsAndMessagesStreams: an http_error on the SECOND /conversations page still withholds coverage and does not advance past the partial prefix", async () => {
   // First page returns a full 100-item page of real, newer-than-cursor
   // conversations (real progress); second page 500s. The old code would
@@ -3263,6 +3415,71 @@ test("runConversationsAndMessagesStreams: a genuine empty /conversations page re
     0,
     "a genuine empty page is not a failure"
   );
+});
+
+test("runConversationsAndMessagesStreams: hitting the PAGINATION_SAFETY_LIMIT mid-backlog does NOT advance the cursor past the un-listed older tail (data-loss regression)", async () => {
+  // The review's Finding 1 worst case: 51 full (100-item) pages, all newer
+  // than priorCursor, so the safety cap fires while there is genuinely more,
+  // OLDER backlog still to list. Before this fix, `listConversationsSinceCursor`
+  // returned `truncated: false` here, so the caller would advance the cursor
+  // to `maxUpdateTimeIso(convosToSync)` — always the NEWEST item's time, since
+  // pages are `order=updated` desc — silently and PERMANENTLY skipping every
+  // un-listed older conversation, because the cursor is a `>` "since"
+  // watermark and the walk never gets a second chance at them.
+  const harness = makeRecordingEmit(validateRecord);
+  let calls = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        calls += 1;
+        const base = 1_900_000_000 - calls * 1000;
+        const items: ConversationListItem[] = Array.from({ length: 100 }, (_, idx) =>
+          makeConvo({ id: `convo-${calls}-${idx}`, update_time: base - idx })
+        );
+        return { status: 200, json: { items } };
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations"].map((name) => [name, { name }])),
+  };
+  const priorCursor = "2000-01-01T00:00:00.000Z"; // old enough that every generated item is "newer"
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: priorCursor } } as CollectContext["state"],
+    { detailPacing: { random: () => 0, sleep: () => undefined } }
+  );
+
+  assert.ok(calls > 50, "sanity: the walk actually paged past the 5000-item cap");
+  assert.equal(
+    harness.emitted.filter((r) => r.stream === "conversations").length > 0,
+    true,
+    "conversations genuinely listed before the cap still emit"
+  );
+  const coverage = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE");
+  assert.equal(coverage, undefined, "a cap-truncated list must not claim coverage over its partial prefix");
+  const states = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE"
+  );
+  assert.deepEqual(
+    states.map((state) => [state.stream, (state.cursor as { last_update_time?: unknown }).last_update_time]),
+    [["conversations", priorCursor]],
+    "cursor must stay pinned to the prior watermark — advancing it to the partial prefix's newest item would " +
+      "permanently strand every un-listed older conversation behind an unreachable `>` cursor"
+  );
+  const skip = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT"
+  );
+  assert.ok(skip);
+  assert.equal(skip.reason, "pagination_cap_truncated");
 });
 
 // ─── task 16: bounded cap-tail deferral materialization ──────────────────────
@@ -5250,6 +5467,96 @@ test("runCustomGptsStream: paginates gizmos/mine and emits STATE when complete",
   assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length, 1);
 });
 
+test("runCustomGptsStream: hitting the GIZMO_MAX_PAGES safety cap with a cursor still present is truncation — no coverage, no STATE", async () => {
+  // An account with more gizmos than 50 full pages can list. Every page
+  // returns a fresh cursor (the source genuinely has more), so the cap fires
+  // WHILE there is still more to walk — the exact scenario the review's
+  // Finding 1 named as previously invisible to this fix's own
+  // coverage/cursor machinery.
+  const harness = makeRecordingEmit(validateRecord);
+  let calls = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      calls += 1;
+      return {
+        status: 200,
+        json: { cursor: `page-${calls + 1}`, items: [{ id: `g-${calls}`, display_name: `GPT ${calls}` }] },
+      };
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["custom_gpts"].map((name) => [name, { name }])),
+  };
+
+  await runCustomGptsStream(deps);
+
+  assert.ok(calls > 50, "sanity: the walk actually reached past the 50-page cap");
+  assert.equal(
+    harness.emitted.filter((r) => r.stream === "custom_gpts").length > 0,
+    true,
+    "gizmos genuinely listed before the cap still emit — only the coverage CLAIM is withheld"
+  );
+  const coverage = customGptsCoverage(harness.protocolMessages);
+  assert.equal(coverage, undefined, "a cap-truncated scan must not claim coverage over its partial prefix");
+  assert.equal(
+    harness.protocolMessages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length,
+    0,
+    "a cap-truncated scan must not commit STATE"
+  );
+  const skip = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT"
+  );
+  assert.ok(skip);
+  assert.equal(skip.reason, "pagination_cap_truncated");
+});
+
+test("runCustomGptsStream: hitting the GIZMO_MAX_PAGES cap exactly when the source also runs out (no next cursor) is honest completion", async () => {
+  // Counterweight: the cap and natural end-of-list coincide (the last page
+  // returns no cursor). This must NOT be misclassified as truncation.
+  const harness = makeRecordingEmit(validateRecord);
+  let calls = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      calls += 1;
+      const isLastPage = calls === 51;
+      return {
+        status: 200,
+        json: {
+          ...(isLastPage ? {} : { cursor: `page-${calls + 1}` }),
+          items: [{ id: `g-${calls}`, display_name: `GPT ${calls}` }],
+        },
+      };
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["custom_gpts"].map((name) => [name, { name }])),
+  };
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(calls, 51, "sanity: the walk fetched exactly through the last, cursor-less page");
+  const coverage = customGptsCoverage(harness.protocolMessages);
+  assert.ok(coverage, "the cap coinciding with genuine end-of-list is honest completion, not truncation");
+  assert.equal(coverage.considered, 51);
+  assert.equal(coverage.covered, 51);
+  assert.equal(
+    harness.protocolMessages.filter((m) => m.type === "SKIP_RESULT" && m.reason === "pagination_cap_truncated").length,
+    0
+  );
+});
+
 /**
  * The discriminator behind ruling R2: a committed checkpoint with zero records
  * proves nothing on its own. A SUCCESSFUL empty enumeration must say so
@@ -5321,6 +5628,25 @@ test("runCustomGptsStream: http 200 with an unreadable body is a failure, not a 
   assert.equal(skip.reason, "parse_error");
 });
 
+for (const [label, body] of CHATGPT_WRONG_SHAPE_BODIES) {
+  test(`runCustomGptsStream: http 200 with ${label} as the body is a parse_error, not a proven-empty scan`, async () => {
+    const { deps, emitted, messages } = makeHarness({
+      fetchQueue: [{ status: 200, json: body }],
+      requested: ["custom_gpts"],
+    });
+
+    await runCustomGptsStream(deps);
+
+    assert.equal(emitted.length, 0, `${label}: no records`);
+    assert.equal(customGptsCoverage(messages), undefined, `${label}: must not prove an empty boundary`);
+    assert.equal(messages.filter((m) => m.type === "STATE").length, 0, `${label}: must not commit a cursor`);
+    const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+    assert.ok(skip, `${label}: must emit a SKIP_RESULT`);
+    assert.equal(skip.stream, "custom_gpts");
+    assert.equal(skip.reason, "parse_error", `${label}: is a shape error, not genuine empty`);
+  });
+}
+
 test("runCustomGptsStream: COUNTERWEIGHT — a populated scan still emits records and counts the boundary", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [
@@ -5346,10 +5672,11 @@ test("runCustomGptsStream: COUNTERWEIGHT — a populated scan still emits record
   assert.equal(coverage.covered, 2);
 });
 
-test("runCustomGptsStream: considered counts enumerated items, not emitted records", async () => {
-  // A raw item `buildGizmoRecord` rejects is still an item the source listed.
-  // If `considered` were aliased to the emitted count this run would read as a
-  // clean 1-of-1 instead of the 1-of-2 it actually is.
+test("runCustomGptsStream: considered counts enumerated items, and covered excludes a rejected one (bounded shape_check_failed diagnostic)", async () => {
+  // A raw item `buildGizmoRecord` rejects is still an item the source listed
+  // (`considered`), but it was neither emitted nor fingerprint-suppressed, so
+  // it must NOT inflate `covered` — this run reads 1-of-2 (`partial`), not a
+  // falsely-complete 1-of-1 or a falsely-complete 2-of-2.
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [{ status: 200, json: { items: [{ id: "g-1", display_name: "Planner" }, { not_a_gizmo: true }] } }],
     requested: ["custom_gpts"],
@@ -5361,6 +5688,14 @@ test("runCustomGptsStream: considered counts enumerated items, not emitted recor
   const coverage = customGptsCoverage(messages);
   assert.ok(coverage);
   assert.equal(coverage.considered, 2, "both listed items were weighed");
+  assert.equal(coverage.covered, 1, "covered excludes the rejected item");
+
+  const shapeCheckSkip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.reason === "shape_check_failed"
+  );
+  assert.ok(shapeCheckSkip, "the drop must be diagnosable, not silent");
+  assert.equal(shapeCheckSkip.stream, "custom_gpts");
 });
 
 test("runCustomGptsStream: 403 → SKIP_RESULT('not_available'), no STATE", async () => {
@@ -5437,6 +5772,59 @@ test("runSharedConversationsStream: paginates shared conversations and emits STA
   assert.equal(coverage.covered, 101);
 });
 
+test("runSharedConversationsStream: hitting the PAGINATION_SAFETY_LIMIT with more full pages remaining is truncation — no coverage, no STATE, no fingerprint pruning", async () => {
+  // 51 full (100-item) pages so offset crosses the 5000-item safety cap while
+  // every page is still full — unambiguous proof there was more to list.
+  // Finding 1's concrete scenario: this must not (a) prune fingerprint
+  // carry-forward entries the walk never observed, or (b) emit a false
+  // considered===covered proof of completeness.
+  const harness = makeRecordingEmit(validateRecord);
+  let calls = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      calls += 1;
+      const items = Array.from({ length: 100 }, (_, idx) => ({
+        share_id: `s-${calls}-${idx}`,
+        conversation_id: `c-${calls}-${idx}`,
+        title: `Share ${calls}-${idx}`,
+        create_time: 1_700_000_000,
+      }));
+      return { status: 200, json: { items } };
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["shared_conversations"].map((name) => [name, { name }])),
+  };
+
+  await runSharedConversationsStream(deps);
+
+  assert.ok(calls > 50, "sanity: the walk actually paged past the 5000-item cap");
+  assert.equal(
+    harness.emitted.filter((r) => r.stream === "shared_conversations").length > 0,
+    true,
+    "shares genuinely listed before the cap still emit — only the coverage CLAIM is withheld"
+  );
+  const coverage = sharedConversationsCoverage(harness.protocolMessages);
+  assert.equal(coverage, undefined, "a cap-truncated scan must not claim coverage over its partial prefix");
+  const states = harness.protocolMessages.filter((m) => m.type === "STATE" && m.stream === "shared_conversations");
+  assert.equal(
+    states.length,
+    0,
+    "a cap-truncated scan must not commit STATE (and therefore never prunes fingerprints)"
+  );
+  const skip = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT"
+  );
+  assert.ok(skip);
+  assert.equal(skip.reason, "pagination_cap_truncated");
+});
+
 test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no record", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [{ status: 404, json: null }],
@@ -5477,6 +5865,25 @@ test("runSharedConversationsStream: http 200 with an unreadable body is a failur
   assert.equal(skip.reason, "parse_error");
 });
 
+for (const [label, body] of CHATGPT_WRONG_SHAPE_BODIES) {
+  test(`runSharedConversationsStream: http 200 with ${label} as the body is a parse_error, not a proven-empty scan`, async () => {
+    const { deps, emitted, messages } = makeHarness({
+      fetchQueue: [{ status: 200, json: body }],
+      requested: ["shared_conversations"],
+    });
+
+    await runSharedConversationsStream(deps);
+
+    assert.equal(emitted.length, 0, `${label}: no records`);
+    assert.equal(sharedConversationsCoverage(messages), undefined, `${label}: must not prove an empty boundary`);
+    assert.equal(messages.filter((m) => m.type === "STATE").length, 0, `${label}: must not commit a cursor`);
+    const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+    assert.ok(skip, `${label}: must emit a SKIP_RESULT`);
+    assert.equal(skip.stream, "shared_conversations");
+    assert.equal(skip.reason, "parse_error", `${label}: is a shape error, not genuine empty`);
+  });
+}
+
 test("runSharedConversationsStream: successful EMPTY enumeration proves zero coverage", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [{ status: 200, json: { items: [] } }],
@@ -5493,10 +5900,13 @@ test("runSharedConversationsStream: successful EMPTY enumeration proves zero cov
   assert.equal(coverage.covered, 0);
 });
 
-test("runSharedConversationsStream: a rejected record still counts as considered", async () => {
+test("runSharedConversationsStream: a rejected record counts toward considered but NOT covered, and gets a bounded shape_check_failed diagnostic", async () => {
   // buildSharedConversationRecord returning null for a malformed item must not
-  // shrink `considered` — the source still listed it. Mirrors the custom_gpts
-  // "considered counts enumerated items, not emitted records" invariant.
+  // shrink `considered` — the source still listed it — but it is ALSO not
+  // emitted or fingerprint-suppressed-as-unchanged, so it must not inflate
+  // `covered` either. considered > covered here is the run correctly reading
+  // `partial` rather than fabricating `complete` over a silently-dropped item
+  // (`DetailCoverageParams.covered`'s documented contract).
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [
       {
@@ -5519,7 +5929,17 @@ test("runSharedConversationsStream: a rejected record still counts as considered
   const coverage = sharedConversationsCoverage(messages);
   assert.ok(coverage);
   assert.equal(coverage.considered, 2, "considered counts both listed items, not just the emitted one");
-  assert.equal(coverage.covered, 2);
+  assert.equal(coverage.covered, 1, "covered excludes the rejected item — it was neither emitted nor suppressed");
+
+  const shapeCheckSkip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.reason === "shape_check_failed"
+  );
+  assert.ok(shapeCheckSkip, "a bounded diagnostic must exist so the drop is not silent");
+  assert.equal(shapeCheckSkip.stream, "shared_conversations");
+  const diag = shapeCheckSkip.diagnostics as { raw_keys?: string[] } | undefined;
+  assert.ok(diag?.raw_keys?.includes("conversation_id"), "diagnostic carries structural keys, not values");
+  assert.equal(shapeCheckSkip.message.includes("Malformed"), false, "diagnostic must not leak the raw title text");
 });
 
 test("runSharedConversationsStream: fingerprint-suppressed records on an unchanged re-list still count as covered", async () => {
