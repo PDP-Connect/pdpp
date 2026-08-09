@@ -7515,19 +7515,117 @@ function computeIngestSemanticTime(
   return firstSemanticTimeValue(data, fields) ?? SEMANTIC_TIME_UNKNOWN;
 }
 
+/**
+ * Which already-stored `semantic_time` values a backfill pass is allowed to
+ * rewrite.
+ *
+ *   - `"drift"` (default) preserves the historical registration behaviour:
+ *     rewrite whenever the recomputed value differs from the stored one.
+ *   - `"ingest-stamped"` is the conservative repair mode. It rewrites ONLY
+ *     rows whose stored `semantic_time` is demonstrably not a semantic date:
+ *     empty (already absence, so rewriting is a no-op or a genuine discovery)
+ *     or exactly equal to `emitted_at`, which is the fingerprint of the ingest
+ *     clock having been stamped in as if it were the owner's timeline position.
+ *
+ * The distinction matters because a real semantic date can legitimately differ
+ * from what today's manifest would recompute (a provider corrected a field, a
+ * stream's declared field changed meaning). Blindly recomputing history would
+ * discard those. `"ingest-stamped"` cannot: a value equal to `emitted_at` to
+ * the millisecond carries no information a recompute could destroy.
+ */
+export type SemanticTimeBackfillMode = "drift" | "ingest-stamped";
+
+/**
+ * Per-stream tally of one backfill pass, so a repair caller can PRINT what it
+ * would change before changing anything. `toSemanticDate` and `toAbsence` are
+ * the two honest outcomes: a real date recovered from the declared field, or
+ * absence recorded where the payload carries no semantic date (including the
+ * provider sentinels `coerceSemanticTimeValue` rejects).
+ */
+/** One intended `semantic_time` write, resolved but not yet applied. */
+interface SemanticTimeRepairUpdate {
+  readonly recordKey: string;
+  readonly semanticTime: string;
+}
+
+export interface SemanticTimeBackfillStreamOutcome {
+  readonly connectorInstanceId: string;
+  readonly examined: number;
+  readonly repairable: number;
+  readonly stream: string;
+  readonly toAbsence: number;
+  readonly toSemanticDate: number;
+}
+
+/**
+ * True when `stored` is a value the `"ingest-stamped"` repair mode is allowed
+ * to overwrite. Absence is included so a row that is already correct-as-absent
+ * stays eligible without changing (the caller still skips no-op writes), which
+ * is what makes repeated runs idempotent.
+ */
+function isRepairableSemanticTime(stored: string | null, emittedAt: string | null): boolean {
+  const current = stored ?? SEMANTIC_TIME_UNKNOWN;
+  return current === SEMANTIC_TIME_UNKNOWN || (emittedAt !== null && current === emittedAt);
+}
+
+/**
+ * Decide, for one stream's already-stored rows, which `semantic_time` values
+ * this pass would rewrite and to what.
+ *
+ * Pure with respect to the database: it reads already-fetched rows and returns
+ * the intended writes, so the dry-run preview and the real write are produced
+ * by the same code rather than by an estimator that can drift from the writer.
+ */
+function planSemanticTimeRepairs(
+  connectorId: string,
+  facts: AttemptStreamFacts & { stream: string },
+  rows: readonly unknown[],
+  mode: SemanticTimeBackfillMode
+): { repairable: number; toAbsence: number; toSemanticDate: number; updates: SemanticTimeRepairUpdate[] } {
+  const updates: SemanticTimeRepairUpdate[] = [];
+  let toAbsence = 0;
+  let toSemanticDate = 0;
+  let repairable = 0;
+  for (const row of rows) {
+    const currentSemanticTime = (row as { semantic_time: string | null }).semantic_time;
+    const emittedAt = (row as { emitted_at: string | null }).emitted_at;
+    if (mode === "ingest-stamped" && !isRepairableSemanticTime(currentSemanticTime, emittedAt)) {
+      continue;
+    }
+    repairable += 1;
+    const data = JSON.parse((row as { record_json: string }).record_json);
+    const semanticTime = computeIngestSemanticTime(connectorId, facts.stream, data, facts);
+    if (semanticTime === (currentSemanticTime ?? SEMANTIC_TIME_UNKNOWN)) {
+      continue;
+    }
+    if (semanticTime === SEMANTIC_TIME_UNKNOWN) {
+      toAbsence += 1;
+    } else {
+      toSemanticDate += 1;
+    }
+    updates.push({ recordKey: (row as { record_key: string }).record_key, semanticTime });
+  }
+  return { repairable, toAbsence, toSemanticDate, updates };
+}
+
 // Registration changes can alter the manifest-derived sort facts of already
 // accepted SQLite rows. SQLite deliberately stores only semantic_time (cursor
 // and primary-key positions are derived from canonical record JSON at read
 // time), so repair that persisted fact under the same instance fence used by
 // every writer. This is version-free: a manifest evolution must not append a
 // record change or emit a client notification.
-export async function backfillSqliteRecordSemanticTimesForManifest(manifest: StoredManifest) {
+export async function backfillSqliteRecordSemanticTimesForManifest(
+  manifest: StoredManifest,
+  options: { dryRun?: boolean; mode?: SemanticTimeBackfillMode } = {}
+) {
+  const mode: SemanticTimeBackfillMode = options.mode ?? "drift";
+  const dryRun = options.dryRun === true;
   const connectorId =
     canonicalConnectorKey(manifest.connector_key || manifest.connector_id) ??
     manifest.connector_key ??
     manifest.connector_id;
   if (typeof connectorId !== "string" || !Array.isArray(manifest.streams)) {
-    return { updated: 0 };
+    return { streams: [] as SemanticTimeBackfillStreamOutcome[], updated: 0 };
   }
   const streamFacts = manifest.streams.flatMap((stream) => {
     if (typeof stream?.name !== "string" || !stream.name) {
@@ -7542,7 +7640,7 @@ export async function backfillSqliteRecordSemanticTimesForManifest(manifest: Sto
     ];
   });
   if (streamFacts.length === 0) {
-    return { updated: 0 };
+    return { streams: [] as SemanticTimeBackfillStreamOutcome[], updated: 0 };
   }
 
   const instanceRows = getDb()
@@ -7554,6 +7652,7 @@ export async function backfillSqliteRecordSemanticTimesForManifest(manifest: Sto
     )
     .all(connectorId, ...streamFacts.map((entry) => entry.stream));
   let updated = 0;
+  const streamOutcomes: SemanticTimeBackfillStreamOutcome[] = [];
   const connectorInstanceIds: string[] = instanceRows.map(
     (row: unknown) => (row as { connector_instance_id: string }).connector_instance_id
   );
@@ -7575,27 +7674,36 @@ export async function backfillSqliteRecordSemanticTimesForManifest(manifest: Sto
               WHERE connector_id = ? AND connector_instance_id = ? AND stream = ? AND deleted = 0`
           )
           .all(connectorId, connectorInstanceId, facts.stream);
+        // Planned first, applied second, so a dry run walks exactly the code
+        // that a real run would and reports what it would have written —
+        // rather than a separate estimator that can drift from the writer.
+        const plan = planSemanticTimeRepairs(connectorId, facts, rows, mode);
+        streamOutcomes.push({
+          connectorInstanceId,
+          examined: rows.length,
+          repairable: plan.repairable,
+          stream: facts.stream,
+          toAbsence: plan.toAbsence,
+          toSemanticDate: plan.toSemanticDate,
+        });
+        const planned = plan.updates;
+        updated += planned.length;
+        if (dryRun || planned.length === 0) {
+          continue;
+        }
         writeTransaction(() => {
           const update = getDb().prepare(
             `UPDATE records SET semantic_time = ?
                 WHERE connector_instance_id = ? AND stream = ? AND record_key = ? AND deleted = 0`
           );
-          for (const row of rows) {
-            const data = JSON.parse((row as { record_json: string }).record_json);
-            const semanticTime = computeIngestSemanticTime(connectorId, facts.stream, data, facts);
-            const currentSemanticTime = (row as { semantic_time: string | null }).semantic_time;
-            if (semanticTime === currentSemanticTime) {
-              continue;
-            }
-            const recordKey = (row as { record_key: string }).record_key;
-            update.run(semanticTime, connectorInstanceId, facts.stream, recordKey);
-            updated += 1;
+          for (const entry of planned) {
+            update.run(entry.semanticTime, connectorInstanceId, facts.stream, entry.recordKey);
           }
         });
       }
     });
   });
-  return { updated };
+  return { streams: streamOutcomes, updated };
 }
 
 // Returns the manifest-declared primary_key field names for a stream, or null

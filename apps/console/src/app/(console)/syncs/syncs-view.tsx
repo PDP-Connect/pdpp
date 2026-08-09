@@ -422,7 +422,6 @@ function RecentSyncsSection({ entries, paging }: { entries: readonly RecentSyncE
     <section className="rr-sync__recent" data-testid="syncs-recent-list">
       <div className="rr-sync__section-head">
         <h2 className="rr-sync__section-title">Recent syncs</h2>
-        <Caption>Open one to see what it collected.</Caption>
       </div>
       <RecentSyncsFilterForm paging={paging} />
       {entries.length > 0 ? (
@@ -455,7 +454,6 @@ function RecentSyncsSectionDemo({ entries }: { entries: readonly RecentSyncEntry
     <section className="rr-sync__recent" data-testid="syncs-recent-list">
       <div className="rr-sync__section-head">
         <h2 className="rr-sync__section-title">Recent syncs</h2>
-        <Caption>Open one to see what it collected.</Caption>
       </div>
       {entries.length > 0 ? (
         <Table cols={RECENT_COLS}>
