@@ -1357,15 +1357,46 @@ async function runDeferredRecordIndexes(
 }
 
 /**
- * Yields to the event loop once accumulated synchronous work since the last
- * yield exceeds `INGEST_BATCH_YIELD_BUDGET_MS`. A wall-time budget (rather
- * than a fixed record count) keeps the worst-case starvation window bounded
- * regardless of per-record cost, which varies with payload size.
+ * Pure decision for whether the batch loop below should yield before moving
+ * to the next record. Kept independent of `setImmediate`/timing side
+ * effects so it can be unit-tested directly (see
+ * ingest-batch-yield-decision.test.ts).
+ *
+ * SQLite only: `ingestSqliteRecord`'s durable write is a fully synchronous
+ * better-sqlite3 transaction with no libuv yield of its own (the mechanism
+ * this fix addresses). `ingestPostgresRecord` already performs multiple
+ * real `await client.query(...)` round-trips per record — genuine I/O that
+ * already yields to the event loop — so an explicit yield there is pure
+ * unnecessary scheduler-hop overhead with no starvation to fix.
+ *
+ * Never on the last record: no further batch work follows it before the
+ * function returns, so yielding there buys nothing.
  */
-async function yieldIfIngestBatchBudgetExceeded(lastYieldAt: number): Promise<number> {
+export function shouldYieldBeforeNextIngestRecord(args: {
+  backendIsSqlite: boolean;
+  isLastRecord: boolean;
+  lastYieldAt: number;
+  now: number;
+}): boolean {
+  if (!args.backendIsSqlite || args.isLastRecord) {
+    return false;
+  }
+  return args.now - args.lastYieldAt >= INGEST_BATCH_YIELD_BUDGET_MS;
+}
+
+/**
+ * Thin async wrapper around `shouldYieldBeforeNextIngestRecord` — isolates
+ * the actual `setImmediate` side effect from the pure decision above so the
+ * decision itself stays unit-testable without timing.
+ */
+async function yieldIfIngestBatchRecordDecidesTo(args: {
+  backendIsSqlite: boolean;
+  isLastRecord: boolean;
+  lastYieldAt: number;
+}): Promise<number> {
   const now = performance.now();
-  if (now - lastYieldAt < INGEST_BATCH_YIELD_BUDGET_MS) {
-    return lastYieldAt;
+  if (!shouldYieldBeforeNextIngestRecord({ ...args, now })) {
+    return args.lastYieldAt;
   }
   await yieldImmediate();
   return performance.now();
@@ -1385,7 +1416,12 @@ async function ingestRecordsWithinCoordinator(
     deferIndexes: true,
     ...(runId ? { runId } : {}),
   };
+  // Computed once per batch, not per record: the storage backend cannot
+  // change mid-batch, and this decides whether the explicit yield below
+  // applies at all (SQLite only — see shouldYieldBeforeNextIngestRecord).
+  const backendIsSqlite = !isPostgresStorageBackend();
   let lastYieldAt = performance.now();
+  const lastIndex = records.length - 1;
 
   for (const [index, record] of records.entries()) {
     let outcome: RecordIngestBatchOutcome;
@@ -1421,7 +1457,11 @@ async function ingestRecordsWithinCoordinator(
       }
     }
     outcomes[index] = outcome;
-    lastYieldAt = await yieldIfIngestBatchBudgetExceeded(lastYieldAt);
+    lastYieldAt = await yieldIfIngestBatchRecordDecidesTo({
+      backendIsSqlite,
+      isLastRecord: index === lastIndex,
+      lastYieldAt,
+    });
   }
 
   return {
