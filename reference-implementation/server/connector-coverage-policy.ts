@@ -257,6 +257,57 @@ function deriveGapFreeStreamCoverageCondition(
 }
 
 /**
+ * Whether a PERSISTED `known_zero` count claim is still backed by positive
+ * coverage evidence at read time.
+ *
+ * `count_state` is derived once at write time and serialized; a row that is
+ * never reclassified for repair keeps serving whatever it was written with.
+ * The write path proves `known_zero` from a record-source checkpoint entry,
+ * but Ruling R2 is explicit that checkpoint commitment ALONE never proves
+ * coverage — so a row written before that proof was required, or written
+ * against a checkpoint that no longer implies coverage, keeps asserting an
+ * exact zero the evidence does not support. The read boundary re-asks the
+ * question against the run's own facts.
+ *
+ * The judgement is NOT reimplemented here: it delegates to the same
+ * `evaluateStreamCoherence` contract module `deriveGapFreeStreamCoverageCondition`
+ * uses, so the RI cannot drift from conformance tooling on the same facts.
+ * Skips and pending recoverable gaps are passed through rather than assumed
+ * away — unlike that helper, this predicate is not reached behind precedence
+ * rules that already excluded them, so an unresolved attempt must be able to
+ * reach the contract's `unresolved_attempt` rule directly.
+ *
+ * A stream with NO runtime fact at all returns `false`: absence of evidence is
+ * the honest `unobserved`, never a proven zero.
+ */
+export function persistedZeroRetainsCoverageProof(
+  fact: RuntimeCollectionFact | null,
+  manifestStream: AcceptedCoverageStream | undefined
+): boolean {
+  if (!fact) {
+    return false;
+  }
+  return evaluateStreamCoherence(
+    {
+      checkpoint: fact.checkpoint,
+      collected: fact.collected,
+      considered: fact.considered ?? null,
+      covered: fact.covered ?? null,
+      observed_collected:
+        fact.coverage_statuses !== undefined &&
+        fact.coverage_statuses.length > 0 &&
+        fact.coverage_statuses.every((status) => status === "collected"),
+      pending_detail_gaps: fact.pending_detail_gaps,
+      skipped: fact.skipped,
+    },
+    {
+      accepted_absence: readAcceptedCoveragePolicy(manifestStream),
+      coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
+    }
+  ).proven;
+}
+
+/**
  * Derive one stream's coverage condition from its runtime fact entry plus the
  * stream's manifest policy. Precedence (first match wins), mirroring the
  * evidence order the contract requires:
