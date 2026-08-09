@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 // biome-ignore lint/correctness/noUnresolvedImports: Biome 2.5.5's built-in Node module registry does not yet recognize node:sqlite; Node's own resolver and tsc both resolve it (same pre-existing gap as packages/polyfill-connectors/src/local-device-outbox.ts and its sibling test files).
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -26,6 +26,7 @@ import {
   compactOutbox,
   findLocalCollectorProfiles,
   getBundledConnector,
+  HELP_TEXT,
   inspectLocalOutboxStatus,
   inspectLocalReferenceRoute,
   installInterruptAbort,
@@ -37,12 +38,14 @@ import {
   readLocalOutboxDeadLetterErrorSummary,
   recoverLocalCollector,
   removeLocalCollectorProfile,
+  resolveConnectScopeChoice,
   resolveInspectionOptions,
   resolveLocalCollectorPackageVersion,
   resolveRunProfileOptions,
   retryLocalOutboxDeadLetters,
   runCollectorOnce,
   runCollectorSample,
+  runConnect,
   runLogout,
   runSetup,
   scopedDefaultQueuePath,
@@ -82,6 +85,18 @@ const FRESH_DEVICE_TOKEN_PATTERN = /PDPP_LOCAL_DEVICE_TOKEN="fresh-token"/;
 const FRESH_DEVICE_ID_PATTERN = /PDPP_LOCAL_DEVICE_ID="fresh-device"/;
 const SAMPLE_STOPPED_NOTE_PATTERN = /Sample stopped after/;
 const SAMPLE_COMPLETE_NOTE_PATTERN = /complete pass, not a truncated one/;
+const HELP_RECENT_FLAG_PATTERN = /--recent <days>/;
+const HELP_ALL_FLAG_PATTERN = /--all\b/;
+const HELP_SINCE_FLAG_PATTERN = /--since <iso>/;
+const HELP_SOURCE_ROOTS_FLAG_PATTERN = /--source-roots a,b/;
+const HELP_REQUEST_NOT_GUARANTEE_PATTERN = /REQUEST, not a guarantee/;
+const HELP_NARROWS_ONLY_PATTERN = /narrows-only/;
+const USAGE_ERROR_CONNECT_PATTERN = /\bconnect\b/;
+const HELP_TEXT_CONNECT_PATTERN = /\bconnect\b/;
+const REQUESTED_SCOPE_SERVER_DEFAULT_PATTERN = /server default/;
+const REQUESTED_SCOPE_RECENT_7_PATTERN = /recent 7 day/;
+const REQUESTED_SCOPE_ALL_HISTORY_PATTERN = /all history/;
+const WIDENING_REJECTION_MESSAGE_PATTERN = /wider than the server-declared boundary|already declared a boundary/;
 
 test("runner exports the collector runtime capability profile with collector id", () => {
   assert.equal(COLLECTOR_RUNTIME_CAPABILITIES.id, "collector");
@@ -3188,6 +3203,403 @@ test("runSetup without --sample enrolls and writes the profile but never runs a 
     assert.equal(sampleCalled, false);
     assert.equal(output.sample, null);
     assert.ok(existsSync(output.profile_path));
+  });
+});
+
+// --- connect: resolveConnectScopeChoice (parser/resolver unit tests) ---
+
+test("resolveConnectScopeChoice: no scope flags at all is unspecified", () => {
+  const choice = resolveConnectScopeChoice({ command: "connect" } as CliOptions);
+  assert.deepEqual(choice, { kind: "unspecified" });
+});
+
+test("resolveConnectScopeChoice: --recent <days>", () => {
+  const choice = resolveConnectScopeChoice({ command: "connect", recentDays: 7 } as CliOptions);
+  assert.deepEqual(choice, { kind: "recent", recentDays: 7 });
+});
+
+test("resolveConnectScopeChoice: --all", () => {
+  const choice = resolveConnectScopeChoice({ allHistory: true, command: "connect" } as CliOptions);
+  assert.deepEqual(choice, { kind: "all" });
+});
+
+test("resolveConnectScopeChoice: --since and --source-roots together form one custom choice", () => {
+  const choice = resolveConnectScopeChoice({
+    command: "connect",
+    since: "2026-07-01T00:00:00.000Z",
+    sourceRoots: ["proj-a"],
+  } as CliOptions);
+  assert.deepEqual(choice, { kind: "custom", since: "2026-07-01T00:00:00.000Z", sourceRoots: ["proj-a"] });
+});
+
+test("resolveConnectScopeChoice: --since alone is custom", () => {
+  const choice = resolveConnectScopeChoice({ command: "connect", since: "2026-07-01T00:00:00.000Z" } as CliOptions);
+  assert.deepEqual(choice, { kind: "custom", since: "2026-07-01T00:00:00.000Z" });
+});
+
+test("resolveConnectScopeChoice: --recent and --all together is rejected as ambiguous", () => {
+  assert.throws(
+    () => resolveConnectScopeChoice({ allHistory: true, command: "connect", recentDays: 7 } as CliOptions),
+    CollectorUsageError
+  );
+});
+
+test("resolveConnectScopeChoice: --recent and --since together is rejected as ambiguous", () => {
+  assert.throws(
+    () =>
+      resolveConnectScopeChoice({
+        command: "connect",
+        recentDays: 7,
+        since: "2026-07-01T00:00:00.000Z",
+      } as CliOptions),
+    CollectorUsageError
+  );
+});
+
+test("resolveConnectScopeChoice: --all and --source-roots together is rejected as ambiguous", () => {
+  assert.throws(
+    () => resolveConnectScopeChoice({ allHistory: true, command: "connect", sourceRoots: ["proj-a"] } as CliOptions),
+    CollectorUsageError
+  );
+});
+
+// --- connect: parseArgs recognizes the command and every new flag ---
+
+test("parseArgs: connect with --recent", () => {
+  const options = parseArgs([
+    "connect",
+    "--base-url",
+    "https://pdpp.example.com",
+    "--code",
+    "one-time-code",
+    "--connector",
+    "codex",
+    "--recent",
+    "7",
+  ]);
+  assert.equal(options.command, "connect");
+  assert.equal(options.recentDays, 7);
+});
+
+test("parseArgs: connect with --all", () => {
+  const options = parseArgs([
+    "connect",
+    "--base-url",
+    "https://pdpp.example.com",
+    "--code",
+    "one-time-code",
+    "--connector",
+    "codex",
+    "--all",
+  ]);
+  assert.equal(options.allHistory, true);
+});
+
+test("parseArgs: connect with --since and --source-roots", () => {
+  const options = parseArgs([
+    "connect",
+    "--base-url",
+    "https://pdpp.example.com",
+    "--code",
+    "one-time-code",
+    "--connector",
+    "codex",
+    "--since",
+    "2026-07-01T00:00:00.000Z",
+    "--source-roots",
+    "proj-a,proj-b",
+  ]);
+  assert.equal(options.since, "2026-07-01T00:00:00.000Z");
+  assert.deepEqual(options.sourceRoots, ["proj-a", "proj-b"]);
+});
+
+test("parseArgs: connect with no scope flags leaves them all unset", () => {
+  const options = parseArgs([
+    "connect",
+    "--base-url",
+    "https://pdpp.example.com",
+    "--code",
+    "one-time-code",
+    "--connector",
+    "codex",
+  ]);
+  assert.equal(options.recentDays, undefined);
+  assert.equal(options.allHistory, undefined);
+  assert.equal(options.since, undefined);
+  assert.equal(options.sourceRoots, undefined);
+});
+
+// --- connect: help/copy tests ---
+
+test("help text documents connect and every scope flag", () => {
+  assert.match(HELP_TEXT, HELP_TEXT_CONNECT_PATTERN);
+  assert.match(HELP_TEXT, HELP_RECENT_FLAG_PATTERN);
+  assert.match(HELP_TEXT, HELP_ALL_FLAG_PATTERN);
+  assert.match(HELP_TEXT, HELP_SINCE_FLAG_PATTERN);
+  assert.match(HELP_TEXT, HELP_SOURCE_ROOTS_FLAG_PATTERN);
+  // The honesty guarantee must be stated in the help text itself, not just
+  // in code comments — an operator reading --help should see it.
+  assert.match(HELP_TEXT, HELP_REQUEST_NOT_GUARANTEE_PATTERN);
+  assert.match(HELP_TEXT, HELP_NARROWS_ONLY_PATTERN);
+});
+
+test("usage error string mentions connect alongside every other command", () => {
+  assert.throws(
+    () => parseArgs(["not-a-real-command"]),
+    (err: unknown) => {
+      assert.ok(err instanceof CollectorUsageError);
+      assert.match(err.message, USAGE_ERROR_CONNECT_PATTERN);
+      return true;
+    }
+  );
+});
+
+// --- connect: full command behavior via runConnect ---
+
+test("runConnect: bare invocation (no scope flags) forwards no collection_scope field at all", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    let seenScope: unknown = "not-called";
+    const output = await runConnect(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "connect",
+        connector: "codex",
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+      } as CliOptions,
+      {
+        enroll: (input) => {
+          seenScope = "collectionScope" in input ? input.collectionScope : "absent";
+          return Promise.resolve({
+            connector_id: "codex",
+            device_id: "fresh-device",
+            device_token: "fresh-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          });
+        },
+      }
+    );
+    assert.equal(
+      seenScope,
+      "absent",
+      "connect with no scope flags must not set collectionScope on the enroll call at all"
+    );
+    assert.match(output.requested_scope, REQUESTED_SCOPE_SERVER_DEFAULT_PATTERN);
+    assert.equal(output.object, "local_collector_connect");
+  });
+});
+
+test("runConnect: --recent 7 forwards an explicit since exactly 7 days back", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    let seenScope: { since?: string; source_roots?: string[] } | null | undefined;
+    const fixedNow = "2026-08-09T00:00:00.000Z";
+    const output = await runConnect(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "connect",
+        connector: "codex",
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+        recentDays: 7,
+      } as CliOptions,
+      {
+        enroll: (input) => {
+          seenScope = input.collectionScope;
+          return Promise.resolve({
+            connector_id: "codex",
+            device_id: "fresh-device",
+            device_token: "fresh-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          });
+        },
+        now: () => fixedNow,
+      }
+    );
+    assert.deepEqual(seenScope, { since: "2026-08-02T00:00:00.000Z" });
+    assert.match(output.requested_scope, REQUESTED_SCOPE_RECENT_7_PATTERN);
+  });
+});
+
+test("runConnect: --all forwards an explicit collection_scope: null (full pass)", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    let seenScope: unknown = "not-called";
+    const output = await runConnect(
+      {
+        allHistory: true,
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "connect",
+        connector: "codex",
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+      } as CliOptions,
+      {
+        enroll: (input) => {
+          seenScope = input.collectionScope;
+          return Promise.resolve({
+            connector_id: "codex",
+            device_id: "fresh-device",
+            device_token: "fresh-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          });
+        },
+      }
+    );
+    assert.equal(seenScope, null);
+    assert.match(output.requested_scope, REQUESTED_SCOPE_ALL_HISTORY_PATTERN);
+  });
+});
+
+test("runConnect: --since/--source-roots forward exactly as given", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    let seenScope: unknown;
+    await runConnect(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "connect",
+        connector: "codex",
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+        since: "2026-07-01T00:00:00.000Z",
+        sourceRoots: ["proj-a"],
+      } as CliOptions,
+      {
+        enroll: (input) => {
+          seenScope = input.collectionScope;
+          return Promise.resolve({
+            connector_id: "codex",
+            device_id: "fresh-device",
+            device_token: "fresh-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          });
+        },
+      }
+    );
+    assert.deepEqual(seenScope, { since: "2026-07-01T00:00:00.000Z", source_roots: ["proj-a"] });
+  });
+});
+
+test("runConnect: a server-side widening rejection (400) surfaces as a CollectorUsageError, never a silent local override", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    await assert.rejects(
+      () =>
+        runConnect(
+          {
+            allHistory: true,
+            baseUrl: "https://pdpp.example.com",
+            code: "one-time-code",
+            command: "connect",
+            connector: "codex",
+            json: true,
+            profile: "codex",
+            queuePath: "unused.sqlite",
+          } as CliOptions,
+          {
+            enroll: () => {
+              throw new LocalDeviceHttpError(
+                400,
+                JSON.stringify({
+                  error: {
+                    code: "invalid_request",
+                    message:
+                      "the device requested an unscoped (all-history) pass, but the server has already declared a boundary (since=2026-06-01T00:00:00.000Z)",
+                    param: "collection_scope",
+                  },
+                })
+              );
+            },
+          }
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof CollectorUsageError);
+        assert.match(err.message, WIDENING_REJECTION_MESSAGE_PATTERN);
+        return true;
+      }
+    );
+  });
+});
+
+test("runConnect: writes the local profile with restrictive permissions, same as setup", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    const output = await runConnect(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "connect",
+        connector: "codex",
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+      } as CliOptions,
+      {
+        enroll: () =>
+          Promise.resolve({
+            connector_id: "codex",
+            device_id: "fresh-device",
+            device_token: "fresh-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          }),
+      }
+    );
+    assert.ok(existsSync(output.profile_path));
+    // POSIX permission check mirrors writeLocalCollectorProfile's own test
+    // ("restricts directory and file permissions to the owner").
+    if (process.platform !== "win32") {
+      // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
+      const fileMode = statSync(output.profile_path).mode & 0o777;
+      assert.equal(fileMode, 0o600);
+      // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
+      const dirMode = statSync(dirname(output.profile_path)).mode & 0o777;
+      assert.equal(dirMode, 0o700);
+    }
+  });
+});
+
+test("runConnect: JSON output never leaks the device_token or enrollment code", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    const output = await runConnect(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "super-secret-one-time-code",
+        command: "connect",
+        connector: "codex",
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+      } as CliOptions,
+      {
+        enroll: () =>
+          Promise.resolve({
+            connector_id: "codex",
+            device_id: "fresh-device",
+            device_token: "super-secret-device-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-fresh",
+          }),
+      }
+    );
+    const rendered = JSON.stringify(output);
+    assert.equal(rendered.includes("super-secret-device-token"), false);
+    assert.equal(rendered.includes("super-secret-one-time-code"), false);
   });
 });
 

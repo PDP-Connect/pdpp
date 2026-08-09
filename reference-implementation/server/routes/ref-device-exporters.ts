@@ -26,9 +26,11 @@
 // directly.
 
 import { createHash } from "node:crypto";
+import type { CollectionScope } from "@pdpp/reference-contract/evidence";
 import { handleLocalDeviceTerminalCollection } from "../../operations/local-device-terminal-collection.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { type DeviceAttemptContext, fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
+import { parseDeviceScopeRequest, resolveEnrollmentScope } from "../enrollment-scope-narrowing.ts";
 import { deriveReferenceFreshness } from "../freshness.ts";
 import { presentHeartbeatHealth } from "../heartbeat-lease.ts";
 import { buildStoredCollectionScope, COLLECTION_SCOPE_STATE_KEY } from "../local-collection-scope.ts";
@@ -242,6 +244,7 @@ interface DeviceExporterStore {
     displayName: string | null;
     createdAt: string;
     expiresAt: string;
+    collectionScope?: CollectionScope | null;
   }) => Promise<void>;
   ensureProcessingBatch: (params: {
     deviceId: string;
@@ -773,7 +776,8 @@ async function performFirstEnrollment(
   res: RouteResponse,
   body: Record<string, unknown>,
   enrollment: ReEnrollableEnrollment,
-  now: Date
+  now: Date,
+  effectiveScope: CollectionScope | null
 ): Promise<void> {
   const collectorProtocolVersion = ctx.readCollectorProtocolHeader(req.headers);
   const candidateDeviceId = ctx.generateSpineId("dexp");
@@ -852,24 +856,20 @@ async function performFirstEnrollment(
     updatedAt: now.toISOString(),
   });
 
-  // Apply the boundary the owner declared at intent-creation time (staged on
-  // the enrollment code, since no connection existed yet to hold
-  // `connector_state.$collection_scope`). This is the FIRST write to that
-  // reserved key, so there is no prior proof to declassify — unlike
+  // Apply the EFFECTIVE boundary the route already resolved (server-declared
+  // narrowed-or-honored by the device's request, or the honest recent-history
+  // default when neither side declared anything — see
+  // `enrollment-scope-narrowing.ts`/`resolveEffectiveEnrollmentScope`). This
+  // is the FIRST write to `connector_state.$collection_scope` for this
+  // connection, so there is no prior proof to declassify — unlike
   // `owner-connection-collection-scope.ts`'s PUT handler, which changes an
-  // already-declared boundary. An enrollment that declared none leaves the
-  // key unwritten, which reads back as `unscoped` (see
-  // `readStoredCollectionScope`) — identical to a collector that predates
-  // this mechanism.
-  if (enrollment.collectionScope) {
-    const scopeTarget = referenceLocalDeviceStorageTarget(
-      ctx,
-      enrollConnectorKey,
-      connectorInstance.connectorInstanceId
-    );
-    const stored = buildStoredCollectionScope(enrollment.collectionScope, now.toISOString());
-    await ctx.putSyncState(scopeTarget, { [COLLECTION_SCOPE_STATE_KEY]: stored }, { grantId: null });
-  }
+  // already-declared boundary. `effectiveScope: null` is itself a real,
+  // deliberate declaration (an explicit full pass), written the same way as
+  // any other boundary — never left unwritten, which is why this call is
+  // unconditional rather than gated on truthiness.
+  const scopeTarget = referenceLocalDeviceStorageTarget(ctx, enrollConnectorKey, connectorInstance.connectorInstanceId);
+  const storedScope = buildStoredCollectionScope(effectiveScope, now.toISOString());
+  await ctx.putSyncState(scopeTarget, { [COLLECTION_SCOPE_STATE_KEY]: storedScope }, { grantId: null });
 
   // Test-only interruption point: identity (device, connector instance,
   // source instance) is now fully durable; the code is still pending. This is
@@ -1964,10 +1964,26 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
           );
           return;
         }
+        // The owner minting this code (dashboard/owner-agent) MAY declare the
+        // boundary the device should enroll within — the SAME
+        // `{since?, source_roots?}` shape and reject-not-coerce validation
+        // `enrollment-scope-narrowing.ts`'s `parseDeviceScopeRequest` already
+        // enforces for what a device may separately REQUEST at enroll time.
+        // Staged here on the code (mirroring `mintEnrollmentNextStep`'s
+        // owner-bearer path) rather than written to `connector_state`
+        // directly, because no connection exists yet to hold it.
+        const parsedOwnerScope = parseDeviceScopeRequest(body.collection_scope);
+        if (!parsedOwnerScope.ok) {
+          ctx.pdppError(res, 400, "invalid_request", parsedOwnerScope.message, "collection_scope");
+          return;
+        }
+        const ownerDeclaredScope = parsedOwnerScope.request.kind === "declared" ? parsedOwnerScope.request.scope : null;
+
         const enrollmentCode = ctx.generateReferenceSecret("lde", 18);
         const expiresAt = new Date(now.getTime() + expiresInSeconds * 1000).toISOString();
         await ctx.deviceExporterStore.createEnrollmentCode({
           codeHash: ctx.hashDeviceSecret(enrollmentCode),
+          collectionScope: ownerDeclaredScope,
           connectorId,
           createdAt: now.toISOString(),
           displayName:
@@ -1980,6 +1996,7 @@ export function mountRefDeviceExporterEnrollmentCodes(app: AppLike, ctx: MountRe
           ownerSubjectId: ctx.getOwnerSubjectId(req),
         });
         res.status(201).json({
+          collection_scope: ownerDeclaredScope,
           connector_id: connectorId,
           enrollment_code: enrollmentCode,
           expires_at: expiresAt,
@@ -2055,11 +2072,32 @@ export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceEx
           return;
         }
 
+        // A device MAY offer a scope alongside the code (a `connect`-style
+        // collector's --recent/--all/--since). It is validated and resolved
+        // against whatever the enrollment code already declared BEFORE any
+        // state changes, so a malformed or widening request is rejected with
+        // nothing consumed or written — same fail-closed posture as an
+        // invalid enrollment_code. See `enrollment-scope-narrowing.ts`.
+        const parsedScope = parseDeviceScopeRequest(body.collection_scope);
+        if (!parsedScope.ok) {
+          ctx.pdppError(res, 400, "invalid_request", parsedScope.message, "collection_scope");
+          return;
+        }
+        const scopeVerdict = resolveEnrollmentScope({
+          device: parsedScope.request,
+          now: now.toISOString(),
+          serverDeclared: enrollment.collectionScope,
+        });
+        if (!scopeVerdict.accepted) {
+          ctx.pdppError(res, 400, "invalid_request", scopeVerdict.reason, "collection_scope");
+          return;
+        }
+
         if (await respondIfConsumedCodeReplay(ctx, res, enrollment, now)) {
           return;
         }
 
-        await performFirstEnrollment(ctx, req, res, body, enrollment, now);
+        await performFirstEnrollment(ctx, req, res, body, enrollment, now, scopeVerdict.effective);
       } catch (err) {
         respondEnrollError(ctx, res, err);
       }

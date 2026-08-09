@@ -417,12 +417,19 @@ const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 export interface CollectorEnrollmentConfig {
   baseUrl: string;
   code: string;
+  /**
+   * Narrowing-only scope request forwarded verbatim to the enroll route.
+   * `undefined` sends no `collection_scope` field ("no preference"); an
+   * explicit `null` requests a full pass. See `EnrollmentExchangeRequest`.
+   */
+  collectionScope?: { since?: string; source_roots?: string[] } | null;
   deviceLabel?: string;
 }
 
 export async function enrollCollector(config: CollectorEnrollmentConfig): Promise<EnrollmentExchangeResponse> {
   const client = new LocalDeviceClient({ baseUrl: config.baseUrl });
   return await client.exchangeEnrollment({
+    ...(config.collectionScope === undefined ? {} : { collection_scope: config.collectionScope }),
     enrollment_code: config.code,
     ...(config.deviceLabel ? { deviceLabel: config.deviceLabel } : {}),
   });

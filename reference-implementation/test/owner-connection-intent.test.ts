@@ -480,7 +480,7 @@ test("a boundary declared at intent creation is materialized on enroll and reads
   });
 });
 
-test("omitting collection_scope at intent creation leaves the connection unscoped (regression)", async () => {
+test("omitting collection_scope at intent creation defaults the connection to recent history, not an implicit full pass", async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const intent = (await createIntent(rsUrl, ownerToken, { connector_id: "codex" })).body as IntentResponseBody;
@@ -497,8 +497,12 @@ test("omitting collection_scope at intent creation leaves the connection unscope
     const scopeResp = await getCollectionScope(rsUrl, ownerToken, enrollBody.connector_instance_id ?? "");
     const scopeBody = scopeResp.body as CollectionScopeBody;
     assert.equal(scopeResp.status, 200);
-    assert.equal(scopeBody.scope, null);
-    assert.equal(scopeBody.fingerprint, "unscoped");
+    // Neither the intent NOR the device declared a boundary, so the honest
+    // system default applies: recent history, never an implicit full pass.
+    // See enrollment-scope-narrowing.ts's resolveEffectiveEnrollmentScope.
+    assert.ok(scopeBody.scope?.since, "an undeclared enrollment defaults to a recent-history since, not null");
+    // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
+    assert.match(scopeBody.fingerprint ?? "", /^since=/);
   });
 });
 

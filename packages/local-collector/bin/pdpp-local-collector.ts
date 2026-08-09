@@ -30,6 +30,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
+import { buildConnectScopeRequest, type ConnectScopeChoice, describeConnectScopeChoice } from "../src/connect-scope.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
 import {
   type BundledConnectorEntry,
@@ -43,6 +44,7 @@ import {
   createBundledConnectorRegistry,
   deriveLocalCollectorLifecycleState,
   type EmittedMessage,
+  type EnrollmentExchangeResponse,
   enrollCollector,
   getBundledConnectorFrom,
   isMainModule,
@@ -285,6 +287,7 @@ function hasRepoOnlySiblings(packageRoot: string): boolean {
 }
 
 export interface CliOptions {
+  allHistory?: boolean;
   apply?: boolean;
   args?: string[];
   baseUrl: string;
@@ -300,6 +303,7 @@ export interface CliOptions {
     | "prune-sent"
     | "compact"
     | "setup"
+    | "connect"
     | "connectors"
     | "logout";
   connector?: string;
@@ -319,14 +323,18 @@ export interface CliOptions {
   profile?: string;
   queuePath: string;
   quiet?: boolean;
+  /** connect's --recent [days]: an explicit day count of 0 is meaningful ("just given, use the default"), so this is a count, not a boolean. */
+  recentDays?: number;
   runId?: string;
   sample?: number;
+  since?: string;
   sourceInstanceId?: string;
+  sourceRoots?: string[];
   streams?: string[];
   streamsToBackfill?: string[];
 }
 
-const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
+export const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
 
 Ownership: the local device/host supervisor decides when filesystem-class
 collectors run. The reference server owns enrollment, ingestion, state, health
@@ -341,6 +349,20 @@ Guided setup (start here):
           [--sample <n>]            works before collecting the full source.
           [--profile <name>]        Optional profile file name (default: connector id).
           [--json]                  Machine-readable output instead of human text.
+  connect --base-url <url>        Same enrollment-code exchange as setup, plus a
+          --code <code>             collection-horizon REQUEST: --recent (30 days
+          --connector <id>          if no --recent/--all/--since given), --all
+          [--recent <days>]         (explicit full history), or --since/
+          [--all]                   --source-roots (custom boundary). This is a
+          [--since <iso>]           REQUEST, not a guarantee: the server is the
+          [--source-roots a,b]      sole authority and narrows-only against
+          [--device-label <label>]  whatever it already declared — a request that
+          [--sample <n>]            would WIDEN a server boundary is rejected, not
+          [--profile <name>]        silently clamped. Exactly one of --recent/
+          [--json]                  --all/--since+--source-roots may be given; give
+                                     none to defer entirely to the server (which
+                                     itself defaults to recent history, never an
+                                     implicit full pass, when nothing is declared).
   connectors                      List connector ids this build accepts.
   logout  --connector <id>        Revoke this device's own credential on the
           [--profile <name>]        reference server, then delete the local profile
@@ -547,6 +569,11 @@ async function runOnboardingCommand(options: CliOptions): Promise<void> {
     return;
   }
 
+  if (options.command === "connect") {
+    await runConnect(options);
+    return;
+  }
+
   if (options.command === "connectors") {
     writeJson({ connectors: BUNDLED_CONNECTOR_IDS, object: "local_collector_connector_list" });
     return;
@@ -620,6 +647,7 @@ async function main(): Promise<void> {
   if (
     options.command === "enroll" ||
     options.command === "setup" ||
+    options.command === "connect" ||
     options.command === "connectors" ||
     options.command === "logout"
   ) {
@@ -916,6 +944,179 @@ export async function runSetup(options: CliOptions, deps: RunSetupDeps = {}): Pr
     `\nNext: pdpp-local-collector run --connection-id ${enrollment.source_instance_id}\n` +
       "(the profile above is picked up automatically — no env vars to set by hand)\n"
   );
+  return output;
+}
+
+/**
+ * Read `connect`'s scope flags off parsed options into one
+ * {@link ConnectScopeChoice}, refusing to guess when more than one is given.
+ * `--recent`/`--all`/`--since`+`--source-roots` are mutually exclusive —
+ * combining them would leave it ambiguous which boundary the operator
+ * actually meant, and silently picking one would be exactly the kind of
+ * fabricated-intent bug this whole feature exists to prevent.
+ */
+export function resolveConnectScopeChoice(options: CliOptions): ConnectScopeChoice {
+  const requested = [
+    options.recentDays === undefined ? null : "recent",
+    options.allHistory ? "all" : null,
+    options.since || options.sourceRoots ? "custom" : null,
+  ].filter((v): v is string => v !== null);
+  if (requested.length > 1) {
+    throw new CollectorUsageError(
+      `connect accepts only one of --recent, --all, --since/--source-roots, got: ${requested.join(", ")}`
+    );
+  }
+  if (options.recentDays !== undefined) {
+    return { kind: "recent", recentDays: options.recentDays };
+  }
+  if (options.allHistory) {
+    return { kind: "all" };
+  }
+  if (options.since || options.sourceRoots) {
+    return {
+      kind: "custom",
+      ...(options.since ? { since: options.since } : {}),
+      ...(options.sourceRoots ? { sourceRoots: options.sourceRoots } : {}),
+    };
+  }
+  return { kind: "unspecified" };
+}
+
+export interface ConnectOutput {
+  connector: string;
+  device_id: string;
+  note: string;
+  object: "local_collector_connect";
+  profile_path: string;
+  requested_scope: string;
+  sample: SampleRunOutput | null;
+  source_instance_id: string;
+}
+
+export interface RunConnectDeps {
+  enroll?: typeof enrollCollector;
+  now?: () => string;
+  runSample?: (options: CliOptions) => Promise<SampleRunOutput>;
+}
+
+/**
+ * `connect`: the same enrollment-code exchange `setup` performs, extended
+ * with an optional narrowing-only scope request
+ * (`--recent [days]`/`--all`/`--since`+`--source-roots`).
+ *
+ * This command holds no new credential and mints nothing: it consumes the
+ * SAME one-time enrollment code an owner already minted out of band (a
+ * dashboard, an owner-agent script — exactly how `setup`/`enroll` obtain one
+ * today). The scope flags below are a REQUEST forwarded verbatim to the
+ * enroll route; the server is the sole authority on the EFFECTIVE boundary
+ * (narrows a server-declared one, or applies the honest recent-history
+ * default when neither side declares anything — see
+ * `reference-implementation/server/enrollment-scope-narrowing.ts`). A
+ * request that would WIDEN a server-declared boundary is rejected by the
+ * server with a typed 400, and this command surfaces that rejection as a
+ * `CollectorUsageError` rather than silently falling back to any local
+ * notion of "complete."
+ *
+ * Exactly one of `--recent`, `--all`, `--since`/`--source-roots` may be
+ * given; passing none at all sends no `collection_scope` field, deferring
+ * entirely to the server.
+ */
+export async function runConnect(options: CliOptions, deps: RunConnectDeps = {}): Promise<ConnectOutput> {
+  const enroll = deps.enroll ?? enrollCollector;
+  const runSample = deps.runSample ?? runCollectorSample;
+  const now = deps.now ?? (() => new Date().toISOString());
+
+  if (!options.code) {
+    throw new CollectorUsageError("connect requires --code <one-time-code>");
+  }
+  if (!options.connector) {
+    throw new CollectorUsageError(
+      `connect requires --connector <connector-id>. Supported: ${BUNDLED_CONNECTOR_IDS.join(", ")}.`
+    );
+  }
+  const normalizedConnector = normalizeConnectorId(options.connector);
+  if (!getBundledConnector(normalizedConnector)) {
+    throw new CollectorUsageError(
+      `connector '${options.connector}' is not bundled with pdpp-local-collector. ` +
+        `Supported: ${BUNDLED_CONNECTOR_IDS.join(", ")}.`
+    );
+  }
+
+  const scopeChoice = resolveConnectScopeChoice(options);
+  const nowIso = now();
+  const collectionScope = buildConnectScopeRequest(scopeChoice, nowIso);
+  const requestedScopeDescription = describeConnectScopeChoice(scopeChoice, nowIso);
+
+  let enrollment: EnrollmentExchangeResponse;
+  try {
+    enrollment = await enroll({
+      baseUrl: options.baseUrl,
+      ...(collectionScope === undefined ? {} : { collectionScope }),
+      code: options.code,
+      ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
+    });
+  } catch (error) {
+    if (error instanceof LocalDeviceHttpError && error.status === 400) {
+      throw new CollectorUsageError(
+        `connect could not enroll with the requested scope (${requestedScopeDescription}): ` +
+          `${error.envelopeMessage ?? error.message}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
+
+  const profileName = options.profile ?? normalizedConnector;
+  const profilePath = writeLocalCollectorProfile({
+    baseUrl: options.baseUrl,
+    connectorId: normalizedConnector,
+    deviceId: enrollment.device_id,
+    deviceToken: enrollment.device_token,
+    name: profileName,
+    sourceInstanceId: enrollment.source_instance_id,
+  });
+
+  let sample: SampleRunOutput | null = null;
+  if (options.sample) {
+    const sampleOptions: CliOptions = {
+      ...options,
+      connector: normalizedConnector,
+      deviceId: enrollment.device_id,
+      deviceToken: enrollment.device_token,
+      sourceInstanceId: enrollment.source_instance_id,
+    };
+    sample = await runSample(sampleOptions);
+  }
+
+  const nextCommand = `pdpp-local-collector run --connection-id ${enrollment.source_instance_id}`;
+  const output: ConnectOutput = {
+    connector: normalizedConnector,
+    device_id: enrollment.device_id,
+    note: sample
+      ? `Enrolled with requested scope: ${requestedScopeDescription}. Credentials saved to ${profilePath} ` +
+        `(permissions restricted to your user). Ran a bounded proof pass: ${sample.note} Run \`${nextCommand}\` ` +
+        "to collect the rest of the declared boundary."
+      : `Enrolled with requested scope: ${requestedScopeDescription}. Credentials saved to ${profilePath} ` +
+        `(permissions restricted to your user). Run \`${nextCommand}\` to collect, or add --sample <n> next time ` +
+        "to verify first with a bounded proof pass.",
+    object: "local_collector_connect",
+    profile_path: profilePath,
+    requested_scope: requestedScopeDescription,
+    sample,
+    source_instance_id: enrollment.source_instance_id,
+  };
+
+  if (options.json) {
+    writeJson(output);
+    return output;
+  }
+  writeStdout(`✓ Requested scope: ${requestedScopeDescription}\n`);
+  writeStdout(`✓ Enrolled ${normalizedConnector} (device ${enrollment.device_id}).\n`);
+  writeStdout(`✓ Credentials saved to ${profilePath} (readable only by you).\n`);
+  if (sample) {
+    writeStdout(`✓ ${sample.note}\n`);
+  }
+  writeStdout(`\nNext: ${nextCommand}\n(the profile above is picked up automatically — no env vars to set by hand)\n`);
   return output;
 }
 
@@ -2725,11 +2926,12 @@ export function parseArgs(args: string[]): CliOptions {
     command !== "prune-sent" &&
     command !== "compact" &&
     command !== "setup" &&
+    command !== "connect" &&
     command !== "connectors" &&
     command !== "logout"
   ) {
     throw new CollectorUsageError(
-      "usage: pdpp-local-collector <setup|run|status|doctor|logout|connectors|advertise|enroll|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
+      "usage: pdpp-local-collector <setup|connect|run|status|doctor|logout|connectors|advertise|enroll|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
     );
   }
   const options: CliOptions = {
@@ -2795,6 +2997,10 @@ function applyFlagOption(options: CliOptions, arg: string): boolean {
   }
   if (arg === "--local-only") {
     options.localOnly = true;
+    return true;
+  }
+  if (arg === "--all") {
+    options.allHistory = true;
     return true;
   }
   return false;
@@ -2870,6 +3076,15 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     },
     "--label": (next) => {
       options.deviceLabel = next;
+    },
+    "--recent": (next) => {
+      options.recentDays = parsePositiveInteger("--recent", next);
+    },
+    "--since": (next) => {
+      options.since = next;
+    },
+    "--source-roots": (next) => {
+      options.sourceRoots = parseCsv(next);
     },
   };
   const set = setters[arg];

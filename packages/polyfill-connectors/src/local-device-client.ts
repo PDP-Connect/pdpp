@@ -54,6 +54,16 @@ export interface LocalDeviceClientOptions {
 export const DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface EnrollmentExchangeRequest {
+  /**
+   * Optional narrowing-only scope request. `undefined` (the default) sends
+   * no field at all — "no preference," letting the server's own declared
+   * boundary or honest recent-history default apply. An explicit `null` asks
+   * for a full pass. See `reference-implementation/server/
+   * enrollment-scope-narrowing.ts`: the server is the sole authority on the
+   * EFFECTIVE scope; this can only narrow what it already declared, never
+   * widen it.
+   */
+  collection_scope?: { since?: string; source_roots?: string[] } | null;
   device_label?: string;
   enrollment_code: string;
 }

@@ -8,3 +8,4 @@
 export * from "./coherence.ts";
 export * from "./collection-scope.ts";
 export * from "./named-collection-scope.ts";
+export * from "./scope-narrowing-authority.ts";
