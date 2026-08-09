@@ -246,6 +246,14 @@ CMD ["node", "apps/console/server.js"]
 # deploy/railway/core-first-boot.ts) durable. With a database URL present the
 # runtime selects Postgres and the SQLite default is ignored.
 #
+# PDPP_CONNECTOR_ARTIFACT_ROOT is set explicitly rather than left to its
+# derive-from-PDPP_DB_PATH default. The default would resolve correctly here
+# (dirname of the baked SQLite path is /var/lib/pdpp), but a Postgres
+# deployment ignores PDPP_DB_PATH entirely — pinning the artifact root means
+# durable connector artifacts (the Slack archive, statement PDFs) do not
+# silently depend on an unrelated SQLite default that a future change could
+# move. See packages/polyfill-connectors/src/connector-artifact-root.ts.
+#
 # reference-implementation/server/index.ts's generic
 # shouldAutoReconcilePolyfillManifests() default stays fail-closed for SQLite
 # (it only recognizes the dev script's ../packages/polyfill-connectors/
@@ -283,6 +291,7 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_ORIGIN=http://localhost:3000 \
     PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite \
     PDPP_BROWSER_PROFILE_ROOT=/var/lib/pdpp/browser-profiles \
+    PDPP_CONNECTOR_ARTIFACT_ROOT=/var/lib/pdpp/connector-artifacts \
     PDPP_EMBEDDING_DOWNLOAD_ALLOWED=1 \
     PDPP_EMBEDDING_CACHE_DIR=/var/lib/pdpp/transformers \
     PDPP_EXPLORE_TIMELINE_DIRECTION=1 \

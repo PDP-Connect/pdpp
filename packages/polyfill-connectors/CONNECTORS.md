@@ -41,6 +41,8 @@ These connectors drive a Playwright session against a persistent browser profile
 
 All browser-scrape connectors use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at the deployment-owned `PDPP_BROWSER_PROFILE_ROOT`, defaulting to `~/.pdpp/profiles/<name>/`, full Patchright). Core sets that root to `/var/lib/pdpp/browser-profiles/<name>/`. See `docs/reference/connector-authoring-guide.md`. The legacy shared daemon and shared `~/.pdpp/browser-profile/` were retired 2026-04-25.
 
+Connectors that accumulate bulk on-disk artifacts across runs — the Slack workspace archive, Chase/USAA statement PDFs — resolve their directory with `resolveConnectorArtifactDir('<connector>', [...])` (`src/connector-artifact-root.ts`) instead of computing a path from `homedir()`. It resolves to `PDPP_CONNECTOR_ARTIFACT_ROOT`, else `dirname(PDPP_DB_PATH)/connector-artifacts`, else `~/.pdpp/connector-artifacts` as a local-development fallback that each run discloses in its log. Core pins it to `/var/lib/pdpp/connector-artifacts/`, inside the one documented volume. A `homedir()`-rooted durable path is a data-loss bug: the documented deployment mounts only `/var/lib/pdpp`, so container replacement discards everything else. `src/connector-durable-artifact-placement.test.ts` enforces this; reads from a user drop-box or a foreign tool's home are exempt by name there.
+
 First-run-portability notes are platform-specific and worth reading before handing the connector to a new user:
 
 | Connector | Bootstrap needs | Maintainer-verified | First-run portable | Records (mine) | Notes on first-run |

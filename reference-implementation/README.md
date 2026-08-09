@@ -499,7 +499,14 @@ Persistent mounts are defined for:
 - `packages/polyfill-connectors/.pdpp-data/` bind-mounted to `/var/lib/pdpp`,
   with `PDPP_DB_PATH` at `/var/lib/pdpp/pdpp.sqlite`
 - `PDPP_EMBEDDING_CACHE_DIR` at `/var/cache/pdpp/transformers`
-- `~/.pdpp/` for browser profiles, daemon files, and connector session state
+
+Durable connector artifacts — the Slack workspace archive, downloaded
+statement PDFs — resolve under `PDPP_CONNECTOR_ARTIFACT_ROOT`, which Core
+pins to `/var/lib/pdpp/connector-artifacts`. They are on the volume above; no
+separate mount is needed. Outside a container, with neither that variable nor
+`PDPP_DB_PATH` set, they fall back to `~/.pdpp/connector-artifacts` and each
+run says so in its log. See
+`packages/polyfill-connectors/src/connector-artifact-root.ts`.
 
 The first boot may download the default MiniLM model into the embedding cache.
 Set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you want to avoid that and accept
