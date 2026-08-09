@@ -246,6 +246,68 @@ export function runCaptureForTest(command: string[], cwd: string): Promise<Captu
   );
 }
 
+/**
+ * Materialize a suite's declared generated prerequisites before its children run.
+ *
+ * Some suites import build artifacts that are gitignored on purpose (e.g. the
+ * site's `src/generated/spec-front-matter.ts`, assembled from the normative root
+ * spec by apps/site/scripts/sync-spec-docs.mjs). `predev`/`prebuild` build those
+ * for the dev and build paths, but the accounting runner spawns the test child
+ * directly and so never triggered them — the artifact was simply absent and the
+ * import failed closed.
+ *
+ * Runs with the suite's own cwd and environment so a prepare command sees exactly
+ * what its children will see. Failure is fatal and attributed to the suite: a
+ * prerequisite that cannot be built must never look like a passing test run.
+ * The caller re-asserts a clean source tree afterwards, so a prepare command that
+ * writes a TRACKED file is still caught by the existing clean-tree gate.
+ */
+function prepareSuite(suite: Suite, cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const command = suite.prepare;
+  if (!command) {
+    return Promise.resolve();
+  }
+  const [file, ...rest] = command;
+  if (!file) {
+    return Promise.reject(new Error(`${suite.id} prepare command is empty`));
+  }
+  reportProgress(`${suite.id}: preparing (${command.join(" ")})`);
+  return new Promise((resolvePrepare, reject) => {
+    const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout?.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0 && !signal) {
+        resolvePrepare();
+        return;
+      }
+      reject(
+        new Error(
+          `${suite.id} prepare failed (exit ${code ?? "null"}${signal ? `, signal ${signal}` : ""}): ${output.trim()}`
+        )
+      );
+    });
+  });
+}
+
+/**
+ * Test seam over the real `prepareSuite` above — same spawn, same env
+ * composition, same failure attribution. Kept deliberately thin so a test
+ * through this seam fails exactly when `prepareSuite` regresses.
+ */
+export function runPrepareForTest(suite: Suite, root: string): Promise<void> {
+  return prepareSuite(suite, resolve(root, suite.cwd), {
+    ...process.env,
+    ...(suite.environment ?? {}),
+  });
+}
+
 function requiredByDefault(entry: ProfileEntry): boolean {
   return typeof entry === "string" || entry.required !== false;
 }
@@ -467,16 +529,15 @@ export async function runAuthority({
       `${JSON.stringify({ event: "start", run_id: runId, nonce, started_at: startedAt, suite: issued.suite, profile: issued.profile, files: issued.files, cwd: issued.cwd, argv: issued.argv })}\n`
     );
     const command = leafCommand(run, authorityPath, root);
+    // One environment and cwd for both the prepare step and the children, so a
+    // prerequisite is always built under the same resolver config that will load it.
+    const suiteCwd = resolve(root, run.suite.cwd);
+    const suiteEnv = { ...process.env, PDPP_TEST_PROFILE: profileId, ...(run.suite.environment ?? {}) };
     let observed: CaptureResult;
     try {
+      await prepareSuite(run.suite, suiteCwd, suiteEnv);
       observed = command
-        ? await capture(
-            command,
-            resolve(root, run.suite.cwd),
-            { ...process.env, PDPP_TEST_PROFILE: profileId, ...(run.suite.environment ?? {}) },
-            transcript,
-            issued
-          )
+        ? await capture(command, suiteCwd, suiteEnv, transcript, issued)
         : { exit_code: 0, signal: null, stdout: "", stderr: "" };
       if (!command) {
         reportProgress(`${issued.suite}/${issued.profile}: zero-test declaration, nothing spawned`);
