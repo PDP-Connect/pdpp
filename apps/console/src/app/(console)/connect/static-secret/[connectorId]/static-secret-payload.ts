@@ -20,6 +20,7 @@ function missingFieldMessage(field: StaticSecretSetupField): string {
 
 function bundledSecretPayload(setup: StaticSecretSetup, formData: FormReader): { error: string } | { secret: string } {
   const fields: Record<string, string> = {};
+  const secretFields = setup.credential_capture.fields.filter((field) => field.secret);
   for (const field of setup.credential_capture.fields) {
     const value = asString(formData.get(field.name));
     if (!value && field.required) {
@@ -28,6 +29,17 @@ function bundledSecretPayload(setup: StaticSecretSetup, formData: FormReader): {
     if (value) {
       fields[field.name] = value;
     }
+  }
+  // When no secret field is individually required (an "at least one
+  // credential path" manifest, e.g. Jellyfin's username+password OR API
+  // key), a fully empty submission would otherwise sail through with an
+  // empty bundle. Require at least one secret field to be filled.
+  if (
+    secretFields.length > 0 &&
+    !secretFields.some((field) => field.required) &&
+    !secretFields.some((field) => fields[field.name])
+  ) {
+    return { error: `${secretFields.map((field) => field.label).join(" or ")} is required.` };
   }
   return { secret: JSON.stringify(fields) };
 }

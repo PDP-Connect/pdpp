@@ -204,6 +204,149 @@ test("secret bundles can include required non-secret setup fields needed by the 
   });
 });
 
+test("at-least-one-path bundles reject a fully empty submission instead of storing an empty bundle", () => {
+  const form = new FormData();
+  form.set("base_url", "https://jellyfin.example.com");
+
+  const payload = buildStaticSecretPayload(
+    setup({
+      credential_capture: {
+        description: null,
+        fields: [
+          {
+            autocomplete: "off",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Jellyfin Server Base URL",
+            name: "base_url",
+            placeholder: null,
+            required: true,
+            secret: false,
+            type: "text",
+          },
+          {
+            autocomplete: "username",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Jellyfin Username",
+            name: "username",
+            placeholder: null,
+            required: false,
+            secret: true,
+            type: "text",
+          },
+          {
+            autocomplete: "current-password",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Jellyfin Password",
+            name: "password",
+            placeholder: null,
+            required: false,
+            secret: true,
+            type: "password",
+          },
+          {
+            autocomplete: "off",
+            description: null,
+            help_text: null,
+            help_url: null,
+            identity: false,
+            label: "Jellyfin API Key (advanced, admin-only)",
+            name: "secret",
+            placeholder: null,
+            required: false,
+            secret: true,
+            type: "password",
+          },
+        ],
+        kind: "username_password",
+        label: "Jellyfin sign-in details",
+        submit_label: null,
+      },
+      credential_kind: "username_password",
+    }),
+    form
+  );
+
+  assert.equal(payload.ok, false);
+  assert.equal(
+    payload.ok ? "" : payload.error,
+    "Jellyfin Username or Jellyfin Password or Jellyfin API Key (advanced, admin-only) is required."
+  );
+});
+
+test("at-least-one-path bundles accept a submission that fills exactly one credential path", () => {
+  const form = new FormData();
+  form.set("base_url", "https://jellyfin.example.com");
+  form.set("secret", "real-api-key");
+
+  const sourceSetup = setup({
+    credential_capture: {
+      description: null,
+      fields: [
+        {
+          autocomplete: "off",
+          description: null,
+          help_text: null,
+          help_url: null,
+          identity: false,
+          label: "Jellyfin Server Base URL",
+          name: "base_url",
+          placeholder: null,
+          required: true,
+          secret: false,
+          type: "text",
+        },
+        {
+          autocomplete: "username",
+          description: null,
+          help_text: null,
+          help_url: null,
+          identity: false,
+          label: "Jellyfin Username",
+          name: "username",
+          placeholder: null,
+          required: false,
+          secret: true,
+          type: "text",
+        },
+        {
+          autocomplete: "off",
+          description: null,
+          help_text: null,
+          help_url: null,
+          identity: false,
+          label: "Jellyfin API Key (advanced, admin-only)",
+          name: "secret",
+          placeholder: null,
+          required: false,
+          secret: true,
+          type: "password",
+        },
+      ],
+      kind: "username_password",
+      label: "Jellyfin sign-in details",
+      submit_label: null,
+    },
+    credential_kind: "username_password",
+  });
+
+  const payload = buildStaticSecretPayload(sourceSetup, form);
+
+  assert.equal(payload.ok, true);
+  assert.deepEqual(JSON.parse(payload.ok ? payload.secret : ""), {
+    base_url: "https://jellyfin.example.com",
+    secret: "real-api-key",
+  });
+});
+
 test("required bundled fields fail before capture instead of storing incomplete credentials", () => {
   const form = new FormData();
   form.set("username", "owner@example.com");

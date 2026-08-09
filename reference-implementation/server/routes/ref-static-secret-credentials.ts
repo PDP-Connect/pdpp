@@ -749,6 +749,74 @@ async function validateCredentialKind(
   return contract;
 }
 
+// A manifest declares an "at least one path" shape when 2+ secret fields
+// exist and none is individually required — e.g. Jellyfin's username+password
+// OR API key. Per-field `required` checks never fire on a fully empty
+// submission for that shape, so it needs its own presence check.
+function isAtLeastOnePathContract(secretFields: readonly StaticSecretSetupField[]): boolean {
+  return secretFields.length >= 2 && !secretFields.some((field) => field.required);
+}
+
+function parseSecretBundle(secret: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(secret);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function bundleHasAnySecret(bundle: Record<string, unknown>, secretFields: readonly StaticSecretSetupField[]): boolean {
+  return secretFields.some((field) => {
+    const value = bundle[field.name];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+// Guards an "at least one path" manifest against a fully empty submission,
+// which would otherwise be stored and reported as "credential captured"
+// with nothing actually captured. A single-secret contract is unaffected:
+// its field is either required already, or has nothing else to be "at
+// least one of".
+async function assertBundledSecretNotEmpty(
+  ctx: MountRefStaticSecretCredentialsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  namespace: ConnectorNamespace,
+  credentialKind: string | null,
+  ownerSubjectId: string | null,
+  contract: StaticSecretCredentialContract,
+  secret: string
+): Promise<boolean> {
+  const secretFields = contract.fields.filter((field) => field.secret);
+  if (!isAtLeastOnePathContract(secretFields)) {
+    return true;
+  }
+  if (bundleHasAnySecret(parseSecretBundle(secret), secretFields)) {
+    return true;
+  }
+  await emitCaptureAudit(ctx, req, res, {
+    connectionId: namespace.connectorInstanceId,
+    connectorId: namespace.connectorId,
+    credentialKind,
+    error: errWithCode("missing_credential"),
+    outcome: "failed",
+    ownerSubjectId,
+  });
+  ctx.pdppError(
+    res,
+    400,
+    "missing_credential",
+    `At least one of ${secretFields.map((field) => field.label).join(", ")} is required.`,
+    "secret"
+  );
+  return false;
+}
+
 // Stores the validated credential and sends the success response.
 async function storeAndRespond(
   ctx: MountRefStaticSecretCredentialsContext,
@@ -855,6 +923,11 @@ async function runStaticSecretCredentialCapture(
   state.namespace = namespace;
   const contract = await validateCredentialKind(ctx, req, res, namespace, credentialKind, ownerSubjectId);
   if (!contract) {
+    return;
+  }
+  if (
+    !(await assertBundledSecretNotEmpty(ctx, req, res, namespace, credentialKind, ownerSubjectId, contract, secret))
+  ) {
     return;
   }
   const submittedSetupFields = parseStaticSecretSetupFields(setupFieldsRaw, contract.fields, (code, message, param) =>

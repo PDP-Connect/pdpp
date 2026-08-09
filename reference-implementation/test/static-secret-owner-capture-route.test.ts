@@ -454,6 +454,69 @@ test("capture rejects foreign and non-static-secret connections without storing 
   });
 });
 
+test("capture rejects an empty credential bundle for an at-least-one-path manifest instead of claiming it was captured", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "jellyfin");
+      await seedInstance({ connectorId: "jellyfin", connectorInstanceId: "cin_jellyfin_personal" });
+      const cookie = await login(asUrl);
+
+      const { status, body, text, resp } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_jellyfin_personal",
+        "{}",
+        "username_password"
+      );
+      assert.equal(status, 400);
+      assert.equal(errorOf(body).code, "missing_credential");
+
+      const audit = findCaptureAuditEvent(resp);
+      assert.equal(audit.status, "failed");
+      assert.equal(errorOf(dataOf(audit)).code, "missing_credential");
+      assert.ok(!text.includes("captured"), "an empty bundle must never be reported as captured");
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      assert.equal(
+        await store.getMetadata("cin_jellyfin_personal"),
+        null,
+        "nothing should be stored for an empty credential bundle"
+      );
+    });
+  });
+});
+
+test("capture accepts an at-least-one-path manifest when exactly one credential path is fully present", async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withServer(async ({ asUrl }) => {
+      await registerConnector(asUrl, "jellyfin");
+      await seedInstance({ connectorId: "jellyfin", connectorInstanceId: "cin_jellyfin_apikey" });
+      const cookie = await login(asUrl);
+
+      const { status, body } = await captureCredential(
+        asUrl,
+        cookie,
+        "cin_jellyfin_apikey",
+        JSON.stringify({ secret: "real-jellyfin-api-key" }),
+        "username_password"
+      );
+      assert.equal(status, 201);
+      assert.equal(credentialOf(body).present, true);
+
+      const store = createSqliteConnectorInstanceCredentialStore({
+        env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
+      });
+      const recovered = await store.recoverSecret({
+        connectorInstanceId: "cin_jellyfin_apikey",
+        ownerSubjectId: OWNER_SUBJECT_ID,
+      });
+      assert.equal(recovered.secret, JSON.stringify({ secret: "real-jellyfin-api-key" }));
+    });
+  });
+});
+
 test("capture rejects wrong credential kind with a non-secret audit event", async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
