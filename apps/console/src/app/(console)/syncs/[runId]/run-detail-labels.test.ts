@@ -54,7 +54,10 @@ test("stat-card row labels are Title Case, not the raw field name", () => {
   assert.equal(describeProgressStatLabel("last_count"), "Last count");
   assert.equal(describeProgressStatLabel("last_total"), "Last total");
   assert.equal(describeProgressStatLabel("reports"), "Reports");
-  assert.equal(describeProgressStatLabel("skipped"), "Skipped");
+  // Named in its unit: the stat counts `run.stream_skipped` events, which a
+  // connector emits per dropped RECORD. A bare "Skipped" next to a number
+  // read as a stream count.
+  assert.equal(describeProgressStatLabel("skipped"), "Skipped items");
   assert.equal(describeInteractionStatLabel("required"), "Required");
   assert.equal(describeInteractionStatLabel("completed"), "Completed");
 });

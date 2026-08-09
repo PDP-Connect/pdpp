@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RefCollectionReportEntry, RefCoverageAxis } from "./ref-client.ts";
+import type { RefCollectionReportEntry, RefCoverageAxis, SpineEvent } from "./ref-client.ts";
 import {
   classifyKnownGaps,
   connectorHasPartialCoverageFromReport,
@@ -14,6 +14,7 @@ import {
   type KnownGap,
   normalizeKnownGaps,
   resolvePartialCoverageCue,
+  summarizeSkippedStreams,
 } from "./run-gaps.ts";
 
 /** Minimal valid Collection Report entry for the coverage condition under test. */
@@ -344,5 +345,102 @@ test("resolvePartialCoverageCue falls back to the known_gaps heuristic only when
       totalRecords: 0,
     }),
     false
+  );
+});
+
+/**
+ * Reproduces the shape the owner hit: one stream, many per-record SKIP_RESULTs,
+ * each carrying `reason` and a `diagnostics.issues` entry. The page counted the
+ * events, called them streams, and said no reason was recorded.
+ */
+function skipEvent(stream: string, data: Record<string, unknown>): SpineEvent {
+  return {
+    actor_id: "connector",
+    actor_type: "runtime",
+    client_id: null,
+    data,
+    event_id: `evt_${stream}_${JSON.stringify(data).length}_${Math.trunc(data.seq as number)}`,
+    event_type: "run.stream_skipped",
+    grant_id: null,
+    interaction_id: null,
+    object_id: "run_1",
+    object_type: "run",
+    occurred_at: "2026-08-08T00:00:00.000Z",
+    recorded_at: "2026-08-08T00:00:00.000Z",
+    request_id: null,
+    run_id: "run_1",
+    scenario_id: null,
+    status: "skipped",
+    stream_id: stream,
+    subject_id: null,
+    subject_type: null,
+    token_id: null,
+    trace_id: "trace_1",
+    version: "1",
+  };
+}
+
+test("summarizeSkippedStreams counts skipped records, and reports the streams separately", () => {
+  // 304 skips, all inside ONE stream. The count is records; streams is 1.
+  const events = Array.from({ length: 304 }, (_, seq) => skipEvent("messages", { reason: "shape_check_failed", seq }));
+
+  const summary = summarizeSkippedStreams(events);
+
+  assert.equal(summary.count, 304, "the event count is a record count");
+  assert.deepEqual(summary.streams, ["messages"], "304 record skips touched exactly one stream");
+});
+
+test("summarizeSkippedStreams reports the reason the connector recorded", () => {
+  const events = [
+    skipEvent("messages", { reason: "shape_check_failed", seq: 0 }),
+    skipEvent("messages", { reason: "shape_check_failed", seq: 1 }),
+    skipEvent("attachments", { reason: "rate_limited", seq: 2 }),
+  ];
+
+  const summary = summarizeSkippedStreams(events);
+
+  assert.equal(summary.unexplainedCount, 0, "every one of these recorded a reason");
+  assert.deepEqual(
+    summary.reasons.map((entry) => [entry.reason, entry.count]),
+    [
+      ["shape_check_failed", 2],
+      ["rate_limited", 1],
+    ],
+    "reasons are grouped with a per-reason record count, most frequent first"
+  );
+});
+
+test("summarizeSkippedStreams surfaces the failing field path and message from diagnostics", () => {
+  const events = [
+    skipEvent("messages", {
+      diagnostics: {
+        id: "m_1",
+        issues: [{ message: "Required", path: "created_at" }],
+        record: { id: "m_1" },
+      },
+      reason: "shape_check_failed",
+      seq: 0,
+    }),
+  ];
+
+  const summary = summarizeSkippedStreams(events);
+
+  assert.deepEqual(summary.reasons[0]?.diagnostics, { message: "Required", path: "created_at" });
+});
+
+test("summarizeSkippedStreams counts as unexplained only the skips carrying no reason", () => {
+  const events = [
+    skipEvent("messages", { reason: "shape_check_failed", seq: 0 }),
+    skipEvent("messages", { seq: 1 }),
+    skipEvent("messages", { reason: "", seq: 2 }),
+  ];
+
+  const summary = summarizeSkippedStreams(events);
+
+  assert.equal(summary.unexplainedCount, 2, "an absent or empty reason is unexplained");
+  assert.deepEqual(
+    summary.reasons.map((entry) => entry.reason),
+    ["shape_check_failed"],
+    "and the recorded reason is still reported alongside them"
   );
 });
