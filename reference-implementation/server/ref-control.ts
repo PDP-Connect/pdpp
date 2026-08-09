@@ -1366,7 +1366,13 @@ function projectStreamRecordSummariesWithDeclaredZeros(
   const synthesized = manifestStreams
     .map((stream) => stream.name)
     .filter((name): name is string => typeof name === "string" && name.length > 0 && !present.has(name))
-    .map((name) => ({ last_updated: null, record_count: 0, stream: name }));
+    // `retainedSizeReliable` vouches that the connection's retained-size
+    // projection is fresh and clean, but a sparse projection still cannot
+    // tell "measured zero" from "never measured" for a stream it has no row
+    // for. The synthesized entry stays (callers rely on declared streams
+    // being present) while `count_state` states plainly that the zero is
+    // unobserved, so no consumer reads it as an exact-zero claim.
+    .map((name) => ({ count_state: "unobserved" as const, last_updated: null, record_count: 0, stream: name }));
   if (synthesized.length === 0) {
     return summaries;
   }
@@ -5105,14 +5111,13 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // exact count alongside it. `unobserved` (no evidence row at all) is
   // distinct from `stale` (an evidence row exists but its snapshot is not
   // current) — both are non-authoritative, but `stale` additionally implies
-  // "we once knew a real value, unverified since."
+  // "we once knew a real value, unverified since." A zero total on a current
+  // snapshot additionally needs positive per-stream proof before it can claim
+  // `known_zero` — see `aggregateCountState`.
   const totalRecordsState: ConnectorSummary["total_records_state"] = evidence
     ? // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
       recordSnapshotCurrent
-      ? // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
-        totalRecords > 0
-        ? "known"
-        : "known_zero"
+      ? aggregateCountState(evidence.stream_records, totalRecords)
       : "stale"
     : "unobserved";
   const retainedBytes = evidence ? evidence.retained_bytes : live.retainedBytes;
@@ -6122,7 +6127,30 @@ function deriveRetainedCountState(
   if (evidence.record_snapshot.state !== "current") {
     return "stale";
   }
-  return totalRecords > 0 ? "known" : "known_zero";
+  return aggregateCountState(evidence.stream_records, totalRecords);
+}
+
+/**
+ * Aggregate `total_records_state` over a current snapshot's per-stream
+ * evidence. A zero total is only an authoritative `known_zero` when every
+ * stream contributing to it carries its own positive proof of zero; if any
+ * counted stream was never canonically observed, the total is an absence of
+ * evidence rather than a measured zero, so it reads `unobserved`. A nonzero
+ * total is a real measurement and stays `known` regardless.
+ */
+function aggregateCountState(
+  streamRecords: readonly { readonly count_state?: string }[] | undefined,
+  totalRecords: number
+): "known" | "known_zero" | "unobserved" {
+  if (totalRecords > 0) {
+    return "known";
+  }
+  if (!streamRecords || streamRecords.length === 0) {
+    return "unobserved";
+  }
+  return streamRecords.every((entry) => entry.count_state === "known_zero" || entry.count_state === "known")
+    ? "known_zero"
+    : "unobserved";
 }
 
 async function projectConnectorRetainedCountSummaryPage(

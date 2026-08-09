@@ -234,6 +234,21 @@ function seedCanonicalRecordSqlite({
     );
 }
 
+/**
+ * Record that a stream was canonically OBSERVED — what ingest does when it
+ * allocates a version. An empty stream is only a PROVEN zero (`known_zero`)
+ * once this exists; without it the stream is merely `unobserved`. See
+ * `connector-summary-count-state-proof.test.ts`.
+ */
+function seedObservedStreamSqlite({ connectorInstanceId = INSTANCE_ID, stream = STREAM, maxVersion = 1 }: any = {}) {
+  getDb()
+    .prepare(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(CONNECTOR_ID, connectorInstanceId, stream, maxVersion);
+}
+
 function seedRetainedConnectionSqlite({ dirty = 0, computedAt = NOW }: any = {}) {
   getDb()
     .prepare(
@@ -369,6 +384,9 @@ test("declared empty stream exposes known_zero only after a current canonical sn
     seedConnectorSqlite();
     seedInstanceSqlite();
     seedHealthyRetainedSnapshotSqlite({ streamCount: 1 });
+    // The stream was canonically observed and holds no records — the only
+    // shape that proves an exact zero rather than a never-collected absence.
+    seedObservedStreamSqlite({ stream: EMPTY_STREAM });
     await rebuildRetainedSize();
     // Terminal-gate revision (2026-07-29): the summary-evidence barrier is no
     // longer implicit on read — simulate the maintenance sweep explicitly so
