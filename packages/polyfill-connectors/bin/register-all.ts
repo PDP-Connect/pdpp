@@ -19,8 +19,10 @@ import { config as dotenvConfig } from "dotenv";
 import {
   DEFAULT_AS_URL,
   DEFAULT_RS_URL,
+  KNOWN_CONNECTOR_NAMES,
   readManifest,
   registerManifest,
+  selectRegisterAllConnectors,
   startEmbeddedServer,
 } from "../src/orchestrator.ts";
 
@@ -28,48 +30,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
 dotenvConfig({ path: join(REPO_ROOT, ".env.local") });
 
-const CONNECTORS = [
-  "ynab",
-  "gmail",
-  "chatgpt",
-  "usaa",
-  "amazon",
-  "github",
-  "oura",
-  "spotify",
-  "anthropic",
-  "shopify",
-  "heb",
-  "wholefoods",
-  "linkedin",
-  "meta",
-  "loom",
-  "uber",
-  "doordash",
-  "whatsapp",
-  "slack",
-  "google_takeout",
-  "google_maps",
-  "google_maps_data_portability",
-  "google_calendar",
-  "google_contacts",
-  "twitter_archive",
-  "imessage",
-  "strava",
-  "notion",
-  "reddit",
-  "claude_code",
-  "codex",
-  "apple_health",
-  "apple_photos",
-  "ical",
-  "apple_contacts",
-  "google_messages",
-  // 'pocket' intentionally excluded — Mozilla shut Pocket down 2025-07-08; the
-  // shipped manifest is now public_listing.listed=false /
-  // status=deprecated_upstream / recommended_mode=manual. See
-  // openspec/changes/add-polyfill-connector-system/design-notes/platform-bootstrap-research.md
-];
+// A hand-maintained list here previously drifted silently from the
+// orchestrator's connector registry, omitting real connectors with no CI
+// signal. selectRegisterAllConnectors is the shared, directly-tested
+// selection logic — see bin/register-all-completeness.test.ts.
+const CONNECTORS = selectRegisterAllConnectors(KNOWN_CONNECTOR_NAMES, readManifest);
 
 // startEmbeddedServer's return type is declared as `Promise<unknown>` in the
 // orchestrator. Model the actual shape used here so the finally-block
