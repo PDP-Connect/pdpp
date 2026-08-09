@@ -53,6 +53,7 @@ import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import {
   dateDirectoryInRange,
   type EnumerationScope,
+  enumerationScopeFingerprint,
   isPathWithinSourceRoots,
   readEnumerationScope,
   scopeBoundsEnumeration,
@@ -1879,7 +1880,15 @@ async function main(): Promise<void> {
   // surface an honest `missing` coverage row, not abort the run with zero
   // coverage evidence — see emitCoverageDiagnostics. The inventory walk reads
   // only path metadata, never payload, so it is safe on a partial/empty home.
-  const inventory = await buildLocalSourceInventory("codex", dirs.codexHome, CODEX_KNOWN_LOCAL_STORES);
+  const enumerationScope = readEnumerationScope(requested, ["sessions", "messages", "function_calls"]);
+  // The measured boundary is stamped onto the coverage records themselves,
+  // so it commits atomically with the evidence it qualifies.
+  const inventory = await buildLocalSourceInventory(
+    "codex",
+    dirs.codexHome,
+    CODEX_KNOWN_LOCAL_STORES,
+    enumerationScopeFingerprint(enumerationScope)
+  );
   await emitCoverageDiagnostics({ emitRecord, inventory, requested });
   await assertRequestedCodexSources(dirs, requested);
 
@@ -1887,7 +1896,6 @@ async function main(): Promise<void> {
   // threads through. Applied at ENUMERATION: the rollout tree is laid out as
   // yyyy/mm/dd, so a `since` prunes whole years, months, and days before they
   // are listed, and `source_roots` skips out-of-root files before they open.
-  const enumerationScope = readEnumerationScope(requested, ["sessions", "messages", "function_calls"]);
   if (scopeBoundsEnumeration(enumerationScope)) {
     emit({
       type: "PROGRESS",

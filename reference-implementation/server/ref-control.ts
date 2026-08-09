@@ -2826,8 +2826,18 @@ function collectionEvidenceScopeIsStale(
   if (declaredScope === undefined || declaredScope === null) {
     return false;
   }
-  const measured = typeof evidenceScope === "string" && evidenceScope.trim() ? evidenceScope.trim() : "unscoped";
-  return measured !== declaredScope.trim();
+  const declared = declaredScope.trim();
+  const measured = typeof evidenceScope === "string" && evidenceScope.trim() ? evidenceScope.trim() : null;
+  if (measured === null) {
+    // The evidence records no boundary. That is a pre-scope collector, which by
+    // definition ran a full pass, so it satisfies an `unscoped` declaration and
+    // nothing narrower. Defaulting it to "unscoped" and comparing equal would
+    // credit a bound it never enforced; defaulting it to stale would strand
+    // every legacy connection. Neither -- the claim is exactly as strong as the
+    // evidence.
+    return declared !== "unscoped";
+  }
+  return measured !== declared;
 }
 
 export function buildCollectionReport(input: {
@@ -3193,9 +3203,16 @@ export function projectCollectionReport(input: {
         : {}
       : { declaredCollectionScope: input.declaredCollectionScope }),
     // A local-device connection's evidence is the coverage-diagnostic axis, not
-    // a run fact block, so its measured boundary is supplied alongside it.
-    ...(input.localDeviceBacked === true && input.localCoverageCollectionScope !== undefined
-      ? { evidenceCollectionScope: input.localCoverageCollectionScope }
+    // a run fact block, so its measured boundary comes off that axis -- which
+    // derived it from the coverage rows themselves. Deriving beats accepting: a
+    // caller-supplied argument is an agreement, and a production call that
+    // omitted it would silently compare a real scoped run against `unscoped`
+    // and read `unknown` forever. An explicit override is honored for tests.
+    ...(input.localDeviceBacked === true
+      ? {
+          evidenceCollectionScope:
+            input.localCoverageCollectionScope ?? input.localCoverage?.measuredCollectionScope ?? null,
+        }
       : {}),
     collectionFactsAsOf: classifyingRun ? classifyingRun.last_at : null,
     collectionFactsRunId: classifyingRun?.run_id ?? null,
@@ -3350,6 +3367,8 @@ function localCoverageParentStream(stream: ManifestStream | undefined): string |
 
 /** Safe per-store coverage triple read from `coverage_diagnostics` records. */
 interface LocalCoverageDiagnosticRow {
+  /** Boundary this row was measured under, committed with the row itself. */
+  readonly collectionScope?: unknown;
   readonly status?: unknown;
   readonly store?: unknown;
   readonly stream?: unknown;
@@ -3364,6 +3383,14 @@ interface LocalCoverageDiagnosticAxis {
    * an N+1 across a page of connections.
    */
   readonly declaredCollectionScope?: string;
+  /**
+   * Boundary the connection's stored terminal evidence was MEASURED under, read
+   * off the same state projection as the declared one. Derived here rather than
+   * accepted from a caller: an argument is an agreement, and a caller that omits
+   * it silently compares a real scoped run against `unscoped` forever.
+   * `null` when no local run has committed terminal evidence under the contract.
+   */
+  readonly measuredCollectionScope?: string | null;
   readonly evidenceAsOf: string | null;
   readonly reliable: boolean;
   /** Safe per-store triples from `coverage_diagnostics`, used to project stream rows. */
@@ -3420,8 +3447,24 @@ export function deriveLocalCoverageAxis(input: {
       ? (input.state as Record<string, unknown>)
       : null
   ).fingerprint;
-  const scopeField = { declaredCollectionScope: declaredScope };
   const { rows } = input;
+  // The MEASURED boundary is derived from the coverage rows themselves -- the
+  // same rows this axis is already reading, written in the same ingest batch as
+  // the evidence they qualify. No second store, so no crash window can pair one
+  // run's coverage with another run's boundary, and no caller can hand over a
+  // value the evidence does not support.
+  //
+  // A run whose rows disagree (a partially-replaced set spanning two runs, which
+  // the stable `coverage:<store>` keys make possible under interleaved upserts)
+  // is deliberately treated as having NO measured boundary rather than picking
+  // one: an ambiguous pairing must not be able to read as proof.
+  const measuredScopes = new Set(
+    rows
+      .map((row) => (typeof row.collectionScope === "string" && row.collectionScope.trim() ? row.collectionScope.trim() : null))
+      .filter((value): value is string => value !== null)
+  );
+  const measuredScope: string | null = measuredScopes.size === 1 ? ([...measuredScopes][0] ?? null) : null;
+  const scopeField = { declaredCollectionScope: declaredScope, measuredCollectionScope: measuredScope };
   const stateCursor =
     input.state && typeof input.state === "object" && !Array.isArray(input.state)
       ? (input.state as Record<string, unknown>).fetched_at

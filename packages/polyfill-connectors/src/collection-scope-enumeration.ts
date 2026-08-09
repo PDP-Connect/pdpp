@@ -318,6 +318,30 @@ export function projectDirMatchesSourceRoots(projectDir: string, scope: Enumerat
 }
 
 /**
+ * Stable fingerprint of the boundary a run enumerated under, stamped onto the
+ * coverage records so it commits with the evidence it qualifies.
+ *
+ * MUST stay byte-identical to the runner's `collectorScopeFingerprint` and the
+ * contract's `collectionScopeFingerprint` -- the server compares them to decide
+ * whether stored proof still describes the declared scope, so drift would
+ * silently invalidate valid proof or validate stale proof. `unscoped` is a real
+ * value: a full pass is a declared boundary too.
+ */
+export function enumerationScopeFingerprint(scope: EnumerationScope | null | undefined): string {
+  const since = typeof scope?.since === "string" ? scope.since.trim() : "";
+  const validSince = since && !Number.isNaN(Date.parse(since)) ? since : "";
+  const roots = normalizeRoots(scope?.source_roots).slice().sort();
+  const parts: string[] = [];
+  if (validSince) {
+    parts.push(`since=${validSince}`);
+  }
+  if (roots.length > 0) {
+    parts.push(`roots=${roots.join(",")}`);
+  }
+  return parts.length > 0 ? parts.join(";") : "unscoped";
+}
+
+/**
  * Whether the declared boundary bounds enumeration at all.
  *
  * Lets a connector report honestly that a run was enumeration-bounded rather

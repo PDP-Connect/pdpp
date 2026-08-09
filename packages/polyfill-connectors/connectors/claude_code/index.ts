@@ -34,6 +34,7 @@ import { createInterface as createFileReader } from "node:readline";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import {
   type EnumerationScope,
+  enumerationScopeFingerprint,
   projectDirMatchesSourceRoots,
   readEnumerationScope,
   scopeBoundsEnumeration,
@@ -1655,12 +1656,19 @@ if (isMainModule(import.meta.url)) {
       // omitted coverage stream collapses to `coverage_unknown` forever (the
       // local run path writes no spine run). The inventory walk reads only
       // path metadata, never payload, so it is safe on a partial/empty home.
-      const inventory = await buildLocalSourceInventory("claude_code", claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
+      const enumerationScope = readEnumerationScope(requested, ["sessions", "messages", "attachments"]);
+      // The measured boundary is stamped onto the coverage records themselves,
+      // so it commits atomically with the evidence it qualifies.
+      const inventory = await buildLocalSourceInventory(
+        "claude_code",
+        claudeHome,
+        CLAUDE_CODE_KNOWN_LOCAL_STORES,
+        enumerationScopeFingerprint(enumerationScope)
+      );
       await emitCoverageDiagnostics({ emitRecord, inventory, requested });
       // The owner-declared boundary rides on the stream scopes the runtime
       // already threads through. Read once here and applied at ENUMERATION so a
       // bounded run does not open files it was never asked to collect.
-      const enumerationScope = readEnumerationScope(requested, ["sessions", "messages", "attachments"]);
       if (scopeBoundsEnumeration(enumerationScope)) {
         await emit({
           type: "PROGRESS",

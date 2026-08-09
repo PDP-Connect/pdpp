@@ -3966,7 +3966,9 @@ const SAFE_COVERAGE_STATUSES = new Set([
   "unaccounted",
 ]);
 
-function projectCoverageRow(rawData: unknown): { status: string; store: string; stream: string | null } | null {
+function projectCoverageRow(
+  rawData: unknown
+): { collectionScope: string | null; status: string; store: string; stream: string | null } | null {
   if (!isRecordData(rawData)) {
     return null;
   }
@@ -3977,10 +3979,17 @@ function projectCoverageRow(rawData: unknown): { status: string; store: string; 
   const status =
     typeof rawData.status === "string" && SAFE_COVERAGE_STATUSES.has(rawData.status) ? rawData.status : "unaccounted";
   const stream = typeof rawData.stream === "string" && rawData.stream ? rawData.stream : null;
+  // The boundary this row was measured under, carried on the row itself so it
+  // cannot drift from the coverage it qualifies. Safe: a fingerprint is a
+  // declared bound, never payload.
+  const collectionScope =
+    typeof rawData.collection_scope === "string" && rawData.collection_scope.trim()
+      ? rawData.collection_scope.trim()
+      : null;
   // Deliberately omit `id`, `reason`, and anything else: the operator
-  // diagnostic only needs the safe store/stream/status triple, never the
-  // reason free-text or any payload.
-  return { status, store, stream };
+  // diagnostic only needs the safe store/stream/status triple plus the boundary,
+  // never the reason free-text or any payload.
+  return { collectionScope, status, store, stream };
 }
 
 /**
@@ -4000,7 +4009,7 @@ export async function listLocalCoverageDiagnostics(storageTarget: RecordStorageT
     return [];
   }
 
-  const byStore = new Map<string, { status: string; store: string; stream: string | null }>();
+  const byStore = new Map<string, { collectionScope: string | null; status: string; store: string; stream: string | null }>();
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `SELECT record_key, record_json FROM records

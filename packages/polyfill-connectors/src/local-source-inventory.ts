@@ -375,7 +375,19 @@ async function statKind(path: string): Promise<{
 export async function buildLocalSourceInventory(
   tool: string,
   sourceHome: string,
-  stores: readonly KnownLocalStore[]
+  stores: readonly KnownLocalStore[],
+  /**
+   * Fingerprint of the boundary this run enumerated under, stamped onto every
+   * coverage record.
+   *
+   * It rides on the RECORDS rather than a side channel because the records are
+   * the coverage evidence: they commit together in the same ingest batch, so a
+   * crash between steps can never pair one run's coverage rows with another
+   * run's boundary, and there is no second store to fall out of sync. A reader
+   * takes the fingerprint from the same rows it is already reading -- one read,
+   * no extra query, identical on both backends.
+   */
+  collectionScope?: string | null
 ): Promise<InventoryPlan> {
   assertExpectedLocalCoverageStores(tool, stores);
   const recordsByStream = new Map<string, InventoryRecord[]>();
@@ -400,6 +412,8 @@ export async function buildLocalSourceInventory(
       stream: store.stream,
       status,
       reason: store.reason,
+      // The boundary this row was measured under, committed WITH the row.
+      ...(collectionScope ? { collection_scope: collectionScope } : {}),
     });
 
     if (

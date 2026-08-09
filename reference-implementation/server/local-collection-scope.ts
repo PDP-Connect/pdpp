@@ -33,6 +33,48 @@ import type { CollectionScope } from "@pdpp/reference-contract/evidence";
 export const COLLECTION_SCOPE_STATE_KEY = "$collection_scope";
 
 /**
+ * Reserved `connector_state.stream` key holding the boundary the connection's
+ * last committed terminal evidence was MEASURED under.
+ *
+ * Separate from {@link COLLECTION_SCOPE_STATE_KEY} because the two answer
+ * different questions — what the owner declares NOW versus what the stored
+ * proof actually covered — and the whole staleness check is their comparison.
+ * Collapsing them would make every read trivially agree.
+ *
+ * Written by the terminal-collection handler, read by the coverage projection
+ * off the same state row it already loads, so neither side depends on a caller
+ * passing the value along and no extra query is added on either backend.
+ */
+export const MEASURED_COLLECTION_SCOPE_STATE_KEY = "$measured_collection_scope";
+
+/**
+ * Read the boundary the stored terminal evidence was measured under.
+ *
+ * `null` means no local run has committed terminal evidence under the scope
+ * contract yet. That is deliberately NOT the same as `"unscoped"`: a run that
+ * genuinely performed a full pass records `"unscoped"` explicitly, whereas a
+ * connection with no such record has proven nothing either way.
+ */
+export function readMeasuredCollectionScope(
+  state: Readonly<Record<string, unknown>> | null | undefined
+): string | null {
+  const entry = state?.[MEASURED_COLLECTION_SCOPE_STATE_KEY];
+  if (isRecord(entry)) {
+    const fingerprint = entry.fingerprint;
+    return typeof fingerprint === "string" && fingerprint.trim() ? fingerprint.trim() : null;
+  }
+  return typeof entry === "string" && entry.trim() ? entry.trim() : null;
+}
+
+/** Build the durable envelope recording what a committed run actually measured. */
+export function buildMeasuredCollectionScope(
+  fingerprint: string,
+  measuredAt: string
+): { readonly fingerprint: string; readonly measured_at: string } {
+  return { fingerprint: fingerprint.trim() || "unscoped", measured_at: measuredAt };
+}
+
+/**
  * The stored scope envelope. `fingerprint` is stored alongside the bounds
  * rather than recomputed on read so a stored proof and the scope it was
  * measured against can be compared without re-deriving either.

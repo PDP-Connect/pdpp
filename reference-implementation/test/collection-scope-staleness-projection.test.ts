@@ -42,7 +42,17 @@ function stateWithScope(since: string | null): Record<string, unknown> {
 }
 
 /** A drained local-device connection whose every store was accounted for. */
-function localCoverageAxis(state: Record<string, unknown>) {
+function localCoverageAxis(state: Record<string, unknown>, measuredScope: string | null = null) {
+  // Rows carry the boundary they were measured under, exactly as the connector
+  // stamps them onto `coverage_diagnostics` records.
+  const coverageRows = [
+    {
+      status: "collected",
+      store: "projects",
+      stream: "sessions",
+      ...(measuredScope ? { collectionScope: measuredScope } : {}),
+    },
+  ];
   return deriveLocalCoverageAxis({
     duplicateStores: [],
     hasAuthoritativeInventory: true,
@@ -51,7 +61,7 @@ function localCoverageAxis(state: Record<string, unknown>) {
     manifestGeneration: 1,
     missingStores: [],
     nowIso: "2026-08-09T00:00:00.000Z",
-    rows: [{ status: "collected", store: "projects", stream: "sessions" }],
+    rows: coverageRows,
     state,
     stateManifestGeneration: 1,
     unexpectedStores: [],
@@ -64,13 +74,20 @@ const HEALTH = {
   conditions: [{ status: "true", type: "ProjectionReliable" }],
 } as unknown as Parameters<typeof projectCollectionReport>[0]["connectionHealth"];
 
+/**
+ * Shaped EXACTLY like the production call in `ref-control.ts`: it does NOT pass
+ * `localCoverageCollectionScope`. The prior version of this test fabricated
+ * that argument, which masked a P1 — the real caller never supplies it, so a
+ * correctly scoped complete run compared against `unscoped` and read `unknown`
+ * forever. The projection must derive the measured boundary itself.
+ */
 function report(input: { declaredScope: string | null; evidenceScope: string | null }) {
   const state = stateWithScope(input.declaredScope);
+  const measured = input.evidenceScope === null ? "unscoped" : `since=${input.evidenceScope}`;
   return projectCollectionReport({
     connectionHealth: HEALTH,
     lastRun: null,
-    localCoverage: localCoverageAxis(state),
-    localCoverageCollectionScope: input.evidenceScope === null ? "unscoped" : `since=${input.evidenceScope}`,
+    localCoverage: localCoverageAxis(state, measured),
     localDeviceBacked: true,
     manifestStreams: MANIFEST_STREAMS as never,
     refreshPolicy: null,
@@ -119,4 +136,103 @@ test("a connection with no scope at all is unaffected", () => {
   const entries = report({ declaredScope: null, evidenceScope: null });
   const sessions = entries.find((entry) => entry.stream === "sessions");
   assert.equal(sessions?.coverage_condition, "complete", "unscoped evidence satisfies an unscoped declaration");
+});
+
+// The exact defect the re-gate found: the production call omits
+// localCoverageCollectionScope, so anything that makes the projection depend on
+// that argument leaves a correctly scoped complete run reading `unknown`
+// forever. This pins the derived path directly.
+test("a scoped complete run reads complete through the production call shape (no supplied argument)", () => {
+  const state = stateWithScope("2026-06-01T00:00:00.000Z");
+  const entries = projectCollectionReport({
+    connectionHealth: HEALTH,
+    lastRun: null,
+    localCoverage: localCoverageAxis(state, "since=2026-06-01T00:00:00.000Z"),
+    localDeviceBacked: true,
+    manifestStreams: MANIFEST_STREAMS as never,
+    refreshPolicy: null,
+    schedule: null,
+  });
+  assert.equal(
+    entries.find((entry) => entry.stream === "sessions")?.coverage_condition,
+    "complete",
+    "the measured boundary must be derived from the evidence, not supplied by the caller"
+  );
+});
+
+// Crash / interruption counterweight. The measured fingerprint rides on the
+// coverage rows, so it commits in the same ingest batch as the coverage it
+// qualifies -- there is no second store and therefore no window in which a
+// crash leaves them disagreeing. The one shape that CAN occur is a partially
+// replaced row set spanning two runs (the stable `coverage:<store>` keys upsert
+// per store), and that must never read as proof of either boundary.
+test("coverage rows spanning two different boundaries never read as complete", () => {
+  const state = stateWithScope("2026-06-01T00:00:00.000Z");
+  const mixed = deriveLocalCoverageAxis({
+    duplicateStores: [],
+    hasAuthoritativeInventory: true,
+    hasCommittedSnapshot: true,
+    malformed: false,
+    manifestGeneration: 1,
+    missingStores: [],
+    nowIso: "2026-08-09T00:00:00.000Z",
+    rows: [
+      { collectionScope: "since=2026-06-01T00:00:00.000Z", status: "collected", store: "projects", stream: "sessions" },
+      { collectionScope: "unscoped", status: "collected", store: "skills", stream: "sessions" },
+    ],
+    state,
+    stateManifestGeneration: 1,
+    unexpectedStores: [],
+    updatedAt: "2026-08-08T00:00:00.000Z",
+  });
+  assert.equal(
+    mixed.measuredCollectionScope,
+    null,
+    "an ambiguous pairing has no single measured boundary and must not pick one"
+  );
+  const entries = projectCollectionReport({
+    connectionHealth: HEALTH,
+    lastRun: null,
+    localCoverage: mixed,
+    localDeviceBacked: true,
+    manifestStreams: MANIFEST_STREAMS as never,
+    refreshPolicy: null,
+    schedule: null,
+  });
+  assert.equal(
+    entries.find((entry) => entry.stream === "sessions")?.coverage_condition,
+    "unknown",
+    "a failure between runs must not be able to produce a false complete"
+  );
+});
+
+test("evidence predating the scope contract satisfies only an unscoped declaration", () => {
+  // No fingerprint on the rows at all: a pre-scope collector, which ran a full
+  // pass. It must not be credited for a narrowed bound, nor stranded when the
+  // connection declares nothing.
+  const unscopedDeclared = projectCollectionReport({
+    connectionHealth: HEALTH,
+    lastRun: null,
+    localCoverage: localCoverageAxis(stateWithScope(null), null),
+    localDeviceBacked: true,
+    manifestStreams: MANIFEST_STREAMS as never,
+    refreshPolicy: null,
+    schedule: null,
+  });
+  assert.equal(unscopedDeclared.find((e) => e.stream === "sessions")?.coverage_condition, "complete");
+
+  const narrowedDeclared = projectCollectionReport({
+    connectionHealth: HEALTH,
+    lastRun: null,
+    localCoverage: localCoverageAxis(stateWithScope("2026-06-01T00:00:00.000Z"), null),
+    localDeviceBacked: true,
+    manifestStreams: MANIFEST_STREAMS as never,
+    refreshPolicy: null,
+    schedule: null,
+  });
+  assert.equal(
+    narrowedDeclared.find((e) => e.stream === "sessions")?.coverage_condition,
+    "unknown",
+    "unfingerprinted evidence cannot prove a boundary it never enforced"
+  );
 });
