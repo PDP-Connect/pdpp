@@ -53,7 +53,7 @@
     "server/connection-id-request.ts": 9,
     "server/connection-identity.ts": 16,
     "server/connection-setup-plan.ts": 24,
-    "server/connector-coverage-policy.ts": 18,
+    "server/connector-coverage-policy.ts": 13,
     "server/connector-gap-classification.ts": 23,
     "server/connector-instance-utils.ts": 18,
     "server/connector-instance-write-coordinator.ts": 5,
@@ -189,7 +189,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 6954,
+  "total": 6949,
   "meta": {
     "biomeVersion": "2.5.6",
     "maxAllowedComplexity": 5

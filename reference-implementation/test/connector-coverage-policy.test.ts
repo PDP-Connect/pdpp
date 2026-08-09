@@ -162,3 +162,100 @@ test("raw local coverage statuses defer accepted absence to manifest policy and 
     "retryable_gap"
   );
 });
+
+// --- Ruling 2: a committed checkpoint alone never proves coverage. ---
+// The invariant lives in `@pdpp/reference-contract/evidence`; these pin the
+// projection's use of it. Before the fix, (b) and (c)'s no-denominator streams
+// read `complete` off the checkpoint alone.
+
+test("a zero-collection run with a measured enumeration boundary is legitimately verified-empty", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ collected: 0, considered: 0, covered: 0 }), {
+      coverage_strategy: "full_inventory",
+    }),
+    "complete"
+  );
+});
+
+test("a zero-collection run with a committed checkpoint but no coverage evidence is not complete", () => {
+  for (const strategy of [
+    "checkpoint_window",
+    "full_inventory",
+    "snapshot_import_receipt",
+    "singleton_presence",
+  ] as const) {
+    assert.equal(
+      deriveStreamCoverageCondition(fact({ checkpoint: "committed", collected: 0, considered: null }), {
+        coverage_strategy: strategy,
+      }),
+      "unknown",
+      `checkpoint alone must not prove ${strategy}`
+    );
+  }
+});
+
+test("a committed checkpoint does not prove coverage for a collected-records stream either", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ checkpoint: "committed", collected: 900, considered: null }), {
+      coverage_strategy: "checkpoint_window",
+    }),
+    "unknown"
+  );
+});
+
+test("an unresolved attempt is never laundered into complete by a committed checkpoint", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({ checkpoint: "committed", collected: 0, considered: null, skipped: { reason: "opaque_failure" } }),
+      { coverage_strategy: "full_inventory" }
+    ),
+    "terminal_gap"
+  );
+  assert.equal(
+    deriveStreamCoverageCondition(
+      fact({ checkpoint: "committed", collected: 0, considered: null, pending_detail_gaps: 4 }),
+      { coverage_strategy: "full_inventory" }
+    ),
+    "retryable_gap"
+  );
+});
+
+test("a genuinely complete run stays complete (no over-correction)", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ collected: 100, considered: 100 }), { coverage_strategy: "full_inventory" }),
+    "complete"
+  );
+  // Steady-state full sync: everything suppressed as unchanged, boundary still covered.
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ collected: 0, considered: 40, covered: 40 }), {
+      coverage_strategy: "checkpoint_window",
+    }),
+    "complete"
+  );
+  // A shortfall under a per-item accounting strategy still reads partial: that
+  // strategy owes a numerator, so `collected`/`covered` must satisfy it.
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ collected: 7, considered: 40 }), {
+      coverage_strategy: "parent_detail_accounting",
+    }),
+    "partial"
+  );
+  // A window-bounding strategy whose window has NOT closed cannot lean on the
+  // boundary alone either.
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ checkpoint: "pending", collected: 7, considered: 40 }), {
+      coverage_strategy: "full_inventory",
+    }),
+    "partial"
+  );
+});
+
+test("a manifest-declared accepted absence remains the precise axis without a denominator", () => {
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ collected: 0, considered: null }), {
+      coverage_policy: "unsupported",
+      required: false,
+    }),
+    "unsupported"
+  );
+});

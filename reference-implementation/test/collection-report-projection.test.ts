@@ -141,7 +141,12 @@ test("collected records, no gaps, NO considered -> unknown coverage + unmeasured
   assert.equal(entry.forward_disposition, "unmeasured");
 });
 
-test("declared checkpoint-window strategy with committed checkpoint proves coverage without numeric denominator", () => {
+test("declared checkpoint-window strategy with committed checkpoint does NOT prove coverage without a denominator", () => {
+  // Extends the invariant directly above: a declared strategy plus a committed
+  // checkpoint is still not positive coverage evidence. The checkpoint records
+  // where the cursor stopped, not what the source held — and a large
+  // `collected` count is a yield, not a boundary. The stream reads honestly
+  // unproven until the connector measures `considered` at its enumeration site.
   const entries = buildCollectionReport({
     attentionOpen: false,
     collectionFacts: {
@@ -157,6 +162,26 @@ test("declared checkpoint-window strategy with committed checkpoint proves cover
   assert.equal(entry.considered, "unknown");
   assert.equal(entry.coverage_strategy, "checkpoint_window");
   assert.equal(entry.freshness_strategy, "scheduled_window");
+  assert.equal(entry.coverage_condition, "unknown");
+  assert.equal(entry.forward_disposition, "unmeasured");
+});
+
+test("declared checkpoint-window strategy with a measured boundary and committed checkpoint proves coverage", () => {
+  // The other half: once the connector declares the boundary it enumerated, the
+  // committed checkpoint closes the window and `collected` is free to be a
+  // changed-record count below it.
+  const entries = buildCollectionReport({
+    attentionOpen: false,
+    collectionFacts: {
+      streams: [fact({ checkpoint: "committed", collected: 12, considered: 1145, stream: "messages" })],
+    },
+    freshness: "fresh",
+    manifestStreams: [
+      { coverage_strategy: "checkpoint_window", freshness_strategy: "scheduled_window", name: "messages" },
+    ],
+    refresh: null,
+  });
+  const entry = entryFor(entries, "messages");
   assert.equal(entry.coverage_condition, "complete");
   assert.equal(entry.forward_disposition, "complete");
 });
@@ -942,7 +967,7 @@ test("YNAB category_groups (full_inventory): committed checkpoint -> complete af
   const entries = buildCollectionReport({
     attentionOpen: false,
     collectionFacts: {
-      streams: [fact({ checkpoint: "committed", collected: 12, considered: null, stream: "category_groups" })],
+      streams: [fact({ checkpoint: "committed", collected: 12, considered: 40, stream: "category_groups" })],
     },
     freshness: "fresh",
     manifestStreams: [
@@ -951,7 +976,7 @@ test("YNAB category_groups (full_inventory): committed checkpoint -> complete af
     refresh: null,
   });
   const entry = entryFor(entries, "category_groups");
-  assert.equal(entry.considered, "unknown");
+  assert.equal(entry.considered, 40);
   assert.equal(entry.coverage_strategy, "full_inventory");
   assert.equal(entry.coverage_condition, "complete");
   assert.equal(entry.forward_disposition, "complete");
@@ -1147,7 +1172,7 @@ test("carry-forward: scoped run preserves prior proof for an omitted required st
     collectionFactsAsOf: "2026-06-01T00:00:00.000Z",
     freshness: "fresh",
     latestStreamFacts: storedFacts(
-      [fact({ checkpoint: "committed", collected: 500, considered: null, stream: "messages" })],
+      [fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" })],
       { asOf: "2026-05-01T00:00:00.000Z" }
     ),
     manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
@@ -1198,7 +1223,7 @@ test("carry-forward: an attempted-but-unresolved classifying fact cannot shadow 
     collectionFactsAsOf: "2026-06-01T00:00:00.000Z",
     freshness: "fresh",
     latestStreamFacts: storedFacts([
-      fact({ checkpoint: "committed", collected: 500, considered: null, stream: "messages" }),
+      fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" }),
     ]),
     manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
     refresh: null,
@@ -1247,8 +1272,8 @@ test("stored evidence: a stored state_stream child inherits from its own run's s
     collectionFacts: { streams: [] },
     freshness: "fresh",
     latestStreamFacts: storedFacts([
-      fact({ checkpoint: "committed", collected: 500, considered: null, stream: "messages" }),
-      fact({ checkpoint: "not_staged", collected: 0, considered: null, stream: "message_reactions" }),
+      fact({ checkpoint: "committed", collected: 500, considered: 500, stream: "messages" }),
+      fact({ checkpoint: "not_staged", collected: 0, considered: 2, stream: "message_reactions" }),
     ]),
     manifestStreams: CHILD_MANIFEST,
     refresh: null,
@@ -1272,7 +1297,7 @@ test("carry-forward: a carried fact zeroes its stale run-local pending_detail_ga
       fact({
         checkpoint: "committed",
         collected: 500,
-        considered: null,
+        considered: 500,
         pending_detail_gaps: 3,
         stream: "messages",
       }),
@@ -1609,7 +1634,7 @@ test("proof-predicate parity: a stored `disabled` checkpoint proves durable cove
     collectionFactsRunId: "run_full_scope_failed",
     freshness: "fresh",
     latestStreamFacts: storedFacts(
-      [fact({ checkpoint: "disabled", collected: 0, considered: null, stream: "order_items" })],
+      [fact({ checkpoint: "disabled", collected: 0, considered: 4, covered: 4, stream: "order_items" })],
       { asOf: "2026-07-10T00:00:00.000Z", runId: "run_old" }
     ),
     manifestStreams: [

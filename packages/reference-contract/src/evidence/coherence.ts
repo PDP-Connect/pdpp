@@ -74,6 +74,15 @@ export interface StreamEvidenceEnvelope {
    * `considered`; never inferred from `collected`.
    */
   readonly covered?: number | null;
+  /**
+   * A collector's own per-stream observation that it DID collect this stream —
+   * e.g. a local-collector device handoff reporting an observed `collected`
+   * status. This is a positive statement about the stream, not a cursor
+   * bookmark, so it stands as coverage evidence in its own right where a
+   * checkpoint does not. Callers must set it only from an affirmative observed
+   * status, never from a non-zero record count.
+   */
+  readonly observed_collected?: boolean;
   /** Pending recoverable detail gaps: an open boundary, not a proven one. */
   readonly pending_detail_gaps?: number | null;
   /** Set when the connector explicitly did not collect this stream. */
@@ -96,6 +105,8 @@ export interface StreamProofDeclaration {
  * - `enumeration_boundary` — a measured `considered` denominator was satisfied
  *   by the `covered`/`collected` numerator. Proves verified-empty at `0/0`.
  * - `accepted_absence` — the manifest declares the stream owes no data.
+ * - `observed_collected` — the collector affirmatively observed the stream as
+ *   collected (a statement about the stream, unlike a cursor bookmark).
  * - `no_proof_strategy` — the manifest declared none; honest silence.
  * - `checkpoint_only` — a checkpoint committed and nothing else was offered.
  *   This is the laundering case the invariant exists to reject.
@@ -109,6 +120,7 @@ export type CoherenceReason =
   | "checkpoint_only"
   | "enumeration_boundary"
   | "no_proof_strategy"
+  | "observed_collected"
   | "unresolved_attempt";
 
 /**
@@ -127,6 +139,29 @@ function readCount(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
 }
 
+/**
+ * Whether the strategy enumerates a bounded window/inventory/snapshot/singleton
+ * whose `collected` count is only the CHANGED records of this run rather than a
+ * coverage numerator. For these, a measured `considered` boundary plus a closed
+ * (committed) window is the proof; `collected < considered` means unchanged
+ * records were suppressed, not that items were missed.
+ *
+ * `parent_detail_accounting` is deliberately excluded: it owes a per-item
+ * accounting, so its numerator must actually satisfy the denominator.
+ */
+function strategyBoundsWindowRatherThanCounting(strategy: CoverageProofStrategy | null): boolean {
+  return (
+    strategy === "checkpoint_window" ||
+    strategy === "full_inventory" ||
+    strategy === "snapshot_import_receipt" ||
+    strategy === "singleton_presence"
+  );
+}
+
+function checkpointClosedWindow(checkpoint: string | null | undefined): boolean {
+  return checkpoint === "committed" || checkpoint === "disabled";
+}
+
 function hasUnresolvedAttempt(envelope: StreamEvidenceEnvelope): boolean {
   if (envelope.skipped) {
     return true;
@@ -140,10 +175,7 @@ function hasUnresolvedAttempt(envelope: StreamEvidenceEnvelope): boolean {
  * Exported because conformance tooling wants to report this case by name: it is
  * the precise shape of the rejected claim, not merely an absence of evidence.
  */
-export function isCheckpointOnlyClaim(
-  envelope: StreamEvidenceEnvelope,
-  declaration: StreamProofDeclaration
-): boolean {
+export function isCheckpointOnlyClaim(envelope: StreamEvidenceEnvelope, declaration: StreamProofDeclaration): boolean {
   if (declaration.accepted_absence) {
     return false;
   }
@@ -158,12 +190,13 @@ export function isCheckpointOnlyClaim(
  *
  * Precedence (first match wins):
  *   1. unresolved attempt (skip / open recoverable gap)  -> not proven
- *   2. manifest declares no proof strategy               -> not proven
- *   3. measured enumeration boundary                     -> satisfied ? proven : shortfall
- *   4. manifest-declared accepted absence                -> proven
- *   5. anything left, incl. a committed checkpoint       -> not proven
+ *   2. measured enumeration boundary                     -> satisfied ? proven : shortfall
+ *   3. manifest-declared accepted absence                -> proven
+ *   4. no measurement and no declared proof strategy     -> not proven
+ *   5. collector-observed collected status               -> proven
+ *   6. anything left, incl. a committed checkpoint       -> not proven
  *
- * Rule 3 is what lets a legitimate zero-result run prove verified emptiness: a
+ * Rule 2 is what lets a legitimate zero-result run prove verified emptiness: a
  * measured `considered: 0` is a positive statement ("I enumerated the boundary
  * and it held nothing"), satisfied by `covered`/`collected` of 0. Rule 5 is the
  * invariant: a committed checkpoint that reaches this point proves nothing.
@@ -181,29 +214,45 @@ export function evaluateStreamCoherence(
   const accepted = declaration.accepted_absence ?? null;
   const strategy = declaration.coverage_strategy ?? null;
 
-  // 2. No declared proof strategy of any kind: the honest answer is that
-  //    nothing was proven, not a synthesized completeness.
-  if (accepted === null && strategy === null) {
-    return { proven: false, reason: "no_proof_strategy" };
-  }
-
-  // 3. A measured enumeration boundary is the strongest positive evidence, and
-  //    the only one that can prove verified-empty on a zero-result run.
+  // 2. A measured enumeration boundary is the strongest positive evidence and
+  //    the only one that can prove verified-empty on a zero-result run. It is
+  //    itself a strategy-specific proof — a `considered` count measured at the
+  //    enumeration site — so it does not additionally require a declared
+  //    strategy keyword to stand.
   const considered = readCount(envelope.considered);
   if (considered !== null) {
+    // A window-bounding strategy that closed its window has measured its
+    // boundary; its `collected` is a changed-record count, not a numerator, so
+    // it does not owe `collected >= considered`. The checkpoint only refines a
+    // boundary that was actually measured — it can never supply one.
+    if (strategyBoundsWindowRatherThanCounting(strategy) && checkpointClosedWindow(envelope.checkpoint)) {
+      return { proven: true, reason: "enumeration_boundary" };
+    }
     const satisfied = readCount(envelope.covered) ?? readCount(envelope.collected) ?? 0;
     return satisfied < considered
       ? { proven: false, reason: "boundary_shortfall" }
       : { proven: true, reason: "enumeration_boundary" };
   }
 
-  // 4. A declared accepted absence is a manifest statement that no data is
+  // 3. A declared accepted absence is a manifest statement that no data is
   //    owed — positive evidence in its own right.
   if (accepted !== null) {
     return { proven: true, reason: "accepted_absence" };
   }
 
-  // 5. A declared strategy with no measurement behind it. If a checkpoint is
+  // 4. No measurement and no declared proof strategy of any kind: the honest
+  //    answer is that nothing was proven, not a synthesized completeness.
+  if (strategy === null) {
+    return { proven: false, reason: "no_proof_strategy" };
+  }
+
+  // 5. A collector's affirmative "I collected this stream" observation is a
+  //    positive statement about the stream itself, unlike a checkpoint.
+  if (envelope.observed_collected === true) {
+    return { proven: true, reason: "observed_collected" };
+  }
+
+  // 6. A declared strategy with no measurement behind it. If a checkpoint is
   //    all that is on offer, name that explicitly; either way it is not proof.
   return {
     proven: false,
