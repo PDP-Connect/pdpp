@@ -31,9 +31,17 @@ import type { LocalCollectorDefinition } from "../../src/collector-definition.ts
 
 export const IMESSAGE_DEFAULT_STREAMS = ["messages", "participants", "attachments"] as const;
 
+/**
+ * Only `messages` declares a `consent_time_field` (`date`). Participants are
+ * standing entities and attachments carry no owner-moment of their own, so a
+ * date bound is not measurable against either; both are collected whole.
+ */
+export const IMESSAGE_TIME_SCOPABLE_STREAMS = ["messages"] as const;
+
 export const imessageCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "imessage",
   entry: "imessage",
   bindings: { filesystem: { required: true } },
   streams: IMESSAGE_DEFAULT_STREAMS,
+  time_scopable_streams: IMESSAGE_TIME_SCOPABLE_STREAMS,
 };

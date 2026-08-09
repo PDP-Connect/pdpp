@@ -2610,6 +2610,11 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     ...(options.streamsToBackfill ? { streamsToBackfill: options.streamsToBackfill } : {}),
     command,
     args,
+    // Which streams a declared `since` can be proven against. Carried from the
+    // connector's own definition so the runtime enforces a boundary without
+    // knowing any connector; absent for a custom-command dev entry, which then
+    // simply runs unscoped rather than guessing.
+    ...(bundled?.time_scopable_streams ? { timeScopableStreams: bundled.time_scopable_streams } : {}),
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established behavior; this diagnostic requires a semantic refactor outside the closure scope.
     runtime_requirements: { bindings: bundled?.bindings ?? {} },
   };

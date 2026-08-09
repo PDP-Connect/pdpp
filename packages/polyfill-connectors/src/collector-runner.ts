@@ -428,6 +428,57 @@ export async function enrollCollector(config: CollectorEnrollmentConfig): Promis
   });
 }
 
+/**
+ * An owner-declared collection boundary, as the collector sees it.
+ *
+ * Structurally mirrors `@pdpp/reference-contract`'s `CollectionScope` (which
+ * owns the normalization/fingerprint/proof-validity rules the RI and
+ * conformance tooling share). It is restated here rather than imported because
+ * the published collector bundle deliberately carries no dependency on the
+ * reference contract — the same reason connectors restate other wire shapes.
+ * The server is the authority for what a scope MEANS; the collector's job is to
+ * receive it and stay inside it.
+ */
+export interface CollectionScope {
+  readonly since?: string | null;
+  readonly source_roots?: readonly string[] | null;
+}
+
+/**
+ * Reserved `connector_state` key carrying the connection's owner-declared
+ * boundary down to the collector on the existing state read.
+ *
+ * `$`-prefixed so it can never collide with a manifest stream name. It is NOT a
+ * stream cursor and must be stripped before `START.state` is built, or the
+ * connector would receive it as one.
+ */
+export const COLLECTION_SCOPE_STATE_KEY = "$collection_scope";
+
+/**
+ * Extract the server-declared boundary from the prior-state projection.
+ *
+ * The scope is delivered on the SAME read that already fetches stream cursors,
+ * so a scoped run needs no extra round-trip and no new endpoint. A connection
+ * that declared nothing yields `null` — an honest full pass.
+ */
+export function readCollectionScopeFromState(
+  priorState: Readonly<Record<string, unknown>> | null | undefined
+): CollectionScope | null {
+  const entry = priorState?.[COLLECTION_SCOPE_STATE_KEY];
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return null;
+  }
+  const { scope } = entry as { scope?: unknown };
+  if (typeof scope !== "object" || scope === null || Array.isArray(scope)) {
+    return null;
+  }
+  const { since, source_roots } = scope as CollectionScope;
+  return {
+    ...(typeof since === "string" ? { since } : {}),
+    ...(Array.isArray(source_roots) ? { source_roots: [...source_roots] } : {}),
+  };
+}
+
 export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   readonly args: readonly string[];
   /** Argv for the connector entrypoint (typically tsx + connector index.ts). */
@@ -438,10 +489,23 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   readonly env?: NodeJS.ProcessEnv;
   /** Optional stream resources for scoped connector runs. */
   readonly resources?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * The owner-declared collection boundary this run must stay inside, as
+   * resolved from the durable per-connection scope. `null`/absent is a full
+   * pass — itself a declared boundary, recorded as `unscoped` on the evidence.
+   */
+  readonly scope?: CollectionScope | null;
   /** Streams the collector should request from the connector. */
   readonly streams: readonly string[];
   /** Optional explicit stream backfills requested from the connector. */
   readonly streamsToBackfill?: readonly string[];
+  /**
+   * Streams the connector declared a `since` can be PROVEN against (mirrors the
+   * manifest's `consent_time_field`; see `LocalCollectorDefinition`). Streams
+   * outside this set are collected whole under a scoped run rather than being
+   * narrowed against a field they do not have.
+   */
+  readonly timeScopableStreams?: readonly string[];
 }
 
 export interface CollectorRunConfig {
@@ -766,10 +830,19 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     startingHeartbeatSent = true;
 
     scanStarted = true;
+    // The SERVER is the authority on the declared boundary: it is persisted with
+    // the connection and delivered on the state read, so it cannot be widened by
+    // a local flag or lost when the CLI process goes away. A caller-supplied
+    // scope only applies when the connection declared none.
+    const declaredScope = readCollectionScopeFromState(priorState) ?? config.connector.scope ?? null;
+    const scopedConfig: CollectorRunConfig = {
+      ...config,
+      connector: { ...config.connector, scope: declaredScope },
+    };
     const streamResult = await streamConnectorIntoOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       batchSize: config.batchSize ?? 100,
-      config,
+      config: scopedConfig,
       outbox,
       policy,
       priorState,
@@ -849,11 +922,16 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
         Object.hasOwn(checkpointResult.flushedState ?? {}, COVERAGE_DIAGNOSTICS_STREAM) &&
         streamResult.coverageByStore
       ) {
+        // The boundary rides WITH the evidence: a coverage claim is only ever a
+        // claim about the region it was measured in, and a later scope change
+        // must be detectable by comparison rather than by trusting a lookup.
+        const scopedTimeRanges = resolveScopedStreamTimeRanges(declaredScope, config.connector.timeScopableStreams);
         await client.reportTerminalCollection({
+          collection_scope: collectorScopeFingerprint(declaredScope),
           connector_id: config.connector.connector_id,
           run_id: config.runId ?? randomUUID(),
           source_instance_id: config.sourceInstanceId,
-          streams: buildTerminalCollectionFacts(streamResult.coverageByStore),
+          streams: buildTerminalCollectionFacts(streamResult.coverageByStore, scopedTimeRanges),
         });
       }
       const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
@@ -1174,7 +1252,8 @@ export function summarizeCollectorCompleteness(
  * whether an observed absence is accepted; the runner must not invent policy.
  */
 export function buildTerminalCollectionFacts(
-  coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>
+  coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>,
+  timeRanges: CollectorStreamTimeRanges = {}
 ): readonly TerminalCollectionFact[] {
   const statusesByStream = new Map<string, CollectorCoverageStatus[]>();
   for (const entry of coverageByStore.values()) {
@@ -1185,9 +1264,17 @@ export function buildTerminalCollectionFacts(
     statuses.push(entry.status);
     statusesByStream.set(entry.stream, statuses);
   }
+  const scopedRun = Object.keys(timeRanges).length > 0;
   return [...statusesByStream.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([stream, statuses]) => ({ stream, coverage_statuses: [...statuses].sort() }));
+    .map(([stream, statuses]) => ({
+      stream,
+      coverage_statuses: [...statuses].sort(),
+      // Only meaningful on a scoped run. `false` is the honest marker for a
+      // stream the bound could not be enforced on: it was collected whole, so
+      // its coverage must never be read as proving the declared boundary.
+      ...(scopedRun ? { scoped: Object.hasOwn(timeRanges, stream) } : {}),
+    }));
 }
 
 /**
@@ -1400,7 +1487,8 @@ async function streamConnectorIntoOutbox(
         input.config.connector.streams,
         input.config.connector.streamsToBackfill,
         input.priorState,
-        input.config.connector.resources
+        input.config.connector.resources,
+        resolveScopedStreamTimeRanges(input.config.connector.scope, input.config.connector.timeScopableStreams)
       )
     )}\n`
   );
@@ -1732,17 +1820,94 @@ async function safeHeartbeat(
   }
 }
 
+/**
+ * Per-stream time bounds for a scoped run, keyed by stream name.
+ *
+ * The runner does not decide which streams a bound applies to — that is the
+ * connector's declared `time_scopable_streams`, mirrored from its manifest's
+ * `consent_time_field`. The runner's job is transport: put the declared bound
+ * on exactly those streams, so the connector runtime's existing generic
+ * emission gate (`connector-runtime.ts`) enforces it without any connector
+ * knowledge here.
+ */
+export type CollectorStreamTimeRanges = Readonly<Record<string, { readonly since: string }>>;
+
+/**
+ * Stable identity for a declared boundary, stamped onto terminal evidence.
+ *
+ * MUST stay byte-identical to `@pdpp/reference-contract`'s
+ * `collectionScopeFingerprint` — the server compares the two to decide whether
+ * stored proof still describes the currently-declared scope, so any drift would
+ * silently invalidate valid proof (or, worse, validate stale proof). A
+ * cross-implementation test pins them together.
+ *
+ * `unscoped` is a real value: a full pass is a declared boundary too, so
+ * introducing a bound over one is detectable as a change.
+ */
+export function collectorScopeFingerprint(scope: CollectionScope | null | undefined): string {
+  const since = typeof scope?.since === "string" ? scope.since.trim() : "";
+  const validSince = since && !Number.isNaN(Date.parse(since)) ? since : "";
+  const roots = Array.isArray(scope?.source_roots)
+    ? [
+        ...new Set(scope.source_roots.filter((root) => typeof root === "string" && root.trim()).map((r) => r.trim())),
+      ].sort()
+    : [];
+  const parts: string[] = [];
+  if (validSince) {
+    parts.push(`since=${validSince}`);
+  }
+  if (roots.length > 0) {
+    parts.push(`roots=${roots.join(",")}`);
+  }
+  return parts.length > 0 ? parts.join(";") : "unscoped";
+}
+
+/**
+ * Resolve an owner-declared boundary into the per-stream bounds a START may
+ * carry, given what the connector declared it can prove a bound against.
+ *
+ * The asymmetry is the honesty rule, not an oversight: a `since` lands ONLY on
+ * streams in `timeScopableStreams`. Putting one on a stream with no time field
+ * would hand the runtime's emission gate a field the record does not have — the
+ * bound would match everything while the run reported itself as scoped, which
+ * is a fabricated boundary. Such streams are collected whole and reported as
+ * out-of-scope instead.
+ */
+export function resolveScopedStreamTimeRanges(
+  scope: CollectionScope | null | undefined,
+  timeScopableStreams: readonly string[] = []
+): CollectorStreamTimeRanges {
+  const since = typeof scope?.since === "string" ? scope.since.trim() : "";
+  if (!since || Number.isNaN(Date.parse(since))) {
+    return {};
+  }
+  const ranges: Record<string, { since: string }> = {};
+  for (const stream of timeScopableStreams) {
+    ranges[stream] = { since };
+  }
+  return Object.freeze(ranges);
+}
+
 export function buildCollectorStartMessage(
   streams: readonly string[],
   streamsToBackfill: readonly string[] = [],
   priorState?: Readonly<Record<string, unknown>> | null,
-  resources: Readonly<Record<string, readonly string[]>> = {}
+  resources: Readonly<Record<string, readonly string[]>> = {},
+  timeRanges: CollectorStreamTimeRanges = {}
 ): StartMessage {
   const start: StartMessage = {
     scope: {
       streams: streams.map((name): StreamScope => {
         const streamResources = resources[name]?.filter((value) => typeof value === "string" && value.length > 0);
-        return streamResources && streamResources.length > 0 ? { name, resources: streamResources } : { name };
+        const timeRange = timeRanges[name];
+        return {
+          name,
+          ...(streamResources && streamResources.length > 0 ? { resources: streamResources } : {}),
+          // Only streams the caller proved scopable carry a bound. A stream
+          // absent from `timeRanges` is collected whole rather than silently
+          // narrowed against a field it does not have.
+          ...(timeRange ? { time_range: { since: timeRange.since } } : {}),
+        };
       }),
     },
     type: "START",
@@ -1751,7 +1916,13 @@ export function buildCollectorStartMessage(
     start.streamsToBackfill = [...streamsToBackfill];
   }
   if (priorState && Object.keys(priorState).length > 0) {
-    start.state = { ...priorState };
+    // The reserved scope entry rides on the same state read as the cursors but
+    // is not one: handing it to the connector would present a policy envelope
+    // as a stream checkpoint.
+    const { [COLLECTION_SCOPE_STATE_KEY]: _scope, ...cursors } = priorState;
+    if (Object.keys(cursors).length > 0) {
+      start.state = cursors;
+    }
   }
   return start;
 }

@@ -28,6 +28,7 @@ export interface FakeServerOptions {
    *  simulating iCloud's regional-host resolution, instead of a
    *  same-origin redirect. */
   regionalHost?: boolean;
+  username: string;
   /** When true, /.well-known/carddav answers PROPFIND inline (207, no
    *  redirect) with `current-user-principal` 404'd in its propstat — the
    *  real behavior observed live against iCloud — instead of the
@@ -35,7 +36,6 @@ export interface FakeServerOptions {
    *  at the bare origin root ("/") in this mode, so the test exercises
    *  discoverCardDav's origin-root fallback. */
   wellKnownAnswersInlineWithoutPrincipal?: boolean;
-  username: string;
 }
 
 export interface FakeCardDavServer {
@@ -110,7 +110,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     // for the well-known resource itself, current-user-principal reported
     // via a 404 propstat (RFC 4918 §14.22) rather than populated.
     const responseBody = multistatus(
-      `<D:response><D:href>/.well-known/carddav/</D:href><D:propstat><D:prop><D:current-user-principal/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response>`
+      "<D:response><D:href>/.well-known/carddav/</D:href><D:propstat><D:prop><D:current-user-principal/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response>"
     );
     res.writeHead(207, { "Content-Type": "application/xml" });
     res.end(responseBody);
@@ -197,8 +197,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
       // Origin-root fallback target: only reached (in real discoverCardDav
       // usage) when the well-known step answered inline without the
       // property, per wellKnownAnswersInlineWithoutPrincipal above.
-      match: (req, url, body) =>
-        req.method === "PROPFIND" && url === "/" && body.includes("current-user-principal"),
+      match: (req, url, body) => req.method === "PROPFIND" && url === "/" && body.includes("current-user-principal"),
       respond: (_req, res) => respondCurrentUserPrincipal(res, "/"),
     },
     {

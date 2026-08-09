@@ -146,6 +146,12 @@ export interface LocalCollectorDefinition {
   readonly entry: string;
   /** Default stream set; operators can override with `--streams`. */
   readonly streams: readonly string[];
+  /**
+   * Streams an owner-declared `since` can be PROVEN against (mirrors the
+   * connector manifest's `consent_time_field`). Streams outside this set are
+   * collected whole rather than narrowed against a field they do not have.
+   */
+  readonly time_scopable_streams?: readonly string[];
 }
 
 /**
@@ -170,6 +176,8 @@ export interface BundledConnectorEntry {
   readonly connector_id: string;
   /** Default stream set; operators can override with `--streams`. */
   readonly streams: readonly string[];
+  /** Streams an owner-declared `since` can be proven against. */
+  readonly time_scopable_streams?: readonly string[];
 }
 
 /** A frozen, id-keyed registry of runnable bundled connector entries. */
@@ -206,6 +214,11 @@ function toBundledEntry(definition: LocalCollectorDefinition): BundledConnectorE
     args: Object.freeze([resolvedEntry]) as readonly string[],
     bindings: definition.bindings,
     streams: Object.freeze([...definition.streams]) as readonly string[],
+    ...(definition.time_scopable_streams
+      ? {
+          time_scopable_streams: Object.freeze([...definition.time_scopable_streams]) as readonly string[],
+        }
+      : {}),
   });
 }
 

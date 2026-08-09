@@ -32,9 +32,22 @@ export const GOOGLE_TAKEOUT_DEFAULT_STREAMS = [
   "coverage_diagnostics",
 ] as const;
 
+/**
+ * Streams an owner-declared `since` can be proven against — those the manifest
+ * gives a `consent_time_field`. `coverage_diagnostics` carries none (it is the
+ * run's own accounting, not owner data), so it is always collected whole.
+ */
+export const GOOGLE_TAKEOUT_TIME_SCOPABLE_STREAMS = [
+  "location_history",
+  "youtube_watch_history",
+  "search_history",
+  "photos",
+] as const;
+
 export const googleTakeoutCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "google_takeout",
   entry: "google_takeout",
   bindings: { filesystem: { required: true } },
   streams: GOOGLE_TAKEOUT_DEFAULT_STREAMS,
+  time_scopable_streams: GOOGLE_TAKEOUT_TIME_SCOPABLE_STREAMS,
 };

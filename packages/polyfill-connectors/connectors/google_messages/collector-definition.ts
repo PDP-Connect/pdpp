@@ -30,9 +30,16 @@ import type { LocalCollectorDefinition } from "../../src/collector-definition.ts
 
 export const GOOGLE_MESSAGES_DEFAULT_STREAMS = ["messages", "coverage_diagnostics"] as const;
 
+/**
+ * `messages` declares `sent_at`; `coverage_diagnostics` is the run's own
+ * accounting and carries no owner-moment, so it is always collected whole.
+ */
+export const GOOGLE_MESSAGES_TIME_SCOPABLE_STREAMS = ["messages"] as const;
+
 export const googleMessagesCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "google_messages",
   entry: "google_messages",
   bindings: { filesystem: { required: true } },
   streams: GOOGLE_MESSAGES_DEFAULT_STREAMS,
+  time_scopable_streams: GOOGLE_MESSAGES_TIME_SCOPABLE_STREAMS,
 };

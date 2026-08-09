@@ -122,6 +122,14 @@ export type IngestBatchRequest = LocalDeviceIngestBatchRequest;
 
 /** Safe, terminal per-stream evidence. Deliberately excludes paths, payloads, and reasons. */
 export interface TerminalCollectionRequest {
+  /**
+   * Fingerprint of the boundary this evidence was measured against (`unscoped`
+   * for a full pass — an absence would be indistinguishable from an old
+   * collector that never reported one). Coverage is only ever proof of the
+   * region it was measured in, so the region travels WITH the proof rather than
+   * being looked up beside it.
+   */
+  collection_scope?: string;
   connector_id: string;
   run_id: string;
   source_instance_id: string;
@@ -130,6 +138,13 @@ export interface TerminalCollectionRequest {
 
 export interface TerminalCollectionFact {
   coverage_statuses: readonly string[];
+  /**
+   * Whether the declared boundary was enforceable on this stream. `false` marks
+   * a stream collected WHOLE because its manifest declares no time field: it
+   * holds real data but proves nothing about the declared bound, so it must not
+   * be read as covering it.
+   */
+  scoped?: boolean;
   stream: string;
 }
 

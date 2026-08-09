@@ -42,9 +42,22 @@ export const CLAUDE_CODE_DEFAULT_STREAMS = [
   "config_inventory",
 ] as const;
 
+/**
+ * Streams an owner-declared `since` can be proven against — exactly those the
+ * `claude_code` manifest gives a `consent_time_field`
+ * (`sessions.started_at`, `messages.timestamp`, `attachments.timestamp`).
+ *
+ * The remaining default streams (skills, slash_commands, memory_notes, the
+ * inventory stores) carry no time field, so a date bound is not measurable
+ * against them. They are collected whole under a scoped run and reported as
+ * out-of-scope rather than being silently narrowed.
+ */
+export const CLAUDE_CODE_TIME_SCOPABLE_STREAMS = ["sessions", "messages", "attachments"] as const;
+
 export const claudeCodeCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "claude_code",
   entry: "claude_code",
   bindings: { filesystem: { required: true } },
   streams: CLAUDE_CODE_DEFAULT_STREAMS,
+  time_scopable_streams: CLAUDE_CODE_TIME_SCOPABLE_STREAMS,
 };

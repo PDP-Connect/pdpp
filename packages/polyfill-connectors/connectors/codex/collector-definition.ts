@@ -46,9 +46,21 @@ export const CODEX_DEFAULT_STREAMS = [
   "coverage_diagnostics",
 ] as const;
 
+/**
+ * Streams an owner-declared `since` can be proven against — exactly those the
+ * `codex` manifest gives a `consent_time_field` (`sessions.started_at`,
+ * `messages.timestamp`, `function_calls.timestamp`).
+ *
+ * The remaining default streams (rules, prompts, skills, history, the log and
+ * inventory stores) carry no time field, so a date bound is not measurable
+ * against them; they are collected whole and reported as out-of-scope.
+ */
+export const CODEX_TIME_SCOPABLE_STREAMS = ["sessions", "messages", "function_calls"] as const;
+
 export const codexCollectorDefinition: LocalCollectorDefinition = {
   connector_id: "codex",
   entry: "codex",
   bindings: { filesystem: { required: true } },
   streams: CODEX_DEFAULT_STREAMS,
+  time_scopable_streams: CODEX_TIME_SCOPABLE_STREAMS,
 };

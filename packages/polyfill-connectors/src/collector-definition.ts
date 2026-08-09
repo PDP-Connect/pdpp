@@ -39,4 +39,19 @@ export interface LocalCollectorDefinition {
    * with `--streams`. Must be non-empty and manifest-declared.
    */
   readonly streams: readonly string[];
+  /**
+   * Streams an owner-declared `since` boundary can honestly bind to: exactly
+   * those whose manifest declares a `consent_time_field`, mirrored here because
+   * the published collector runtime ships no manifests (it knows only the
+   * definitions injected into its registry) and must not guess.
+   *
+   * The direction of knowledge is the same as `streams`: the connector declares
+   * what it can prove a bound against; the runtime enforces without knowing any
+   * connector. A stream omitted here is NEVER silently narrowed against a field
+   * it does not have — it is collected whole and reported as out-of-scope, which
+   * is the honest outcome rather than an invisible drop.
+   *
+   * Absent/empty means the connector supports no time boundary at all.
+   */
+  readonly time_scopable_streams?: readonly string[];
 }
