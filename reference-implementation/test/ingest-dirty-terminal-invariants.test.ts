@@ -13,6 +13,7 @@ import test from "node:test";
 import { registerConnector } from "../server/auth.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { __setRecordIndexFaultHookForTest, ingestRecord, ingestRecords } from "../server/records.ts";
+import { __setLexicalBackfillPhaseHookForTest } from "../server/search.ts";
 import { runSearchIndexDirtyReconcileRound } from "../server/search-index-reconcile.ts";
 import { countDirtySearchIndexScopes, isSearchIndexScopeDirty } from "../server/stores/search-index-dirty-store.ts";
 
@@ -234,6 +235,73 @@ test("invariant (5): dirty work is BOUNDED -- a reconcile round respects pageSiz
     assert.equal(round.incomplete, true, "a backlog larger than pageSize is reported incomplete, not silently dropped");
   } finally {
     __setRecordIndexFaultHookForTest(null);
+    closeDb();
+  }
+});
+
+test("invariant (5): a permanently-failing dirty scope cannot starve a later healthy scope out of every page", async () => {
+  initDb(":memory:");
+  try {
+    const connectorId = "inv-starvation-avoidance";
+    await registerConnector(manifestFor(connectorId));
+
+    const brokenInstanceId = "cin_starvation_broken";
+    const healthyInstanceId = "cin_starvation_healthy";
+
+    // The broken scope is ingested FIRST, so it is durably the OLDEST dirty
+    // scope (lowest marked_at) -- exactly the position that would starve
+    // everything behind it under a naive oldest-first-forever ordering.
+    await ingestRecord(target(connectorId, brokenInstanceId), record("items", "k1", "will never reconcile"));
+    await ingestRecord(target(connectorId, healthyInstanceId), record("items", "k1", "reconciles normally"));
+
+    // Prevent deferred ack-path indexing from clearing the healthy scope's
+    // own convergence path from under the assertions below -- both scopes
+    // stay dirty until the reconcile round below runs.
+    assert.equal(await countDirtySearchIndexScopes(), 2, "both scopes start dirty");
+
+    // Make the backfill phase throw FOR THE BROKEN INSTANCE ONLY, every
+    // single time, forever -- simulating a permanently-broken scope (e.g. a
+    // structurally invalid stored field value that always throws when
+    // reconciled), not a transient blip that would eventually clear on its
+    // own.
+    __setLexicalBackfillPhaseHookForTest((point, ctx) => {
+      if (point === "before-instance-fence" && ctx.connectorInstanceId === brokenInstanceId) {
+        throw new Error("permanently broken scope, by design of this test");
+      }
+    });
+
+    // Page size 1 is deliberately adversarial: with NO starvation
+    // avoidance, the broken scope (oldest marked_at) would occupy this
+    // single slot on every round forever, and the healthy scope behind it
+    // would never even be ATTEMPTED, let alone converge.
+    let healthyConverged = false;
+    for (let round = 0; round < 10 && !healthyConverged; round += 1) {
+      // biome-ignore lint/performance/noAwaitInLoops: Sequential rounds are the thing under test -- each round must observe the previous round's backoff state.
+      await runSearchIndexDirtyReconcileRound({ maxDurationMs: 2000, pageSize: 1 });
+      healthyConverged = !(await isSearchIndexScopeDirty({ connectorInstanceId: healthyInstanceId, stream: "items" }));
+    }
+
+    assert.equal(
+      healthyConverged,
+      true,
+      "the healthy scope must eventually be attempted and converge despite a permanently-failing older scope"
+    );
+    assert.equal(
+      await isSearchIndexScopeDirty({ connectorInstanceId: brokenInstanceId, stream: "items" }),
+      true,
+      "the broken scope legitimately never converges (it always throws) -- it is starved OUT of contention, not silently fixed"
+    );
+
+    const rows = getDb()
+      .prepare("SELECT DISTINCT record_key FROM lexical_search_index WHERE connector_instance_id = ?")
+      .all(healthyInstanceId) as { record_key: string }[];
+    assert.deepEqual(
+      rows.map((r) => r.record_key),
+      ["k1"],
+      "the healthy scope's record actually converged"
+    );
+  } finally {
+    __setLexicalBackfillPhaseHookForTest(null);
     closeDb();
   }
 });

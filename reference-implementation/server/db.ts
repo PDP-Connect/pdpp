@@ -1943,6 +1943,14 @@ CREATE TABLE IF NOT EXISTS manifest_write_violations (
 -- drift -- the existing exact-comparison drift-checks (search.ts
 -- backfillLexicalStream, search-semantic.ts semanticBackfillIndexIsInSync)
 -- remain the source of truth for whether a rebuild is actually needed.
+-- attempts/next_attempt_at implement backoff-based starvation avoidance: a
+-- scope that fails reconcile repeatedly must not occupy the front of the
+-- oldest-first queue forever (its marked_at never changes on failure,
+-- unlike a genuinely re-dirtied scope). Each failure increments attempts
+-- and pushes next_attempt_at forward by an exponential-ish delay; the
+-- listing query excludes rows still in backoff, so a permanently-failing
+-- scope rotates out of contention and a later healthy scope can take its
+-- page slot, while the failing scope still gets retried periodically.
 CREATE TABLE IF NOT EXISTS search_index_dirty (
   connector_instance_id TEXT NOT NULL,
   connector_id          TEXT NOT NULL,
@@ -1951,6 +1959,8 @@ CREATE TABLE IF NOT EXISTS search_index_dirty (
   marked_at             TEXT NOT NULL,
   reconciled_at         TEXT,
   last_error            TEXT,
+  attempts              INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at       TEXT,
   PRIMARY KEY(connector_instance_id, stream)
 );
 CREATE INDEX IF NOT EXISTS idx_search_index_dirty_pending
@@ -5179,6 +5189,13 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
   runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorMaintenanceCursorColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateManifestWriteViolations(raw));
+  // Starvation-avoidance backoff columns for search_index_dirty (see the
+  // CREATE TABLE comment above): a pre-existing reference DB created the
+  // table before these columns existed on it.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, "search_index_dirty", "attempts", "INTEGER NOT NULL DEFAULT 0")
+  );
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "search_index_dirty", "next_attempt_at", "TEXT"));
   runWithSqliteBusyRetrySync(() => ensureRecordResetGenerationColumn(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
   // prior package it extends via `parent_package_id`. Pre-existing reference

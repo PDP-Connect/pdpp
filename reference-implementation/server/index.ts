@@ -435,7 +435,7 @@ import {
   runLexicalSearch,
 } from "./search.ts";
 import { runHybridSearch } from "./search-hybrid.ts";
-import { selfHealSearchIndexDirtyBeforeRead } from "./search-index-reconcile.ts";
+import { triggerSearchIndexDirtySelfHeal } from "./search-index-reconcile.ts";
 import {
   computeIndexState as computeSemanticIndexState,
   configureSemanticBackend,
@@ -499,6 +499,7 @@ import {
   runStartupRunHistoryBackfillToCompletion,
 } from "./stores/run-history-backfill-stage.ts";
 import { getDefaultSchedulerStore, type SchedulerStore } from "./stores/scheduler-store.ts";
+import { countDirtySearchIndexScopes } from "./stores/search-index-dirty-store.ts";
 import { getDefaultSourceWebhookEventStore } from "./stores/source-webhook-event-store.ts";
 import { resolveStaticSecretRunEnv } from "./stores/static-secret-run-credentials.ts";
 import {
@@ -6060,6 +6061,7 @@ function buildRsApp(opts: ServerOpts = {}) {
     buildSourceDescriptor,
     buildStreamMetadataEntry,
     canonicalConnectorKey,
+    countSearchIndexDirtyScopes: countDirtySearchIndexScopes,
     createBlobStore,
     decorateRecordBlobRefs,
     emitQueryReceived,
@@ -6106,8 +6108,8 @@ function buildRsApp(opts: ServerOpts = {}) {
     runHybridSearch,
     runLexicalSearch,
     runSemanticSearch,
-    selfHealSearchIndexDirtyBeforeRead,
     setReferenceTraceId,
+    triggerSearchIndexDirtySelfHeal,
     validateRequestedQueryFieldParams,
   };
   mountRsReadQueries(app, rsReadContext as unknown as Parameters<typeof mountRsReadQueries>[1]);

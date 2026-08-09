@@ -385,7 +385,8 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly searchIndexDirtyGetByScope: ReadOneQuery;
   readonly searchIndexDirtyListDirty: IterateQuery;
   readonly searchIndexDirtyMarkDirty: MutationQuery;
-  readonly searchIndexDirtyRecordFailure: MutationQuery;
+  readonly searchIndexDirtyRecordFailure: MutationReturningOneQuery;
+  readonly searchIndexDirtySetNextAttempt: MutationQuery;
   readonly searchIndexInsertRow: MutationQuery;
   readonly searchMetaDeleteByStream: MutationQuery;
   // Lexical retrieval — backfill drift detection metadata.

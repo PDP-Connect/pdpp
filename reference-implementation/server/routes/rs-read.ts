@@ -269,6 +269,14 @@ export interface MountRsReadContext {
   }) => unknown;
   canonicalConnectorKey: (connectorId: string) => string | null;
 
+  /**
+   * Cheap, honest count of currently-dirty search-index scopes
+   * (process-wide, not scoped to any one query). Used to attach an
+   * additive `meta.index_maintenance` disclosure when nonzero. Optional so
+   * hosts/tests that do not wire it simply omit the disclosure.
+   */
+  countSearchIndexDirtyScopes?: () => Promise<number>;
+
   // blob read
   createBlobStore: () => BlobStoreLike;
   decorateRecordBlobRefs: (record: unknown) => unknown;
@@ -369,19 +377,20 @@ export interface MountRsReadContext {
   }) => Promise<ReadRequestBindingsResult>;
   resolveRegisteredConnectorManifest: (connectorId: string) => Promise<ManifestLike>;
   runHybridSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
-
   // search surfaces
   runLexicalSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
   runSemanticSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
-  /**
-   * Read-time self-heal (I3): checked once before running the actual
-   * search. Cooldown-gated internally; a no-op when there is no dirty
-   * backlog or the last attempt failed within the cooldown window. Optional
-   * so tests/hosts that do not wire it simply skip the self-heal (search
-   * still works, just relies solely on the periodic sweep for convergence).
-   */
-  selfHealSearchIndexDirtyBeforeRead?: () => Promise<void>;
   setReferenceTraceId: (res: unknown, traceId: string | null) => void;
+  /**
+   * Read-time self-heal (I3) trigger. MUST be non-blocking (fire-and-forget)
+   * and internally deduplicated/cooldown-gated -- a single dirty scope's
+   * backfill has no wall-clock bound, so awaiting this could hang an
+   * ordinary search request. Returns void, not a Promise, specifically so a
+   * caller cannot accidentally await it. Optional so tests/hosts that do not
+   * wire it simply skip the self-heal (search still works, relying solely on
+   * the periodic sweep for convergence).
+   */
+  triggerSearchIndexDirtySelfHeal?: () => void;
   validateRequestedQueryFieldParams: (
     requestParams: Record<string, unknown>,
     manifestStream: ManifestStreamLike | undefined
@@ -2274,12 +2283,14 @@ async function runSearchRouteHandler(
     };
     await ctx.emitQueryReceived(queryContext, req);
 
-    // I3 read-time self-heal: cooldown-gated, bounded, and best-effort --
-    // a failure here must never block the search itself.
-    await ctx.selfHealSearchIndexDirtyBeforeRead?.().catch(() => {
-      // Self-heal is acceleration, not authority; the periodic sweep still
-      // owns eventual convergence if this attempt fails.
-    });
+    // I3 read-time self-heal: fire-and-forget, cooldown- and in-flight-
+    // deduplicated. MUST NOT be awaited -- a single dirty scope's backfill
+    // has no internal wall-clock bound (only the reconcile ROUND checks a
+    // deadline BETWEEN scopes, not within one), so awaiting this here could
+    // block an ordinary search request for an unbounded duration. The
+    // periodic maintenance sweep is still the authoritative convergence
+    // path; this only accelerates it opportunistically.
+    ctx.triggerSearchIndexDirtySelfHeal?.();
 
     const { envelope, disclosureData } = await opts.runSearch({
       opts: ctx.opts,
@@ -2299,6 +2310,29 @@ async function runSearchRouteHandler(
       tokenInfo,
       traceId,
     });
+
+    // Honest global-backlog disclosure: a nonzero search_index_dirty
+    // backlog means SOME scope somewhere may be under-indexed right now.
+    // This is deliberately coarse (process-wide, not scoped to this
+    // query's specific connector instances/streams -- doing that
+    // precisely would require the search execution path itself to report
+    // which scopes it actually touched, which it does not today) but it
+    // is never wrong in the direction that matters: it only ever ADDS a
+    // "results may be incomplete" signal, never removes one, and it never
+    // fires when the backlog is actually empty. Silence is not a claim of
+    // completeness on its own (see the existing count_accuracy/recall
+    // disclosure for the query-scoped signal); this augments that with
+    // the one honest thing this layer can cheaply prove.
+    const envelopeWithMeta = envelope as { meta?: Record<string, unknown> };
+    if (envelopeWithMeta.meta) {
+      const dirtyCount = await ctx.countSearchIndexDirtyScopes?.().catch(() => 0);
+      if (dirtyCount) {
+        envelopeWithMeta.meta.index_maintenance = {
+          note: "a background index-maintenance backlog exists somewhere on this server; some results elsewhere may be temporarily under-indexed. This is not scoped to this specific query.",
+          pending_scopes: dirtyCount,
+        };
+      }
+    }
 
     return res.json(ctx.finalizeCanonicalEnvelope(envelope, req));
   } catch (err) {

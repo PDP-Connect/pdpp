@@ -2036,10 +2036,14 @@ export async function bootstrapPostgresSchema({
         marked_at TEXT NOT NULL,
         reconciled_at TEXT,
         last_error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
         PRIMARY KEY(connector_instance_id, stream)
       );
       CREATE INDEX IF NOT EXISTS idx_pg_search_index_dirty_pending
         ON search_index_dirty(dirty);
+      ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE search_index_dirty ADD COLUMN IF NOT EXISTS next_attempt_at TEXT;
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;

@@ -22,7 +22,7 @@
  * for that scope.
  */
 
-import { exec, getOne, iterate, referenceQueries } from "../../lib/db.ts";
+import { exec, execReturningOne, getOne, iterate, referenceQueries } from "../../lib/db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 interface SqlClient {
@@ -66,7 +66,8 @@ export async function markSearchIndexDirtyPostgres(
 export async function clearSearchIndexDirty(key: SearchIndexScopeKey, nowIso: string): Promise<void> {
   if (isPostgresStorageBackend()) {
     await postgresQuery(
-      `UPDATE search_index_dirty SET dirty = 0, reconciled_at = $3, last_error = NULL
+      `UPDATE search_index_dirty
+       SET dirty = 0, reconciled_at = $3, last_error = NULL, attempts = 0, next_attempt_at = NULL
        WHERE connector_instance_id = $1 AND stream = $2`,
       [key.connectorInstanceId, key.stream, nowIso]
     );
@@ -75,16 +76,53 @@ export async function clearSearchIndexDirty(key: SearchIndexScopeKey, nowIso: st
   exec(referenceQueries.searchIndexDirtyClear, [nowIso, key.connectorInstanceId, key.stream]);
 }
 
-/** Records a reconcile failure for this scope: dirty stays 1, structured evidence for observability (I6). */
+// Starvation-avoidance backoff schedule (I5/review): each successive
+// failure pushes next_attempt_at further out, capped so a scope is never
+// starved for longer than ~10 minutes between retries. Deliberately small
+// multipliers (not a full exponential-to-hours curve) because this backlog
+// is expected to be tiny in steady state (a crash/restart edge case, not
+// routine traffic) -- the goal is "a permanently-broken scope stops eating
+// every page's front slot," not "minimize retry cost of a large backlog."
+const BACKOFF_SCHEDULE_MS = [0, 5000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000];
+
+function backoffDelayMsForAttempt(attempts: number): number {
+  const index = Math.min(Math.max(attempts, 0), BACKOFF_SCHEDULE_MS.length - 1);
+  return BACKOFF_SCHEDULE_MS[index] ?? BACKOFF_SCHEDULE_MS.at(-1) ?? 600_000;
+}
+
+/**
+ * Records a reconcile failure for this scope: dirty stays 1, structured
+ * evidence for observability (I6), and attempts/next_attempt_at advance so
+ * a repeatedly-failing scope backs off instead of permanently occupying
+ * the oldest-first queue's front slot (see listDirtySearchIndexScopes).
+ */
 export async function recordSearchIndexDirtyFailure(key: SearchIndexScopeKey, error: string): Promise<void> {
   if (isPostgresStorageBackend()) {
-    await postgresQuery(
-      "UPDATE search_index_dirty SET last_error = $3 WHERE connector_instance_id = $1 AND stream = $2",
+    const { rows } = await postgresQuery<{ attempts: number }>(
+      `UPDATE search_index_dirty
+       SET last_error = $3, attempts = attempts + 1
+       WHERE connector_instance_id = $1 AND stream = $2
+       RETURNING attempts`,
       [key.connectorInstanceId, key.stream, error]
+    );
+    const attempts = rows[0]?.attempts;
+    if (typeof attempts !== "number") {
+      return;
+    }
+    const nextAttemptAt = new Date(Date.now() + backoffDelayMsForAttempt(attempts)).toISOString();
+    await postgresQuery(
+      "UPDATE search_index_dirty SET next_attempt_at = $3 WHERE connector_instance_id = $1 AND stream = $2",
+      [key.connectorInstanceId, key.stream, nextAttemptAt]
     );
     return;
   }
-  exec(referenceQueries.searchIndexDirtyRecordFailure, [error, key.connectorInstanceId, key.stream]);
+  const row = execReturningOne<{ attempts: number }>(referenceQueries.searchIndexDirtyRecordFailure, [
+    error,
+    key.connectorInstanceId,
+    key.stream,
+  ]);
+  const nextAttemptAt = new Date(Date.now() + backoffDelayMsForAttempt(row.attempts)).toISOString();
+  exec(referenceQueries.searchIndexDirtySetNextAttempt, [nextAttemptAt, key.connectorInstanceId, key.stream]);
 }
 
 export async function isSearchIndexScopeDirty(key: SearchIndexScopeKey): Promise<boolean> {
@@ -102,7 +140,15 @@ export async function isSearchIndexScopeDirty(key: SearchIndexScopeKey): Promise
   return Boolean(row?.dirty);
 }
 
-/** Oldest-first page of currently-dirty scopes, bounded by `limit`. Re-queried fresh every sweep round. */
+/**
+ * Oldest-first page of currently-dirty AND currently-eligible scopes,
+ * bounded by `limit`. "Eligible" excludes a scope still serving out its
+ * post-failure backoff (next_attempt_at in the future) -- without this
+ * exclusion, a scope that fails every reconcile attempt would occupy the
+ * front of this oldest-first ordering forever (failure never advances
+ * marked_at), permanently starving every healthy scope behind it out of
+ * every page. Re-queried fresh every sweep round.
+ */
 export async function listDirtySearchIndexScopes(limit: number): Promise<DirtySearchIndexScope[]> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery<{
@@ -114,9 +160,10 @@ export async function listDirtySearchIndexScopes(limit: number): Promise<DirtySe
       `SELECT connector_instance_id, connector_id, stream, marked_at
        FROM search_index_dirty
        WHERE dirty <> 0
+         AND (next_attempt_at IS NULL OR next_attempt_at <= $2)
        ORDER BY marked_at ASC, connector_instance_id ASC, stream ASC
        LIMIT $1`,
-      [limit]
+      [limit, new Date().toISOString()]
     );
     return result.rows.map((row) => ({
       connectorId: row.connector_id,
@@ -131,7 +178,7 @@ export async function listDirtySearchIndexScopes(limit: number): Promise<DirtySe
     connector_instance_id: string;
     marked_at: string;
     stream: string;
-  }>(referenceQueries.searchIndexDirtyListDirty, [])) {
+  }>(referenceQueries.searchIndexDirtyListDirty, [new Date().toISOString()])) {
     scopes.push({
       connectorId: row.connector_id,
       connectorInstanceId: row.connector_instance_id,

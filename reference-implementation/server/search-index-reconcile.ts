@@ -71,6 +71,12 @@ function safeParseManifest(raw: string): Record<string, unknown> | null {
   }
 }
 
+function declaresSemanticFields(manifestStream: Record<string, unknown>): boolean {
+  const query = manifestStream.query as { search?: { semantic_fields?: unknown } } | undefined;
+  const fields = query?.search?.semantic_fields;
+  return Array.isArray(fields) && fields.length > 0;
+}
+
 export interface ReconcileScopeResult {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
@@ -116,7 +122,32 @@ export async function reconcileSearchIndexDirtyScope(scope: DirtySearchIndexScop
     };
 
     await lexicalIndexBackfillForManifest({ manifest: pinnedManifest } as unknown as LexicalBackfillOptions);
-    if (getSemanticBackend()) {
+
+    // Distinguish "this stream does not declare semantic_fields" (semantic
+    // participation was never configured here -- clearing is correct, there
+    // is nothing to prove) from "this stream DOES declare semantic_fields
+    // but no server-wide backend is currently configured" (review-flagged
+    // gap: getSemanticBackend() returning null here could mean semantic
+    // retrieval is intentionally disabled for the whole server, OR that the
+    // backend is temporarily unavailable/warming -- either way, clearing
+    // the combined dirty flag in that case would silently declare "semantic
+    // is in sync" for a scope whose semantic index was never actually
+    // checked, permanently dropping pending proof). When semantic is
+    // configured for this stream but no backend exists right now, this
+    // reconcile only proves LEXICAL is in sync; the semantic half stays
+    // unproven and the flag is deliberately left set (with distinct
+    // evidence, not a generic failure) so a later attempt -- once a backend
+    // exists -- still gets a chance to actually check it.
+    const semanticFieldsDeclared = declaresSemanticFields(targetStream);
+    const semanticBackend = getSemanticBackend();
+    if (semanticFieldsDeclared && !semanticBackend) {
+      await recordSearchIndexDirtyFailure(
+        { connectorInstanceId, stream },
+        "semantic_fields is declared for this stream but no semantic backend is currently configured; semantic sync is unproven, dirty flag retained"
+      );
+      return { connectorId, connectorInstanceId, ok: false, stream };
+    }
+    if (semanticBackend) {
       await semanticIndexBackfillForManifest({ manifest: pinnedManifest } as unknown as SemanticBackfillOptions);
     }
 
@@ -188,18 +219,28 @@ export async function runSearchIndexDirtyReconcileRound(options?: {
 
 // ---------------------------------------------------------------------------
 // Read-time self-heal (I3) -- mirrors buildAutoReconciledRetainedSizeProjection
-// (routes/ref-dataset.ts): the periodic maintenance sweep alone means a
-// crash-abandoned record stays invisible to search until the next tick
-// (bounded, but nonzero); a cheap check + cooldown-gated bounded reconcile at
-// read time closes that window without a thundering-herd reconcile storm on
-// a hot search endpoint. Process-local cooldown state, exactly like the
-// retained-size read model's own auto-reconcile gate -- not durable, not
-// correctness-critical, just a rate limit on how often an unlucky request
-// pays the reconcile cost.
+// (routes/ref-dataset.ts) in spirit (a cheap check + cooldown gate at read
+// time accelerates convergence beyond the periodic sweep's own tick), but is
+// DELIBERATELY NON-BLOCKING here where that pattern is not: a single dirty
+// scope's lexical/semantic backfill has no internal wall-clock bound (only
+// runSearchIndexDirtyReconcileRound's deadline check runs BETWEEN scopes,
+// never within one), so a search request that awaited this could hang for
+// an unbounded duration. A search request must never await an unbounded
+// reconcile -- this fires a bounded round in the background and returns
+// immediately, every time, regardless of outcome.
+//
+// In-flight dedup (not just a cooldown) matters here specifically because
+// this is now fire-and-forget: without it, N concurrent requests arriving
+// while a backlog exists would each launch their own background reconcile
+// round, multiplying DB load with no benefit (they would all converge the
+// same handful of oldest-dirty scopes). Cooldown-after-failure still
+// applies on top, exactly as before, to rate-limit repeated attempts
+// against a systemically failing reconcile path.
 // ---------------------------------------------------------------------------
 
 const SEARCH_INDEX_DIRTY_AUTO_RECONCILE_FAILURE_COOLDOWN_MS = 30_000;
 let searchIndexDirtyAutoReconcileRetryAfterMs = 0;
+let searchIndexDirtySelfHealInFlight: Promise<void> | null = null;
 
 function searchIndexDirtyAutoReconcileNow(): number {
   return Date.now();
@@ -209,21 +250,7 @@ function searchIndexDirtyAutoReconcileInCooldown(): boolean {
   return searchIndexDirtyAutoReconcileNow() < searchIndexDirtyAutoReconcileRetryAfterMs;
 }
 
-/**
- * Call once near the top of a search request handler, before running the
- * actual search. If there is a dirty backlog and the cooldown has elapsed,
- * runs ONE bounded reconcile round synchronously (small maxDurationMs/page
- * bound, so worst-case added request latency is bounded) before the search
- * proceeds -- closing the "crash-abandoned record invisible until next
- * sweep tick" window for the request that happens to ask first. A search
- * that runs while the backlog is nonempty but in cooldown (or reconcile
- * itself fails) is still honest: it just returns whatever the index
- * currently has, same as any read between two sweep ticks.
- */
-export async function selfHealSearchIndexDirtyBeforeRead(): Promise<void> {
-  if (searchIndexDirtyAutoReconcileInCooldown()) {
-    return;
-  }
+async function runSelfHealAttempt(): Promise<void> {
   const dirtyCount = await countDirtySearchIndexScopes().catch(() => 0);
   if (dirtyCount === 0) {
     return;
@@ -235,4 +262,26 @@ export async function selfHealSearchIndexDirtyBeforeRead(): Promise<void> {
     searchIndexDirtyAutoReconcileRetryAfterMs =
       searchIndexDirtyAutoReconcileNow() + SEARCH_INDEX_DIRTY_AUTO_RECONCILE_FAILURE_COOLDOWN_MS;
   }
+}
+
+/**
+ * Call once near the top of a search request handler, before running the
+ * actual search. Fire-and-forget: returns `void` synchronously, never a
+ * Promise, so it cannot be mistakenly awaited. If a self-heal attempt is
+ * already in flight, or the cooldown after a recent failure has not
+ * elapsed, this is a pure no-op. The search itself proceeds against
+ * whatever the index currently has, same as any read between two periodic
+ * sweep ticks -- this only accelerates convergence, it is never on the
+ * critical path of the response.
+ */
+export function triggerSearchIndexDirtySelfHeal(): void {
+  if (searchIndexDirtySelfHealInFlight || searchIndexDirtyAutoReconcileInCooldown()) {
+    return;
+  }
+  const attempt = runSelfHealAttempt().finally(() => {
+    if (searchIndexDirtySelfHealInFlight === attempt) {
+      searchIndexDirtySelfHealInFlight = null;
+    }
+  });
+  searchIndexDirtySelfHealInFlight = attempt;
 }
