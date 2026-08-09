@@ -1158,11 +1158,40 @@ export async function drainConnectorInstanceIndexWork(timeoutMs = 5000): Promise
     if (Date.now() >= deadline) {
       throw new ConnectorInstanceIndexWorkDrainTimeoutError(tails.length, timeoutMs);
     }
-    // biome-ignore lint/performance/noAwaitInLoops: Draining is intentionally sequential to observe newly-enqueued tails between rounds.
-    await Promise.race([
-      Promise.allSettled(tails),
-      new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
-    ]);
+    // Each loop iteration awaits a bounded race between "every tail
+    // currently in the snapshot settles" and "the remaining deadline
+    // elapses," THEN re-snapshots the tails map -- a newly-enqueued tail
+    // (another record's deferred job scheduled while this round was
+    // waiting) is only visible on the NEXT iteration's fresh snapshot, so
+    // the loop cannot be replaced by a single non-looping await over one
+    // upfront collection. The round-boundary timer is cleared in BOTH race
+    // outcomes (not just left to expire): an uncleared ref'ed setTimeout
+    // keeps the event loop alive for its full remaining duration even after
+    // Promise.allSettled already won the race, which would retain the
+    // process for up to `timeoutMs` on every successful drain -- including
+    // a near-instant one.
+    // biome-ignore lint/performance/noAwaitInLoops: Each round's wait depends on the PRIOR round's tail snapshot; collapsing to Promise.all over one upfront snapshot would miss tails enqueued mid-drain.
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(
+        () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve();
+        },
+        Math.max(0, deadline - Date.now())
+      );
+      Promise.allSettled(tails).then(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 }
 

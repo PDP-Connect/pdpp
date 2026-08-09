@@ -8554,6 +8554,55 @@ function createReferenceSchedulerManager({
   return { cancelRun, refresh, start: refresh, stop };
 }
 
+export interface ShutdownStorageCloseDependencies {
+  readonly closeDb: () => void;
+  readonly closePostgresStorage: () => Promise<void>;
+  readonly drainConnectorInstanceIndexWork: (timeoutMs?: number) => Promise<void>;
+  readonly onDrainTimeout?: (err: unknown) => void;
+}
+
+export type ShutdownStorageCloseOutcome = { readonly closed: true } | { readonly closed: false; readonly err: unknown };
+
+/**
+ * Pure (dependency-injected, no process.exit/no module-scope state) decision
+ * boundary for the drain-then-close half of CLI shutdown: drain the deferred
+ * lexical/semantic index-maintenance lane, then close EITHER storage backend
+ * only if that drain actually succeeded. A deferred job can be running
+ * against SQLite or Postgres depending on the active backend, so both
+ * closeDb() and closePostgresStorage() are equally unsafe to run out from
+ * under one -- on a drain timeout, NEITHER may run.
+ *
+ * process.exit(1) on the caller's timeout branch does NOT let an in-flight
+ * job "finish naturally": Node's process.exit reclaims file descriptors and
+ * tears down the event loop immediately, so any in-flight query is aborted
+ * at whatever point it happened to be, same as a hard kill. What skipping
+ * closeDb()/closePostgresStorage() here actually buys is narrower: this
+ * process never itself issues a controlled close on a handle a job is
+ * using, so the specific "[db] No database is open" failure mode (this
+ * process's OWN close racing this process's OWN deferred job) cannot
+ * occur -- it does not make the in-flight job safe, only removes this
+ * process as the cause of that specific defect.
+ *
+ * Extracted as a pure function (rather than left inline in the CLI-only
+ * entrypoint block below, which only runs under `node server/index.ts` and
+ * cannot be exercised by an import-time test) specifically so this
+ * drain-gates-close invariant is provable at a real boundary instead of by
+ * reading the source.
+ */
+export async function shutdownStorageClose(
+  deps: ShutdownStorageCloseDependencies
+): Promise<ShutdownStorageCloseOutcome> {
+  try {
+    await deps.drainConnectorInstanceIndexWork(2000);
+  } catch (err) {
+    deps.onDrainTimeout?.(err);
+    return { closed: false, err };
+  }
+  await deps.closePostgresStorage();
+  deps.closeDb();
+  return { closed: true };
+}
+
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────
 //
 // Process-level handlers (uncaughtException, unhandledRejection, SIGTERM,
@@ -8729,38 +8778,22 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
         )
       : Promise.resolve();
     await Promise.allSettled([...httpDrains, Promise.race([awaitStartupTasks, backfillDeadline]), drainConnectors]);
-    // Drain the deferred lexical/semantic index-maintenance lane
-    // (records.ts's scheduleRecordIndexMaintenance/runDeferredRecordIndexes)
-    // before closeDb() nulls the handle those jobs' storage-generation fence
-    // is guarding. Without this, a job that already passed its fence check
-    // and is mid-await on the now-closing handle throws "[db] No database is
-    // open" instead of completing cleanly.
-    //
-    // On timeout, closeDb() must NOT run: a job still genuinely in flight
-    // would be racing the handle it is actively using. Exiting WITHOUT
-    // closeDb() leaves that job to either finish naturally before the
-    // process actually terminates or be reclaimed by the OS along with the
-    // process's file descriptors -- neither closes the WAL file out from
-    // under a live query, which a synchronous closeDb() here would. Exit
-    // code 1 marks this an unclean shutdown (distinct from the normal
-    // exit(0) below) so an operator/orchestrator can tell the two apart.
-    let drained = true;
-    try {
-      await drainConnectorInstanceIndexWork(2000);
-    } catch (err) {
-      drained = false;
-      cliLogger.warn(
-        { err },
-        "deferred index work did not drain before shutdown; skipping closeDb to avoid closing storage under an active job"
-      );
-    }
-    await closePostgresStorage();
-    if (drained) {
-      closeDb();
-      process.exit(0);
-    } else {
-      process.exit(1);
-    }
+    // See shutdownStorageClose's own doc comment for the drain-gates-close
+    // invariant and why exit(1) here does not mean the in-flight job
+    // finishes safely -- only that this process is not the one that raced
+    // it with a controlled close.
+    const closeOutcome = await shutdownStorageClose({
+      closeDb,
+      closePostgresStorage,
+      drainConnectorInstanceIndexWork,
+      onDrainTimeout: (err) => {
+        cliLogger.warn(
+          { err },
+          "deferred index work did not drain before shutdown; skipping storage close to avoid closing a handle under an active job"
+        );
+      },
+    });
+    process.exit(closeOutcome.closed ? 0 : 1);
   };
   process.on("SIGTERM", exitOnSignal("SIGTERM"));
   process.on("SIGINT", exitOnSignal("SIGINT"));

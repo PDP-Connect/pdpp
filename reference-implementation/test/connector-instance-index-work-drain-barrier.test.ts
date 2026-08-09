@@ -76,3 +76,39 @@ test("drainConnectorInstanceIndexWork resolves normally once every tail settles 
   );
   await tail;
 });
+
+// REVISE-flagged defect: the round-boundary race originally paired
+// Promise.allSettled(tails) with a bare `new Promise((resolve) =>
+// setTimeout(resolve, ...))` inside Promise.race. Promise.race never clears
+// the loser's timer, so even a drain whose tail settles almost immediately
+// left a ref'ed setTimeout scheduled for the FULL remaining deadline (up to
+// timeoutMs) — Node's event loop stays alive for that whole duration even
+// though drainConnectorInstanceIndexWork itself already resolved. The tail
+// must still be genuinely PENDING (not already resolved) when the drain's
+// first loop iteration snapshots connectorInstanceIndexTails, or the drain
+// takes the tails.length === 0 fast path and never reaches the race at
+// all -- a same-tick-resolved tail would pass this test even against the
+// original bug, so the tail below resolves on a real macrotask instead.
+test("drainConnectorInstanceIndexWork leaves no pending deadline timer behind once its tail settles", async () => {
+  const activeTimeoutCount = () => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+
+  const before = activeTimeoutCount();
+  const tail = enqueueConnectorInstanceIndexWorkForTests(
+    "cin_drain_no_timer_leak_probe",
+    () => new Promise((resolve) => setTimeout(resolve, 5))
+  );
+
+  // A long timeoutMs is the whole point of this test: if the round-boundary
+  // timer were left uncleared once the tail settles, it would still be
+  // ref'ed/pending for nearly this entire duration after the awaited call
+  // below returns. A short timeoutMs could pass this test by accident (the
+  // leaked timer fires and self-clears before the assertion runs).
+  await drainConnectorInstanceIndexWork(60_000);
+  const after = activeTimeoutCount();
+
+  assert.ok(
+    after <= before,
+    `drain must not leave a pending Timeout behind once its tail settles: ${before} active Timeout resource(s) before, ${after} after`
+  );
+  await tail;
+});
