@@ -38,8 +38,8 @@
           "required": true,
           "secret": true,
           "autocomplete": "one-time-code",
-          "help_url": "https://support.apple.com/en-us/102654",
-          "help_text": "Create an app-specific password at appleid.apple.com under Sign-In and Security, then paste it here. Apple documents this credential type for mail, contacts, and calendars access.",
+          "help_url": "https://account.apple.com/account/manage",
+          "help_text": "Go to account.apple.com/account/manage, sign in, then under Sign-In and Security choose App-Specific Passwords and generate one for this connection. Paste it here. See Apple's support article (support.apple.com/en-us/102654) for background on this credential type.",
           "env": ["APPLE_APP_SPECIFIC_PASSWORD"]
         }
       ]

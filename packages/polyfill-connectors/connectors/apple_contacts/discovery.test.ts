@@ -204,6 +204,32 @@ test("discoverCardDav: follows a redirect to a regional host under the icloud.co
   }
 });
 
+test("discoverCardDav: falls back to the origin root when well-known answers inline without current-user-principal", async () => {
+  // Real-world shape observed live against iCloud (2026-08-09):
+  // .well-known/carddav answers PROPFIND directly (207, no redirect) with
+  // current-user-principal 404'd in its own propstat; the property is only
+  // populated when the same PROPFIND is issued against the bare origin
+  // root. A client that treats "no principal href at the well-known
+  // response" as terminal fails discovery even though the server is
+  // RFC-6764-compliant and the account has valid, reachable data.
+  const server = await startFakeCardDavServer({
+    username: "owner@example.com",
+    password: "app-specific-pw",
+    wellKnownAnswersInlineWithoutPrincipal: true,
+  });
+  try {
+    const result = await discoverCardDav({
+      originUrl: server.origin,
+      authHeader: `Basic ${Buffer.from("owner@example.com:app-specific-pw").toString("base64")}`,
+      fetchImpl: nativeFetchAdapter,
+    });
+    assert.equal(result.principalUrl, server.url("/principals/owner/"));
+    assert.equal(result.addressBookHomeUrl, server.url("/addressbooks/owner/"));
+  } finally {
+    await server.close();
+  }
+});
+
 test("discoverCardDav: rejects on 401 with a stable auth-rejected error", async () => {
   const server = await startFakeCardDavServer({ username: "owner@example.com", password: "app-specific-pw" });
   try {

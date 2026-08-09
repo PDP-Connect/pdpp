@@ -22,7 +22,17 @@
  *      (DAVx5) use for iCloud precisely because Apple does not publish a
  *      stable hostname. Label: THIRD-PARTY-CORROBORATED, not Apple-official.
  *   2. PROPFIND `current-user-principal` on the resolved root to find the
- *      owner's principal URL (RFC 6764 §6 / RFC 3744 §5.1).
+ *      owner's principal URL (RFC 6764 §6 / RFC 3744 §5.1). RFC 6764 §5
+ *      expects the well-known URI to redirect rather than answer inline, but
+ *      does not forbid a server from answering it directly; when that
+ *      happens and the response's own propstat 404s `current-user-principal`
+ *      (RFC 4918 §14.22 — "this resource doesn't carry this property", not
+ *      an error), this step retries once against the bare origin root before
+ *      failing. Verified live against a real iCloud account: the well-known
+ *      URL 207s inline with `current-user-principal` absent, while `/` on
+ *      the same origin answers it. This fallback is standards-general (any
+ *      RFC 6764 server that inline-answers the well-known URI without the
+ *      property benefits), not an iCloud-specific carve-out.
  *   3. PROPFIND `addressbook-home-set` on the principal to find the address
  *      book collection(s) (RFC 6352 §7.1.1).
  *
@@ -326,7 +336,7 @@ export async function discoverCardDav(args: {
   const visitedOrigins: string[] = [];
 
   const wellKnownUrl = new URL("/.well-known/carddav", originUrl).toString();
-  const principalStep = await propfindFollowingRedirects(
+  let principalStep = await propfindFollowingRedirects(
     fetchImpl,
     wellKnownUrl,
     CURRENT_USER_PRINCIPAL_BODY,
@@ -352,7 +362,46 @@ export async function discoverCardDav(args: {
     throw new CardDavDiscoveryError(`carddav_discovery_propfind_failed: status=${String(principalStep.status)}`);
   }
 
-  const principalHref = extractHref(principalStep.text, "current-user-principal");
+  let principalHref = extractHref(principalStep.text, "current-user-principal");
+  // RFC 6764 §5 expects the well-known URI to redirect to the real context
+  // path; it does not mandate that a server answering the well-known
+  // PROPFIND inline (no redirect) must itself carry
+  // `current-user-principal` on that exact resource. A server may legally
+  // answer 207 there with the property 404'd in its propstat (RFC 4918
+  // §14.22: "this resource doesn't have this property") while still
+  // honoring the property at the origin root. Observed live against a real
+  // iCloud account: `.well-known/carddav` answers inline with
+  // current-user-principal absent, while `/` on the same origin returns it
+  // populated. When the well-known step never redirected (so the origin
+  // root hasn't already been tried) and yielded no principal href, retry
+  // once against the bare origin root before giving up — this is a
+  // standards-general fallback, not an iCloud-specific carve-out.
+  if (!principalHref && principalStep.visited.length === 1) {
+    const rootUrl = new URL("/", originUrl).toString();
+    if (rootUrl !== wellKnownUrl) {
+      const rootStep = await propfindFollowingRedirects(
+        fetchImpl,
+        rootUrl,
+        CURRENT_USER_PRINCIPAL_BODY,
+        authHeader,
+        trustedOrigins,
+        "0"
+      );
+      visitedOrigins.push(...rootStep.visited);
+      for (const origin of rootStep.visited) {
+        if (!trustedOrigins.includes(origin)) {
+          trustedOrigins.push(origin);
+        }
+      }
+      if (rootStep.status >= 200 && rootStep.status < 300) {
+        const rootHref = extractHref(rootStep.text, "current-user-principal");
+        if (rootHref) {
+          principalStep = rootStep;
+          principalHref = rootHref;
+        }
+      }
+    }
+  }
   if (!principalHref) {
     throw new CardDavDiscoveryError("carddav_discovery_no_current_user_principal");
   }
