@@ -17,10 +17,10 @@
  * shaping) a connector-owned adapter module.
  */
 
-import {
-  type DeploymentConfigResolver,
-  type ProviderAuthAdapter,
-  type ProviderAuthManifestLike,
+import type {
+  DeploymentConfigResolver,
+  ProviderAuthAdapter,
+  ProviderAuthManifestLike,
 } from "../../../packages/polyfill-connectors/src/provider-auth-adapter.ts";
 import { resolveProviderAuthAdapter } from "../../../packages/polyfill-connectors/src/provider-auth-adapters.ts";
 import type { ProviderAccount, ProviderAuthExchanger, ProviderAuthTokens } from "../routes/ref-provider-auth.ts";
@@ -57,11 +57,7 @@ async function requireManifest(
 ): Promise<ProviderAuthManifestLike> {
   const manifest = await resolveManifest(connectorId);
   if (!manifest) {
-    throw new GenericProviderAuthDispatchError(
-      "not_found",
-      `Connector '${connectorId}' is not registered.`,
-      404
-    );
+    throw new GenericProviderAuthDispatchError("not_found", `Connector '${connectorId}' is not registered.`, 404);
   }
   return manifest;
 }

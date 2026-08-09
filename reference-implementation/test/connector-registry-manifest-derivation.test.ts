@@ -66,7 +66,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { seedableConnectors } from "../cli/commands/seed.ts";
+import { seedableConnectorsFromManifests } from "../cli/commands/seed.ts";
 import { SUPPORTED_SEED_CONNECTOR_KEYS } from "../connectors/seed/index.ts";
 import type { ConnectorManifestLike } from "../server/connection-setup-plan.ts";
 import {
@@ -289,39 +289,38 @@ test("counterweight: a custom third-party connector_id, unknown to every generat
   assert.equal(isConnectorKey(thirdPartyId), true);
 });
 
-test("cli/commands/seed.ts: seedableConnectors intersects manifest presence with the seed connector's own SUPPORTED_SEED_CONNECTOR_KEYS export, not manifest presence alone", () => {
-  const scratchDir = mkdtempSync(join(tmpdir(), "seed-manifests-"));
-  try {
-    writeFileSync(
-      join(scratchDir, "acme.json"),
-      JSON.stringify({ connector_id: "https://registry.pdpp.org/connectors/acme", connector_key: "acme" })
-    );
+test("cli/commands/seed.ts: seedableConnectorsFromManifests intersects manifest presence with the seed connector's own SUPPORTED_SEED_CONNECTOR_KEYS export, not manifest presence alone", () => {
+  const manifests = [
+    { connector_id: "https://registry.pdpp.org/connectors/acme", connector_key: "acme" },
     // connector_key present, no top-level connector_id — the shape a custom
     // manifest without a registry URL can still declare (canonicalConnectorKey
     // fails closed on bare, non-URL-shaped connector_id values it doesn't
     // already recognize, matching connector-key.ts's documented fail-closed
     // posture — so a manifest identifying itself this way must use
     // connector_key directly).
-    writeFileSync(join(scratchDir, "bravo.json"), JSON.stringify({ connector_key: "bravo" }));
+    { connector_key: "bravo" },
     // provider_id-shaped fixtures (no connector_id/connector_key) are
     // correctly excluded — same rule northstar-hr.json exercises for real.
-    writeFileSync(join(scratchDir, "charlie.json"), JSON.stringify({ provider_id: "charlie" }));
-    // delta.json declares a real connector_key but has no fixture logic in
+    { provider_id: "charlie" },
+    // delta declares a real connector_key but has no fixture logic in
     // connectors/seed/index.ts — a manifest declaring connector_id/connector_key
-    // is necessary but not sufficient for seedability. If seedableConnectors
-    // fell back to manifest-presence alone (the over-claim this closes),
-    // "delta" would appear here and later fail at runtime with zero records
-    // emitted instead of being excluded up front.
-    writeFileSync(join(scratchDir, "delta.json"), JSON.stringify({ connector_key: "delta" }));
+    // is necessary but not sufficient for seedability. If
+    // seedableConnectorsFromManifests fell back to manifest-presence alone
+    // (the over-claim this closes), "delta" would appear here and later fail
+    // at runtime with zero records emitted instead of being excluded up front.
+    { connector_key: "delta" },
+  ];
 
-    assert.deepEqual(seedableConnectors(scratchDir, ["acme", "bravo"]), ["acme", "bravo"]);
-  } finally {
-    rmSync(scratchDir, { force: true, recursive: true });
-  }
+  assert.deepEqual(seedableConnectorsFromManifests(manifests, ["acme", "bravo"]), ["acme", "bravo"]);
 });
 
-test("cli/commands/seed.ts: seedableConnectors against the real manifests/ and the real seed connector export reproduces the historical [github, reddit, spotify] set", () => {
-  assert.deepEqual(seedableConnectors(join(riRoot, "manifests"), SUPPORTED_SEED_CONNECTOR_KEYS), [
+test("cli/commands/seed.ts: seedableConnectorsFromManifests against the real manifests/ and the real seed connector export reproduces the historical [github, reddit, spotify] set", () => {
+  const manifestsDir = join(riRoot, "manifests");
+  const manifests = readdirSync(manifestsDir)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => JSON.parse(readFileSync(join(manifestsDir, file), "utf8")));
+
+  assert.deepEqual(seedableConnectorsFromManifests(manifests, SUPPORTED_SEED_CONNECTOR_KEYS), [
     "github",
     "reddit",
     "spotify",

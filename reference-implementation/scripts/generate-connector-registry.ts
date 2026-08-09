@@ -49,13 +49,15 @@
  * drift check to render into a scratch directory without touching the real
  * file).
  *
- * Two source directories are also overridable via environment variables —
- * `PDPP_POLYFILL_MANIFESTS_DIR` and `PDPP_REFERENCE_MANIFESTS_DIR` — so tests
- * can point the generator at scratch manifest directories instead of writing
- * synthetic/probe manifests into the real, shared
- * `packages/polyfill-connectors/manifests`. Unset in normal use (CLI,
- * `pnpm run generate:connector-registry`, the drift-check test), where the
- * real directories apply.
+ * The polyfill-connector manifests source is overridable via
+ * `PDPP_POLYFILL_MANIFESTS_DIR` (see `@pdpp/polyfill-connectors`'s
+ * `readPolyfillManifests`) so tests can point the generator at a scratch
+ * manifest directory instead of writing synthetic/probe manifests into the
+ * real, shared `packages/polyfill-connectors/manifests`. Unset in normal use
+ * (CLI, `pnpm run generate:connector-registry`, the drift-check test), where
+ * the real directory applies. `reference-implementation/manifests` (RI's own
+ * native-storage-binding fixtures) has no override — no test currently needs
+ * one — and is always read from its real, fixed location.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -65,12 +67,6 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const riRoot = resolve(scriptDir, "..");
 const repoRoot = resolve(riRoot, "..");
-const polyfillManifestsDir = process.env.PDPP_POLYFILL_MANIFESTS_DIR
-  ? resolve(process.env.PDPP_POLYFILL_MANIFESTS_DIR)
-  : resolve(repoRoot, "packages/polyfill-connectors/manifests");
-const referenceManifestsDir = process.env.PDPP_REFERENCE_MANIFESTS_DIR
-  ? resolve(process.env.PDPP_REFERENCE_MANIFESTS_DIR)
-  : resolve(riRoot, "manifests");
 const targetPath = process.argv[2]
   ? resolve(process.argv[2])
   : resolve(riRoot, "server/generated/connector-registry.generated.ts");
@@ -89,14 +85,31 @@ interface ManifestLike {
   storage_binding?: { connector_id?: unknown };
 }
 
-function readManifestsFrom(dir: string): { file: string; manifest: ManifestLike }[] {
+// Polyfill-connector manifest enumeration/loading is connector-package
+// knowledge, not RI knowledge: this generator consumes the package's own
+// `readPolyfillManifests` export rather than walking
+// `packages/polyfill-connectors/manifests` itself. Loaded via a direct file
+// path (not the `@pdpp/polyfill-connectors/manifests` specifier) because
+// this script runs standalone via `node --experimental-strip-types`,
+// without workspace package resolution — matching the existing
+// `collector-registry.ts` import below.
+const { readPolyfillManifests } = (await import(
+  resolve(repoRoot, "packages/polyfill-connectors/src/manifest-registry.ts")
+)) as { readPolyfillManifests: () => { file: string; manifest: ManifestLike }[] };
+
+/** Parses one reference-implementation manifest JSON file at `manifestPath`. */
+function readReferenceManifestFile(manifestPath: string): ManifestLike {
+  return JSON.parse(readFileSync(manifestPath, "utf8")) as ManifestLike;
+}
+
+function readReferenceManifests(): { file: string; manifest: ManifestLike }[] {
+  const realDir = resolve(riRoot, "manifests");
   const out: { file: string; manifest: ManifestLike }[] = [];
-  for (const file of readdirSync(dir)) {
+  for (const file of readdirSync(realDir)) {
     if (!file.endsWith(".json")) {
       continue;
     }
-    const manifest = JSON.parse(readFileSync(resolve(dir, file), "utf8")) as ManifestLike;
-    out.push({ file, manifest });
+    out.push({ file, manifest: readReferenceManifestFile(resolve(realDir, file)) });
   }
   return out;
 }
@@ -117,8 +130,8 @@ function manifestKey(manifest: ManifestLike): string | null {
   return null;
 }
 
-const polyfillManifests = readManifestsFrom(polyfillManifestsDir);
-const referenceManifests = readManifestsFrom(referenceManifestsDir);
+const polyfillManifests = readPolyfillManifests();
+const referenceManifests = readReferenceManifests();
 
 // First-party connector keys: every polyfill manifest's canonical key.
 // (reference-implementation/manifests are the native-storage-binding fixtures

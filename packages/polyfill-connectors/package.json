@@ -20,6 +20,7 @@
   "exports": {
     "./runner": "./src/runner/index.ts",
     "./collectors": "./src/collector-registry.ts",
+    "./manifests": "./src/manifest-registry.ts",
     "./connectors/claude_code": "./connectors/claude_code/index.ts",
     "./connectors/codex": "./connectors/codex/index.ts",
     "./connectors/imessage": "./connectors/imessage/index.ts"
