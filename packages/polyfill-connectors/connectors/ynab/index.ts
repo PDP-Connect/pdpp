@@ -1088,7 +1088,25 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
   });
 }
 
-async function collectScheduledTransactions(ctx: BudgetCtx): Promise<void> {
+/**
+ * One budget's contribution to the `scheduled_transactions` whole-stream
+ * coverage proof. `/budgets/{id}/scheduled_transactions` is a `server_knowledge`
+ * delta endpoint: called with a prior cursor it returns only rows changed since
+ * that cursor, so a zero-length response on an incremental call proves nothing
+ * changed — never that the source is empty. Only a fresh call (`knowledge`
+ * undefined, i.e. no prior cursor for this budget) walks the full boundary and
+ * can measure it. `enumeratedFresh` records which case this run hit so the
+ * caller can require every requested budget to have measured fresh before
+ * declaring the aggregate proof (a single stale/incremental budget must not let
+ * a genuinely fresh sibling's zero launder into a whole-stream zero).
+ */
+export interface ScheduledTransactionsBudgetFact {
+  budgetId: string;
+  count: number;
+  enumeratedFresh: boolean;
+}
+
+export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<ScheduledTransactionsBudgetFact> {
   const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "scheduled_transactions", budgetId);
   await progress("Fetching YNAB scheduled transactions window", {
@@ -1132,6 +1150,36 @@ async function collectScheduledTransactions(ctx: BudgetCtx): Promise<void> {
     stream: "scheduled_transactions",
     cursor: newState.scheduled_transactions,
   });
+  return {
+    budgetId,
+    count: res.data.scheduled_transactions.length,
+    enumeratedFresh: knowledge === undefined,
+  };
+}
+
+/**
+ * Aggregate per-budget `scheduled_transactions` facts into the whole-stream
+ * self-coverage proof, or `null` when the proof cannot be made this run.
+ *
+ * The stream is enumerated per-budget via YNAB's `server_knowledge` delta, so
+ * `considered` can only be a true boundary measurement when EVERY requested
+ * budget did a fresh (knowledge-undefined) call this run — an incremental
+ * delta call measures "what changed", not "what exists", so a stray unchanged
+ * budget must not let the aggregate collapse to a false zero. Requiring all
+ * budgets fresh (not just non-empty) means the proof is offered only on the
+ * runs that actually walked every boundary: typically first-ever runs, or a
+ * future forced-recheck. Steady-state incremental runs correctly stay
+ * unproven here — they never measured the boundary, so `unknown` is the
+ * honest verdict, not a synthesized `complete`.
+ */
+export function aggregateScheduledTransactionsCoverage(
+  facts: readonly ScheduledTransactionsBudgetFact[]
+): { considered: number; covered: number } | null {
+  if (facts.length === 0 || !facts.every((f) => f.enumeratedFresh)) {
+    return null;
+  }
+  const total = facts.reduce((sum, f) => sum + f.count, 0);
+  return { considered: total, covered: total };
 }
 
 async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promise<YnabMonth[] | null> {
@@ -1272,7 +1320,7 @@ export async function collectMonthCategories(
   });
 }
 
-async function collectForBudget(ctx: BudgetCtx): Promise<void> {
+async function collectForBudget(ctx: BudgetCtx): Promise<{ scheduledTransactions?: ScheduledTransactionsBudgetFact }> {
   const { requested } = ctx;
   if (requested.has("accounts") || requested.has("account_stats")) {
     await collectAccounts(ctx);
@@ -1289,8 +1337,9 @@ async function collectForBudget(ctx: BudgetCtx): Promise<void> {
   if (requested.has("transactions")) {
     await collectTransactions(ctx);
   }
+  let scheduledTransactions: ScheduledTransactionsBudgetFact | undefined;
   if (requested.has("scheduled_transactions")) {
-    await collectScheduledTransactions(ctx);
+    scheduledTransactions = await collectScheduledTransactions(ctx);
   }
 
   const monthsStream = requested.get("months");
@@ -1301,6 +1350,8 @@ async function collectForBudget(ctx: BudgetCtx): Promise<void> {
   if (monthCategoriesStream && monthList) {
     await collectMonthCategories(ctx, monthList, monthCategoriesStream);
   }
+
+  return scheduledTransactions === undefined ? {} : { scheduledTransactions };
 }
 
 /** Inputs for the `budgets` full-sync stream, extracted from `collect()` so the
@@ -1440,12 +1491,13 @@ if (isMainModule(import.meta.url)) {
         await emitBudgetsStream({ budgets, state, newState, emit, trackAndEmit });
       }
 
+      const scheduledTransactionsFacts: ScheduledTransactionsBudgetFact[] = [];
       for (let budgetOrdinal = 0; budgetOrdinal < budgetIds.length; budgetOrdinal += 1) {
         const budgetId = budgetIds[budgetOrdinal];
         if (!budgetId) {
           continue;
         }
-        await collectForBudget({
+        const { scheduledTransactions } = await collectForBudget({
           budgetId,
           budgetOrdinal,
           token,
@@ -1456,6 +1508,26 @@ if (isMainModule(import.meta.url)) {
           trackAndEmit,
           progress: progressWithCounters,
         });
+        if (scheduledTransactions) {
+          scheduledTransactionsFacts.push(scheduledTransactions);
+        }
+      }
+
+      if (requested.has("scheduled_transactions")) {
+        const aggregate = aggregateScheduledTransactionsCoverage(scheduledTransactionsFacts);
+        if (aggregate) {
+          await emitDetailCoverage(
+            { emit },
+            {
+              stream: "scheduled_transactions",
+              stateStream: "scheduled_transactions",
+              requiredKeys: [],
+              hydratedKeys: [],
+              considered: aggregate.considered,
+              covered: aggregate.covered,
+            }
+          );
+        }
       }
     },
   });
