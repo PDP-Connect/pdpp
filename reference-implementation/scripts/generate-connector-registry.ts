@@ -33,7 +33,11 @@
  *     necessarily snake_case) against its manifest's canonical `connector_key`
  *     — an alias entry exists only where the two differ
  *   - localCollectorProvenKeys: manifests declaring
- *     capabilities.proven.local_collector === true
+ *     capabilities.proven.local_collector === true, ordered by
+ *     LOCAL_COLLECTOR_DEFINITIONS's own connector_id iteration order (the
+ *     connector package's documented supported public order), not
+ *     alphabetically — the enrollment UI's connector picker renders in this
+ *     order
  *   - browserBoundKeys: manifests declaring runtime_requirements.bindings.browser
  *   - providerAuthLifecycleProvenKeys: manifests declaring
  *     capabilities.proven.provider_auth_lifecycle === true
@@ -146,12 +150,22 @@ for (const definition of LOCAL_COLLECTOR_DEFINITIONS) {
   legacyLocalAliases[bundleId] = canonicalKey ?? bundleId;
 }
 
-// Local-collector proven keys: capabilities.proven.local_collector === true.
-const localCollectorProvenKeys = polyfillManifests
-  .filter(({ manifest }) => manifest.capabilities?.proven?.local_collector === true)
-  .map(({ manifest }) => manifestKey(manifest))
-  .filter((key): key is string => key !== null)
-  .sort((a, b) => a.localeCompare(b));
+// Local-collector proven keys: capabilities.proven.local_collector === true,
+// ordered by LOCAL_COLLECTOR_DEFINITIONS's own connector_id iteration order
+// (the connector package's documented supported public order), not
+// alphabetically — this order is consumed by the enrollment UI's connector
+// picker and must match its pinned COLLECTOR_RUN_CONNECTORS literal.
+const provenManifestsByKey = new Map(
+  polyfillManifests
+    .filter(({ manifest }) => manifest.capabilities?.proven?.local_collector === true)
+    .map(({ manifest }) => [manifestKey(manifest), manifest] as const)
+    .filter((entry): entry is [string, ManifestLike] => entry[0] !== null)
+);
+const localCollectorProvenKeys = LOCAL_COLLECTOR_DEFINITIONS.map((definition) => {
+  const manifest = manifestByBundleSlug.get(definition.connector_id);
+  const canonicalKey = manifest ? manifestKey(manifest) : null;
+  return canonicalKey && provenManifestsByKey.has(canonicalKey) ? canonicalKey : null;
+}).filter((key): key is string => key !== null);
 
 // Browser-bound keys: runtime_requirements.bindings.browser present.
 const browserBoundKeys = polyfillManifests

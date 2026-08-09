@@ -13,8 +13,17 @@
  */
 
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 
-const rl = createInterface({ input: process.stdin, terminal: false });
+/**
+ * The connector_key of every fixture family this file actually has emit
+ * logic for. This is the connector-owned fact of what the seed connector can
+ * emit — callers (e.g. `pdpp seed`) that need to know which connectors are
+ * seedable must read this export rather than re-deriving the answer from
+ * manifest metadata, which only proves a connector_id was declared, not that
+ * this file emits fixtures for it.
+ */
+export const SUPPORTED_SEED_CONNECTOR_KEYS: readonly string[] = Object.freeze(["github", "reddit", "spotify"]);
 
 type JsonPrimitive = boolean | null | number | string;
 type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -521,6 +530,7 @@ const REDDIT_SAVED = [
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
 async function main(): Promise<void> {
+  const rl = createInterface({ input: process.stdin, terminal: false });
   const startMsg = await new Promise<StartMessage>((resolve, reject) => {
     rl.once("line", (line) => {
       try {
@@ -641,12 +651,18 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((error: unknown) => {
-  emit({
-    error: { message: messageFromError(error), retryable: false },
-    records_emitted: 0,
-    status: "failed",
-    type: "DONE",
+// Guarded so `SUPPORTED_SEED_CONNECTOR_KEYS` can be imported (e.g. by
+// cli/commands/seed.ts) without also starting the stdin protocol loop —
+// main() must run only when this file is the process entrypoint (how the
+// runtime spawns it: `node --import tsx/esm connectors/seed/index.ts`).
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((error: unknown) => {
+    emit({
+      error: { message: messageFromError(error), retryable: false },
+      records_emitted: 0,
+      status: "failed",
+      type: "DONE",
+    });
+    process.exit(1);
   });
-  process.exit(1);
-});
+}

@@ -12,13 +12,18 @@
  *    (scripts/generate-connector-registry.ts) into a scratch path and
  *    byte-compares it against the tracked file, the same pattern
  *    scripts/check-generated-artifacts.ts uses for every other generated
- *    artifact in this repo. Unlike the three parity tests this replaces
+ *    artifact in this repo. Supersedes the three former parity tests
  *    (connection-setup-plan-proof-gates-manifest-parity.test.ts,
  *    connection-setup-plan-local-collector-proven-manifest-parity.test.ts,
- *    connection-setup-plan-browser-bound-manifest-parity.test.ts — which
- *    diffed two hand-maintained lists against each other), this test's
- *    oracle IS the generator: there is no second hand-maintained list left
- *    to drift.
+ *    connection-setup-plan-browser-bound-manifest-parity.test.ts), which
+ *    diffed two hand-maintained lists against each other: this test's
+ *    oracle IS the generator, so there is no second hand-maintained list
+ *    left to drift. The browser-bound file was deleted outright (its one
+ *    test became fully redundant with this drift oracle); the other two
+ *    were kept but trimmed to only their genuinely distinct real-manifest
+ *    invariant checks and renamed to
+ *    connector-manifest-proof-gate-modality-invariant.test.ts and
+ *    connector-manifest-local-collector-proof-binding-invariant.test.ts.
  *
  * 2. Counterweight: a synthetic third-party connector manifest — a
  *    connector_id no shipped manifest declares — must classify purely from
@@ -27,6 +32,14 @@
  *    its id happens to appear in a hardcoded RI list. This is the
  *    "custom/third-party connector must work identically to a first-party
  *    one with the same traits" guarantee the task asked for.
+ *
+ * 3. cli/commands/seed.ts's seedableConnectors intersects manifest presence
+ *    with connectors/seed/index.ts's own SUPPORTED_SEED_CONNECTOR_KEYS export
+ *    — the connector-owned fact of which fixture families it actually has
+ *    emit logic for — rather than inferring seedability from every RI
+ *    manifest declaring a connector_id/connector_key. A manifest alone only
+ *    proves registration is possible, not that the seed connector can emit
+ *    anything for it.
  */
 
 import assert from "node:assert/strict";
@@ -37,9 +50,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { connectorsWithConnectorId } from "../cli/commands/seed.ts";
+import { seedableConnectors } from "../cli/commands/seed.ts";
+import { SUPPORTED_SEED_CONNECTOR_KEYS } from "../connectors/seed/index.ts";
 import type { ConnectorManifestLike } from "../server/connection-setup-plan.ts";
-import { buildConnectionSetupPlan, classifyConnectorSetupModality } from "../server/connection-setup-plan.ts";
+import {
+  buildConnectionSetupPlan,
+  classifyConnectorSetupModality,
+  PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS,
+} from "../server/connection-setup-plan.ts";
 import { canonicalConnectorKey, isConnectorKey } from "../server/connector-key.ts";
 import {
   BROWSER_BOUND_KEYS,
@@ -95,6 +113,24 @@ test("every generated registry entry is a real, non-empty connector key with no 
       assert.equal(new Set(value).size, value.length, `${name} has a duplicate entry`);
     }
   }
+});
+
+test("PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS is exactly the generated manifest-derived set plus the synthetic test_provider literal", () => {
+  // test_provider is a synthetic connector constructed only by
+  // test/provider-auth-lifecycle.test.ts fixtures; it has no manifest file,
+  // so it is a deliberate non-generated literal addition in
+  // connection-setup-plan.ts, not manifest-derived. This proves it is the
+  // ONLY non-generated entry — a future hand-edit adding a second literal
+  // key would fail here instead of silently reopening the connector-id
+  // allowlist this generator closed.
+  const nonGenerated = PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS.filter(
+    (key) => !PROVIDER_AUTH_LIFECYCLE_PROVEN_KEYS.includes(key)
+  );
+  assert.deepEqual(nonGenerated, ["test_provider"]);
+  assert.deepEqual(
+    [...PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS].sort(),
+    [...new Set(["test_provider", ...PROVIDER_AUTH_LIFECYCLE_PROVEN_KEYS])].sort()
+  );
 });
 
 function customManifest(
@@ -183,7 +219,7 @@ test("counterweight: a custom third-party connector_id, unknown to every generat
   assert.equal(isConnectorKey(thirdPartyId), true);
 });
 
-test("cli/commands/seed.ts: DEFAULT_CONNECTORS derives from every manifest declaring connector_id/connector_key, not a hand-named fixture list", () => {
+test("cli/commands/seed.ts: seedableConnectors intersects manifest presence with the seed connector's own SUPPORTED_SEED_CONNECTOR_KEYS export, not manifest presence alone", () => {
   const scratchDir = mkdtempSync(join(tmpdir(), "seed-manifests-"));
   try {
     writeFileSync(
@@ -200,11 +236,26 @@ test("cli/commands/seed.ts: DEFAULT_CONNECTORS derives from every manifest decla
     // provider_id-shaped fixtures (no connector_id/connector_key) are
     // correctly excluded — same rule northstar-hr.json exercises for real.
     writeFileSync(join(scratchDir, "charlie.json"), JSON.stringify({ provider_id: "charlie" }));
+    // delta.json declares a real connector_key but has no fixture logic in
+    // connectors/seed/index.ts — a manifest declaring connector_id/connector_key
+    // is necessary but not sufficient for seedability. If seedableConnectors
+    // fell back to manifest-presence alone (the over-claim this closes),
+    // "delta" would appear here and later fail at runtime with zero records
+    // emitted instead of being excluded up front.
+    writeFileSync(join(scratchDir, "delta.json"), JSON.stringify({ connector_key: "delta" }));
 
-    assert.deepEqual(connectorsWithConnectorId(scratchDir), ["acme", "bravo"]);
+    assert.deepEqual(seedableConnectors(scratchDir, ["acme", "bravo"]), ["acme", "bravo"]);
   } finally {
     rmSync(scratchDir, { force: true, recursive: true });
   }
+});
+
+test("cli/commands/seed.ts: seedableConnectors against the real manifests/ and the real seed connector export reproduces the historical [github, reddit, spotify] set", () => {
+  assert.deepEqual(seedableConnectors(join(riRoot, "manifests"), SUPPORTED_SEED_CONNECTOR_KEYS), [
+    "github",
+    "reddit",
+    "spotify",
+  ]);
 });
 
 test("classifyConnectorSetupModality never special-cases a specific connector id", () => {

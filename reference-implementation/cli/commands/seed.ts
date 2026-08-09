@@ -4,6 +4,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SUPPORTED_SEED_CONNECTOR_KEYS } from "../../connectors/seed/index.ts";
 import { canonicalConnectorKey } from "../../server/connector-key.ts";
 import { initDb } from "../../server/db.ts";
 import { initPostgresStorage, isPostgresStorageBackend, resolveStorageBackend } from "../../server/postgres-storage.ts";
@@ -24,16 +25,18 @@ const SEED_CONNECTOR_PATH = join(REF_ROOT, "connectors", "seed", "index.ts");
 const MANIFESTS_DIR = join(REF_ROOT, "manifests");
 const OWNER_AUTH_REQUIRED_PATTERN = /owner_session_required|owner placeholder auth|401/i;
 
-// The deterministic seed connector (connectors/seed/index.ts) infers which
-// fixture family to emit from the requested stream names, so it can serve
-// any manifest in MANIFESTS_DIR that declares a connector_id (the shape
-// registerManifest/runConnector expect). Derived by listing that directory
-// rather than hand-naming the fixture set, so adding a manifest here is
-// enough to make it seedable — no second list to update. Excludes
-// provider_id-shaped fixtures (e.g. northstar-hr.json), which use a
-// different storage_binding-keyed registration path this command doesn't
-// drive.
-export function connectorsWithConnectorId(manifestsDir: string): string[] {
+// The seed connector (connectors/seed/index.ts) only has fixture-emit logic
+// for the connector keys it exports via SUPPORTED_SEED_CONNECTOR_KEYS — that
+// export is the connector-owned fact of what it can actually emit. A
+// manifest declaring connector_id/connector_key is necessary (this command
+// still needs manifests/<key>.json to register the connector) but not
+// sufficient: a manifest with no corresponding fixture logic in the seed
+// connector would register successfully then emit zero records, silently
+// over-claiming seedability. Intersecting against SUPPORTED_SEED_CONNECTOR_KEYS
+// closes that gap instead of inferring seedability from manifest presence
+// alone.
+export function seedableConnectors(manifestsDir: string, supportedSeedKeys: readonly string[]): string[] {
+  const supported = new Set(supportedSeedKeys);
   const names: string[] = [];
   for (const file of readdirSync(manifestsDir)) {
     if (!file.endsWith(".json")) {
@@ -46,7 +49,7 @@ export function connectorsWithConnectorId(manifestsDir: string): string[] {
     const key =
       (typeof manifest.connector_key === "string" && manifest.connector_key.trim()) ||
       (typeof manifest.connector_id === "string" ? canonicalConnectorKey(manifest.connector_id) : null);
-    if (key) {
+    if (key && supported.has(key)) {
       names.push(key);
     }
   }
@@ -54,7 +57,7 @@ export function connectorsWithConnectorId(manifestsDir: string): string[] {
 }
 
 function readDefaultConnectors(): string[] {
-  return connectorsWithConnectorId(MANIFESTS_DIR);
+  return seedableConnectors(MANIFESTS_DIR, SUPPORTED_SEED_CONNECTOR_KEYS);
 }
 
 const DEFAULT_CONNECTORS = readDefaultConnectors();
