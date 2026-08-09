@@ -39,6 +39,7 @@ import {
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
+  collectorScopeFingerprint,
   createBundledConnectorRegistry,
   deriveLocalCollectorLifecycleState,
   type EmittedMessage,
@@ -57,6 +58,7 @@ import {
   type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxSummary,
   LocalDeviceRequestTimeoutError,
+  readCollectionScopeFromState,
   runCollectorConnector,
 } from "../src/runner.ts";
 
@@ -1274,6 +1276,20 @@ export interface LocalOutboxStatusOutput {
     name: string;
     version: string;
   };
+  /**
+   * The owner-declared collection boundary in force for this lane, as the
+   * server last delivered it, so an operator can see WHAT a "complete" run on
+   * this connection is complete *within*.
+   *
+   * `active` is the boundary's fingerprint (`unscoped` for a full pass — an
+   * absence would be indistinguishable from "we did not look"). `unknown: true`
+   * means the lane has no local record of a delivered scope yet, which is the
+   * honest answer before the first run rather than a claimed full corpus.
+   */
+  scope: {
+    active: string;
+    unknown: boolean;
+  };
   source: {
     connection_id: string | null;
     source_instance_id: string | null;
@@ -1286,6 +1302,13 @@ export interface LocalCollectorReferenceRouteCheck {
   error_class?: string;
   http_status?: number;
   missing?: Array<"device_id" | "device_token" | "source_instance_id">;
+  /**
+   * The owner-declared boundary in force for this connection, read from the
+   * same state payload this probe already fetches. `unscoped` is a real value
+   * (a full pass); the field is absent only when the probe could not reach the
+   * server, so a failed check never implies an unbounded collection.
+   */
+  scope?: string;
   status: "ok" | "fail" | "unknown";
 }
 
@@ -1419,6 +1442,12 @@ export function inspectLocalOutboxStatus(
       name: LOCAL_COLLECTOR_PACKAGE_NAME,
       version: resolveLocalCollectorPackageVersion(),
     },
+    // `status` reads the durable outbox alone and never calls the server (see
+    // `doctor` for the reachability probe), so it cannot observe the declared
+    // boundary. Saying so is the honest answer: the alternative — defaulting the
+    // display to `unscoped` — would assert a full-corpus pass that nothing here
+    // measured. `doctor` fills this in from the live state read.
+    scope: { active: "unknown", unknown: true },
     source: {
       connection_id: options.sourceInstanceId ?? null,
       source_instance_id: options.sourceInstanceId ?? null,
@@ -1467,10 +1496,15 @@ export async function inspectLocalReferenceRoute(
         deviceToken,
         requestTimeoutMs: REFERENCE_ROUTE_DOCTOR_TIMEOUT_MS,
       });
-    await client.getSourceInstanceState({ sourceInstanceId });
+    const projection = await client.getSourceInstanceState({ sourceInstanceId });
+    // The state read the probe already performs is the same one that carries the
+    // owner-declared boundary, so `doctor` can state the active scope without an
+    // extra round-trip. This is the surface that answers "complete within WHAT?"
+    // for an operator looking at a green lane.
     return {
       base_url: baseUrl,
       check: "device_source_state",
+      scope: collectorScopeFingerprint(readCollectionScopeFromState(projection.state)),
       status: "ok",
     };
   } catch (error) {

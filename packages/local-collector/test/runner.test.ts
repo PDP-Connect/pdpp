@@ -96,10 +96,14 @@ test("runner exports a stable COLLECTOR_PROTOCOL_VERSION string", () => {
 });
 
 test("bundled connectors registry contains every supported local connector", () => {
-  assert.deepEqual(
-    [...BUNDLED_CONNECTOR_IDS].sort(),
-    ["apple_photos", "claude_code", "codex", "google_messages", "google_takeout", "imessage"]
-  );
+  assert.deepEqual([...BUNDLED_CONNECTOR_IDS].sort(), [
+    "apple_photos",
+    "claude_code",
+    "codex",
+    "google_messages",
+    "google_takeout",
+    "imessage",
+  ]);
   assert.ok(BUNDLED_CONNECTORS.claude_code);
   assert.ok(BUNDLED_CONNECTORS.codex);
   assert.ok(BUNDLED_CONNECTORS.imessage);
@@ -175,9 +179,7 @@ test("bundled connector defaults request coverage_diagnostics whenever the conne
     assert.ok(entry, `entry for ${id}`);
     const manifestPath = new URL(`../../polyfill-connectors/manifests/${id}.json`, import.meta.url);
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-    const declaresCoverageDiagnostics = manifest.streams.some(
-      (stream) => stream.name === "coverage_diagnostics"
-    );
+    const declaresCoverageDiagnostics = manifest.streams.some((stream) => stream.name === "coverage_diagnostics");
     if (!declaresCoverageDiagnostics) {
       continue;
     }

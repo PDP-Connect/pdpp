@@ -220,10 +220,14 @@ async function main(): Promise<void> {
     const advertised = JSON.parse(advertise.stdout);
     assert.equal(advertised.runtime, "collector");
     assert.deepEqual([...advertised.bindings].sort(), ["filesystem", "local_device", "network"]);
-    assert.deepEqual(
-      [...advertised.bundled_connectors].sort(),
-      ["apple_photos", "claude_code", "codex", "google_messages", "google_takeout", "imessage"]
-    );
+    assert.deepEqual([...advertised.bundled_connectors].sort(), [
+      "apple_photos",
+      "claude_code",
+      "codex",
+      "google_messages",
+      "google_takeout",
+      "imessage",
+    ]);
     // biome-ignore lint/performance/useTopLevelRegex: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     assert.match(advertised.collector_protocol_version, /^\d+$/);
 
@@ -834,7 +838,7 @@ async function runImessageSampleSmoke({
 
     // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const persisted = (getDb() as any)
-      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .prepare("SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?")
       .get("imessage", enrollment.connector_instance_id);
     assert.equal(
       persisted.n,
@@ -894,7 +898,11 @@ async function runFixtureBackedGoogleTakeoutEnrollRunSmoke({
       connector_id: "google_takeout",
       local_binding_name: "pack-install-run-laptop",
     });
-    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    assert.equal(
+      codeResp.status,
+      201,
+      `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
     // biome-ignore lint/suspicious/noExplicitAny: The route response is validated at this dynamic package boundary.
     const enrollmentCode = (codeResp.body as any).enrollment_code;
     assert.ok(typeof enrollmentCode === "string" && enrollmentCode.length > 0);
@@ -931,12 +939,15 @@ async function runFixtureBackedGoogleTakeoutEnrollRunSmoke({
     );
     const runOutput = JSON.parse(runResult.stdout) as RunOutput;
     assert.equal(runOutput.done?.status, "succeeded");
-    assert.ok((runOutput.recordsQueued ?? 0) > 0, `google_takeout connector did not queue any records: ${runResult.stdout}`);
+    assert.ok(
+      (runOutput.recordsQueued ?? 0) > 0,
+      `google_takeout connector did not queue any records: ${runResult.stdout}`
+    );
     assert.ok((runOutput.sentBatches ?? 0) > 0);
 
     // biome-ignore lint/suspicious/noExplicitAny: The test reads the dynamically imported reference database.
     const persisted = (getDb() as any)
-      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .prepare("SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?")
       .get("google-takeout", enrollment.connector_instance_id);
     assert.ok(persisted.n > 0, `expected at least one persisted google_takeout record; got ${persisted.n}`);
     log(`Google Takeout fixture-backed enroll/run smoke PASS: ${persisted.n} record(s) persisted at ingest.`);
@@ -945,7 +956,6 @@ async function runFixtureBackedGoogleTakeoutEnrollRunSmoke({
     await rm(takeoutDir, { recursive: true, force: true });
   }
 }
-
 
 const APPLE_PHOTOS_FIXTURE_FILE_COUNT = 500;
 const APPLE_PHOTOS_SAMPLE_LIMIT = 20;
@@ -1001,7 +1011,11 @@ async function runApplePhotosSampleSmoke({
       connector_id: "apple_photos",
       local_binding_name: "pack-install-run-apple-photos",
     });
-    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    assert.equal(
+      codeResp.status,
+      201,
+      `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
     // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const enrollmentCode = (codeResp.body as any).enrollment_code;
 
@@ -1057,7 +1071,9 @@ async function runApplePhotosSampleSmoke({
     const outboxTotal = runOutput.status?.outbox?.counts?.total ?? 0;
     assert.ok(outboxTotal > 0, `sample run must leave sampled work in the local outbox: ${runResult.stdout}`);
 
-    log("Running installed pdpp-local-collector run --connector apple_photos (no --sample) to drain the full fixture...");
+    log(
+      "Running installed pdpp-local-collector run --connector apple_photos (no --sample) to drain the full fixture..."
+    );
     const fullRun = await run(
       "npx",
       [
@@ -1090,7 +1106,7 @@ async function runApplePhotosSampleSmoke({
 
     // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const persisted = (getDb() as any)
-      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .prepare("SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?")
       .get("apple-photos", enrollment.connector_instance_id);
     assert.equal(
       persisted.n,
@@ -1184,7 +1200,11 @@ async function runGoogleMessagesSampleSmoke({
       connector_id: "google_messages",
       local_binding_name: "pack-install-run-google-messages",
     });
-    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    assert.equal(
+      codeResp.status,
+      201,
+      `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
     // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const enrollmentCode = (codeResp.body as any).enrollment_code;
 
@@ -1277,7 +1297,7 @@ async function runGoogleMessagesSampleSmoke({
 
     // biome-ignore lint/suspicious/noExplicitAny: Preserves established ordered async behavior, boundary contract, or dynamic test-harness type where a mechanical rewrite would change semantics.
     const persisted = (getDb() as any)
-      .prepare(`SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?`)
+      .prepare("SELECT COUNT(*) as n FROM records WHERE connector_id = ? AND connector_instance_id = ?")
       .get("google-messages", enrollment.connector_instance_id);
     assert.equal(
       persisted.n,
@@ -1292,6 +1312,5 @@ async function runGoogleMessagesSampleSmoke({
     await rm(path.dirname(gmcliBin), { recursive: true, force: true });
   }
 }
-
 
 await main();
