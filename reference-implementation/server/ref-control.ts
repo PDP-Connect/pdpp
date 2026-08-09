@@ -105,6 +105,7 @@ import {
   deriveStreamCoverageCondition,
   type FreshnessEvidenceStrategy,
   isRequiredStream,
+  persistedZeroRetainsCoverageProof,
   pickAcceptedCoverage,
   pickRequiredAcceptedCoverage,
   readCoverageEvidenceStrategy,
@@ -325,6 +326,13 @@ interface StreamProjection {
   readonly last_updated: string | null;
   readonly record_count: number;
 }
+
+/**
+ * The count-state vocabulary as stored on an evidence row, where the state is
+ * always populated. `StreamRecordSummary.count_state` is optional instead,
+ * because a non-evidence-backed caller may make no count claim at all.
+ */
+type CountStateValue = "known" | "known_zero" | "unobserved" | "stale" | "unknown";
 
 export interface StreamRecordSummary {
   readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
@@ -5090,13 +5098,51 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // already `unobserved`/`stale`/`unknown` (never had a trustworthy count
   // to begin with) is left as-is — this only downgrades a component that
   // WAS trustworthy (`known`/`known_zero`) and no longer is.
+  // A `known_zero` that survives the staleness downgrade still owes a SECOND,
+  // independent test. `count_state` is computed once at write time and then
+  // served verbatim from `stream_records_json`, and a row whose checkpoint and
+  // total have not moved is never reclassified for repair — so a `known_zero`
+  // written before positive proof was required stays on the wire indefinitely,
+  // on a row that reads perfectly `current`. Ruling R2: checkpoint commitment
+  // alone never proves coverage, and the converse prohibition is the one at
+  // stake here — a stream with no evidence at all must present as
+  // `unobserved`, never as a proven exact zero.
+  //
+  // TWO independent proof channels are honoured, and either suffices:
+  //
+  //   1. RECORD-SIDE: a record-source checkpoint entry, which exists only once
+  //      ingest allocated a version for the stream. This is the write path's
+  //      own proof, and it is a canonical fact about the records rather than a
+  //      cursor bookmark — an observed-then-emptied stream is a real zero even
+  //      on a connection that never measured collection coverage.
+  //   2. RUN-SIDE: positive coverage evidence in the run's own facts, judged by
+  //      the shared contract invariant.
+  //
+  // Requiring BOTH would withdraw genuinely proven zeros; requiring neither is
+  // the defect. A stream that satisfies neither has nothing behind its claim.
+  //
+  // Only `known_zero` is re-tested. A `known` count is a positive measurement
+  // that stands on its own (records were counted); coverage evidence bounds
+  // whether a stream was fully seen, which is a claim only an exact-ZERO
+  // assertion depends on. Re-testing `known` here would downgrade real counts
+  // for want of a denominator they never needed.
   const recordSnapshotCurrent = evidence ? evidence.record_snapshot.state === "current" : false;
+  const manifestStreamsByName = new Map((manifest.streams ?? []).map((stream) => [stream.name, stream]));
+  const observedCheckpointStreams = parseObservedCheckpointStreams(evidence?.record_checkpoint);
+  const retainsZeroProof = (stream: string): boolean =>
+    observedCheckpointStreams.has(stream) ||
+    persistedZeroRetainsCoverageProof(
+      authoritativeLatestStreamFacts?.get(stream)?.fact ?? null,
+      manifestStreamsByName.get(stream)
+    );
   const streamRecords: readonly StreamRecordSummary[] = evidence
     ? evidence.stream_records.map((entry) => ({
-        count_state:
-          !recordSnapshotCurrent && (entry.count_state === "known" || entry.count_state === "known_zero")
-            ? "stale"
-            : entry.count_state,
+        count_state: downgradePersistedCountState({
+          countState: entry.count_state,
+          recordSnapshotCurrent,
+          retainsZeroProof,
+          stream: entry.stream,
+        }),
         declaration_state: entry.declaration_state,
         last_updated: null,
         record_count: entry.record_count,
@@ -5113,11 +5159,14 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // current) — both are non-authoritative, but `stale` additionally implies
   // "we once knew a real value, unverified since." A zero total on a current
   // snapshot additionally needs positive per-stream proof before it can claim
-  // `known_zero` — see `aggregateCountState`.
+  // `known_zero` — see `aggregateCountState`. It reads the READ-CORRECTED
+  // `streamRecords` rather than the raw `evidence.stream_records`, so a
+  // per-stream `known_zero` withdrawn for want of coverage proof cannot be
+  // re-asserted at the connection level by the aggregate.
   const totalRecordsState: ConnectorSummary["total_records_state"] = evidence
     ? // biome-ignore lint/style/noNestedTernary: The existing expression mirrors the protocol’s compact value selection contract.
       recordSnapshotCurrent
-      ? aggregateCountState(evidence.stream_records, totalRecords)
+      ? aggregateCountState(streamRecords, totalRecords)
       : "stale"
     : "unobserved";
   const retainedBytes = evidence ? evidence.retained_bytes : live.retainedBytes;
@@ -5814,6 +5863,12 @@ export interface ConnectorSummaryEvidenceRow {
     readonly reason_code: string | null;
   };
   readonly manifest_generation?: number;
+  /**
+   * Raw stored record-source checkpoint (`version_counter` as of the repair).
+   * Typed `unknown` for the same reason as `stream_latest_facts`: consumers go
+   * through `parseObservedCheckpointStreams` rather than trusting the shape.
+   */
+  readonly record_checkpoint: unknown;
   readonly record_snapshot: {
     readonly state: "current" | "unobserved" | "stale" | "failed";
     readonly as_of: string | null;
@@ -5835,6 +5890,13 @@ export interface ConnectorSummaryEvidenceRow {
   readonly state: string;
   /** Count of streams with at least one live canonical record — NOT the exhaustive declared+observed stream_records set size. */
   readonly stream_count: number;
+  /**
+   * Raw stored per-stream latest-attempt fact map, parsed defensively by
+   * `parseLatestStreamFactsMap`. Typed `unknown` because the read model stores
+   * it verbatim: every consumer must go through that validating parse rather
+   * than trusting the stored shape.
+   */
+  readonly stream_latest_facts: unknown;
   readonly stream_records: readonly {
     readonly stream: string;
     readonly declaration_state: "declared" | "dormant" | "unexpected" | "unavailable";
@@ -6093,6 +6155,14 @@ async function projectConnectorIdentityInventoryPage(
 // derivation (ref-control.ts lines ~5142-5158) exactly, extracted so
 // `projectConnectorRetainedCountSummaryPage`'s per-row closure stays under the
 // cognitive-complexity budget.
+// The `known_zero` coverage-proof re-test applies here for the same reason it
+// applies in the full profile: this aggregate is built from persisted
+// per-stream states that were derived once at write time. The runtime facts it
+// needs (`stream_latest_facts`) live on the SAME evidence row this profile
+// already loads, so the correction costs no additional read and the profile's
+// flat-read-matrix guarantee is preserved. The manifest is deliberately not
+// loaded here, so streams are judged on their runtime facts alone — a stricter
+// test than the full profile's, never a laxer one.
 function deriveRetainedCountState(
   evidence: ConnectorSummaryEvidenceRow | null,
   totalRecords: number
@@ -6103,7 +6173,83 @@ function deriveRetainedCountState(
   if (evidence.record_snapshot.state !== "current") {
     return "stale";
   }
-  return aggregateCountState(evidence.stream_records, totalRecords);
+  const facts = parseLatestStreamFactsMap(evidence.stream_latest_facts);
+  const observedCheckpointStreams = parseObservedCheckpointStreams(evidence.record_checkpoint);
+  const corrected = evidence.stream_records.map((entry) => ({
+    count_state: downgradePersistedCountState({
+      countState: entry.count_state,
+      recordSnapshotCurrent: true,
+      retainsZeroProof: (stream) =>
+        observedCheckpointStreams.has(stream) ||
+        persistedZeroRetainsCoverageProof(facts.get(stream)?.fact ?? null, undefined),
+      stream: entry.stream,
+    }),
+  }));
+  return aggregateCountState(corrected, totalRecords);
+}
+
+/**
+ * The set of streams the stored record-source checkpoint proves were
+ * canonically observed. An entry exists only once ingest allocated a version
+ * for that stream, so it is a record-side observation fact — the SAME proof
+ * `buildRepairedRow` derives `known_zero` from at the write path.
+ *
+ * Defensive at every field: a malformed column yields an empty set (no
+ * observation), never a fabricated one.
+ */
+function parseObservedCheckpointStreams(raw: unknown): ReadonlySet<string> {
+  const observed = new Set<string>();
+  if (!(raw && typeof raw === "object" && !Array.isArray(raw))) {
+    return observed;
+  }
+  const { streams } = raw as Row;
+  if (!Array.isArray(streams)) {
+    return observed;
+  }
+  for (const entry of streams) {
+    const stream = entry && typeof entry === "object" ? (entry as Row).stream : null;
+    if (typeof stream === "string" && stream.length > 0) {
+      observed.add(stream);
+    }
+  }
+  return observed;
+}
+
+/**
+ * Correct one PERSISTED per-stream `count_state` at the read boundary, where
+ * two independent invalidations apply to a value that was derived once at
+ * write time and has been served verbatim ever since.
+ *
+ *   1. The record snapshot is no longer `current`: any exact-count claim
+ *      (`known`/`known_zero`) predates the failure, so it reads `stale` while
+ *      the original count is kept as a non-authoritative hint.
+ *   2. The claim is `known_zero` but its runtime facts no longer carry
+ *      positive coverage evidence: an exact-zero assertion with no proof —
+ *      and, for a stream with no runtime fact at all, no observation
+ *      whatsoever — is `unobserved`, the honest "no count claim".
+ *
+ * Rule 2 never touches `known`: a counted record is its own measurement.
+ * A stream already reading `unobserved`/`stale`/`unknown` is left alone —
+ * this only ever downgrades a claim that was trustworthy and no longer is.
+ */
+function downgradePersistedCountState({
+  countState,
+  recordSnapshotCurrent,
+  retainsZeroProof,
+  stream,
+}: {
+  readonly countState: CountStateValue;
+  readonly recordSnapshotCurrent: boolean;
+  readonly retainsZeroProof: (stream: string) => boolean;
+  readonly stream: string;
+}): CountStateValue {
+  if (!recordSnapshotCurrent && (countState === "known" || countState === "known_zero")) {
+    return "stale";
+  }
+  if (countState === "known_zero" && !retainsZeroProof(stream)) {
+    return "unobserved";
+  }
+  return countState;
 }
 
 /**
@@ -6113,6 +6259,11 @@ function deriveRetainedCountState(
  * counted stream was never canonically observed, the total is an absence of
  * evidence rather than a measured zero, so it reads `unobserved`. A nonzero
  * total is a real measurement and stays `known` regardless.
+ *
+ * Callers pass the READ-CORRECTED per-stream states
+ * (`downgradePersistedCountState`), never the raw persisted row: an aggregate
+ * built from unproven `known_zero` entries would re-assert at the connection
+ * level exactly the claim the per-stream correction just withdrew.
  */
 function aggregateCountState(
   streamRecords: readonly { readonly count_state?: string }[] | undefined,
