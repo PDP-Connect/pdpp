@@ -48,7 +48,13 @@ import {
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
-import { addressbookQueryAll, listAddressBooks, syncCollectionReport, type VCardResource } from "./carddav-client.ts";
+import {
+  addressbookQueryAll,
+  CardDavStructuralError,
+  listAddressBooks,
+  syncCollectionReport,
+  type VCardResource,
+} from "./carddav-client.ts";
 import {
   CardDavDiscoveryError,
   CardDavRedirectOriginError,
@@ -120,6 +126,31 @@ function classifyDiscoveryFailure(err: unknown): Error {
     });
   }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
+ * Classify a caught `davRequest` failure (sync-collection, addressbook-query,
+ * or list-addressbooks) into a typed `CARDDAV_REQUEST_FAILED` connector
+ * failure. `instanceof CardDavStructuralError` dispatch — never message-text
+ * guessing — so a redirect refusal, missing Location, oversized response, or
+ * redirect loop is non-retryable at every call site, matching the original
+ * `retryablePattern` (which never matched these four structural shapes).
+ * Genuinely transient HTTP-status failures (`carddav_sync_collection_failed`,
+ * `carddav_addressbook_query_failed`, `carddav_list_addressbooks_failed`)
+ * fall through to the caller's own retryable default.
+ */
+function classifyCardDavRequestFailure(err: unknown, options: { retryableByDefault: boolean }): Error {
+  const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof CardDavStructuralError) {
+    return createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, {
+      cause: err,
+      retryable: false,
+    });
+  }
+  return createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, {
+    cause: err,
+    retryable: options.retryableByDefault,
+  });
 }
 
 const DEFAULT_ORIGIN = "https://contacts.icloud.com";
@@ -284,9 +315,13 @@ async function emitAddressBookRecordIfRequested(args: {
  * from collect() to keep the top-level function's branching bounded — this
  * is the whole per-book unit of work in one place.
  */
-async function collectAddressBook(
-  ctx: AddressBookCollectionCtx
-): Promise<{ contactsConsidered: number; covered: boolean; groupsEmitted: number }> {
+async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{
+  contactsConsidered: number;
+  contactsCovered: number;
+  covered: boolean;
+  groupsEmitted: number;
+  hadUnparseableResource: boolean;
+}> {
   const {
     book,
     bookCursor,
@@ -313,14 +348,13 @@ async function collectAddressBook(
     trustedOrigins,
     priorSyncToken: priorSync?.sync_token,
   }).catch((err: unknown) => {
-    // resolveSyncResult only ever throws carddav_sync_collection_failed
-    // (an HTTP-status-shaped failure) — retryable, matching the original
-    // string-pattern behavior this classification replaces.
-    const message = err instanceof Error ? err.message : String(err);
-    throw createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, {
-      cause: err,
-      retryable: true,
-    });
+    // resolveSyncResult throws either the HTTP-status-shaped
+    // carddav_sync_collection_failed (transient — retryable, matching the
+    // original string-pattern behavior) or one of davRequest's structural
+    // CardDavStructuralError shapes (redirect refusal, missing Location,
+    // oversized response, redirect loop — never retryable, since none of
+    // those matched the original retryablePattern either).
+    throw classifyCardDavRequestFailure(err, { retryableByDefault: true });
   });
 
   const supportsSync = syncResult.supportsSyncCollection;
@@ -331,10 +365,20 @@ async function collectAddressBook(
   const entityCursor = openFingerprintCursor(fingerprintState);
   const seenCards: Array<{ card: ParsedVCard; uid: string }> = [];
   let contactCount = 0;
+  let resourcesEnumerated = 0;
+  let unparseableResources = 0;
 
   const emitContactRecord = async (resource: VCardResource): Promise<void> => {
+    resourcesEnumerated += 1;
     const [card] = parseVCards(resource.vcardText);
     if (!card) {
+      // The server enumerated this resource, but its vCard body didn't parse
+      // (malformed/truncated/non-vCard <address-data>). It must still count
+      // toward `resourcesEnumerated` (the coverage denominator) so a parse
+      // failure shows up as considered > covered instead of silently
+      // vanishing — see the honest-coverage note on collectAddressBook's
+      // return value below.
+      unparseableResources += 1;
       return;
     }
     const record = contactRecord(book.url, resource, card);
@@ -360,16 +404,14 @@ async function collectAddressBook(
       total: contactCount,
     });
   } else {
-    // addressbookQueryAll only ever throws carddav_addressbook_query_failed
-    // (an HTTP-status-shaped failure) — retryable, matching the original
-    // string-pattern behavior this classification replaces.
+    // addressbookQueryAll throws either the HTTP-status-shaped
+    // carddav_addressbook_query_failed (transient — retryable, matching the
+    // original string-pattern behavior) or one of davRequest's structural
+    // CardDavStructuralError shapes (never retryable — see
+    // classifyCardDavRequestFailure).
     const resources = await addressbookQueryAll({ bookUrl: book.url, authHeader, fetchImpl, trustedOrigins }).catch(
       (err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        throw createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, {
-          cause: err,
-          retryable: true,
-        });
+        throw classifyCardDavRequestFailure(err, { retryableByDefault: true });
       }
     );
     for (const resource of resources) {
@@ -402,15 +444,26 @@ async function collectAddressBook(
   newState.contacts = contactsState;
   await emit({ type: "STATE", stream: "contacts", cursor: newState.contacts });
 
-  // Every enumerated resource is accounted for here regardless of whether the
-  // fingerprint cursor suppressed its RECORD emit as unchanged (contactCount
-  // increments unconditionally in emitContactRecord, above the shouldEmit
-  // gate) — the same considered===covered "proven empty" contract
-  // buildFullScanCoverageMessage documents. A genuinely empty address book
-  // (contactCount === 0) still proves its own completion this way, rather
-  // than reading as `unknown` coverage with no way to distinguish "verified
-  // zero contacts" from "never actually enumerated."
-  return { contactsConsidered: contactCount, covered: bookCovered, groupsEmitted };
+  // `contactsConsidered` counts every resource the server actually
+  // enumerated (resourcesEnumerated), NOT the successfully-parsed subset —
+  // a vCard body that fails to parse still consumed a slot in the server's
+  // response and must not silently disappear from the denominator.
+  // `contactsCovered` counts only resources this run actually accounted for
+  // (emitted, or suppressed as unchanged by the fingerprint cursor;
+  // contactCount increments unconditionally above the shouldEmit gate, but
+  // ONLY on the parse-succeeded path). When every enumerated resource
+  // parsed, considered === covered and the caller's DETAIL_COVERAGE proves
+  // complete/verified-empty coverage exactly as before (a genuinely empty
+  // address book still proves considered === covered === 0). When one or
+  // more resources failed to parse, considered > covered, so the caller
+  // reads a real partial instead of a fabricated complete.
+  return {
+    contactsConsidered: resourcesEnumerated,
+    contactsCovered: contactCount,
+    hadUnparseableResource: unparseableResources > 0,
+    covered: bookCovered,
+    groupsEmitted,
+  };
 }
 
 if (isMainModule(import.meta.url)) {
@@ -449,18 +502,20 @@ if (isMainModule(import.meta.url)) {
       });
       const trustedOrigins = [...new Set(discovery.visitedOrigins)];
 
-      // listAddressBooks only ever throws carddav_list_addressbooks_failed —
-      // NOT retryable, matching the original string-pattern behavior (that
-      // pattern never matched this message, unlike the sibling sync/query
-      // failures below) this classification replaces.
+      // listAddressBooks throws either the HTTP-status-shaped
+      // carddav_list_addressbooks_failed — NOT retryable, matching the
+      // original string-pattern behavior (that pattern never matched this
+      // message) — or one of davRequest's structural CardDavStructuralError
+      // shapes (also never retryable). Both land on the same default here,
+      // routed through the shared classifier for call-site consistency with
+      // the sync/query sites above.
       const books = await listAddressBooks({
         homeUrl: discovery.addressBookHomeUrl,
         authHeader,
         fetchImpl,
         trustedOrigins,
       }).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        throw createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, { cause: err });
+        throw classifyCardDavRequestFailure(err, { retryableByDefault: false });
       });
       await progress("Discovered address books", {
         stream: "address_books",
@@ -477,13 +532,17 @@ if (isMainModule(import.meta.url)) {
       let groupsConsidered = 0;
       let groupsCovered = 0;
       let contactsConsidered = 0;
+      let contactsCovered = 0;
+      let anyUnparseableResource = false;
 
       for (const book of books) {
         considered += 1;
         const {
           contactsConsidered: bookContactsConsidered,
+          contactsCovered: bookContactsCovered,
           covered: bookCovered,
           groupsEmitted,
+          hadUnparseableResource,
         } = await collectAddressBook({
           book,
           bookCursor,
@@ -506,13 +565,27 @@ if (isMainModule(import.meta.url)) {
         groupsConsidered += groupsEmitted;
         groupsCovered += groupsEmitted;
         contactsConsidered += bookContactsConsidered;
+        contactsCovered += bookContactsCovered;
+        anyUnparseableResource = anyUnparseableResource || hadUnparseableResource;
       }
 
       if (requested.has("contacts")) {
-        // Every enumerated contact is accounted for (emitted, or suppressed
-        // as unchanged by the fingerprint cursor) — considered === covered,
-        // including the genuine-zero-contacts case, per the same
-        // proven-empty contract contact_groups already uses below.
+        // `considered` counts every resource the server enumerated;
+        // `covered` counts only the ones this run successfully parsed and
+        // accounted for (emitted, or suppressed as unchanged by the
+        // fingerprint cursor). When every enumerated resource parsed,
+        // considered === covered and this proves complete/verified-empty
+        // coverage, including the genuine-zero-contacts case. When a vCard
+        // failed to parse, considered > covered — an honest partial, not a
+        // fabricated complete — and PROGRESS surfaces the shape/parse
+        // failure so it isn't silently swallowed by the coverage numbers.
+        if (anyUnparseableResource) {
+          await progress("Some enumerated contacts had unparseable vCard data", {
+            stream: "contacts",
+            count: contactsCovered,
+            total: contactsConsidered,
+          });
+        }
         await emitDetailCoverage(
           { emit },
           {
@@ -521,7 +594,7 @@ if (isMainModule(import.meta.url)) {
             requiredKeys: [],
             hydratedKeys: [],
             considered: contactsConsidered,
-            covered: contactsConsidered,
+            covered: contactsCovered,
           }
         );
       }

@@ -256,6 +256,125 @@ test("apple_contacts integration: fails cleanly on rejected credentials", async 
   }
 });
 
+test("apple_contacts integration: an unsafe-redirect refusal on sync-collection is a non-retryable terminal failure", async () => {
+  // End-to-end proof through the real subprocess (not just the unit-level
+  // carddav-client.test.ts coverage): a structural davRequest failure
+  // surfacing through resolveSyncResult's .catch site must land on DONE
+  // as retryable: false. Before the fix this call site blanket-set
+  // retryable: true for every caught error, which would have silently
+  // told the scheduler to keep retrying a security control that is firing
+  // correctly and cannot succeed on retry (review finding P1).
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    syncReportRedirectsToUnsafeOrigin: true,
+  });
+  try {
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+      allowFailedDone: true,
+    });
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "failed");
+    assert.equal(done.error?.code, "carddav_request_failed");
+    assert.equal(done.error?.retryable, false, "an unsafe-redirect refusal cannot self-resolve on retry");
+    assert.ok(done.error?.message?.startsWith("carddav_unsafe_redirect"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: an unsafe-redirect refusal on the bounded-snapshot fallback query is a non-retryable terminal failure", async () => {
+  // Same structural class, surfacing through addressbookQueryAll's .catch
+  // site instead of resolveSyncResult's — proves call-site consistency,
+  // not just one spot check (review finding P1).
+  const server = await startFakeCardDavServer({
+    username: USERNAME,
+    password: PASSWORD,
+    disableSyncCollection: true,
+    syncReportRedirectsToUnsafeOrigin: true,
+  });
+  try {
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+      allowFailedDone: true,
+    });
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "failed");
+    assert.equal(done.error?.code, "carddav_request_failed");
+    assert.equal(done.error?.retryable, false, "an unsafe-redirect refusal cannot self-resolve on retry");
+    assert.ok(done.error?.message?.startsWith("carddav_unsafe_redirect"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: an unparseable vCard resource is counted in coverage but withholds a complete claim", async () => {
+  // A resource the server DID enumerate (it appears in the multistatus
+  // response) but whose <address-data> is not a well-formed vCard must
+  // still count toward `considered` — the coverage denominator — even
+  // though it can never be `covered` (parsed, emitted-or-suppressed).
+  // Before the fix, contactsConsidered was aliased to the parsed-count
+  // variable, so this resource silently vanished from both considered and
+  // covered and the run reported a fabricated `complete` (review finding
+  // P2).
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    server.contacts.set("good", {
+      uid: "good",
+      href: "/addressbooks/owner/card/good.vcf",
+      vcard: buildVCard({ uid: "good", fn: "Good Contact" }),
+    });
+    // Not a well-formed vCard (no BEGIN:VCARD/END:VCARD block) — parseVCards
+    // will return zero cards for this resource's address-data.
+    server.contacts.set("malformed", {
+      uid: "malformed",
+      href: "/addressbooks/owner/card/malformed.vcf",
+      vcard: "NOT-A-VALID-VCARD-BODY",
+    });
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: { APPLE_ID: USERNAME, APPLE_APP_SPECIFIC_PASSWORD: PASSWORD, APPLE_CARDDAV_ORIGIN: server.origin },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded", "a parse failure on one resource does not fail the whole run");
+
+    const contacts = recordsOf(result.messages, "contacts");
+    assert.equal(contacts.length, 1, "only the well-formed vCard is emitted as a contact record");
+
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE");
+    // Both resources the server enumerated count toward considered; only
+    // the one that actually parsed counts toward covered. considered >
+    // covered is the honest signal — a fabricated considered === covered
+    // would read as proven-complete despite the silently dropped input.
+    assert.equal(contactsCoverage.considered, 2);
+    assert.equal(contactsCoverage.covered, 1);
+
+    // The parse failure must be surfaced, not silently swallowed.
+    const progressMessages = result.messages.filter((m) => m.type === "PROGRESS");
+    const sawParseFailureNotice = progressMessages.some(
+      (m) => m.type === "PROGRESS" && m.message.toLowerCase().includes("unparseable")
+    );
+    assert.equal(sawParseFailureNotice, true, "an honest shape/parse-failure signal must be emitted");
+  } finally {
+    await server.close();
+  }
+});
+
 test("apple_contacts integration: never logs credentials or vCard field values in PROGRESS messages", async () => {
   const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
   try {

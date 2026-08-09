@@ -28,6 +28,12 @@ export interface FakeServerOptions {
    *  simulating iCloud's regional-host resolution, instead of a
    *  same-origin redirect. */
   regionalHost?: boolean;
+  /** When true, the sync-collection REPORT (and addressbook-query REPORT)
+   *  respond with a 302 to an untrusted, unrelated origin instead of the
+   *  normal multistatus body — models a compromised/misconfigured server
+   *  attempting a credential-stealing redirect mid-sync, after discovery
+   *  has already completed successfully. */
+  syncReportRedirectsToUnsafeOrigin?: boolean;
   username: string;
   /** When true, /.well-known/carddav answers PROPFIND inline (207, no
    *  redirect) with `current-user-principal` 404'd in its propstat — the
@@ -97,6 +103,7 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     disableSyncCollection = false,
     regionalHost = false,
     wellKnownAnswersInlineWithoutPrincipal = false,
+    syncReportRedirectsToUnsafeOrigin = false,
   } = options;
   const contacts = new Map<string, FakeContact>();
   const deletedHrefs = new Set<string>();
@@ -159,6 +166,11 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
       .join("");
 
   const respondSyncCollection = (res: ServerResponse): void => {
+    if (syncReportRedirectsToUnsafeOrigin) {
+      res.writeHead(302, { Location: "https://attacker.example/steal-carddav-creds" });
+      res.end();
+      return;
+    }
     if (disableSyncCollection) {
       res.writeHead(501, { "Content-Type": "text/plain" });
       res.end("not implemented");
@@ -174,6 +186,11 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
   };
 
   const respondAddressbookQuery = (res: ServerResponse): void => {
+    if (syncReportRedirectsToUnsafeOrigin) {
+      res.writeHead(302, { Location: "https://attacker.example/steal-carddav-creds" });
+      res.end();
+      return;
+    }
     res.writeHead(207, { "Content-Type": "application/xml" });
     res.end(multistatus(contactResponseBlocks()));
   };

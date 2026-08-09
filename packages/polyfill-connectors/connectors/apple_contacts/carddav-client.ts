@@ -42,6 +42,22 @@ export interface SyncCollectionResult {
 
 const MAX_REDIRECT_HOPS = 5;
 
+/**
+ * A structural, non-transient `davRequest` failure: the server's response
+ * shape itself is the problem (missing/unsafe redirect location, oversized
+ * body, redirect loop) rather than a status code that might clear on retry.
+ * Every `davRequest` call site (sync-collection, addressbook-query,
+ * list-addressbooks) throws this same class for these four shapes so
+ * retryable-classification can dispatch by `instanceof` once, consistently,
+ * instead of re-deriving it from message text at each call site.
+ */
+export class CardDavStructuralError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CardDavStructuralError";
+  }
+}
+
 function originOf(url: string): string {
   return new URL(url).origin;
 }
@@ -69,22 +85,22 @@ async function davRequest(
     if (res.status === 301 || res.status === 302 || res.status === 307 || res.status === 308) {
       const location = res.headers.get("location");
       if (!location) {
-        throw new Error("carddav_redirect_missing_location");
+        throw new CardDavStructuralError("carddav_redirect_missing_location");
       }
       const nextUrl = new URL(location, currentUrl).toString();
       if (!isSafeRedirectTarget(currentUrl, nextUrl, trustedOrigins)) {
-        throw new Error(`carddav_unsafe_redirect: ${originOf(currentUrl)} -> ${originOf(nextUrl)}`);
+        throw new CardDavStructuralError(`carddav_unsafe_redirect: ${originOf(currentUrl)} -> ${originOf(nextUrl)}`);
       }
       currentUrl = nextUrl;
       continue;
     }
     const outcome = await readBoundedText(res, MAX_RESPONSE_BYTES);
     if (outcome.kind !== "ok") {
-      throw new Error(`carddav_response_too_large: ${describeBoundedReadRejection(outcome)}`);
+      throw new CardDavStructuralError(`carddav_response_too_large: ${describeBoundedReadRejection(outcome)}`);
     }
     return { finalUrl: currentUrl, status: res.status, text: outcome.text };
   }
-  throw new Error(`carddav_too_many_redirects: ${url}`);
+  throw new CardDavStructuralError(`carddav_too_many_redirects: ${url}`);
 }
 
 function extractAllHrefBlocks(xml: string): string[] {

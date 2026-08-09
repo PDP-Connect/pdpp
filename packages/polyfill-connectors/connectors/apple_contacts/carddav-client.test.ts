@@ -3,7 +3,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addressbookQueryAll, listAddressBooks, syncCollectionReport } from "./carddav-client.ts";
+import {
+  addressbookQueryAll,
+  CardDavStructuralError,
+  listAddressBooks,
+  syncCollectionReport,
+} from "./carddav-client.ts";
+import type { DiscoveryFetchResponse } from "./discovery.ts";
 import { discoverCardDav, MAX_RESPONSE_BYTES, nativeFetchAdapter } from "./discovery.ts";
 import { buildVCard, startFakeCardDavServer } from "./test-carddav-server.ts";
 
@@ -14,6 +20,39 @@ const fetchImpl = nativeFetchAdapter;
 
 function discover(originUrl: string) {
   return discoverCardDav({ originUrl, authHeader: AUTH_HEADER, fetchImpl });
+}
+
+/** Build a synthetic `DiscoveryFetchResponse` for tests that intercept a
+ *  davRequest hop instead of hitting the fake network server — mirrors
+ *  discovery.test.ts's syntheticResponse helper. */
+function syntheticResponse(status: number, headers: Record<string, string | null>, text = ""): DiscoveryFetchResponse {
+  return {
+    status,
+    headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    }),
+  };
+}
+
+/** Wrap a real fetchImpl so the REPORT/PROPFIND call this test targets
+ *  (matched by HTTP method) gets a synthetic redirect response instead of
+ *  hitting the fake server — every other hop (discovery, book listing)
+ *  passes through untouched. */
+function interceptMethod(
+  method: string,
+  status: number,
+  headers: Record<string, string | null>
+): Parameters<typeof syncCollectionReport>[0]["fetchImpl"] {
+  return async (url, init) => {
+    if (init.method === method) {
+      return syntheticResponse(status, headers);
+    }
+    return await nativeFetchAdapter(url, init);
+  };
 }
 
 test("listAddressBooks: finds the address book collection with ctag", async () => {
@@ -200,7 +239,212 @@ test("syncCollectionReport: an oversized multistatus response (huge embedded pho
         trustedOrigins: [server.origin],
         priorSyncToken: "",
       }),
-      (err: unknown) => err instanceof Error && err.message.startsWith("carddav_response_too_large")
+      (err: unknown) => err instanceof CardDavStructuralError && err.message.startsWith("carddav_response_too_large")
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+/**
+ * Call-site consistency: every davRequest-originated structural failure
+ * (missing redirect Location, unsafe cross-origin redirect, oversized
+ * response, redirect loop) must throw the same CardDavStructuralError class
+ * at all three REPORT/PROPFIND call sites — syncCollectionReport,
+ * addressbookQueryAll, and listAddressBooks — so index.ts's
+ * classifyCardDavRequestFailure can classify them as non-retryable
+ * uniformly via `instanceof`, never by re-deriving it from message text per
+ * call site (review finding P1, packages/polyfill-connectors REVISE
+ * 2026-08-09).
+ */
+
+test("syncCollectionReport: a missing redirect Location header is a CardDavStructuralError", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    const discovery = await discover(server.origin);
+    const books = await listAddressBooks({
+      homeUrl: discovery.addressBookHomeUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: [server.origin],
+    });
+    await assert.rejects(
+      syncCollectionReport({
+        bookUrl: books[0]?.url as string,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("REPORT", 302, {}),
+        trustedOrigins: [server.origin],
+        priorSyncToken: "",
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message === "carddav_redirect_missing_location"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("syncCollectionReport: a redirect to an untrusted origin is a CardDavStructuralError", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    const discovery = await discover(server.origin);
+    const books = await listAddressBooks({
+      homeUrl: discovery.addressBookHomeUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: [server.origin],
+    });
+    await assert.rejects(
+      syncCollectionReport({
+        bookUrl: books[0]?.url as string,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("REPORT", 302, { location: "https://attacker.example/steal" }),
+        trustedOrigins: [server.origin],
+        priorSyncToken: "",
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message.startsWith("carddav_unsafe_redirect")
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("syncCollectionReport: a redirect loop past the hop cap is a CardDavStructuralError", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    const discovery = await discover(server.origin);
+    const books = await listAddressBooks({
+      homeUrl: discovery.addressBookHomeUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: [server.origin],
+    });
+    const bookUrl = books[0]?.url as string;
+    await assert.rejects(
+      syncCollectionReport({
+        bookUrl,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("REPORT", 302, { location: bookUrl }),
+        trustedOrigins: [server.origin],
+        priorSyncToken: "",
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message.startsWith("carddav_too_many_redirects")
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("addressbookQueryAll: all four davRequest structural failure shapes are CardDavStructuralError", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    const discovery = await discover(server.origin);
+    const books = await listAddressBooks({
+      homeUrl: discovery.addressBookHomeUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: [server.origin],
+    });
+    const bookUrl = books[0]?.url as string;
+
+    await assert.rejects(
+      addressbookQueryAll({
+        bookUrl,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("REPORT", 302, {}),
+        trustedOrigins: [server.origin],
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message === "carddav_redirect_missing_location"
+    );
+
+    await assert.rejects(
+      addressbookQueryAll({
+        bookUrl,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("REPORT", 302, { location: "https://attacker.example/steal" }),
+        trustedOrigins: [server.origin],
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message.startsWith("carddav_unsafe_redirect")
+    );
+
+    await assert.rejects(
+      addressbookQueryAll({
+        bookUrl,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("REPORT", 302, { location: bookUrl }),
+        trustedOrigins: [server.origin],
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message.startsWith("carddav_too_many_redirects")
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("listAddressBooks: all four davRequest structural failure shapes are CardDavStructuralError", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    const discovery = await discover(server.origin);
+
+    await assert.rejects(
+      listAddressBooks({
+        homeUrl: discovery.addressBookHomeUrl,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("PROPFIND", 302, {}),
+        trustedOrigins: [server.origin],
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message === "carddav_redirect_missing_location"
+    );
+
+    await assert.rejects(
+      listAddressBooks({
+        homeUrl: discovery.addressBookHomeUrl,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("PROPFIND", 302, { location: "https://attacker.example/steal" }),
+        trustedOrigins: [server.origin],
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message.startsWith("carddav_unsafe_redirect")
+    );
+
+    await assert.rejects(
+      listAddressBooks({
+        homeUrl: discovery.addressBookHomeUrl,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("PROPFIND", 302, { location: discovery.addressBookHomeUrl }),
+        trustedOrigins: [server.origin],
+      }),
+      (err: unknown) => err instanceof CardDavStructuralError && err.message.startsWith("carddav_too_many_redirects")
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("syncCollectionReport: a genuinely transient HTTP-status failure is a plain Error, NOT CardDavStructuralError", async () => {
+  // Discriminates the transient/structural boundary from the other side:
+  // an ordinary 500 status must stay classified as the retryable
+  // carddav_sync_collection_failed shape, not get swept into the
+  // non-retryable structural bucket.
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    const discovery = await discover(server.origin);
+    const books = await listAddressBooks({
+      homeUrl: discovery.addressBookHomeUrl,
+      authHeader: AUTH_HEADER,
+      fetchImpl,
+      trustedOrigins: [server.origin],
+    });
+    await assert.rejects(
+      syncCollectionReport({
+        bookUrl: books[0]?.url as string,
+        authHeader: AUTH_HEADER,
+        fetchImpl: interceptMethod("REPORT", 500, {}),
+        trustedOrigins: [server.origin],
+        priorSyncToken: "",
+      }),
+      (err: unknown) =>
+        !(err instanceof CardDavStructuralError) &&
+        err instanceof Error &&
+        err.message.startsWith("carddav_sync_collection_failed")
     );
   } finally {
     await server.close();
