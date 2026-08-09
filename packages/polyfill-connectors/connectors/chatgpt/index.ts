@@ -82,6 +82,7 @@ import type {
   ChatGptApi,
   ChatGptAuth,
   ChatGptFetchResult,
+  ChatGptJson,
   ConversationListItem,
   RawCustomInstructionsBody,
   RawMemoryEntry,
@@ -1858,16 +1859,21 @@ const MEMORIES_PATH = "/memories?include_memory_entries=true";
  * Fetch /memories and emit one record per entry.
  *
  * Invariants:
- *   - On http !== 200, emits a SKIP_RESULT and no records.
- *   - On a 200 with an unreadable body (see isUnreadableJsonBody), emits a
- *     `parse_error` SKIP_RESULT and no records/STATE/coverage — a body we
- *     could not read must never read as a genuinely empty memories list.
- *   - On success, emits records in list order, then a STATE heartbeat plus a
- *     full-scan coverage message so a genuinely empty account proves
- *     considered === covered === 0 instead of leaving positive evidence
- *     indistinguishable from the malformed-body case.
+ *   - On http !== 200, emits a SKIP_RESULT and no records, no STATE, no coverage.
+ *   - On a 200 whose body fails to parse, emits a `parse_error` SKIP_RESULT —
+ *     distinct from `http_error` — and no records, no STATE, no coverage: an
+ *     unreadable body is not a proven-empty list.
+ *   - On success, emits records in list order, then a STATE heartbeat and a
+ *     full-scan DETAIL_COVERAGE. `/memories` is a single-shot, unpaginated full
+ *     list with no fingerprint suppression (every run re-lists and re-emits
+ *     every entry), so its enumerated boundary honestly supports the same
+ *     considered === covered contract as `custom_gpts`/`shared_conversations`:
+ *     `considered` is the listed entry count, `covered` mirrors it because
+ *     nothing here is suppressed as unchanged — a listed entry is either
+ *     emitted or dropped by buildMemoryRecord's own id filter, and either way
+ *     it was genuinely observed on the wire.
  *   - buildMemoryRecord filters entries with no id; those drop silently but
- *     still count as considered (they were genuinely observed on the wire).
+ *     still count toward `considered`.
  */
 export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
   deps.emit({
@@ -1875,29 +1881,18 @@ export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
     stream: "memories",
     message: "Fetching memories",
   });
-  const res = await deps.api.fetch(MEMORIES_PATH);
-  if (res.status !== 200) {
-    deps.emit({
-      type: "SKIP_RESULT",
-      stream: "memories",
-      reason: "http_error",
-      message: `memories fetch http ${res.status}`,
-      diagnostics: { http_status: res.status },
-    });
+  const classified = classifyChatGptListPage(await deps.api.fetch(MEMORIES_PATH), {
+    stream: "memories",
+    endpointLabel: "memories fetch",
+    page: 0,
+    extractItems: (json) =>
+      (json.memories as RawMemoryEntry[] | undefined) || (json.items as RawMemoryEntry[] | undefined) || [],
+  });
+  if (!classified.ok) {
+    deps.emit(classified.skip);
     return;
   }
-  if (isUnreadableJsonBody(res)) {
-    deps.emit({
-      type: "SKIP_RESULT",
-      stream: "memories",
-      reason: "parse_error",
-      message: "memories fetch http 200 with an unreadable body",
-      diagnostics: { http_status: res.status },
-    });
-    return;
-  }
-  const entries =
-    (res.json?.memories as RawMemoryEntry[] | undefined) || (res.json?.items as RawMemoryEntry[] | undefined) || [];
+  const { items: entries } = classified;
   for (const m of entries) {
     const rec = buildMemoryRecord(m);
     if (rec) {
@@ -2070,12 +2065,10 @@ const GIZMO_MAX_PAGES = 50;
 
 /**
  * A 200 whose body failed to parse arrives as `res.json === null` (the api
- * layer swallows the parse error). Every list/enumeration endpoint below reads
- * an array off `res.json`, and `res.json?.foo || []` makes that unreadable
- * body byte-identical to a genuinely empty page — silently proving a boundary
- * (zero-coverage, exhausted cursor, pruned fingerprints) it never earned. This
- * is the one parse-validity boundary shared by every stream that walks a JSON
- * list body: it does NOT decide http-status handling (each caller has its own
+ * layer swallows the parse error). `runCustomInstructionsStream` is a
+ * single-fetch, non-list endpoint outside `classifyChatGptListPage`'s shared
+ * list-item machinery, so it needs this same parse-validity check on its own:
+ * does NOT decide http-status handling (the caller has its own
  * not_available/http_error shape) — only "is this 200 body readable at all?".
  */
 function isUnreadableJsonBody(res: ChatGptFetchResult): boolean {
@@ -2083,23 +2076,54 @@ function isUnreadableJsonBody(res: ChatGptFetchResult): boolean {
 }
 
 /**
- * One `/gizmos/mine` page, or the reason it never arrived. Separating "did this
- * page arrive intact?" from "walk the pages" keeps the enumeration loop able to
- * treat every failure identically: stop, and prove nothing.
+ * A classified list-endpoint response, or the reason it never arrived.
+ * Separating "did this response arrive intact?" from "walk the pages" keeps
+ * every enumeration loop in this file able to treat every failure
+ * identically: stop, and prove nothing.
  */
-type GizmoPage =
-  | { ok: true; items: unknown[]; nextCursor: string | null }
+type ChatGptListPage<T> =
+  | { ok: true; items: T[] }
   | { ok: false; skip: Extract<EmittedMessage, { type: "SKIP_RESULT" }> };
 
-function classifyGizmoPage(res: ChatGptFetchResult, page: number): GizmoPage {
-  if (res.status === 404 || res.status === 403) {
+/**
+ * Classify one fetch result from a ChatGPT list endpoint. Shared by every
+ * caller that reads `res.json` off a `ChatGptFetchResult` and lists items off
+ * it — `custom_gpts`, `shared_conversations`, `conversations`/`messages`
+ * listing, and `memories` all hit the same three failure shapes:
+ *
+ *   - 404/403 → `not_available` (feature disabled for this account), only
+ *     when the endpoint supports that distinction (`notAvailableOn404`).
+ *   - any other non-200 → `http_error`.
+ *   - a 200 whose body failed to parse arrives as `json: null` (the browser
+ *     fetch shim swallows the parse error). Reading any key off `null` is
+ *     `undefined`, and `undefined || []` is `[]` — byte-identical to a
+ *     genuinely empty page. Without this guard an unreadable body would be
+ *     indistinguishable from a proven-empty enumeration and would emit
+ *     zero-coverage proof, or a cursor advance, it has not earned. This is a
+ *     `parse_error` SKIP_RESULT, not a genuinely empty page.
+ *
+ * `extractItems` supplies only the per-endpoint key(s) to read off a parsed
+ * body; it never runs when the body failed to parse.
+ */
+function classifyChatGptListPage<T>(
+  res: ChatGptFetchResult,
+  opts: {
+    stream: string;
+    endpointLabel: string;
+    page: number;
+    notAvailableOn404?: boolean;
+    extractItems: (json: ChatGptJson) => T[];
+  }
+): ChatGptListPage<T> {
+  const { stream, endpointLabel, page, notAvailableOn404, extractItems } = opts;
+  if (notAvailableOn404 && (res.status === 404 || res.status === 403)) {
     return {
       ok: false,
       skip: {
         type: "SKIP_RESULT",
-        stream: "custom_gpts",
+        stream,
         reason: "not_available",
-        message: `gizmos/mine http ${res.status} (feature may be disabled for this account)`,
+        message: `${endpointLabel} http ${res.status} (feature may be disabled for this account)`,
       },
     };
   }
@@ -2108,32 +2132,26 @@ function classifyGizmoPage(res: ChatGptFetchResult, page: number): GizmoPage {
       ok: false,
       skip: {
         type: "SKIP_RESULT",
-        stream: "custom_gpts",
+        stream,
         reason: "http_error",
-        message: `gizmos/mine http ${res.status}`,
+        message: `${endpointLabel} http ${res.status}`,
         diagnostics: { http_status: res.status },
       },
     };
   }
-  // See isUnreadableJsonBody: a body we could not read is a failed enumeration,
-  // not a proven-empty one.
-  if (isUnreadableJsonBody(res)) {
+  if (!res.json) {
     return {
       ok: false,
       skip: {
         type: "SKIP_RESULT",
-        stream: "custom_gpts",
+        stream,
         reason: "parse_error",
-        message: "gizmos/mine http 200 with an unreadable body",
+        message: `${endpointLabel} http 200 with an unreadable body`,
         diagnostics: { http_status: res.status, page },
       },
     };
   }
-  return {
-    ok: true,
-    items: (res.json?.items as unknown[] | undefined) || (res.json?.gizmos as unknown[] | undefined) || [],
-    nextCursor: (res.json?.cursor as string | null | undefined) ?? null,
-  };
+  return { ok: true, items: extractItems(res.json) };
 }
 
 export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
@@ -2153,7 +2171,14 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   let considered = 0;
   do {
     const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=100` : "?limit=100";
-    const page = classifyGizmoPage(await deps.api.fetch(`/gizmos/mine${qs}`), pages);
+    const res = await deps.api.fetch(`/gizmos/mine${qs}`);
+    const page = classifyChatGptListPage(res, {
+      stream: "custom_gpts",
+      endpointLabel: "gizmos/mine",
+      page: pages,
+      notAvailableOn404: true,
+      extractItems: (json) => (json.items as unknown[] | undefined) || (json.gizmos as unknown[] | undefined) || [],
+    });
     if (!page.ok) {
       deps.emit(page.skip);
       anyError = true;
@@ -2166,7 +2191,10 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
         await deps.emitRecord("custom_gpts", rec);
       }
     }
-    cursor = page.nextCursor;
+    // Cursor pagination is gizmo-specific (the other list endpoints in this
+    // file use offset/limit), so it is read directly off the parsed body
+    // here rather than folded into the shared classifier's generic item shape.
+    cursor = (res.json?.cursor as string | null | undefined) ?? null;
     pages += 1;
     if (pages > GIZMO_MAX_PAGES) {
       break;
@@ -2189,61 +2217,6 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
     // breaks out before reaching here and proves nothing.
     deps.emit(buildFullScanCoverageMessage("custom_gpts", considered));
   }
-}
-
-/**
- * One `/shared_conversations` page, or the reason it never arrived. Mirrors
- * `classifyGizmoPage`: separating "did this page arrive intact?" from "walk
- * the pages" keeps the enumeration loop able to treat every failure
- * identically: stop, and prove nothing.
- */
-type SharedConversationsPage =
-  | { ok: true; items: RawSharedConversation[] }
-  | { ok: false; skip: Extract<EmittedMessage, { type: "SKIP_RESULT" }> };
-
-function classifySharedConversationsPage(res: ChatGptFetchResult, page: number): SharedConversationsPage {
-  if (res.status === 404 || res.status === 403) {
-    return {
-      ok: false,
-      skip: {
-        type: "SKIP_RESULT",
-        stream: "shared_conversations",
-        reason: "not_available",
-        message: `shared_conversations http ${res.status}`,
-      },
-    };
-  }
-  if (res.status !== 200) {
-    return {
-      ok: false,
-      skip: {
-        type: "SKIP_RESULT",
-        stream: "shared_conversations",
-        reason: "http_error",
-        message: `shared_conversations http ${res.status}`,
-        diagnostics: { http_status: res.status },
-      },
-    };
-  }
-  // A 200 whose body failed to parse arrives here as `json: null` (the api
-  // swallows the parse error). Reading `?.items` off it yields [] — identical
-  // to a genuinely empty page — so without this guard a malformed body would be
-  // indistinguishable from a proven-empty enumeration and would emit STATE plus
-  // zero-coverage proof it has not earned. A body we could not read is a failed
-  // enumeration.
-  if (!res.json) {
-    return {
-      ok: false,
-      skip: {
-        type: "SKIP_RESULT",
-        stream: "shared_conversations",
-        reason: "parse_error",
-        message: "shared_conversations http 200 with an unreadable body",
-        diagnostics: { http_status: res.status, page },
-      },
-    };
-  }
-  return { ok: true, items: (res.json.items as RawSharedConversation[] | undefined) || [] };
 }
 
 export async function runSharedConversationsStream(
@@ -2275,9 +2248,15 @@ export async function runSharedConversationsStream(
   // no-op re-list read as an incomplete scan (`DetailCoverageParams.considered`).
   let considered = 0;
   for (;;) {
-    const classified = classifySharedConversationsPage(
+    const classified = classifyChatGptListPage(
       await deps.api.fetch(`/shared_conversations?offset=${offset}&limit=${limit}&order=created`),
-      page
+      {
+        stream: "shared_conversations",
+        endpointLabel: "shared_conversations",
+        page,
+        notAvailableOn404: true,
+        extractItems: (json) => (json.items as RawSharedConversation[] | undefined) || [],
+      }
     );
     page += 1;
     if (!classified.ok) {
@@ -2326,13 +2305,17 @@ export async function runSharedConversationsStream(
 // ─── Conversations + messages ──────────────────────────────────────────
 
 /**
- * Result of walking `/conversations` for a cursor: the items collected, plus
- * whether the walk reached its OWN stopping condition (priorCursor boundary
- * hit, a genuinely empty/short page, or the safety limit) versus being cut
- * short by a failure it never recovered from. `truncated` is the signal a
- * caller needs to tell "this list is everything newer than the cursor" from
- * "this list is a partial prefix — do not treat it as proof of anything past
- * the last item actually collected."
+ * The result of one `listConversationsSinceCursor` walk: the items collected,
+ * and whether every page that should have contributed to that list actually
+ * arrived and parsed. `truncated` is the caller's signal to prove nothing: a
+ * page that 404'd, errored, or arrived as an unreadable 200 body stops the
+ * walk exactly like a genuine end-of-list would, but the two are NOT the same
+ * fact. A genuine end-of-list (a short page, or the first item at/before
+ * `priorCursor`) is honest completion — `truncated: false` — even with zero
+ * items collected. A page that never arrived intact leaves the walk unable to
+ * prove it saw everything newer than `priorCursor`, so the caller MUST NOT
+ * advance either cursor built from this list, and MUST NOT emit list/detail
+ * coverage claiming this pass covered its boundary.
  */
 interface ConversationListResult {
   items: ConversationListItem[];
@@ -2340,53 +2323,11 @@ interface ConversationListResult {
 }
 
 /**
- * One `/conversations` page, or the reason it never arrived. Mirrors
- * `classifyGizmoPage`: separating "did this page arrive intact?" from "walk
- * the pages" keeps the enumeration loop able to treat every failure
- * identically — stop, and mark the result truncated rather than proven-complete.
- */
-type ConversationListPage =
-  | { ok: true; items: ConversationListItem[] }
-  | { ok: false; skip: Extract<EmittedMessage, { type: "SKIP_RESULT" }> };
-
-function classifyConversationListPage(res: ChatGptFetchResult, offset: number): ConversationListPage {
-  if (res.status !== 200) {
-    return {
-      ok: false,
-      skip: {
-        type: "SKIP_RESULT",
-        stream: "conversations",
-        reason: "http_error",
-        message: `conversations list http ${res.status}`,
-        diagnostics: { http_status: res.status },
-      },
-    };
-  }
-  // See isUnreadableJsonBody: a body we could not read is a failed page, not a
-  // genuinely empty/final one — `res.json?.items || []` would make it
-  // indistinguishable from having reached the end of the list, letting the
-  // incremental walk stop early and report a partial prefix as complete.
-  if (isUnreadableJsonBody(res)) {
-    return {
-      ok: false,
-      skip: {
-        type: "SKIP_RESULT",
-        stream: "conversations",
-        reason: "parse_error",
-        message: "conversations list http 200 with an unreadable body",
-        diagnostics: { http_status: res.status, offset },
-      },
-    };
-  }
-  return { ok: true, items: (res.json?.items as ConversationListItem[] | undefined) || [] };
-}
-
-/**
  * Walk /conversations pages newer than priorCursor and collect the list
  * items we still need to sync. Stops early once any update_time <= priorCursor
  * (conversations are returned ordered by updated desc).
  *
- * A failed or unreadable page (see classifyConversationListPage) marks the
+ * A failed or unreadable page (see classifyChatGptListPage) marks the
  * result `truncated: true` instead of ending the walk silently, so the caller
  * emits honest retryable/gap evidence instead of fabricating coverage over a
  * partial prefix it never proved complete.
@@ -2399,23 +2340,28 @@ async function listConversationsSinceCursor(
   let offset = 0;
   const limit = 100;
   let stopPaging = false;
-  let truncated = false;
+  let page = 0;
   deps.emit({
     type: "PROGRESS",
     stream: "conversations",
     message: priorCursor ? `Listing conversations updated after ${priorCursor}` : "Listing conversations (full pass)",
   });
   while (!stopPaging) {
-    const page = classifyConversationListPage(
+    const classified = classifyChatGptListPage(
       await deps.api.fetch(`/conversations?offset=${offset}&limit=${limit}&order=updated`),
-      offset
+      {
+        stream: "conversations",
+        endpointLabel: "conversations list",
+        page,
+        extractItems: (json) => (json.items as ConversationListItem[] | undefined) || [],
+      }
     );
-    if (!page.ok) {
-      deps.emit(page.skip);
-      truncated = true;
-      break;
+    page += 1;
+    if (!classified.ok) {
+      deps.emit(classified.skip);
+      return { items: convosToSync, truncated: true };
     }
-    const { items } = page;
+    const { items } = classified;
     if (!items.length) {
       break;
     }
@@ -2435,7 +2381,7 @@ async function listConversationsSinceCursor(
       break;
     }
   }
-  return { items: convosToSync, truncated };
+  return { items: convosToSync, truncated: false };
 }
 
 function conversationIsAfterCursor(c: ConversationListItem, priorCursor: string | null): boolean {
@@ -2470,12 +2416,14 @@ async function selectConversationListsForRequestedStreams({
 }): Promise<{
   conversationsToSync: ConversationListItem[];
   messageDetailConversations: ConversationListItem[];
-  // True when the underlying `/conversations` walk was cut short by a failure
-  // (http error or unreadable body) rather than reaching its own boundary
-  // (prior-cursor watermark, genuine short/empty page, or the safety limit).
-  // Callers must not treat conversationsToSync/messageDetailConversations as
-  // proof of full coverage when this is true.
-  listTruncated: boolean;
+  // Whether the list backing THAT stream's selection was truncated by a
+  // failed/unreadable page. When `wantsConversations && wantsMessages` share
+  // one underlying list call, a truncation of that shared call truncates both
+  // — the walk stopped before it could prove it saw everything newer than
+  // either cursor, so neither cursor may advance and neither stream may claim
+  // coverage this run.
+  conversationsListTruncated: boolean;
+  messagesListTruncated: boolean;
 }> {
   if (wantsConversations && wantsMessages) {
     const sharedCursor = oldestConversationCursor(priorConversationsCursor, priorMessagesCursor);
@@ -2483,26 +2431,34 @@ async function selectConversationListsForRequestedStreams({
     return {
       conversationsToSync: sharedList.items.filter((c) => conversationIsAfterCursor(c, priorConversationsCursor)),
       messageDetailConversations: sharedList.items.filter((c) => conversationIsAfterCursor(c, priorMessagesCursor)),
-      listTruncated: sharedList.truncated,
+      conversationsListTruncated: sharedList.truncated,
+      messagesListTruncated: sharedList.truncated,
     };
   }
   if (wantsConversations) {
-    const listed = await listForCursor(priorConversationsCursor);
+    const list = await listForCursor(priorConversationsCursor);
     return {
-      conversationsToSync: listed.items,
+      conversationsToSync: list.items,
       messageDetailConversations: [],
-      listTruncated: listed.truncated,
+      conversationsListTruncated: list.truncated,
+      messagesListTruncated: false,
     };
   }
   if (wantsMessages) {
-    const listed = await listForCursor(priorMessagesCursor);
+    const list = await listForCursor(priorMessagesCursor);
     return {
       conversationsToSync: [],
-      messageDetailConversations: listed.items,
-      listTruncated: listed.truncated,
+      messageDetailConversations: list.items,
+      conversationsListTruncated: false,
+      messagesListTruncated: list.truncated,
     };
   }
-  return { conversationsToSync: [], messageDetailConversations: [], listTruncated: false };
+  return {
+    conversationsToSync: [],
+    messageDetailConversations: [],
+    conversationsListTruncated: false,
+    messagesListTruncated: false,
+  };
 }
 
 // ε ANTI-PHASE-LOCK JITTER, NOT a rate floor. The lane waits
@@ -3882,10 +3838,12 @@ async function expandBacklogConversationDetailGap(
   // expects (materialize the newest of the window per-key, fold the rest).
   const listed = await listConversationsSinceCursor(deps, null);
   if (listed.truncated) {
-    // A failed/unreadable re-list must NOT read as "backlog drained" — that
-    // would resolve the gap as fully recovered on zero evidence. Leave the
-    // backlog gap exactly as it was (not expanded, not resolved); the next
-    // recovery attempt re-lists from the same watermark.
+    // A failed/unreadable page stopped the re-list before it could prove the
+    // backlog window was fully re-observed. An empty `olderWindow` from a
+    // truncated list is NOT proof the backlog drained — it may just be proof
+    // the list never got far enough to find the older items. Leave the gap
+    // pending (no DETAIL_GAP_RECOVERED, not expanded) so the next run re-lists
+    // it rather than silently discarding un-recovered history.
     return { recovered: 0, expanded: false };
   }
   const olderWindow = listed.items.filter((c) => {
@@ -4059,50 +4017,6 @@ function shouldSuppressForwardWalkAfterRecovery(deps: StreamDeps): boolean {
   return deps.recoveryOnly === true || deps.runBudget?.shouldStop() === true;
 }
 
-/**
- * The `/conversations` walk was cut short by a failure (http error or an
- * unreadable 200 body — see listConversationsSinceCursor / classifyConversationListPage)
- * rather than reaching its own boundary. `conversationsToSync` /
- * `messageDetailConversations` are still exactly what was proven before the
- * cut, so records already collected still emit and their STATE cursors still
- * advance only to the max item actually seen — never past the point of
- * failure. This surfaces the cut as retryable evidence; the caller separately
- * suppresses list coverage so a partial prefix is never certified complete.
- */
-function emitConversationListTruncatedSkip(deps: StreamDeps): void {
-  deps.emit({
-    type: "SKIP_RESULT",
-    stream: "conversations",
-    reason: "http_error",
-    message: "conversations list walk was cut short by a failed or unreadable page; retryable next run",
-  });
-}
-
-/**
- * Emit list-only parent records for conversations not already repaired by a
- * message-detail fetch this run, then certify list coverage — but ONLY when
- * the underlying walk was not truncated. Mirrors custom_gpts/shared_conversations:
- * a partial prefix must not be reported as considered === covered.
- */
-async function emitConversationListOnlyParentsAndCoverage(
-  deps: StreamDeps,
-  conversationsToSync: ConversationListItem[],
-  messageDetailConversations: ConversationListItem[],
-  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
-  listTruncated: boolean
-): Promise<void> {
-  const detailedIds = new Set(messageDetailConversations.map((c) => c.id));
-  for (const c of conversationsToSync) {
-    if (detailedIds.has(c.id)) {
-      continue;
-    }
-    await emitConversation(c, null);
-  }
-  if (!listTruncated) {
-    await deps.emit(makeConversationListCoverage(conversationsToSync.length));
-  }
-}
-
 export async function runConversationsAndMessagesStreams(
   deps: StreamDeps,
   state: CollectContext["state"],
@@ -4141,7 +4055,7 @@ export async function runConversationsAndMessagesStreams(
     return;
   }
 
-  const { conversationsToSync, messageDetailConversations, listTruncated } =
+  const { conversationsToSync, messageDetailConversations, conversationsListTruncated, messagesListTruncated } =
     await selectConversationListsForRequestedStreams({
       wantsConversations,
       wantsMessages,
@@ -4149,9 +4063,6 @@ export async function runConversationsAndMessagesStreams(
       priorMessagesCursor,
       listForCursor,
     });
-  if (listTruncated) {
-    emitConversationListTruncatedSkip(deps);
-  }
   if (wantsConversations) {
     const foundProgressMsg = {
       type: "PROGRESS",
@@ -4178,6 +4089,63 @@ export async function runConversationsAndMessagesStreams(
       emitConversation,
       options.detailPacing
     );
+    await emitMessagesCoverageAndState(deps, {
+      messageDetailConversations,
+      coverage,
+      messagesListTruncated,
+      priorMessagesCursor,
+    });
+  }
+
+  if (wantsConversations) {
+    const detailedIds = new Set(messageDetailConversations.map((c) => c.id));
+    // Emit list-only parents for conversation rows not already repaired by
+    // message-detail fetches in this run. These rows were genuinely listed
+    // before any truncation, so emitting them is still lose-nothing even on a
+    // truncated pass — only the coverage CLAIM and cursor advance below are
+    // withheld.
+    for (const c of conversationsToSync) {
+      if (detailedIds.has(c.id)) {
+        continue;
+      }
+      await emitConversation(c, null);
+    }
+    // A truncated list proved it did not see everything newer than
+    // priorConversationsCursor, so `conversationsToSync.length` is a prefix,
+    // not the true boundary — claiming it as `considered === covered` would
+    // fabricate completion the same way the malformed-200 defect did upstream.
+    if (!conversationsListTruncated) {
+      await deps.emit(makeConversationListCoverage(conversationsToSync.length));
+    }
+    emitConversationsState(deps, { conversationsToSync, conversationsListTruncated, priorConversationsCursor });
+  }
+}
+
+/**
+ * Emit the `messages` DETAIL_COVERAGE + STATE tail of the forward walk. A
+ * truncated list proved it did NOT see everything newer than
+ * `priorMessagesCursor` — the source-of-truth denominator for "did this run
+ * cover its boundary" is broken, so this run must not claim detail coverage
+ * over `messageDetailConversations` (only a prefix of the true boundary) and
+ * must not advance the cursor past conversations it never listed. What was
+ * already hydrated by the caller is still real, lose-nothing detail work;
+ * only the completion claim and the cursor watermark are withheld here.
+ */
+async function emitMessagesCoverageAndState(
+  deps: StreamDeps,
+  {
+    messageDetailConversations,
+    coverage,
+    messagesListTruncated,
+    priorMessagesCursor,
+  }: {
+    messageDetailConversations: ConversationListItem[];
+    coverage: ConversationDetailCoverage;
+    messagesListTruncated: boolean;
+    priorMessagesCursor: string | null;
+  }
+): Promise<void> {
+  if (!messagesListTruncated) {
     // Required keys are the set the run ACCOUNTED FOR: every hydrated and
     // per-key-gapped conversation, plus — when a cap-tail deferral folded the
     // older tail into a backlog gap — that backlog gap's synthetic key (backed
@@ -4191,56 +4159,48 @@ export async function runConversationsAndMessagesStreams(
       ? [...coverage.hydratedKeys, ...coverage.gapKeys, coverage.backlogGapKey]
       : messageDetailConversations.map((c) => c.id);
     await deps.emit(makeConversationDetailCoverage(requiredKeys, coverage));
-    // The messages list cursor is derived from the SAME `/conversations` walk
-    // as the conversations cursor below — it has no independent proof of
-    // anything past the point of failure. On a truncated walk, advancing it
-    // to the max of the (partial) prefix would be unsafe for exactly the same
-    // reason: newest-first pagination means unseen items between the prior
-    // cursor and that new max, sitting on the failed page or later, would
-    // read as "already covered" and never be replayed. Pin to the prior
-    // cursor verbatim so the next run re-lists the full un-proven range.
-    const maxMessagesUpdate = listTruncated ? null : maxUpdateTimeIso(messageDetailConversations);
-    deps.emit({
-      type: "STATE",
-      stream: "messages",
-      // Persist the controller's learned interval alongside the cursor so the
-      // next run warm-starts from it (warm-start, SLVP ideal §5.2).
-      cursor: {
-        last_update_time: maxMessagesUpdate || priorMessagesCursor || null,
-        ...buildChatGptPacingStateFields(deps.providerBudget),
-      },
-    });
   }
+  const maxMessagesUpdate = messagesListTruncated ? null : maxUpdateTimeIso(messageDetailConversations);
+  deps.emit({
+    type: "STATE",
+    stream: "messages",
+    // Persist the controller's learned interval alongside the cursor so the
+    // next run warm-starts from it (warm-start, SLVP ideal §5.2). A
+    // truncated list leaves `maxMessagesUpdate` null so the cursor falls
+    // through to `priorMessagesCursor` unchanged — never advanced on an
+    // unproven boundary.
+    cursor: {
+      last_update_time: maxMessagesUpdate || priorMessagesCursor || null,
+      ...buildChatGptPacingStateFields(deps.providerBudget),
+    },
+  });
+}
 
-  if (wantsConversations) {
-    await emitConversationListOnlyParentsAndCoverage(
-      deps,
-      conversationsToSync,
-      messageDetailConversations,
-      emitConversation,
-      listTruncated
-    );
+/**
+ * Emit the `conversations` STATE tail of the forward walk. Mirrors
+ * `emitMessagesCoverageAndState`'s truncation posture: never advance (or even
+ * re-affirm past a partial max) on an unproven boundary — a truncated list
+ * falls straight through to the unchanged prior cursor regardless of how much
+ * of the partial prefix it collected.
+ */
+function emitConversationsState(
+  deps: StreamDeps,
+  {
+    conversationsToSync,
+    conversationsListTruncated,
+    priorConversationsCursor,
+  }: {
+    conversationsToSync: ConversationListItem[];
+    conversationsListTruncated: boolean;
+    priorConversationsCursor: string | null;
   }
-
-  if (wantsConversations) {
-    // CURSOR SAFETY: on a truncated walk, the collected prefix is everything
-    // proven BEFORE the failure — it says nothing about what a later page
-    // would have held. For newest-first pagination, advancing the cursor to
-    // max(prefix) would make the next run's incremental walk stop the moment
-    // it re-sees anything <= that new cursor — permanently skipping every
-    // unseen item between the prior cursor and the new one that lived on the
-    // failed page or later. So on ANY truncation the cursor stays pinned to
-    // priorConversationsCursor, full stop — never advanced, regardless of how
-    // much of the prefix was proven. The already-emitted prefix records are
-    // safe to replay next run: they rely on existing stable-key/fingerprint/
-    // storage idempotence downstream, not on the cursor to avoid duplication.
-    const maxUpdate = listTruncated ? null : maxUpdateTimeIso(conversationsToSync);
-    deps.emit({
-      type: "STATE",
-      stream: "conversations",
-      cursor: { last_update_time: maxUpdate || priorConversationsCursor || null },
-    });
-  }
+): void {
+  const maxUpdate = conversationsListTruncated ? null : maxUpdateTimeIso(conversationsToSync);
+  deps.emit({
+    type: "STATE",
+    stream: "conversations",
+    cursor: { last_update_time: maxUpdate || priorConversationsCursor || null },
+  });
 }
 
 /**

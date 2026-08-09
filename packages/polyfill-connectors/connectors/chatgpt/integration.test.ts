@@ -894,33 +894,62 @@ function memoriesCoverage(
   );
 }
 
-test("runMemoriesStream: genuinely EMPTY list proves zero coverage with positive evidence", async () => {
-  const { deps, emitted, messages } = makeHarness({
-    fetchQueue: [{ status: 200, json: { memories: [] } }],
-  });
-  await runMemoriesStream(deps);
-  assert.equal(emitted.length, 0, "an account with no memories emits no records");
-  const coverage = memoriesCoverage(messages);
-  assert.ok(coverage, "a genuinely empty list must emit positive zero-coverage proof");
-  assert.equal(coverage.considered, 0);
-  assert.equal(coverage.covered, 0);
-  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "memories").length, 1);
-});
-
-test("runMemoriesStream: http 200 with an unreadable body is a failure, not a proven-empty list", async () => {
+test("runMemoriesStream: http 200 with an unreadable body is a parse_error, not a proven-empty scan", async () => {
   // The api swallows a JSON parse error into `json: null`, which reads as []
   // downstream — indistinguishable from a genuinely empty list without a guard.
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [{ status: 200, json: null }],
   });
+
   await runMemoriesStream(deps);
+
   assert.equal(emitted.length, 0);
-  assert.equal(memoriesCoverage(messages), undefined, "an unreadable body must not prove an empty boundary");
   assert.equal(messages.filter((m) => m.type === "STATE").length, 0, "an unreadable body must not commit a cursor");
+  assert.equal(memoriesCoverage(messages), undefined, "an unreadable body must not prove an empty boundary");
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
-  assert.equal(skip.stream, "memories");
-  assert.equal(skip.reason, "parse_error");
+  assert.equal(skip.reason, "parse_error", "distinct from http_error — the request succeeded, the body did not parse");
+  assert.notEqual(skip.reason, "http_error");
+});
+
+test("runMemoriesStream: successful EMPTY list proves zero coverage (genuine empty stays valid)", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { memories: [] } }],
+  });
+
+  await runMemoriesStream(deps);
+
+  assert.equal(emitted.length, 0, "an account with no memories emits no records");
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 1, "a genuine empty list still commits STATE");
+  const coverage = memoriesCoverage(messages);
+  assert.ok(coverage, "a successful empty enumeration must emit positive zero-coverage proof");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+});
+
+test("runMemoriesStream: COUNTERWEIGHT — a populated list still emits records and proves the boundary", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      {
+        status: 200,
+        json: {
+          memories: [
+            { id: "mem-1", content: "likes tabs over spaces" },
+            { id: "mem-2", content: "works east coast hours" },
+          ],
+        },
+      },
+    ],
+  });
+
+  await runMemoriesStream(deps);
+
+  assert.equal(emitted.filter((r) => r.stream === "memories").length, 2, "positive records are unchanged");
+  const coverage = memoriesCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 2, "considered counts what the source listed");
+  assert.equal(coverage.covered, 2);
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 1);
 });
 
 // ─── Invariant 4: null-enrichment fallback ───────────────────────────────
@@ -2868,17 +2897,11 @@ test("runConversationsAndMessagesStreams: empty forward poll emits zero coverage
   );
 });
 
-// ─── Invariant 8: a 200 with an unreadable body must never masquerade as a
-// proven-empty/complete `/conversations` list page. `res.json?.items || []`
-// makes an unparseable body byte-identical to a genuinely empty page, which
-// would let the incremental walk stop "cleanly" and commit list coverage /
-// cursor advancement it never earned. These mirror the custom_gpts /
-// shared_conversations fix for the conversations/messages incremental-cursor
-// architecture, which does NOT get a full-scan coverage boundary (it is not a
-// full scan) — instead a malformed page must surface as retryable SKIP_RESULT
-// evidence and leave the cursor resumable at the last proven boundary.
-
-test("runConversationsAndMessagesStreams: http 200 with an unreadable /conversations body is a failure, not a proven-empty page", async () => {
+test("runConversationsAndMessagesStreams: a malformed 200 on the shared /conversations list is a typed parse_error, emits no coverage, and never advances either cursor", async () => {
+  // The api swallows a JSON parse error into `json: null` on an otherwise-200
+  // response — reading `?.items` off it used to yield [] downstream,
+  // indistinguishable from a genuinely empty/complete list. That let the run
+  // commit STATE and DETAIL_COVERAGE as if it had proven the boundary.
   const harness = makeRecordingEmit(validateRecord);
   const api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
@@ -2897,28 +2920,16 @@ test("runConversationsAndMessagesStreams: http 200 with an unreadable /conversat
     progress: (): Promise<void> => Promise.resolve(),
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
   };
+  const priorCursor = "2026-06-15T00:00:00.000Z";
 
   await runConversationsAndMessagesStreams(
     deps,
     {
-      conversations: { last_update_time: "2026-06-15T00:00:00.000Z" },
-      messages: { last_update_time: "2026-06-15T00:00:00.000Z" },
+      conversations: { last_update_time: priorCursor },
+      messages: { last_update_time: priorCursor },
     } as CollectContext["state"],
     { detailPacing: { random: () => 0, sleep: () => undefined } }
   );
-
-  const skip = harness.protocolMessages.find(
-    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
-      m.type === "SKIP_RESULT" && m.stream === "conversations"
-  );
-  assert.ok(skip, "an unreadable list body must surface as a retryable SKIP_RESULT, not silence");
-  assert.equal(skip.reason, "parse_error");
-
-  const listCoverage = harness.protocolMessages.find(
-    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
-      m.type === "DETAIL_COVERAGE" && m.stream === "conversations"
-  );
-  assert.equal(listCoverage, undefined, "a truncated list walk must not certify list coverage");
 
   const states = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "conversations"
@@ -3131,6 +3142,126 @@ test("runConversationsAndMessagesStreams: a backlog-gap re-list that comes back 
     recovered,
     undefined,
     "a malformed re-list must not resolve the backlog gap — that would fabricate a drained backlog on zero evidence"
+  );
+});
+
+test("runConversationsAndMessagesStreams: an http_error on the SECOND /conversations page still withholds coverage and does not advance past the partial prefix", async () => {
+  // First page returns a full 100-item page of real, newer-than-cursor
+  // conversations (real progress); second page 500s. The old code would
+  // advance the cursor to the max update_time of the PARTIAL prefix it
+  // collected, silently stranding every conversation older than that partial
+  // watermark that the second page never got to list.
+  const harness = makeRecordingEmit(validateRecord);
+  let conversationsCalls = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        conversationsCalls += 1;
+        if (conversationsCalls === 1) {
+          // A full page (== limit) so the loop pages again instead of stopping
+          // short. All 100 items are newer than priorCursor, so every one of
+          // them is real, un-truncated progress collected before page 2 fails.
+          const page: ConversationListItem[] = Array.from({ length: 100 }, (_, i) =>
+            makeConvo({ id: `convo-${i}`, update_time: 1_800_000_000 - i })
+          );
+          return { status: 200, json: { items: page } };
+        }
+        return { status: 500, json: null };
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations"].map((name) => [name, { name }])),
+  };
+  const priorCursor = "2026-06-15T00:00:00.000Z";
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: priorCursor } } as CollectContext["state"],
+    { detailPacing: { random: () => 0, sleep: () => undefined } }
+  );
+
+  assert.equal(conversationsCalls, 2, "sanity: the walk actually reached the failing second page");
+  assert.equal(
+    harness.emitted.filter((r) => r.stream === "conversations").length,
+    100,
+    "the 100 genuinely-listed conversations from page 1 still emit — only the coverage CLAIM is withheld"
+  );
+
+  const coverages = harness.protocolMessages.filter((m) => m.type === "DETAIL_COVERAGE");
+  assert.deepEqual(coverages, [], "a list truncated mid-pagination must not claim coverage over its partial prefix");
+
+  const skip = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT"
+  );
+  assert.ok(skip);
+  assert.equal(skip.reason, "http_error");
+
+  const states = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE"
+  );
+  assert.deepEqual(
+    states.map((state) => [state.stream, (state.cursor as { last_update_time?: unknown }).last_update_time]),
+    [["conversations", priorCursor]],
+    "cursor must NOT advance to the partial prefix's max update_time — that would strand the un-listed tail"
+  );
+});
+
+test("runConversationsAndMessagesStreams: a genuine empty /conversations page remains a valid completed delta boundary", async () => {
+  // Counterweight to the two truncation tests above: a real 200-with-empty-items
+  // response is honest completion, not a failure — it must still commit STATE
+  // and zero coverage, exactly as it did before this fix.
+  const harness = makeRecordingEmit(validateRecord);
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        return { status: 200, json: { items: [] } };
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations"].map((name) => [name, { name }])),
+  };
+  const priorCursor = "2026-06-15T00:00:00.000Z";
+
+  await runConversationsAndMessagesStreams(
+    deps,
+    { conversations: { last_update_time: priorCursor } } as CollectContext["state"],
+    { detailPacing: { random: () => 0, sleep: () => undefined } }
+  );
+
+  const coverage = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
+  );
+  assert.ok(coverage, "a genuine empty page still proves zero coverage");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+
+  const states = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE"
+  );
+  assert.deepEqual(
+    states.map((state) => [state.stream, (state.cursor as { last_update_time?: unknown }).last_update_time]),
+    [["conversations", priorCursor]]
+  );
+  assert.equal(
+    harness.protocolMessages.filter((m) => m.type === "SKIP_RESULT").length,
+    0,
+    "a genuine empty page is not a failure"
   );
 });
 
