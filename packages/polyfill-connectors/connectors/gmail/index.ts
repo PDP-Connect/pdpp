@@ -123,6 +123,16 @@ const MAX_ATTACHMENT_BYTES_ENV = "PDPP_GMAIL_MAX_ATTACHMENT_BYTES";
 const POSITIVE_INTEGER_PATTERN = /^\d+$/;
 export const DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS = 500;
 const ATTACHMENT_BACKFILL_WINDOW_UIDS_ENV = "PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS";
+// Live-incident floor (gmail-attachment-convergence-0809): sustained Gmail
+// IMAP attachment-transfer throughput measured at ~4.65 KB/s across four
+// different attachment sizes over a 2-hour window (general HTTPS from the
+// same host hit 22 MB/s; TLS handshake to imap.gmail.com was instant), so the
+// bottleneck is IMAP-side, not this codebase's network path. 90s of true
+// silence is generous headroom above the inter-chunk gaps a merely-slow (not
+// wedged) transfer at that floor rate produces, while still bounding a truly
+// stuck FETCH to a fraction of the run's cadence window.
+export const DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS = 90_000;
+const ATTACHMENT_STALL_TIMEOUT_MS_ENV = "PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS";
 
 // ─── imapflow interface augmentation ────────────────────────────────────
 
@@ -296,6 +306,15 @@ export interface AttachmentHydrationResult {
   readonly record: AttachmentRecord;
 }
 
+/**
+ * Resolves to an honest per-attachment outcome for every ordinary failure
+ * mode (download error, too-large, upload error) — callers do not need a
+ * try/catch for those. The one exception: a stall-timeout (see
+ * `AttachmentStallTimeoutError`) REJECTS instead, because by the time it
+ * fires the shared IMAP connection has already been closed and every later
+ * command in the run would fail too; that must end the run, not be
+ * swallowed into one attachment's coverage row.
+ */
 export type HydrateAttachmentFn = (
   msg: FetchMessageObject,
   attachment: AttachmentRecord
@@ -758,6 +777,15 @@ export async function emitMessagesPass(deps: PerMessageDeps, metas: readonly Fet
         });
       }
     } catch (perMsgErr) {
+      if (perMsgErr instanceof AttachmentStallTimeoutError) {
+        // NOT an ordinary per-message failure: `onStall` has already closed
+        // the shared IMAP connection (imapflow has no per-command cancel),
+        // so every later command in this run — including the next message
+        // in this very loop — would throw a confusing "connection closed"
+        // error instead of the real cause. Propagate instead of swallowing
+        // so the run ends cleanly through the normal uncaught-rejection path.
+        throw perMsgErr;
+      }
       const emsg = perMsgErr instanceof Error ? (perMsgErr.stack ?? perMsgErr.message) : String(perMsgErr);
       process.stderr.write(`[gmail] per-message error at UID ${String(msg.uid)}: ${emsg}\n`);
       // Continue with next message; don't let one bad record halt the whole run.
@@ -2109,6 +2137,20 @@ class AttachmentTooLargeError extends Error {
 }
 
 /**
+ * Raised when an attachment transfer goes silent (no chunk received) for
+ * longer than the stall budget. The message deliberately contains "timeout"
+ * so `RETRYABLE_ERROR_RE` (and `handleMainRejection`'s classification) marks
+ * the resulting run failure retryable without a second keyword list to keep
+ * in sync.
+ */
+export class AttachmentStallTimeoutError extends Error {
+  constructor(stallMs: number, observedBytes: number) {
+    super(`attachment transfer stalled: no data for ${stallMs}ms after ${observedBytes} bytes (timeout)`);
+    this.name = "AttachmentStallTimeoutError";
+  }
+}
+
+/**
  * Wrap an AsyncIterable so that consumed bytes are tallied and the stream
  * aborts with `AttachmentTooLargeError` the moment it exceeds the cap.
  * Used as a defense-in-depth guard against attachments whose source size
@@ -2151,13 +2193,97 @@ function enforceMaxBytes(
   };
 }
 
+/**
+ * Wrap an AsyncIterable so that SILENCE (no chunk delivered) longer than
+ * `stallMs` aborts the transfer, instead of a fixed total-duration cap.
+ *
+ * A total-duration timeout is wrong here: legitimate large attachments over
+ * a slow-but-live IMAP transfer (observed live at ~4.65 KB/s — see
+ * gmail-attachment-convergence-0809 root-cause notes) can honestly take many
+ * minutes while still making steady progress. A stall budget only fires when
+ * that progress actually STOPS, which is the real distinguishing signal
+ * between "slow" and "wedged" (mirrors the test-accounting authority runner's
+ * stall-vs-total-runtime distinction).
+ *
+ * `onStall` MUST leave the source iterable unusable afterward (e.g. by
+ * force-closing the underlying IMAP connection) — imapflow has no per-command
+ * cancel; the only way to unblock an abandoned in-flight FETCH is to close
+ * the whole connection (see `fetchAttachmentPart`). This wrapper does not
+ * call `inner.return()` on stall for that reason: the source is expected to
+ * already be dead by the time `onStall` returns.
+ */
+function enforceStallTimeout(
+  content: AsyncIterable<Buffer | Uint8Array | string>,
+  stallMs: number,
+  onStall: () => void
+): AsyncIterable<Buffer | Uint8Array | string> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Buffer | Uint8Array | string> {
+      const inner = content[Symbol.asyncIterator]();
+      let observed = 0;
+      return {
+        async next() {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const stalled = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              onStall();
+              reject(new AttachmentStallTimeoutError(stallMs, observed));
+            }, stallMs);
+          });
+          try {
+            const step = await Promise.race([inner.next(), stalled]);
+            if (!step.done) {
+              const chunk = step.value;
+              observed +=
+                typeof chunk === "string" ? Buffer.byteLength(chunk) : (chunk as Buffer | Uint8Array).byteLength;
+            }
+            return step;
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        return(value): Promise<IteratorResult<Buffer | Uint8Array | string>> {
+          if (typeof inner.return === "function") {
+            return inner.return(value);
+          }
+          return Promise.resolve({ done: true, value });
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Resolve the attachment stall budget from env, falling back to the
+ * conservative default. Non-positive or non-numeric overrides are ignored so
+ * a misconfigured env var can never silently disable the guard.
+ */
+export function resolveAttachmentStallTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[ATTACHMENT_STALL_TIMEOUT_MS_ENV];
+  if (!(raw && POSITIVE_INTEGER_PATTERN.test(raw))) {
+    return DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS;
+}
+
 export function makeAttachmentHydrator(args: {
   connectorId: string;
   fetchAttachment: FetchAttachmentFn;
   maxBytes?: number;
+  /**
+   * Called at most once if a transfer stalls past `stallTimeoutMs`. MUST make
+   * the connection backing `fetchAttachment`'s returned content unusable
+   * (imapflow has no per-command cancel — see `fetchAttachmentPart`), so the
+   * caller is expected to treat the whole run as ending after this fires.
+   * Omitted in tests that don't exercise a real IMAP connection.
+   */
+  onStall?: () => void;
+  stallTimeoutMs?: number;
   uploadBlob: UploadAttachmentBlobFn;
 }): HydrateAttachmentFn {
   const maxBytes = args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
+  const stallTimeoutMs = args.stallTimeoutMs ?? DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS;
   return async (msg, attachment) => {
     if (typeof attachment.size_bytes === "number" && attachment.size_bytes > maxBytes) {
       return hydrationFailureResult(
@@ -2180,7 +2306,8 @@ export function makeAttachmentHydrator(args: {
       );
     }
     try {
-      const guarded = enforceMaxBytes(downloaded.content, maxBytes);
+      const sizeGuarded = enforceMaxBytes(downloaded.content, maxBytes);
+      const guarded = args.onStall ? enforceStallTimeout(sizeGuarded, stallTimeoutMs, args.onStall) : sizeGuarded;
       const blobRef = await args.uploadBlob({
         content: guarded,
         connectorId: args.connectorId,
@@ -2204,6 +2331,17 @@ export function makeAttachmentHydrator(args: {
       const originalError = originalHydrationError(err);
       if (originalError instanceof AttachmentTooLargeError) {
         return hydrationFailureResult(attachment, "too_large", originalError);
+      }
+      if (originalError instanceof AttachmentStallTimeoutError) {
+        // Re-thrown, not returned as an ordinary `failed` result: `onStall`
+        // already closed the shared IMAP connection (imapflow has no
+        // per-command cancel), so every later command in this run — the next
+        // attachment, the delta pass, anything — would otherwise throw a
+        // confusing "connection closed" error instead of the real cause.
+        // Propagating here lets the run end cleanly through the normal
+        // uncaught-rejection path (`handleMainRejection`), which classifies
+        // it retryable and reports one honest reason instead of a cascade.
+        throw originalError;
       }
       return hydrationFailureResult(attachment, "failed", err, hydrationFailureForBlobUpload(err));
     }
@@ -2485,6 +2623,17 @@ async function runAllMailPasses(
     connectorId: process.env.PDPP_CONNECTOR_ID || DEFAULT_GMAIL_CONNECTOR_ID,
     fetchAttachment: (msg, attachment) => fetchAttachmentPart(client, msg, attachment),
     maxBytes: resolveMaxAttachmentBytes(),
+    // imapflow has no per-command cancel (see `AttachmentStallTimeoutError`
+    // doc comment): the only way to unblock a stalled FETCH is to close the
+    // whole connection. That's a whole-run failure, not a per-attachment one
+    // — but it's a RETRYABLE one (message contains "timeout", matched by
+    // `RETRYABLE_ERROR_RE` in `handleMainRejection`), and every record this
+    // run already emitted (labels/threads/prior attachments) is durable, and
+    // the messages STATE cursor only commits at the very end of
+    // `runAllMailPasses` — so the next run resumes cleanly rather than
+    // silently poisoning a completed stream.
+    onStall: () => client.close(),
+    stallTimeoutMs: resolveAttachmentStallTimeoutMs(),
     uploadBlob: buildRuntimeBlobUploader(),
   });
   // Accumulate honest attachments detail-coverage across BOTH the primary pass

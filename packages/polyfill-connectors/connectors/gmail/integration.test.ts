@@ -53,12 +53,14 @@ import {
   ATTACHMENT_RECOVERY_PAGE_DEFAULT_BYTES,
   type AttachmentDetailCoverage,
   type AttachmentHydrationResult,
+  AttachmentStallTimeoutError,
   addAttachmentBackfillRecordToSummary,
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
+  DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
   emitMessagesPass,
   type FetchBodiesFn,
@@ -75,6 +77,7 @@ import {
   resolveAttachmentBackfillPageByteBudget,
   resolveAttachmentBackfillWindowUids,
   resolveAttachmentRecoveryPageByteBudget,
+  resolveAttachmentStallTimeoutMs,
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
@@ -796,6 +799,147 @@ test("resolveMaxAttachmentBytes: env override is honored only when positive inte
     DEFAULT_MAX_ATTACHMENT_BYTES,
     "partially numeric override is ignored"
   );
+});
+
+test("resolveAttachmentStallTimeoutMs: env override is honored only when positive integer; otherwise falls back to default", () => {
+  assert.equal(resolveAttachmentStallTimeoutMs({}), DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS);
+  assert.equal(resolveAttachmentStallTimeoutMs({ PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS: "5000" }), 5000);
+  assert.equal(
+    resolveAttachmentStallTimeoutMs({ PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS: "0" }),
+    DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
+    "non-positive override is ignored"
+  );
+  assert.equal(
+    resolveAttachmentStallTimeoutMs({ PDPP_GMAIL_ATTACHMENT_STALL_TIMEOUT_MS: "abc" }),
+    DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
+    "unparseable override is ignored"
+  );
+});
+
+/** An async-iterable content source under full test control: yields
+ *  `chunks` one at a time, each after `delayMs` (0 = immediate), then either
+ *  ends cleanly or hangs forever past the last chunk depending on `hang`. */
+function scriptedContent(chunks: Buffer[], delayMs: number, hang: boolean): AsyncIterable<Buffer> {
+  const queue = [...chunks];
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next: async () => {
+          const value = queue.shift();
+          if (value === undefined) {
+            if (hang) {
+              return new Promise<never>(() => {
+                // Intentionally never settles — simulates a stalled IMAP FETCH.
+              });
+            }
+            return { done: true, value: undefined };
+          }
+          if (delayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+          return { done: false, value };
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Root-cause coverage for gmail-attachment-convergence-0809: a live run
+ * observed attachment transfers sustaining a real, non-zero, but extremely
+ * slow rate (~4.65 KB/s, confirmed against imap.gmail.com — see the incident
+ * report) that made single attachments take 300-1000+ seconds. Before this
+ * fix, `makeAttachmentHydrator` had no bound on transfer silence at all: a
+ * source iterable that simply never resolves its next chunk (the wedge case,
+ * distinct from "slow but delivering") would hang `uploadBlob` — and the
+ * whole connector run — forever. These tests pin the FAIL-BEFORE/PASS-AFTER
+ * behavior directly against `processMessage`, the same entry point production
+ * uses, not a hand-rolled call into the hydrator's internals.
+ */
+test("processMessage: a transfer that goes fully silent is bounded by the stall timeout, not left to hang forever", async () => {
+  let stallDetected = false;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: scriptedContent([Buffer.from("first chunk")], 0, true),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onStall: () => {
+      stallDetected = true;
+    },
+    stallTimeoutMs: 20,
+    uploadBlob: async ({ content }) => {
+      for await (const _chunk of content) {
+        // Drain until the stall guard throws.
+      }
+      throw new Error("uploadBlob must not observe a clean end-of-stream on a stalled source");
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await assert.rejects(
+    processMessage(deps, makeAttachmentMsg()),
+    AttachmentStallTimeoutError,
+    "a stalled transfer must reject with AttachmentStallTimeoutError, not hang or resolve — this must propagate out of processMessage, not be swallowed into a per-attachment 'failed' record, because onStall has already closed the shared IMAP connection and every later command in the run would fail too"
+  );
+  assert.equal(stallDetected, true, "onStall must fire so the caller can close the poisoned IMAP connection");
+});
+
+test("processMessage: a slow-but-steadily-progressing transfer is NOT mistaken for a stall", async () => {
+  // Two chunks, each delivered well under the stall budget apart. A
+  // total-duration cap would kill this; the stall budget must not, because
+  // real Gmail IMAP transfers can legitimately take minutes while still
+  // making steady progress (see the incident's measured ~4.65 KB/s floor).
+  const chunks = [Buffer.from("slow "), Buffer.from("progress")];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: scriptedContent(chunks, 15, false),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onStall: () => {
+      throw new Error("onStall must not fire for a transfer that is only slow, never silent");
+    },
+    stallTimeoutMs: 500,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.ok(attachment, "expected hydrated attachment record");
+  assert.equal(attachment.data.hydration_status, "hydrated", "slow-but-live progress must complete normally");
+});
+
+test("makeAttachmentHydrator: stall-timeout error message carries only counts, no attachment identity or content", () => {
+  const error = new AttachmentStallTimeoutError(90_000, 12_345);
+  assert.match(error.message, /timeout/i, "message must match RETRYABLE_ERROR_RE so the run is retried, not abandoned");
+  assert.match(error.message, /90000/);
+  assert.match(error.message, /12345/);
+  assert.doesNotMatch(error.message, /gmmsgid|@|subject|filename/i);
 });
 
 test("runtimeBlobUploadAvailable: requires an RS URL alias and owner token", () => {
@@ -2489,6 +2633,51 @@ test("emitMessagesPass: one message throwing doesn't halt the rest of the batch"
   const msgRecords = emitted.filter((r) => r.stream === "messages");
   assert.equal(msgRecords.length, 1, "the second message emits even though the first errored");
   assert.equal(msgRecords[0]?.data.id, "good-msg");
+});
+
+test("emitMessagesPass: a stalled attachment transfer propagates instead of being swallowed like an ordinary per-message error, and no later message is attempted", async () => {
+  // Distinguishes this from the "one message throwing doesn't halt the rest
+  // of the batch" case above: an ordinary per-message error (a bad body
+  // fetch, a malformed record) is isolated and the loop continues. A stall
+  // timeout is NOT isolated, because `onStall` already closed the shared
+  // IMAP connection this loop's next iteration would try to reuse — every
+  // later message would fail too, with a confusing "connection closed"
+  // error masking the real cause. This pins that the loop stops immediately
+  // instead of grinding through the remaining metas against a dead client.
+  let attachmentHydrationAttempts = 0;
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () => {
+      attachmentHydrationAttempts += 1;
+      return Promise.resolve({
+        content: scriptedContent([], 0, true),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      });
+    },
+    onStall: () => undefined,
+    stallTimeoutMs: 10,
+    uploadBlob: async ({ content }) => {
+      for await (const _chunk of content) {
+        // no chunks; stall fires while awaiting the first `next()`
+      }
+      throw new Error("unreachable");
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+  const metas: FetchMessageObject[] = [makeAttachmentMsg(), makeAttachmentMsg()];
+
+  await assert.rejects(emitMessagesPass(deps, metas), AttachmentStallTimeoutError);
+  assert.equal(
+    attachmentHydrationAttempts,
+    1,
+    "the second message's attachment must never be attempted against the poisoned connection"
+  );
 });
 
 test("emitMessagesPass: progress includes count and total when metadata count is known", async () => {
