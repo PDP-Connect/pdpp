@@ -57,6 +57,7 @@ const CANVAS_PASSES_RECORDS_BASE_RE =
 const HEADER_FULL_STREAM_USES_HELPER_RE =
   /const fullStreamHref =[\s\S]*buildStreamRecordsHref\(\s*recordsBasePath,[\s\S]*connectionId: scopedConnection\.connectionId,[\s\S]*connectorId: scopedConnection\.connectorId,[\s\S]*stream: selectedStreams\[0\] \?\? ""/;
 const ROW_ACTION_LABEL_RE = /<span className="rr-x-row__action">\{actionLabel\}<\/span>/;
+const BURST_STREAM_LABEL_RE = /rep\?\.stream \? ` \/ \$\{humanizeFieldLabel\(rep\.stream\)\}` : ""/;
 // R2: feed rows MUST render a per-record time-of-day in the LIVE FeedRow (the
 // console renders explore-canvas.tsx FeedRow, not the operator-ui card). Pin the
 // semantic contract: the row carries the time wrapper, labels non-semantic rows
@@ -440,6 +441,16 @@ test("Slice 4: the LIVE FeedRow renders an honest generic row (first humanized k
     src,
     CANVAS_MATCH_EXCERPT_MARK_RE,
     "the match excerpt renders under a 'Match' mark so it reads as an excerpt, not a faked title (F1)"
+  );
+});
+
+test("Explore burst headers humanize stream keys without changing stream identity", async () => {
+  const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
+
+  assert.match(
+    src,
+    BURST_STREAM_LABEL_RE,
+    "burst headers must render a human label instead of exposing a raw stream key"
   );
 });
 
