@@ -108,9 +108,11 @@ import {
   persistedZeroRetainsCoverageProof,
   pickAcceptedCoverage,
   pickRequiredAcceptedCoverage,
+  readAcceptedCoveragePolicy,
   readCoverageEvidenceStrategy,
   readFreshnessEvidenceStrategy,
 } from "./connector-coverage-policy.ts";
+import { readStoredCollectionScope } from "./local-collection-scope.ts";
 import {
   firstDegradingKnownGapReason,
   firstPendingDetailGapReason,
@@ -2803,6 +2805,31 @@ function resolveEffectiveStreamFacts(input: {
  *   - a malformed `considered`                             -> `unknown` (re-validated
  *     defensively on read).
  */
+/**
+ * Whether committed evidence was measured under a boundary the connection no
+ * longer declares.
+ *
+ * Pure string comparison of two fingerprints; the caller reads the declared one
+ * once per connection. `undefined` declared means the caller holds no scope
+ * (server-side connector, or a test), so no comparison is made and prior
+ * behavior is preserved.
+ *
+ * Evidence carrying NO fingerprint came from a collector predating the scope
+ * contract, which by definition ran a full pass — it satisfies only an
+ * `unscoped` declaration. Crediting it for a narrowed boundary would claim an
+ * enforcement that never happened.
+ */
+function collectionEvidenceScopeIsStale(
+  evidenceScope: string | null | undefined,
+  declaredScope: string | null | undefined
+): boolean {
+  if (declaredScope === undefined || declaredScope === null) {
+    return false;
+  }
+  const measured = typeof evidenceScope === "string" && evidenceScope.trim() ? evidenceScope.trim() : "unscoped";
+  return measured !== declaredScope.trim();
+}
+
 export function buildCollectionReport(input: {
   readonly collectionFacts: RuntimeCollectionFacts | null;
   /** Terminal time of the classifying run (stamps evidence_as_of on its facts). */
@@ -2836,14 +2863,38 @@ export function buildCollectionReport(input: {
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly schedule?: { readonly enabled: boolean } | null;
+  /**
+   * Fingerprint of the boundary this connection CURRENTLY declares, read once
+   * per connection by the caller (never per stream — this must not become an
+   * N+1). When the classifying run's evidence was measured under a different
+   * boundary, that evidence describes a region the owner is no longer asking
+   * about, so it is declassified here rather than reinterpreted: coverage falls
+   * back to the honest `unknown` until a fresh run recomputes it.
+   *
+   * Omitted by callers that hold no scope (server-side connectors, tests), in
+   * which case no staleness comparison is performed and behavior is unchanged.
+   */
+  readonly declaredCollectionScope?: string | null;
+  /**
+   * Boundary the evidence was measured under, when it does not ride on
+   * `collectionFacts` (the local-device path, whose evidence is the
+   * coverage-diagnostic axis). Falls back to the run fact block's own value.
+   */
+  readonly evidenceCollectionScope?: string | null;
 }): CollectionReportEntry[] {
   const { inScope, ...entryIndexes } = indexCollectionReportInputs(input);
+  // One comparison for the whole report, not one per stream.
+  const evidenceScopeIsStale = collectionEvidenceScopeIsStale(
+    input.evidenceCollectionScope ?? input.collectionFacts?.collection_scope,
+    input.declaredCollectionScope
+  );
   return [...inScope]
     .map((stream) =>
       buildCollectionReportEntry({
         stream,
         ...entryIndexes,
         attentionOpen: input.attentionOpen,
+        evidenceScopeIsStale,
         freshness: input.freshness,
         localCoverage: input.localCoverage ?? null,
         refresh: input.refresh,
@@ -2936,8 +2987,21 @@ function buildCollectionReportEntry(input: {
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly schedule?: { readonly enabled: boolean } | null;
+  /** Whether this run's evidence was measured under a boundary no longer declared. */
+  readonly evidenceScopeIsStale?: boolean;
 }): CollectionReportEntry {
-  const { effective, effectiveFact, manifestStream, coverageCondition } = deriveCollectionReportEntryCoverage(input);
+  const derived = deriveCollectionReportEntryCoverage(input);
+  const { effective, effectiveFact, manifestStream } = derived;
+  // Evidence measured under a boundary the owner has since changed describes a
+  // region they are no longer asking about. It is not proof of the current one,
+  // so it is declassified to the honest `unknown` rather than reinterpreted --
+  // the same treatment `scoped: false` already gets, one level up. An accepted
+  // -absence axis is a manifest statement about the stream itself, not a
+  // measurement, so it survives a scope change untouched.
+  const coverageCondition =
+    input.evidenceScopeIsStale === true && !readAcceptedCoveragePolicy(manifestStream)
+      ? "unknown"
+      : derived.coverageCondition;
   const forwardDisposition = deriveForwardDisposition({
     attentionOpen: input.attentionOpen,
     coverage: coverageCondition,
@@ -3098,6 +3162,19 @@ export function projectCollectionReport(input: {
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
   readonly refreshPolicy: unknown;
   readonly schedule?: { readonly enabled: boolean } | null;
+  /**
+   * Fingerprint of the boundary this connection currently declares, read ONCE
+   * per connection by the caller. Threaded straight through to
+   * `buildCollectionReport`, which declassifies evidence measured under a
+   * different boundary. Omitted where no scope applies, preserving behavior.
+   */
+  readonly declaredCollectionScope?: string | null;
+  /**
+   * Fingerprint the local-device coverage evidence was measured under. Local
+   * runs carry their evidence in `localCoverage` rather than a run's
+   * `collection_facts`, so the boundary arrives alongside it.
+   */
+  readonly localCoverageCollectionScope?: string | null;
 }): CollectionReportEntry[] {
   // Select source authority before run precedence: local-device scheduler facts
   // are audit history, never coverage evidence.
@@ -3107,6 +3184,19 @@ export function projectCollectionReport(input: {
   return buildCollectionReport({
     attentionOpen: input.connectionHealth.axes.attention !== "none",
     collectionFacts: classifyingRun?.collection_facts ?? null,
+    // Declared boundary: explicit caller value wins; otherwise it rides on the
+    // local-coverage axis, which already read it from the connector-state
+    // projection (no extra query, no per-stream read).
+    ...(input.declaredCollectionScope === undefined
+      ? input.localDeviceBacked === true && input.localCoverage?.declaredCollectionScope !== undefined
+        ? { declaredCollectionScope: input.localCoverage.declaredCollectionScope }
+        : {}
+      : { declaredCollectionScope: input.declaredCollectionScope }),
+    // A local-device connection's evidence is the coverage-diagnostic axis, not
+    // a run fact block, so its measured boundary is supplied alongside it.
+    ...(input.localDeviceBacked === true && input.localCoverageCollectionScope !== undefined
+      ? { evidenceCollectionScope: input.localCoverageCollectionScope }
+      : {}),
     collectionFactsAsOf: classifyingRun ? classifyingRun.last_at : null,
     collectionFactsRunId: classifyingRun?.run_id ?? null,
     freshness: input.connectionHealth.axes.freshness,
@@ -3267,6 +3357,13 @@ interface LocalCoverageDiagnosticRow {
 
 interface LocalCoverageDiagnosticAxis {
   readonly axis: CoverageAxis;
+  /**
+   * Boundary this connection CURRENTLY declares, read off the same
+   * connector-state projection this axis is already derived from — so binding
+   * coverage to the declared scope costs no additional query and cannot become
+   * an N+1 across a page of connections.
+   */
+  readonly declaredCollectionScope?: string;
   readonly evidenceAsOf: string | null;
   readonly reliable: boolean;
   /** Safe per-store triples from `coverage_diagnostics`, used to project stream rows. */
@@ -3316,6 +3413,14 @@ export function deriveLocalCoverageAxis(input: {
   readonly stateManifestGeneration?: number | null;
   readonly nowIso?: string;
 }): LocalCoverageDiagnosticAxis {
+  // Read the connection's declared boundary off the SAME state projection this
+  // axis is derived from -- no extra query, so this stays O(1) per connection.
+  const declaredScope = readStoredCollectionScope(
+    input.state && typeof input.state === "object" && !Array.isArray(input.state)
+      ? (input.state as Record<string, unknown>)
+      : null
+  ).fingerprint;
+  const scopeField = { declaredCollectionScope: declaredScope };
   const { rows } = input;
   const stateCursor =
     input.state && typeof input.state === "object" && !Array.isArray(input.state)
@@ -3335,10 +3440,10 @@ export function deriveLocalCoverageAxis(input: {
     input.missingStores.length === 0 &&
     input.unexpectedStores.length === 0;
   if (!reliable) {
-    return { axis: "unknown", evidenceAsOf: null, reliable: false, rows, unaccountedStores: [] };
+    return { ...scopeField, axis: "unknown", evidenceAsOf: null, reliable: false, rows, unaccountedStores: [] };
   }
   if (rows.length === 0) {
-    return { axis: "unknown", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
+    return { ...scopeField, axis: "unknown", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
   }
   const unaccountedStores: string[] = [];
   for (const row of rows) {
@@ -3351,6 +3456,7 @@ export function deriveLocalCoverageAxis(input: {
   }
   if (unaccountedStores.length > 0) {
     return {
+      ...scopeField,
       axis: "gaps",
       evidenceAsOf: input.updatedAt,
       reliable: true,
@@ -3358,7 +3464,7 @@ export function deriveLocalCoverageAxis(input: {
       unaccountedStores: unaccountedStores.sort((left, right) => left.localeCompare(right)),
     };
   }
-  return { axis: "complete", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
+  return { ...scopeField, axis: "complete", evidenceAsOf: input.updatedAt, reliable: true, rows, unaccountedStores: [] };
 }
 
 /**

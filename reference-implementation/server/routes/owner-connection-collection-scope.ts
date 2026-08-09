@@ -112,6 +112,12 @@ function parseScopeBody(body: unknown): { error: string } | { scope: { since?: s
     }
     out.since = body.since.trim();
   }
+  // Root format, stated here because it is the field an owner most easily gets
+  // wrong: give a natural absolute project path (`/home/you/code/project`) or a
+  // bare project directory name. Connectors translate that to their own on-disk
+  // layout (Claude Code flattens paths into single directory names), so the
+  // owner never types an encoded form. A root that matches nothing is reported
+  // by the connector as a skip rather than silently collecting an empty set.
   if (body.source_roots !== undefined && body.source_roots !== null) {
     if (!Array.isArray(body.source_roots)) {
       return { error: "source_roots must be an array of strings" };

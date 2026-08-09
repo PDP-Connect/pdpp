@@ -37,6 +37,13 @@ export interface RuntimeCollectionFact {
 
 /** The runtime `collection_facts` terminal-event block, parsed defensively. */
 export interface RuntimeCollectionFacts {
+  /**
+   * Fingerprint of the collection boundary this evidence was measured against
+   * (`unscoped` for a full pass). Compared against the connection's currently
+   * declared scope on read: evidence measured under a different region is not
+   * proof of this one. Absent for a pre-scope collector.
+   */
+  readonly collection_scope?: string;
   readonly streams: readonly RuntimeCollectionFact[];
 }
 
@@ -123,6 +130,10 @@ function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact | null {
     considered: readSafeNonNegativeInteger(entry.considered),
     covered: readSafeNonNegativeInteger(entry.covered),
     pending_detail_gaps: readFiniteNumber(entry.pending_detail_gaps, 0),
+    // Whether the declared boundary was enforceable on this stream. `false`
+    // marks a stream collected WHOLE under a bounded run, so its coverage must
+    // not read as proving the declared region.
+    ...(typeof entry.scoped === "boolean" ? { scoped: entry.scoped } : {}),
     skipped: readCollectionFactSkip(entry.skipped),
     stream: entry.stream,
   };
@@ -158,7 +169,14 @@ function readCollectionFactsFromTerminalData(data: Record<string, unknown> | nul
       entries.push(fact);
     }
   }
-  return { streams: entries };
+  // The boundary this evidence was measured against travels WITH it, so a later
+  // scope change is detectable by comparison rather than by trusting a lookup.
+  // Absent means a collector that predates the scope contract reported it.
+  const scope = (block as { collection_scope?: unknown }).collection_scope;
+  return {
+    ...(typeof scope === "string" && scope.trim() ? { collection_scope: scope.trim() } : {}),
+    streams: entries,
+  };
 }
 
 function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSkip | null {
