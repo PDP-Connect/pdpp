@@ -17,6 +17,8 @@
 // classification that the pickers feed. It reads the runtime fact shapes
 // type-only (erased at runtime, so no module cycle with ref-control.ts).
 
+import { evaluateStreamCoherence } from "@pdpp/reference-contract/evidence";
+
 import type { CoverageAxis } from "../runtime/connection-health.ts";
 import type { RuntimeCollectionFact, RuntimeCollectionFactSkip } from "./ref-control.ts";
 
@@ -160,19 +162,6 @@ export function isRequiredStream(stream: AcceptedCoverageStream | undefined): bo
   return stream.required !== false;
 }
 
-function checkpointProvesCoverage(checkpoint: string | null): boolean {
-  return checkpoint === "committed" || checkpoint === "disabled";
-}
-
-function strategyCanProveCoverageWithoutDenominator(strategy: CoverageEvidenceStrategy | null): boolean {
-  return (
-    strategy === "checkpoint_window" ||
-    strategy === "full_inventory" ||
-    strategy === "snapshot_import_receipt" ||
-    strategy === "singleton_presence"
-  );
-}
-
 const RETRYABLE_SKIP_REASON_PATTERN = /(429|rate|temporar|retry|upstream_pressure|pressure)/;
 const DEFERRED_SKIP_REASON_PATTERN = /(out_of_scope|user_disabled|deferred|paused|postpon)/;
 const UNAVAILABLE_SKIP_REASON_PATTERN = /(unavailable|not_available|blocked|locked|upstream)/;
@@ -210,67 +199,61 @@ export function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): Cover
 
 /**
  * Classify a stream once no contradictory manifest, explicit skip, or pending
- * recoverable detail gap takes precedence. At this point, coverage rests only
- * on the considered denominator or a checkpoint-backed strategy boundary.
+ * recoverable detail gap takes precedence. At this point coverage rests entirely
+ * on whether the evidence envelope carries POSITIVE coverage evidence, which is
+ * the shared contract invariant — delegated to
+ * `@pdpp/reference-contract/evidence` so conformance tooling reaches the same
+ * verdict on the same facts.
+ *
+ * The contract's `proven` verdict maps onto this axis as follows:
+ *   - proven via `enumeration_boundary` / `accepted_absence` -> accepted axis
+ *     else `complete` (a measured `considered: 0` is how a zero-result run
+ *     legitimately proves verified emptiness);
+ *   - `boundary_shortfall` -> `partial` (the numerator missed a known
+ *     denominator);
+ *   - `checkpoint_only` / `no_proof_strategy` -> the accepted axis when the
+ *     manifest declares one, else `unknown`. A committed checkpoint alone is
+ *     NOT coverage evidence, so it can no longer reach `complete`.
  */
 function deriveGapFreeStreamCoverageCondition(
   fact: RuntimeCollectionFact,
   accepted: AcceptedCoveragePolicy | null,
   strategy: CoverageEvidenceStrategy | null
 ): CoverageAxis {
-  // Defensive normalization: the type contract is `number | null`, but a
-  // caller that bypasses `readRuntimeCollectionFact`'s re-validation could
-  // hand this an `undefined` denominator. `undefined !== null` would
-  // otherwise read as a KNOWN denominator below (and `0 < undefined` is
-  // `false`), painting a zero-collected fact `complete` instead of
-  // `unknown`. Normalizing here keeps "no denominator" a single value.
-  const considered = fact.considered ?? null;
-  // Some stream strategies establish coverage by committing a bounded source
-  // window/inventory/snapshot/singleton boundary. For those streams,
-  // `collected` remains only the number of records emitted this run
-  // (typically changed records), not a coverage numerator. A committed
-  // checkpoint with no skip/gaps proves the stream boundary was covered even
-  // when unchanged records were suppressed and `collected < considered`.
-  if (
-    considered !== null &&
-    strategyCanProveCoverageWithoutDenominator(strategy) &&
-    checkpointProvesCoverage(fact.checkpoint)
-  ) {
+  const verdict = evaluateStreamCoherence(
+    {
+      checkpoint: fact.checkpoint,
+      collected: fact.collected,
+      // Defensive normalization: the type contract is `number | null`, but a
+      // caller that bypasses `readRuntimeCollectionFact`'s re-validation could
+      // hand this an `undefined` denominator, which must read as "no
+      // denominator" rather than as a known one.
+      considered: fact.considered ?? null,
+      covered: fact.covered ?? null,
+      // A local collector that reported per-stream statuses reaches this branch
+      // only when every status was `collected` (the caller returns earlier
+      // otherwise), so that is an affirmative observation of collection.
+      observed_collected: fact.coverage_statuses !== undefined && fact.coverage_statuses.length > 0,
+      // Skips and pending gaps are handled by the caller's earlier precedence
+      // rules; this branch is reached only when neither is present.
+      pending_detail_gaps: 0,
+      skipped: null,
+    },
+    { accepted_absence: accepted, coverage_strategy: strategy }
+  );
+
+  if (verdict.proven) {
+    // A declared accepted-coverage policy (e.g. `inventory_only`, `deferred`)
+    // is the more precise honest claim than a bare `complete`.
     return accepted ?? "complete";
   }
-
-  // A known considered denominator distinguishes `partial` from covered. The
-  // satisfying numerator is the connector-declared `covered` count when present
-  // (the in-boundary items the run accounted for: emitted +
-  // suppressed-because-unchanged), otherwise the raw `collected` count. The
-  // `covered` path is what lets a steady-state full-sync run — which
-  // re-enumerated its whole boundary and emitted nothing because every record
-  // was unchanged — read `complete` instead of a false `partial`. It cannot
-  // mask a dropped record: a weighed-but-dropped item is counted in neither
-  // `collected` nor `covered`, so a real shortfall still reads `partial`.
-  if (considered !== null) {
-    const satisfied = fact.covered ?? fact.collected;
-    if (satisfied < considered) {
-      return "partial";
-    }
-    // The numerator satisfies the considered denominator: covered. A declared
-    // accepted-coverage policy (e.g. `inventory_only`, `deferred`) is the more
-    // precise honest claim than a bare `complete`.
-    return accepted ?? "complete";
+  if (verdict.reason === "boundary_shortfall") {
+    return "partial";
   }
-
-  // No considered denominator: absence of evidence, NOT proof of completeness.
-  // A declared accepted-coverage policy is still precise (the manifest owes no
-  // further data). A declared coverage evidence strategy can also prove a
-  // bounded stream complete when the runtime committed that stream's boundary:
-  // the proof is the strategy + checkpoint, not `collected === considered`.
-  if (accepted !== null) {
-    return accepted;
-  }
-  if (strategyCanProveCoverageWithoutDenominator(strategy) && checkpointProvesCoverage(fact.checkpoint)) {
-    return "complete";
-  }
-  return "unknown";
+  // Not proven: absence of evidence, NOT proof of completeness. A declared
+  // accepted-coverage policy is still precise (the manifest owes no further
+  // data); otherwise the honest answer is `unknown`.
+  return accepted ?? "unknown";
 }
 
 /**

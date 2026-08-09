@@ -160,24 +160,24 @@ test("slack unsupported-in-mode streams: manifest accepted-absence prevents rest
 
 test("slack co-emitted detail streams: checkpoint_window + committed parent checkpoint -> complete", () => {
   // reactions / message_attachments ride the `messages` cursor and are committed
-  // by the parent `messages` STATE. They carry no `considered` denominator, so
-  // the ONLY coverage proof is the committed checkpoint under the
-  // `checkpoint_window` strategy. A succeeded run whose parent committed must
-  // read `complete`, not `unknown`.
+  // by the parent `messages` STATE. Under the ruling that a committed checkpoint
+  // alone never proves coverage, they need a measured `considered` boundary too;
+  // the committed checkpoint then closes the `checkpoint_window` so a
+  // changed-record-only `collected` below the boundary still reads `complete`.
   const manifestStreams: ManifestStreamFixture[] = [
     { coverage_strategy: "checkpoint_window", name: "reactions", state_stream: "messages" },
     { coverage_strategy: "checkpoint_window", name: "message_attachments", state_stream: "messages" },
   ];
   const entries = report(
     [
-      fact({ checkpoint: "committed", collected: 42, considered: null, stream: "reactions" }),
-      fact({ checkpoint: "committed", collected: 7, considered: null, stream: "message_attachments" }),
+      fact({ checkpoint: "committed", collected: 42, considered: 50, stream: "reactions" }),
+      fact({ checkpoint: "committed", collected: 7, considered: 9, stream: "message_attachments" }),
     ],
     { manifestStreams }
   );
   for (const stream of ["reactions", "message_attachments"]) {
     const entry = entryFor(entries, stream);
-    assert.equal(entry.coverage_condition, "complete", `${stream} committed checkpoint proves coverage`);
+    assert.equal(entry.coverage_condition, "complete", `${stream} measured boundary + closed window proves coverage`);
     assert.equal(entry.forward_disposition, "complete", `${stream} is complete, not unmeasured`);
   }
 });
@@ -192,8 +192,8 @@ test("slack co-emitted detail streams: historical child not_staged inherits comm
   ];
   const entries = report(
     [
-      fact({ checkpoint: "committed", collected: 1903, considered: null, stream: "messages" }),
-      fact({ checkpoint: "not_staged", collected: 42, considered: null, stream: "reactions" }),
+      fact({ checkpoint: "committed", collected: 1903, considered: 1903, stream: "messages" }),
+      fact({ checkpoint: "not_staged", collected: 42, considered: 50, stream: "reactions" }),
     ],
     { manifestStreams }
   );
