@@ -32,6 +32,7 @@ const GROUP = "shared-google-oauth-app-pg";
 const OTHER_GROUP = "shared-microsoft-oauth-app-pg";
 
 const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
+const POSTGRES_SKIP = POSTGRES_URL ? false : "PDPP_TEST_POSTGRES_URL unset";
 
 function postgresStorageConfig(): { backend: "postgres"; databaseUrl: string } {
   assert.ok(POSTGRES_URL, "Postgres test requires PDPP_TEST_POSTGRES_URL");
@@ -50,7 +51,7 @@ async function cleanup() {
 }
 
 test("real PostgreSQL: set seals at rest, keyed by (identity_group, logical_key); get round-trips", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -74,7 +75,7 @@ test("real PostgreSQL: set seals at rest, keyed by (identity_group, logical_key)
   }
 });
 
-test("real PostgreSQL: get returns null for an absent pair", { skip: !POSTGRES_URL }, async () => {
+test("real PostgreSQL: get returns null for an absent pair", { skip: POSTGRES_SKIP }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
     await cleanup();
@@ -87,7 +88,7 @@ test("real PostgreSQL: get returns null for an absent pair", { skip: !POSTGRES_U
 });
 
 test("real PostgreSQL: two identity groups holding the same logical_key do not collide", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -104,7 +105,7 @@ test("real PostgreSQL: two identity groups holding the same logical_key do not c
 });
 
 test("real PostgreSQL: set is an upsert via ON CONFLICT(identity_group, logical_key) — no duplicate row, updated_at advances", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -128,7 +129,7 @@ test("real PostgreSQL: set is an upsert via ON CONFLICT(identity_group, logical_
   }
 });
 
-test("real PostgreSQL: delete removes the row; get returns null afterward", { skip: !POSTGRES_URL }, async () => {
+test("real PostgreSQL: delete removes the row; get returns null afterward", { skip: POSTGRES_SKIP }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
     await cleanup();
@@ -148,7 +149,7 @@ test("real PostgreSQL: delete removes the row; get returns null afterward", { sk
 });
 
 test("real PostgreSQL: listConfiguredKeys returns only logical_key names, never values", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -176,7 +177,7 @@ test("real PostgreSQL: listConfiguredKeys returns only logical_key names, never 
 });
 
 test("real PostgreSQL: set fails closed when the operator encryption key is unconfigured", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -198,7 +199,7 @@ test("real PostgreSQL: set fails closed when the operator encryption key is unco
 });
 
 test("real PostgreSQL: resolver prefers the DB-stored value over a set env alias, falls back to env when the DB is unset", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -234,7 +235,7 @@ test("real PostgreSQL: resolver prefers the DB-stored value over a set env alias
 // setMany — atomic multi-row upsert (real Postgres transaction)
 // ---------------------------------------------------------------------------
 
-test("real PostgreSQL: setMany commits every entry together in one transaction", { skip: !POSTGRES_URL }, async () => {
+test("real PostgreSQL: setMany commits every entry together in one transaction", { skip: POSTGRES_SKIP }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
     await cleanup();
@@ -257,7 +258,7 @@ test("real PostgreSQL: setMany commits every entry together in one transaction",
 });
 
 test("real PostgreSQL: setMany is an upsert per entry via ON CONFLICT — no duplicate rows", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -295,7 +296,7 @@ test("real PostgreSQL: setMany is an upsert per entry via ON CONFLICT — no dup
 });
 
 test("real PostgreSQL: setMany rejects an empty/invalid batch before any write is attempted", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {
@@ -320,7 +321,7 @@ test("real PostgreSQL: setMany rejects an empty/invalid batch before any write i
 });
 
 test("real PostgreSQL: setMany rolls back the WHOLE batch on a mid-transaction failure — no partial commit", {
-  skip: !POSTGRES_URL,
+  skip: POSTGRES_SKIP,
 }, async () => {
   await initPostgresStorage(postgresStorageConfig());
   try {

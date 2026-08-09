@@ -14,7 +14,7 @@
           "required": true,
           "skip_reasons": {
             "set PDPP_TEST_LIVE_NEKO_CAP=1 inside the Docker reference service": 1,
-            "PDPP_TEST_POSTGRES_URL unset": 148,
+            "PDPP_TEST_POSTGRES_URL unset": 160,
             "PDPP_TEST_POSTGRES_URL unset or non-dedicated": 2,
             "dedicated disposable URL not selected": 1,
             "set PDPP_TEST_LIVE_NEKO=1 and NEKO_ORIGIN to run": 2,
