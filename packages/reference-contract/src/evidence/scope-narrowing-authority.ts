@@ -68,6 +68,59 @@ function sinceIsNarrowerOrEqual(candidate: string | undefined, bound: string | u
   return Date.parse(candidate) >= Date.parse(bound);
 }
 
+const PATH_SEPARATORS = /[\\/]/;
+
+/**
+ * Split a path-ish string into non-empty, dot-segment-normalized segments,
+ * tolerating either separator. `.` is dropped and `..` pops the preceding
+ * segment, so containment is decided on the resolved path rather than its
+ * spelling (a `..` that would escape the start is dropped rather than
+ * retained, so a path can never climb above its own first segment).
+ */
+function segments(value: string): string[] {
+  const parts = value.split(PATH_SEPARATORS).filter((part) => part.length > 0 && part !== ".");
+  const resolved: string[] = [];
+  for (const part of parts) {
+    if (part === "..") {
+      resolved.pop();
+      continue;
+    }
+    resolved.push(part);
+  }
+  return resolved;
+}
+
+/**
+ * Whether `candidate` is at or inside `bound` — i.e. `candidate` is `bound`
+ * itself or a strict descendant of it, by whole path segments. This is the
+ * ONE canonical directional containment authority for security/narrowing
+ * decisions in this contract: "is the candidate equal to or a descendant of
+ * the bound," never the reverse.
+ *
+ * Deliberately distinct from a bidirectional walker-descent predicate (used
+ * elsewhere to decide whether to keep walking a directory tree toward a
+ * root, where an ancestor legitimately "contains" a root for descent
+ * purposes). Conflating the two — asking a bidirectional predicate a
+ * one-directional security question — is exactly how a device could
+ * previously offer an ANCESTOR of the server-declared root and have it
+ * accepted as "contained," silently widening the boundary. This function
+ * requires `candidate` to cover every segment of `bound`, so an ancestor
+ * (which has fewer segments than `bound`) can never satisfy it.
+ *
+ * An empty `bound` (no path restriction) is satisfied by anything.
+ */
+export function pathIsWithinOrEqual(bound: string, candidate: string): boolean {
+  const boundParts = segments(bound);
+  if (boundParts.length === 0) {
+    return true;
+  }
+  const candidateParts = segments(candidate);
+  if (candidateParts.length < boundParts.length) {
+    return false;
+  }
+  return boundParts.every((part, i) => part === candidateParts[i]);
+}
+
 /**
  * Whether every root the candidate selects is at-or-inside some root the
  * bound selects. An empty candidate root list is "select everything" (no
@@ -76,8 +129,7 @@ function sinceIsNarrowerOrEqual(candidate: string | undefined, bound: string | u
  */
 function rootsAreNarrowerOrEqual(
   candidate: readonly string[] | undefined,
-  bound: readonly string[] | undefined,
-  pathContainsOrIsWithin: (root: string, path: string) => boolean
+  bound: readonly string[] | undefined
 ): boolean {
   if (!bound || bound.length === 0) {
     return true;
@@ -85,9 +137,7 @@ function rootsAreNarrowerOrEqual(
   if (!candidate || candidate.length === 0) {
     return false;
   }
-  return candidate.every((candidateRoot) =>
-    bound.some((boundRoot) => pathContainsOrIsWithin(boundRoot, candidateRoot))
-  );
+  return candidate.every((candidateRoot) => bound.some((boundRoot) => pathIsWithinOrEqual(boundRoot, candidateRoot)));
 }
 
 /**
@@ -112,14 +162,16 @@ function rootsAreNarrowerOrEqual(
  *    boundary — so an operator who mistypes a scope is told, not quietly
  *    overridden.
  *
- * `pathContainsOrIsWithin` is injected so this module stays a pure leaf with
- * no dependency on the enumeration module's path-segment implementation;
- * callers pass the real one from `collection-scope-enumeration.ts`.
+ * Path containment for the `source_roots` axis is decided by this module's
+ * own {@link pathIsWithinOrEqual} — the canonical directional containment
+ * authority for narrowing decisions. Callers do not inject a predicate: this
+ * module is a pure leaf with no dependency on any connector-facing walker
+ * logic, and the security-relevant containment rule lives in exactly one
+ * place.
  */
 export function resolveEffectiveEnrollmentScope(input: {
   readonly device: DeviceScopeRequest;
   readonly now: string;
-  readonly pathContainsOrIsWithin: (root: string, path: string) => boolean;
   readonly serverDeclared: CollectionScope | null | undefined;
 }): ScopeNarrowingVerdict {
   const server = normalizeCollectionScope(input.serverDeclared);
@@ -144,11 +196,7 @@ export function resolveEffectiveEnrollmentScope(input: {
   }
 
   const sinceOk = sinceIsNarrowerOrEqual(device.since ?? undefined, server.since ?? undefined);
-  const rootsOk = rootsAreNarrowerOrEqual(
-    device.source_roots ?? undefined,
-    server.source_roots ?? undefined,
-    input.pathContainsOrIsWithin
-  );
+  const rootsOk = rootsAreNarrowerOrEqual(device.source_roots ?? undefined, server.source_roots ?? undefined);
 
   if (!(sinceOk && rootsOk)) {
     return {

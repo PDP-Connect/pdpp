@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
@@ -969,6 +969,42 @@ test("writeLocalCollectorProfile restricts directory and file permissions to the
   const dirMode = statSync(profileDir).mode & 0o777;
   assert.equal(fileMode, 0o600);
   assert.equal(dirMode, 0o700);
+});
+
+test("writeLocalCollectorProfile re-tightens a pre-existing profile file/dir left at weaker permissions (P3: connect --force overwrite)", {
+  skip: process.platform === "win32",
+}, () => {
+  const profileDir = tempDirSync();
+  const path = writeLocalCollectorProfile({
+    baseUrl: "https://pdpp.example.com",
+    connectorId: "codex",
+    deviceId: "device-old",
+    deviceToken: "token-old",
+    name: "codex",
+    profileDir,
+    sourceInstanceId: "dsrc_perm_weak",
+  });
+  // Simulate a profile left world/group-readable by something outside this
+  // CLI's own write paths (manual chmod, restored backup, older build).
+  chmodSync(path, 0o644);
+  chmodSync(profileDir, 0o755);
+
+  writeLocalCollectorProfile({
+    baseUrl: "https://pdpp.example.com",
+    connectorId: "codex",
+    deviceId: "device-new",
+    deviceToken: "token-new",
+    name: "codex",
+    profileDir,
+    sourceInstanceId: "dsrc_perm_weak",
+  });
+
+  // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
+  const fileMode = statSync(path).mode & 0o777;
+  // biome-ignore lint/suspicious/noBitwiseOperators: genuine POSIX file-mode bitmask, not a style mistake.
+  const dirMode = statSync(profileDir).mode & 0o777;
+  assert.equal(fileMode, 0o600, "overwrite must re-tighten a pre-existing 0644 file back to 0600");
+  assert.equal(dirMode, 0o700, "overwrite must re-tighten a pre-existing 0755 directory back to 0700");
 });
 
 test("writeLocalCollectorProfile round-trips a base URL containing special characters", () => {

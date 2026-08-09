@@ -25,7 +25,16 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2294,14 +2303,23 @@ export interface WriteLocalCollectorProfileInput {
  *
  * Directory is created `0700` and the file `0600` (owner read/write only),
  * matching the existing secret-adjacent write pattern in
- * `collector-runner.ts`'s connector-protocol debug dump. `chmod`/POSIX mode
- * bits are inert on Windows, where NTFS ACLs (not mode bits) govern access;
- * the file still lands under the user's own profile directory there.
+ * `collector-runner.ts`'s connector-protocol debug dump. `mode` on
+ * `mkdirSync`/`writeFileSync` only applies at CREATION — POSIX `open()`
+ * does not `chmod` an existing path on truncate-and-rewrite — so both are
+ * followed by an explicit `chmodSync` to reset the mode even when the
+ * directory/file already existed with weaker permissions (e.g. `connect
+ * --force` reusing a profile left at `0644` by a manual `chmod`, an older
+ * build, or a restored backup). `chmod`/POSIX mode bits are inert on
+ * Windows, where NTFS ACLs (not mode bits) govern access; the file still
+ * lands under the user's own profile directory there.
  */
 export function writeLocalCollectorProfile(input: WriteLocalCollectorProfileInput): string {
   const profileDir =
     input.profileDir?.trim() || process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
   mkdirSync(profileDir, { mode: 0o700, recursive: true });
+  if (process.platform !== "win32") {
+    chmodSync(profileDir, 0o700);
+  }
   const fileName = safeProfileFileName(input.name);
   const path = join(profileDir, fileName);
   const body = serializeCollectorProfileEnv({
@@ -2312,6 +2330,9 @@ export function writeLocalCollectorProfile(input: WriteLocalCollectorProfileInpu
     PDPP_CONNECTION_ID: input.sourceInstanceId,
   });
   writeFileSync(path, body, { mode: 0o600 });
+  if (process.platform !== "win32") {
+    chmodSync(path, 0o600);
+  }
   return path;
 }
 

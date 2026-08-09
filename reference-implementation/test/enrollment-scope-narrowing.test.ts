@@ -4,33 +4,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  parseDeviceScopeRequest,
-  pathContainsOrIsWithin,
-  resolveEnrollmentScope,
-} from "../server/enrollment-scope-narrowing.ts";
+import { parseDeviceScopeRequest, resolveEnrollmentScope } from "../server/enrollment-scope-narrowing.ts";
 
 const NOW = "2026-08-09T00:00:00.000Z";
 
-test("pathContainsOrIsWithin stays byte-identical to polyfill-connectors's real implementation", async () => {
-  const { pathContainsOrIsWithin: realImpl } = await import(
-    "../../packages/polyfill-connectors/src/collection-scope-enumeration.ts"
-  );
-  const cases: [string, string][] = [
-    ["/home/u/code/pdpp", "/home/u/code/pdpp"],
-    ["/home/u/code/pdpp", "/home/u/code/pdpp/sub"],
-    ["/home/u/code/pdpp", "/home/u/code/other"],
-    ["", "/anything"],
-    ["/a/b/c", "/a/b"],
-    ["a", "a/b/c"],
-  ];
-  for (const [root, candidate] of cases) {
-    assert.equal(
-      pathContainsOrIsWithin(root, candidate),
-      realImpl(root, candidate),
-      `drift on pathContainsOrIsWithin(${JSON.stringify(root)}, ${JSON.stringify(candidate)})`
-    );
-  }
+test("resolveEnrollmentScope rejects a device request offering an ANCESTOR of the server-declared root as a widening, not a narrowing", () => {
+  // This is the P1 finding's exact reproduction, run through the RI's own
+  // server-facing wrapper: a server scoped a connection to a narrow project
+  // directory; the device requests the wider PARENT directory at connect
+  // time. That must be rejected, not accepted with the wider root effective.
+  const verdict = resolveEnrollmentScope({
+    device: { kind: "declared", scope: { source_roots: ["/home/tim/projects"] } },
+    now: NOW,
+    serverDeclared: { source_roots: ["/home/tim/projects/work-only-client"] },
+  });
+  assert.equal(verdict.accepted, false);
 });
 
 test("parseDeviceScopeRequest: an absent field is unspecified, not a declared full pass", () => {

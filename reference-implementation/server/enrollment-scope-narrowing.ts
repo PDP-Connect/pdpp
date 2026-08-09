@@ -7,58 +7,18 @@
  * /_ref/device-exporters/enroll`'s optional `collection_scope` body field).
  *
  * The decision itself — default-to-recent, honor-as-is when nothing is
- * declared server-side, narrow-only otherwise — is the pure, connector-
- * agnostic `resolveEffectiveEnrollmentScope` in `@pdpp/reference-contract`.
- * This module supplies the one thing that function needs and cannot import
- * itself (a path-containment predicate) and validates the raw request body
- * into the typed request that function expects, using the SAME reject-
- * rather-coerce rules `owner-connection-collection-scope.ts`'s
- * `parseScopeBody` already enforces for the owner-authenticated route.
- *
- * `pathContainsOrIsWithin` is a server-local copy of
- * `packages/polyfill-connectors/src/collection-scope-enumeration.ts`'s
- * function of the same name and MUST stay behaviorally identical to it —
- * this server module has no dependency on connector runtime code (server
- * code must not import from a connector's runtime package), so the
- * predicate is duplicated rather than imported, the same pattern
- * `collector-runner.ts` already uses in the other direction (mirroring
- * `@pdpp/reference-contract`'s scope logic without importing it). A
- * cross-package test asserts the two never drift.
+ * declared server-side, narrow-only otherwise, including the directional
+ * path-containment check on the `source_roots` axis — is entirely owned by
+ * the pure, connector-agnostic `resolveEffectiveEnrollmentScope` in
+ * `@pdpp/reference-contract`. This module contains NO path-containment
+ * logic of its own: it only validates the raw request body into the typed
+ * request that function expects, using the SAME reject-rather-coerce rules
+ * `owner-connection-collection-scope.ts`'s `parseScopeBody` already
+ * enforces for the owner-authenticated route, then delegates the decision.
  */
 
 import type { CollectionScope, DeviceScopeRequest, ScopeNarrowingVerdict } from "@pdpp/reference-contract/evidence";
 import { resolveEffectiveEnrollmentScope } from "@pdpp/reference-contract/evidence";
-
-const PATH_SEPARATORS = /[\\/]/;
-
-function segments(value: string): string[] {
-  const parts = value.split(PATH_SEPARATORS).filter((part) => part.length > 0 && part !== ".");
-  const resolved: string[] = [];
-  for (const part of parts) {
-    if (part === "..") {
-      resolved.pop();
-      continue;
-    }
-    resolved.push(part);
-  }
-  return resolved;
-}
-
-/** Whether `candidate` is inside (or exactly equal to) `root`, by whole path segments. */
-export function pathContainsOrIsWithin(root: string, candidate: string): boolean {
-  const rootParts = segments(root);
-  const candidateParts = segments(candidate);
-  if (rootParts.length === 0) {
-    return true;
-  }
-  const shared = Math.min(rootParts.length, candidateParts.length);
-  for (let i = 0; i < shared; i += 1) {
-    if (rootParts[i] !== candidateParts[i]) {
-      return false;
-    }
-  }
-  return true;
-}
 
 /** Validate `collection_scope.since`. `undefined`/`null` means "not declared", not an error. */
 function parseScopeSince(value: unknown): { ok: true; since?: string } | { ok: false; message: string } {
@@ -139,11 +99,11 @@ export function parseDeviceScopeRequest(
   };
 }
 
-/** Resolve the effective enrollment scope, injecting this module's own path predicate. */
+/** Resolve the effective enrollment scope. Delegates entirely to `@pdpp/reference-contract`. */
 export function resolveEnrollmentScope(input: {
   readonly device: DeviceScopeRequest;
   readonly now: string;
   readonly serverDeclared: CollectionScope | null | undefined;
 }): ScopeNarrowingVerdict {
-  return resolveEffectiveEnrollmentScope({ ...input, pathContainsOrIsWithin });
+  return resolveEffectiveEnrollmentScope(input);
 }
