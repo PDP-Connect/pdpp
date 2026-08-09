@@ -19,6 +19,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  buildCoverageDiagnosticsStateSnapshot,
+  type CoverageRecord,
+  LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR,
+  parseCoverageDiagnosticsStateSnapshot,
+} from "../../packages/polyfill-connectors/src/local-source-inventory.ts";
 import { COLLECTION_SCOPE_STATE_KEY } from "../server/local-collection-scope.ts";
 import { deriveLocalCoverageAxis, projectCollectionReport } from "../server/ref-control.ts";
 
@@ -234,5 +240,141 @@ test("evidence predating the scope contract satisfies only an unscoped declarati
     narrowedDeclared.find((e) => e.stream === "sessions")?.coverage_condition,
     "unknown",
     "unfingerprinted evidence cannot prove a boundary it never enforced"
+  );
+});
+
+// FULL SERIALIZATION ROUND-TRIP through the REAL production path:
+//
+//   coverage record (as the connector emits it)
+//     -> buildCoverageDiagnosticsStateSnapshot   (real builder)
+//     -> JSON round-trip                          (what persistence does)
+//     -> parseCoverageDiagnosticsStateSnapshot    (real parser, the trust gate
+//                                                  readCommittedLocalCoverageDiagnostics uses)
+//     -> LocalCoverageDiagnosticRow
+//     -> deriveLocalCoverageAxis
+//     -> projectCollectionReport                  (production call shape)
+//
+// Hand-built rows would skip the builder and parser, which is exactly where the
+// fingerprint was being dropped. Nothing here is constructed by hand except the
+// connector's own record.
+
+/**
+ * Coverage records as the connector emits them, with the measured boundary.
+ * Covers claude_code's full declared store set: a partial snapshot is not a
+ * committed one, so a short fixture would never reach `complete` and every
+ * assertion below would pass vacuously.
+ */
+function coverageRecords(scope: string | null): CoverageRecord[] {
+  return LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR.claude_code.map(
+    (descriptor) =>
+      ({
+        id: `coverage:${descriptor.store}`,
+        reason: "declared source",
+        status: "collected",
+        store: descriptor.store,
+        stream: descriptor.stream,
+        ...(scope ? { collection_scope: scope } : {}),
+      }) as CoverageRecord
+  );
+}
+
+/** Persisted snapshot exactly as the collector writes it (JSON, both backends). */
+function persistedSnapshot(scope: string | null): unknown {
+  return JSON.parse(
+    JSON.stringify({
+      fetched_at: "2026-08-08T00:00:00.000Z",
+      stores: buildCoverageDiagnosticsStateSnapshot(coverageRecords(scope)),
+    })
+  );
+}
+
+function axisFromRealSnapshot(declaredScope: string | null, measuredScope: string | null) {
+  const snapshot = persistedSnapshot(measuredScope);
+  const parsed = parseCoverageDiagnosticsStateSnapshot("claude_code", snapshot);
+  return deriveLocalCoverageAxis({
+    duplicateStores: [...parsed.duplicateStores],
+    hasAuthoritativeInventory: parsed.hasAuthoritativeInventory,
+    hasCommittedSnapshot: parsed.hasCommittedSnapshot,
+    malformed: parsed.malformed,
+    manifestGeneration: 1,
+    missingStores: [...parsed.missingStores],
+    nowIso: "2026-08-09T00:00:00.000Z",
+    rows: parsed.rows,
+    // The axis reads the DECLARED boundary plus the snapshot's own fetched_at
+    // (its reliability cursor) out of the coverage stream's persisted state.
+    state: { ...(snapshot as Record<string, unknown>), ...stateWithScope(declaredScope) },
+    stateManifestGeneration: 1,
+    unexpectedStores: [...parsed.unexpectedStores],
+    updatedAt: "2026-08-08T00:00:00.000Z",
+  });
+}
+
+function reportFromRealSnapshot(declaredScope: string | null, measuredScope: string | null) {
+  return projectCollectionReport({
+    connectionHealth: HEALTH,
+    lastRun: null,
+    localCoverage: axisFromRealSnapshot(declaredScope, measuredScope),
+    localDeviceBacked: true,
+    manifestStreams: MANIFEST_STREAMS as never,
+    refreshPolicy: null,
+    schedule: null,
+  });
+}
+
+test("the real snapshot builder preserves the measured boundary through JSON persistence", () => {
+  const snapshot = persistedSnapshot("since=2026-06-01T00:00:00.000Z") as { stores: Array<Record<string, unknown>> };
+  assert.equal(
+    snapshot.stores[0]?.collection_scope,
+    "since=2026-06-01T00:00:00.000Z",
+    "the builder must not strip the boundary -- dropping it here blinds every downstream reader"
+  );
+  const parsed = parseCoverageDiagnosticsStateSnapshot("claude_code", snapshot);
+  assert.equal(parsed.malformed, false, "the parser must accept the scoped entry shape, not fail closed on it");
+  assert.equal(
+    (parsed.rows.find((row) => row.store === "projects") as { collection_scope?: string } | undefined)
+      ?.collection_scope,
+    "since=2026-06-01T00:00:00.000Z"
+  );
+});
+
+test("round-trip: a scoped complete run reads complete through builder, parser, axis, and projection", () => {
+  const entries = reportFromRealSnapshot("2026-06-01T00:00:00.000Z", "since=2026-06-01T00:00:00.000Z");
+  assert.equal(
+    entries.find((entry) => entry.stream === "sessions")?.coverage_condition,
+    "complete",
+    "the boundary must survive the whole serialization chain"
+  );
+});
+
+test("round-trip: narrowing the scope declassifies snapshot-persisted coverage", () => {
+  const entries = reportFromRealSnapshot("2026-07-01T00:00:00.000Z", "unscoped");
+  assert.equal(
+    entries.find((entry) => entry.stream === "sessions")?.coverage_condition,
+    "unknown",
+    "a full-corpus snapshot must not read as proof of a narrowed boundary"
+  );
+});
+
+test("round-trip: an old snapshot with no boundary stays backward-compatible", () => {
+  // Written before the scope contract: it must still parse as proof (not
+  // malformed) and satisfy an unscoped declaration, but nothing narrower.
+  const legacy = persistedSnapshot(null) as { stores: Array<Record<string, unknown>> };
+  assert.equal(
+    "collection_scope" in (legacy.stores[0] ?? {}),
+    false,
+    "no boundary is written when the run declared none, keeping old snapshots byte-compatible"
+  );
+  assert.equal(parseCoverageDiagnosticsStateSnapshot("claude_code", legacy).malformed, false);
+
+  assert.equal(
+    reportFromRealSnapshot(null, null).find((entry) => entry.stream === "sessions")?.coverage_condition,
+    "complete",
+    "a legacy snapshot still proves an unscoped declaration"
+  );
+  assert.equal(
+    reportFromRealSnapshot("2026-06-01T00:00:00.000Z", null).find((entry) => entry.stream === "sessions")
+      ?.coverage_condition,
+    "unknown",
+    "a legacy snapshot cannot prove a boundary it never enforced"
   );
 });

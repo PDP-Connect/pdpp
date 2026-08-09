@@ -149,6 +149,14 @@ export interface CoverageRecord extends RecordData {
 }
 
 export interface SafeCoverageDiagnosticStore {
+  /**
+   * Boundary this store's coverage was measured under, carried through the
+   * durable snapshot so the read side can tell coverage-of-a-declared-region
+   * from coverage-of-everything. Absent for a snapshot written before the scope
+   * contract, which is a different claim from `unscoped` and must stay
+   * distinguishable.
+   */
+  readonly collection_scope?: string;
   readonly status: CoverageStatus | "unaccounted";
   readonly store: string;
   readonly stream: string | null;
@@ -161,7 +169,17 @@ export interface SafeCoverageDiagnosticStore {
 export function buildCoverageDiagnosticsStateSnapshot(
   coverage: readonly CoverageRecord[]
 ): readonly SafeCoverageDiagnosticStore[] {
-  return coverage.map(({ status, store, stream }) => ({ status, store, stream }));
+  return coverage.map((record) => {
+    const { status, store, stream } = record;
+    // Preserve the measured boundary alongside the store triple. It is a
+    // declared bound, never payload, so it does not widen the safe surface this
+    // builder exists to enforce -- and dropping it here is precisely what left
+    // the read side blind to the fingerprint the records already carried.
+    const scope = (record as { collection_scope?: unknown }).collection_scope;
+    return typeof scope === "string" && scope.trim()
+      ? { collection_scope: scope.trim(), status, store, stream }
+      : { status, store, stream };
+  });
 }
 
 export interface ParsedCoverageDiagnosticsStateSnapshot {
@@ -186,6 +204,13 @@ const SAFE_COVERAGE_DIAGNOSTIC_STATUSES = new Set<CoverageStatus | "unaccounted"
 
 const COVERAGE_DIAGNOSTICS_STATE_KEYS = ["fetched_at", "stores"] as const;
 const COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS = ["status", "store", "stream"] as const;
+/**
+ * The same triple plus the optional measured boundary. Both shapes are accepted
+ * so a snapshot written before the scope contract still parses as proof rather
+ * than failing closed as malformed -- an old snapshot is honestly
+ * boundary-unknown, not corrupt.
+ */
+const COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS_WITH_SCOPE = ["collection_scope", "status", "store", "stream"] as const;
 
 function hasExactKeys(value: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
   const keys = Object.keys(value).sort();
@@ -197,6 +222,7 @@ function isValidCoverageDiagnosticsFetchedAt(value: unknown): value is string {
 }
 
 function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
+  readonly collection_scope?: string;
   readonly status: CoverageStatus | "unaccounted";
   readonly store: string;
   readonly stream: unknown;
@@ -205,7 +231,12 @@ function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
     return null;
   }
   const entry = rawEntry as Record<string, unknown>;
-  if (!hasExactKeys(entry, COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS)) {
+  if (
+    !(
+      hasExactKeys(entry, COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS) ||
+      hasExactKeys(entry, COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS_WITH_SCOPE)
+    )
+  ) {
     return null;
   }
   const store = typeof entry.store === "string" && entry.store ? entry.store : null;
@@ -218,7 +249,17 @@ function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
   ) {
     return null;
   }
-  return { store, stream: entry.stream, status: status as CoverageStatus | "unaccounted" };
+  // Only a non-empty string survives: a malformed or blank boundary reads as
+  // NO recorded boundary rather than as an empty one, so it cannot be mistaken
+  // for a measured full pass.
+  const scope = entry.collection_scope;
+  const collectionScope = typeof scope === "string" && scope.trim() ? scope.trim() : null;
+  return {
+    ...(collectionScope ? { collection_scope: collectionScope } : {}),
+    store,
+    stream: entry.stream,
+    status: status as CoverageStatus | "unaccounted",
+  };
 }
 
 /**
@@ -285,7 +326,12 @@ export function parseCoverageDiagnosticsStateSnapshot(
       malformed = true;
       continue;
     }
-    rows.push({ store, stream: expectedEntry.stream, status });
+    rows.push({
+      ...(entry.collection_scope ? { collection_scope: entry.collection_scope } : {}),
+      store,
+      stream: expectedEntry.stream,
+      status,
+    });
   }
 
   const missingStores = expected

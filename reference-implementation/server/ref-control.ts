@@ -3365,9 +3365,34 @@ function localCoverageParentStream(stream: ManifestStream | undefined): string |
   return typeof parent === "string" && parent ? parent : null;
 }
 
+/**
+ * The measured boundary carried on one coverage row, in either producer's
+ * spelling. Only a non-empty string counts: a blank or malformed value reads as
+ * NO recorded boundary rather than as an empty one, so it can never be mistaken
+ * for a measured full pass.
+ */
+function readRowCollectionScope(row: LocalCoverageDiagnosticRow): string | null {
+  for (const candidate of [row.collection_scope, row.collectionScope]) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
 /** Safe per-store coverage triple read from `coverage_diagnostics` records. */
 interface LocalCoverageDiagnosticRow {
-  /** Boundary this row was measured under, committed with the row itself. */
+  /**
+   * Boundary this row was measured under, committed with the row itself.
+   *
+   * Two producers feed this type and they name the field differently: the
+   * durable state snapshot uses the wire form `collection_scope` (what
+   * `buildCoverageDiagnosticsStateSnapshot` writes and
+   * `parseCoverageDiagnosticsStateSnapshot` returns), while the records-table
+   * projection uses the camelCase `collectionScope`. Both are read, so the
+   * fingerprint survives whichever path the caller took.
+   */
+  readonly collection_scope?: unknown;
   readonly collectionScope?: unknown;
   readonly status?: unknown;
   readonly store?: unknown;
@@ -3460,7 +3485,7 @@ export function deriveLocalCoverageAxis(input: {
   // one: an ambiguous pairing must not be able to read as proof.
   const measuredScopes = new Set(
     rows
-      .map((row) => (typeof row.collectionScope === "string" && row.collectionScope.trim() ? row.collectionScope.trim() : null))
+      .map((row) => readRowCollectionScope(row))
       .filter((value): value is string => value !== null)
   );
   const measuredScope: string | null = measuredScopes.size === 1 ? ([...measuredScopes][0] ?? null) : null;
