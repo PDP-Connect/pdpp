@@ -79,51 +79,11 @@ After "Create code" the dashboard renders:
 
 You do not need to memorize the route or the env var names; the dashboard advertises the exact command.
 
-## Step 3 &mdash; Set up the host (guided)
+## Step 3 &mdash; Enroll the host
 
-On the host with the data, run `setup` with the code the dashboard rendered:
-
-```bash
-npx -y @pdpp/local-collector setup \
-  --base-url https://your-pdpp-host.example.com \
-  --code <one-time-code> \
-  --connector claude_code \
-  --device-label "the owner's laptop" \
-  --sample 20
-```
-
-`setup` exchanges the code, saves the device id/device token/connection id to a
-local profile file under `~/.config/pdpp/collectors/` (owner-only permissions:
-`0600` on the file, `0700` on the directory &mdash; POSIX mode bits, so on
-Windows the file lands under your user profile directory instead), and &mdash;
-because `--sample 20` was passed &mdash; immediately runs a bounded 20-record
-proof pass so you can see real evidence the pairing works before deciding to
-collect the full source:
-
-```text
-✓ Enrolled claude_code (device dev_...).
-✓ Credentials saved to /home/you/.config/pdpp/collectors/claude_code.env (readable only by you).
-✓ Sample stopped after 20 record(s) (limit 20). These records are durably queued
-  but this is NOT a complete collection — the connector was stopped before
-  finishing its scan, so no coverage checkpoint was recorded. Run `run` (without
-  --sample) to collect the full source, or `recover --apply` to drain what was
-  already queued.
-
-Next: pdpp-local-collector run --connection-id si_...
-(the profile above is picked up automatically — no env vars to set by hand)
-```
-
-Swap `--connector claude_code` for `codex` to pair Codex CLI history/skills/etc.
-Add `--json` for machine-readable output instead of the human summary above.
-
-Drop `--sample` to skip the proof pass and only enroll + save credentials.
-`setup` never prints the raw device token to the terminal &mdash; it goes
-straight into the permission-restricted profile file.
-
-**Manual / scriptable alternative.** `enroll` remains available as the
-low-level primitive `setup` is built on &mdash; it prints the raw JSON
-response instead of writing a profile, for scripts that manage credentials
-themselves:
+On the host with the data, exchange the code the dashboard rendered for a
+device credential. `enroll` prints the raw JSON response &mdash; save the
+three values, and never log or paste the token anywhere else:
 
 ```bash
 npx -y @pdpp/local-collector enroll \
@@ -148,23 +108,17 @@ diagnostics; the collector still passes the device-binding selector as
 only, but still write-capable on this lane) &mdash; treat it like an API key
 and never commit or log it.
 
+> **A guided `setup` subcommand (one command, `--sample` proof pass, saved
+> profile file) exists in this repo's source but has not shipped in a
+> published `@pdpp/local-collector` release yet.** Once it ships, this step
+> collapses to a single `setup --sample <n>` invocation; until then, use the
+> two-step `enroll` + `run` flow below, which matches every published
+> version.
+
 ## Step 4 &mdash; Run a connector pass
 
-If you used `setup`, the profile it wrote is picked up automatically by
-`--connection-id` alone:
-
-```bash
-npx -y @pdpp/local-collector run --connection-id si_...
-```
-
-Live progress prints to stderr as the connector finds records (phase, running
-counts, and a final summary), so a large local archive no longer looks stuck
-&mdash; pass `--quiet` to suppress it (useful under a systemd unit where
-stderr already goes to the journal). Add `--sample <n>` here too, any time
-you want a bounded proof pass instead of collecting everything.
-
-**Manual / scriptable alternative.** If you used `enroll` directly, supply the
-three values as env vars the way the dashboard's rendered command shows:
+Supply the three values from Step 3's `enroll` output as env vars, the way the
+dashboard's rendered command shows:
 
 ```bash
 PDPP_LOCAL_DEVICE_ID=dev_... \
@@ -175,7 +129,19 @@ PDPP_CONNECTION_ID=si_... \
     --connector claude_code
 ```
 
-Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/etc. The runner:
+Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/etc.
+
+Live progress prints to stderr as the connector finds records (phase, running
+counts, and a final summary), so a large local archive no longer looks stuck
+&mdash; pass `--quiet` to suppress it (useful under a systemd unit where
+stderr already goes to the journal).
+
+> Once the `setup` subcommand ships in a published release (see the note in
+> Step 3), it saves a local profile so `run --connection-id si_...` alone
+> resolves your credentials, and its `--sample <n>` flag runs a bounded proof
+> pass. Neither is available in the published package today.
+
+The runner:
 
 1. Recovers expired outbox leases (work a crashed prior run left claimed).
 2. **Drains the existing durable outbox first.** Any record batches, checkpoints, or gaps already queued for this connection are sent against `POST .../ingest` before anything else.
@@ -208,10 +174,9 @@ Open `/device-exporters`. The device row updates with:
 
 ## Stopping a run and interrupt safety
 
-`Ctrl+C` (`SIGINT`, and `SIGTERM`) during a plain `run` or `run --sample`/
-`setup --sample` is safe: the collector installs a real signal handler for
-the duration of the run and aborts the same `abortSignal` `--sample <n>` uses
-internally to stop after N records. The abort forwards to the connector child
+`Ctrl+C` (`SIGINT`, and `SIGTERM`) during a plain `run` is safe: the collector
+installs a real signal handler for the duration of the run and aborts
+cleanly. The abort forwards to the connector child
 (`SIGTERM`, then `SIGKILL` after a grace period if it does not exit), flushes
 any records it had already parsed before the interrupt to the durable local
 outbox, and records an honest recovery gap. Nothing already flushed is lost,
@@ -222,6 +187,12 @@ Re-run the same command (or `recover --apply`) to pick up where it left off;
 the durable outbox is exactly what makes that safe.
 
 ## Removing a host
+
+> `logout` and the local profile file it manages depend on `setup`, which is
+> not yet in a published `@pdpp/local-collector` release (see the note in
+> Step 3). Until then, revoke a device from `/device-exporters` and stop
+> running its `enroll`/`run` commands &mdash; there is no local profile file
+> to delete for the manual two-step flow.
 
 To fully log out a host &mdash; revoke its device credential on the reference
 server, then delete its local profile:

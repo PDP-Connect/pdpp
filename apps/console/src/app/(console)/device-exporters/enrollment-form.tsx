@@ -7,11 +7,7 @@ import { IcButton, IcInput } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { Callout, ToolbarField } from "@pdpp/operator-ui/components/primitives";
 import { useActionState, useState } from "react";
-import {
-  pdppLocalCollectorEnrollCommand,
-  pdppLocalCollectorRunCommand,
-  pdppLocalCollectorSetupCommand,
-} from "@/lib/pdpp-cli-command.ts";
+import { pdppLocalCollectorEnrollCommand, pdppLocalCollectorRunCommand } from "@/lib/pdpp-cli-command.ts";
 import { createEnrollmentCodeAction } from "./actions.ts";
 
 const COLLECTOR_RUN_CONNECTORS = [
@@ -22,7 +18,6 @@ const COLLECTOR_RUN_CONNECTORS = [
   "apple_photos",
   "google_messages",
 ] as const;
-const SETUP_SAMPLE_SIZE = 20;
 const MACOS_ONLY_LOCAL_COLLECTOR_CONNECTORS = ["imessage", "apple_photos"] as const;
 const EXTERNAL_TOOL_LOCAL_COLLECTOR_CONNECTORS = ["google_messages"] as const;
 
@@ -50,27 +45,21 @@ export function EnrollmentForm({
   defaultConnectorId?: string;
 }) {
   const [state, formAction, pending] = useActionState(createEnrollmentCodeAction, { ok: null });
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showOtherConnectors, setShowOtherConnectors] = useState(false);
 
-  let setupCommand: string | null = null;
   let enrollCommand: string | null = null;
+  let runCommand: string | null = null;
   let isMacosOnly = false;
   let isExternalTool = false;
   if (state.ok === true) {
     isMacosOnly = isMacosOnlyLocalCollectorConnector(state.code.connector_id);
     isExternalTool = isExternalToolLocalCollectorConnector(state.code.connector_id);
-    setupCommand = pdppLocalCollectorSetupCommand({
-      baseUrl: referenceBaseUrl,
-      code: state.code.enrollment_code,
-      connectorId: state.code.connector_id,
-      deviceLabel: state.deviceLabel,
-      sample: SETUP_SAMPLE_SIZE,
-    });
     enrollCommand = pdppLocalCollectorEnrollCommand({
       baseUrl: referenceBaseUrl,
       code: state.code.enrollment_code,
       deviceLabel: state.deviceLabel,
     });
+    runCommand = pdppLocalCollectorRunCommand({ baseUrl: referenceBaseUrl, connectorId: state.code.connector_id });
   }
 
   return (
@@ -96,7 +85,7 @@ export function EnrollmentForm({
       </form>
 
       {state.ok === false ? <p className="pdpp-caption mt-3 text-destructive">{state.message}</p> : null}
-      {state.ok === true && setupCommand && enrollCommand ? (
+      {state.ok === true && enrollCommand && runCommand ? (
         <div className="mt-4 space-y-3 rounded-md border border-border/80 bg-background/60 p-3">
           <div>
             <div className="pdpp-eyebrow text-muted-foreground">Enrollment code</div>
@@ -158,96 +147,102 @@ export function EnrollmentForm({
           ) : null}
 
           <div>
-            <div className="pdpp-eyebrow text-muted-foreground">Set up the device that has the data</div>
+            <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the device that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Run this <code className="font-mono">@pdpp/local-collector</code> command on the device with the data
-              (Claude Code, Codex, Google Takeout, iMessage, Apple Photos export, or a gmcli-paired Google Messages
-              archive). It exchanges the code, saves your device credentials to a local file only you can read (never
-              printed here or in your terminal), and runs a bounded {SETUP_SAMPLE_SIZE}-record proof pass so you can
-              see it working before it collects everything.
+              Run this <code className="font-mono">@pdpp/local-collector</code> command on the device with the data. It
+              exchanges the code for a credential and prints it as JSON: save the{" "}
+              <code className="font-mono">device_id</code>, <code className="font-mono">device_token</code>, and{" "}
+              <code className="font-mono">source_instance_id</code> values it returns &mdash; you will pass them to the
+              next command. Never log or paste the token anywhere else.
             </p>
             <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
               <code
                 className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
-                data-testid="collector-setup-command"
+                data-testid="collector-enroll-command"
               >
-                {setupCommand}
+                {enrollCommand}
               </code>
-              <CopyButton ariaLabel="Copy @pdpp/local-collector setup command" value={setupCommand} />
+              <CopyButton ariaLabel="Copy @pdpp/local-collector enroll command" value={enrollCommand} />
             </div>
-            <p className="pdpp-caption mt-2 text-muted-foreground">
-              When that finishes, it prints the exact <code className="font-mono">run</code> command to collect the full
-              source &mdash; credentials are picked up automatically, no values to copy by hand.
+          </div>
+
+          <div>
+            <div className="pdpp-eyebrow text-muted-foreground">2. Start collection</div>
+            <p className="pdpp-caption mt-1 text-muted-foreground">
+              Use the three values from step 1's output. The collector resumes from its saved state, so running it again
+              is safe.
             </p>
+            <div className="mt-2 space-y-2">
+              {(() => {
+                const fullCommand = [
+                  "PDPP_LOCAL_DEVICE_ID=<device_id> \\",
+                  "PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\",
+                  "PDPP_CONNECTION_ID=<source_instance_id> \\",
+                  runCommand,
+                ].join("\n");
+                return (
+                  <div className="rounded-md border border-border/70 bg-muted/30 p-3">
+                    <div className="flex min-w-0 items-baseline justify-between gap-2">
+                      <div className="pdpp-caption text-muted-foreground">
+                        <code className="font-mono">{state.code.connector_id}</code>
+                      </div>
+                      <CopyButton
+                        ariaLabel={`Copy @pdpp/local-collector run command for ${state.code.connector_id}`}
+                        value={fullCommand}
+                      />
+                    </div>
+                    <pre
+                      className="pdpp-caption mt-2 min-w-0 overflow-x-auto whitespace-pre font-mono text-foreground"
+                      data-testid={`collector-run-command-${state.code.connector_id}`}
+                    >
+                      {fullCommand}
+                    </pre>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
 
           <div>
             <button
               className="pdpp-caption text-foreground underline underline-offset-2"
-              onClick={() => setShowAdvanced((prev) => !prev)}
+              onClick={() => setShowOtherConnectors((prev) => !prev)}
               type="button"
             >
-              {showAdvanced ? "Hide" : "Show"} advanced / scriptable commands
+              {showOtherConnectors ? "Hide" : "Show"} run commands for other connectors
             </button>
-            {showAdvanced ? (
-              <div className="mt-3 space-y-3">
-                <div>
-                  <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the device (prints raw JSON)</div>
-                  <p className="pdpp-caption mt-1 text-muted-foreground">
-                    Exchanges the code for a credential and prints it as JSON instead of saving a profile file &mdash;
-                    for scripts that manage credentials themselves. The response returns{" "}
-                    <code className="font-mono">device_id</code>, <code className="font-mono">device_token</code>, and{" "}
-                    <code className="font-mono">source_instance_id</code> &mdash; save all three, and never log the
-                    token.
-                  </p>
-                  <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
-                    <code
-                      className="pdpp-caption min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-foreground"
-                      data-testid="collector-enroll-command"
-                    >
-                      {enrollCommand}
-                    </code>
-                    <CopyButton ariaLabel="Copy @pdpp/local-collector enroll command" value={enrollCommand} />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="pdpp-eyebrow text-muted-foreground">2. Start collection with explicit env vars</div>
-                  <p className="pdpp-caption mt-1 text-muted-foreground">
-                    Use the three values from the enrollment response. The collector resumes from its saved state, so
-                    running it again is safe.
-                  </p>
-                  <div className="mt-2 space-y-2">
-                    {COLLECTOR_RUN_CONNECTORS.map((connectorId) => {
-                      const runCommand = pdppLocalCollectorRunCommand({ baseUrl: referenceBaseUrl, connectorId });
-                      const fullCommand = [
-                        "PDPP_LOCAL_DEVICE_ID=<device_id> \\",
-                        "PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\",
-                        "PDPP_CONNECTION_ID=<source_instance_id> \\",
-                        runCommand,
-                      ].join("\n");
-                      return (
-                        <div className="rounded-md border border-border/70 bg-muted/30 p-3" key={connectorId}>
-                          <div className="flex min-w-0 items-baseline justify-between gap-2">
-                            <div className="pdpp-caption text-muted-foreground">
-                              <code className="font-mono">{connectorId}</code>
-                            </div>
-                            <CopyButton
-                              ariaLabel={`Copy @pdpp/local-collector run command for ${connectorId}`}
-                              value={fullCommand}
-                            />
+            {showOtherConnectors ? (
+              <div className="mt-3 space-y-2">
+                {COLLECTOR_RUN_CONNECTORS.filter((connectorId) => connectorId !== state.code.connector_id).map(
+                  (connectorId) => {
+                    const otherRunCommand = pdppLocalCollectorRunCommand({ baseUrl: referenceBaseUrl, connectorId });
+                    const fullCommand = [
+                      "PDPP_LOCAL_DEVICE_ID=<device_id> \\",
+                      "PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\",
+                      "PDPP_CONNECTION_ID=<source_instance_id> \\",
+                      otherRunCommand,
+                    ].join("\n");
+                    return (
+                      <div className="rounded-md border border-border/70 bg-muted/30 p-3" key={connectorId}>
+                        <div className="flex min-w-0 items-baseline justify-between gap-2">
+                          <div className="pdpp-caption text-muted-foreground">
+                            <code className="font-mono">{connectorId}</code>
                           </div>
-                          <pre
-                            className="pdpp-caption mt-2 min-w-0 overflow-x-auto whitespace-pre font-mono text-foreground"
-                            data-testid={`collector-run-command-${connectorId}`}
-                          >
-                            {fullCommand}
-                          </pre>
+                          <CopyButton
+                            ariaLabel={`Copy @pdpp/local-collector run command for ${connectorId}`}
+                            value={fullCommand}
+                          />
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                        <pre
+                          className="pdpp-caption mt-2 min-w-0 overflow-x-auto whitespace-pre font-mono text-foreground"
+                          data-testid={`collector-run-command-${connectorId}`}
+                        >
+                          {fullCommand}
+                        </pre>
+                      </div>
+                    );
+                  }
+                )}
               </div>
             ) : null}
           </div>

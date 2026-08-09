@@ -35,7 +35,6 @@ const COLLECTOR_RUN_HELPER = /pdppLocalCollectorRunCommand/;
 const LOCAL_COLLECTOR_PACKAGE = /@pdpp\/local-collector/;
 const BROWSER_COLLECTOR_MONOREPO_COPY =
   /PDPP monorepo checkout|pnpm --dir|packages\/polyfill-connectors|browser-collector run command/;
-const SETUP_TESTID = /data-testid="collector-setup-command"/;
 const ENROLL_TESTID = /data-testid="collector-enroll-command"/;
 const RUN_TESTID_CLAUDE = /data-testid={`collector-run-command-/;
 const SUPPORTED_CONNECTORS =
@@ -43,7 +42,11 @@ const SUPPORTED_CONNECTORS =
 
 test("enrollment form derives the canonical local collector commands via shared helpers", async () => {
   const src = await read(FORM_PATH);
-  assert.match(src, COLLECTOR_SETUP_HELPER, "form must call pdppLocalCollectorSetupCommand as the primary path");
+  assert.doesNotMatch(
+    src,
+    COLLECTOR_SETUP_HELPER,
+    "form must not render pdppLocalCollectorSetupCommand: `setup`/`--sample` are not in the published @pdpp/local-collector package"
+  );
   assert.match(src, COLLECTOR_ENROLL_HELPER, "form must call pdppLocalCollectorEnrollCommand");
   assert.match(src, COLLECTOR_RUN_HELPER, "form must call pdppLocalCollectorRunCommand");
   assert.match(src, LOCAL_COLLECTOR_PACKAGE, "form must surface the public @pdpp/local-collector path");
@@ -52,18 +55,28 @@ test("enrollment form derives the canonical local collector commands via shared 
 
 test("enrollment form exposes stable test hooks for the rendered commands", async () => {
   const src = await read(FORM_PATH);
-  assert.match(src, SETUP_TESTID, "setup command must carry a stable data-testid");
   assert.match(src, ENROLL_TESTID, "enroll command must carry a stable data-testid");
   assert.match(src, RUN_TESTID_CLAUDE, "run command must carry a stable per-connector data-testid");
 });
 
-test("guided setup command appears before the advanced enroll/run commands in the rendered form", async () => {
+test("enroll command appears before the run command in the rendered form", async () => {
   const src = await read(FORM_PATH);
-  const setupIndex = src.indexOf('data-testid="collector-setup-command"');
   const enrollIndex = src.indexOf('data-testid="collector-enroll-command"');
-  assert.ok(setupIndex > -1, "setup command block must be present");
+  const runIndex = src.indexOf("data-testid={`collector-run-command-");
   assert.ok(enrollIndex > -1, "enroll command block must be present");
-  assert.ok(setupIndex < enrollIndex, "setup must render before the low-level enroll/run commands");
+  assert.ok(runIndex > -1, "run command block must be present");
+  assert.ok(enrollIndex < runIndex, "enroll must render before run, matching the two-step CLI contract");
+});
+
+test("enrollment form never renders a local-collector setup invocation", async () => {
+  // Direct regression test for the fresh-install blocker: the published
+  // @pdpp/local-collector CLI (confirmed against the live 1.1.0 tarball) has
+  // no `setup` subcommand and no `--sample` flag. Guard the LITERAL rendered
+  // string, not just the helper import, so a future inline command build
+  // cannot reintroduce the unpublished subcommand.
+  const src = await read(FORM_PATH);
+  assert.doesNotMatch(src, /local-collector setup/, "form must never render `local-collector setup`");
+  assert.doesNotMatch(src, /--sample/, "form must never render the unpublished --sample flag");
 });
 
 test("enrollment form advertises every connector bundled in the published @pdpp/local-collector npx path", async () => {
