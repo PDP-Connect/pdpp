@@ -75,6 +75,7 @@ import { compileRequestFilters, passesGrantRecordConstraints, passesRequestFilte
 import { mapSearchFanout } from "./search-fanout.ts";
 import { sqliteCountIndexableTextValues } from "./search-index-counts.ts";
 import { makeDefaultAccountConnectorInstanceId } from "./stores/connector-instance-store.ts";
+import { countDirtySearchIndexScopes } from "./stores/search-index-dirty-store.ts";
 
 type JsonObject = Record<string, unknown>;
 type SqlBindValue = string | number | bigint | null | Uint8Array;
@@ -376,6 +377,29 @@ export function isLexicalIndexBackfillActive() {
 export function getLexicalIndexBackfillProgress() {
   const job = latestLexicalBackfillJob();
   return job ? publicLexicalBackfillJob(job) : null;
+}
+
+/**
+ * Honest public index_state for capabilities.lexical_retrieval (I7:
+ * public parity with the pre-existing semantic_retrieval.index_state).
+ * Mirrors search-semantic.ts's computeIndexState's shape ('built' |
+ * 'building' | 'stale') and precedence (an active backfill always wins
+ * over the dirty-backlog check, same as semantic's isSemanticIndexBackfillActive
+ * short-circuit).
+ *
+ * "stale" is derived from the scope-dirty backlog (search_index_dirty),
+ * not a fingerprint/backend-identity comparison the way semantic's version
+ * is: lexical has no analogous "embedding backend changed" concept, and
+ * after this design's I2 fix, a nonempty dirty backlog IS the accurate
+ * signal that at least one scope's lexical index has not yet been proven
+ * in sync with its durable records.
+ */
+export async function computeLexicalIndexState(): Promise<"built" | "building" | "stale"> {
+  if (isLexicalIndexBackfillActive()) {
+    return "building";
+  }
+  const dirtyCount = await countDirtySearchIndexScopes();
+  return dirtyCount > 0 ? "stale" : "built";
 }
 
 function resolveLexicalConnectorInstanceId(connectorId: string, connectorInstanceId: string | null = null): string {

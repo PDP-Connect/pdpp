@@ -109,6 +109,7 @@ import {
 } from "./retained-size-read-model.ts";
 import { firstSemanticTimeValue, SEMANTIC_TIME_UNKNOWN } from "./semantic-time-coercion.ts";
 import { createStorageBackend } from "./storage-backend.ts";
+import { currentStorageGeneration, isCurrentStorageGeneration } from "./storage-generation.ts";
 import {
   getChangeHistoryLimit,
   nowIso,
@@ -121,6 +122,7 @@ import {
 } from "./stores/connector-instance-store.ts";
 import { getDefaultConnectorStateStore } from "./stores/connector-state-store.ts";
 import { advanceSqliteDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
+import { markSearchIndexDirtySqlite, recordSearchIndexDirtyFailure } from "./stores/search-index-dirty-store.ts";
 
 export { resolveRecordIdentityForBinding } from "./connection-identity.ts";
 
@@ -854,8 +856,36 @@ export class RecordIngestRunTerminalError extends Error {
   }
 }
 
-let activeIndexWork = 0;
-const indexWorkWaiters: IndexWorkWaiter[] = [];
+// Admission accounting is GENERATION-SCOPED (one bucket per
+// server/storage-generation.ts generation), not a single shared counter.
+// Rationale: a deferred index job captures its storage generation at
+// schedule time (scheduleRecordIndexMaintenance/runDeferredRecordIndexes)
+// and can still be legitimately computing when storage closes/reinitializes
+// underneath it (the fence makes it skip touching the NEW generation's
+// storage, but it does not — and must not — instantly stop; it drains on
+// its own). If admission accounting were one shared counter, that draining
+// old-generation job's eventual release() would decrement the NEW
+// generation's count, permitting oversubscription of the new generation's
+// concurrency policy purely because an unrelated old job happened to finish
+// around then — a cross-generation corruption bug, not a fix. Keying by
+// generation means an old bucket drains independently to zero and is simply
+// left as a small, self-contained, garbage-collectable entry; the current
+// generation's bucket is never written to by any other generation's
+// acquire/release calls.
+interface IndexWorkGenerationState {
+  active: number;
+  readonly waiters: IndexWorkWaiter[];
+}
+const indexWorkByGeneration = new Map<number, IndexWorkGenerationState>();
+
+function indexWorkStateFor(generation: number): IndexWorkGenerationState {
+  let state = indexWorkByGeneration.get(generation);
+  if (!state) {
+    state = { active: 0, waiters: [] };
+    indexWorkByGeneration.set(generation, state);
+  }
+  return state;
+}
 
 function configuredIndexWorkLimit() {
   const parsed = Number.parseInt(process.env.PDPP_INGEST_INDEX_WORK_LIMIT || "", 10);
@@ -872,19 +902,20 @@ function configuredIndexWorkAcquireDeadlineMs() {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_INDEX_WORK_ACQUIRE_DEADLINE_MS;
 }
 
-function removeIndexWorkWaiter(waiter: IndexWorkWaiter): void {
-  const index = indexWorkWaiters.indexOf(waiter);
+function removeIndexWorkWaiter(state: IndexWorkGenerationState, waiter: IndexWorkWaiter): void {
+  const index = state.waiters.indexOf(waiter);
   if (index >= 0) {
-    indexWorkWaiters.splice(index, 1);
+    state.waiters.splice(index, 1);
   }
 }
 
-async function acquireIndexWork(): Promise<void> {
-  if (activeIndexWork < configuredIndexWorkLimit() && indexWorkWaiters.length === 0) {
-    activeIndexWork += 1;
+async function acquireIndexWork(generation: number): Promise<void> {
+  const state = indexWorkStateFor(generation);
+  if (state.active < configuredIndexWorkLimit() && state.waiters.length === 0) {
+    state.active += 1;
     return;
   }
-  if (indexWorkWaiters.length >= configuredIndexWorkQueueLimit()) {
+  if (state.waiters.length >= configuredIndexWorkQueueLimit()) {
     throw new RecordIndexAdmissionError();
   }
   await new Promise<void>((resolve, reject) => {
@@ -903,32 +934,72 @@ async function acquireIndexWork(): Promise<void> {
           return;
         }
         waiter.settled = true;
-        removeIndexWorkWaiter(waiter);
+        removeIndexWorkWaiter(state, waiter);
         reject(new RecordIndexAdmissionError());
       }, configuredIndexWorkAcquireDeadlineMs()),
     };
-    indexWorkWaiters.push(waiter);
+    state.waiters.push(waiter);
   });
 }
 
-function releaseIndexWork(): void {
-  while (indexWorkWaiters.length > 0) {
-    const next = indexWorkWaiters.shift();
+function releaseIndexWork(generation: number): void {
+  const state = indexWorkByGeneration.get(generation);
+  if (!state) {
+    return;
+  }
+  while (state.waiters.length > 0) {
+    const next = state.waiters.shift();
     if (!next || next.settled) {
       continue;
     }
     next.resolve();
     return;
   }
-  activeIndexWork = Math.max(0, activeIndexWork - 1);
+  state.active = Math.max(0, state.active - 1);
+  // Old-generation buckets are never revisited once idle (no future
+  // acquire will target them: schedule-time generation capture only ever
+  // points at generations that already existed at capture time). Drop them
+  // so this map cannot grow across a long-running process's history of
+  // restarts/reinits.
+  if (state.active === 0 && state.waiters.length === 0 && generation !== currentStorageGeneration()) {
+    indexWorkByGeneration.delete(generation);
+  }
 }
 
-async function withIndexWork<T>(operation: () => Promise<T>): Promise<T> {
-  await acquireIndexWork();
+/**
+ * Thrown by `withIndexWork` when the storage generation changed while a job
+ * was queued on the index-work admission semaphore. This is NOT a caller-
+ * visible error: every call site that can run against a stale generation
+ * (the deferred/fire-and-forget paths) catches it as a normal "storage
+ * generation changed" drop, identical in effect to the earlier top-of-job
+ * generation check -- this is the SAME fence, re-asserted at the true last
+ * gate before any storage touch, because a job can pass the earlier check
+ * and then queue behind another generation's held admission permit for an
+ * arbitrarily long time before actually running its operation.
+ */
+class StaleStorageGenerationError extends Error {
+  constructor() {
+    super("storage generation changed while queued for index-work admission");
+    this.name = "StaleStorageGenerationError";
+  }
+}
+
+async function withIndexWork<T>(operation: () => Promise<T>, generation = currentStorageGeneration()): Promise<T> {
+  await acquireIndexWork(generation);
   try {
+    // Re-assert the fence immediately before touching storage: acquiring
+    // the semaphore can itself have waited an arbitrary amount of time
+    // (queued behind another generation's held permit), during which
+    // storage may have closed/reinitialized. This is the LAST gate, not a
+    // duplicate of the schedule-time check — that check only proves the
+    // generation was current at schedule time, not at the moment this job
+    // actually gets to run its operation.
+    if (generation !== currentStorageGeneration()) {
+      throw new StaleStorageGenerationError();
+    }
     return await operation();
   } finally {
-    releaseIndexWork();
+    releaseIndexWork(generation);
   }
 }
 
@@ -969,12 +1040,34 @@ function enqueueConnectorInstanceIndexWork(
   return next;
 }
 
+/**
+ * Reports ONLY the current storage generation's admission bucket. An old
+ * generation's still-draining bucket (see the generation-scoped accounting
+ * comment above `indexWorkByGeneration`) is deliberately invisible here: it
+ * is neither this process's current concurrency policy nor a leak, just a
+ * prior epoch's own work finishing on its own.
+ */
 export function recordIndexWorkStatsForTests(): { active: number; queued: number } {
-  return { active: activeIndexWork, queued: indexWorkWaiters.length };
+  const state = indexWorkByGeneration.get(currentStorageGeneration());
+  return { active: state?.active ?? 0, queued: state?.waiters.length ?? 0 };
+}
+
+/** Test-only: inspect an ARBITRARY generation's bucket, not just the current one. */
+export function recordIndexWorkStatsForGenerationForTests(generation: number): { active: number; queued: number } {
+  const state = indexWorkByGeneration.get(generation);
+  return { active: state?.active ?? 0, queued: state?.waiters.length ?? 0 };
 }
 
 export function withRecordIndexWorkForTests<T>(operation: () => Promise<T>): Promise<T> {
   return withIndexWork(operation);
+}
+
+/** Test-only: hold an index-work permit under an EXPLICIT (possibly stale) generation. */
+export function withRecordIndexWorkForGenerationForTests<T>(
+  generation: number,
+  operation: () => Promise<T>
+): Promise<T> {
+  return withIndexWork(operation, generation);
 }
 
 function fanInReadConcurrency(opts: { concurrency?: unknown } | null | undefined): number {
@@ -1297,7 +1390,6 @@ export async function ingestRecords(
 ): Promise<RecordIngestBatchOutcome[]> {
   const coordinationConnectorId = connectorIdForStorageTarget(storageTarget);
   const coordinationInstanceId = resolveStorageConnectorInstanceId(storageTarget, coordinationConnectorId);
-  let deferredIndexWork: Promise<void> | undefined;
   let releaseFence: (() => void) | undefined;
   const fenceReleasedPromise = new Promise<void>((resolve) => {
     releaseFence = resolve;
@@ -1317,41 +1409,88 @@ export async function ingestRecords(
           options.runId
         );
         if (batch.changedRecords.length > 0) {
-          deferredIndexWork = enqueueConnectorInstanceIndexWork(
+          // Fire-and-forget: the HTTP batch ack must not await derived index
+          // work (see the single-record path's identical reasoning at
+          // scheduleRecordIndexMaintenance). Every changed record's stream
+          // already got its scope marked dirty inside its own commit
+          // transaction (ingestSqliteRecord/postgresIngestRecord run with
+          // deferIndexes: true below, which skips ONLY the inline
+          // maintainRecordIndexes call, never the durable dirty mark), so a
+          // crash here still converges via the reconcile sweep. `void`
+          // intentionally detaches this from the batch's own outcome array:
+          // derived-index failure must never retroactively flip an
+          // already-accepted outcome (see runDeferredRecordIndexes header).
+          // Storage-lifecycle fence: captured NOW, at schedule time -- see
+          // scheduleRecordIndexMaintenance's identical reasoning.
+          const scheduledGeneration = currentStorageGeneration();
+          enqueueConnectorInstanceIndexWork(
             coordinationInstanceId,
-            () => runDeferredRecordIndexes(storageTarget, batch),
+            () => runDeferredRecordIndexes(storageTarget, batch, scheduledGeneration),
             fenceReleasedPromise
-          );
+          ).catch(() => {
+            // runDeferredRecordIndexes already catches every per-record
+            // failure internally; this only guards against the enclosing
+            // promise chain itself (e.g. enqueueConnectorInstanceIndexWork's
+            // own bookkeeping) ever rejecting unobserved.
+          });
         }
         return batch;
       },
       undefined
     );
     releaseFence?.();
-    await deferredIndexWork;
     return result.outcomes;
   } finally {
     releaseFence?.();
   }
 }
 
+/**
+ * Runs each changed record's derived index maintenance. A failure is
+ * deliberately NOT surfaced back onto `batch.outcomes`: those outcomes were
+ * already returned to the HTTP caller as accepted durable writes by the
+ * time this runs (invariant: accepted durable records are never
+ * retroactively rejected by derived-index failure). Each affected scope's
+ * dirty flag was already set inside its own record's commit transaction;
+ * this function records structured failure evidence (I6) on that same row
+ * rather than only a console.warn line, and leaves the flag set for the
+ * bounded reconcile sweep to retry.
+ */
 async function runDeferredRecordIndexes(
   storageTarget: RecordStorageTarget,
-  batch: IngestRecordsWithinCoordinatorResult
+  batch: IngestRecordsWithinCoordinatorResult,
+  scheduledGeneration: number
 ): Promise<void> {
-  for (const { index, record } of batch.changedRecords) {
+  const connectorId = connectorIdForStorageTarget(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  for (const { record } of batch.changedRecords) {
+    const { stream } = record;
+    // Storage-lifecycle fence (server/storage-generation.ts), re-checked per
+    // record: if storage closed/reinitialized partway through this batch's
+    // deferred work, stop touching it immediately rather than continuing
+    // against a generation this job was never scheduled against. Every
+    // remaining record's scope is still durably marked dirty from its own
+    // commit transaction, so the new generation's reconcile still converges
+    // them.
+    if (!isCurrentStorageGeneration(scheduledGeneration)) {
+      console.warn(
+        `[records] dropping remaining deferred batch index maintenance for ${connectorInstanceId}: storage generation changed since scheduling (crash/restart-safe by design)`
+      );
+      return;
+    }
     try {
       // biome-ignore lint/performance/noAwaitInLoops: One connector instance's derived index repairs are intentionally ordered.
-      await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, {}));
+      await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, {}), scheduledGeneration);
     } catch (err) {
-      const outcome = batch.outcomes[index];
-      if (outcome?.accepted) {
-        batch.outcomes[index] = {
-          accepted: false,
-          changed: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
+      const message = err instanceof Error ? err.message : String(err);
+      if (isCurrentStorageGeneration(scheduledGeneration)) {
+        await recordSearchIndexDirtyFailure({ connectorInstanceId, stream }, message).catch(() => {
+          // Evidence write is itself best-effort; never mask the original failure.
+        });
       }
+      console.warn(
+        `[records] deferred batch index maintenance failed for ${connectorInstanceId}/${stream}, scope stays dirty for the reconcile sweep: ${message}`
+      );
     }
   }
 }
@@ -1595,12 +1734,11 @@ async function ingestPostgresRecord(
       connectorInstanceId,
       reason: "record ingest changed connection count/stream evidence",
     });
+    // Fire-and-forget, same reasoning as ingestSqliteRecord: this scope's
+    // dirty flag (written inside postgresIngestRecord's own transaction) is
+    // what makes it safe not to await this before returning the ack.
     if (!options.deferIndexes) {
-      await maintainRecordIndexes(
-        storageTarget,
-        record,
-        options.attemptContext ? { attemptContext: options.attemptContext } : {}
-      );
+      scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, options);
     }
     __invokeClientEventEnqueueHook({
       connectionId: connectorInstanceId,
@@ -1863,6 +2001,14 @@ async function ingestSqliteRecord(
 
     maybeFault("after-record-changes-append", { connectorId, connectorInstanceId, nextVersion, op, recordKey, stream });
 
+    // Scope-keyed dirty mark, inside the SAME transaction as the record
+    // mutation above: this scope's lexical/semantic index may now be stale,
+    // and unlike the best-effort connector-summary marker below, this flag
+    // has no independent future re-trigger if the scope receives no further
+    // writes -- so the mark must be atomic with the write, not best-effort
+    // after it. See server/stores/search-index-dirty-store.ts.
+    markSearchIndexDirtySqlite({ connectorId, connectorInstanceId, stream }, nowIso());
+
     const insertedChangeJsonBytes = byteLength(op === "delete" ? current?.record_json : recordJson);
     const { prunedBytesForDelta, prunedRowsForDelta } = pruneRecordChangeHistory(
       connectorInstanceId,
@@ -1893,15 +2039,15 @@ async function ingestSqliteRecord(
     return { accepted: true, changed: false };
   }
 
-  // Derived index maintenance runs after the durable commit. Failures here
-  // are not allowed to retroactively roll back the durable record mutation;
-  // recovery is the search-index drift detector's job.
+  // Derived index maintenance is scheduled after the durable commit but is
+  // NOT awaited here: the HTTP ack must not block on lexical/semantic index
+  // latency. This stays safe against a crash before the scheduled work runs
+  // because the scope-dirty flag (written inside the transaction above) is
+  // the durable fact that survives the crash -- the bounded reconcile sweep
+  // and read-time self-heal both check it. See scheduleRecordIndexMaintenance
+  // and server/stores/search-index-dirty-store.ts.
   if (!options.deferIndexes) {
-    await maintainRecordIndexes(
-      storageTarget,
-      record,
-      options.attemptContext ? { attemptContext: options.attemptContext } : {}
-    );
+    scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, options);
   }
 
   // Colocated with the retained-size delta applied in the committed
@@ -1949,9 +2095,85 @@ async function ingestSqliteRecord(
 export async function maintainRecordIndexes(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
-  options: RecordIngestOptions = {}
+  options: RecordIngestOptions = {},
+  generation: number = currentStorageGeneration()
 ): Promise<void> {
-  return await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, options));
+  return await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, options), generation);
+}
+
+/**
+ * Ack-independent index maintenance: schedules `maintainRecordIndexes` on
+ * the connector instance's ordered derived-work lane (never awaited by the
+ * HTTP ack path) and, on failure, records structured evidence on this
+ * scope's dirty row (I6) instead of only a console.warn line. Deliberately
+ * does NOT clear the scope-dirty flag on success: this call only proves ONE
+ * record's own maintenance succeeded, not that the whole
+ * (connector_instance_id, stream) scope is back in sync (another
+ * in-flight/failed record could still be dirty) -- clearing the flag is the
+ * bounded reconcile's job (reconcileSearchIndexDirtyScope), which re-checks
+ * the whole scope with the existing exact-comparison drift-checks before
+ * clearing.
+ */
+function scheduleRecordIndexMaintenance(
+  connectorInstanceId: string,
+  stream: string,
+  storageTarget: RecordStorageTarget,
+  record: RecordEnvelope,
+  options: RecordIngestOptions,
+  startAfter?: Promise<void>
+): Promise<void> {
+  // Storage-lifecycle fence (server/storage-generation.ts): captured NOW,
+  // while the durable write that just committed is still the current
+  // generation. If storage is closed/reinitialized (test teardown, a
+  // future controlled-shutdown-then-restart-in-process path) before this
+  // deferred work actually runs, the generation check below drops the job
+  // instead of touching whatever storage handle/pool is current by then.
+  // The scope's dirty flag (already durably written inside that same
+  // committed transaction) is the fact the NEW generation's own startup
+  // reconcile picks up -- this job's disappearance is not a correctness
+  // gap, it is the fence doing its job.
+  const scheduledGeneration = currentStorageGeneration();
+  return enqueueConnectorInstanceIndexWork(
+    connectorInstanceId,
+    async () => {
+      if (!isCurrentStorageGeneration(scheduledGeneration)) {
+        console.warn(
+          `[records] dropping deferred index maintenance for ${connectorInstanceId}/${stream}: storage generation changed since scheduling (crash/restart-safe by design; the scope-dirty flag converges on the new generation's reconcile)`
+        );
+        return;
+      }
+      try {
+        await maintainRecordIndexes(
+          storageTarget,
+          record,
+          options.attemptContext ? { attemptContext: options.attemptContext } : {},
+          scheduledGeneration
+        );
+      } catch (err) {
+        // Deliberately swallowed here: this call is fire-and-forget from the
+        // HTTP ack path, so an unobserved rejection would surface as an
+        // unhandled-rejection process warning, not a caller-visible
+        // failure. The scope's dirty flag (already 1 from the durable
+        // write) is left as-is; structured evidence lands on that same row
+        // so an operator/reconcile pass can see WHY, not just THAT it
+        // failed.
+        const message = err instanceof Error ? err.message : String(err);
+        // Re-check the fence: the failure itself may BE storage having
+        // closed mid-flight, in which case writing failure evidence would
+        // touch a different generation's table under the same scope key.
+        if (isCurrentStorageGeneration(scheduledGeneration)) {
+          await recordSearchIndexDirtyFailure({ connectorInstanceId, stream }, message).catch(() => {
+            // Evidence write is itself best-effort; never let it mask the
+            // original failure or throw out of a fire-and-forget lane.
+          });
+        }
+        console.warn(
+          `[records] deferred index maintenance failed for ${connectorInstanceId}/${stream}, scope stays dirty for the reconcile sweep: ${message}`
+        );
+      }
+    },
+    startAfter
+  );
 }
 
 /**
@@ -4009,7 +4231,10 @@ export async function listLocalCoverageDiagnostics(storageTarget: RecordStorageT
     return [];
   }
 
-  const byStore = new Map<string, { collectionScope: string | null; status: string; store: string; stream: string | null }>();
+  const byStore = new Map<
+    string,
+    { collectionScope: string | null; status: string; store: string; stream: string | null }
+  >();
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `SELECT record_key, record_json FROM records

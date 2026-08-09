@@ -29,6 +29,7 @@
  */
 
 import { retireExpiredBrowserEnrollmentShellsForMaintenance } from "./ref-control.ts";
+import { runSearchIndexDirtyReconcileRound } from "./search-index-reconcile.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import {
   type ConnectorMaintenanceCursorStore,
@@ -45,7 +46,10 @@ export interface ConnectorMaintenanceSweepOptions {
   readonly evidenceSweepMaxDurationMs?: number;
   readonly evidenceSweepPageSize?: number;
   readonly nowIso?: () => string;
-  readonly onPhaseError?: (phase: "attention" | "evidence" | "run_history_backfill" | "shells", err: unknown) => void;
+  readonly onPhaseError?: (
+    phase: "attention" | "evidence" | "run_history_backfill" | "search_index_dirty" | "shells",
+    err: unknown
+  ) => void;
   readonly runEvidenceSweep: (args: {
     readonly afterId?: string | null;
     readonly maxDurationMs: number;
@@ -60,6 +64,8 @@ export interface ConnectorMaintenanceSweepOptions {
    * engine, no new table.
    */
   readonly runHistoryBackfillStage?: ResumableRunHistoryBackfillStage;
+  readonly searchIndexDirtyReconcileMaxDurationMs?: number;
+  readonly searchIndexDirtyReconcilePageSize?: number;
 }
 
 interface ResumableEvidenceSweepResult {
@@ -222,5 +228,11 @@ export async function runConnectorMaintenanceSweep(options: ConnectorMaintenance
       .catch((err) => {
         onPhaseError?.("run_history_backfill", err);
       }),
+    runSearchIndexDirtyReconcileRound({
+      maxDurationMs: options.searchIndexDirtyReconcileMaxDurationMs ?? 2000,
+      pageSize: options.searchIndexDirtyReconcilePageSize ?? 25,
+    }).catch((err) => {
+      onPhaseError?.("search_index_dirty", err);
+    }),
   ]);
 }

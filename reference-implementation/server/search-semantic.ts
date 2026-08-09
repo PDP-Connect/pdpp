@@ -2393,9 +2393,6 @@ async function semanticBackfillIndexIsInSync({
   usePostgres: boolean;
   vectorIndex: SemanticIndex;
 }): Promise<boolean> {
-  const recordCount = usePostgres
-    ? await postgresCountSemanticRecords({ connectorInstanceId, stream })
-    : Number(getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream])?.n || 0);
   const indexCounts = await Promise.all(
     declaredFields.map((field) =>
       usePostgres
@@ -2408,14 +2405,18 @@ async function semanticBackfillIndexIsInSync({
     )
   );
   const indexCount = indexCounts.reduce((total, count) => total + count, 0);
-  const maxIndexRows = recordCount * declaredFields.length;
-  let expectedIndexRows: number | null = null;
-  if (indexCount === 0 || indexCount > maxIndexRows) {
-    expectedIndexRows = usePostgres
-      ? await postgresCountIndexableSemanticValues({ connectorInstanceId, declaredFields, stream })
-      : countIndexableSemanticValues({ connectorInstanceId, declaredFields, stream });
-  }
-  return indexCount > 0 ? indexCount <= maxIndexRows : expectedIndexRows === 0;
+  // Exact comparison, not the prior upper-bound-only `indexCount <=
+  // maxIndexRows`: that check could never detect a record whose index rows
+  // were never written (a crash between durable commit and background index
+  // maintenance) because a short-but-nonzero indexCount still satisfies
+  // `<= maxIndexRows`. expectedIndexRows (the actual number of indexable
+  // text values in the CURRENT record set) is now always computed and
+  // compared exactly, so any per-record shortfall is caught. See
+  // probe-semantic-crash-gap.test.ts.
+  const expectedIndexRows = usePostgres
+    ? await postgresCountIndexableSemanticValues({ connectorInstanceId, declaredFields, stream })
+    : countIndexableSemanticValues({ connectorInstanceId, declaredFields, stream });
+  return indexCount === expectedIndexRows;
 }
 
 function logSemanticBackfillDecision({

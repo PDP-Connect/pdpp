@@ -373,6 +373,14 @@ export interface MountRsReadContext {
   // search surfaces
   runLexicalSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
   runSemanticSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
+  /**
+   * Read-time self-heal (I3): checked once before running the actual
+   * search. Cooldown-gated internally; a no-op when there is no dirty
+   * backlog or the last attempt failed within the cooldown window. Optional
+   * so tests/hosts that do not wire it simply skip the self-heal (search
+   * still works, just relies solely on the periodic sweep for convergence).
+   */
+  selfHealSearchIndexDirtyBeforeRead?: () => Promise<void>;
   setReferenceTraceId: (res: unknown, traceId: string | null) => void;
   validateRequestedQueryFieldParams: (
     requestParams: Record<string, unknown>,
@@ -2265,6 +2273,13 @@ async function runSearchRouteHandler(
       traceId,
     };
     await ctx.emitQueryReceived(queryContext, req);
+
+    // I3 read-time self-heal: cooldown-gated, bounded, and best-effort --
+    // a failure here must never block the search itself.
+    await ctx.selfHealSearchIndexDirtyBeforeRead?.().catch(() => {
+      // Self-heal is acceleration, not authority; the periodic sweep still
+      // owns eventual convergence if this attempt fails.
+    });
 
     const { envelope, disclosureData } = await opts.runSearch({
       opts: ctx.opts,

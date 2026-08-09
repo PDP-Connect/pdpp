@@ -27,6 +27,7 @@ import {
   makeConnectorInstanceSourceBindingKey as canonicalSourceBindingKey,
 } from "./connector-instance-utils.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = "owner_local";
@@ -300,6 +301,10 @@ export function closeDb(): void {
   }
   sqliteStoreCacheGeneration += 1;
   sqliteStoreCacheIdentity = `sqlite:closed:${sqliteStoreCacheGeneration}`;
+  // Storage-lifecycle fence (server/storage-generation.ts): any deferred
+  // index-maintenance work scheduled against the handle this just closed
+  // must never run against whatever handle a later initDb() attaches.
+  bumpStorageGeneration();
 }
 
 /**
@@ -325,6 +330,11 @@ function detachDb(): void {
   db = null;
   sqliteStoreCacheGeneration += 1;
   sqliteStoreCacheIdentity = `sqlite:closed:${sqliteStoreCacheGeneration}`;
+  // Storage-lifecycle fence: the handle a caller previously attached is no
+  // longer the module's current handle, even though it may still be open
+  // and usable by whoever holds it directly. Deferred work that only holds
+  // a GENERATION (not the handle itself) must re-check before running.
+  bumpStorageGeneration();
 }
 
 function resolveSqliteBusyTimeoutMs(
@@ -1917,6 +1927,34 @@ CREATE TABLE IF NOT EXISTS manifest_write_violations (
   observed_at           TEXT NOT NULL,
   PRIMARY KEY(connector_instance_id, stream, manifest_generation)
 );
+
+-- Scope-keyed (never per-record) dirty flag for lexical+semantic derived
+-- index maintenance, mirroring retained_size_stream's dirty-flag shape
+-- (db.ts:1770-1783) at the SAME (connector_instance_id, stream) grain the
+-- lexical/semantic drift-check backfills already key on. Set to dirty=1
+-- INSIDE the same durable write transaction as the record mutation that
+-- caused it (ingestSqliteRecord/postgresIngestRecord) -- unlike the
+-- best-effort post-commit connector-summary marker, this flag has no
+-- independent future re-trigger if a scope receives no further writes, so
+-- the same-transaction write is required, not optional (see
+-- record-index-dirty-store.ts). Cleared (dirty=0) only after a reconcile
+-- pass proves the lexical+semantic drift-checks for this scope both report
+-- in-sync. A present dirty=1 row is a hint to re-check, not proof of actual
+-- drift -- the existing exact-comparison drift-checks (search.ts
+-- backfillLexicalStream, search-semantic.ts semanticBackfillIndexIsInSync)
+-- remain the source of truth for whether a rebuild is actually needed.
+CREATE TABLE IF NOT EXISTS search_index_dirty (
+  connector_instance_id TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  dirty                 INTEGER NOT NULL DEFAULT 1,
+  marked_at             TEXT NOT NULL,
+  reconciled_at         TEXT,
+  last_error            TEXT,
+  PRIMARY KEY(connector_instance_id, stream)
+);
+CREATE INDEX IF NOT EXISTS idx_search_index_dirty_pending
+  ON search_index_dirty(dirty);
 `;
 
 /**

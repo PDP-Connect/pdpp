@@ -21,6 +21,7 @@ import {
   nonEmptyString,
 } from "./connector-instance-utils.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
+import { bumpStorageGeneration } from "./storage-generation.ts";
 
 const VALID_BACKENDS = new Set(["sqlite", "postgres"]);
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = "owner_local";
@@ -673,6 +674,11 @@ export async function initPostgresStorage(
   lockPool = new Pool({ connectionString: config.databaseUrl, max });
   lockPoolCapacity = max;
   activeBackend = "postgres";
+  // Storage-lifecycle fence (server/storage-generation.ts): a fresh pool
+  // means any deferred work scheduled against a prior pool (this function's
+  // own closePostgresStorage() call above, or a prior SQLite epoch) must
+  // never touch this new one.
+  bumpStorageGeneration();
 
   await bootstrapPostgresSchema({ log });
   return pool;
@@ -688,6 +694,10 @@ export async function closePostgresStorage() {
   semanticEmbeddingColumnMode = "jsonb";
   semanticIterativeScanSupported = false;
   lexicalPgSearchAvailability = "unavailable";
+  // Storage-lifecycle fence: any deferred index-maintenance work scheduled
+  // against the pool this just closed must never run against whatever pool
+  // a later initPostgresStorage() creates.
+  bumpStorageGeneration();
   if (current) {
     await current.end();
   }
@@ -2014,6 +2024,22 @@ export async function bootstrapPostgresSchema({
         observed_at TEXT NOT NULL,
         PRIMARY KEY(connector_instance_id, stream, manifest_generation)
       );
+
+      -- Scope-keyed (never per-record) dirty flag for lexical+semantic
+      -- derived index maintenance. See server/db.ts for the SQLite mirror
+      -- and full rationale.
+      CREATE TABLE IF NOT EXISTS search_index_dirty (
+        connector_instance_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        dirty INTEGER NOT NULL DEFAULT 1,
+        marked_at TEXT NOT NULL,
+        reconciled_at TEXT,
+        last_error TEXT,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_search_index_dirty_pending
+        ON search_index_dirty(dirty);
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;

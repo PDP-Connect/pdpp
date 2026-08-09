@@ -56,6 +56,7 @@ import {
 } from "./storage-utils.ts";
 import { createPostgresConnectorInstanceStore } from "./stores/connector-instance-store.ts";
 import { advancePostgresDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
+import { markSearchIndexDirtyPostgres } from "./stores/search-index-dirty-store.ts";
 
 type JsonObject = Record<string, unknown>;
 const SAFE_JSON_FIELD = /^[A-Za-z0-9_]+$/;
@@ -1899,6 +1900,15 @@ export async function postgresIngestRecord(
       storedSemanticTime,
       stream,
     });
+
+    // Scope-keyed dirty mark, inside the SAME transaction/client as the
+    // record mutation above: this scope's lexical/semantic index may now be
+    // stale. See server/stores/search-index-dirty-store.ts.
+    await markSearchIndexDirtyPostgres(
+      client,
+      { connectorId: resolvedConnectorId, connectorInstanceId, stream },
+      nowIso()
+    );
 
     const insertedChangeJsonBytes = op === "delete" ? currentRecordJsonBytes : nextRecordJsonBytes;
     const { bytes: prunedBytesForDelta, rows: prunedRowsForDelta } = await prunePostgresRecordChanges({

@@ -293,13 +293,13 @@ import { mountAsPar } from "./routes/as-par.ts";
 import { mountAsPolyfillConnectorDetail, mountAsPolyfillConnectorRegister } from "./routes/as-polyfill-connectors.ts";
 import { mountClientMetadata } from "./routes/client-metadata.ts";
 import { mountHostedUiCss } from "./routes/hosted-ui-asset.ts";
+import { mountOwnerConnectionCollectionScope } from "./routes/owner-connection-collection-scope.ts";
 import { mountOwnerConnectionDelete } from "./routes/owner-connection-delete.ts";
 import { mountOwnerConnectionDiagnostics } from "./routes/owner-connection-diagnostics.ts";
 import { mountOwnerConnectionIntent } from "./routes/owner-connection-intent.ts";
 import { mountOwnerConnectionReactivate } from "./routes/owner-connection-reactivate.ts";
 import { mountOwnerConnectionRevoke } from "./routes/owner-connection-revoke.ts";
 import { mountOwnerConnectionRun } from "./routes/owner-connection-run.ts";
-import { mountOwnerConnectionCollectionScope } from "./routes/owner-connection-collection-scope.ts";
 import { mountOwnerConnectionSchedule } from "./routes/owner-connection-schedule.ts";
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from "./routes/owner-connections.ts";
 import { mountOwnerConnectorTemplates } from "./routes/owner-connector-templates.ts";
@@ -428,8 +428,14 @@ import {
   mountRefWebPushListSubscriptions,
   mountRefWebPushTest,
 } from "./routes/web-push.ts";
-import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from "./search.ts";
+import {
+  computeLexicalIndexState,
+  getLexicalIndexBackfillProgress,
+  lexicalIndexBackfillForManifest,
+  runLexicalSearch,
+} from "./search.ts";
 import { runHybridSearch } from "./search-hybrid.ts";
+import { selfHealSearchIndexDirtyBeforeRead } from "./search-index-reconcile.ts";
 import {
   computeIndexState as computeSemanticIndexState,
   configureSemanticBackend,
@@ -5985,12 +5991,12 @@ function buildRsApp(opts: ServerOpts = {}) {
       opts.asPublicUrl ||
       (opts.ignoreAmbientPublicUrls ? null : process.env.AS_ISSUER || process.env.AS_PUBLIC_URL),
     resolveHybridCapabilityOverride: () => opts.hybridRetrievalCapability || null,
-    resolveLexicalCapability: () => {
+    resolveLexicalCapability: async () => {
       if (opts.lexicalRetrievalCapability) {
         return opts.lexicalRetrievalCapability;
       }
       if (opts.lexicalRetrievalSupported !== false) {
-        return buildLexicalRetrievalCapability();
+        return buildLexicalRetrievalCapability({ indexState: await computeLexicalIndexState() });
       }
       return null;
     },
@@ -6100,6 +6106,7 @@ function buildRsApp(opts: ServerOpts = {}) {
     runHybridSearch,
     runLexicalSearch,
     runSemanticSearch,
+    selfHealSearchIndexDirtyBeforeRead,
     setReferenceTraceId,
     validateRequestedQueryFieldParams,
   };
@@ -6214,30 +6221,33 @@ function buildRsApp(opts: ServerOpts = {}) {
   // claim. Persisting through `putSyncState` writes the reserved
   // `$collection_scope` entry the collector already reads at run start, so the
   // same write both stores the boundary and delivers it.
-  mountOwnerConnectionCollectionScope(app as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[0], {
-    declassifyCollectionProof: async ({
-      connectorInstanceId,
-      reason,
-    }: {
-      connectorInstanceId: string;
-      reason: string;
-    }) => {
-      invalidateConnectorSummariesCache();
-      await markConnectorSummaryEvidenceDirty?.({ connectorInstanceId, reason });
-    },
-    getOwnerTokenSubjectId,
-    getSyncState,
-    handleError,
-    pdppError,
-    putSyncState,
-    referenceLocalDeviceStorageTarget: (connectorId: string, connectorInstanceId: string) => ({
-      connector_id: canonicalConnectorKey(connectorId) ?? connectorId,
-      connector_instance_id: connectorInstanceId,
-    }),
-    requireOwner,
-    requireToken,
-    resolveOwnerConnectorNamespace,
-  } as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[1]);
+  mountOwnerConnectionCollectionScope(
+    app as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[0],
+    {
+      declassifyCollectionProof: async ({
+        connectorInstanceId,
+        reason,
+      }: {
+        connectorInstanceId: string;
+        reason: string;
+      }) => {
+        invalidateConnectorSummariesCache();
+        await markConnectorSummaryEvidenceDirty?.({ connectorInstanceId, reason });
+      },
+      getOwnerTokenSubjectId,
+      getSyncState,
+      handleError,
+      pdppError,
+      putSyncState,
+      referenceLocalDeviceStorageTarget: (connectorId: string, connectorInstanceId: string) => ({
+        connector_id: canonicalConnectorKey(connectorId) ?? connectorId,
+        connector_instance_id: connectorInstanceId,
+      }),
+      requireOwner,
+      requireToken,
+      resolveOwnerConnectorNamespace,
+    } as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[1]
+  );
 
   // POST /v1/owner/connections/:connectionId/run and
   // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent
@@ -7088,11 +7098,10 @@ export async function startServer(opts: ServerOpts = {}) {
   // (it lazily imports the connector package's probe + live transport). Tests
   // may inject their own via `opts.staticSecretCredentialProber`.
   const staticSecretCredentialProber = opts.staticSecretCredentialProber ?? (await buildStaticSecretCredentialProber());
-  const configuredProviderAuthConnectorKeys =
-    opts.configuredProviderAuthConnectorKeys ?? [
-      ...configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env),
-      ...configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env),
-    ];
+  const configuredProviderAuthConnectorKeys = opts.configuredProviderAuthConnectorKeys ?? [
+    ...configuredGoogleDataPortabilityProviderAuthConnectorKeys(process.env),
+    ...configuredGoogleOwnerAccountProviderAuthConnectorKeys(process.env),
+  ];
   const providerAuthExchanger =
     opts.providerAuthExchanger ?? buildCompositeProviderAuthExchanger(createRequestConnectorInstanceCredentialStore);
 

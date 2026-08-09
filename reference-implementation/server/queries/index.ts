@@ -378,6 +378,14 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Lexical retrieval — FTS5 index maintenance.
   readonly searchIndexDeleteByRecordKey: MutationQuery;
   readonly searchIndexDeleteByStream: MutationQuery;
+  // Search — scope-keyed (connector_instance_id, stream) dirty flag for
+  // deferred lexical+semantic index maintenance.
+  readonly searchIndexDirtyClear: MutationQuery;
+  readonly searchIndexDirtyCountDirty: ReadOneQuery;
+  readonly searchIndexDirtyGetByScope: ReadOneQuery;
+  readonly searchIndexDirtyListDirty: IterateQuery;
+  readonly searchIndexDirtyMarkDirty: MutationQuery;
+  readonly searchIndexDirtyRecordFailure: MutationQuery;
   readonly searchIndexInsertRow: MutationQuery;
   readonly searchMetaDeleteByStream: MutationQuery;
   // Lexical retrieval — backfill drift detection metadata.
