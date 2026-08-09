@@ -807,6 +807,12 @@ export function shapeEvidenceRow(row: Row) {
       row.manifest_declaration_reason_code
     ),
     manifest_generation: Number(row.manifest_generation ?? 0),
+    // The record-source checkpoint (`version_counter` as of the repair) —
+    // shaped here so the READ boundary can reach the same record-side
+    // observation proof `buildRepairedRow` used when it derived the row's
+    // `count_state`. Parsed defensively; a malformed column reads as no
+    // checkpoint at all rather than a fabricated observation.
+    record_checkpoint: parseEvidenceJson(row.record_checkpoint_json, null),
     record_snapshot: shapeComponentEnvelope(
       row,
       row.record_snapshot_state || "unobserved",
