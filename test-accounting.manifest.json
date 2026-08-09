@@ -319,6 +319,7 @@
       "authority_argument": null,
       "execution": "direct",
       "environment": { "TSX_TSCONFIG_PATH": "apps/site/tsconfig.json" },
+      "prepare": ["node", "apps/site/scripts/sync-spec-docs.mjs"],
       "profiles": [{ "id": "default", "required": true, "skip_reasons": {} }],
       "command": [
         "node",
