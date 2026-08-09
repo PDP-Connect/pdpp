@@ -255,6 +255,24 @@ interface YnabMonthDetailResponse {
   data: { month: YnabMonth };
 }
 
+const BUDGET_ID_PATH_SEGMENT = /\/budgets\/[^/]+/;
+const MONTH_PATH_SEGMENT = /\/months\/[^/]+$/;
+
+/**
+ * The stable, non-identifying shape of a request path, for terminal-error
+ * attribution: `/budgets/{budget_id}/categories` rather than the live path.
+ *
+ * Which ENDPOINT failed is the diagnostic — one failing endpoint across every
+ * budget is a different defect from one failing budget across every endpoint,
+ * and the bare "HTTP request failed" message distinguished neither. The budget
+ * UUID and the month are owner data, so they are templated out: a terminal
+ * `message` is read by operators and must carry no account content (the
+ * connectors' `message` vs `diagnostics` split).
+ */
+function endpointLabel(path: string): string {
+  return path.replace(BUDGET_ID_PATH_SEGMENT, "/budgets/{budget_id}").replace(MONTH_PATH_SEGMENT, "/months/{month}");
+}
+
 async function ynab<T>(
   path: string,
   token: string,
@@ -287,8 +305,20 @@ async function ynab<T>(
   } catch (error) {
     // Terminal rate-limit: emit the same progress side-effect the hand-rolled
     // path did, then rethrow `ynab_rate_limited` for the cross-run contract.
+    // The message is the whole contract here — the runtime pattern-matches it —
+    // so it is rethrown untouched.
     if (error instanceof Error && error.message === "ynab_rate_limited") {
       await progress?.("YNAB request rate limited", { ...extra, phase: "rate_limit", rate_limit_pressure: 1 });
+      throw error;
+    }
+    // Every other governor throw (transport fault, exhausted retryable status)
+    // reaches the owner as the terminal error. The retry layer folds in the
+    // transport cause; only this frame knows WHICH endpoint failed, so it is
+    // attached here. `endpointLabel` is the templated path — never the resolved
+    // URL, which carries no token today but would silently start leaking one if
+    // YNAB ever moved to a query-string credential.
+    if (error instanceof Error) {
+      throw new Error(`${error.message} [endpoint ${endpointLabel(path)}]`, { cause: error });
     }
     throw error;
   }
@@ -296,7 +326,9 @@ async function ynab<T>(
     throw new Error("ynab_auth_failed");
   }
   if (result.status < 200 || result.status >= 300) {
-    throw new Error(`ynab_http_${String(result.status)}: ${result.body.slice(0, 200)}`);
+    throw new Error(
+      `ynab_http_${String(result.status)} [endpoint ${endpointLabel(path)}]: ${result.body.slice(0, 200)}`
+    );
   }
   return JSON.parse(result.body) as T;
 }
@@ -1294,7 +1326,15 @@ export async function emitBudgetsStream(deps: BudgetsStreamDeps): Promise<void> 
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "ynab",
-    retryablePattern: /rate_limited|ECONN|ETIMEDOUT|fetch failed/i,
+    // Transport vocabulary (`fetch failed`, `ECONN…`, `ETIMEDOUT`) plus YNAB's
+    // own `ynab_rate_limited`. `retryable status \d+` covers the retry layer's
+    // exhausted-5xx/408/429 wording: those statuses are retryable BY
+    // CONSTRUCTION — `retryHttp` only calls them that after `shouldRetry`
+    // classified them so — and exhausting a bounded in-run budget against a
+    // transient upstream fault does not make the fault permanent. Without it a
+    // YNAB 503 terminals the connection as permanently failed and the owner is
+    // asked to reconnect a credential that was never the problem.
+    retryablePattern: /rate_limited|ECONN|ETIMEDOUT|fetch failed|retryable status \d+/i,
     // YNAB marks deleted records with `deleted: true` in-band. Runtime strips
     // to { id } and emits with op: 'delete'.
     isTombstone: (_stream, d) => d.deleted === true,
