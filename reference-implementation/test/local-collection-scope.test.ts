@@ -21,6 +21,7 @@ import {
   COLLECTION_SCOPE_STATE_KEY,
   readStoredCollectionScope,
   scopeChangeInvalidatesProof,
+  terminalEvidenceMatchesDeclaredScope,
 } from "../server/local-collection-scope.ts";
 
 const SINCE = "2026-06-01T00:00:00.000Z";
@@ -86,4 +87,34 @@ test("a no-op edit does NOT discard valid proof", () => {
 
 test("narrowing a boundary still invalidates: prior wider proof did not measure the narrower region", () => {
   assert.equal(scopeChangeInvalidatesProof({ since: SINCE }, { since: SINCE, source_roots: ["proj-a"] }), true);
+});
+
+// Health/coverage must be green only WITHIN the currently-declared boundary.
+// Evidence carries the fingerprint it was measured under; these pin the
+// comparison that keeps stale proof from reading as current.
+test("committed evidence stays valid only while the declared boundary is unchanged", () => {
+  assert.equal(terminalEvidenceMatchesDeclaredScope(`since=${SINCE}`, { since: SINCE }), true);
+  assert.equal(
+    terminalEvidenceMatchesDeclaredScope(`since=${SINCE}`, { since: "2026-07-01T00:00:00.000Z" }),
+    false,
+    "moving the boundary must make prior proof non-current until a fresh run recomputes it"
+  );
+});
+
+test("clearing the scope declassifies proof measured under a bound", () => {
+  assert.equal(
+    terminalEvidenceMatchesDeclaredScope(`since=${SINCE}`, null),
+    false,
+    "clearing is a change to `unscoped`, not an absence of change"
+  );
+  assert.equal(terminalEvidenceMatchesDeclaredScope("unscoped", null), true);
+});
+
+test("evidence with no recorded boundary satisfies only an unscoped declaration", () => {
+  // Such evidence came from a pre-scope collector, which by definition ran a
+  // full pass. Letting it satisfy a narrowed boundary would credit a bound it
+  // never enforced.
+  assert.equal(terminalEvidenceMatchesDeclaredScope(undefined, null), true);
+  assert.equal(terminalEvidenceMatchesDeclaredScope(undefined, { since: SINCE }), false);
+  assert.equal(terminalEvidenceMatchesDeclaredScope("   ", { since: SINCE }), false);
 });

@@ -299,6 +299,7 @@ import { mountOwnerConnectionIntent } from "./routes/owner-connection-intent.ts"
 import { mountOwnerConnectionReactivate } from "./routes/owner-connection-reactivate.ts";
 import { mountOwnerConnectionRevoke } from "./routes/owner-connection-revoke.ts";
 import { mountOwnerConnectionRun } from "./routes/owner-connection-run.ts";
+import { mountOwnerConnectionCollectionScope } from "./routes/owner-connection-collection-scope.ts";
 import { mountOwnerConnectionSchedule } from "./routes/owner-connection-schedule.ts";
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from "./routes/owner-connections.ts";
 import { mountOwnerConnectorTemplates } from "./routes/owner-connector-templates.ts";
@@ -6206,6 +6207,37 @@ function buildRsApp(opts: ServerOpts = {}) {
         options
       ),
   } as unknown as Parameters<typeof mountOwnerConnectionSchedule>[1]);
+
+  // The owner's read/write surface for a local connection's declared collection
+  // boundary. Without this the scope machinery is unreachable and every run is
+  // unscoped by construction, so a "complete" claim is always a whole-corpus
+  // claim. Persisting through `putSyncState` writes the reserved
+  // `$collection_scope` entry the collector already reads at run start, so the
+  // same write both stores the boundary and delivers it.
+  mountOwnerConnectionCollectionScope(app as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[0], {
+    declassifyCollectionProof: async ({
+      connectorInstanceId,
+      reason,
+    }: {
+      connectorInstanceId: string;
+      reason: string;
+    }) => {
+      invalidateConnectorSummariesCache();
+      await markConnectorSummaryEvidenceDirty?.({ connectorInstanceId, reason });
+    },
+    getOwnerTokenSubjectId,
+    getSyncState,
+    handleError,
+    pdppError,
+    putSyncState,
+    referenceLocalDeviceStorageTarget: (connectorId: string, connectorInstanceId: string) => ({
+      connector_id: canonicalConnectorKey(connectorId) ?? connectorId,
+      connector_instance_id: connectorInstanceId,
+    }),
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+  } as unknown as Parameters<typeof mountOwnerConnectionCollectionScope>[1]);
 
   // POST /v1/owner/connections/:connectionId/run and
   // POST /v1/owner/connectors/:connectorId/run are the bearer-authed owner-agent

@@ -64,6 +64,7 @@ export async function handleLocalDeviceTerminalCollection(input: {
       ctx.pdppError(res, 400, "invalid_request", "terminal collection connector or streams is invalid");
       return;
     }
+    const collectionScope = body && readRequiredString(body.collection_scope);
     const streams = normalizeTerminalFacts(body.streams);
     if (!streams) {
       ctx.pdppError(
@@ -80,6 +81,11 @@ export async function handleLocalDeviceTerminalCollection(input: {
       actor_type: "local_device",
       data: {
         collection_facts: {
+          // The boundary this evidence was measured against travels WITH it, so
+          // a later scope change is detectable by comparison and stale proof can
+          // never be read as describing the current region. `unscoped` is a real
+          // value (a full pass); absent means a pre-scope collector reported it.
+          ...(collectionScope ? { collection_scope: collectionScope } : {}),
           reference_only: true,
           schema_version: 1,
           streams,
@@ -138,7 +144,13 @@ function normalizeTerminalFacts(rawFacts: readonly unknown[]): readonly Record<s
     if (!fact) {
       return null;
     }
+    // `scoped` is the collector's statement that the declared boundary was
+    // actually ENFORCEABLE on this stream. Dropping it would leave the server
+    // unable to tell coverage-of-a-region from coverage-of-everything, so it is
+    // preserved verbatim; absent means the run declared no boundary.
+    const scoped = typeof entry.scoped === "boolean" ? { scoped: entry.scoped } : {};
     byStream.set(fact.stream, {
+      ...scoped,
       checkpoint: fact.checkpoint,
       collected: fact.collected,
       considered: fact.considered,

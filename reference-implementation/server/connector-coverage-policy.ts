@@ -233,7 +233,15 @@ function deriveGapFreeStreamCoverageCondition(
       // A local collector that reported per-stream statuses reaches this branch
       // only when every status was `collected` (the caller returns earlier
       // otherwise), so that is an affirmative observation of collection.
-      observed_collected: fact.coverage_statuses !== undefined && fact.coverage_statuses.length > 0,
+      //
+      // `scoped: false` withdraws it. Under a declared boundary that stream was
+      // collected whole because the bound could not be enforced on it, so its
+      // observation is not evidence about the declared region. Crediting it
+      // would let a bounded run present whole-corpus coverage as
+      // coverage-of-the-boundary — the fabricated watermark this contract
+      // exists to prevent.
+      observed_collected:
+        fact.scoped !== false && fact.coverage_statuses !== undefined && fact.coverage_statuses.length > 0,
       // Skips and pending gaps are handled by the caller's earlier precedence
       // rules; this branch is reached only when neither is present.
       pending_detail_gaps: 0,
@@ -294,6 +302,7 @@ export function persistedZeroRetainsCoverageProof(
       considered: fact.considered ?? null,
       covered: fact.covered ?? null,
       observed_collected:
+        fact.scoped !== false &&
         fact.coverage_statuses !== undefined &&
         fact.coverage_statuses.length > 0 &&
         fact.coverage_statuses.every((status) => status === "collected"),

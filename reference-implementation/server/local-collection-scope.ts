@@ -101,3 +101,29 @@ export function scopeChangeInvalidatesProof(
   return collectionScopeFingerprint(normalizeCollectionScope(previous)) !==
     collectionScopeFingerprint(normalizeCollectionScope(next));
 }
+
+/**
+ * Whether committed coverage evidence still describes the connection's
+ * currently-declared boundary.
+ *
+ * Evidence carries the fingerprint it was measured under; this compares it to
+ * what is declared now. A mismatch means the owner moved the boundary after the
+ * evidence was produced, so the evidence is stale — it describes a region that
+ * is no longer the one being claimed, and must be recomputed by a fresh run
+ * rather than reinterpreted.
+ *
+ * Evidence with NO recorded fingerprint is treated as describing the current
+ * scope only when that scope is `unscoped`. Such evidence came from a collector
+ * that predates the scope contract, which by definition ran a full pass; letting
+ * it satisfy a narrowed boundary would credit a bound it never enforced.
+ */
+export function terminalEvidenceMatchesDeclaredScope(
+  evidenceFingerprint: string | null | undefined,
+  declared: CollectionScope | null | undefined
+): boolean {
+  const declaredFingerprint = collectionScopeFingerprint(normalizeCollectionScope(declared));
+  if (typeof evidenceFingerprint !== "string" || !evidenceFingerprint.trim()) {
+    return declaredFingerprint === "unscoped";
+  }
+  return evidenceFingerprint.trim() === declaredFingerprint;
+}

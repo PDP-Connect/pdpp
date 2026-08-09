@@ -468,12 +468,25 @@ export interface RuntimeCollectionFact {
    */
   readonly covered: number | null;
   readonly pending_detail_gaps: number;
+  /**
+   * Whether the run's declared collection boundary was actually enforceable on
+   * this stream. `false` marks a stream collected WHOLE under a bounded run —
+   * it holds real data but proves nothing about the declared region, so it must
+   * not be read as covering it. Absent when the run declared no boundary.
+   */
+  readonly scoped?: boolean;
   readonly skipped: RuntimeCollectionFactSkip | null;
   readonly stream: string;
 }
 
 /** The runtime `collection_facts` terminal-event block, parsed defensively. */
 export interface RuntimeCollectionFacts {
+  /**
+   * Fingerprint of the boundary this evidence was measured against (`unscoped`
+   * for a full pass). Compared against the connection's currently-declared
+   * scope: evidence measured under a different region is not proof of this one.
+   */
+  readonly collection_scope?: string;
   readonly streams: readonly RuntimeCollectionFact[];
 }
 
