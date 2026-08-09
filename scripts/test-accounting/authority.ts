@@ -107,12 +107,51 @@ interface TranscriptHandle {
   write: (chunk: string) => Promise<unknown>;
 }
 
+// How long a leaf may produce NO output at all before it is declared wedged.
+//
+// This is a STALL budget, not a duration budget: it bounds silence, never total
+// runtime. A leaf that keeps emitting output is never killed no matter how long
+// it takes, so a legitimately slow suite cannot be starved by a wall-clock cap
+// that a future, larger suite would outgrow.
+//
+// The value is derived from the slowest measured gap between consecutive output
+// chunks on the real `--suite all` run, not chosen for roundness. ri-default is
+// the worst case: its RI runner buffers each test file's whole output and
+// flushes it only when that file completes (reference-implementation/scripts/
+// run-tests.ts worker()), so the observable output gap equals the slowest single
+// file. The slowest measured file is test/collection-profile.test.ts at ~23s,
+// and that runner independently SIGKILLs any file exceeding its own
+// PER_FILE_TIMEOUT_MS (120s default), which is the true ceiling on ri-default
+// silence. 300s therefore clears the enforced per-file ceiling by 2.5x, leaving
+// room for a loaded machine to stretch a 120s-bounded file without ever making
+// this budget the thing that fires first on a healthy run.
+const LEAF_STALL_BUDGET_MS = Number.parseInt(process.env.PDPP_ACCOUNTING_STALL_BUDGET_MS || "", 10) || 300_000;
+// How often the watchdog re-checks for silence, and the cadence of the heartbeat
+// line printed while a leaf is quiet. Short enough that an operator sees the run
+// is alive within seconds of starting it, long enough to add no measurable cost.
+const PROGRESS_TICK_MS = 5000;
+
+/**
+ * Emit an operator-facing progress line.
+ *
+ * Deliberately writes to the authority's OWN stderr and nowhere else. The
+ * transcript is a digest-verified accounting artifact (verifyTranscript hashes
+ * the file and requires `start` first / `end` last), and the child's stdout is
+ * parsed for the structured accounting result and event lines, so progress must
+ * never enter either. stderr of the authority process is not captured, not
+ * hashed, and not parsed by anything — it is the one channel where progress is
+ * free of accounting consequences.
+ */
+function reportProgress(text: string): void {
+  process.stderr.write(`[test-accounting] ${text}\n`);
+}
+
 function capture(
   command: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
   transcript: TranscriptHandle,
-  start: { run_id: string }
+  start: { run_id: string; suite: string; profile: string; files: string[] }
 ): Promise<CaptureResult> {
   return new Promise((resolveResult, reject) => {
     const [file, ...rest] = command;
@@ -120,9 +159,15 @@ function capture(
       reject(new Error("capture requires a non-empty command"));
       return;
     }
+    const label = `${start.suite}/${start.profile}`;
+    const startedAt = Date.now();
+    reportProgress(`${label}: started (${start.files.length} files)`);
     const child = spawn(file, rest, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let bytes = 0;
+    let lastOutputAt = Date.now();
+    let stalled = false;
     const writes: Promise<unknown>[] = [];
     const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
       const text = chunk.toString();
@@ -131,17 +176,76 @@ function capture(
       } else {
         stderr += text;
       }
+      // Progress is measured as output ARRIVING, which is what distinguishes a
+      // slow-but-live leaf from a wedged one. Only the clock and a byte counter
+      // move here; the captured text and the transcript record are untouched.
+      bytes += chunk.length;
+      lastOutputAt = Date.now();
       writes.push(transcript.write(`${JSON.stringify({ event: stream, run_id: start.run_id, chunk: text })}\n`));
     };
     child.stdout?.on("data", (chunk) => append("stdout", chunk));
     child.stderr?.on("data", (chunk) => append("stderr", chunk));
-    child.on("error", reject);
+
+    // Watchdog + heartbeat share one timer: every tick reports liveness, and a
+    // tick that finds the silence older than the declared budget kills the leaf
+    // and says so. A leaf that keeps producing output resets `lastOutputAt` and
+    // is never killed, however long it runs.
+    const ticker = setInterval(() => {
+      const quietMs = Date.now() - lastOutputAt;
+      if (quietMs >= LEAF_STALL_BUDGET_MS) {
+        stalled = true;
+        clearInterval(ticker);
+        reportProgress(
+          `${label}: STALLED — no output for ${Math.round(quietMs / 1000)}s (budget ${Math.round(LEAF_STALL_BUDGET_MS / 1000)}s); killing`
+        );
+        child.kill("SIGKILL");
+        return;
+      }
+      reportProgress(
+        `${label}: running ${Math.round((Date.now() - startedAt) / 1000)}s, ${bytes} bytes, quiet ${Math.round(quietMs / 1000)}s`
+      );
+    }, PROGRESS_TICK_MS);
+    ticker.unref?.();
+
+    child.on("error", (error) => {
+      clearInterval(ticker);
+      reject(error);
+    });
     child.on("exit", async (code, signal) => {
+      clearInterval(ticker);
       await Promise.all(writes);
+      if (stalled) {
+        reject(
+          new Error(
+            `${label} produced no output for ${Math.round(LEAF_STALL_BUDGET_MS / 1000)}s (stall budget PDPP_ACCOUNTING_STALL_BUDGET_MS) and was killed`
+          )
+        );
+        return;
+      }
+      reportProgress(
+        `${label}: exit ${code ?? "null"}${signal ? ` (signal ${signal})` : ""} after ${Math.round((Date.now() - startedAt) / 1000)}s`
+      );
       resolveResult({ exit_code: code ?? 1, signal: signal ?? null, stdout, stderr });
     });
   });
 }
+/**
+ * Test seam over the real `capture` above — same spawn, same append, same
+ * watchdog, with the transcript replaced by a sink so a behavioral test can
+ * exercise stall-vs-progress discrimination without issuing a receipt. Kept
+ * deliberately thin: it adds no logic of its own, so a test through this seam
+ * fails exactly when `capture` regresses.
+ */
+export function runCaptureForTest(command: string[], cwd: string): Promise<CaptureResult> {
+  return capture(
+    command,
+    cwd,
+    process.env,
+    { write: () => Promise.resolve() },
+    { run_id: "test", suite: "fixture", profile: "fixture", files: [] }
+  );
+}
+
 function requiredByDefault(entry: ProfileEntry): boolean {
   return typeof entry === "string" || entry.required !== false;
 }
@@ -326,7 +430,11 @@ export async function runAuthority({
   const sourceTree = sourceTreeDigest(root, head);
   const manifestHash = contentDigest(await readFile(resolve(root, "test-accounting.manifest.json")));
   const receipts: Receipt[] = [];
+  reportProgress(`${runs.length} suite/profile runs selected`);
+  let runIndex = 0;
   for (const run of runs) {
+    runIndex += 1;
+    reportProgress(`[${runIndex}/${runs.length}] ${run.suite.id}/${run.profile.id ?? ""}`);
     const runId = randomUUID();
     const nonce = randomUUID();
     const issuedAt = instant(Date.now());
@@ -370,6 +478,9 @@ export async function runAuthority({
             issued
           )
         : { exit_code: 0, signal: null, stdout: "", stderr: "" };
+      if (!command) {
+        reportProgress(`${issued.suite}/${issued.profile}: zero-test declaration, nothing spawned`);
+      }
     } catch (error) {
       await transcript.close();
       throw error;
