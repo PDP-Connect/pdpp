@@ -936,6 +936,62 @@ export function summarizeOutboxStallRemediation(
   };
 }
 
+/**
+ * Heartbeat chip for one source instance.
+ *
+ * Reads the server-derived `heartbeat_health`, NEVER the raw
+ * `last_heartbeat_status`. The collector is one-shot, so nothing rewrites that
+ * column when the process dies: a collector killed mid-run left `starting`
+ * there and the dashboard reported an actively-starting collector for 38
+ * hours. Past the lease, `heartbeat_health` is `stale` and the last observed
+ * status moves into the title as clearly-dated evidence.
+ */
+export function formatSourceHeartbeat(
+  source: Pick<DeviceSourceInstance, "heartbeat_health" | "heartbeat_lease_ms" | "last_heartbeat_status">
+): AxisChip {
+  const health = source.heartbeat_health ?? "unknown";
+  const observed = source.last_heartbeat_status ?? null;
+  if (health === "stale") {
+    return {
+      dimension: "Heartbeat",
+      label: "Heartbeat · stale",
+      title: observed
+        ? `Last reported "${observed}", but that check-in is older than the ${formatLeaseWindow(source.heartbeat_lease_ms)} lease, so it no longer describes the collector's current state.`
+        : `No check-in within the ${formatLeaseWindow(source.heartbeat_lease_ms)} lease.`,
+      tone: "warning",
+      value: "stale",
+    };
+  }
+  if (health === "unknown") {
+    return {
+      dimension: "Heartbeat",
+      label: "Heartbeat · unknown",
+      title: "No usable heartbeat has been recorded for this source.",
+      tone: "neutral",
+      value: "unknown",
+    };
+  }
+  return {
+    dimension: "Heartbeat",
+    label: `Heartbeat · ${health}`,
+    title: `Reported within the ${formatLeaseWindow(source.heartbeat_lease_ms)} lease.`,
+    tone: health === "blocked" ? "danger" : "neutral",
+    value: health,
+  };
+}
+
+/** Render the declared lease as a human window for the heartbeat explanation. */
+function formatLeaseWindow(leaseMs: number | undefined): string {
+  if (!leaseMs || leaseMs <= 0) {
+    return "configured";
+  }
+  const minutes = Math.round(leaseMs / 60_000);
+  if (minutes < 60) {
+    return `${minutes}-minute`;
+  }
+  return `${Math.round(minutes / 60)}-hour`;
+}
+
 export function formatSourceOutboxState(
   source: Pick<DeviceSourceInstance, "outbox_diagnostics" | "outbox_state">
 ): AxisChip {

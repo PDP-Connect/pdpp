@@ -104,7 +104,9 @@ const PROGRESS_STAT_LABELS: Record<string, string> = {
   last_message: "Last message",
   last_total: "Last total",
   reports: "Reports",
-  skipped: "Skipped",
+  // One `run.stream_skipped` event per SKIP_RESULT, and a connector may emit
+  // one per dropped record — so this counts items, not streams. Say which.
+  skipped: "Skipped items",
 };
 
 export function describeProgressStatLabel(key: string): string {

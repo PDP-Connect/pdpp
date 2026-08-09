@@ -185,11 +185,45 @@ function normalizeBackend(value: unknown): StorageBackend {
   return normalized as StorageBackend;
 }
 
+/**
+ * The env var by which a deployment ARTIFACT asserts "records for this
+ * deployment live in Postgres". It is an assertion about the surrounding
+ * deployment that the runtime cannot observe for itself, in the same vein as
+ * `PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT` — and like that flag it
+ * is set by the artifact itself, never by the operator-supplied env file whose
+ * absence is the failure being guarded against.
+ *
+ * Deliberately NOT inferred. A `postgres` service sitting in the same compose
+ * file, or a `depends_on` on it, does not declare storage intent: the root
+ * compose brings that service up for env-gated conformance proofs and its own
+ * comment says the reference "falls back to the SQLite default" without the
+ * backend vars. Only this explicit declaration counts.
+ */
+const DEPLOYMENT_STORAGE_CONTRACT_ENV = "PDPP_DEPLOYMENT_STORAGE_CONTRACT";
+
 export function resolveStorageBackend({ env = process.env, opts = {} }: StorageOptions = {}) {
   const databaseUrl = opts.databaseUrl ?? env.PDPP_DATABASE_URL ?? env.DATABASE_URL;
   const explicitBackend = nonEmptyString(opts.storageBackend ?? env.PDPP_STORAGE_BACKEND);
   const backend = normalizeBackend(explicitBackend ?? (nonEmptyString(databaseUrl) ? "postgres" : "sqlite"));
   if (backend === "sqlite") {
+    // A deployment whose own artifact declares Postgres must never be served
+    // from SQLite. Reaching here with that contract set means the config the
+    // contract promised did not arrive — most often a hand-rolled
+    // `docker compose up` without the `--env-file` that supplies it. Serving
+    // anyway creates an EMPTY database behind the deployment's real URL and
+    // returns HTTP 200 over it while the actual records sit untouched in
+    // Postgres, which is worse than not starting.
+    //
+    // Only an explicit contract fails closed. With no contract at all this
+    // returns SQLite exactly as before: the single-container product is a
+    // legitimate deployment that runs with no storage config, and treating an
+    // unset backend as fatal would break it.
+    // `explicitBackend` is the operator answering the question deliberately —
+    // that is a choice, not the silent fallback. Only ABSENT config trips the
+    // guard, which is exactly the ruling's boundary.
+    if (!explicitBackend) {
+      assertDeploymentStorageContractSatisfied(env);
+    }
     return { backend };
   }
 
@@ -197,6 +231,22 @@ export function resolveStorageBackend({ env = process.env, opts = {} }: StorageO
     throw new Error("PDPP_STORAGE_BACKEND=postgres requires PDPP_DATABASE_URL or DATABASE_URL.");
   }
   return { backend, databaseUrl };
+}
+
+/**
+ * Fail closed when the deployment's artifact declared Postgres but the config
+ * that declaration promised is absent. Names the two vars that were expected,
+ * because the operator's next action is to supply them (or the `--env-file`
+ * carrying them), not to debug the runtime.
+ */
+function assertDeploymentStorageContractSatisfied(env: NodeJS.ProcessEnv): void {
+  const declared = nonEmptyString(env[DEPLOYMENT_STORAGE_CONTRACT_ENV])?.trim().toLowerCase();
+  if (declared !== "postgres") {
+    return;
+  }
+  throw new Error(
+    `Refusing to start: ${DEPLOYMENT_STORAGE_CONTRACT_ENV}=postgres declares this deployment stores records in Postgres, but neither PDPP_STORAGE_BACKEND=postgres nor PDPP_DATABASE_URL/DATABASE_URL is set, so the runtime would silently fall back to SQLite and serve an empty database behind this deployment's URL. Supply the backend configuration (for the reference stack, that is the '--env-file .env.docker' the canonical 'scripts/reference-stack.sh up' always passes), or remove ${DEPLOYMENT_STORAGE_CONTRACT_ENV} if this deployment really is SQLite-backed.`
+  );
 }
 
 export function getStorageBackendKind() {

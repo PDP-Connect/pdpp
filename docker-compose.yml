@@ -56,6 +56,18 @@ services:
       # (canonical record/blob storage is Postgres; only local-only caches use
       # SQLite — see .env.docker).
       PDPP_DB_PATH: ${PDPP_DB_PATH:-/root/.pdpp/pdpp.sqlite}
+      # This artifact's own declaration that its records live in Postgres.
+      # A literal, NOT `${VAR:-}` — it must survive the missing `--env-file`
+      # that is the failure it guards. Without it, a bare `docker compose up`
+      # left both vars below empty, the runtime fell back to SQLite, and this
+      # stack served an EMPTY database behind the owner's production URL for
+      # ~7 hours at HTTP 200 while 23 connections and 4.5M records sat
+      # untouched in Postgres. resolveStorageBackend now refuses to boot on
+      # that combination instead of downgrading silently.
+      #
+      # MUST stay paired with the two vars below: this asserts they will be
+      # supplied. Delete it only if this stack genuinely becomes SQLite-backed.
+      PDPP_DEPLOYMENT_STORAGE_CONTRACT: postgres
       PDPP_STORAGE_BACKEND: ${PDPP_STORAGE_BACKEND:-}
       PDPP_DATABASE_URL: ${PDPP_DATABASE_URL:-}
       PDPP_EMBEDDING_CACHE_DIR: ${PDPP_EMBEDDING_CACHE_DIR:-/var/cache/pdpp/transformers}

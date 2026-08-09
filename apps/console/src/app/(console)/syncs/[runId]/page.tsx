@@ -30,6 +30,8 @@ import {
   formatRecoveryHint,
   type KnownGap,
   type KnownGapSummary,
+  type SkippedStreamSummary,
+  summarizeSkippedStreams,
 } from "../../lib/run-gaps.ts";
 import { CancelRunControl } from "./cancel-run-control.tsx";
 import { RunInteractionForm } from "./interaction-form.tsx";
@@ -162,7 +164,7 @@ export default async function RunDetailPage({
         coverageGaps={gapClassification.coverageGaps}
         informationalGaps={gapClassification.informationalGaps}
         protocolViolationCount={gapClassification.protocolViolationGaps.length}
-        skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
+        skipped={summarizeSkippedStreams(events)}
         summary={terminalKnownGaps.summary ?? gapClassification.summary}
       />
       <ViolationDiagnosis failure={failure} />
@@ -450,20 +452,20 @@ function KnownGapsSection({
   coverageGaps,
   informationalGaps,
   protocolViolationCount,
-  skippedCount,
+  skipped,
   summary,
 }: {
   coverageGaps: KnownGap[];
   informationalGaps: KnownGap[];
   protocolViolationCount: number;
-  skippedCount: number;
+  skipped: SkippedStreamSummary;
   summary: KnownGapSummary | null;
 }) {
   if (
     coverageGaps.length === 0 &&
     informationalGaps.length === 0 &&
     protocolViolationCount === 0 &&
-    skippedCount === 0
+    skipped.count === 0
   ) {
     return null;
   }
@@ -515,14 +517,7 @@ function KnownGapsSection({
           ))}
         </ul>
       ) : (
-        // Only claim "nothing missing" when nothing else in this section
-        // contradicts it. With silently-skipped streams the honest answer is
-        // "unknown", which the skipped-stream line below states.
-        skippedCount === 0 ? (
-          <p className="pdpp-caption text-muted-foreground">
-            This run reported no missing sources. Anything below is a separate protocol failure.
-          </p>
-        ) : null
+        <NoMissingSourcesClaim skipped={skipped} />
       )}
 
       {informationalGaps.length > 0 ? (
@@ -560,17 +555,72 @@ function KnownGapsSection({
           Failure diagnosis.
         </p>
       ) : null}
-      {/* Skipped streams with no gap record are the ONLY thing this section has
-          to say when coverageGaps is empty — so say it plainly instead of
-          footnoting it under a denial. The connector skipped these without
-          recording why, which is a reporting gap on its side, not a clean run. */}
-      {skippedCount > 0 && coverageGaps.length === 0 ? (
-        <p className="pdpp-caption mt-3 text-muted-foreground">
-          {skippedCount} stream{skippedCount === 1 ? " was" : "s were"} skipped without saying why. The connector did
-          not record a reason, so PDPP cannot tell you whether anything is missing.
+      {/* Skips with no gap record are the ONLY thing this section has to say
+          when coverageGaps is empty — so say it plainly instead of footnoting
+          it under a denial. Report the reason the connector recorded; claim
+          nothing was recorded only for the skips that genuinely carry none. */}
+      {skipped.count > 0 && coverageGaps.length === 0 ? <SkippedWithoutGapRecord skipped={skipped} /> : null}
+    </section>
+  );
+}
+
+/**
+ * Only claim "nothing missing" when nothing else in this section contradicts
+ * it. With skips that produced no gap record the honest answer is "unknown",
+ * which the skip line below states instead.
+ */
+function NoMissingSourcesClaim({ skipped }: { skipped: SkippedStreamSummary }) {
+  if (skipped.count === 0) {
+    return (
+      <p className="pdpp-caption text-muted-foreground">
+        This run reported no missing sources. Anything below is a separate protocol failure.
+      </p>
+    );
+  }
+  return null;
+}
+
+/**
+ * Skips that produced no entry in the terminal `known_gaps` list. Previously
+ * this rendered "{n} streams were skipped without saying why", which was wrong
+ * twice: the connector records its reason on each skip event, and the count is
+ * of skipped items, not streams. Say the reason, and count in the right unit.
+ */
+function SkippedWithoutGapRecord({ skipped }: { skipped: SkippedStreamSummary }) {
+  const items = `${skipped.count} record${skipped.count === 1 ? "" : "s"}`;
+  const where =
+    skipped.streams.length > 0
+      ? ` in ${skipped.streams.length === 1 ? "stream" : `${skipped.streams.length} streams`} ${skipped.streams.map((stream) => `\`${stream}\``).join(", ")}`
+      : "";
+  return (
+    <div className="mt-3">
+      <p className="pdpp-caption text-muted-foreground">
+        {items}
+        {where} {skipped.count === 1 ? "was" : "were"} skipped without a terminal gap entry.
+      </p>
+      {skipped.reasons.length > 0 ? (
+        <ul className="mt-1.5 space-y-1">
+          {skipped.reasons.map((entry) => (
+            <li className="pdpp-caption text-muted-foreground" key={entry.reason}>
+              <code>{formatGapReason(entry.reason)}</code> · {entry.count} record{entry.count === 1 ? "" : "s"}
+              {entry.diagnostics ? (
+                <>
+                  {" · first failing field "}
+                  <code>{entry.diagnostics.path}</code>
+                  {`: ${entry.diagnostics.message}`}
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {skipped.unexplainedCount > 0 ? (
+        <p className="pdpp-caption mt-1.5 text-muted-foreground">
+          {skipped.unexplainedCount} of these recorded no reason, so PDPP cannot tell you whether anything is missing
+          for {skipped.unexplainedCount === 1 ? "it" : "them"}.
         </p>
       ) : null}
-    </section>
+    </div>
   );
 }
 

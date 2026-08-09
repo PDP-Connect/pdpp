@@ -29,6 +29,7 @@ import {
   formatLastDurableProgress,
   formatOutboxAxis,
   formatProjectionFreshness,
+  formatSourceHeartbeat,
   formatSourceOutboxState,
   formatSupportingCondition,
   outboxAxisIsApplicable,
@@ -2324,3 +2325,41 @@ test("formatSupportingCondition degrades gracefully for an unknown condition typ
 // classification this synthesizer relied on (`isSourcePressureCooldown`)
 // remains load-bearing for `deriveFailureSummary`'s `blocked` branch and is
 // covered above (`deriveFailureSummary blocked + source_pressure reason_code`).
+
+/**
+ * Reproduces the live UAT shape: a one-shot collector killed with its
+ * terminal, leaving `last_heartbeat_status = 'starting'` in the column for
+ * 38+ hours. The dashboard rendered "Heartbeat: starting" the whole time.
+ */
+test("formatSourceHeartbeat never presents a stale status verbatim", () => {
+  const chip = formatSourceHeartbeat({
+    heartbeat_health: "stale",
+    heartbeat_lease_ms: 30 * 60 * 1000,
+    last_heartbeat_status: "starting",
+  });
+
+  assert.equal(chip.value, "stale", "beyond the lease the presented health is stale");
+  assert.doesNotMatch(chip.label, /starting/, "the dead process's last 'starting' must not be the label");
+  assert.match(chip.title, /Last reported "starting"/, "but it is retained as dated evidence");
+  assert.match(chip.title, /30-minute lease/, "and the declared lease is named");
+});
+
+test("formatSourceHeartbeat passes a within-lease status through", () => {
+  const chip = formatSourceHeartbeat({
+    heartbeat_health: "starting",
+    heartbeat_lease_ms: 30 * 60 * 1000,
+    last_heartbeat_status: "starting",
+  });
+
+  assert.equal(chip.value, "starting", "a fresh 'starting' really is starting");
+  assert.equal(chip.label, "Heartbeat · starting");
+});
+
+test("formatSourceHeartbeat reports unknown when the server derived no health", () => {
+  // An older reference that does not project `heartbeat_health` must degrade
+  // to unknown, never fall back to the raw status it also sends.
+  const chip = formatSourceHeartbeat({ last_heartbeat_status: "starting" });
+
+  assert.equal(chip.value, "unknown");
+  assert.doesNotMatch(chip.label, /starting/, "an underived status is not evidence of life");
+});

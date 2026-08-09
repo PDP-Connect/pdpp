@@ -25,6 +25,11 @@ services:
       # Postgres is the storage backend; the runtime selects it because this
       # database URL is present. Credentials live on the compose-private
       # network only (no published Postgres port).
+      # This artifact's own declaration that its records live in Postgres, so
+      # the runtime refuses to boot rather than silently serving SQLite if the
+      # URL below is ever emptied or overridden away. Safe by construction
+      # today (the URL is a literal), and this keeps it that way.
+      PDPP_DEPLOYMENT_STORAGE_CONTRACT: postgres
       PDPP_DATABASE_URL: postgresql://pdpp:${PDPP_POSTGRES_PASSWORD:-pdpp}@postgres:5432/pdpp
       # Required secrets — generate once into .env (see header). The owner
       # password gates the dashboard; the encryption key seals any connector

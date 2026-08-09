@@ -1364,6 +1364,16 @@ const DeviceSourceInstanceSchema = {
     created_at: { type: "string" },
     device_id: { type: "string" },
     display_name: { type: ["string", "null"] },
+    heartbeat_age_ms: { type: ["integer", "null"] },
+    // Presented health, derived from heartbeat age against
+    // `heartbeat_lease_ms`. `stale`/`unknown` are derivations, not statuses a
+    // collector reports. Read this, not `last_heartbeat_status`, for whether
+    // a collector is currently alive.
+    heartbeat_health: {
+      enum: ["blocked", "healthy", "retrying", "stale", "starting", "stopped", "unknown"],
+      type: "string",
+    },
+    heartbeat_lease_ms: { minimum: 0, type: "integer" },
     last_error: { additionalProperties: true, type: ["object", "null"] },
     last_ingest_at: { type: ["string", "null"] },
     local_binding_name: { type: "string" },

@@ -30,6 +30,7 @@ import { handleLocalDeviceTerminalCollection } from "../../operations/local-devi
 import { mapWithConcurrency } from "../concurrency.ts";
 import { type DeviceAttemptContext, fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
 import { deriveReferenceFreshness } from "../freshness.ts";
+import { presentHeartbeatHealth } from "../heartbeat-lease.ts";
 import { assertRecordIdentity, normalizePrimaryKey } from "../record-expand-helpers.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import {
@@ -1650,7 +1651,8 @@ function projectSourceInstance(
   outcomeStats: OutcomeStatMap,
   gapStats: GapStatMap,
   unreliableIds: Set<string>,
-  coverageByConnectorInstance: Map<string, LocalCoverageProjection>
+  coverageByConnectorInstance: Map<string, LocalCoverageProjection>,
+  now: number
 ): unknown {
   const stats = outcomeStats.get(source.sourceInstanceId) ?? { accepted: 0, lastIngestAt: null, rejected: 0 };
   const device = devicesById.get(source.deviceId);
@@ -1665,6 +1667,15 @@ function projectSourceInstance(
   }
   const gap = gapStats.get(source.sourceInstanceId) ?? null;
   const outboxDiagnostics = source.outboxDiagnostics ?? null;
+  // Last status without age is not current health. A one-shot collector that
+  // was killed leaves its last lifecycle status in the column forever, so the
+  // presented health is derived against the declared lease and the raw column
+  // is kept alongside as evidence rather than as the answer.
+  const heartbeatHealth = presentHeartbeatHealth({
+    lastHeartbeatAt: source.lastHeartbeatAt,
+    lastHeartbeatStatus: source.lastHeartbeatStatus,
+    nowIso: new Date(now).toISOString(),
+  });
   return {
     accepted_record_count: stats.accepted,
     connector_id: source.connectorId,
@@ -1672,8 +1683,17 @@ function projectSourceInstance(
     created_at: source.createdAt,
     device_id: source.deviceId,
     display_name: source.displayName,
+    heartbeat_age_ms: heartbeatHealth.ageMs,
+    // Presented health: the collector's status only while within lease,
+    // otherwise `stale`/`unknown`. This is what a reader should render.
+    heartbeat_health: heartbeatHealth.status,
+    // The lease the age was judged against, so a reader can see the policy
+    // that produced `heartbeat_health` instead of inferring it.
+    heartbeat_lease_ms: heartbeatHealth.leaseMs,
     last_error: source.lastError,
     last_heartbeat_at: source.lastHeartbeatAt ?? null,
+    // Raw last-observed column, retained as evidence. NOT current health —
+    // read `heartbeat_health` for that.
     last_heartbeat_status: source.lastHeartbeatStatus ?? null,
     last_ingest_at: stats.lastIngestAt,
     local_binding_name: source.localBindingId,
@@ -1797,7 +1817,8 @@ async function buildDeviceExporterDiagnostics(
       outcomeStats,
       gapStats,
       unreliableIds,
-      coverageByConnectorInstance
+      coverageByConnectorInstance,
+      now
     );
     const list = sourcesByDevice.get(source.deviceId) ?? [];
     list.push(projected);
