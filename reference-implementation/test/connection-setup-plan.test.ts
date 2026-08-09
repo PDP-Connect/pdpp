@@ -518,14 +518,30 @@ test("Apple Photos and Google Messages are supported local_collector_enroll conn
   }
 });
 
-test("wave-0807 GroupMe manifest (manual_action, no credential_capture) stays unsupported", async () => {
+test("wave-0807 GroupMe manifest is a static-secret experimental connector, not silently promoted to live-proven", async () => {
+  // GroupMe's manifest now declares setup.modality: "static_secret" with a
+  // real credential_capture block (access-token field), so it is eligible
+  // for the experimental static-secret path — a deliberate change from the
+  // earlier manual_action/no-credential_capture shape this test used to
+  // assert against. Counterweight: GroupMe is not (and must not silently
+  // become) a member of STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS, so it must
+  // land on the unproven "experimental" branch, never the fully-supported
+  // "static_secret_connect"/supported branch that live-proven connectors get.
   const groupmeManifest = (
     await import("../../packages/polyfill-connectors/manifests/groupme.json", { with: { type: "json" } })
   ).default;
+  assert.equal(
+    STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS.includes("groupme" as never),
+    false,
+    "GroupMe must not be added to the live-proven roster without a real dated live env-free run"
+  );
   const plan = buildConnectionSetupPlan({ connectorKey: "groupme", manifest: groupmeManifest });
-  assert.equal(plan.setupModality, "unsupported");
-  assert.equal(plan.supportState, "unsupported");
-  assert.equal(plan.catalogDisposition, "api_network_unsupported");
+  assert.equal(plan.setupModality, "static_secret");
+  assert.equal(plan.supportState, "experimental");
+  assert.equal(plan.catalogDisposition, "static_secret_experimental");
+  assert.equal(plan.proofGate, "static_secret_live_proof_missing");
+  assert.notEqual(plan.catalogDisposition, "static_secret_connect");
+  assert.notEqual(plan.supportState, "unsupported");
 });
 
 test("wave-0807 Google Calendar/Contacts keep the deployment-app vs owner-account split untouched", async () => {
