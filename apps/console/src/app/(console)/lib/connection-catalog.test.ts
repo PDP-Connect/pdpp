@@ -643,7 +643,6 @@ test("configured Google provider readiness exposes the existing owner authorizat
     GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "test-client-secret",
     GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://example.test/callback",
   });
-  
   const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps-data-portability");
   assert.ok(entry, "google-maps-data-portability must be in the committed catalog");
   assert.equal(entry.deploymentReadiness.state, "ready");
@@ -893,18 +892,17 @@ test("filesystem connectors outside the proven set are local-collector-unproven,
   }
 });
 
-test("owner catalog admits an unlisted (listed:false) template only when support_state is experimental", () => {
-  // Regression guard for the Steam UAT gap: Steam ships public_listing.listed
-  // false today, but its static-secret credential-capture form is real. The
-  // Experimental section is itself the explicit opt-in, so an unlisted
-  // experimental template must still surface there — while an unlisted
-  // template with any OTHER support_state must stay dropped exactly as
-  // before, so the normal picker never gains a silent extra source.
+test("owner catalog never offers an unlisted (listed:false) template, whatever its support_state", () => {
+  // An unlisted connector must not be offered or addable on the OFFER surface,
+  // and `experimental` is not an exception: the Experimental section presents
+  // what is already offered rather than acting as a second door into the
+  // catalog. Both an experimental and a non-experimental unlisted template are
+  // asserted here so the gate cannot be reopened for one support_state alone.
   const catalog = buildOwnerConnectorCatalog(
     [],
     [
       ownerTemplate({
-        connectorKey: "steam",
+        connectorKey: "unlisted-experimental",
         disposition: "static_secret_experimental",
         listed: false,
         nextStepKind: "capture_static_secret",
@@ -927,14 +925,36 @@ test("owner catalog admits an unlisted (listed:false) template only when support
         actionStatus: "unsupported",
         actionUrl: null,
       }),
+      ownerTemplate({
+        connectorKey: "listed-experimental",
+        disposition: "static_secret_experimental",
+        listed: true,
+        nextStepKind: "capture_static_secret",
+        ownerActionable: false,
+        setupModality: "static_secret",
+        supportState: "experimental",
+        actionMethod: null,
+        actionStatus: "experimental",
+        actionUrl: null,
+      }),
     ]
   );
-  const steam = catalog.find((e) => e.connectorKey === "steam");
-  assert.ok(steam, "an unlisted experimental template must still be admitted into the catalog");
-  assert.equal(steam.supportState, "experimental");
-  assert.equal(sourceSetupAvailability(steam), "experimental_opt_in");
-  const unlistedProofGated = catalog.find((e) => e.connectorKey === "unlisted-proof-gated");
-  assert.equal(unlistedProofGated, undefined, "an unlisted non-experimental template must stay dropped");
+  assert.equal(
+    catalog.find((e) => e.connectorKey === "unlisted-experimental"),
+    undefined,
+    "an unlisted experimental template must not be offered"
+  );
+  assert.equal(
+    catalog.find((e) => e.connectorKey === "unlisted-proof-gated"),
+    undefined,
+    "an unlisted non-experimental template must stay dropped"
+  );
+  // The listing gate must not swallow the Experimental section itself: a
+  // connector the operator HAS listed still reaches it.
+  const listedExperimental = catalog.find((e) => e.connectorKey === "listed-experimental");
+  assert.ok(listedExperimental, "a listed experimental template must still be offered");
+  assert.equal(sourceSetupAvailability(listedExperimental), "experimental_opt_in");
+  assert.ok(sourceSetupAction(listedExperimental), "a listed experimental template keeps its add action");
 });
 
 test("ownerActionable field is the sole authority for live owner catalogs", () => {
