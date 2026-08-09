@@ -1,0 +1,103 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Durable owner-declared collection scope for local-device connections.
+ *
+ * Where the scope lives, and why it is not a new column:
+ *
+ * `connector_instances.source_binding_json` is IDENTITY — it is hashed into
+ * `source_binding_key`, which participates in the connection's uniqueness
+ * constraint and derives the deterministic `connector_instance_id`. Scope is
+ * mutable by definition, so storing it there would make every scope edit a
+ * connection re-identification. `device_source_instances`' JSON columns are
+ * rewritten on every heartbeat, so nothing durable survives there either.
+ *
+ * `connector_state` is already the durable, per-connection, server-owned store
+ * the collector reads at run start (`GET .../state` -> `START.state`). Keying a
+ * reserved, non-stream entry in it gives us persistence and delivery with no
+ * schema migration and no new transport — the collector's existing state read
+ * carries the boundary down with the cursors it already fetches.
+ *
+ * The reserved key is namespaced with a `$` prefix, which no manifest stream
+ * name can take, so it can never collide with a real stream's cursor.
+ */
+
+import { collectionScopeFingerprint, normalizeCollectionScope } from "@pdpp/reference-contract/evidence";
+import type { CollectionScope } from "@pdpp/reference-contract/evidence";
+
+/**
+ * Reserved `connector_state.stream` key holding the connection's declared
+ * boundary. `$`-prefixed so it cannot collide with a manifest stream name.
+ */
+export const COLLECTION_SCOPE_STATE_KEY = "$collection_scope";
+
+/**
+ * The stored scope envelope. `fingerprint` is stored alongside the bounds
+ * rather than recomputed on read so a stored proof and the scope it was
+ * measured against can be compared without re-deriving either.
+ */
+export interface StoredCollectionScope {
+  readonly declared_at: string;
+  readonly fingerprint: string;
+  readonly scope: CollectionScope | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Read the declared scope out of a connector-state projection.
+ *
+ * A connection that never declared one reads as `unscoped` — the honest
+ * default, and identical to what an older collector would have run.
+ */
+export function readStoredCollectionScope(state: Readonly<Record<string, unknown>> | null | undefined): {
+  fingerprint: string;
+  scope: CollectionScope | null;
+} {
+  const entry = state?.[COLLECTION_SCOPE_STATE_KEY];
+  if (!isRecord(entry)) {
+    return { fingerprint: "unscoped", scope: null };
+  }
+  const scope = normalizeCollectionScope(entry.scope as CollectionScope | null | undefined);
+  // Recompute rather than trusting a stored string: a hand-edited or
+  // partially-written row must not be able to assert a boundary its own bounds
+  // do not describe.
+  return { fingerprint: collectionScopeFingerprint(scope), scope };
+}
+
+/**
+ * Build the durable envelope for a newly-declared scope.
+ *
+ * `declaredAt` is injected rather than read from a clock so this stays a total
+ * function of its arguments and the caller owns the run-clock.
+ */
+export function buildStoredCollectionScope(
+  scope: CollectionScope | null | undefined,
+  declaredAt: string
+): StoredCollectionScope {
+  const normalized = normalizeCollectionScope(scope);
+  return {
+    declared_at: declaredAt,
+    fingerprint: collectionScopeFingerprint(normalized),
+    scope: normalized,
+  };
+}
+
+/**
+ * Whether changing the declared scope must invalidate prior coverage proof.
+ *
+ * True whenever the boundary's identity changes — including to and from
+ * `unscoped`, since a full pass is itself a declared region. A no-op edit
+ * (reordered roots, padded whitespace) normalizes to the same fingerprint and
+ * correctly does NOT discard valid proof.
+ */
+export function scopeChangeInvalidatesProof(
+  previous: CollectionScope | null | undefined,
+  next: CollectionScope | null | undefined
+): boolean {
+  return collectionScopeFingerprint(normalizeCollectionScope(previous)) !==
+    collectionScopeFingerprint(normalizeCollectionScope(next));
+}
