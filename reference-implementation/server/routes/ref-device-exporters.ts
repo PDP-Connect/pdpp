@@ -31,6 +31,7 @@ import { mapWithConcurrency } from "../concurrency.ts";
 import { type DeviceAttemptContext, fingerprintDeviceAttemptManifest } from "../device-ingest-attempt-context.ts";
 import { deriveReferenceFreshness } from "../freshness.ts";
 import { presentHeartbeatHealth } from "../heartbeat-lease.ts";
+import { buildStoredCollectionScope, COLLECTION_SCOPE_STATE_KEY } from "../local-collection-scope.ts";
 import { assertRecordIdentity, normalizePrimaryKey } from "../record-expand-helpers.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 import {
@@ -266,6 +267,7 @@ interface DeviceExporterStore {
     status: string;
     expiresAt: string;
     consumedAt: string | null;
+    collectionScope?: { since?: string; source_roots?: string[] } | null;
   } | null>;
   getBatchOutcome: (deviceId: string, batchId: string) => Promise<BatchOutcomeRow | null>;
   getDevice: (deviceId: string) => Promise<DeviceRow | null>;
@@ -589,6 +591,7 @@ async function resolveEnrollmentSourceKind(
 }
 
 interface ReEnrollableEnrollment {
+  collectionScope?: { since?: string; source_roots?: string[] } | null;
   connectorId: string;
   consumedAt: string | null;
   deviceId: string | null;
@@ -848,6 +851,25 @@ async function performFirstEnrollment(
     sourceKind,
     updatedAt: now.toISOString(),
   });
+
+  // Apply the boundary the owner declared at intent-creation time (staged on
+  // the enrollment code, since no connection existed yet to hold
+  // `connector_state.$collection_scope`). This is the FIRST write to that
+  // reserved key, so there is no prior proof to declassify — unlike
+  // `owner-connection-collection-scope.ts`'s PUT handler, which changes an
+  // already-declared boundary. An enrollment that declared none leaves the
+  // key unwritten, which reads back as `unscoped` (see
+  // `readStoredCollectionScope`) — identical to a collector that predates
+  // this mechanism.
+  if (enrollment.collectionScope) {
+    const scopeTarget = referenceLocalDeviceStorageTarget(
+      ctx,
+      enrollConnectorKey,
+      connectorInstance.connectorInstanceId
+    );
+    const stored = buildStoredCollectionScope(enrollment.collectionScope, now.toISOString());
+    await ctx.putSyncState(scopeTarget, { [COLLECTION_SCOPE_STATE_KEY]: stored }, { grantId: null });
+  }
 
   // Test-only interruption point: identity (device, connector instance,
   // source instance) is now fully durable; the code is still pending. This is

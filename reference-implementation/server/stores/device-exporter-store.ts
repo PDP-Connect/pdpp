@@ -159,6 +159,11 @@ function mapEnrollment(row: Row | null | undefined) {
   }
   return {
     codeHash: row.code_hash,
+    // The scope an owner declared while minting this code, staged here
+    // because no connection (and so no connector_state row) exists yet to
+    // hold it — see local-collection-scope.ts for why the materialized home
+    // is a reserved connector_state key rather than a column of its own.
+    collectionScope: parseJson(row.collection_scope_json, null) as { since?: string; source_roots?: string[] } | null,
     connectorId: row.connector_id,
     consumedAt: row.consumed_at,
     createdAt: row.created_at,
@@ -573,6 +578,9 @@ export function createSqliteDeviceExporterStore() {
         record.expiresAt,
         record.consumedAt ?? null,
         record.revokedAt ?? null,
+        record.collectionScope === undefined || record.collectionScope === null
+          ? null
+          : JSON.stringify(record.collectionScope),
       ]);
     },
 
@@ -978,8 +986,8 @@ export function createPostgresDeviceExporterStore() {
 
     async createEnrollmentCode(record: Row) {
       await postgresQuery(
-        `INSERT INTO device_enrollment_codes(enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        `INSERT INTO device_enrollment_codes(enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at, collection_scope_json)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
         [
           record.enrollmentCodeId,
           record.codeHash,
@@ -993,6 +1001,9 @@ export function createPostgresDeviceExporterStore() {
           record.expiresAt,
           record.consumedAt ?? null,
           record.revokedAt ?? null,
+          record.collectionScope === undefined || record.collectionScope === null
+            ? null
+            : JSON.stringify(record.collectionScope),
         ]
       );
     },
@@ -1040,7 +1051,7 @@ export function createPostgresDeviceExporterStore() {
 
     async findEnrollmentByCodeHash(codeHash: string) {
       const result = await postgresQuery(
-        `SELECT enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at
+        `SELECT enrollment_code_id, code_hash, owner_subject_id, connector_id, local_binding_id, display_name, device_id, status, created_at, expires_at, consumed_at, revoked_at, collection_scope_json
          FROM device_enrollment_codes WHERE code_hash = $1`,
         [codeHash]
       );

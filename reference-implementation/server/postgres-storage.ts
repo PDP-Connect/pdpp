@@ -1255,7 +1255,8 @@ export async function bootstrapPostgresSchema({
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         consumed_at TEXT,
-        revoked_at TEXT
+        revoked_at TEXT,
+        collection_scope_json JSONB
       );
       CREATE INDEX IF NOT EXISTS idx_pg_device_enrollment_codes_owner_status
         ON device_enrollment_codes(owner_subject_id, status, expires_at);
@@ -4507,7 +4508,8 @@ async function migratePostgresDeviceExporterColumns(client: PoolClient): Promise
     ALTER TABLE device_enrollment_codes
       ADD COLUMN IF NOT EXISTS connector_id TEXT NOT NULL DEFAULT 'unknown',
       ADD COLUMN IF NOT EXISTS local_binding_id TEXT NOT NULL DEFAULT 'default',
-      ADD COLUMN IF NOT EXISTS display_name TEXT
+      ADD COLUMN IF NOT EXISTS display_name TEXT,
+      ADD COLUMN IF NOT EXISTS collection_scope_json JSONB
   `);
   await client.query(`
     ALTER TABLE device_source_instances

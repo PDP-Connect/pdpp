@@ -808,6 +808,7 @@ CREATE TABLE IF NOT EXISTS device_enrollment_codes (
   expires_at          TEXT NOT NULL,
   consumed_at         TEXT,
   revoked_at          TEXT,
+  collection_scope_json TEXT,
   FOREIGN KEY(device_id) REFERENCES device_exporters(device_id) ON DELETE SET NULL
 );
 
@@ -5146,6 +5147,7 @@ export function initDb(path = ":memory:", opts: InitDbOptions = {}): DatabaseHan
     addColumnIfMissing(raw, "device_enrollment_codes", "local_binding_id", "TEXT NOT NULL DEFAULT 'default'")
   );
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_enrollment_codes", "display_name", "TEXT"));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_enrollment_codes", "collection_scope_json", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_source_instances", "connector_instance_id", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_source_instances", "source_kind", "TEXT"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, "device_source_instances", "last_error_json", "TEXT"));

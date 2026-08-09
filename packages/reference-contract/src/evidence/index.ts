@@ -7,3 +7,4 @@
 // biome-ignore lint/performance/noBarrelFile: subpath entry point for "./evidence"; the modules below are the whole surface.
 export * from "./coherence.ts";
 export * from "./collection-scope.ts";
+export * from "./named-collection-scope.ts";

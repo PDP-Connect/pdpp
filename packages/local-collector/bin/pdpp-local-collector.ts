@@ -1053,6 +1053,20 @@ export async function runLogout(options: CliOptions, deps: RunLogoutDeps = {}): 
 
 export interface LocalCollectorRunOutput extends Omit<CollectorRunResult, "flushedState" | "priorState"> {
   /**
+   * One honest, operator-facing line stating whether THIS run committed
+   * terminal coverage evidence — i.e. whether the connector exhaustively
+   * enumerated the declared boundary and the server now holds proof of it —
+   * or whether the run was partial (interrupted, sample-limited, or stopped
+   * by the per-run scan budget) and therefore recorded no completion claim.
+   * Drawn from the exact same gate `collector-runner.ts` uses to decide
+   * whether to call `reportTerminalCollection`
+   * (`done.status === "succeeded" && !scanBudgetExceeded &&
+   * completeness !== null`), so this note can never say "complete" when the
+   * server was never told so. Identical logic for every connector — no
+   * connector-id branch decides this sentence.
+   */
+  coverage_note: string;
+  /**
    * One honest, operator-facing line describing the drain outcome of this
    * invocation. A successful connector pass (`done.status === "succeeded"`)
    * does NOT imply the outbox is empty: the run can succeed on the source
@@ -1118,6 +1132,7 @@ export function summarizeRunResultForCli(result: CollectorRunResult): LocalColle
   const drained = openWork === 0;
   return {
     ...result,
+    coverage_note: runCoverageNote(result),
     drain_note: runDrainNote(result, summary, drained),
     drained,
     flushedState: summarizeCollectorState(result.flushedState),
@@ -1168,6 +1183,42 @@ function runDrainNote(result: CollectorRunResult, summary: LocalDeviceOutboxSumm
     ? " The connector was stopped by the per-run enqueue budget, so more source work likely remains; re-run to continue."
     : "";
   return `Run succeeded on the source but the outbox is NOT fully drained: ${parts.join(", ")}.${scanNote}`;
+}
+
+/**
+ * One honest line on whether this run's completion is provable, not just
+ * "the process exited zero". Mirrors `collector-runner.ts`'s own
+ * `reportTerminalCollection` gate exactly, so this text and the server's
+ * committed evidence can never disagree: a `--sample`/interrupted/
+ * budget-stopped pass never claims exhaustive coverage of the declared
+ * boundary, regardless of how many records it happened to collect.
+ */
+function runCoverageNote(result: CollectorRunResult): string {
+  if (result.scanBudgetExceeded) {
+    return (
+      "Coverage NOT committed: the connector was stopped by the per-run scan budget before it finished " +
+      "enumerating the declared boundary. Re-run to continue; only a run that finishes without hitting the " +
+      "budget can commit a completion claim."
+    );
+  }
+  if (result.done?.status !== "succeeded") {
+    return (
+      "Coverage NOT committed: this run did not finish (interrupted or the connector exited without " +
+      "reporting success). Records already collected before the stop were still delivered, but no completion " +
+      "claim was recorded for the declared boundary — re-run to finish the enumeration."
+    );
+  }
+  if (!result.completeness) {
+    return (
+      "Coverage NOT committed: the connector finished but reported no coverage diagnostics for this pass, " +
+      "so no completion claim was recorded."
+    );
+  }
+  return result.completeness.fullyAccounted
+    ? "Coverage committed: the connector exhaustively enumerated the declared boundary and every requested " +
+        "stream is fully accounted for."
+    : `Coverage committed, but ${result.completeness.unaccountedStores.length} store(s) are unaccounted for ` +
+        `(${result.completeness.unaccountedStores.join(", ")}) — see \`doctor\` for detail.`;
 }
 
 function pendingOpenWork(summary: LocalDeviceOutboxSummary): number {

@@ -36,6 +36,28 @@ npx -y @pdpp/local-collector run --connection-id <source_instance_id>
 suppress). `--sample <n>` works on `run` too, any time you want a bounded
 preview instead of a full collection.
 
+### Bounded collection horizon (recent history vs. full history)
+
+The one-time `--code` above comes from the owner-authenticated
+`POST /v1/owner/connections/intents` call that mints it (see
+[`docs/reference/local-collector.md`](../../docs/local-collector.md)). That
+same call accepts an optional `collection_scope` — `{ since, source_roots }`
+— declaring the boundary the collector should run within: recent history
+(e.g. `since` 30 days ago), a specific project (`source_roots`), or the
+default of no bound (full history). The boundary is declared once, server-side,
+before the device ever enrolls, and applies to every `run` against that
+connection from then on — there is no `run`-time flag that can widen or
+override it, by design: a local flag must never be able to claim more coverage
+than the server actually granted.
+
+`status` and `doctor` report the boundary currently in force for a lane under
+`scope.active` (a fingerprint string; `"unscoped"` means a full pass), so you
+can always see what a "complete" run on this connection is complete *within*.
+A run only reports coverage as committed once it has exhaustively enumerated
+that boundary — `--sample`, an interrupted run, or one stopped by the per-run
+scan budget always reports `coverage_note` as NOT committed, never a partial
+count read as done.
+
 ```bash
 # List connector ids this build accepts.
 npx -y @pdpp/local-collector connectors

@@ -1773,6 +1773,81 @@ test("run summary names the scan-budget cutoff so the backlog is not read as the
   assert.match(output.drain_note, /enqueue budget/);
 });
 
+// --- coverage_note: exhaustive-vs-partial completion honesty ---
+//
+// A run's coverage_note must agree EXACTLY with whether collector-runner.ts's
+// own reportTerminalCollection gate fired — the same three axes: scan budget,
+// DONE status, and a real coverage observation. It must never say "committed"
+// for a run that could not have reached that call.
+
+test("coverage_note reports committed + fully accounted for a clean succeeded run", () => {
+  const result = baseRunResult({ ready: 0, succeeded: 5, total: 5 });
+  result.completeness = {
+    byStore: { messages: "observed_collected" },
+    countsByStatus: { observed_collected: 1 },
+    fullyAccounted: true,
+    storeCount: 1,
+    unaccountedStores: [],
+  };
+  const output = summarizeRunResultForCli(result);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /Coverage committed/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /fully accounted/);
+});
+
+test("coverage_note names unaccounted stores rather than claiming full coverage", () => {
+  const result = baseRunResult({ ready: 0, succeeded: 5, total: 5 });
+  result.completeness = {
+    byStore: { attachments: "unaccounted", messages: "observed_collected" },
+    countsByStatus: { observed_collected: 1, unaccounted: 1 },
+    fullyAccounted: false,
+    storeCount: 2,
+    unaccountedStores: ["attachments"],
+  };
+  const output = summarizeRunResultForCli(result);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /Coverage committed/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /attachments/);
+});
+
+test("coverage_note never claims committed coverage when the scan budget stopped the run", () => {
+  const result = baseRunResult({ ready: 500, succeeded: 1000, total: 1500 });
+  result.scanBudgetExceeded = true;
+  result.completeness = {
+    byStore: { messages: "observed_collected" },
+    countsByStatus: { observed_collected: 1 },
+    fullyAccounted: true,
+    storeCount: 1,
+    unaccountedStores: [],
+  };
+  const output = summarizeRunResultForCli(result);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /NOT committed/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /scan budget/);
+});
+
+test("coverage_note never claims committed coverage when the connector did not report succeeded", () => {
+  const result = baseRunResult({ ready: 0, succeeded: 0, total: 0 });
+  result.done = { records_emitted: 0, status: "failed", type: "DONE" };
+  const output = summarizeRunResultForCli(result);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /NOT committed/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /did not finish/);
+});
+
+test("coverage_note never claims committed coverage when no coverage diagnostic was observed", () => {
+  const output = summarizeRunResultForCli(baseRunResult({ ready: 0, succeeded: 5, total: 5 }));
+  assert.equal(output.completeness, null);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /NOT committed/);
+  // biome-ignore lint/performance/useTopLevelRegex: inline assertion literal scoped to this test case; hoisting would separate the pattern from the single call site it documents.
+  assert.match(output.coverage_note, /reported no coverage diagnostics/);
+});
+
 test("run summary drained flag is true iff lifecycle_state is healthy_idle", () => {
   // Invariant: the boolean honesty flag and the lifecycle taxonomy must never
   // disagree. Exercise every non-stale open-work shape plus the idle case.
