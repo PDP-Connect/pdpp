@@ -97,6 +97,53 @@ export class RetryExhaustedError extends Error {
   }
 }
 
+/**
+ * Bound for the transport detail folded into a thrown-error exhaustion message.
+ * The message reaches a terminal DB row, so a pathological cause chain must not
+ * bloat it. The runtime applies its own 300-char bound downstream; this one keeps
+ * any single link short enough that the outer bound does not truncate away the
+ * status/endpoint the caller appended.
+ */
+const THROWN_CAUSE_DETAIL_MAX = 120;
+
+/**
+ * Describe a THROWN transport failure well enough to act on it.
+ *
+ * `fetch` reports every transport fault — DNS, TLS, reset socket, undici's
+ * header/body timeouts — as the same contentless `TypeError: fetch failed`, and
+ * puts the real fault on `.cause` (an `Error` with a `code` such as
+ * `ECONNRESET`, `ENOTFOUND`, `UND_ERR_HEADERS_TIMEOUT`). Reporting only the
+ * outer message makes a transient reset and a permanent DNS failure — which need
+ * opposite operator responses — indistinguishable in `connector_error_json`.
+ *
+ * This is also load-bearing for RETRY CLASSIFICATION, not just legibility:
+ * connectors declare a `retryablePattern` matching the transport vocabulary
+ * (`/ECONN|ETIMEDOUT|fetch failed/i`). The runtime tests that pattern against the
+ * terminal MESSAGE, so a message that drops the cause cannot match its own
+ * connector's pattern, and a retryable blip terminals the run as permanent.
+ *
+ * Walks the `.cause` chain (bounded) because undici nests one level deep and a
+ * future transport may nest further. Never includes a URL or header — the caller
+ * owns adding a redacted endpoint.
+ */
+export function describeThrownTransportError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const parts: string[] = [error.message];
+  let cause: unknown = error.cause;
+  for (let depth = 0; depth < 3 && cause instanceof Error; depth += 1) {
+    const { code, message: causeMessage } = cause as Error & { code?: unknown };
+    const codeSuffix = typeof code === "string" && code.length > 0 && !causeMessage.includes(code) ? ` (${code})` : "";
+    const link = `${causeMessage}${codeSuffix}`;
+    if (link && !parts.includes(link)) {
+      parts.push(link.length > THROWN_CAUSE_DETAIL_MAX ? `${link.slice(0, THROWN_CAUSE_DETAIL_MAX)}…` : link);
+    }
+    ({ cause } = cause);
+  }
+  return parts.join(": ");
+}
+
 const DEFAULT_SLEEP = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function parseRetryAfterMs(value: string | null | undefined, nowMs = Date.now()): number | null {
@@ -177,10 +224,20 @@ function classifyThrownRequestError(
   maxAttempts: number,
   retryBudget: HttpRetryBudget | undefined
 ): RetryExhaustedError | null {
+  // Fold the transport fault into the message. `originalCause` already carried
+  // it, but nothing downstream reads that field, so the owner saw only the
+  // generic sentence and the connector's retryablePattern could not match its
+  // own transport vocabulary. See `describeThrownTransportError`.
+  const detail = describeThrownTransportError(error);
   if (attempt >= maxAttempts) {
-    return new RetryExhaustedError("HTTP request failed after retry budget was exhausted", attempt, error);
+    return new RetryExhaustedError(`HTTP request failed after retry budget was exhausted: ${detail}`, attempt, error);
   }
-  return retryBudgetGate(retryBudget, attempt, error, "HTTP request failed; ratio-based retry budget is exhausted");
+  return retryBudgetGate(
+    retryBudget,
+    attempt,
+    error,
+    `HTTP request failed; ratio-based retry budget is exhausted: ${detail}`
+  );
 }
 
 /**
@@ -291,5 +348,13 @@ export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryO
     await sleep(delayMs);
   }
 
-  throw new RetryExhaustedError("HTTP request failed after retry budget was exhausted", maxAttempts, lastFailure);
+  // Loop fell through with retries left unspent (only reachable when the last
+  // attempt slept rather than returned). `lastFailure` is a thrown error or a
+  // retryable response; only the former carries transport detail worth folding.
+  const trailingDetail = lastFailure instanceof Error ? `: ${describeThrownTransportError(lastFailure)}` : "";
+  throw new RetryExhaustedError(
+    `HTTP request failed after retry budget was exhausted${trailingDetail}`,
+    maxAttempts,
+    lastFailure
+  );
 }

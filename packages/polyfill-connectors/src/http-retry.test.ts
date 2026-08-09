@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  describeThrownTransportError,
   jitteredExponentialDelayMs,
   parseRetryAfterMs,
   RetryExhaustedError,
@@ -283,4 +284,75 @@ test("retryHttp: shouldKeepRetrying sees the parsed Retry-After so policy can ke
   assert.equal(result.status, 200, "honest Retry-After waits still recover");
   assert.deepEqual(seenRetryAfter, [5000], "predicate receives the parsed Retry-After in ms");
   assert.deepEqual(sleeps, [5000]);
+});
+
+// ─── A THROWN transport fault must survive into the terminal message ────────
+//
+// Regression for a live YNAB run (run_1786288330250) whose terminal row read
+// {"code":null,"message":"HTTP request failed after retry budget was exhausted",
+// "retryable":false} — no status, no endpoint, no cause. `fetch` reports every
+// transport fault as the same `TypeError: fetch failed` and puts the real fault
+// on `.cause`; `RetryExhaustedError` stashed it on `originalCause`, but nothing
+// downstream reads that field, so the owner saw only the generic sentence.
+
+test("describeThrownTransportError: unwraps fetch's contentless TypeError to the real transport fault", () => {
+  const err = new TypeError("fetch failed");
+  err.cause = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  const described = describeThrownTransportError(err);
+  assert.match(described, /fetch failed/, "the outer message is kept for continuity");
+  assert.match(described, /ECONNRESET/, "the real transport fault must survive — it is the whole diagnostic");
+});
+
+test("describeThrownTransportError: appends a cause code the message does not already state", () => {
+  const err = new TypeError("fetch failed");
+  err.cause = Object.assign(new Error("getaddrinfo ENOTFOUND api.example.com"), { code: "ENOTFOUND" });
+  // The code is already in the message text, so it must not be repeated.
+  assert.equal(describeThrownTransportError(err), "fetch failed: getaddrinfo ENOTFOUND api.example.com");
+
+  const timeout = new TypeError("fetch failed");
+  timeout.cause = Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" });
+  assert.match(describeThrownTransportError(timeout), /UND_ERR_HEADERS_TIMEOUT/);
+});
+
+test("describeThrownTransportError: bounds a pathological cause and passes non-Errors through", () => {
+  const err = new Error("outer");
+  err.cause = new Error("x".repeat(5000));
+  const described = describeThrownTransportError(err);
+  assert.ok(described.length < 200, `expected a bounded description, got ${described.length}`);
+  assert.match(described, /…/);
+  assert.equal(describeThrownTransportError("raw string throw"), "raw string throw");
+});
+
+test("retryHttp: a thrown transport error carries its cause into the exhaustion message", async () => {
+  const boom = new TypeError("fetch failed");
+  boom.cause = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+  await assert.rejects(
+    retryHttp({
+      baseDelayMs: 1,
+      // maxAttempts: 1 is the shared API-connector convention, so the very first
+      // throw is immediately terminal — the exact live YNAB configuration.
+      maxAttempts: 1,
+      maxDelayMs: 10,
+      maxRetryAfterMs: 10,
+      request: () => {
+        throw boom;
+      },
+      sleep: () => {
+        // No retry is reachable at maxAttempts:1; a real sleep would only slow the test.
+      },
+    }),
+    (err: unknown) => {
+      assert.ok(err instanceof RetryExhaustedError);
+      assert.match(err.message, /ECONNRESET/, "the terminal message must name the transport fault");
+      assert.equal(err.originalCause, boom, "the original error is still reachable for callers that want it");
+      // Load-bearing beyond legibility: connectors declare a retryablePattern
+      // over transport vocabulary and the runtime tests it against THIS message.
+      assert.equal(
+        /ECONN|ETIMEDOUT|fetch failed/i.test(err.message),
+        true,
+        "a transport fault must remain classifiable as retryable"
+      );
+      return true;
+    }
+  );
 });
