@@ -3792,8 +3792,15 @@ test(
   })
 );
 
+// Contract revised 2026-08-08: an unproven DETAIL_COVERAGE key still WITHHOLDS
+// the state commit (a claim of completeness must carry proof), but it no longer
+// KILLS the run. A coverage shortfall is a reported gap, not a protocol
+// violation — the connector's envelope was well-formed and it simply covered
+// fewer detail items than expected, so a run whose records are already ingested
+// must keep them. The cursor-withholding half below is unchanged and is the
+// invariant this test has always really been protecting.
 test(
-  "runtime rejects state commit when required DETAIL_COVERAGE has no hydrated detail or durable gap",
+  "runtime withholds state commit and reports a gap when required DETAIL_COVERAGE has no hydrated detail or durable gap",
   withTempDb(async () => {
     await withStateServer(async ({ rsUrl, stateWrites }) => {
       const { connectorPath, cleanup } = createConnector([
@@ -3810,23 +3817,30 @@ test(
       ]);
 
       try {
-        await assert.rejects(
-          () =>
-            runConnectorWithGapStore({
-              admitRunConnection: fakeAdmitRunConnection(),
-              connectorId: "chatgpt",
-              connectorPath,
-              manifest: { streams: [{ name: "conversation_list" }, { name: "conversations" }] },
-              // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
-              onProgress: () => {},
-              ownerToken: "owner",
-              rsUrl,
-              state: {},
-            }),
+        const result = await runConnectorWithGapStore({
+          admitRunConnection: fakeAdmitRunConnection(),
+          connectorId: "chatgpt",
+          connectorPath,
+          manifest: { streams: [{ name: "conversation_list" }, { name: "conversations" }] },
+          // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op test double represents an optional side effect.
+          onProgress: () => {},
+          ownerToken: "owner",
+          rsUrl,
+          state: {},
+        });
+
+        assert.equal(result.status, "succeeded", "a coverage shortfall is not a run-killing protocol violation");
+        // The unproven state_stream's cursor is still not advanced.
+        assert.equal(stateWrites.length, 0);
+        // ...and the shortfall is reported honestly rather than swallowed.
+        const gaps = (result.known_gaps ?? []) as Record<string, unknown>[];
+        const coverageGap = gaps.find((gap) => gap.reason === "detail_coverage_incomplete");
+        assert.ok(coverageGap, "the shortfall is surfaced as a known gap");
+        assert.match(
+          String(coverageGap.message ?? ""),
           // biome-ignore lint/performance/useTopLevelRegex: test assertion patterns remain colocated with the assertion they explain.
           /Connector detail coverage incomplete: state_stream=conversation_list stream=conversations missing_required_keys=1/
         );
-        assert.equal(stateWrites.length, 0);
       } finally {
         cleanup();
       }

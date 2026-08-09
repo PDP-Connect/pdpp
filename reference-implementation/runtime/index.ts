@@ -305,10 +305,26 @@ function unsupportedDetailGapStoreCapability(capability: string): () => never {
 interface DetailCoverageEntry {
   considered: number | null;
   covered: number | null;
+  /**
+   * Keys the connector declared it could not hydrate this run. A declared gap
+   * is an accounted-for key — the connector reported the shortfall honestly
+   * rather than claiming coverage it does not have — so it satisfies the
+   * coverage invariant just like a durable DETAIL_GAP for the same key.
+   */
+  gapKeys: Set<string>;
   hydratedKeys: Set<string>;
   optionalSkipKeys: Set<string>;
   requiredKeys: string[];
   stream: string;
+}
+
+/**
+ * Single source for the coverage-shortfall explanation, shared by the known-gap
+ * message and the terminal `failure_message`, so the owner reads the same
+ * sentence wherever the shortfall surfaces.
+ */
+function detailCoverageShortfallMessage(stateStream: string, stream: string, missingKeyCount: number): string {
+  return `Connector detail coverage incomplete: state_stream=${stateStream} stream=${stream} missing_required_keys=${missingKeyCount}`;
 }
 
 /** An open structured-ASSISTANCE prompt awaiting a terminal status. */
@@ -2954,6 +2970,10 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       // against `covered` when present so a steady-state full-sync run reads
       // `complete`, never inferred from collected.
       covered: boundConsideredCount(msg.covered),
+      // Connector-declared unhydrated keys. Retained (not just counted for the
+      // timeline event) so the coverage invariant can credit a key the
+      // connector honestly reported as a gap.
+      gapKeys: new Set(((msg.gap_keys as (string | number)[] | null) || []).map(normalizeCoverageKey)),
       hydratedKeys: new Set((msg.hydrated_keys as (string | number)[]).map(normalizeCoverageKey)),
       optionalSkipKeys: new Set(
         ((msg.optional_skip_keys as (string | number)[] | null) || []).map(normalizeCoverageKey)
@@ -2964,7 +2984,20 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     detailCoverageByStateStream.set(stateStream, entries);
   }
 
-  function assertDetailCoverageSatisfiedBeforeCommit(): void {
+  // A DETAIL_COVERAGE shortfall is a coverage GAP, not a protocol violation.
+  // The connector spoke a well-formed protocol and told the truth about what it
+  // could not hydrate this run; the honest response is to report the shortfall
+  // and withhold the affected `state_stream`'s cursor so the next run
+  // re-collects it — never to fail a run whose records are already ingested and
+  // durable. (A claim of completeness must carry proof, so an unproven key
+  // still blocks the cursor advance; incomplete coverage is reported, not
+  // fatal.) Mirrors the transient-manifest-drift posture in
+  // `recordManifestDriftStreamSkip`: per-stream gap + no cursor advance.
+  //
+  // Returns the `state_stream`s whose coverage is unproven; the caller skips
+  // exactly those commits and commits the rest.
+  async function recordDetailCoverageShortfalls(): Promise<Set<string>> {
+    const shortfallStateStreams = new Set<string>();
     for (const stateStream of Object.keys(newState)) {
       const coverageEntries = detailCoverageByStateStream.get(stateStream) || [];
       for (const coverage of coverageEntries) {
@@ -2979,17 +3012,68 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
             .map((gap) => normalizeCoverageKey(gap.record_key as string | number))
         );
         const missingKeys = coverage.requiredKeys.filter(
-          (key) => !(coverage.hydratedKeys.has(key) || coverage.optionalSkipKeys.has(key) || accountedGapKeys.has(key))
+          (key) =>
+            !(
+              coverage.hydratedKeys.has(key) ||
+              coverage.optionalSkipKeys.has(key) ||
+              coverage.gapKeys.has(key) ||
+              accountedGapKeys.has(key)
+            )
         );
         if (!missingKeys.length) {
           continue;
         }
-
-        throw new Error(
-          `Connector detail coverage incomplete: state_stream=${stateStream} stream=${coverage.stream} missing_required_keys=${missingKeys.length}`
-        );
+        shortfallStateStreams.add(stateStream);
+        // biome-ignore lint/performance/noAwaitInLoops: one bounded gap per shortfalling coverage entry; sequential ordering keeps the timeline honest.
+        await recordDetailCoverageShortfall(stateStream, coverage, missingKeys.length);
       }
     }
+    return shortfallStateStreams;
+  }
+
+  // Per-shortfall known gap + timeline event. `detail_coverage_incomplete` is a
+  // transient reason: the next run retries the same keys, so the owner sees a
+  // reported gap with a real explanation rather than a bare failure.
+  async function recordDetailCoverageShortfall(
+    stateStream: string,
+    coverage: DetailCoverageEntry,
+    missingKeyCount: number
+  ): Promise<void> {
+    const message = detailCoverageShortfallMessage(stateStream, coverage.stream, missingKeyCount);
+    const gap = buildKnownGap({
+      diagnostics: {
+        missing_required_keys: missingKeyCount,
+        required_keys: coverage.requiredKeys.length,
+        state_stream: stateStream,
+      },
+      kind: "detail_coverage",
+      message,
+      reason: "detail_coverage_incomplete",
+      recoveryHint: "retry_by_runtime",
+      stream: coverage.stream,
+    });
+    appendKnownGap(gap);
+    await emitSpineEventTracked({
+      actor_id: connectorId,
+      actor_type: "runtime",
+      data: {
+        known_gap: gap,
+        message,
+        reason: "detail_coverage_incomplete",
+        source: runSource,
+        state_stream: stateStream,
+        stream: coverage.stream,
+      },
+      event_type: "run.stream_skipped",
+      object_id: runId,
+      object_type: "run",
+      run_id: runId,
+      scenario_id: traceContext.scenario_id,
+      status: "skipped",
+      stream_id: coverage.stream,
+      trace_id: traceContext.trace_id,
+    });
+    onProgress({ reason: "detail_coverage_incomplete", stream: coverage.stream, type: "stream_skipped" });
   }
 
   // Record a transient per-stream gap for a stream whose ingest was rejected as
@@ -4602,11 +4686,13 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       await awaitLeaseAccounting();
 
       if (done.status === "succeeded" && persistState) {
-        assertDetailCoverageSatisfiedBeforeCommit();
-        await Object.entries(newState).reduce(
-          (previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)),
-          Promise.resolve()
-        );
+        // Unproven coverage withholds only its own state_stream's cursor; every
+        // other stream still commits, and the run stays successful with the
+        // shortfall reported as a known gap.
+        const coverageShortfallStateStreams = await recordDetailCoverageShortfalls();
+        await Object.entries(newState)
+          .filter(([stream]) => !coverageShortfallStateStreams.has(stream))
+          .reduce((previous, [stream, cursor]) => previous.then(() => commitState(stream, cursor)), Promise.resolve());
       }
       const assistanceStatus = done.status === "succeeded" ? "resolved" : "cancelled";
       const assistanceReason = done.status === "succeeded" ? "run_completed" : "connector_reported_failed";

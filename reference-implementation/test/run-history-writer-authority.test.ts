@@ -28,6 +28,7 @@ const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL
 interface RunHistoryTestRow {
   readonly attempt: number;
   readonly completed_at: string | null;
+  readonly connector_error_json: string | null;
   readonly connector_id: string;
   readonly connector_instance_id: string;
   readonly facts_json: string | null;
@@ -35,6 +36,7 @@ interface RunHistoryTestRow {
   readonly scheduler_managed: 0 | 1;
   readonly started_at: string;
   readonly status: string;
+  readonly terminal_reason: string | null;
   readonly trigger_kind: string | null;
 }
 
@@ -167,6 +169,87 @@ test("a terminal-only browser-surface failure is durable with its bounded nested
       browser_surface_wait_reason: "surface_unhealthy",
     });
     assert.equal(countRunHistoryRows(runId), 1, "terminal fallback creates exactly one fenced row");
+  } finally {
+    closeDb();
+  }
+});
+
+// Regression for run_1786242751717 (live UAT, 2026-08-08): a run the RUNTIME
+// failed stored terminal_reason=connector_protocol_violation with
+// connector_error_json EMPTY. The connector had reported DONE with no error of
+// its own, so there were no `connector_error_*` fields to reassemble and the
+// column was written NULL — while the runtime's precise explanation
+// ("Connector detail coverage incomplete: ...") sat on the terminal spine event
+// as `failure_message` and reached nothing the owner could see. A terminal
+// failure must never be stored without its reason.
+test("a runtime-authored terminal failure stores its failure_message as the connector error", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-runtime-failure-message-");
+  initDb(dbPath);
+  try {
+    const runId = "run_runtime_authored_failure";
+    const connectorInstanceId = "cin_runtime_authored_failure";
+    const failureMessage = "Connector detail coverage incomplete: state_stream=holdings stream=valuations";
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+        // The live shape: runtime-authored explanation, and NO connector_error_*
+        // field anywhere because the connector itself reported no error.
+        failure_message: failureMessage,
+        failure_origin: "runtime",
+        reason: "connector_protocol_violation",
+        records_emitted: 5,
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    const row = readRunHistoryRow(runId);
+    assert.equal(row?.status, "failed");
+    assert.equal(row?.terminal_reason, "connector_protocol_violation");
+    assert.ok(row?.connector_error_json, "a terminal failure must not be stored with an empty error");
+    assert.deepEqual(JSON.parse(row?.connector_error_json ?? "null"), {
+      code: null,
+      message: failureMessage,
+      origin: "runtime",
+      retryable: null,
+    });
+  } finally {
+    closeDb();
+  }
+});
+
+// The connector's own DONE.error stays authoritative when it exists: the
+// runtime-authored fallback must not overwrite a more specific,
+// connector-reported explanation.
+test("a connector-reported terminal error is preserved verbatim over the runtime fallback", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-connector-error-wins-");
+  initDb(dbPath);
+  try {
+    const runId = "run_connector_error_wins";
+    const connectorInstanceId = "cin_connector_error_wins";
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        connector_error_code: "session_failed",
+        connector_error_message: "otp_not_provided",
+        connector_error_retryable: false,
+        connector_instance_id: connectorInstanceId,
+        failure_message: "a less specific runtime line",
+        failure_origin: "runtime",
+        reason: "connector_reported_failed",
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    assert.deepEqual(JSON.parse(readRunHistoryRow(runId)?.connector_error_json ?? "null"), {
+      code: "session_failed",
+      message: "otp_not_provided",
+      retryable: false,
+    });
   } finally {
     closeDb();
   }

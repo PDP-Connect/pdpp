@@ -167,7 +167,28 @@ function connectorErrorJsonFromTerminalData(data: Record<string, unknown>): stri
     connector_error_code === undefined &&
     connector_error_retryable === undefined
   ) {
-    return null;
+    // A run the RUNTIME failed (not the connector) carries no
+    // `connector_error_*` field: the connector reported DONE without an error
+    // and the runtime rejected the run afterwards. Without this fallback the
+    // owner sees a terminal failure with an empty explanation while the real
+    // reason exists only in the container log. `failure_message` is the
+    // runtime-authored explanation already persisted on the terminal spine
+    // event (buildTerminalErrorFields, runtime/index.ts); carry it through so
+    // the stored error is never blank. `failure_origin` distinguishes it from
+    // a connector-authored message.
+    const { failure_message, failure_origin } = data as {
+      failure_message?: unknown;
+      failure_origin?: unknown;
+    };
+    if (typeof failure_message !== "string" || !failure_message) {
+      return null;
+    }
+    return JSON.stringify({
+      code: null,
+      message: failure_message,
+      origin: typeof failure_origin === "string" && failure_origin ? failure_origin : "runtime",
+      retryable: null,
+    });
   }
   return JSON.stringify({
     code: connector_error_code ?? null,
