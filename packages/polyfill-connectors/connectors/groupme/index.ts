@@ -153,6 +153,36 @@ export function validateAttachmentUrl(urlString: string): { valid: boolean; reas
   }
 }
 
+// Content-Types GroupMe's CDN is known to serve for image/file attachments.
+// A header outside this set (or absent/malformed) falls back to the
+// type-based guess rather than passing an arbitrary provider-supplied string
+// through to blob storage.
+const SAFE_ATTACHMENT_CONTENT_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "application/octet-stream",
+  "application/pdf",
+]);
+
+/**
+ * Normalizes a raw Content-Type response header into a safe, known MIME
+ * type, or null if the header is missing/malformed/not in the allowed set.
+ * Strips parameters (e.g. `; charset=utf-8`) before matching.
+ */
+export function normalizeAttachmentContentType(rawHeader: string | null | undefined): string | null {
+  if (!rawHeader) {
+    return null;
+  }
+  const base = rawHeader.split(";")[0]?.trim().toLowerCase();
+  if (!base) {
+    return null;
+  }
+  return SAFE_ATTACHMENT_CONTENT_TYPES.has(base) ? base : null;
+}
+
 async function readAttachmentBody(res: Response, recordKey: string): Promise<{ buffer: Buffer; size: number } | null> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
@@ -193,7 +223,7 @@ async function readAttachmentBody(res: Response, recordKey: string): Promise<{ b
 export async function fetchAttachmentBlob(
   urlString: string,
   recordKey: string
-): Promise<{ buffer: Buffer; size: number } | null> {
+): Promise<{ buffer: Buffer; contentType: string | null; size: number } | null> {
   const validation = validateAttachmentUrl(urlString);
   if (!validation.valid) {
     // eslint-disable-next-line no-console
@@ -237,7 +267,11 @@ export async function fetchAttachmentBlob(
       return null;
     }
 
-    return await readAttachmentBody(res, recordKey);
+    const body = await readAttachmentBody(res, recordKey);
+    if (!body) {
+      return null;
+    }
+    return { ...body, contentType: normalizeAttachmentContentType(res.headers.get("content-type")) };
   } catch (error) {
     if (error instanceof TypeError && error.message.includes("redirect")) {
       // eslint-disable-next-line no-console
@@ -485,6 +519,15 @@ interface GroupMeUnifiedState {
   groups?: Record<string, string>;
 }
 
+/**
+ * Prefers the Content-Type actually observed on the attachment fetch over
+ * the pre-fetch type-based guess. `observedContentType` is already
+ * normalized/allowlisted by `normalizeAttachmentContentType` upstream.
+ */
+export function resolveUploadMimeType(observedContentType: string | null, fallbackGuess: string): string {
+  return observedContentType ?? fallbackGuess;
+}
+
 function makeUploader(): BlobUploader | undefined {
   if (!runtimeBlobUploadAvailable()) {
     return;
@@ -505,13 +548,14 @@ function makeUploader(): BlobUploader | undefined {
     if (!blob) {
       return null; // Failure already logged by fetchAttachmentBlob
     }
+    const resolvedMimeType = resolveUploadMimeType(blob.contentType, mimeType);
 
     try {
       return await blobUploader({
         connectorId: "groupme",
         connectorInstanceId: process.env.PDPP_CONNECTOR_INSTANCE_ID || null,
         content: [blob.buffer],
-        mimeType,
+        mimeType: resolvedMimeType,
         recordKey,
         stream: "attachments",
       });

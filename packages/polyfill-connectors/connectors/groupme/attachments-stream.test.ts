@@ -25,7 +25,13 @@
 
 import assert, { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { describe, it } from "node:test";
-import { attachmentContentType, attachmentRecordId, normalizeAttachments, normalizeOneAttachment } from "./index.ts";
+import {
+  attachmentContentType,
+  attachmentRecordId,
+  normalizeAttachments,
+  normalizeOneAttachment,
+  resolveUploadMimeType,
+} from "./index.ts";
 
 describe("GroupMe attachments stream (production seam)", () => {
   describe("attachmentRecordId (record_key uniqueness)", () => {
@@ -62,6 +68,24 @@ describe("GroupMe attachments stream (production seam)", () => {
       const mimeType = attachmentContentType({ type: "file", url: "https://i.groupme.com/a.pdf" });
       assert.notStrictEqual(mimeType, "image/file");
       strictEqual(mimeType, "application/octet-stream");
+    });
+  });
+
+  describe("resolveUploadMimeType (prefer observed Content-Type over the guess)", () => {
+    it("prefers a real observed PNG content-type over the image/jpeg guess", () => {
+      strictEqual(resolveUploadMimeType("image/png", "image/jpeg"), "image/png");
+    });
+
+    it("prefers a real observed GIF content-type over the image/jpeg guess", () => {
+      strictEqual(resolveUploadMimeType("image/gif", "image/jpeg"), "image/gif");
+    });
+
+    it("falls back to the guess when the provider omitted Content-Type", () => {
+      strictEqual(resolveUploadMimeType(null, "image/jpeg"), "image/jpeg");
+    });
+
+    it("falls back to the guess when the observed header failed normalization (malformed/invalid)", () => {
+      strictEqual(resolveUploadMimeType(null, "application/octet-stream"), "application/octet-stream");
     });
   });
 

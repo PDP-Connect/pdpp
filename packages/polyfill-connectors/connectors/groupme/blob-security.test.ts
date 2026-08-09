@@ -18,7 +18,30 @@
 
 import assert, { deepStrictEqual, match, ok, strictEqual } from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { fetchAttachmentBlob, validateAttachmentUrl } from "./index.ts";
+import { fetchAttachmentBlob, normalizeAttachmentContentType, validateAttachmentUrl } from "./index.ts";
+
+function fakeAttachmentResponse(headers: Record<string, string>, body: Buffer): unknown {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-length": String(body.length), ...headers }),
+    body: {
+      getReader: () => {
+        let sent = false;
+        return {
+          read: () => {
+            if (sent) {
+              return Promise.resolve({ done: true });
+            }
+            sent = true;
+            return Promise.resolve({ done: false, value: body });
+          },
+          cancel: () => Promise.resolve(undefined),
+        };
+      },
+    },
+  };
+}
 
 describe("GroupMe blob attachment security (production seam)", () => {
   describe("validateAttachmentUrl (origin validation)", () => {
@@ -242,6 +265,106 @@ describe("GroupMe blob attachment security (production seam)", () => {
       const result = await fetchAttachmentBlob("https://i.groupme.com/large.jpg", "max");
       ok(result, "50 MiB image should succeed");
       strictEqual(result.size, 50 * 1024 * 1024);
+    });
+  });
+
+  describe("fetchAttachmentBlob content-type capture", () => {
+    let originalFetch: typeof global.fetch;
+
+    beforeEach(() => {
+      originalFetch = global.fetch;
+    });
+
+    afterEach(() => {
+      (global as any).fetch = originalFetch;
+    });
+
+    it("captures a real PNG content-type from the response headers", async () => {
+      (global as any).fetch = async () => fakeAttachmentResponse({ "content-type": "image/png" }, Buffer.alloc(10));
+      const result = await fetchAttachmentBlob("https://i.groupme.com/a.png", "png-1");
+      ok(result);
+      strictEqual(result.contentType, "image/png");
+    });
+
+    it("captures a real GIF content-type from the response headers", async () => {
+      (global as any).fetch = async () => fakeAttachmentResponse({ "content-type": "image/gif" }, Buffer.alloc(10));
+      const result = await fetchAttachmentBlob("https://i.groupme.com/a.gif", "gif-1");
+      ok(result);
+      strictEqual(result.contentType, "image/gif");
+    });
+
+    it("captures a real JPEG content-type from the response headers", async () => {
+      (global as any).fetch = async () => fakeAttachmentResponse({ "content-type": "image/jpeg" }, Buffer.alloc(10));
+      const result = await fetchAttachmentBlob("https://i.groupme.com/a.jpg", "jpeg-1");
+      ok(result);
+      strictEqual(result.contentType, "image/jpeg");
+    });
+
+    it("strips content-type parameters before matching (image/jpeg; charset=binary)", async () => {
+      (global as any).fetch = async () =>
+        fakeAttachmentResponse({ "content-type": "image/jpeg; charset=binary" }, Buffer.alloc(10));
+      const result = await fetchAttachmentBlob("https://i.groupme.com/a.jpg", "jpeg-charset");
+      ok(result);
+      strictEqual(result.contentType, "image/jpeg");
+    });
+
+    it("returns null contentType when the header is missing", async () => {
+      (global as any).fetch = async () => fakeAttachmentResponse({}, Buffer.alloc(10));
+      const result = await fetchAttachmentBlob("https://i.groupme.com/a.bin", "missing-header");
+      ok(result, "fetch must still succeed without a content-type header");
+      strictEqual(result.contentType, null);
+    });
+
+    it("returns null contentType for a malformed/unrecognized header value", async () => {
+      (global as any).fetch = async () =>
+        fakeAttachmentResponse({ "content-type": "text/html; <script>evil()</script>" }, Buffer.alloc(10));
+      const result = await fetchAttachmentBlob("https://i.groupme.com/a.jpg", "malformed-header");
+      ok(result, "fetch must still succeed with a garbage content-type header");
+      strictEqual(result.contentType, null, "unrecognized/unsafe header values must not pass through");
+    });
+
+    it("does not fetch the attachment twice to determine content-type (single fetch call)", async () => {
+      let callCount = 0;
+      (global as any).fetch = async () => {
+        callCount += 1;
+        return fakeAttachmentResponse({ "content-type": "image/png" }, Buffer.alloc(10));
+      };
+      await fetchAttachmentBlob("https://i.groupme.com/a.png", "single-fetch");
+      strictEqual(callCount, 1, "must resolve content-type from the same fetch that downloads the body");
+    });
+  });
+
+  describe("normalizeAttachmentContentType (safe header normalization)", () => {
+    it("accepts known-safe image types", () => {
+      strictEqual(normalizeAttachmentContentType("image/png"), "image/png");
+      strictEqual(normalizeAttachmentContentType("image/gif"), "image/gif");
+      strictEqual(normalizeAttachmentContentType("image/jpeg"), "image/jpeg");
+      strictEqual(normalizeAttachmentContentType("image/webp"), "image/webp");
+    });
+
+    it("accepts application/pdf and application/octet-stream for file attachments", () => {
+      strictEqual(normalizeAttachmentContentType("application/pdf"), "application/pdf");
+      strictEqual(normalizeAttachmentContentType("application/octet-stream"), "application/octet-stream");
+    });
+
+    it("strips parameters and lowercases before matching", () => {
+      strictEqual(normalizeAttachmentContentType("IMAGE/PNG; charset=binary"), "image/png");
+    });
+
+    it("returns null for missing header", () => {
+      strictEqual(normalizeAttachmentContentType(null), null);
+      strictEqual(normalizeAttachmentContentType(undefined), null);
+      strictEqual(normalizeAttachmentContentType(""), null);
+    });
+
+    it("returns null for an unrecognized MIME type not in the safe set", () => {
+      strictEqual(normalizeAttachmentContentType("application/x-shellscript"), null);
+      strictEqual(normalizeAttachmentContentType("text/html"), null);
+    });
+
+    it("returns null for whitespace-only or malformed header", () => {
+      strictEqual(normalizeAttachmentContentType("   "), null);
+      strictEqual(normalizeAttachmentContentType(";;;"), null);
     });
   });
 
