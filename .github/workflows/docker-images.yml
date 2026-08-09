@@ -22,11 +22,16 @@ on:
       - "Dockerfile"
       - "apps/console/**"
       - "deploy/railway/**"
+      - "docker/neko/**"
       - "docker-compose*.yml"
       - "package.json"
       - "packages/**"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+      - "scripts/check-railway-template-artifacts.test.ts"
+      - "scripts/core-headed-patchright-runtime-oracle.sh"
+      - "scripts/core-headed-patchright-runtime-oracle.test.ts"
+      - "scripts/core-headed-patchright-runtime-oracle.ts"
       - "scripts/docker-smoke.sh"
   pull_request:
     # See the push trigger above: reference-implementation/** is excluded on
@@ -38,11 +43,16 @@ on:
       - "Dockerfile"
       - "apps/console/**"
       - "deploy/railway/**"
+      - "docker/neko/**"
       - "docker-compose*.yml"
       - "package.json"
       - "packages/**"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+      - "scripts/check-railway-template-artifacts.test.ts"
+      - "scripts/core-headed-patchright-runtime-oracle.sh"
+      - "scripts/core-headed-patchright-runtime-oracle.test.ts"
+      - "scripts/core-headed-patchright-runtime-oracle.ts"
       - "scripts/docker-smoke.sh"
   workflow_dispatch:
     inputs:
@@ -68,6 +78,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  patchright-lockstep:
+    name: patchright/browser version lockstep
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      # Static oracle: fails closed if the Dockerfile/n.eko image ever
+      # hardcodes a Patchright/Chromium version instead of deriving it from
+      # packages/polyfill-connectors/package.json (the one source of truth
+      # the reference-implementation runtime loads at import time).
+      - name: Prove Dockerfile and n.eko derive Patchright from the workspace manifest
+        run: pnpm railway:template:test
+
   validate:
     name: validate ${{ matrix.image }}
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -162,6 +205,18 @@ jobs:
           PDPP_CORE_IMAGE_TAG: pdpp:ci-core-test
         run: |
           node --test scripts/docker-slackdump-core-bundle.test.ts
+
+      # Runtime oracle: proves the exact image just built actually contains
+      # a launchable full-Chromium Patchright binary (not a headless-shell
+      # substitution and not a stale pinned revision), owns its managed
+      # display and profile, and survives a restart. Reuses the image loaded
+      # above instead of paying for a second build.
+      - name: Prove Core's built image launches a persistent Patchright/Chromium context
+        if: (github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == 'core') && matrix.image == 'core'
+        env:
+          PDPP_CORE_ORACLE_IMAGE: pdpp:ci-core-test
+          PDPP_CORE_ORACLE_SKIP_BUILD: "1"
+        run: bash scripts/core-headed-patchright-runtime-oracle.sh
 
   publish:
     name: publish ${{ matrix.image }}
