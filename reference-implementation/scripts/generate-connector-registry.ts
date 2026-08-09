@@ -48,6 +48,14 @@
  * tracked `server/generated/connector-registry.generated.ts` (used by the
  * drift check to render into a scratch directory without touching the real
  * file).
+ *
+ * Two source directories are also overridable via environment variables —
+ * `PDPP_POLYFILL_MANIFESTS_DIR` and `PDPP_REFERENCE_MANIFESTS_DIR` — so tests
+ * can point the generator at scratch manifest directories instead of writing
+ * synthetic/probe manifests into the real, shared
+ * `packages/polyfill-connectors/manifests`. Unset in normal use (CLI,
+ * `pnpm run generate:connector-registry`, the drift-check test), where the
+ * real directories apply.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -57,8 +65,12 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const riRoot = resolve(scriptDir, "..");
 const repoRoot = resolve(riRoot, "..");
-const polyfillManifestsDir = resolve(repoRoot, "packages/polyfill-connectors/manifests");
-const referenceManifestsDir = resolve(riRoot, "manifests");
+const polyfillManifestsDir = process.env.PDPP_POLYFILL_MANIFESTS_DIR
+  ? resolve(process.env.PDPP_POLYFILL_MANIFESTS_DIR)
+  : resolve(repoRoot, "packages/polyfill-connectors/manifests");
+const referenceManifestsDir = process.env.PDPP_REFERENCE_MANIFESTS_DIR
+  ? resolve(process.env.PDPP_REFERENCE_MANIFESTS_DIR)
+  : resolve(riRoot, "manifests");
 const targetPath = process.argv[2]
   ? resolve(process.argv[2])
   : resolve(riRoot, "server/generated/connector-registry.generated.ts");

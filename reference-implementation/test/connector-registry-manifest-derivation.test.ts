@@ -49,13 +49,18 @@
  *    walking the fixed LOCAL_COLLECTOR_DEFINITIONS array, so a proven
  *    manifest outside that array was structurally invisible to the
  *    computation — no error, no drift, no CI signal. This test reproduces
- *    that exact scenario against the real generator and real manifests
- *    directory (a temporary sibling manifest file, removed in `finally`).
+ *    that exact scenario against the real generator, but points it at an
+ *    isolated scratch manifests directory (seeded with a copy of every real
+ *    polyfill manifest plus the probe) via PDPP_POLYFILL_MANIFESTS_DIR,
+ *    rather than writing the probe into the real, shared
+ *    packages/polyfill-connectors/manifests — so parallel test execution or a
+ *    killed run cannot leave a stray probe manifest behind to corrupt other
+ *    tests or a concurrent generator run.
  */
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -118,39 +123,53 @@ test("connector-registry.generated.ts has not drifted from what regenerating fro
 });
 
 test("the generator throws (does not silently drop the claim) when a manifest declares capabilities.proven.local_collector=true with no matching LOCAL_COLLECTOR_DEFINITIONS entry", () => {
-  const probeConnectorKey = "zzz-test-omission-probe";
-  const probeManifestPath = join(polyfillManifestsDir, `${probeConnectorKey}.json`);
-  const probeManifest = {
-    capabilities: {
-      proven: { local_collector: true },
-    },
-    connector_id: `https://registry.pdpp.org/connectors/${probeConnectorKey}`,
-    connector_key: probeConnectorKey,
-    display_name: "Omission Probe (test fixture, not a real connector)",
-    protocol_version: "0.1.0",
-    runtime_requirements: { bindings: { filesystem: { required: true } } },
-    streams: [
-      {
-        name: "items",
-        primary_key: ["id"],
-        schema: { properties: { id: { type: "string" } }, type: "object" },
-      },
-    ],
-    version: "0.1.0",
-  };
-  writeFileSync(probeManifestPath, JSON.stringify(probeManifest, null, 2));
+  // Isolated scratch manifests dir, never the real
+  // packages/polyfill-connectors/manifests: seeded with a copy of every real
+  // polyfill manifest (so the generator's other derived sets stay realistic)
+  // plus the probe. Pointed at via PDPP_POLYFILL_MANIFESTS_DIR so a parallel
+  // test run or a killed process can never leave the probe behind in shared,
+  // live manifest state.
+  const scratchDir = mkdtempSync(join(tmpdir(), "connector-registry-omission-probe-"));
   try {
+    for (const file of readdirSync(polyfillManifestsDir)) {
+      if (file.endsWith(".json")) {
+        writeFileSync(join(scratchDir, file), readFileSync(join(polyfillManifestsDir, file)));
+      }
+    }
+
+    const probeConnectorKey = "zzz-test-omission-probe";
+    const probeManifest = {
+      capabilities: {
+        proven: { local_collector: true },
+      },
+      connector_id: `https://registry.pdpp.org/connectors/${probeConnectorKey}`,
+      connector_key: probeConnectorKey,
+      display_name: "Omission Probe (test fixture, not a real connector)",
+      protocol_version: "0.1.0",
+      runtime_requirements: { bindings: { filesystem: { required: true } } },
+      streams: [
+        {
+          name: "items",
+          primary_key: ["id"],
+          schema: { properties: { id: { type: "string" } }, type: "object" },
+        },
+      ],
+      version: "0.1.0",
+    };
+    writeFileSync(join(scratchDir, `${probeConnectorKey}.json`), JSON.stringify(probeManifest, null, 2));
+
     assert.throws(
       () =>
         execFileSync("node", ["--experimental-strip-types", generatorScript, "/dev/null"], {
           cwd: riRoot,
+          env: { ...process.env, PDPP_POLYFILL_MANIFESTS_DIR: scratchDir },
           stdio: "pipe",
         }),
       OMISSION_PROBE_KEY_RE,
       "generator must fail loud on a local_collector-proven manifest with no LOCAL_COLLECTOR_DEFINITIONS entry, not silently omit it from LOCAL_COLLECTOR_PROVEN_KEYS"
     );
   } finally {
-    unlinkSync(probeManifestPath);
+    rmSync(scratchDir, { force: true, recursive: true });
   }
 });
 
