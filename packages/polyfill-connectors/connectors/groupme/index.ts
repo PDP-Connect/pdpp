@@ -25,7 +25,13 @@
 
 import { createHash } from "node:crypto";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import { buildFullScanCoverageMessage, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import {
+  buildFullScanCoverageMessage,
+  type CollectContext,
+  type EmittedMessage,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { groupmePacingProfile } from "../../src/provider-profile.ts";
@@ -103,6 +109,7 @@ interface ProgressExtra {
   before_id?: string;
   cursor_present?: boolean;
   item_count?: number;
+  page?: number;
   phase?: string;
   rate_limit_pressure?: number;
   stream?: string;
@@ -437,6 +444,55 @@ async function makeRequest<T>(token: string, path: string, queryParams?: Record<
   return json.response;
 }
 
+interface PaginatedListResult<T> {
+  items: T[];
+  /** True when the walk hit `MAX_PAGES_PER_STREAM` before a page came back
+   *  shorter than `PAGE_SIZE` — the natural end signal. GroupMe's `/groups`
+   *  and `/chats` are genuinely paginated (`page`, `per_page`, empty array
+   *  once past the last page); a single unpaged page-1 fetch silently misses
+   *  every group/chat beyond it for an account with more than `PAGE_SIZE`. */
+  truncated: boolean;
+}
+
+/**
+ * Fully paginate a GroupMe list endpoint (`/groups`, `/chats`) using its
+ * documented `page`/`per_page` query params, stopping at the first page
+ * shorter than `PAGE_SIZE` (the natural end) or `maxPages` pages (honest
+ * truncation — see `PaginatedListResult.truncated`). `maxPages` defaults to
+ * the production `MAX_PAGES_PER_STREAM` cap; tests override it to exercise
+ * the truncation branch without paying for hundreds of real paced requests.
+ */
+async function fetchPaginatedList<T>(
+  token: string,
+  path: string,
+  stream: string,
+  progressWithSignals: ProgressFn,
+  maxPages: number = MAX_PAGES_PER_STREAM
+): Promise<PaginatedListResult<T>> {
+  const items: T[] = [];
+  let page = 1;
+
+  while (page <= maxPages) {
+    await progressWithSignals(`Fetching ${path}`, { stream, phase: "fetch", page, total_seen: items.length });
+    const pageItems = await makeRequest<T[]>(token, path, { page, per_page: PAGE_SIZE });
+    items.push(...pageItems);
+    await progressWithSignals(`Fetched ${path} page`, {
+      stream,
+      phase: "page",
+      page,
+      item_count: pageItems.length,
+      total_seen: items.length,
+    });
+
+    if (pageItems.length < PAGE_SIZE) {
+      return { items, truncated: false };
+    }
+    page += 1;
+  }
+
+  return { items, truncated: true };
+}
+
 function toGroupRecord(g: GroupMeGroup): RecordData {
   return {
     id: g.id,
@@ -508,20 +564,6 @@ async function toDirectChatMessageRecord(
 type BlobUploader = (url: string, mimeType: string, recordKey: string) => Promise<ReferenceBlobRef | null>;
 type ProgressFn = (message: string, extra?: ProgressExtra) => Promise<void>;
 
-// Runtime merges state per-stream, so all GroupMe state is under a single "groups" stream.
-// We emit all cursors under that unified namespace to ensure carry-forward on the next run.
-// Each field is wrapped `{ fingerprints: {...} }` — the shape `openFingerprintCursor`'s
-// `decodePriorFingerprints` actually decodes (see the fix note on the cursor
-// construction below); every other connector's per-stream state uses this same
-// wrapper (e.g. google_contacts, amazon, ynab).
-interface GroupMeUnifiedState {
-  attachments?: { fingerprints: Record<string, string> };
-  direct_chat_messages?: { fingerprints: Record<string, string> };
-  direct_chats?: { fingerprints: Record<string, string> };
-  group_messages?: { fingerprints: Record<string, string> };
-  groups?: { fingerprints: Record<string, string> };
-}
-
 /**
  * Prefers the Content-Type actually observed on the attachment fetch over
  * the pre-fetch type-based guess. `observedContentType` is already
@@ -585,6 +627,15 @@ interface GroupMessagesResponse {
  * caller rather than swallowing them, so a mid-group failure cannot be
  * mistaken for "this group has no more messages."
  */
+interface PerConversationWalkResult {
+  totalSeen: number;
+  /** True when the walk hit `MAX_PAGES_PER_STREAM` before reaching a page
+   *  shorter than `PAGE_SIZE` — the natural end signal. A capped walk did
+   *  not prove it saw every message, so its caller must not report this as
+   *  a clean, fully-considered pass. */
+  truncated: boolean;
+}
+
 async function collectGroupMessagesForGroup(
   token: string,
   group: GroupMeGroup,
@@ -592,13 +643,14 @@ async function collectGroupMessagesForGroup(
   uploader: BlobUploader | undefined,
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<number> {
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  maxPages: number = MAX_PAGES_PER_STREAM
+): Promise<PerConversationWalkResult> {
   let beforeId: string | undefined;
   let pageIndex = 0;
   let totalSeen = 0;
 
-  while (pageIndex < MAX_PAGES_PER_STREAM) {
+  while (pageIndex < maxPages) {
     const pageExtra: ProgressExtra = {
       stream: "group_messages",
       phase: "fetch",
@@ -622,7 +674,7 @@ async function collectGroupMessagesForGroup(
     });
 
     if (!messages.length) {
-      break;
+      return { totalSeen, truncated: false };
     }
 
     for (const msg of messages) {
@@ -633,14 +685,16 @@ async function collectGroupMessagesForGroup(
     }
 
     if (messages.length < PAGE_SIZE) {
-      break;
+      return { totalSeen, truncated: false };
     }
 
     beforeId = messages.at(-1)?.id;
     pageIndex += 1;
   }
 
-  return totalSeen;
+  // Loop exited via the page cap, not the natural `messages.length < PAGE_SIZE`
+  // end signal — this group's message history was not fully walked.
+  return { totalSeen, truncated: true };
 }
 
 /**
@@ -675,10 +729,31 @@ async function runCollectionPass(
   stream: string,
   errorLabel: string,
   progressWithSignals: ProgressFn,
-  body: () => Promise<number>
+  emit: (msg: EmittedMessage) => Promise<void>,
+  body: () => Promise<{ considered: number; truncated: boolean }>,
+  maxPages: number = MAX_PAGES_PER_STREAM
 ): Promise<CollectionOutcome> {
   try {
-    const considered = await body();
+    const { considered, truncated } = await body();
+    if (truncated) {
+      // A page-cap-truncated walk did not prove it saw every message in this
+      // stream — the enumerated `considered` count is a real but partial
+      // lower bound, not the boundary. Emitting it as `considered` would
+      // make `buildFullScanCoverageMessage` claim `covered === considered`
+      // for a walk that stopped short of the natural end, so this pass
+      // reports `failed: true` to withhold both the STATE checkpoint and
+      // the coverage claim, same as any other incomplete pass — plus a
+      // bounded diagnostic (count only, no message/group/chat identifiers)
+      // so the truncation itself is visible instead of silently absorbed.
+      await emit({
+        type: "SKIP_RESULT",
+        stream,
+        reason: "page_cap_truncated",
+        message: `${errorLabel}: hit the ${String(maxPages)}-page cap before reaching the end of at least one conversation's history`,
+        diagnostics: { considered, page_cap: maxPages },
+      });
+      return { considered: 0, failed: true };
+    }
     return { considered, failed: false };
   } catch (error) {
     if (error instanceof Error && error.message === "groupme_auth_failed") {
@@ -699,50 +774,70 @@ export async function collectGroups(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
+  emit: (msg: EmittedMessage) => Promise<void>,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  maxPages: number = MAX_PAGES_PER_STREAM
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe groups", { stream: "groups", phase: "start" });
-  return await runCollectionPass("groups", "groups", progressWithSignals, async () => {
-    const groups = await makeRequest<GroupMeGroup[]>(token, "/groups", { per_page: PAGE_SIZE });
-    await progressWithSignals("Fetched GroupMe groups", {
-      stream: "groups",
-      phase: "page",
-      item_count: groups.length,
-    });
+  return await runCollectionPass(
+    "groups",
+    "groups",
+    progressWithSignals,
+    emit,
+    async () => {
+      const { items: groups, truncated } = await fetchPaginatedList<GroupMeGroup>(
+        token,
+        "/groups",
+        "groups",
+        progressWithSignals,
+        maxPages
+      );
 
-    for (const group of groups) {
-      const record = toGroupRecord(group);
-      if (cursor.shouldEmit(record)) {
-        await emitRecord("groups", record);
+      for (const group of groups) {
+        const record = toGroupRecord(group);
+        if (cursor.shouldEmit(record)) {
+          await emitRecord("groups", record);
+        }
       }
-    }
-    return groups.length;
-  });
+      return { considered: groups.length, truncated };
+    },
+    maxPages
+  );
 }
 
 export async function collectDirectChats(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
+  emit: (msg: EmittedMessage) => Promise<void>,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  maxPages: number = MAX_PAGES_PER_STREAM
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct chats", { stream: "direct_messages", phase: "start" });
-  return await runCollectionPass("direct_messages", "direct chats", progressWithSignals, async () => {
-    const chats = await makeRequest<GroupMeDirectChat[]>(token, "/chats", { per_page: PAGE_SIZE });
-    await progressWithSignals("Fetched GroupMe direct chats", {
-      stream: "direct_messages",
-      phase: "page",
-      item_count: chats.length,
-    });
+  return await runCollectionPass(
+    "direct_messages",
+    "direct chats",
+    progressWithSignals,
+    emit,
+    async () => {
+      const { items: chats, truncated } = await fetchPaginatedList<GroupMeDirectChat>(
+        token,
+        "/chats",
+        "direct_messages",
+        progressWithSignals,
+        maxPages
+      );
 
-    for (const chat of chats) {
-      const record = toDirectChatRecord(chat);
-      if (cursor.shouldEmit(record)) {
-        await emitRecord("direct_messages", record);
+      for (const chat of chats) {
+        const record = toDirectChatRecord(chat);
+        if (cursor.shouldEmit(record)) {
+          await emitRecord("direct_messages", record);
+        }
       }
-    }
-    return chats.length;
-  });
+      return { considered: chats.length, truncated };
+    },
+    maxPages
+  );
 }
 
 interface DirectMessagesResponse {
@@ -765,13 +860,14 @@ async function collectDirectChatMessagesForChat(
   uploader: BlobUploader | undefined,
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<number> {
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  maxPages: number = MAX_PAGES_PER_STREAM
+): Promise<PerConversationWalkResult> {
   let beforeId: string | undefined;
   let pageIndex = 0;
   let totalSeen = 0;
 
-  while (pageIndex < MAX_PAGES_PER_STREAM) {
+  while (pageIndex < maxPages) {
     const pageExtra: ProgressExtra = {
       stream: "direct_chat_messages",
       phase: "fetch",
@@ -795,7 +891,7 @@ async function collectDirectChatMessagesForChat(
     });
 
     if (!messages.length) {
-      break;
+      return { totalSeen, truncated: false };
     }
 
     for (const msg of messages) {
@@ -806,14 +902,16 @@ async function collectDirectChatMessagesForChat(
     }
 
     if (messages.length < PAGE_SIZE) {
-      break;
+      return { totalSeen, truncated: false };
     }
 
     beforeId = messages.at(-1)?.id;
     pageIndex += 1;
   }
 
-  return totalSeen;
+  // Loop exited via the page cap, not the natural `messages.length < PAGE_SIZE`
+  // end signal — this chat's message history was not fully walked.
+  return { totalSeen, truncated: true };
 }
 
 export async function collectDirectChatMessages(
@@ -822,28 +920,48 @@ export async function collectDirectChatMessages(
   uploader: BlobUploader | undefined,
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
+  emit: (msg: EmittedMessage) => Promise<void>,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  maxPages: number = MAX_PAGES_PER_STREAM
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct messages", {
     stream: "direct_chat_messages",
     phase: "start",
   });
-  return await runCollectionPass("direct_chat_messages", "direct messages", progressWithSignals, async () => {
-    let considered = 0;
-    const chats = await makeRequest<GroupMeDirectChat[]>(token, "/chats", { per_page: PAGE_SIZE });
-    for (const chat of chats) {
-      considered += await collectDirectChatMessagesForChat(
+  return await runCollectionPass(
+    "direct_chat_messages",
+    "direct messages",
+    progressWithSignals,
+    emit,
+    async () => {
+      let considered = 0;
+      let truncated = false;
+      const { items: chats, truncated: chatsListTruncated } = await fetchPaginatedList<GroupMeDirectChat>(
         token,
-        chat,
-        cursor,
-        uploader,
-        emitAttachmentRecord,
+        "/chats",
+        "direct_chat_messages",
         progressWithSignals,
-        emitRecord
+        maxPages
       );
-    }
-    return considered;
-  });
+      truncated = truncated || chatsListTruncated;
+      for (const chat of chats) {
+        const chatResult = await collectDirectChatMessagesForChat(
+          token,
+          chat,
+          cursor,
+          uploader,
+          emitAttachmentRecord,
+          progressWithSignals,
+          emitRecord,
+          maxPages
+        );
+        considered += chatResult.totalSeen;
+        truncated = truncated || chatResult.truncated;
+      }
+      return { considered, truncated };
+    },
+    maxPages
+  );
 }
 
 export async function collectGroupMessages(
@@ -852,25 +970,173 @@ export async function collectGroupMessages(
   uploader: BlobUploader | undefined,
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
+  emit: (msg: EmittedMessage) => Promise<void>,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  maxPages: number = MAX_PAGES_PER_STREAM
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe group messages", { stream: "group_messages", phase: "start" });
-  return await runCollectionPass("group_messages", "group messages", progressWithSignals, async () => {
-    let considered = 0;
-    const groups = await makeRequest<GroupMeGroup[]>(token, "/groups", { per_page: PAGE_SIZE });
-    for (const group of groups) {
-      considered += await collectGroupMessagesForGroup(
+  return await runCollectionPass(
+    "group_messages",
+    "group messages",
+    progressWithSignals,
+    emit,
+    async () => {
+      let considered = 0;
+      let truncated = false;
+      const { items: groups, truncated: groupsListTruncated } = await fetchPaginatedList<GroupMeGroup>(
         token,
-        group,
-        cursor,
-        uploader,
-        emitAttachmentRecord,
+        "/groups",
+        "group_messages",
         progressWithSignals,
-        emitRecord
+        maxPages
       );
-    }
-    return considered;
-  });
+      truncated = truncated || groupsListTruncated;
+      for (const group of groups) {
+        const groupResult = await collectGroupMessagesForGroup(
+          token,
+          group,
+          cursor,
+          uploader,
+          emitAttachmentRecord,
+          progressWithSignals,
+          emitRecord,
+          maxPages
+        );
+        considered += groupResult.totalSeen;
+        truncated = truncated || groupResult.truncated;
+      }
+      return { considered, truncated };
+    },
+    maxPages
+  );
+}
+
+/**
+ * `collect()` writes each stream's fingerprint cursor under that stream's OWN
+ * top-level `state.<stream>` key — `state.groups`, `state.group_messages`,
+ * `state.direct_messages`, `state.direct_chat_messages`, `state.attachments`
+ * — mirroring exactly what it reads back on the next run. This is the only
+ * shape that survives the runtime's per-stream last-wins STATE projection
+ * (`bufferedState[message.stream] = message.cursor` in collector-runner.ts):
+ * a single unified emit under `stream: "groups"` would collide with
+ * `groups`'s own per-stream STATE emit and get overwritten by it on every
+ * run where `groups` succeeds, silently discarding the other four streams'
+ * cursors. There is no prior persisted state to migrate — GroupMe has never
+ * shipped a build that read these keys.
+ */
+export async function collect({
+  state,
+  requested,
+  credentials,
+  emit,
+  emitRecord,
+  progress,
+}: CollectContext): Promise<void> {
+  const progressWithSignals = progress as ProgressFn;
+  const token = credentials.GROUPME_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error("groupme_auth_failed");
+  }
+
+  const uploader = makeUploader();
+
+  const groupCursor = openFingerprintCursor(state.groups);
+  const groupMessageCursor = openFingerprintCursor(state.group_messages);
+  const directChatCursor = openFingerprintCursor(state.direct_messages);
+  const directChatMessageCursor = openFingerprintCursor(state.direct_chat_messages);
+  const attachmentCursor = openFingerprintCursor(state.attachments);
+
+  const attachmentsRequested = requested.has("attachments");
+  const emitAttachmentRecord = attachmentsRequested
+    ? async (data: RecordData): Promise<void> => {
+        if (attachmentCursor.shouldEmit(data)) {
+          await emitRecord("attachments", data);
+        }
+      }
+    : undefined;
+
+  let groupsOutcome: CollectionOutcome | undefined;
+  if (requested.has("groups")) {
+    groupsOutcome = await collectGroups(token, groupCursor, progressWithSignals, emit, emitRecord);
+  }
+  let groupMessagesOutcome: CollectionOutcome | undefined;
+  if (requested.has("group_messages")) {
+    groupMessagesOutcome = await collectGroupMessages(
+      token,
+      groupMessageCursor,
+      uploader,
+      emitAttachmentRecord,
+      progressWithSignals,
+      emit,
+      emitRecord
+    );
+  }
+  let directChatsOutcome: CollectionOutcome | undefined;
+  if (requested.has("direct_messages")) {
+    directChatsOutcome = await collectDirectChats(token, directChatCursor, progressWithSignals, emit, emitRecord);
+  }
+  let directChatMessagesOutcome: CollectionOutcome | undefined;
+  if (requested.has("direct_chat_messages")) {
+    directChatMessagesOutcome = await collectDirectChatMessages(
+      token,
+      directChatMessageCursor,
+      uploader,
+      emitAttachmentRecord,
+      progressWithSignals,
+      emit,
+      emitRecord
+    );
+  }
+
+  // Each stream owns its own top-level STATE key (`state.<stream>`) — the
+  // only shape that survives the runtime's per-stream last-wins STATE
+  // projection (see the `collect` doc comment above). A stream's own
+  // checkpoint and coverage proof are gated on that stream's collection pass
+  // having completed cleanly — a fetch/parse failure must commit neither a
+  // STATE checkpoint nor a coverage claim for the boundary it never finished
+  // walking (see CollectionOutcome). Withholding the emit on failure, rather
+  // than emitting a stale/empty replacement, is also what preserves a failed
+  // stream's prior cursor: its previously persisted top-level key is simply
+  // untouched this run and is still readable next run.
+  if (requested.has("groups") && groupsOutcome && !groupsOutcome.failed) {
+    await emit({
+      type: "STATE",
+      stream: "groups",
+      cursor: { fingerprints: groupCursor.toState() },
+    });
+    await emit(buildFullScanCoverageMessage("groups", groupsOutcome.considered));
+  }
+  if (requested.has("group_messages") && groupMessagesOutcome && !groupMessagesOutcome.failed) {
+    await emit({
+      type: "STATE",
+      stream: "group_messages",
+      cursor: { fingerprints: groupMessageCursor.toState() },
+    });
+    await emit(buildFullScanCoverageMessage("group_messages", groupMessagesOutcome.considered));
+  }
+  if (requested.has("direct_messages") && directChatsOutcome && !directChatsOutcome.failed) {
+    await emit({
+      type: "STATE",
+      stream: "direct_messages",
+      cursor: { fingerprints: directChatCursor.toState() },
+    });
+    await emit(buildFullScanCoverageMessage("direct_messages", directChatsOutcome.considered));
+  }
+  if (requested.has("direct_chat_messages") && directChatMessagesOutcome && !directChatMessagesOutcome.failed) {
+    await emit({
+      type: "STATE",
+      stream: "direct_chat_messages",
+      cursor: { fingerprints: directChatMessageCursor.toState() },
+    });
+    await emit(buildFullScanCoverageMessage("direct_chat_messages", directChatMessagesOutcome.considered));
+  }
+  if (attachmentsRequested) {
+    await emit({
+      type: "STATE",
+      stream: "attachments",
+      cursor: { fingerprints: attachmentCursor.toState() },
+    });
+  }
 }
 
 if (isMainModule(import.meta.url)) {
@@ -879,143 +1145,6 @@ if (isMainModule(import.meta.url)) {
     validateRecord,
     retryablePattern: /ECONN|fetch failed|rate_limited/i,
     auth: { kind: "env", required: ["GROUPME_ACCESS_TOKEN"] },
-    async collect({ state, requested, credentials, emit, emitRecord, progress }) {
-      const progressWithSignals = progress as ProgressFn;
-      const token = credentials.GROUPME_ACCESS_TOKEN;
-      if (!token) {
-        throw new Error("groupme_auth_failed");
-      }
-
-      const uploader = makeUploader();
-
-      // `openFingerprintCursor`'s `decodePriorFingerprints` only reads a
-      // `{ fingerprints: {...} }` shape (see google_contacts/amazon/ynab for
-      // the same convention) — passing a bare `Map` here silently decoded to
-      // an empty prior map every run, so dedup never actually carried
-      // forward across runs for any GroupMe stream. Pass each sub-state
-      // object directly; it already carries the `fingerprints` wrapper the
-      // STATE emits below now write.
-      const groupmeState = (state.groups as GroupMeUnifiedState) || {};
-      const groupCursor = openFingerprintCursor(groupmeState.groups);
-      const groupMessageCursor = openFingerprintCursor(groupmeState.group_messages);
-      const directChatCursor = openFingerprintCursor(groupmeState.direct_chats);
-      const directChatMessageCursor = openFingerprintCursor(groupmeState.direct_chat_messages);
-      const attachmentCursor = openFingerprintCursor(groupmeState.attachments);
-
-      const attachmentsRequested = requested.has("attachments");
-      const emitAttachmentRecord = attachmentsRequested
-        ? async (data: RecordData): Promise<void> => {
-            if (attachmentCursor.shouldEmit(data)) {
-              await emitRecord("attachments", data);
-            }
-          }
-        : undefined;
-
-      let groupsOutcome: CollectionOutcome | undefined;
-      if (requested.has("groups")) {
-        groupsOutcome = await collectGroups(token, groupCursor, progressWithSignals, emitRecord);
-      }
-      let groupMessagesOutcome: CollectionOutcome | undefined;
-      if (requested.has("group_messages")) {
-        groupMessagesOutcome = await collectGroupMessages(
-          token,
-          groupMessageCursor,
-          uploader,
-          emitAttachmentRecord,
-          progressWithSignals,
-          emitRecord
-        );
-      }
-      let directChatsOutcome: CollectionOutcome | undefined;
-      if (requested.has("direct_messages")) {
-        directChatsOutcome = await collectDirectChats(token, directChatCursor, progressWithSignals, emitRecord);
-      }
-      let directChatMessagesOutcome: CollectionOutcome | undefined;
-      if (requested.has("direct_chat_messages")) {
-        directChatMessagesOutcome = await collectDirectChatMessages(
-          token,
-          directChatMessageCursor,
-          uploader,
-          emitAttachmentRecord,
-          progressWithSignals,
-          emitRecord
-        );
-      }
-
-      // Emit all state under a unified namespace. The runtime merges per-stream,
-      // so this single emit carries all cursors forward to the next run. Each
-      // sub-state is wrapped `{ fingerprints: ... }` — the shape
-      // `openFingerprintCursor` actually decodes on the next run's read side
-      // above.
-      await emit({
-        type: "STATE",
-        stream: "groups",
-        cursor: {
-          groups: { fingerprints: groupCursor.toState() },
-          group_messages: { fingerprints: groupMessageCursor.toState() },
-          direct_chats: { fingerprints: directChatCursor.toState() },
-          direct_chat_messages: { fingerprints: directChatMessageCursor.toState() },
-          attachments: { fingerprints: attachmentCursor.toState() },
-        } satisfies GroupMeUnifiedState,
-      });
-      // The unified emit above only ever proves coverage for the "groups"
-      // stream (the runtime keys committed-checkpoint state off the STATE
-      // message's own `stream` field, not its cursor payload contents), so
-      // group_messages/direct_messages/direct_chat_messages were structurally
-      // unable to ever reach `complete` even after collecting real data. Each
-      // stream is independently gated above (no manifest `profiles` bundle
-      // requires "groups" alongside them), so a state_stream inheritance
-      // mapping to "groups" would still leave a groups-less run gapped —
-      // emit each stream's own checkpoint directly instead, using the same
-      // per-stream cursor state already computed above.
-      //
-      // A stream's own checkpoint and coverage proof are gated on that
-      // stream's collection pass having completed cleanly — a fetch/parse
-      // failure must commit neither a STATE checkpoint nor a coverage claim
-      // for the boundary it never finished walking (see CollectionOutcome).
-      // The unconditional unified emit above still carries every cursor
-      // forward regardless of per-stream failure, so a failed stream doesn't
-      // lose a sibling's successfully-advanced fingerprints — only that
-      // failed stream's OWN checkpoint/coverage below is withheld.
-      if (requested.has("groups") && groupsOutcome && !groupsOutcome.failed) {
-        await emit({
-          type: "STATE",
-          stream: "groups",
-          cursor: { fingerprints: groupCursor.toState() },
-        });
-        await emit(buildFullScanCoverageMessage("groups", groupsOutcome.considered));
-      }
-      if (requested.has("group_messages") && groupMessagesOutcome && !groupMessagesOutcome.failed) {
-        await emit({
-          type: "STATE",
-          stream: "group_messages",
-          cursor: { fingerprints: groupMessageCursor.toState() },
-        });
-        await emit(buildFullScanCoverageMessage("group_messages", groupMessagesOutcome.considered));
-      }
-      if (requested.has("direct_messages") && directChatsOutcome && !directChatsOutcome.failed) {
-        await emit({
-          type: "STATE",
-          stream: "direct_messages",
-          cursor: { fingerprints: directChatCursor.toState() },
-        });
-        await emit(buildFullScanCoverageMessage("direct_messages", directChatsOutcome.considered));
-      }
-      if (requested.has("direct_chat_messages") && directChatMessagesOutcome && !directChatMessagesOutcome.failed) {
-        await emit({
-          type: "STATE",
-          stream: "direct_chat_messages",
-          cursor: { fingerprints: directChatMessageCursor.toState() },
-        });
-        await emit(buildFullScanCoverageMessage("direct_chat_messages", directChatMessagesOutcome.considered));
-      }
-      if (attachmentsRequested) {
-        await emit({
-          type: "STATE",
-          stream: "attachments",
-          cursor: { fingerprints: attachmentCursor.toState() },
-        });
-      }
-    },
+    collect,
   });
 }
