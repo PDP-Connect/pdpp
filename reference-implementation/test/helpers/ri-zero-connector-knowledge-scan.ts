@@ -8,11 +8,20 @@
  *       reference-implementation-architecture/spec.md
  *
  * Proves RI production code carries no hardcoded connector/provider identity,
- * endpoint, scope, or credential-env-var knowledge. This is a text-structural
- * scan, not a type-checker: it trades a small amount of theoretical
- * evadability (string concatenation, indirect constants) for zero new
- * toolchain dependency, matching the existing manifest-honesty guards in
- * `packages/polyfill-connectors/`. See the change's design.md Non-Goals.
+ * endpoint, scope, or credential-env-var knowledge. Rules (1)-(4) below are a
+ * deliberate text-structural scan over string literals, not a type-checker:
+ * that trade (a small amount of theoretical evadability — string
+ * concatenation, indirect constants — for zero new toolchain dependency) is
+ * still correct for those four rules; see the change's design.md Non-Goals.
+ *
+ * Rule (5) — whether a sibling JSON/YAML data file can carry the same
+ * knowledge these four rules forbid in `.ts` source — is NOT a text-scan
+ * non-goal: a syntax-specific regex over one JS shape for reaching a data
+ * file cannot back up a "closed" claim (readFileSync/require/dynamic
+ * import/static json-attribute-import/new URL all reach the identical file
+ * with identical runtime behavior). Rule (5) is delegated to
+ * `ri-zero-connector-knowledge-data-load-scan.ts`, a real AST-based scanner
+ * that closes the load-site class rather than one syntax shape within it.
  *
  * The scanner derives its notion of "known connector identity" from the
  * shipped manifests themselves (both manifest roots), rather than hardcoding
@@ -21,7 +30,9 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, join, relative } from "node:path";
+import { extname, join, relative } from "node:path";
+
+import { isExemptDataLoadPath, scanFileDataLoads } from "./ri-zero-connector-knowledge-data-load-scan.ts";
 
 export interface ScanRoots {
   /** Absolute path to the repository root. */
@@ -37,39 +48,7 @@ export interface Violation {
 
 const PRODUCTION_SCAN_ROOTS = ["cli", "lib", "operations", "runtime", "scripts", "server"];
 
-/** Directories inside `reference-implementation/` that are exempt: connector-authored
- * code, test files, and generated/docs output. */
-const EXEMPT_DIR_SEGMENTS = new Set(["connectors", "test", "node_modules", "generated", "docs", "openapi"]);
-
 const MANIFEST_ROOTS = ["reference-implementation/manifests", "packages/polyfill-connectors/manifests"];
-
-/**
- * The complete, hand-maintained allowlist of RI-owned policy resources a
- * production `.ts` file may load via the `new URL("<relative-path>",
- * import.meta.url)` sibling-resolution idiom. Each entry is
- * `<production .ts file that may load it>` -> `<relative path it may load>`,
- * both fixed string literals. This is deliberately NOT auto-derived (unlike
- * `manifestDerivedConnectorKeys`): these are RI-maintainer-owned security
- * registries that must never be self-attested by a manifest or connector, so
- * the allowlist itself has to be a closed, PR-reviewed set — the one place in
- * this guard where a hand-typed list is correct, because it enumerates *this
- * guard's own trust boundary* rather than connector identity.
- *
- * Adding an entry here is a real security decision: it must be a fixed
- * sibling JSON/YAML file read as opaque DATA (never containing TypeScript
- * identity-literal logic), never a path under `connectors/`,
- * `packages/polyfill-connectors/` (outside `manifests/`), or any
- * connector-authored location.
- */
-const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ["reference-implementation/server/version-disposition.ts", new Set(["./version-disposition-policy.json"])],
-  [
-    "reference-implementation/scripts/compact-record-history.ts",
-    new Set(["./compact-record-history-local-device-policy.json"]),
-  ],
-]);
-
-const DATA_RESOURCE_EXTENSION_RE = /\.(json|ya?ml)$/i;
 
 const REGISTRY_ID_PREFIX = "https://registry.pdpp.org/connectors/";
 
@@ -109,12 +88,7 @@ const GENERIC_URL_HOSTS = new Set([
 /** Env-var name shapes that are always generic (never provider-specific). */
 const GENERIC_ENV_PREFIXES = ["PDPP_", "NODE_", "CI_", "GITHUB_ACTIONS", "npm_", "NEKO_"];
 
-function isExemptPath(relPath: string): boolean {
-  const segments = relPath.split("/");
-  return segments.some((segment) => EXEMPT_DIR_SEGMENTS.has(segment));
-}
-
-function walkTsFiles(dir: string, repoRoot: string, out: string[]): void {
+function walkTsFiles(dir: string, scanRootDir: string, repoRoot: string, out: string[]): void {
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -125,7 +99,7 @@ function walkTsFiles(dir: string, repoRoot: string, out: string[]): void {
     const abs = join(dir, entry);
     const stat = statSync(abs);
     if (stat.isDirectory()) {
-      walkTsFiles(abs, repoRoot, out);
+      walkTsFiles(abs, scanRootDir, repoRoot, out);
       continue;
     }
     if (extname(entry) !== ".ts") {
@@ -134,11 +108,15 @@ function walkTsFiles(dir: string, repoRoot: string, out: string[]): void {
     if (entry.endsWith(".test.ts") || entry.endsWith(".d.ts")) {
       continue;
     }
-    const relPath = relative(repoRoot, abs);
-    if (isExemptPath(relative(join(repoRoot, "reference-implementation"), abs))) {
+    // Exemption is checked relative to THIS FILE'S OWN scan root (e.g.
+    // `server/`), matching only the intended top-level directories
+    // (`server/connectors/`, `server/generated/`, ...) — not any directory
+    // sharing that name at arbitrary depth (a `server/foo/connectors/`
+    // shape does not exist in this codebase and must not be exempt).
+    if (isExemptDataLoadPath(relative(scanRootDir, abs))) {
       continue;
     }
-    out.push(relPath);
+    out.push(relative(repoRoot, abs));
   }
 }
 
@@ -147,7 +125,8 @@ export function productionFiles({ repoRoot }: ScanRoots): string[] {
   const riRoot = join(repoRoot, "reference-implementation");
   const out: string[] = [];
   for (const root of PRODUCTION_SCAN_ROOTS) {
-    walkTsFiles(join(riRoot, root), repoRoot, out);
+    const scanRootDir = join(riRoot, root);
+    walkTsFiles(scanRootDir, scanRootDir, repoRoot, out);
   }
   return out.sort();
 }
@@ -244,72 +223,6 @@ function hasIdentityContext(source: string, matchStart: number): boolean {
   return IDENTITY_CONTEXT_BEFORE_RE.test(before) || CASE_CONTEXT_BEFORE_RE.test(before);
 }
 
-// Matches `new URL(<literal-or-template>, import.meta.url)` — the ESM idiom
-// for resolving a path relative to the current module. This is the only
-// shape production code uses to reach a sibling data file, so it is also the
-// only shape a connector-knowledge-smuggling data file would need to hide
-// behind.
-const NEW_URL_SIBLING_RE = /new\s+URL\s*\(\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1\s*,\s*import\.meta\.url\s*\)/g;
-
-function resolveRelativeToFile(relFileFromRepoRoot: string, rawPathLiteral: string): string {
-  // Strip `${...}` interpolation segments before resolving so a dynamic
-  // segment doesn't corrupt path-join arithmetic; callers only use the
-  // resolved path to test "which directory does this land in", which is
-  // unaffected by what a runtime-interpolated segment ultimately contains.
-  const staticShape = rawPathLiteral.replace(/\$\{[^}]*\}/g, "PLACEHOLDER");
-  const fileDir = dirname(relFileFromRepoRoot);
-  return join(fileDir, staticShape).split("\\").join("/");
-}
-
-function isUnderSanctionedManifestRoot(resolvedRelPath: string): boolean {
-  return MANIFEST_ROOTS.some((root) => resolvedRelPath === root || resolvedRelPath.startsWith(`${root}/`));
-}
-
-/**
- * Scans one production file's source for `new URL(<path>, import.meta.url)`
- * sibling-resource loads that target a `.json`/`.yaml`/`.yml` file, which is
- * the mechanism `readFileSync`/dynamic `import()` production code uses to
- * pull in data files. Two shapes are legitimate:
- *   - a FIXED literal path landing on this file's exact
- *     `SANCTIONED_POLICY_RESOURCES` entry (a closed RI-owned registry, e.g.
- *     `version-disposition-policy.json`), or landing inside a sanctioned
- *     manifest root;
- *   - a DYNAMIC (template-interpolated) path, but only if it resolves inside
- *     a sanctioned manifest root — the normal "select a manifest by
- *     connector id" shape.
- * Anything else — a fixed literal outside both the allowlist and the
- * manifest roots, or a dynamic path outside the manifest roots — is a
- * violation: either an unreviewed policy resource, or a connector-derived
- * path free to point anywhere at runtime.
- */
-function scanDataResourceLoadSites(source: string, raw: string, relPath: string): Violation[] {
-  const violations: Violation[] = [];
-  for (const m of source.matchAll(NEW_URL_SIBLING_RE)) {
-    const index = m.index ?? 0;
-    const rawPathLiteral = m[2] ?? "";
-    if (!DATA_RESOURCE_EXTENSION_RE.test(rawPathLiteral.replace(/\$\{[^}]*\}/g, ""))) {
-      continue;
-    }
-    const isDynamic = rawPathLiteral.includes("${");
-    const resolved = resolveRelativeToFile(relPath, rawPathLiteral);
-
-    if (isUnderSanctionedManifestRoot(resolved)) {
-      continue;
-    }
-    if (!isDynamic && SANCTIONED_POLICY_RESOURCES.get(relPath)?.has(rawPathLiteral)) {
-      continue;
-    }
-
-    violations.push({
-      file: relPath,
-      line: lineNumberAt(source, index),
-      rule: isDynamic ? "dynamic-connector-derived-resource-path" : "unsanctioned-policy-resource-path",
-      snippet: lineTextAt(raw, index),
-    });
-  }
-  return violations;
-}
-
 /**
  * Scans one production file's source for the five violation shapes:
  * (1) a string literal equal to a known manifest-derived connector key,
@@ -318,11 +231,15 @@ function scanDataResourceLoadSites(source: string, raw: string, relPath: string)
  *     surface as a bare string literal match against the known-key set];
  * (3) a literal absolute URL whose host isn't on the generic allowlist;
  * (4) a provider-shaped credential env-var name literal;
- * (5) a sibling JSON/YAML data-resource load (`new URL(path,
- *     import.meta.url)`) that is neither a sanctioned manifest-root read nor
- *     an explicitly allowlisted RI-owned policy resource.
+ * (5) a JSON/YAML data-resource load (readFileSync/readFile/require/dynamic
+ *     import/static json-attribute import/new URL, resolved via a bounded
+ *     AST-based constant-folder — see
+ *     `ri-zero-connector-knowledge-data-load-scan.ts`) that is neither a
+ *     sanctioned-and-provenance-checked manifest-root read, an explicitly
+ *     allowlisted RI-owned policy resource, nor an explicitly reviewed
+ *     generic-data-read call site.
  */
-export function scanFile(absPath: string, relPath: string, connectorKeys: Set<string>): Violation[] {
+export function scanFile(absPath: string, relPath: string, connectorKeys: Set<string>, repoRoot: string): Violation[] {
   const raw = readFileSync(absPath, "utf8");
   const source = stripComments(raw);
   const violations: Violation[] = [];
@@ -384,7 +301,7 @@ export function scanFile(absPath: string, relPath: string, connectorKeys: Set<st
     }
   }
 
-  violations.push(...scanDataResourceLoadSites(source, raw, relPath));
+  violations.push(...scanFileDataLoads(absPath, relPath, repoRoot));
 
   // Multiple literals on one line (e.g. a multi-entry array literal) each
   // independently match the same rule; collapse to one report per
@@ -405,7 +322,7 @@ export function scanRepository(roots: ScanRoots): Violation[] {
   const files = productionFiles(roots);
   const violations: Violation[] = [];
   for (const relPath of files) {
-    violations.push(...scanFile(join(roots.repoRoot, relPath), relPath, connectorKeys));
+    violations.push(...scanFile(join(roots.repoRoot, relPath), relPath, connectorKeys, roots.repoRoot));
   }
   return violations;
 }
