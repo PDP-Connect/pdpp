@@ -49,7 +49,6 @@ export const PRODUCTION_READY_CONNECTORS: Record<string, { testFile: string }> =
   google_contacts: { testFile: "connectors/google_contacts/index.test.ts" },
   jellyfin: { testFile: "connectors/jellyfin/protocol-subprocess.test.ts" },
   google_maps: { testFile: "connectors/google_maps/parsers.test.ts" },
-  netflix_export: { testFile: "connectors/netflix_export/integration.test.ts" },
   notion: { testFile: "connectors/notion/schemas.test.ts" },
   oura: { testFile: "connectors/oura/schemas.test.ts" },
   reddit: { testFile: "connectors/reddit/integration.test.ts" },
@@ -96,6 +95,10 @@ export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {
   google_maps_data_portability: { testFile: "connectors/google_maps_data_portability/api.test.ts" },
   google_messages: { testFile: "connectors/google_messages/integration.test.ts" },
   google_takeout: { testFile: "connectors/google_takeout/schemas.test.ts" },
+  // Import-only (CSV/zip upload); no collection path is implemented, so its
+  // manifest sets public_listing.listed:false. Real, not scaffold: it parses a
+  // genuine Netflix export rather than emitting a SKIP_RESULT placeholder.
+  netflix_export: { testFile: "connectors/netflix_export/integration.test.ts" },
   steam: { testFile: "connectors/steam/index.test.ts" },
   ical: { testFile: "connectors/ical/parsers.test.ts" },
   imessage: { testFile: "connectors/imessage/integration.test.ts" },
