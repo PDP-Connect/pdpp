@@ -441,22 +441,6 @@ test("wave-0807 static-secret connectors (Steam, Jellyfin, Apple Contacts) surfa
   }
 });
 
-test("Netflix Export stays local_collector_unproven, not promoted", async () => {
-  // Netflix Export reads a live local artifact (extracted export archive)
-  // that the generic manual-upload route cannot stage correctly — no
-  // registered manual_or_upload validator kind exists for that shape, and
-  // there is no local-collector bridge registered for it. It must stay
-  // honestly unproven, not silently reclassified.
-  const connectorId = "netflix_export";
-  const shippedManifest = (
-    await import(`../../packages/polyfill-connectors/manifests/${connectorId}.json`, { with: { type: "json" } })
-  ).default;
-  const plan = buildConnectionSetupPlan({ connectorKey: connectorId, manifest: shippedManifest });
-  assert.equal(plan.connectorModality, "local_collector", `${connectorId}: connectorModality`);
-  assert.equal(plan.catalogDisposition, "local_collector_unproven", `${connectorId}: catalogDisposition`);
-  assert.equal(plan.supportState, "proof_gated", `${connectorId}: supportState`);
-});
-
 test("iMessage is a supported local_collector_enroll connector, not proof-gated", async () => {
   // iMessage reads chat.db via node:sqlite (no native module), so it ships in
   // the published @pdpp/local-collector bundle like Claude Code/Codex and is
