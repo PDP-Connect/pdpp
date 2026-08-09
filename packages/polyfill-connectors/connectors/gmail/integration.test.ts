@@ -42,7 +42,7 @@ import type {
   MessageStructureObject,
 } from "imapflow";
 import type { DetailGapStartEntry } from "../../src/connector-runtime.ts";
-import { buildDetailCoverageMessage } from "../../src/connector-runtime.ts";
+import { buildDetailCoverageMessage, buildFullScanCoverageMessage } from "../../src/connector-runtime.ts";
 import { ReferenceBlobUploadFailure, runtimeBlobUploadAvailable } from "../../src/reference-blob-uploader.ts";
 import { type EmittedRecord, makeRecordingEmit, type RecordedEvent } from "../../src/test-harness.ts";
 import {
@@ -57,7 +57,6 @@ import {
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
-  buildFullScanCoverageMessage,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_MAX_ATTACHMENT_BYTES,

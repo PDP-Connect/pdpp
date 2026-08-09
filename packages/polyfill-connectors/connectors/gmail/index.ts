@@ -37,6 +37,7 @@ import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import {
   buildDetailCoverageMessage,
   buildDetailGap,
+  buildFullScanCoverageMessage,
   type DetailCoverageMessage,
   type DetailGapMessage,
   type DetailGapStartEntry,
@@ -445,32 +446,6 @@ export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailC
     optionalSkipKeys: coverage.optionalSkipKeys,
     considered: coverage.requiredKeys.length,
     covered: coverage.hydratedKeys.length + coverage.optionalSkipKeys.length,
-  });
-}
-
-/**
- * Build the self-coverage DETAIL_COVERAGE for a full-scan stream whose boundary
- * is re-enumerated every run and gated by a per-record fingerprint cursor
- * (`labels`, `threads`).
- *
- * `considered` is the enumerated boundary size, measured at the enumeration site
- * — the mailbox list for `labels`, the aggregated thread map for `threads` —
- * never the emitted count. Every in-boundary item is either emitted or
- * suppressed as unchanged, so `covered` equals `considered` and a steady-state
- * run reads covered rather than a false `partial`. There is no separate detail
- * hydration phase, so the key sets stay empty and `stream === state_stream`.
- *
- * Extracted so both declarations are testable without standing up an IMAP
- * fixture, matching `buildAttachmentDetailCoverageMessage` above.
- */
-export function buildFullScanCoverageMessage(stream: string, considered: number): DetailCoverageMessage {
-  return buildDetailCoverageMessage({
-    stream,
-    stateStream: stream,
-    requiredKeys: [],
-    hydratedKeys: [],
-    considered,
-    covered: considered,
   });
 }
 

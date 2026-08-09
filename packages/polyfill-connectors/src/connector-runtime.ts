@@ -549,6 +549,33 @@ export function buildDetailCoverageMessage(params: DetailCoverageParams): Detail
 }
 
 /**
+ * Build the self-coverage DETAIL_COVERAGE for a full-scan stream: one whose
+ * whole boundary is re-enumerated every run and which has no separate detail
+ * hydration phase, so the key sets stay empty and `stream === state_stream`.
+ *
+ * `considered` is the enumerated boundary size, measured at the enumeration
+ * site — never the emitted count (see `DetailCoverageParams.considered`). Every
+ * in-boundary item is either emitted or suppressed as unchanged, so `covered`
+ * equals `considered` and a steady-state run reads covered rather than a false
+ * `partial`. A successful enumeration that found nothing declares
+ * `considered === covered === 0`: proven-empty is a fact, and it is the only
+ * way an empty stream can prove coverage rather than merely lack evidence.
+ *
+ * The caller owns when to emit, and MUST emit only on a successful
+ * enumeration — a fetch or parse failure never proves an empty boundary.
+ */
+export function buildFullScanCoverageMessage(stream: string, considered: number): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream,
+    stateStream: stream,
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered,
+    covered: considered,
+  });
+}
+
+/**
  * Thin emit wrapper for connectors adopting the detail coverage contract. `ctx`
  * is structural so both the collect context and connector-local dependency bags
  * can use it without importing a heavier runtime type.
