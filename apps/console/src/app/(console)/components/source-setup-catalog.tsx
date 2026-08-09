@@ -229,6 +229,29 @@ function ExistingSourceLinks({
   );
 }
 
+/**
+ * The one-line `sourceMethodLine` for an entry with no setup path states a
+ * fact ("No proven setup path is available in this dashboard.") and stops
+ * there. On its own that is the dead end the owner complained about: it never
+ * says WHY the path is missing or who could change it.
+ *
+ * `sourceSetupGuidance` carries exactly that missing half — named deployment
+ * blockers, a runbook path, or the connector key and reported setup state an
+ * operator needs — so an unavailable card renders it inline beneath the fact.
+ * Available entries are unaffected: their next-step button already says where
+ * to act, and repeating the guidance there would just be noise.
+ */
+function SourceUnavailableGuidance({ entry }: { entry: ConnectorCatalogEntry }) {
+  if (sourceSetupAvailability(entry) !== "not_available_here") {
+    return null;
+  }
+  return (
+    <p className="pdpp-caption mt-2 text-muted-foreground" data-testid="source-unavailable-guidance">
+      {sourceSetupGuidance(entry)}
+    </p>
+  );
+}
+
 function SourceSetupDetails({ entry }: { entry: ConnectorCatalogEntry }) {
   const guidance = sourceSetupGuidance(entry);
   const hasRichImportDetail = entry.disposition === "manual_upload_connect" && entry.acquisitionPaths.length > 0;
@@ -279,6 +302,7 @@ function SourceSetupCard({
           </span>
         </div>
         <p className="pdpp-caption mt-1 text-muted-foreground">{sourceMethodLine(entry, existingSources.length)}</p>
+        <SourceUnavailableGuidance entry={entry} />
         <SourceSetupContext entry={entry} />
         <ExistingSourceLinks connectorKey={entry.connectorKey} sources={existingSources} />
         <SourceSetupDetails entry={entry} />
@@ -396,6 +420,12 @@ function UnavailableSourceSummary({ entries }: { entries: readonly ConnectorCata
             <div className="min-w-0">
               <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
               <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
+              {/* `sourceMethodLine` states the fact ("no proven setup path"); on
+                  its own that is the dead end the owner complained about. The
+                  guidance line carries the missing half — named blockers, a
+                  runbook path, or the connector key and reported setup state an
+                  operator can act on. */}
+              <SourceUnavailableGuidance entry={entry} />
             </div>
             <span className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}>{status.label}</span>
           </li>

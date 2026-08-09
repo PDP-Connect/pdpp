@@ -162,6 +162,60 @@ test("recent syncs filter form is a plain GET form with no client hydration on t
   assert.doesNotMatch(src, USE_STATE_RE, "the filter form must submit via native GET, not client state");
 });
 
+const RECENT_FILTER_CONNECTOR_SELECT_RE = /name="connector_id"[\s\S]{0,80}options=\{paging\.connectorOptions\}/;
+const RECENT_FILTER_CONNECTOR_HIDDEN_INPUT_RE = /<input\s+name="connector_id"\s+type="hidden"/;
+const CONNECTOR_QUERY_RE = /connector_id:\s*params\.connector_id \|\| undefined/;
+const CONNECTOR_OPTIONS_FROM_FLEET_PAGE_RE =
+  /connectorOptions:\s*connectorFilterOptions\(connectorsPage\.items,\s*params\.connector_id\)/;
+const CONNECTOR_OPTIONS_ANY_SOURCE_RE = /\{ label: "any source", value: "" \}/;
+// The picker must be built from identity fields the reference already returned.
+// Any literal connector key here would mean the console had grown its own
+// roster, which is exactly what this filter must never do.
+const CONNECTOR_OPTIONS_PROJECTION_RE = /connector\.connector_display_name \|\| connector\.connector_id/;
+const SORT_PARAM_RE = /\bsort\s*[:=]|name="sort"|localeCompare\(.*outcome/;
+
+test("recent syncs offers a real connector picker, not a hidden input the owner cannot reach", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+
+  assert.match(
+    src,
+    RECENT_FILTER_CONNECTOR_SELECT_RE,
+    "the source filter must be a real select bound to the server-supplied connector options"
+  );
+  assert.doesNotMatch(
+    src,
+    RECENT_FILTER_CONNECTOR_HIDDEN_INPUT_RE,
+    "connector_id must no longer survive only as a hidden input — the owner must be able to choose it"
+  );
+});
+
+test("connector filter options come from the fleet page the route already fetched, never a hardcoded roster", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+
+  assert.match(src, CONNECTOR_QUERY_RE, "the connector filter must forward params.connector_id verbatim to listRuns");
+  assert.match(
+    src,
+    CONNECTOR_OPTIONS_FROM_FLEET_PAGE_RE,
+    "connector options must be projected from the connector-summary page, not fetched or invented separately"
+  );
+  assert.match(src, CONNECTOR_OPTIONS_ANY_SOURCE_RE, "the picker must offer an explicit option that clears the filter");
+  assert.match(
+    src,
+    CONNECTOR_OPTIONS_PROJECTION_RE,
+    "option labels must come from the reference's own identity fields"
+  );
+});
+
+test("recent syncs still refuses to offer a sort control the runs feed cannot honour", async () => {
+  const viewSrc = await readFile(VIEW_FILE, "utf8");
+  const pageSrc = await readFile(PAGE_FILE, "utf8");
+
+  // `_ref/runs` has no sort parameter. A client-side sort would reorder only the
+  // current page while reading as a whole-feed sort, so neither surface may grow one.
+  assert.doesNotMatch(viewSrc, SORT_PARAM_RE, "the syncs view must not offer a sort the runs feed cannot apply");
+  assert.doesNotMatch(pageSrc, SORT_PARAM_RE, "the syncs route must not forward a sort param the feed does not accept");
+});
+
 test("recent syncs pager links to the next cursor the server returned, never a fabricated offset", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
 
