@@ -2930,71 +2930,161 @@ test("runConversationsAndMessagesStreams: http 200 with an unreadable /conversat
   );
 });
 
-test("runConversationsAndMessagesStreams: partial pagination before a malformed page keeps proven items but does not certify coverage", async () => {
-  const harness = makeRecordingEmit(validateRecord);
-  const firstPage = Array.from({ length: 100 }, (_, idx) =>
+// CURSOR SAFETY (P1): for newest-first pagination, advancing the list cursor
+// to max(proven-prefix) on a truncated walk is unsafe. Items that lived on
+// the failed page or later — anywhere between the prior cursor and that new
+// max — would never be listed again: the next run's incremental walk stops
+// the instant it re-sees anything <= the new cursor, so the unseen tail is
+// permanently skipped, not just delayed. The fix is to never advance past
+// priorConversationsCursor on ANY truncation, regardless of how much of the
+// prefix was proven. This two-run oracle is the fail-before/pass-after gate:
+// run 1 proves the cursor stays PINNED after a partial-then-malformed walk;
+// run 2 proves a healthy re-list from that unchanged cursor re-observes the
+// safe prefix AND reaches the formerly-missing tail, advancing the cursor
+// exactly once, only after a genuinely clean pass.
+test("runConversationsAndMessagesStreams: CURSOR SAFETY — a truncated walk leaves the list cursor pinned; a later healthy run reaches the previously-missing tail", async () => {
+  const priorCursorIso = "2026-06-01T00:00:00.000Z";
+  const priorCursorUnix = Math.floor(new Date(priorCursorIso).getTime() / 1000);
+  // Page 1: 100 items, newest-first, all newer than priorCursor.
+  const page1 = Array.from({ length: 100 }, (_, idx) =>
     makeConvo({
-      id: `convo-${idx}`,
-      update_time: 1_700_000_200 - idx,
+      id: `convo-page1-${idx}`,
+      update_time: priorCursorUnix + 1000 - idx,
     })
   );
-  let conversationsCalls = 0;
-  const api: ChatGptApi = {
+  // The tail that only a healthy run 2 can reach: items that would have sat
+  // on page 2+ in run 1, still newer than priorCursor, older than page 1.
+  const missingTail = Array.from({ length: 20 }, (_, idx) =>
+    makeConvo({
+      id: `convo-tail-${idx}`,
+      update_time: priorCursorUnix + 500 - idx,
+    })
+  );
+  const trueMaxUpdateIso = new Date((priorCursorUnix + 1000) * 1000).toISOString();
+
+  // ── Run 1: page 1 succeeds, page 2 is a 200 with an unreadable body. ──
+  const run1 = makeRecordingEmit(validateRecord);
+  let run1ConversationsCalls = 0;
+  const run1Api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
     fetch: async (path: string): Promise<ChatGptFetchResult> => {
       await Promise.resolve();
       if (path.startsWith("/conversations?")) {
-        conversationsCalls += 1;
-        if (conversationsCalls === 1) {
-          return { status: 200, json: { items: firstPage } };
+        run1ConversationsCalls += 1;
+        if (run1ConversationsCalls === 1) {
+          return { status: 200, json: { items: page1 } };
         }
-        // Second page: a 200 whose body failed to parse.
         return { status: 200, json: null };
       }
-      // No message-detail fetches expected: conversations-only scope.
       throw new Error(`unexpected fetch ${path}`);
     },
   };
-  const deps: StreamDeps = {
-    api,
-    emit: harness.emit,
-    emitRecord: harness.emitRecord,
+  const run1Deps: StreamDeps = {
+    api: run1Api,
+    emit: run1.emit,
+    emitRecord: run1.emitRecord,
     progress: (): Promise<void> => Promise.resolve(),
     requested: new Map(["conversations"].map((name) => [name, { name }])),
   };
 
-  await runConversationsAndMessagesStreams(deps, {
-    conversations: { last_update_time: null },
+  await runConversationsAndMessagesStreams(run1Deps, {
+    conversations: { last_update_time: priorCursorIso },
   } as CollectContext["state"]);
 
-  const convoRecords = harness.emitted.filter((r) => r.stream === "conversations");
-  assert.equal(
-    convoRecords.length,
-    100,
-    "the 100 items proven before the malformed page still emit — nothing proven is lost"
-  );
+  const run1ConvoRecords = run1.emitted.filter((r) => r.stream === "conversations");
+  assert.equal(run1ConvoRecords.length, 100, "the proven page-1 prefix still emits — nothing proven is lost");
 
-  const listCoverage = harness.protocolMessages.find(
+  const run1ListCoverage = run1.protocolMessages.find(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
       m.type === "DETAIL_COVERAGE" && m.stream === "conversations"
   );
-  assert.equal(listCoverage, undefined, "a partial-then-malformed walk must not certify a complete list boundary");
+  assert.equal(run1ListCoverage, undefined, "a partial-then-malformed walk must not certify a complete list boundary");
 
-  const skip = harness.protocolMessages.find(
+  const run1Skip = run1.protocolMessages.find(
     (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
       m.type === "SKIP_RESULT" && m.stream === "conversations"
   );
-  assert.ok(skip);
-  assert.equal(skip.reason, "parse_error");
+  assert.ok(run1Skip);
+  assert.equal(run1Skip.reason, "parse_error");
 
-  const states = harness.protocolMessages.filter(
+  const run1States = run1.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "conversations"
   );
-  assert.equal(states.length, 1);
+  assert.equal(run1States.length, 1, "STATE still fires exactly once so the pinned cursor is persisted");
   assert.equal(
-    (states[0]?.cursor as { last_update_time?: string } | undefined)?.last_update_time,
-    new Date(1_700_000_200 * 1000).toISOString(),
-    "the cursor advances only to the max update_time actually proven from the collected prefix"
+    (run1States[0]?.cursor as { last_update_time?: string } | undefined)?.last_update_time,
+    priorCursorIso,
+    "P1 CURSOR SAFETY: a truncated walk must leave the cursor PINNED at the prior value, never advanced to max(proven prefix) — advancing it would let a healthy run 2 skip everything between the prior cursor and that max forever"
+  );
+
+  // ── Run 2: healthy full re-list from the SAME (unchanged) prior cursor. ──
+  // Real pagination order is newest-first: page 1 replays page1 (already
+  // proven), page 2 now succeeds and surfaces missingTail — the items run 1
+  // could never prove existed. A final empty page ends the walk cleanly.
+  const run2 = makeRecordingEmit(validateRecord);
+  let run2ConversationsCalls = 0;
+  const run2Api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      await Promise.resolve();
+      if (path.startsWith("/conversations?")) {
+        run2ConversationsCalls += 1;
+        if (run2ConversationsCalls === 1) {
+          return { status: 200, json: { items: page1 } };
+        }
+        if (run2ConversationsCalls === 2) {
+          return { status: 200, json: { items: missingTail } };
+        }
+        return { status: 200, json: { items: [] } };
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    },
+  };
+  const run2Deps: StreamDeps = {
+    api: run2Api,
+    emit: run2.emit,
+    emitRecord: run2.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations"].map((name) => [name, { name }])),
+  };
+
+  await runConversationsAndMessagesStreams(run2Deps, {
+    conversations: { last_update_time: priorCursorIso },
+  } as CollectContext["state"]);
+
+  const run2ConvoRecords = run2.emitted.filter((r) => r.stream === "conversations");
+  assert.equal(
+    run2ConvoRecords.length,
+    120,
+    "run 2 re-observes the safe page-1 prefix (idempotent replay) AND reaches the previously-missing 20-item tail"
+  );
+  const run2Ids = new Set(run2ConvoRecords.map((r) => r.data.id));
+  for (const tailItem of missingTail) {
+    assert.ok(run2Ids.has(tailItem.id), `run 2 must reach ${tailItem.id}, which run 1's truncation could never prove`);
+  }
+
+  const run2ListCoverage = run2.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "conversations"
+  );
+  assert.ok(run2ListCoverage, "a genuinely clean full walk must certify list coverage");
+  assert.equal(run2ListCoverage?.considered, 120);
+  assert.equal(run2ListCoverage?.covered, 120);
+
+  const run2Skip = run2.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.stream === "conversations"
+  );
+  assert.equal(run2Skip, undefined, "a clean run must not emit a truncation SKIP_RESULT");
+
+  const run2States = run2.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "STATE" }> => m.type === "STATE" && m.stream === "conversations"
+  );
+  assert.equal(run2States.length, 1, "the cursor advances exactly once, only after the clean full pass");
+  assert.equal(
+    (run2States[0]?.cursor as { last_update_time?: string } | undefined)?.last_update_time,
+    trueMaxUpdateIso,
+    "run 2 advances the cursor to the TRUE max update_time now that the full range (including the formerly-missing tail) was genuinely proven — no loss, no double-count"
   );
 });
 

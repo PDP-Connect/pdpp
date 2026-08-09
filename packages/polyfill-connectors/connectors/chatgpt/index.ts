@@ -4191,7 +4191,15 @@ export async function runConversationsAndMessagesStreams(
       ? [...coverage.hydratedKeys, ...coverage.gapKeys, coverage.backlogGapKey]
       : messageDetailConversations.map((c) => c.id);
     await deps.emit(makeConversationDetailCoverage(requiredKeys, coverage));
-    const maxMessagesUpdate = maxUpdateTimeIso(messageDetailConversations);
+    // The messages list cursor is derived from the SAME `/conversations` walk
+    // as the conversations cursor below — it has no independent proof of
+    // anything past the point of failure. On a truncated walk, advancing it
+    // to the max of the (partial) prefix would be unsafe for exactly the same
+    // reason: newest-first pagination means unseen items between the prior
+    // cursor and that new max, sitting on the failed page or later, would
+    // read as "already covered" and never be replayed. Pin to the prior
+    // cursor verbatim so the next run re-lists the full un-proven range.
+    const maxMessagesUpdate = listTruncated ? null : maxUpdateTimeIso(messageDetailConversations);
     deps.emit({
       type: "STATE",
       stream: "messages",
@@ -4214,18 +4222,23 @@ export async function runConversationsAndMessagesStreams(
     );
   }
 
-  if (wantsConversations && conversationsToSync.length) {
-    const maxUpdate = maxUpdateTimeIso(conversationsToSync);
+  if (wantsConversations) {
+    // CURSOR SAFETY: on a truncated walk, the collected prefix is everything
+    // proven BEFORE the failure — it says nothing about what a later page
+    // would have held. For newest-first pagination, advancing the cursor to
+    // max(prefix) would make the next run's incremental walk stop the moment
+    // it re-sees anything <= that new cursor — permanently skipping every
+    // unseen item between the prior cursor and the new one that lived on the
+    // failed page or later. So on ANY truncation the cursor stays pinned to
+    // priorConversationsCursor, full stop — never advanced, regardless of how
+    // much of the prefix was proven. The already-emitted prefix records are
+    // safe to replay next run: they rely on existing stable-key/fingerprint/
+    // storage idempotence downstream, not on the cursor to avoid duplication.
+    const maxUpdate = listTruncated ? null : maxUpdateTimeIso(conversationsToSync);
     deps.emit({
       type: "STATE",
       stream: "conversations",
       cursor: { last_update_time: maxUpdate || priorConversationsCursor || null },
-    });
-  } else if (wantsConversations) {
-    deps.emit({
-      type: "STATE",
-      stream: "conversations",
-      cursor: { last_update_time: priorConversationsCursor || null },
     });
   }
 }
