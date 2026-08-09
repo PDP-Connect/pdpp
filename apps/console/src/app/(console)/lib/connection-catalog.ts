@@ -195,8 +195,6 @@ export interface ConnectorCatalogEntry {
   displayName: string;
   /** What the console can honestly do with this connector today. */
   disposition: CatalogDisposition;
-  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
-  icon?: OwnerConnectorTemplateLike["icon"];
   /**
    * The `?connector=` value to deep-link into the enrollment form, present only
    * for dispositions the console can actually start (`local_collector_enroll`,
@@ -206,6 +204,8 @@ export interface ConnectorCatalogEntry {
   enrollmentKey?: string;
   /** Manifest-authored external documentation links. */
   externalDocs: readonly ConnectorExternalDoc[];
+  /** Optional manifest-declared brand glyph; absent renders the Monogram fallback (see ConnectorIcon). */
+  icon?: OwnerConnectorTemplateLike["icon"];
   /** Binding-derived modality. */
   modality: CatalogModality;
   /** The next owner step selected by the shared planner. */
@@ -305,7 +305,8 @@ function acquisitionPathsFromManifest(manifest: CatalogManifestLike): ConnectorA
  */
 export function buildConnectorCatalog(
   manifests: readonly CatalogManifestLike[],
-  configuredProviderAuthConnectorKeys: readonly string[] = []
+  configuredProviderAuthConnectorKeys: readonly string[] = [],
+  deploymentEnv?: Readonly<Record<string, string | undefined>>
 ): ConnectorCatalogEntry[] {
   const entries: ConnectorCatalogEntry[] = [];
   for (const manifest of manifests) {
@@ -319,7 +320,12 @@ export function buildConnectorCatalog(
     // (connector_id) when connector_key is absent, the same precedence
     // buildConnectionSetupPlan itself uses internally.
     const connectorKey = connectorKeyFromManifest(manifest, manifest.connector_id) ?? "unknown";
-    const plan = buildConnectionSetupPlan({ connectorKey, configuredProviderAuthConnectorKeys, manifest });
+    const plan = buildConnectionSetupPlan({
+      connectorKey,
+      configuredProviderAuthConnectorKeys,
+      manifest,
+      ...(deploymentEnv ? { deploymentEnv } : {}),
+    });
     const setupCopy = setupCopyFromManifest(manifest);
     const entry: ConnectorCatalogEntry = {
       acquisitionPaths: acquisitionPathsFromManifest(manifest),
@@ -470,17 +476,15 @@ export function buildOwnerConnectorCatalog(
   for (const template of templates) {
     const connectorKey = cleanManifestText(template.connector_key);
     const setupPlan = template.setup_plan;
-    // Normal (non-experimental) entries require an explicit operator opt-in
-    // into public listing (`listed === true`). An experimental support_state
-    // is admitted even when `listed !== true` — a wave-0807 connector such as
-    // Steam ships `public_listing.listed: false` (the operator has not opted
-    // it into the normal picker) but the same manifest-driven credential
-    // capture form is real and runnable; the Experimental section is itself
-    // the explicit opt-in gate, so it must not be blocked a second time by
-    // the listing flag. Every OTHER support_state still requires listed=true.
+    // Every offered entry requires an explicit operator opt-in into public
+    // listing (`listed === true`), whatever its support_state. The Experimental
+    // section is a presentation of what is already offered, NOT a second door
+    // into the offer surface: a connector the operator has not listed must not
+    // be addable through it. `listed` answers only the OFFER question — an
+    // existing owner connection for an unlisted connector stays fully visible
+    // and manageable on /sources, which is a separate inventory read.
     const isListed = template.public_listing?.listed === true;
-    const isExperimental = setupPlan?.support_state === "experimental";
-    if (!connectorKey || template.registration_status !== "registered" || !(isListed || isExperimental)) {
+    if (!connectorKey || template.registration_status !== "registered" || !isListed) {
       continue;
     }
     const disposition = setupPlan?.catalog_disposition;

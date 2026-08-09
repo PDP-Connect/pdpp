@@ -634,7 +634,9 @@ export function classifyConnectorSetupModality(
 // Accepts both the legacy bare-string-array shape and the enriched
 // {key,label,secret} object shape declared by DeploymentConfigDeclarationLike,
 // normalizing either to a plain key-string array.
-function deploymentConfigKeyStrings(declaration: DeploymentConfigDeclarationLike | null | undefined): readonly string[] {
+function deploymentConfigKeyStrings(
+  declaration: DeploymentConfigDeclarationLike | null | undefined
+): readonly string[] {
   if (!Array.isArray(declaration)) {
     return [];
   }
@@ -657,9 +659,32 @@ function deploymentConfigKeysFromManifest(manifest: ConnectorManifestLike | null
   );
 }
 
+/**
+ * The observed deployment environment. Injected rather than read directly so
+ * this module stays a pure function of its inputs and a test can describe a
+ * deployment without mutating the process.
+ */
+export interface DeploymentEnvLike {
+  readonly [key: string]: string | undefined;
+}
+
+function needsDeploymentConfig(missingKeys: readonly string[]): ConnectorSetupDeploymentReadiness {
+  return {
+    blockers: missingKeys.map((key) => ({
+      key,
+      label: key,
+      secret: SECRET_DEPLOYMENT_KEY_RE.test(key),
+    })),
+    guidance:
+      "Configure the instance-level provider application first. After that, each owner authorizes their own account through an owner-mediated provider authorization step.",
+    state: "needs_config",
+  };
+}
+
 function buildDeploymentReadiness(args: {
   readonly connectorKey: string;
   readonly configuredProviderAuthConnectorKeys?: readonly string[];
+  readonly deploymentEnv?: DeploymentEnvLike;
   readonly manifest: ConnectorManifestLike | null;
   readonly requiredKeys?: readonly string[];
   readonly setupModality: ConnectorSetupModality;
@@ -667,24 +692,25 @@ function buildDeploymentReadiness(args: {
   if (args.setupModality !== "provider_authorization") {
     return NOT_APPLICABLE_DEPLOYMENT_READINESS;
   }
+  const requiredKeys = args.requiredKeys?.length ? args.requiredKeys : deploymentConfigKeysFromManifest(args.manifest);
+  // A manifest that declares its deployment prerequisites is answered from
+  // those keys against the observed environment. Readiness is then a property
+  // of the DEPLOYMENT, not of the connector's identity: any connector whose
+  // declared settings are all present reads ready, and any connector missing
+  // one reads needs_config with that exact setting named. Only a manifest
+  // declaring NO keys falls back to the adapter allowlist below, which is the
+  // one case where this module has nothing to measure.
+  if (requiredKeys.length > 0) {
+    const env = args.deploymentEnv ?? process.env;
+    // A setting counts as supplied only when it holds a non-blank value.
+    const missing = requiredKeys.filter((key) => (env[key] ?? "").trim().length === 0);
+    return missing.length === 0 ? READY_DEPLOYMENT_READINESS : needsDeploymentConfig(missing);
+  }
   const configured = new Set((args.configuredProviderAuthConnectorKeys ?? []).map(canonicalConnectorKey));
   if (configured.has(args.connectorKey)) {
     return READY_DEPLOYMENT_READINESS;
   }
-  const requiredKeys = args.requiredKeys?.length ? args.requiredKeys : deploymentConfigKeysFromManifest(args.manifest);
-  const blockers = (requiredKeys.length > 0 ? requiredKeys : [`${args.connectorKey.toUpperCase()}_OAUTH_CLIENT`]).map(
-    (key) => ({
-      key,
-      label: key,
-      secret: SECRET_DEPLOYMENT_KEY_RE.test(key),
-    })
-  );
-  return {
-    blockers,
-    guidance:
-      "Configure the instance-level provider application first. After that, each owner authorizes their own account through an owner-mediated provider authorization step.",
-    state: "needs_config",
-  };
+  return needsDeploymentConfig([`${args.connectorKey.toUpperCase()}_OAUTH_CLIENT`]);
 }
 
 export function unsupportedReason(modality: ConnectorIntentModality | ConnectorSetupModality): string {
@@ -1010,6 +1036,7 @@ function buildUnsupportedSetupPlan(ctx: ConnectionSetupPlanContext): ConnectionS
 export function buildConnectionSetupPlan(args: {
   readonly connectorKey?: string | null;
   readonly configuredProviderAuthConnectorKeys?: readonly string[];
+  readonly deploymentEnv?: DeploymentEnvLike;
   readonly manifest: ConnectorManifestLike | null;
 }): ConnectionSetupPlan {
   const rawConnectorKey = typeof args.connectorKey === "string" ? args.connectorKey.trim() : "";
@@ -1023,6 +1050,7 @@ export function buildConnectionSetupPlan(args: {
   const deploymentArgs: {
     connectorKey: string;
     configuredProviderAuthConnectorKeys?: readonly string[];
+    deploymentEnv?: DeploymentEnvLike;
     manifest: ConnectorManifestLike | null;
     setupModality: ConnectorSetupModality;
   } = {
@@ -1032,6 +1060,9 @@ export function buildConnectionSetupPlan(args: {
   };
   if (args.configuredProviderAuthConnectorKeys) {
     deploymentArgs.configuredProviderAuthConnectorKeys = args.configuredProviderAuthConnectorKeys;
+  }
+  if (args.deploymentEnv) {
+    deploymentArgs.deploymentEnv = args.deploymentEnv;
   }
   const deploymentReadiness = buildDeploymentReadiness(deploymentArgs);
   const enrollmentKey = enrollmentKeyForCanonicalKey(connectorKey);

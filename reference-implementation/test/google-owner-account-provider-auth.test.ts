@@ -93,10 +93,10 @@ test("Google owner-account provider auth readiness is driven by deployment confi
   assert.equal(hasGoogleOwnerAccountProviderAuthConfig({}), false);
   assert.deepEqual(configuredGoogleOwnerAccountProviderAuthConnectorKeys({}), []);
   assert.equal(hasGoogleOwnerAccountProviderAuthConfig(READY_ENV), true);
-  assert.deepEqual(
-    [...configuredGoogleOwnerAccountProviderAuthConnectorKeys(READY_ENV)].sort(),
-    ["google-calendar", "google-contacts"]
-  );
+  assert.deepEqual([...configuredGoogleOwnerAccountProviderAuthConnectorKeys(READY_ENV)].sort(), [
+    "google-calendar",
+    "google-contacts",
+  ]);
 });
 
 test("GOOGLE_OWNER_ACCOUNT_CONNECTOR_KEYS is disjoint from google-maps-data-portability", () => {
@@ -152,7 +152,8 @@ test("initiateAuthorization rejects a connector outside the owner-account allowl
         redirectUri: REDIRECT_URI,
         state: "pas_state",
       }),
-    (err: unknown) => err instanceof GoogleOwnerAccountProviderAuthError && err.code === "provider_auth_connector_unsupported"
+    (err: unknown) =>
+      err instanceof GoogleOwnerAccountProviderAuthError && err.code === "provider_auth_connector_unsupported"
   );
 });
 
@@ -321,6 +322,11 @@ test("provider-auth run env: google-maps-data-portability connectorId with a goo
 test("Google owner-account provider-auth route materializes an active connection for Calendar", async () => {
   const asPublicUrl = "https://pdpp.example";
   const env = { ...READY_ENV };
+  // The setup planner measures deployment readiness from the manifest's
+  // declared settings against the process environment, so this route test
+  // supplies them for its duration the way a configured deployment would.
+  const priorDeploymentEnv = new Map(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
   const transport = makeFetch([
     jsonResponse({
       access_token: "ya29.route-access",
@@ -353,9 +359,7 @@ test("Google owner-account provider-auth route materializes an active connection
   const asUrl = `http://localhost:${server.asPort}`;
   try {
     const calendarManifest = JSON.parse(
-      await (
-        await import("node:fs/promises")
-      ).readFile(
+      await (await import("node:fs/promises")).readFile(
         new URL("../../packages/polyfill-connectors/manifests/google_calendar.json", import.meta.url),
         "utf8"
       )
@@ -388,10 +392,7 @@ test("Google owner-account provider-auth route materializes an active connection
     // biome-ignore lint/performance/useTopLevelRegex: mirrors google-data-portability-provider-auth.test.ts
     assert.match(connectionId, /^cin_/);
     // biome-ignore lint/performance/useTopLevelRegex: mirrors google-data-portability-provider-auth.test.ts
-    assert.doesNotMatch(
-      JSON.stringify(callback.body),
-      /route-access|route-refresh-token|access_token|refresh_token/i
-    );
+    assert.doesNotMatch(JSON.stringify(callback.body), /route-access|route-refresh-token|access_token|refresh_token/i);
 
     const instance = await createSqliteConnectorInstanceStore().get(connectionId);
     assert.ok(instance, "the connector instance was created");
@@ -407,5 +408,12 @@ test("Google owner-account provider-auth route materializes an active connection
     assert.equal(credential.status, "active");
   } finally {
     await closeServer(server);
+    for (const [key, value] of priorDeploymentEnv) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   }
 });

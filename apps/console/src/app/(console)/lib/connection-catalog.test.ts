@@ -635,7 +635,14 @@ test("Google Maps Timeline keeps its import/API distinction visible in the catal
 });
 
 test("configured Google provider readiness exposes the existing owner authorization action", async () => {
-  const catalog = buildConnectorCatalog(await loadCommittedManifests(), ["google-maps-data-portability"]);
+  // "Configured" means the manifest's declared deployment settings are
+  // actually present in the environment — readiness is measured, not asserted
+  // by connector identity.
+  const catalog = buildConnectorCatalog(await loadCommittedManifests(), ["google-maps-data-portability"], {
+    GOOGLE_DATAPORTABILITY_CLIENT_ID: "test-client-id",
+    GOOGLE_DATAPORTABILITY_CLIENT_SECRET: "test-client-secret",
+    GOOGLE_DATAPORTABILITY_REDIRECT_URI: "https://example.test/callback",
+  });
   const entry = catalog.find((candidate) => candidate.connectorKey === "google-maps-data-portability");
   assert.ok(entry, "google-maps-data-portability must be in the committed catalog");
   assert.equal(entry.deploymentReadiness.state, "ready");
@@ -885,18 +892,17 @@ test("filesystem connectors outside the proven set are local-collector-unproven,
   }
 });
 
-test("owner catalog admits an unlisted (listed:false) template only when support_state is experimental", () => {
-  // Regression guard for the Steam UAT gap: Steam ships public_listing.listed
-  // false today, but its static-secret credential-capture form is real. The
-  // Experimental section is itself the explicit opt-in, so an unlisted
-  // experimental template must still surface there — while an unlisted
-  // template with any OTHER support_state must stay dropped exactly as
-  // before, so the normal picker never gains a silent extra source.
+test("owner catalog never offers an unlisted (listed:false) template, whatever its support_state", () => {
+  // An unlisted connector must not be offered or addable on the OFFER surface,
+  // and `experimental` is not an exception: the Experimental section presents
+  // what is already offered rather than acting as a second door into the
+  // catalog. Both an experimental and a non-experimental unlisted template are
+  // asserted here so the gate cannot be reopened for one support_state alone.
   const catalog = buildOwnerConnectorCatalog(
     [],
     [
       ownerTemplate({
-        connectorKey: "steam",
+        connectorKey: "unlisted-experimental",
         disposition: "static_secret_experimental",
         listed: false,
         nextStepKind: "capture_static_secret",
@@ -919,14 +925,36 @@ test("owner catalog admits an unlisted (listed:false) template only when support
         actionStatus: "unsupported",
         actionUrl: null,
       }),
+      ownerTemplate({
+        connectorKey: "listed-experimental",
+        disposition: "static_secret_experimental",
+        listed: true,
+        nextStepKind: "capture_static_secret",
+        ownerActionable: false,
+        setupModality: "static_secret",
+        supportState: "experimental",
+        actionMethod: null,
+        actionStatus: "experimental",
+        actionUrl: null,
+      }),
     ]
   );
-  const steam = catalog.find((e) => e.connectorKey === "steam");
-  assert.ok(steam, "an unlisted experimental template must still be admitted into the catalog");
-  assert.equal(steam.supportState, "experimental");
-  assert.equal(sourceSetupAvailability(steam), "experimental_opt_in");
-  const unlistedProofGated = catalog.find((e) => e.connectorKey === "unlisted-proof-gated");
-  assert.equal(unlistedProofGated, undefined, "an unlisted non-experimental template must stay dropped");
+  assert.equal(
+    catalog.find((e) => e.connectorKey === "unlisted-experimental"),
+    undefined,
+    "an unlisted experimental template must not be offered"
+  );
+  assert.equal(
+    catalog.find((e) => e.connectorKey === "unlisted-proof-gated"),
+    undefined,
+    "an unlisted non-experimental template must stay dropped"
+  );
+  // The listing gate must not swallow the Experimental section itself: a
+  // connector the operator HAS listed still reaches it.
+  const listedExperimental = catalog.find((e) => e.connectorKey === "listed-experimental");
+  assert.ok(listedExperimental, "a listed experimental template must still be offered");
+  assert.equal(sourceSetupAvailability(listedExperimental), "experimental_opt_in");
+  assert.ok(sourceSetupAction(listedExperimental), "a listed experimental template keeps its add action");
 });
 
 test("ownerActionable field is the sole authority for live owner catalogs", () => {
@@ -1147,4 +1175,92 @@ test("an unclassified disposition carrying real deployment blockers names those 
   assert.ok(guidance.includes("PDPP_FUTURE_CLIENT_ID"), "guidance must name the exact setting that is missing");
   assert.match(guidance, ENV_VARS_RE, "guidance must say where the setting goes");
   assert.match(guidance, RESTART_RE, "guidance must say what makes the setting take effect");
+});
+
+test("deployment readiness is measured from manifest-declared settings against the observed environment", () => {
+  // The unavailability of a provider-authorization source must derive from
+  // what its manifest DECLARES plus what the deployment actually SUPPLIES, so
+  // any future connector with unmet prerequisites behaves identically without
+  // the reference implementation learning its name. A synthetic connector key
+  // is used here precisely because no connector may be special-cased.
+  const manifest: CatalogManifestLike = {
+    capabilities: {
+      auth: { deployment_config: ["ACME_OAUTH_CLIENT_ID", "ACME_OAUTH_CLIENT_SECRET"], kind: "oauth" },
+      public_listing: { listed: true, status: "needs_human_auth" },
+    },
+    connector_id: "acme-widgets",
+    display_name: "Acme Widgets",
+    runtime_requirements: { bindings: { network: { required: true } } },
+    setup: {
+      deployment_config: ["ACME_OAUTH_CLIENT_ID", "ACME_OAUTH_CLIENT_SECRET"],
+      modality: "provider_authorization",
+    },
+  } as CatalogManifestLike;
+  const readinessFor = (deploymentEnv: Readonly<Record<string, string | undefined>>) => {
+    const entry = buildConnectorCatalog([manifest], [], deploymentEnv).find(
+      (candidate) => candidate.connectorKey === "acme-widgets"
+    );
+    assert.ok(entry, "a listed provider-authorization manifest must reach the catalog");
+    return entry;
+  };
+
+  // Nothing supplied: blocked, and BOTH declared settings are named so the
+  // owner can see exactly what this deployment is missing.
+  const missing = readinessFor({});
+  assert.equal(missing.deploymentReadiness.state, "needs_config");
+  assert.deepEqual(
+    missing.deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_ID", "ACME_OAUTH_CLIENT_SECRET"]
+  );
+  assert.equal(sourceSetupAvailability(missing), "requires_server_setup");
+  assert.ok(
+    sourceSetupGuidance(missing).includes("ACME_OAUTH_CLIENT_SECRET"),
+    "guidance must name the exact settings this deployment is waiting on"
+  );
+
+  // Partially supplied: only the setting still absent is reported, never a
+  // blanket re-listing of every declared key.
+  assert.deepEqual(
+    readinessFor({ ACME_OAUTH_CLIENT_ID: "supplied" }).deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_SECRET"]
+  );
+
+  // Present but blank is not supplied.
+  assert.deepEqual(
+    readinessFor({
+      ACME_OAUTH_CLIENT_ID: "supplied",
+      ACME_OAUTH_CLIENT_SECRET: "   ",
+    }).deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_SECRET"]
+  );
+
+  // Fully supplied: ready, with no allowlist entry anywhere for this key.
+  const ready = readinessFor({ ACME_OAUTH_CLIENT_ID: "supplied", ACME_OAUTH_CLIENT_SECRET: "supplied" });
+  assert.equal(ready.deploymentReadiness.state, "ready");
+  assert.deepEqual(ready.deploymentReadiness.blockers, []);
+});
+
+test("a connector-key allowlist cannot declare readiness a deployment has not supplied", () => {
+  // The inverse guard: naming a connector in the provider-auth allowlist must
+  // NOT make it read ready while its declared settings are absent, or the
+  // catalog would offer a source that cannot complete setup.
+  const manifest: CatalogManifestLike = {
+    capabilities: {
+      auth: { deployment_config: ["ACME_OAUTH_CLIENT_ID"], kind: "oauth" },
+      public_listing: { listed: true, status: "needs_human_auth" },
+    },
+    connector_id: "acme-widgets",
+    display_name: "Acme Widgets",
+    runtime_requirements: { bindings: { network: { required: true } } },
+    setup: { deployment_config: ["ACME_OAUTH_CLIENT_ID"], modality: "provider_authorization" },
+  } as CatalogManifestLike;
+  const entry = buildConnectorCatalog([manifest], ["acme-widgets"], {}).find(
+    (candidate) => candidate.connectorKey === "acme-widgets"
+  );
+  assert.ok(entry);
+  assert.equal(entry.deploymentReadiness.state, "needs_config", "an unsupplied setting must stay blocked");
+  assert.deepEqual(
+    entry.deploymentReadiness.blockers.map((blocker) => blocker.key),
+    ["ACME_OAUTH_CLIENT_ID"]
+  );
 });
