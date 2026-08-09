@@ -5326,6 +5326,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     ? evidence.stream_records.map((entry) => ({
         count_state: downgradePersistedCountState({
           countState: entry.count_state,
+          recordCount: entry.record_count,
           recordSnapshotCurrent,
           retainsZeroProof,
           stream: entry.stream,
@@ -6365,6 +6366,7 @@ function deriveRetainedCountState(
   const corrected = evidence.stream_records.map((entry) => ({
     count_state: downgradePersistedCountState({
       countState: entry.count_state,
+      recordCount: entry.record_count,
       recordSnapshotCurrent: true,
       retainsZeroProof: (stream) =>
         observedCheckpointStreams.has(stream) ||
@@ -6404,8 +6406,8 @@ function parseObservedCheckpointStreams(raw: unknown): ReadonlySet<string> {
 
 /**
  * Correct one PERSISTED per-stream `count_state` at the read boundary, where
- * two independent invalidations apply to a value that was derived once at
- * write time and has been served verbatim ever since.
+ * a value derived once at write time and served verbatim ever since can
+ * drift from what the run's own facts now prove, in EITHER direction.
  *
  *   1. The record snapshot is no longer `current`: any exact-count claim
  *      (`known`/`known_zero`) predates the failure, so it reads `stale` while
@@ -6414,18 +6416,32 @@ function parseObservedCheckpointStreams(raw: unknown): ReadonlySet<string> {
  *      positive coverage evidence: an exact-zero assertion with no proof —
  *      and, for a stream with no runtime fact at all, no observation
  *      whatsoever — is `unobserved`, the honest "no count claim".
+ *   3. The claim is `unobserved` with a persisted zero record_count, but the
+ *      run's own facts DO carry positive coverage evidence the write path
+ *      never consulted (`buildRepairedRow` derives `observed` solely from
+ *      the record-source checkpoint, which a stream that legitimately
+ *      enumerated to zero never populates — see
+ *      connector-summary-evidence-engine.ts's `deriveStreamCountState`).
+ *      `retainsZeroProof` is the SAME predicate rule 2 uses to withdraw an
+ *      unproven `known_zero`; used here to grant one a completed,
+ *      zero-result requested enumeration already earned. A genuinely
+ *      unrequested/never-run stream has no runtime fact at all, so
+ *      `retainsZeroProof` returns false and it correctly stays `unobserved`.
  *
  * Rule 2 never touches `known`: a counted record is its own measurement.
- * A stream already reading `unobserved`/`stale`/`unknown` is left alone —
- * this only ever downgrades a claim that was trustworthy and no longer is.
+ * Rule 3 never touches `known`/`stale`/`unknown`: it only ever upgrades the
+ * specific "zero record_count, no count claim" combination `unobserved`
+ * represents.
  */
 function downgradePersistedCountState({
   countState,
+  recordCount,
   recordSnapshotCurrent,
   retainsZeroProof,
   stream,
 }: {
   readonly countState: CountStateValue;
+  readonly recordCount: number | null;
   readonly recordSnapshotCurrent: boolean;
   readonly retainsZeroProof: (stream: string) => boolean;
   readonly stream: string;
@@ -6435,6 +6451,9 @@ function downgradePersistedCountState({
   }
   if (countState === "known_zero" && !retainsZeroProof(stream)) {
     return "unobserved";
+  }
+  if (countState === "unobserved" && recordCount === 0 && recordSnapshotCurrent && retainsZeroProof(stream)) {
+    return "known_zero";
   }
   return countState;
 }

@@ -248,3 +248,101 @@ test("(c) COUNTERWEIGHT: a genuinely proven zero keeps reading known_zero", () =
       "an aggregate over exclusively proven zeros is itself a proven zero"
     );
   }));
+
+/**
+ * The write path (`buildRepairedRow` in connector-summary-evidence-engine.ts)
+ * derives `observed` — and therefore whether a zero record_count becomes
+ * `known_zero` vs `unobserved` — SOLELY from the record-source checkpoint
+ * (`version_counter`), which is written per-record on ingest. A stream that
+ * completes a requested, fully-enumerated pass and finds zero records never
+ * allocates a version, so it is persisted `unobserved` even though the SAME
+ * run's own facts (`collection_facts`) already carry positive proof of a
+ * completed zero-result enumeration. This reproduces the live GroupMe UAT
+ * connection (cin_5804a2ff36cd303e22762745): direct_messages/
+ * direct_chat_messages committed a checkpoint and collected 0 records in a
+ * successful run, yet `stream_records[].count_state` read `unobserved`
+ * indistinguishable from a stream that was never requested at all.
+ *
+ * Tests (d)/(e) are the fail-before/pass-after pair for this asymmetry;
+ * (f) is the counterweight proving an unobserved stream with NO run-side
+ * proof is correctly left alone (never fabricated into known_zero).
+ */
+test("(d) a persisted unobserved row with a proven completed zero-enumeration upgrades to known_zero", () =>
+  withTempDb(async () => {
+    const connectorId = "https://test.pdpp.dev/connectors/persisted-unobserved-proven-zero";
+    seedManifestConnector(connectorId, ["direct_messages"]);
+    seedInstance("cin_persisted_unobserved_proven_zero", connectorId);
+    // Reproduces the write-path gap directly: countState is persisted
+    // "unobserved" (no version_counter entry — buildRepairedRow's only proof
+    // channel), but the run's own facts prove a completed, measured
+    // zero-result enumeration (checkpoint committed, considered: 0).
+    seedPersistedEvidenceRow({
+      connectorId,
+      connectorInstanceId: "cin_persisted_unobserved_proven_zero",
+      countState: "unobserved",
+      stream: "direct_messages",
+      streamLatestFacts: storedFact("direct_messages", { checkpoint: "committed", considered: 0, covered: 0 }),
+    });
+
+    const { entry, summary } = await streamEntryFor("cin_persisted_unobserved_proven_zero", "direct_messages");
+    assert.equal(entry.record_count, 0, "fixture premise: no live canonical records");
+    assert.equal(
+      entry.count_state,
+      "known_zero",
+      "a persisted unobserved row backed by a proven completed zero-enumeration must upgrade to known_zero — the write path's missing proof channel must not survive at the read boundary"
+    );
+    assert.equal(
+      summary.total_records_state,
+      "known_zero",
+      "the aggregate must reflect the read-corrected per-stream proof, not the persisted unobserved claim"
+    );
+  }));
+
+test("(e) a persisted unobserved row whose checkpoint never closed stays unobserved (no false upgrade)", () =>
+  withTempDb(async () => {
+    const connectorId = "https://test.pdpp.dev/connectors/persisted-unobserved-open-checkpoint";
+    seedManifestConnector(connectorId, ["direct_chat_messages"]);
+    seedInstance("cin_persisted_unobserved_open", connectorId);
+    // Mirrors the GroupMe live connection's MOST RECENT (cancelled) run: a
+    // runtime fact exists but the checkpoint never committed
+    // ("Staged stream state was not committed"). An unresolved attempt must
+    // not be laundered into a coverage claim in either direction.
+    seedPersistedEvidenceRow({
+      connectorId,
+      connectorInstanceId: "cin_persisted_unobserved_open",
+      countState: "unobserved",
+      stream: "direct_chat_messages",
+      streamLatestFacts: storedFact("direct_chat_messages", { checkpoint: "not_committed" }),
+    });
+
+    const { entry } = await streamEntryFor("cin_persisted_unobserved_open", "direct_chat_messages");
+    assert.equal(
+      entry.count_state,
+      "unobserved",
+      "an open/uncommitted checkpoint is not positive coverage evidence — must never upgrade to known_zero"
+    );
+  }));
+
+test("(f) COUNTERWEIGHT: a persisted unobserved row with NO runtime fact at all stays unobserved", () =>
+  withTempDb(async () => {
+    const connectorId = "https://test.pdpp.dev/connectors/persisted-unobserved-no-fact";
+    seedManifestConnector(connectorId, ["direct_messages"]);
+    seedInstance("cin_persisted_unobserved_no_fact", connectorId);
+    // A genuinely never-requested/never-run stream: no runtime fact
+    // whatsoever. The fix must not fabricate a zero claim for the absence of
+    // any evidence.
+    seedPersistedEvidenceRow({
+      connectorId,
+      connectorInstanceId: "cin_persisted_unobserved_no_fact",
+      countState: "unobserved",
+      stream: "direct_messages",
+      streamLatestFacts: null,
+    });
+
+    const { entry } = await streamEntryFor("cin_persisted_unobserved_no_fact", "direct_messages");
+    assert.equal(
+      entry.count_state,
+      "unobserved",
+      "no runtime fact at all must never upgrade to known_zero — this is the genuinely-never-observed case"
+    );
+  }));
