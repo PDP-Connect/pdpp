@@ -18,6 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import { reclaimUploads } from "./index.ts";
@@ -25,6 +26,19 @@ import { reclaimUploads } from "./index.ts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
+
+/**
+ * Where the connector will look for `<workspace>`'s archive, derived from the
+ * SAME resolver the connector uses so these tests pin the seam rather than
+ * re-encoding the on-disk layout. Tests own the root via
+ * `PDPP_CONNECTOR_ARTIFACT_ROOT`; the connector no longer derives it from the
+ * home directory (see src/connector-artifact-root.ts).
+ */
+function seedArchiveRoot(artifactRoot: string, workspace: string): string {
+  return resolveConnectorArtifactDir("slack", [workspace], {
+    PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
+  }).root;
+}
 
 function scopedArchiveDigest(channels: readonly string[]): string {
   return createHash("sha256")
@@ -64,8 +78,8 @@ async function seedUploads(archiveDir: string, fileId: string, bytes: number): P
   await writeFile(join(uploadsDir, "attachment.bin"), Buffer.alloc(bytes, 7));
 }
 
-async function seedArchive(homeDir: string, workspace: string, withUploads: boolean): Promise<string> {
-  const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+async function seedArchive(artifactRoot: string, workspace: string, withUploads: boolean): Promise<string> {
+  const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
   await mkdir(archiveDir, { recursive: true });
   const sqlitePath = join(archiveDir, "slackdump.sqlite");
   const db = new DatabaseSync(sqlitePath);
@@ -111,9 +125,9 @@ function messagesState(result: { messages: EmittedMessage[] }): Record<string, u
 }
 
 test("reclaimUploads removes only __uploads/, leaves sqlite + sidecars, reports bytes", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-unit-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-unit-"));
   try {
-    const archiveDir = await seedArchive(homeDir, "ws", true);
+    const archiveDir = await seedArchive(artifactRoot, "ws", true);
     const sqlitePath = join(archiveDir, "slackdump.sqlite");
     await writeFile(`${sqlitePath}-wal`, Buffer.alloc(128, 1));
     await writeFile(`${sqlitePath}-shm`, Buffer.alloc(64, 1));
@@ -128,22 +142,22 @@ test("reclaimUploads removes only __uploads/, leaves sqlite + sidecars, reports 
     assert.ok(existsSync(`${sqlitePath}-wal`), "-wal sidecar untouched");
     assert.ok(existsSync(`${sqlitePath}-shm`), "-shm sidecar untouched");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("base archive resume is throttled on the 90-minute follow-up without invoking slackdump", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-immediate-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-immediate-"));
   try {
     const workspace = "base-throttle-immediate-ws";
-    const archiveDir = await seedArchive(homeDir, workspace, false);
-    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const archiveDir = await seedArchive(artifactRoot, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(artifactRoot);
     const resumedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
@@ -169,21 +183,21 @@ test("base archive resume is throttled on the 90-minute follow-up without invoki
       "the successful base-resume fact is carried forward unchanged while throttled"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("a failed base archive resume remains owed and retries successfully on the next run", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-retry-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-retry-"));
   try {
     const workspace = "base-throttle-retry-ws";
-    const archiveDir = await seedArchive(homeDir, workspace, false);
-    const fakeSlackdump = await writeCountingSlackdump(homeDir, true);
+    const archiveDir = await seedArchive(artifactRoot, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(artifactRoot, true);
     const options = {
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
@@ -212,22 +226,22 @@ test("a failed base archive resume remains owed and retries successfully on the 
       "only the successful retry writes the base archive success cursor"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("base archive resume runs again after the seven-day lookback expires", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-expiry-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-expiry-"));
   try {
     const workspace = "base-throttle-expiry-ws";
-    const archiveDir = await seedArchive(homeDir, workspace, false);
-    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const archiveDir = await seedArchive(artifactRoot, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(artifactRoot);
     const staleResumedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
@@ -248,7 +262,7 @@ test("base archive resume runs again after the seven-day lookback expires", asyn
       "a successful due resume advances the base archive success cursor"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -265,11 +279,11 @@ test("upgrade compatibility: a pre-upgrade successful base archive is throttled 
   // throttle was supposed to prevent. This test fails against the code as
   // shipped in b7a6485f5 (undefined base_archive_resumed_at entry reads as
   // "due") and must pass once the migration/derivation closes the gap.
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-migration-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-migration-"));
   try {
     const workspace = "base-throttle-migration-ws";
-    const archiveDir = await seedArchive(homeDir, workspace, false);
-    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const archiveDir = await seedArchive(artifactRoot, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(artifactRoot);
     const preUpgradeState = {
       messages: {
         archive_dir: archiveDir,
@@ -283,7 +297,7 @@ test("upgrade compatibility: a pre-upgrade successful base archive is throttled 
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
@@ -312,7 +326,7 @@ test("upgrade compatibility: a pre-upgrade successful base archive is throttled 
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
@@ -335,7 +349,7 @@ test("upgrade compatibility: a pre-upgrade successful base archive is throttled 
       "the derived fact is carried forward unchanged on the follow-up run"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -347,17 +361,17 @@ test("upgrade compatibility does NOT seed the throttle from archive existence al
   // base_archive_resumed_at fact. This must resume normally, exactly like
   // today's pre-migration first-run behavior — seeding from mere existence
   // would silently mask a prior run that never actually finished.
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-no-seed-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-base-throttle-no-seed-"));
   try {
     const workspace = "base-throttle-no-seed-ws";
-    const archiveDir = await seedArchive(homeDir, workspace, false);
-    const fakeSlackdump = await writeCountingSlackdump(homeDir);
+    const archiveDir = await seedArchive(artifactRoot, workspace, false);
+    const fakeSlackdump = await writeCountingSlackdump(artifactRoot);
 
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
@@ -381,19 +395,19 @@ test("upgrade compatibility does NOT seed the throttle from archive existence al
       "a genuinely completed resume this run still stamps the real success fact"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("reclaimUploads is a no-op returning 0 when __uploads/ is absent", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-absent-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-absent-"));
   try {
-    const archiveDir = await seedArchive(homeDir, "ws", false);
+    const archiveDir = await seedArchive(artifactRoot, "ws", false);
     const reclaimed = await reclaimUploads(archiveDir);
     assert.equal(reclaimed, 0);
     assert.ok(existsSync(join(archiveDir, "slackdump.sqlite")), "sqlite untouched");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -403,10 +417,13 @@ function progressLines(messages: EmittedMessage[]): string[] {
     .map((m) => (m as { message?: string }).message ?? "");
 }
 
-async function writeCountingSlackdump(homeDir: string, failFirst = false): Promise<{ callLog: string; path: string }> {
-  const path = join(homeDir, "fake-slackdump.mjs");
-  const callLog = join(homeDir, "slackdump-calls.log");
-  const failedMarker = join(homeDir, "slackdump-first-failure.marker");
+async function writeCountingSlackdump(
+  artifactRoot: string,
+  failFirst = false
+): Promise<{ callLog: string; path: string }> {
+  const path = join(artifactRoot, "fake-slackdump.mjs");
+  const callLog = join(artifactRoot, "slackdump-calls.log");
+  const failedMarker = join(artifactRoot, "slackdump-first-failure.marker");
   await writeFile(
     path,
     `#!/usr/bin/env node
@@ -435,14 +452,14 @@ function baseArchiveState(archivePath: string, baseArchiveResumedAt?: string): R
 }
 
 test("connector emits phase-timing and archive-size PROGRESS every run", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-timing-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-timing-"));
   try {
-    await seedArchive(homeDir, "timing-ws", true);
+    await seedArchive(artifactRoot, "timing-ws", true);
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -468,19 +485,19 @@ test("connector emits phase-timing and archive-size PROGRESS every run", async (
       "reports archive size snapshot"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("__uploads reclaim is OFF by default: a normal run leaves __uploads intact", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-off-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-off-"));
   try {
-    const archiveDir = await seedArchive(homeDir, "off-ws", true);
+    const archiveDir = await seedArchive(artifactRoot, "off-ws", true);
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -492,16 +509,16 @@ test("__uploads reclaim is OFF by default: a normal run leaves __uploads intact"
     assert.equal(done?.status, "succeeded");
     assert.ok(existsSync(join(archiveDir, "__uploads")), "__uploads NOT reclaimed without opt-in");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim when the run fails (gate honored)", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-fail-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-fail-"));
   try {
     // Seed __uploads but NO sqlite: with PDPP_SLACK_SKIP_SLACKDUMP=1 and a
     // missing archive, the connector fails before durable commit.
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", "fail-ws", "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, "fail-ws"), "archive");
     await mkdir(join(archiveDir, "__uploads", "F1"), { recursive: true });
     await writeFile(join(archiveDir, "__uploads", "F1", "a.bin"), Buffer.alloc(2048, 3));
 
@@ -510,7 +527,7 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim when the run fails (gate honored)
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -523,19 +540,19 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim when the run fails (gate honored)
     assert.equal(done?.status, "failed", "run failed (no archive)");
     assert.ok(existsSync(join(archiveDir, "__uploads")), "__uploads intact: reclaim never precedes a durable commit");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("SLACK_RECLAIM_UPLOADS=1 removes __uploads after a successful run, sqlite intact", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-on-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-on-"));
   try {
-    const archiveDir = await seedArchive(homeDir, "on-ws", true);
+    const archiveDir = await seedArchive(artifactRoot, "on-ws", true);
     const result = await runConnectorProtocolSubprocess({
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -565,7 +582,7 @@ test("SLACK_RECLAIM_UPLOADS=1 removes __uploads after a successful run, sqlite i
     );
     assert.ok(result.stderr.includes("one-way"), "reclaim evidence states it is one-way/unrecoverable");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -577,15 +594,12 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims __uploads/ in every archive the run actua
   // archive have their own __uploads/ residue — a reclaim plan that only
   // tracks the base archive (the pre-fix behavior) leaves the scoped
   // archive's bytes stranded forever.
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-multi-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-multi-"));
   try {
     const workspace = "reclaim-multi-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -615,7 +629,7 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims __uploads/ in every archive the run actua
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -650,7 +664,7 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims __uploads/ in every archive the run actua
       "reports the scoped archive's reclaimed bytes"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -665,15 +679,12 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims a repair archive that was successfully cr
   // and the repair attempt is forced; the pre-seeded repair-target archive
   // only contains an unrelated channel, so the repair "succeeds" but recovers
   // nothing.
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-empty-repair-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-empty-repair-"));
   try {
     const workspace = "reclaim-empty-repair-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const repairArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -706,7 +717,7 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims a repair archive that was successfully cr
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -747,7 +758,7 @@ test("SLACK_RECLAIM_UPLOADS=1 reclaims a repair archive that was successfully cr
       "reports the empty-repair archive's reclaimed bytes"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -760,10 +771,10 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim a repair archive when the repair 
   // still succeeds (the repair failure is caught and reported as a
   // progress line, not a fatal error) since C0MISSING was already
   // optional-diagnostic, not required.
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-repair-fail-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reclaim-repair-fail-"));
   try {
     const workspace = "reclaim-repair-fail-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(baseArchiveDir, { recursive: true });
     const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
     try {
@@ -782,7 +793,7 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim a repair archive when the repair 
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
@@ -806,16 +817,13 @@ test("SLACK_RECLAIM_UPLOADS=1 does NOT reclaim a repair archive when the repair 
     assert.equal(done?.status, "succeeded", "run still succeeds; the failed repair attempt is non-fatal");
     assert.ok(!existsSync(join(baseArchiveDir, "__uploads")), "base archive __uploads/ still reclaimed");
     const repairArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
     assert.ok(!existsSync(repairArchiveDir), "failed repair attempt created no archive directory to reclaim");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -825,15 +833,12 @@ test("scoped-archive-reconcile phase timing is reported when source-cache healin
   // slackdump-subprocess and read-and-emit phases but were not themselves
   // timed — their cost was silently absorbed into total run wall-clock,
   // invisible in run evidence.
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-timing-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-timing-"));
   try {
     const workspace = "reconcile-timing-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -861,7 +866,7 @@ test("scoped-archive-reconcile phase timing is reported when source-cache healin
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -912,7 +917,7 @@ test("scoped-archive-reconcile phase timing is reported when source-cache healin
       "declares the phase finished with 0 remaining — a single run cannot leave an open-ended backlog"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -920,10 +925,10 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
   // The bound must also be honest in the common case: no missing channel
   // means 0 repair units selected and 0 subprocess calls, not a phase that
   // silently runs "just in case".
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-none-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-none-"));
   try {
     const workspace = "reconcile-none-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(baseArchiveDir, { recursive: true });
     const baseDb = new DatabaseSync(join(baseArchiveDir, "slackdump.sqlite"));
     try {
@@ -938,7 +943,7 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -967,7 +972,7 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
       "finishes immediately with 0/0, proving no unbounded work was attempted"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -980,15 +985,12 @@ test("scoped-archive-reconcile declares 0 selected repair units and does no work
 // sufficient reason to resume it, with no check for whether a resume could
 // possibly discover anything new since the last one.
 test("scoped-archive-reconcile throttles a scoped archive's resume to at most once per lookback window", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-throttle-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-throttle-"));
   try {
     const workspace = "reconcile-throttle-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -1017,7 +1019,7 @@ test("scoped-archive-reconcile throttles a scoped archive's resume to at most on
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1074,20 +1076,17 @@ test("scoped-archive-reconcile throttles a scoped archive's resume to at most on
       "a throttled archive's resumed_at timestamp is carried forward unchanged, not bumped to now"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("scoped-archive-reconcile resumes a scoped archive again once its lookback throttle window has elapsed", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-due-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-due-"));
   try {
     const workspace = "reconcile-due-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -1117,7 +1116,7 @@ test("scoped-archive-reconcile resumes a scoped archive again once its lookback 
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1159,7 +1158,7 @@ test("scoped-archive-reconcile resumes a scoped archive again once its lookback 
       "resumed_at is bumped to this run's time after a real resume"
     );
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -1172,16 +1171,13 @@ test("scoped-archive-reconcile resumes a scoped archive again once its lookback 
 // scoped archive's path (succeeds for the base archive), so the failure is
 // genuine subprocess failure, not a test-harness shortcut.
 test("a failed scoped-archive resume does not advance the success cursor, emits a typed retryable gap, and leaves the archive owed for the next governor-allowed run", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-resume-fail-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-resume-fail-"));
   const priorBin = process.env.SLACKDUMP_BIN;
   try {
     const workspace = "reconcile-resume-fail-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -1210,7 +1206,7 @@ test("a failed scoped-archive resume does not advance the success cursor, emits 
     // archive's own invocation succeeds (both sqlites already exist on disk
     // from the seeding above, so a no-op success is a valid "did nothing new
     // but completed cleanly" outcome for the base archive).
-    const fakeSlackdumpPath = join(homeDir, "fake-slackdump.mjs");
+    const fakeSlackdumpPath = join(artifactRoot, "fake-slackdump.mjs");
     await writeFile(
       fakeSlackdumpPath,
       `#!/usr/bin/env node
@@ -1231,7 +1227,7 @@ process.exit(0);
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         SLACK_WORKSPACE: workspace,
@@ -1301,20 +1297,17 @@ process.exit(0);
     } else {
       process.env.SLACKDUMP_BIN = priorBin;
     }
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-failed archive resumes successfully", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-recovered-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-recovered-"));
   try {
     const workspace = "reconcile-recovered-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -1343,7 +1336,7 @@ test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-fail
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1381,7 +1374,7 @@ test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-fail
     assert.equal(recovered?.record_key, scopedArchiveDir);
     assert.equal(recovered?.stream, "messages");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
@@ -1397,16 +1390,13 @@ test("scoped-archive-reconcile emits DETAIL_GAP_RECOVERED when a previously-fail
 // C0MISSING on disk — forcing reconcileMessageSourceCache into the
 // new-repair-attempt branch, not the existing-archive-refresh branch.
 test("a failed NEW-repair attempt for an uncovered missing channel emits the same typed retryable gap and leaves the archive owed", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-repair-fail-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-repair-fail-"));
   const priorBin = process.env.SLACKDUMP_BIN;
   try {
     const workspace = "reconcile-repair-fail-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const repairArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -1438,7 +1428,7 @@ test("a failed NEW-repair attempt for an uncovered missing channel emits the sam
     // with the target's positional CHANNEL IDs, not the archive path itself
     // (unlike "resume", where the path IS the last arg). The archive path
     // instead follows the "-o" flag, so the fake binary locates it there.
-    const fakeSlackdumpPath = join(homeDir, "fake-slackdump.mjs");
+    const fakeSlackdumpPath = join(artifactRoot, "fake-slackdump.mjs");
     await writeFile(
       fakeSlackdumpPath,
       `#!/usr/bin/env node
@@ -1464,7 +1454,7 @@ process.exit(0);
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         SLACK_COOKIE: "xoxd-fake",
         SLACK_RECLAIM_UPLOADS: "1",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1544,20 +1534,17 @@ process.exit(0);
     } else {
       process.env.SLACKDUMP_BIN = priorBin;
     }
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("a later successful NEW-repair attempt emits DETAIL_GAP_RECOVERED for a previously-failed repair archive path", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-repair-recovered-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-reconcile-repair-recovered-"));
   try {
     const workspace = "reconcile-repair-recovered-ws";
-    const baseArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const baseArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const repairArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -1588,7 +1575,7 @@ test("a later successful NEW-repair attempt emits DETAIL_GAP_RECOVERED for a pre
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1626,6 +1613,6 @@ test("a later successful NEW-repair attempt emits DETAIL_GAP_RECOVERED for a pre
     assert.equal(recovered?.record_key, repairArchiveDir);
     assert.equal(recovered?.stream, "messages");
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
