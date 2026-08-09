@@ -219,6 +219,35 @@ test("WhatsApp connector emits privacy-safe structured progress for manual impor
   }
 });
 
+test("WhatsApp connector declares chat and message coverage from the parsed export inventory", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-chat-coverage-"));
+  try {
+    await writeMediaZip(importRoot);
+    const { messages } = await runWhatsAppImport(importRoot);
+    const coverage = detailCoverage(messages);
+
+    // One export file parsed into one chat, so the discovery walk considered
+    // one chat and accounted for it.
+    const chats = coverage.find((message) => message.stream === "chats");
+    assert.ok(chats, "expected chats DETAIL_COVERAGE");
+    assert.equal(chats.state_stream, "chats");
+    assert.equal(chats.considered, 1);
+    assert.equal(chats.covered, 1);
+    assert.deepEqual(chats.required_keys, []);
+    assert.deepEqual(chats.hydrated_keys, []);
+
+    // VALID_EXPORT carries two parsed lines; the denominator is the parsed
+    // count, not the emitted count.
+    const parsed = coverage.find((message) => message.stream === "messages");
+    assert.ok(parsed, "expected messages DETAIL_COVERAGE");
+    assert.equal(parsed.state_stream, "messages");
+    assert.equal(parsed.considered, 2);
+    assert.equal(parsed.covered, 2);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
 test("WhatsApp connector declares attachment coverage from parsed media inventory", async () => {
   const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-coverage-"));
   try {

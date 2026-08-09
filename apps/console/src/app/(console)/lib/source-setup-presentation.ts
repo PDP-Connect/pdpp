@@ -201,10 +201,54 @@ export function sourceSetupStatus(entry: ConnectorCatalogEntry): SourceSetupStat
   }
 }
 
+/**
+ * Guidance for an entry whose disposition this dashboard does not recognise.
+ *
+ * "Not available here" must never be a dead end: an owner reading it learns
+ * nothing about where to act. This says the one honest thing — the reference
+ * described this source in a way this dashboard cannot classify — and then
+ * hands over every concrete lead the entry actually carries:
+ *
+ *   - real deployment blockers, named exactly as the shipped
+ *     `provider_auth_deployment_blocked` copy names them, so an operator can set
+ *     those settings where the instance runs;
+ *   - the operator runbook path when the manifest declares one;
+ *   - otherwise the specific pair of facts (`connectorKey`, `disposition`) an
+ *     operator needs to identify the mismatch, plus where to look.
+ *
+ * `sourceSetupContext` still renders the modality/description line beside this,
+ * and `externalDocs` links still render, so provider documentation is reachable
+ * even when nothing here can be named.
+ */
+function unclassifiedSetupGuidance(entry: ConnectorCatalogEntry): string {
+  const blockers = entry.deploymentReadiness.blockers.map((blocker) => blocker.label || blocker.key).filter(Boolean);
+  if (blockers.length > 0) {
+    return `This source is waiting on server settings: ${blockers.join(", ")}. Set them as environment variables where this instance runs, then restart the server — the source becomes available here automatically once its settings are present.`;
+  }
+  if (entry.runbookPath) {
+    return `This dashboard does not recognise this source's setup path (${entry.connectorKey}), so it cannot offer an add flow. An operator can follow this source's runbook at ${entry.runbookPath} on the machine running this instance.`;
+  }
+  return `This dashboard does not recognise this source's setup path, so it cannot offer an add flow yet. Nothing is wrong with your data — existing collection keeps working. An operator can check this instance's connector manifest for '${entry.connectorKey}' (reported setup state '${entry.disposition}') and upgrade the instance, or report it so the setup path can be added.`;
+}
+
+/**
+ * Dispositions this module classifies deliberately. Each has its own `case`
+ * below, so a member of this set keeps its specific copy even though the broad
+ * {@link isUnavailableSetupEntry} predicate also matches it. Anything OUTSIDE
+ * this set that reaches an unavailable branch is by definition unrecognised,
+ * and gets the actionable unclassified guidance instead of a flat refusal.
+ */
+const CLASSIFIED_UNAVAILABLE_DISPOSITIONS = new Set([
+  "api_network_unsupported",
+  "browser_bound_runbook",
+  "local_collector_unproven",
+  "provider_auth_proof_gated",
+]);
+
 /** One short owner-facing guidance line for first-account setup. */
 export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
-  if (isUnavailableSetupEntry(entry)) {
-    return "This dashboard cannot add this source yet.";
+  if (isUnavailableSetupEntry(entry) && !CLASSIFIED_UNAVAILABLE_DISPOSITIONS.has(entry.disposition)) {
+    return unclassifiedSetupGuidance(entry);
   }
   if (browserBoundWithStoredCredentials(entry)) {
     return "Sign in in the secure browser. Saving sign-in details is optional and may help with setup or repair, but one-time codes, passkeys, and other human steps still happen in the browser. Automatic reconnection is not guaranteed.";
@@ -235,11 +279,14 @@ export function sourceSetupGuidance(entry: ConnectorCatalogEntry): string {
     case "provider_auth_proof_gated":
       return "Server setup is complete, but this provider's owner authorization flow has not yet completed live validation with a real provider account. Provider authorization is not available here yet.";
     case "api_network_unsupported":
-      return "This dashboard cannot add this source yet.";
+      // A KNOWN reason, not an unclassified one: this provider exposes no
+      // owner-reachable collection path, so name that rather than implying a
+      // setup step exists somewhere.
+      return "This source has no owner-reachable collection path — the provider offers no export or API this instance can collect from. Nothing to set up here; provider documentation below explains what the provider does offer.";
     default:
-      // unknown_unsupported and any future unclassified disposition: never a
-      // blank wall. Give the owner at least a direction.
-      return "This dashboard cannot add this source yet.";
+      // Any future unclassified disposition: never a blank wall, and never a
+      // dead end. Name what is unknown and who can act on it.
+      return unclassifiedSetupGuidance(entry);
   }
 }
 

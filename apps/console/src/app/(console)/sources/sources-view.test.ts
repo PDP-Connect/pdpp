@@ -60,3 +60,51 @@ test("SourcesView renders non-run owner actions as subject-scoped detail links, 
   assert.match(action, OWNER_VERDICT_ACTION_HREF_RE);
   assert.match(action, OWNER_VERDICT_ACTION_TITLE_RE);
 });
+
+const SOURCES_VIEW_CSS_FILE = `${HERE}sources-view.css`;
+const MANIFEST_CONTAINER_TYPE_RE = /\.rr-s-manifest\s*\{[\s\S]{0,120}?container-type:\s*inline-size;/;
+const MANIFEST_CONTAINER_NAME_RE = /\.rr-s-manifest\s*\{[\s\S]{0,120}?container-name:\s*rr-s-manifest;/;
+const MANIFEST_CONTAINER_QUERY_RE =
+  /@container rr-s-manifest \(max-width:\s*34rem\)\s*\{[\s\S]*?--cols:\s*minmax\(0, 1fr\) minmax\(0, 1\.25fr\)\s*!important;/;
+const MANIFEST_VIEWPORT_QUERY_RE = /@media \(max-width:\s*640px\)\s*\{\s*\.rr-s-cols/;
+
+/**
+ * The stream-name column is a flexible `minmax(0, 1fr)` track sharing a grid
+ * with three FIXED minimums (13rem + 10rem + 6.5rem = 472px). Whenever the
+ * manifest's own box is narrower than that sum, the fixed tracks win and the
+ * stream track is squeezed to literally 0px — the name becomes invisible while
+ * the facts beside it stay legible.
+ *
+ * That squeeze is a function of the DETAIL PANEL's width, not the viewport's:
+ * at a 1024px viewport the panel is only ~366px. A viewport media query cannot
+ * see it, which is precisely why the original `@media (max-width: 640px)` rule
+ * never fired for the collapse. The breakpoint must therefore be a container
+ * query on the panel itself.
+ */
+test("stream manifest columns respond to the panel's own width, so the stream name can never be squeezed to zero", async () => {
+  const css = await readFile(SOURCES_VIEW_CSS_FILE, "utf8");
+
+  assert.match(
+    css,
+    MANIFEST_CONTAINER_TYPE_RE,
+    "the manifest must establish an inline-size container to query against"
+  );
+  assert.match(
+    css,
+    MANIFEST_CONTAINER_NAME_RE,
+    "the container must be named so the query cannot bind to a stray ancestor"
+  );
+  // `!important` is what makes the override actually apply: the shared Table
+  // primitive sets --cols as an INLINE style, which outranks any stylesheet
+  // rule. Dropping it silently restores the collapse, so it is pinned here.
+  assert.match(
+    css,
+    MANIFEST_CONTAINER_QUERY_RE,
+    "below the fixed track minimums the manifest must drop to two tracks (with !important, to beat the primitive's inline --cols)"
+  );
+  assert.doesNotMatch(
+    css,
+    MANIFEST_VIEWPORT_QUERY_RE,
+    "the stream-column breakpoint must not key on viewport width — the panel is far narrower than the viewport"
+  );
+});

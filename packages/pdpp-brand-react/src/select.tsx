@@ -23,7 +23,9 @@
  *   - `value`       → controlled selected value (string).
  *   - `defaultValue`→ uncontrolled initial value (string).
  *   - `onValueChange` → called when the user picks a new item.
- *   - `options`     → declarative option list (IcSelectOption[]).
+ *   - `options`     → declarative option list (IcSelectOption[]). Also forwarded
+ *                      to base-ui's `items`, so the trigger shows the selected
+ *                      option's label rather than its raw value.
  *   - `id`          → forwarded to the trigger button.
  *   - `disabled`    → forwarded to Select.Root.
  *   - `style`       → forwarded to the outer wrapper (for width etc.).
@@ -98,6 +100,13 @@ function IcSelect({
     <SelectPrimitive.Root
       defaultValue={defaultValue ?? undefined}
       disabled={disabled}
+      // base-ui's `items` is what makes <Select.Value> render the selected
+      // option's LABEL instead of its raw value. Without it a trigger shows the
+      // submitted value verbatim — fine while label === value (every early call
+      // site), wrong as soon as they differ (a connector key like `amazon`
+      // displayed where the owner picked "Amazon"). `options` already has the
+      // exact `{ label, value }[]` shape this prop expects.
+      items={options as { label: string; value: string }[]}
       name={name}
       onValueChange={onValueChange}
       value={value ?? undefined}

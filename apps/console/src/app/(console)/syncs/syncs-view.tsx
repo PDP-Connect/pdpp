@@ -45,8 +45,8 @@ import {
   type SyncsViewModel,
 } from "./syncs-model.ts";
 
-/** One filterable/pageable option for the recent-syncs status control. */
-interface RecentSyncsStatusOption {
+/** One filterable/pageable option for a recent-syncs filter control. */
+interface RecentSyncsFilterOption {
   label: string;
   value: string;
 }
@@ -58,11 +58,19 @@ interface RecentSyncsStatusOption {
  * stays a pure server component (no client hydration for a GET form).
  */
 export interface RecentSyncsPaging {
+  /**
+   * The connectors this owner actually has, projected from the SAME bounded
+   * fleet page the rest of Syncs renders from — never a hardcoded roster and
+   * never connector-specific knowledge held in the console. If the fleet page
+   * is empty the picker is not rendered at all rather than offering a filter
+   * that can only ever return nothing.
+   */
+  connectorOptions: readonly RecentSyncsFilterOption[];
   hasMore: boolean;
   isPaged: boolean;
   nextCursor: string | undefined;
   params: Readonly<Record<string, string | undefined>>;
-  statusOptions: readonly RecentSyncsStatusOption[];
+  statusOptions: readonly RecentSyncsFilterOption[];
 }
 
 const RECENT_SYNCS_PATH = "/syncs";
@@ -346,15 +354,32 @@ function RecentSyncRow({ entry }: { entry: RecentSyncEntry }) {
 }
 
 /**
- * GET-submitted status filter for recent syncs. A plain server form: no client
- * state on this page, matching the "no useState" invariant — the select's own
- * module owns the minimal client interactivity, same pattern as `/audit`.
- * Every option here is a real `_ref/runs` status value (see `RUN_STATUS_FILTER_OPTIONS`
- * in `page.tsx`); this never offers a filter the server can't honestly apply.
+ * GET-submitted outcome + source filters for recent syncs. A plain server form:
+ * no client state on this page, matching the "no useState" invariant — the
+ * select's own module owns the minimal client interactivity, same pattern as
+ * `/audit`.
+ *
+ * Both controls are honest about what `_ref/runs` can actually apply. Every
+ * status option is a real run status (see `RUN_STATUS_FILTER_OPTIONS` in
+ * `page.tsx`), and every source option is a connector the owner really has,
+ * projected from the fleet page this route already fetches — so neither offers
+ * a filter the server can't honour. The two compose: `_ref/runs` takes
+ * `status` and `connector_id` together, so submitting the form carries
+ * whichever of the pair are set.
+ *
+ * `run_cursor` is deliberately NOT carried through this form. A cursor is a
+ * position inside ONE filtered feed; re-filtering makes it meaningless, so
+ * applying a filter restarts at the newest page. Paging preserves both filters
+ * instead — see `RecentSyncsPager`, which merges the current params.
+ *
+ * There is no sort control, because `_ref/runs` has no sort parameter. Faking
+ * one client-side would only reorder the current page and read as a whole-feed
+ * sort, so the list stays newest-first — the one order the feed guarantees.
  */
 function RecentSyncsFilterForm({ paging }: { paging: RecentSyncsPaging }) {
   const status = paging.params.status ?? "";
-  const hasFilter = status !== "";
+  const connectorId = paging.params.connector_id ?? "";
+  const hasFilter = status !== "" || connectorId !== "";
   return (
     <form
       action={RECENT_SYNCS_PATH}
@@ -362,9 +387,6 @@ function RecentSyncsFilterForm({ paging }: { paging: RecentSyncsPaging }) {
       method="get"
       style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 8 }}
     >
-      {paging.params.connector_id ? (
-        <input name="connector_id" type="hidden" value={paging.params.connector_id} />
-      ) : null}
       <IcSelect
         aria-label="Filter recent syncs by outcome"
         defaultValue={status}
@@ -372,13 +394,22 @@ function RecentSyncsFilterForm({ paging }: { paging: RecentSyncsPaging }) {
         options={paging.statusOptions}
         style={{ minWidth: 160 }}
       />
+      {paging.connectorOptions.length > 0 ? (
+        <IcSelect
+          aria-label="Filter recent syncs by source"
+          defaultValue={connectorId}
+          name="connector_id"
+          options={paging.connectorOptions}
+          style={{ minWidth: 160 }}
+        />
+      ) : null}
       <IcButton size="sm" type="submit" variant="ghost">
         Apply
       </IcButton>
       {hasFilter ? (
         <a
           className={buttonVariants({ size: "sm", variant: "ghost" })}
-          href={recentSyncsHref(paging.params, { status: undefined })}
+          href={recentSyncsHref(paging.params, { connector_id: undefined, run_cursor: undefined, status: undefined })}
         >
           Clear filter
         </a>
@@ -417,7 +448,7 @@ function RecentSyncsPager({ paging }: { paging: RecentSyncsPaging }) {
 }
 
 function RecentSyncsSection({ entries, paging }: { entries: readonly RecentSyncEntry[]; paging: RecentSyncsPaging }) {
-  const hasFilter = Boolean(paging.params.status);
+  const hasFilter = Boolean(paging.params.status) || Boolean(paging.params.connector_id);
   return (
     <section className="rr-sync__recent" data-testid="syncs-recent-list">
       <div className="rr-sync__section-head">

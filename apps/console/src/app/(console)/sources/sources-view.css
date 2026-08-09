@@ -321,21 +321,62 @@ a.rr-s-item {
 
 /* Stream manifest table — show useful collection facts when present, and an
    explicit unavailable state when the reference has not produced per-stream
-   facts. No dash-only rows: empty facts are still a meaningful state. */
+   facts. No dash-only rows: empty facts are still a meaningful state.
+
+   The three fact tracks carry FIXED minimums (13rem + 10rem + 6.5rem = 472px).
+   Whenever the manifest's own box is narrower than that sum, those minimums win
+   and the flexible `minmax(0, 1fr)` stream track is squeezed to literally 0px —
+   the stream name disappears while the facts beside it stay legible. That is a
+   function of the DETAIL PANEL's width, not the viewport's: at a 1024px viewport
+   the panel is only ~366px, so a viewport media query cannot see the squeeze.
+   Hence a container query on the panel — it measures the box the grid actually
+   has to fit in. */
+.rr-s-manifest {
+  container-name: rr-s-manifest;
+  container-type: inline-size;
+}
+
 .rr-s-cols {
   --cols: minmax(0, 1fr) minmax(13rem, 1.4fr) minmax(10rem, 1fr) 6.5rem;
 }
-@media (max-width: 640px) {
+
+/* Below the 472px the four fixed track minimums demand (plus the row's own
+   padding + column gaps), drop to stream + records. Coverage and "read in" are
+   the droppable pair: the collection column still says whether facts exist, and
+   tapping the row remains the reader.
+
+   `!important` is load-bearing, not decoration. The shared `Table` primitive
+   sets `--cols` as an INLINE style (`style={{ "--cols": cols }}` in
+   packages/pdpp-brand-react/src/table.tsx), and an inline declaration outranks
+   any stylesheet rule no matter which query wraps it. Without `!important` this
+   block matches and still loses — which is exactly why the previous
+   `@media (max-width: 640px)` override never actually took effect and the
+   collapse survived. */
+@container rr-s-manifest (max-width: 34rem) {
   .rr-s-cols {
-    --cols: minmax(0, 1fr) minmax(0, 1.25fr);
+    --cols: minmax(0, 1fr) minmax(0, 1.25fr) !important;
   }
-  /* Hide coverage + Explore columns on narrow screens; the collection column
-     still says whether facts exist, and tapping the row remains the reader. */
   .rr-s-cols .pdpp-table__h:nth-child(3),
   .rr-s-cols .pdpp-table__h:nth-child(4),
   .rr-s-cols .pdpp-table__row > *:nth-child(3),
   .rr-s-cols .pdpp-table__row > *:nth-child(4) {
     display: none;
+  }
+}
+
+/* Narrower still: even two tracks with a 1.25fr records column starve the
+   stream name. Stack the pair so the name always owns a full line. */
+@container rr-s-manifest (max-width: 20rem) {
+  .rr-s-cols {
+    --cols: minmax(0, 1fr) !important;
+  }
+  .rr-s-cols .pdpp-table__h:nth-child(2),
+  .rr-s-cols .pdpp-table__h:nth-child(3),
+  .rr-s-cols .pdpp-table__h:nth-child(4) {
+    display: none;
+  }
+  .rr-s-cols .pdpp-table__row > *:nth-child(2) {
+    padding-top: 2px;
   }
 }
 

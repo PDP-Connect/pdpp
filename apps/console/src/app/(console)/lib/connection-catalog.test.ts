@@ -1076,3 +1076,75 @@ test("owner catalog: presentation consistency between actionability and availabi
   // Special case: deployment_blocked gets "requires_server_setup", not "not_available_here"
   assert.equal(sourceSetupAvailability(deploymentBlocked), "requires_server_setup");
 });
+
+const ENDS_IN_REFUSAL_RE = /cannot add this source yet\.$/;
+const OPERATOR_RE = /operator/i;
+const DATA_SAFE_RE = /existing collection keeps working/i;
+const ENV_VARS_RE = /environment variables/i;
+const RESTART_RE = /restart/i;
+
+/**
+ * The unclassified-disposition fallback must never be a dead end.
+ *
+ * "This dashboard cannot add this source yet." told the owner nothing about
+ * where to act — the exact complaint that produced the shipped server-settings
+ * copy ("Each source below lists the exact settings it is waiting on"). This
+ * branch is latent today (no shipped connector reaches it, which the
+ * no-silent-fallthrough guard above enforces), but a future unclassified
+ * connector would land on it, so it has to clear the same bar: name what is
+ * unknown, and name who can act next.
+ */
+test("an unclassified disposition gets actionable guidance, never the old dead-end line", () => {
+  const catalog = buildOwnerConnectorCatalog(
+    [],
+    [
+      ownerTemplate({
+        connectorKey: "future-unclassified",
+        disposition: "unknown_unsupported",
+        nextStepKind: "unsupported",
+        ownerActionable: false,
+      }),
+    ]
+  );
+  const entry = catalog.find((e) => e.connectorKey === "future-unclassified");
+  assert.ok(entry, "an unclassified template must still be listed, never silently dropped");
+
+  const guidance = sourceSetupGuidance(entry);
+  assert.notEqual(guidance, "This dashboard cannot add this source yet.", "the dead-end line must not survive");
+  assert.doesNotMatch(guidance, ENDS_IN_REFUSAL_RE, "guidance must not end at a refusal");
+  // Names the source it cannot classify, so an operator can find it.
+  assert.ok(guidance.includes("future-unclassified"), "guidance must name the connector key an operator must look up");
+  // Says what the owner can do next, and reassures that data is unaffected.
+  assert.match(guidance, OPERATOR_RE, "guidance must name who can act next");
+  assert.match(guidance, DATA_SAFE_RE, "guidance must not imply existing data is at risk");
+});
+
+test("an unclassified disposition carrying real deployment blockers names those settings", () => {
+  const template = ownerTemplate({
+    connectorKey: "future-blocked",
+    disposition: "unknown_unsupported",
+    nextStepKind: "unsupported",
+    ownerActionable: false,
+  });
+  const blockedTemplate = {
+    ...template,
+    setup_plan: {
+      ...template.setup_plan,
+      deployment_readiness: {
+        blockers: [{ key: "PDPP_FUTURE_CLIENT_ID", label: "PDPP_FUTURE_CLIENT_ID", secret: false }],
+        guidance: null,
+        state: "needs_config" as const,
+      },
+    },
+  };
+  const catalog = buildOwnerConnectorCatalog([], [blockedTemplate]);
+  const entry = catalog.find((e) => e.connectorKey === "future-blocked");
+  assert.ok(entry);
+
+  const guidance = sourceSetupGuidance(entry);
+  // Same shape as the shipped provider_auth_deployment_blocked copy: name the
+  // exact env vars, say where to set them, say what happens next.
+  assert.ok(guidance.includes("PDPP_FUTURE_CLIENT_ID"), "guidance must name the exact setting that is missing");
+  assert.match(guidance, ENV_VARS_RE, "guidance must say where the setting goes");
+  assert.match(guidance, RESTART_RE, "guidance must say what makes the setting take effect");
+});

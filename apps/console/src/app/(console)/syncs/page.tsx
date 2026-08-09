@@ -16,11 +16,14 @@
  * the page must never pull an inline run timeline).
  *
  * Recent syncs is a real cursor-paginated view over the runs feed (`run_cursor`),
- * with an honest server-side `status` filter — `_ref/runs` applies `status` as a
- * real (if bounded-window) post-aggregate filter, so every returned row's status
- * genuinely matches; see `listRuns`'s `ListQuery.status`. There is no sort param
- * on `_ref/runs`, so the list is never presented as sortable — it stays
- * newest-first, the one order the feed actually guarantees.
+ * with two honest server-side filters — `status` and `connector_id`. `_ref/runs`
+ * applies both (see `listRuns`'s `ListQuery`), so every returned row genuinely
+ * matches, and the two compose. The source options are projected from the
+ * connector-summary page this route already fetches, so the picker can only ever
+ * offer connectors the owner really has and the console never holds a connector
+ * roster of its own. There is no sort param on `_ref/runs`, so the list is never
+ * presented as sortable — it stays newest-first, the one order the feed actually
+ * guarantees.
  */
 
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
@@ -69,6 +72,38 @@ const RUN_STATUS_FILTER_OPTIONS = [
   { label: "cancelled", value: "cancelled" },
   { label: "in progress", value: "in_progress" },
 ] as const;
+
+/**
+ * Source filter options, derived from the SAME bounded connector-summary page
+ * the view already renders — not a hardcoded roster, and not connector-specific
+ * knowledge held in the console. The reference stays the only authority on
+ * which connectors exist; this just projects the identity fields
+ * (`connector_id` + `connector_display_name`) it already returned.
+ *
+ * One option per distinct `connector_id` (a connector with several connections
+ * is still one source to filter by), sorted by the label the owner sees. A
+ * connector whose current filter value is active but absent from this bounded
+ * page is appended, so an in-effect filter is never silently missing from the
+ * control that owns it.
+ */
+function connectorFilterOptions(
+  connectors: readonly { connector_display_name?: string; connector_id: string }[],
+  activeConnectorId: string | undefined
+) {
+  const byConnectorId = new Map<string, string>();
+  for (const connector of connectors) {
+    if (!byConnectorId.has(connector.connector_id)) {
+      byConnectorId.set(connector.connector_id, connector.connector_display_name || connector.connector_id);
+    }
+  }
+  if (activeConnectorId && !byConnectorId.has(activeConnectorId)) {
+    byConnectorId.set(activeConnectorId, activeConnectorId);
+  }
+  const options = [...byConnectorId.entries()]
+    .map(([value, label]) => ({ label, value }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  return options.length > 0 ? [{ label: "any source", value: "" }, ...options] : [];
+}
 
 function runListQuery(params: Params) {
   return {
@@ -141,6 +176,7 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
       <SyncsView
         model={model}
         recentSyncsPaging={{
+          connectorOptions: connectorFilterOptions(connectorsPage.items, params.connector_id),
           hasMore: runsResult.has_more,
           isPaged: Boolean(params.run_cursor),
           nextCursor: runsResult.next_cursor,

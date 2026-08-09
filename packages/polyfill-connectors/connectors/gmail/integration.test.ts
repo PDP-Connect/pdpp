@@ -57,6 +57,7 @@ import {
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
+  buildFullScanCoverageMessage,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
@@ -2806,6 +2807,35 @@ test("buildAttachmentDetailCoverageMessage: emits complete zero-attachment cover
     reference_only: true,
     stream: "attachments",
     state_stream: "messages",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 0,
+    covered: 0,
+  });
+});
+
+test("buildFullScanCoverageMessage: declares the enumerated boundary as both denominator and numerator", () => {
+  // `labels` and `threads` re-enumerate their whole boundary every run and
+  // suppress unchanged records, so the boundary size is the honest covered
+  // count — a steady-state run that emitted nothing is still fully covered.
+  assert.deepEqual(buildFullScanCoverageMessage("labels", 23), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "labels",
+    state_stream: "labels",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 23,
+    covered: 23,
+  });
+
+  // A stream that genuinely enumerated nothing declares a measured zero, which
+  // reads as covered — not as an unknown denominator.
+  assert.deepEqual(buildFullScanCoverageMessage("threads", 0), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "threads",
+    state_stream: "threads",
     required_keys: [],
     hydrated_keys: [],
     considered: 0,
