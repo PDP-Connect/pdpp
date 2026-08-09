@@ -33,10 +33,16 @@
  * chrome an owner actually sees. These are scanned strictly for forbidden
  * strings and rendered commands. Paths are relative to the repo root.
  *
- * `components/shell.tsx` is included because its chrome (including the
- * `ServerUnreachable` / `OwnerTokenRequired` fallbacks) renders on every
- * dashboard page, so a leak there reaches the normal owner journey from any
+ * `components/server-unreachable.tsx` and the segment-level `error.tsx` are
+ * included because they are always-rendered fallback chrome: `ServerUnreachable`
+ * is pulled into every route that fetches from the resource server, and
+ * `error.tsx` is the App Router error boundary for the entire `(console)`
+ * route group, so a leak in either reaches the normal owner journey from any
  * route — including `/dashboard/connect`, where the failed walkthrough began.
+ * (The monolithic `components/shell.tsx` that previously carried this
+ * fallback chrome was split apart in commit 3cb259441 — its always-rendered
+ * nav contract is now covered by `SHARED_SHELL_FILE` /
+ * `checkDashboardRouteShellContract` below, not a single file here.)
  */
 export const NORMAL_OWNER_UI_FILES = [
   "apps/console/src/app/(console)/sources/page.tsx",
@@ -50,7 +56,8 @@ export const NORMAL_OWNER_UI_FILES = [
   "apps/console/src/app/(console)/connect/static-secret/[connectorId]/page.tsx",
   "apps/console/src/app/(console)/connect/static-secret/[connectorId]/actions.ts",
   "apps/console/src/app/(console)/connect/static-secret/[connectorId]/status/[connectionId]/page.tsx",
-  "apps/console/src/app/(console)/components/shell.tsx",
+  "apps/console/src/app/(console)/components/server-unreachable.tsx",
+  "apps/console/src/app/(console)/error.tsx",
 ];
 
 /**
