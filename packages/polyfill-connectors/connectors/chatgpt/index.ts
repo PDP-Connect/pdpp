@@ -2141,6 +2141,61 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   }
 }
 
+/**
+ * One `/shared_conversations` page, or the reason it never arrived. Mirrors
+ * `classifyGizmoPage`: separating "did this page arrive intact?" from "walk
+ * the pages" keeps the enumeration loop able to treat every failure
+ * identically: stop, and prove nothing.
+ */
+type SharedConversationsPage =
+  | { ok: true; items: RawSharedConversation[] }
+  | { ok: false; skip: Extract<EmittedMessage, { type: "SKIP_RESULT" }> };
+
+function classifySharedConversationsPage(res: ChatGptFetchResult, page: number): SharedConversationsPage {
+  if (res.status === 404 || res.status === 403) {
+    return {
+      ok: false,
+      skip: {
+        type: "SKIP_RESULT",
+        stream: "shared_conversations",
+        reason: "not_available",
+        message: `shared_conversations http ${res.status}`,
+      },
+    };
+  }
+  if (res.status !== 200) {
+    return {
+      ok: false,
+      skip: {
+        type: "SKIP_RESULT",
+        stream: "shared_conversations",
+        reason: "http_error",
+        message: `shared_conversations http ${res.status}`,
+        diagnostics: { http_status: res.status },
+      },
+    };
+  }
+  // A 200 whose body failed to parse arrives here as `json: null` (the api
+  // swallows the parse error). Reading `?.items` off it yields [] — identical
+  // to a genuinely empty page — so without this guard a malformed body would be
+  // indistinguishable from a proven-empty enumeration and would emit STATE plus
+  // zero-coverage proof it has not earned. A body we could not read is a failed
+  // enumeration.
+  if (!res.json) {
+    return {
+      ok: false,
+      skip: {
+        type: "SKIP_RESULT",
+        stream: "shared_conversations",
+        reason: "parse_error",
+        message: "shared_conversations http 200 with an unreadable body",
+        diagnostics: { http_status: res.status, page },
+      },
+    };
+  }
+  return { ok: true, items: (res.json.items as RawSharedConversation[] | undefined) || [] };
+}
+
 export async function runSharedConversationsStream(
   deps: StreamDeps,
   state: CollectContext["state"] = {}
@@ -2162,30 +2217,26 @@ export async function runSharedConversationsStream(
   let offset = 0;
   const limit = 100;
   let sawError = false;
+  let page = 0;
+  // The enumerated boundary: every share `/shared_conversations` listed across
+  // all pages, counted here at the enumeration site. Deliberately NOT the
+  // emitted count — a share the fingerprint gate suppressed as unchanged was
+  // still genuinely observed, and aliasing the two would make a byte-identical
+  // no-op re-list read as an incomplete scan (`DetailCoverageParams.considered`).
+  let considered = 0;
   for (;;) {
-    const res = await deps.api.fetch(`/shared_conversations?offset=${offset}&limit=${limit}&order=created`);
-    if (res.status === 404 || res.status === 403) {
-      deps.emit({
-        type: "SKIP_RESULT",
-        stream: "shared_conversations",
-        reason: "not_available",
-        message: `shared_conversations http ${res.status}`,
-      });
+    const classified = classifySharedConversationsPage(
+      await deps.api.fetch(`/shared_conversations?offset=${offset}&limit=${limit}&order=created`),
+      page
+    );
+    page += 1;
+    if (!classified.ok) {
+      deps.emit(classified.skip);
       sawError = true;
       break;
     }
-    if (res.status !== 200) {
-      deps.emit({
-        type: "SKIP_RESULT",
-        stream: "shared_conversations",
-        reason: "http_error",
-        message: `shared_conversations http ${res.status}`,
-        diagnostics: { http_status: res.status },
-      });
-      sawError = true;
-      break;
-    }
-    const items = (res.json?.items as RawSharedConversation[] | undefined) || [];
+    const { items } = classified;
+    considered += items.length;
     if (!items.length) {
       break;
     }
@@ -2212,6 +2263,13 @@ export async function runSharedConversationsStream(
       stream: "shared_conversations",
       cursor: { fetched_at: nowIso(), fingerprints: fingerprintCursor.toState() },
     });
+    // `shared_conversations` is a full scan with no detail-hydration phase, so
+    // the enumerated boundary is its own coverage. Emitting this only on a
+    // clean pass is the point: an account with zero shares then proves
+    // considered === covered === 0 instead of leaving a committed checkpoint
+    // with no positive evidence behind it, while every failure path above
+    // breaks out before reaching here and proves nothing.
+    deps.emit(buildFullScanCoverageMessage("shared_conversations", considered));
   }
 }
 

@@ -4887,6 +4887,22 @@ test("runCustomGptsStream: 403 → SKIP_RESULT('not_available'), no STATE", asyn
   assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
 });
 
+/**
+ * Mirrors `customGptsCoverage`: the discriminator behind ruling R2 applies
+ * identically to shared_conversations now that it proves its enumerated
+ * boundary — a committed checkpoint with zero records proves nothing on its
+ * own, so a SUCCESSFUL empty enumeration must say so positively
+ * (considered === covered === 0) and a FAILED one must stay silent.
+ */
+function sharedConversationsCoverage(
+  messages: readonly EmittedMessage[]
+): Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> | undefined {
+  return messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "shared_conversations"
+  );
+}
+
 test("runSharedConversationsStream: paginates shared conversations and emits STATE when complete", async () => {
   const firstPageItems = Array.from({ length: 100 }, (_, idx) => ({
     share_id: `s-${idx}`,
@@ -4921,6 +4937,12 @@ test("runSharedConversationsStream: paginates shared conversations and emits STA
   assert.equal(shares[0]?.data.id, "s-0");
   assert.equal(shares[100]?.data.id, "s-100");
   assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "shared_conversations").length, 1);
+  // nonempty pagination counts `considered` at enumeration (101 items listed
+  // across both pages), not at emitted count.
+  const coverage = sharedConversationsCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 101);
+  assert.equal(coverage.covered, 101);
 });
 
 test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no record", async () => {
@@ -4937,6 +4959,101 @@ test("runSharedConversationsStream: 404 → SKIP_RESULT('not_available'), no rec
   assert.equal(skip.stream, "shared_conversations");
   assert.equal(skip.reason, "not_available");
   assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+  assert.equal(sharedConversationsCoverage(messages), undefined, "a failed scan must not prove any boundary");
+});
+
+test("runSharedConversationsStream: http 200 with an unreadable body is a failure, not a proven-empty scan", async () => {
+  // The api swallows a JSON parse error into `json: null`, which reads as []
+  // downstream — indistinguishable from a genuinely empty page without a guard.
+  // This is the exact defect fixed for custom_gpts in 2079d986e; before this
+  // fix shared_conversations fell through res.json?.items -> [] -> break,
+  // then still pruned fingerprints and emitted a clean STATE cursor as if it
+  // had proven an empty/complete pass.
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: null }],
+    requested: ["shared_conversations"],
+  });
+
+  await runSharedConversationsStream(deps);
+
+  assert.equal(emitted.length, 0);
+  assert.equal(sharedConversationsCoverage(messages), undefined, "an unreadable body must not prove an empty boundary");
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 0, "an unreadable body must not commit a cursor");
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.stream, "shared_conversations");
+  assert.equal(skip.reason, "parse_error");
+});
+
+test("runSharedConversationsStream: successful EMPTY enumeration proves zero coverage", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: [] } }],
+    requested: ["shared_conversations"],
+  });
+
+  await runSharedConversationsStream(deps);
+
+  assert.equal(emitted.length, 0);
+  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "shared_conversations").length, 1);
+  const coverage = sharedConversationsCoverage(messages);
+  assert.ok(coverage, "a genuinely empty page must still prove considered === covered === 0");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+});
+
+test("runSharedConversationsStream: a rejected record still counts as considered", async () => {
+  // buildSharedConversationRecord returning null for a malformed item must not
+  // shrink `considered` — the source still listed it. Mirrors the custom_gpts
+  // "considered counts enumerated items, not emitted records" invariant.
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      {
+        status: 200,
+        json: {
+          items: [
+            { share_id: "s-0", conversation_id: "c-0", title: "Share 0", create_time: 1_700_000_000 },
+            { share_id: null, conversation_id: "c-1", title: "Malformed", create_time: 1_700_000_001 },
+          ],
+        },
+      },
+    ],
+    requested: ["shared_conversations"],
+  });
+
+  await runSharedConversationsStream(deps);
+
+  const shares = emitted.filter((r) => r.stream === "shared_conversations");
+  assert.equal(shares.length, 1, "only the well-formed record emits");
+  const coverage = sharedConversationsCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 2, "considered counts both listed items, not just the emitted one");
+  assert.equal(coverage.covered, 2);
+});
+
+test("runSharedConversationsStream: fingerprint-suppressed records on an unchanged re-list still count as covered", async () => {
+  const items = Array.from({ length: 3 }, (_, idx) => ({
+    share_id: `s-${idx}`,
+    conversation_id: `c-${idx}`,
+    title: `Share ${idx}`,
+    create_time: 1_700_000_000 + idx,
+  }));
+
+  const first = makeHarness({ fetchQueue: [{ status: 200, json: { items } }], requested: ["shared_conversations"] });
+  await runSharedConversationsStream(first.deps, {});
+  const priorCursor = lastStateCursor(first.messages, "shared_conversations");
+
+  const second = makeHarness({ fetchQueue: [{ status: 200, json: { items } }], requested: ["shared_conversations"] });
+  await runSharedConversationsStream(second.deps, { shared_conversations: priorCursor });
+
+  assert.equal(
+    second.emitted.filter((r) => r.stream === "shared_conversations").length,
+    0,
+    "byte-identical re-list → no re-emit"
+  );
+  const coverage = sharedConversationsCoverage(second.messages);
+  assert.ok(coverage, "genuinely observed shares suppressed by the fingerprint gate still prove coverage");
+  assert.equal(coverage.considered, 3, "all 3 shares were genuinely observed on the wire");
+  assert.equal(coverage.covered, 3, "fingerprint suppression is not a failure to observe — covered stays 3");
 });
 
 // ─── Invariant 7: fingerprint no-op suppression (version-churn fix) ──────
