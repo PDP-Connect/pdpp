@@ -50,6 +50,13 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
+import {
+  dateDirectoryInRange,
+  type EnumerationScope,
+  isPathWithinSourceRoots,
+  readEnumerationScope,
+  scopeBoundsEnumeration,
+} from "../../src/collection-scope-enumeration.ts";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
@@ -358,7 +365,8 @@ async function* walkDayFiles(
 async function* walkMonthDays(
   monthPath: string,
   year: string,
-  month: string
+  month: string,
+  scope?: EnumerationScope | null
 ): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
   const days = await listIfExists(monthPath);
   if (days === null) {
@@ -368,13 +376,19 @@ async function* walkMonthDays(
     if (!TWO_DIGIT_DIR_RE.test(d)) {
       continue;
     }
+    // A civil day strictly before the boundary day cannot hold an in-range
+    // record, so the whole day is skipped without listing or opening any file.
+    if (!dateDirectoryInRange({ day: d, month, year }, scope)) {
+      continue;
+    }
     yield* walkDayFiles(join(monthPath, d), year, month, d);
   }
 }
 
 async function* walkYearMonths(
   yearPath: string,
-  year: string
+  year: string,
+  scope?: EnumerationScope | null
 ): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
   const months = await listIfExists(yearPath);
   if (months === null) {
@@ -384,13 +398,17 @@ async function* walkYearMonths(
     if (!TWO_DIGIT_DIR_RE.test(m)) {
       continue;
     }
-    yield* walkMonthDays(join(yearPath, m), year, m);
+    if (!dateDirectoryInRange({ month: m, year }, scope)) {
+      continue;
+    }
+    yield* walkMonthDays(join(yearPath, m), year, m, scope);
   }
 }
 
 // Recursively walk the yyyy/mm/dd hierarchy and yield rollout-*.jsonl paths.
-async function* walkRollouts(
-  baseDir: string
+export async function* walkRollouts(
+  baseDir: string,
+  scope?: EnumerationScope | null
 ): AsyncGenerator<{ path: string; year: string; month: string; day: string; file: string }> {
   const years = await listIfExists(baseDir);
   if (years === null) {
@@ -400,7 +418,10 @@ async function* walkRollouts(
     if (!YEAR_DIR_RE.test(y)) {
       continue;
     }
-    yield* walkYearMonths(join(baseDir, y), y);
+    if (!dateDirectoryInRange({ year: y }, scope)) {
+      continue;
+    }
+    yield* walkYearMonths(join(baseDir, y), y, scope);
   }
 }
 
@@ -1145,6 +1166,7 @@ interface ScanRolloutsArgs {
   requested: Map<string, StreamScope>;
   rolloutAggregates: Map<string, RolloutAggregate>;
   scanStartedAtMs: number;
+  scope?: EnumerationScope | null;
 }
 
 interface ScanRolloutsResult {
@@ -1308,7 +1330,12 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
   }
   let totalRollouts = 0;
   let parsedRollouts = 0;
-  for await (const entry of walkRollouts(args.baseDir)) {
+  for await (const entry of walkRollouts(args.baseDir, args.scope)) {
+    // Root membership is decided from the path alone, so an out-of-root rollout
+    // is never opened, read, or parsed.
+    if (!isPathWithinSourceRoots(entry.path, args.scope)) {
+      continue;
+    }
     totalRollouts += 1;
     if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
       parsedRollouts += 1;
@@ -1856,6 +1883,20 @@ async function main(): Promise<void> {
   await emitCoverageDiagnostics({ emitRecord, inventory, requested });
   await assertRequestedCodexSources(dirs, requested);
 
+  // The owner-declared boundary rides on the stream scopes the runtime already
+  // threads through. Applied at ENUMERATION: the rollout tree is laid out as
+  // yyyy/mm/dd, so a `since` prunes whole years, months, and days before they
+  // are listed, and `source_roots` skips out-of-root files before they open.
+  const enumerationScope = readEnumerationScope(requested, ["sessions", "messages", "function_calls"]);
+  if (scopeBoundsEnumeration(enumerationScope)) {
+    emit({
+      type: "PROGRESS",
+      message: `Codex phase=index pass=index enumeration_bounded=true since=${
+        enumerationScope?.since ? "set" : "unset"
+      } roots=${enumerationScope?.source_roots?.length ?? 0}`,
+    });
+  }
+
   await emitLocalInventoryStreams({
     codexHome: dirs.codexHome,
     emitRecord,
@@ -1877,6 +1918,7 @@ async function main(): Promise<void> {
       emitRecord,
       rolloutAggregates,
       scanStartedAtMs,
+      scope: enumerationScope,
     });
     parsedRolloutFiles = rolloutScan.parsedFiles;
   }

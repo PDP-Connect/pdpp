@@ -2649,6 +2649,9 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     // knowing any connector; absent for a custom-command dev entry, which then
     // simply runs unscoped rather than guessing.
     ...(bundled?.time_scopable_streams ? { timeScopableStreams: bundled.time_scopable_streams } : {}),
+    // Only a connector that declared it prunes by root may have a roots
+    // boundary honoured; otherwise it is declassified, never falsely claimed.
+    ...(bundled?.enforces_source_roots ? { enforcesSourceRoots: true } : {}),
     // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves established behavior; this diagnostic requires a semantic refactor outside the closure scope.
     runtime_requirements: { bindings: bundled?.bindings ?? {} },
   };

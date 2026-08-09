@@ -157,6 +157,8 @@ export interface LocalCollectorDefinition {
    * collected whole rather than narrowed against a field they do not have.
    */
   readonly time_scopable_streams?: readonly string[];
+  /** Whether the connector enforces path roots at enumeration time. */
+  readonly enforces_source_roots?: boolean;
 }
 
 /**
@@ -183,6 +185,8 @@ export interface BundledConnectorEntry {
   readonly streams: readonly string[];
   /** Streams an owner-declared `since` can be proven against. */
   readonly time_scopable_streams?: readonly string[];
+  /** Whether the connector enforces path roots at enumeration time. */
+  readonly enforces_source_roots?: boolean;
 }
 
 /** A frozen, id-keyed registry of runnable bundled connector entries. */
@@ -224,6 +228,7 @@ function toBundledEntry(definition: LocalCollectorDefinition): BundledConnectorE
           time_scopable_streams: Object.freeze([...definition.time_scopable_streams]) as readonly string[],
         }
       : {}),
+    ...(definition.enforces_source_roots ? { enforces_source_roots: true } : {}),
   });
 }
 

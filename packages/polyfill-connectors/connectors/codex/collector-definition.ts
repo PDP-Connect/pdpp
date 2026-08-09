@@ -62,5 +62,6 @@ export const codexCollectorDefinition: LocalCollectorDefinition = {
   entry: "codex",
   bindings: { filesystem: { required: true } },
   streams: CODEX_DEFAULT_STREAMS,
+  enforces_source_roots: true,
   time_scopable_streams: CODEX_TIME_SCOPABLE_STREAMS,
 };

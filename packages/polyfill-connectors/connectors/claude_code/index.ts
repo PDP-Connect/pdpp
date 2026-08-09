@@ -32,6 +32,12 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
+import {
+  type EnumerationScope,
+  readEnumerationScope,
+  scopeBoundsEnumeration,
+  shouldDescendIntoDirectory,
+} from "../../src/collection-scope-enumeration.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { canonicalJson } from "../../src/local-device-envelope.ts";
@@ -1222,9 +1228,27 @@ async function emitLocalJsonlTelemetry(emit: CollectContext["emit"], telemetry: 
   });
 }
 
-async function discoverClaudeJsonlSources(
+/**
+ * Enumerate the JSONL sources a run may read, bounded by the owner-declared
+ * scope BEFORE any file is opened.
+ *
+ * The bound applied here is `source_roots` against the project directory, which
+ * is exact: a project dir either is a selected root or it is not, so a pruned
+ * subtree is never listed and its transcripts are never opened, read, or
+ * parsed. That is the difference between a bounded run and a full-corpus scan
+ * whose output is filtered afterwards.
+ *
+ * A `since` is deliberately NOT applied here. Claude Code's project layout does
+ * not encode a date in the path, and a transcript's mtime is not a sound upper
+ * bound on the timestamps its lines carry, so skipping a file on mtime would
+ * risk silently not reading in-range owner data while still reporting the
+ * stream as collected. Time bounding for this connector stays at the emission
+ * gate, where it is correct; `source_roots` is what bounds the work.
+ */
+export async function discoverClaudeJsonlSources(
   baseDir: string,
-  emit: CollectContext["emit"]
+  emit: CollectContext["emit"],
+  scope?: EnumerationScope | null
 ): Promise<ClaudeJsonlSource[] | null> {
   const projectDirs = await listProjectDirs(baseDir, emit);
   if (projectDirs === null) {
@@ -1232,6 +1256,9 @@ async function discoverClaudeJsonlSources(
   }
   const sources: ClaudeJsonlSource[] = [];
   for (const projectDir of projectDirs) {
+    if (!shouldDescendIntoDirectory(projectDir, scope)) {
+      continue;
+    }
     const projectPath = join(baseDir, projectDir);
     let entries: Dirent[];
     try {
@@ -1611,6 +1638,18 @@ if (isMainModule(import.meta.url)) {
       // path metadata, never payload, so it is safe on a partial/empty home.
       const inventory = await buildLocalSourceInventory("claude_code", claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
       await emitCoverageDiagnostics({ emitRecord, inventory, requested });
+      // The owner-declared boundary rides on the stream scopes the runtime
+      // already threads through. Read once here and applied at ENUMERATION so a
+      // bounded run does not open files it was never asked to collect.
+      const enumerationScope = readEnumerationScope(requested, ["sessions", "messages", "attachments"]);
+      if (scopeBoundsEnumeration(enumerationScope)) {
+        await emit({
+          type: "PROGRESS",
+          message: `Claude Code phase=index pass=index enumeration_bounded=true roots=${
+            enumerationScope?.source_roots?.length ?? 0
+          }`,
+        });
+      }
       await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
       const typedState = state as ClaudeCodeState;
       // STATE is stream-keyed per Collection Profile. JSONL child emits and
@@ -1679,7 +1718,7 @@ if (isMainModule(import.meta.url)) {
           sessionsRaw?.local_jsonl_cursor_version === 1 &&
           decodedSessionCursors.valid &&
           decodedSessionAggregates.valid;
-        const sources = await discoverClaudeJsonlSources(baseDir, emit);
+        const sources = await discoverClaudeJsonlSources(baseDir, emit, enumerationScope);
         if (sources === null) {
           return;
         }

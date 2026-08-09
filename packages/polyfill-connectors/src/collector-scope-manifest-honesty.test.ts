@@ -72,6 +72,37 @@ test("every local-collector definition mirrors its manifest's time-scopable stre
   }
 });
 
+/**
+ * The connectors whose own enumeration walk consults the declared roots before
+ * opening anything. Kept as an explicit list so adding the flag to a connector
+ * without implementing pruning fails here rather than shipping a false claim.
+ */
+const ROOT_ENFORCING_CONNECTORS = new Set(["claude_code", "codex"]);
+
+test("enforces_source_roots is declared by exactly the connectors that implement root pruning", () => {
+  for (const definition of LOCAL_COLLECTOR_DEFINITIONS) {
+    assert.equal(
+      definition.enforces_source_roots === true,
+      ROOT_ENFORCING_CONNECTORS.has(definition.connector_id),
+      `${definition.connector_id}: enforces_source_roots must reflect implemented behaviour, not intent — ` +
+        "claiming it without a root-pruning walk would report corpus-wide coverage as bounded"
+    );
+  }
+});
+
+test("a root-enforcing connector's source actually consults the shared containment helper", () => {
+  // Pins the flag to the implementation rather than to a comment: a connector
+  // that drops the pruning call must fail this, not silently keep the claim.
+  for (const connectorId of ROOT_ENFORCING_CONNECTORS) {
+    const source = readFileSync(join(PACKAGE_ROOT, "..", "connectors", connectorId, "index.ts"), "utf8");
+    assert.match(
+      source,
+      /shouldDescendIntoDirectory|isPathWithinSourceRoots/,
+      `${connectorId} declares enforces_source_roots but never calls the shared path-containment helper`
+    );
+  }
+});
+
 test("no definition claims a time-scopable stream it does not collect", () => {
   for (const definition of LOCAL_COLLECTOR_DEFINITIONS) {
     const requested = new Set(definition.streams);

@@ -485,6 +485,13 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   readonly command: string;
   /** Stable connector id used for ingest envelopes. */
   readonly connector_id: string;
+  /**
+   * Whether the connector declared it ENFORCES path roots at enumeration time.
+   * Gates whether a roots boundary may be reported as `scoped` coverage; a
+   * connector that has not implemented root pruning gets its roots scope
+   * declassified rather than falsely claimed.
+   */
+  readonly enforcesSourceRoots?: boolean;
   /** Optional extra env passed to the connector child process. */
   readonly env?: NodeJS.ProcessEnv;
   /** Optional stream resources for scoped connector runs. */
@@ -926,12 +933,18 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
         // claim about the region it was measured in, and a later scope change
         // must be detectable by comparison rather than by trusting a lookup.
         const scopedTimeRanges = resolveScopedStreamTimeRanges(declaredScope, config.connector.timeScopableStreams);
+        const scopedRoots = resolveScopedSourceRoots(declaredScope);
         await client.reportTerminalCollection({
           collection_scope: collectorScopeFingerprint(declaredScope),
           connector_id: config.connector.connector_id,
           run_id: config.runId ?? randomUUID(),
           source_instance_id: config.sourceInstanceId,
-          streams: buildTerminalCollectionFacts(streamResult.coverageByStore, scopedTimeRanges),
+          streams: buildTerminalCollectionFacts(
+            streamResult.coverageByStore,
+            scopedTimeRanges,
+            scopedRoots,
+            config.connector.enforcesSourceRoots === true
+          ),
         });
       }
       const finalDeadLetterError = buildHeartbeatDeadLetterError(outbox, config.sourceInstanceId);
@@ -1253,7 +1266,9 @@ export function summarizeCollectorCompleteness(
  */
 export function buildTerminalCollectionFacts(
   coverageByStore: ReadonlyMap<string, { status: CollectorCoverageStatus; stream: string | null }>,
-  timeRanges: CollectorStreamTimeRanges = {}
+  timeRanges: CollectorStreamTimeRanges = {},
+  sourceRoots: readonly string[] = [],
+  enforcesSourceRoots = false
 ): readonly TerminalCollectionFact[] {
   const statusesByStream = new Map<string, CollectorCoverageStatus[]>();
   for (const entry of coverageByStore.values()) {
@@ -1264,7 +1279,14 @@ export function buildTerminalCollectionFacts(
     statuses.push(entry.status);
     statusesByStream.set(entry.stream, statuses);
   }
-  const scopedRun = Object.keys(timeRanges).length > 0;
+  // Path roots bound enumeration for every stream — but ONLY when the connector
+  // positively declared it enforces them. Supplying roots to a connector that
+  // never implemented root pruning would otherwise mark every stream `scoped`
+  // while the run walked the whole corpus: a fabricated watermark. For such a
+  // connector the roots boundary is declassified here (data still collected, no
+  // stream claims the bound) rather than silently honoured.
+  const rootsBounded = sourceRoots.length > 0 && enforcesSourceRoots;
+  const scopedRun = rootsBounded || Object.keys(timeRanges).length > 0;
   return [...statusesByStream.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([stream, statuses]) => ({
@@ -1273,7 +1295,7 @@ export function buildTerminalCollectionFacts(
       // Only meaningful on a scoped run. `false` is the honest marker for a
       // stream the bound could not be enforced on: it was collected whole, so
       // its coverage must never be read as proving the declared boundary.
-      ...(scopedRun ? { scoped: Object.hasOwn(timeRanges, stream) } : {}),
+      ...(scopedRun ? { scoped: rootsBounded || Object.hasOwn(timeRanges, stream) } : {}),
     }));
 }
 
@@ -1488,7 +1510,13 @@ async function streamConnectorIntoOutbox(
         input.config.connector.streamsToBackfill,
         input.priorState,
         input.config.connector.resources,
-        resolveScopedStreamTimeRanges(input.config.connector.scope, input.config.connector.timeScopableStreams)
+        resolveScopedStreamTimeRanges(input.config.connector.scope, input.config.connector.timeScopableStreams),
+        // Roots only reach the connector when it declared it enforces them, so
+        // an unsupported connector cannot silently receive a boundary it will
+        // ignore while the run still looks bounded.
+        input.config.connector.enforcesSourceRoots === true
+          ? resolveScopedSourceRoots(input.config.connector.scope)
+          : []
       )
     )}\n`
   );
@@ -1888,12 +1916,29 @@ export function resolveScopedStreamTimeRanges(
   return Object.freeze(ranges);
 }
 
+/**
+ * Resolve the owner-declared path roots a run must stay inside.
+ *
+ * Unlike a time bound, roots apply to every stream a connector enumerates:
+ * membership is decidable from the path itself, so no manifest time field is
+ * needed to prove it. Empty means no path narrowing.
+ */
+export function resolveScopedSourceRoots(scope: CollectionScope | null | undefined): readonly string[] {
+  if (!Array.isArray(scope?.source_roots)) {
+    return [];
+  }
+  return [
+    ...new Set(scope.source_roots.filter((root) => typeof root === "string" && root.trim()).map((r) => r.trim())),
+  ].sort();
+}
+
 export function buildCollectorStartMessage(
   streams: readonly string[],
   streamsToBackfill: readonly string[] = [],
   priorState?: Readonly<Record<string, unknown>> | null,
   resources: Readonly<Record<string, readonly string[]>> = {},
-  timeRanges: CollectorStreamTimeRanges = {}
+  timeRanges: CollectorStreamTimeRanges = {},
+  sourceRoots: readonly string[] = []
 ): StartMessage {
   const start: StartMessage = {
     scope: {
@@ -1907,6 +1952,11 @@ export function buildCollectorStartMessage(
           // absent from `timeRanges` is collected whole rather than silently
           // narrowed against a field it does not have.
           ...(timeRange ? { time_range: { since: timeRange.since } } : {}),
+          // Path roots ride on EVERY stream, unlike a time bound: root
+          // membership is a decidable property of the path, so it needs no
+          // per-stream `consent_time_field` to be provable. This is what lets a
+          // connector prune subtrees before it opens anything.
+          ...(sourceRoots.length > 0 ? { source_roots: [...sourceRoots] } : {}),
         };
       }),
     },

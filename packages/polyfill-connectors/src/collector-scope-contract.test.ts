@@ -26,6 +26,7 @@ import { test } from "node:test";
 
 import {
   buildCollectorStartMessage,
+  buildTerminalCollectionFacts,
   COLLECTION_SCOPE_STATE_KEY,
   collectorScopeFingerprint,
   readCollectionScopeFromState,
@@ -316,4 +317,45 @@ test("the runner's fingerprint matches the contract's, so server and collector a
       `fingerprint drift on ${JSON.stringify(scope)} would silently invalidate or revalidate proof`
     );
   }
+});
+
+// The counterweight to (c): a roots boundary must NOT be honoured for a
+// connector that never implemented root pruning. Supplying roots to such a
+// connector and marking its streams `scoped` would report whole-corpus coverage
+// as coverage-of-the-owner's-selection — a fabricated watermark, and the most
+// dangerous failure mode of this whole contract because the data still arrives
+// and the run still looks green.
+test("a supplied root cannot produce scoped:true for a connector that does not enforce roots", () => {
+  const coverage = new Map([
+    ["photos-store", { status: "collected" as const, stream: "photos" }],
+    ["diag-store", { status: "collected" as const, stream: "coverage_diagnostics" }],
+  ]);
+
+  const unsupported = buildTerminalCollectionFacts(coverage, {}, ["proj-a"], false);
+  for (const fact of unsupported) {
+    assert.equal(
+      (fact as { scoped?: boolean }).scoped,
+      undefined,
+      `${fact.stream}: an unenforced roots boundary must be declassified, never claimed as scoped coverage`
+    );
+  }
+
+  // ...and the same inputs DO produce a scoped claim once the connector has
+  // declared (and implemented) enforcement, so the gate is the declaration
+  // rather than an accident of the data.
+  const supported = buildTerminalCollectionFacts(coverage, {}, ["proj-a"], true);
+  for (const fact of supported) {
+    assert.equal((fact as { scoped?: boolean }).scoped, true, `${fact.stream}: an enforced roots boundary is provable`);
+  }
+});
+
+test("roots are not transmitted to a connector that never declared root enforcement", () => {
+  // Sending a boundary a connector will silently ignore is worse than sending
+  // none: the run would look bounded while walking everything.
+  const start = buildCollectorStartMessage(["photos"], [], null, {}, {}, []);
+  assert.equal(
+    "source_roots" in (start.scope.streams[0] ?? {}),
+    false,
+    "an unsupported connector must receive no roots at all"
+  );
 });

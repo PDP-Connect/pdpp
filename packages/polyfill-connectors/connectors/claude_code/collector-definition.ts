@@ -59,5 +59,6 @@ export const claudeCodeCollectorDefinition: LocalCollectorDefinition = {
   entry: "claude_code",
   bindings: { filesystem: { required: true } },
   streams: CLAUDE_CODE_DEFAULT_STREAMS,
+  enforces_source_roots: true,
   time_scopable_streams: CLAUDE_CODE_TIME_SCOPABLE_STREAMS,
 };
