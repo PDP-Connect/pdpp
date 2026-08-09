@@ -242,7 +242,11 @@ test("apple_contacts integration: fails cleanly on rejected credentials", async 
     const done = result.messages.findLast((m) => m.type === "DONE");
     assert.ok(done && done.type === "DONE");
     assert.equal(done.status, "failed");
-    assert.equal(done.error?.message, "apple_contacts_auth_failed");
+    // The stable machine code rides error.code (the typed, non-redacted
+    // channel); error.message is human-readable free-form text that still
+    // goes through the same redaction as any other connector diagnostic.
+    assert.equal(done.error?.code, "auth_failed");
+    assert.equal(done.error?.message, "Apple ID or app-specific password was rejected");
     // No vCard or credential content leaked into the terminal error/progress trace.
     const serialized = JSON.stringify(result.messages);
     assert.equal(serialized.includes("wrong-password"), false);

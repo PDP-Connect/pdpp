@@ -25,6 +25,7 @@ import type { AttentionWriterOptions } from "./attention-writer.ts";
 import { createAttentionWriter } from "./attention-writer.ts";
 import { classifyRuntimeFailure } from "./classify-runtime-failure.ts";
 import {
+  boundConnectorErrorCode,
   boundConnectorErrorMessage,
   boundConsideredCount,
   boundGapString,
@@ -2742,8 +2743,15 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     if (connectorError?.message) {
       data.connector_error_message = boundConnectorErrorMessage(connectorError.message);
     }
-    if (connectorError?.code) {
-      data.connector_error_code = connectorError.code;
+    // Unlike `message`, `code` is copied without redaction — it is a typed,
+    // non-secret channel by contract, so it MUST be validated (not
+    // redacted) before crossing into the unredacted `connector_error_code`
+    // column. boundConnectorErrorCode fails closed to null on anything
+    // malformed, so an invalid/malicious code is dropped rather than
+    // trusted just because the connector sent it.
+    const validatedCode = connectorError?.code ? boundConnectorErrorCode(connectorError.code) : null;
+    if (validatedCode) {
+      data.connector_error_code = validatedCode;
     }
     if (connectorError?.retryable !== null && connectorError?.retryable !== undefined) {
       data.connector_error_retryable = connectorError.retryable;

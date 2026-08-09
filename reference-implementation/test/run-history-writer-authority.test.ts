@@ -17,7 +17,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emitSpineEvent } from "../lib/spine.ts";
-import { boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
+import { boundConnectorErrorCode, boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { createSqliteSchedulerStore } from "../server/stores/scheduler-store.ts";
@@ -256,36 +256,92 @@ test("a connector-reported terminal error is preserved verbatim over the runtime
   }
 });
 
-// Regression for the apple_contacts UAT failure (2026-08-09): a connector's
-// own long snake_case error-class identifier (e.g.
-// `carddav_discovery_propfind_failed`, `apple_contacts_auth_failed`) was
-// caught by stderr-redact.ts's long-opaque-token rule (>=24 alnum-ish chars,
-// meant for generated secrets) and collapsed to the single word
-// "[REDACTED]" -- so `connector_error_json` on the finalized row became
-// `{"message":"[REDACTED]"}` with no way to tell what actually failed. This
-// exercises the real production path: `boundConnectorErrorMessage` (what
-// `buildTerminalConnectorFields` in runtime/index.ts calls before the
-// message ever reaches the spine event) feeding straight into the same
-// writer the tests above exercise, proving the connector's diagnostic
-// class survives end to end while a real secret alongside it still gets
-// redacted.
-test("a connector error message shaped like a long error-class identifier is not collapsed to [REDACTED]", async () => {
-  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-error-code-not-redacted-");
+// Regression for the apple_contacts UAT failure (2026-08-09): the free-form
+// `connector_error_message` field is redacted (stderr-redact.ts's
+// long-opaque-token rule, meant for generated secrets, previously also
+// destroyed a connector's own long snake_case error-class identifier — a
+// REJECTED fix attempt tried exempting pure-lowercase-underscore text from
+// that redaction, which a security review correctly rejected: shape alone
+// cannot prove absence of a secret). The actual fix routes a stable
+// diagnostic class through `error.code` — a SEPARATE, typed, validated
+// channel that is never redacted (see `boundConnectorErrorCode`) precisely
+// because it is constrained to a strict charset a real secret cannot take.
+// These tests exercise that channel through the real production path:
+// `boundConnectorErrorCode`/`boundConnectorErrorMessage` (what
+// `buildTerminalConnectorFields` in runtime/index.ts calls) feeding into
+// the same writer the tests above exercise.
+
+test("a well-formed connector error code survives end to end while the message stays fully redacted", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-typed-code-survives-");
   initDb(dbPath);
   try {
-    const runId = "run_apple_contacts_error_code_preserved";
-    const connectorInstanceId = "cin_apple_contacts_error_code_preserved";
-    const rawMessage = "carddav_discovery_propfind_failed: status=401";
+    const runId = "run_apple_contacts_typed_code_survives";
+    const connectorInstanceId = "cin_apple_contacts_typed_code_survives";
+    const rawCode = "carddav_request_failed";
+    const secret = ["sk", "live", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].join("_"); // runtime-constructed so secret scanners don't flag the synthetic fixture
+    const rawMessage = `status=401, token=${secret}`;
+    const boundedCode = boundConnectorErrorCode(rawCode);
     const boundedMessage = boundConnectorErrorMessage(rawMessage);
-    assert.equal(boundedMessage, rawMessage, "the connector-authored error class must survive bounding intact");
+    assert.equal(boundedCode, rawCode, "a well-formed code must survive validation unchanged");
+    assert.ok(!boundedMessage?.includes(secret), "the message-channel secret must still be redacted");
 
     await emitSpineEvent(startedEvent(runId, connectorInstanceId));
     await emitSpineEvent({
       ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
       data: {
         connection_id: connectorInstanceId,
-        connector_error_code: "apple_contacts_auth_failed",
+        connector_error_code: boundedCode,
         connector_error_message: boundedMessage,
+        connector_error_retryable: true,
+        connector_instance_id: connectorInstanceId,
+        reason: "connector_reported_failed",
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    const stored = JSON.parse(readRunHistoryRow(runId)?.connector_error_json ?? "null");
+    assert.equal(stored.code, "carddav_request_failed", "the typed code must survive verbatim");
+    assert.ok(!stored.message.includes(secret), "the credential in the adjacent message must not leak");
+    assert.ok(stored.message.includes("[REDACTED]"), "the message must show redaction happened, not silently vanish");
+    assert.equal(stored.retryable, true);
+  } finally {
+    closeDb();
+  }
+});
+
+test("boundConnectorErrorCode fails closed on a malformed/secret-shaped code (the actual runtime gate)", () => {
+  // This is the real gate: runtime/index.ts's buildTerminalConnectorFields
+  // calls boundConnectorErrorCode BEFORE constructing the spine event's
+  // `data` — a malformed code never reaches `data.connector_error_code`,
+  // so it can never reach run_history in any form. (The writer test below
+  // proves the OTHER half: the writer itself trusts whatever `code` is
+  // already present in `data`, exactly like it trusts `message` is
+  // already-bounded text — it is not a second validation layer.)
+  const secretShapedCode = "sk_LIVE_AbCdEfGhIjKlMnOpQrStUvWxYz012345"; // mixed case: a real secret's shape
+  assert.equal(boundConnectorErrorCode(secretShapedCode), null);
+});
+
+test("a malformed connector error code omitted upstream never reaches connector_error_json", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-malformed-code-omitted-");
+  initDb(dbPath);
+  try {
+    const runId = "run_malformed_code_omitted_upstream";
+    const connectorInstanceId = "cin_malformed_code_omitted_upstream";
+    const secretShapedCode = "sk_LIVE_AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+    // Mirrors buildTerminalConnectorFields's real gate exactly: only set
+    // connector_error_code on the terminal data when boundConnectorErrorCode
+    // returns non-null. A malformed code is OMITTED, not passed through as
+    // null-in-the-object — matching what the production code path does.
+    const boundedCode = boundConnectorErrorCode(secretShapedCode);
+    assert.equal(boundedCode, null, "sanity: this fixture must actually be invalid");
+
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        ...(boundedCode ? { connector_error_code: boundedCode } : {}),
+        connector_error_message: "a normal failure message",
         connector_error_retryable: false,
         connector_instance_id: connectorInstanceId,
         reason: "connector_reported_failed",
@@ -294,12 +350,11 @@ test("a connector error message shaped like a long error-class identifier is not
     });
 
     const stored = JSON.parse(readRunHistoryRow(runId)?.connector_error_json ?? "null");
-    assert.deepEqual(stored, {
-      code: "apple_contacts_auth_failed",
-      message: rawMessage,
-      retryable: false,
-    });
-    assert.notEqual(stored.message, "[REDACTED]", "the diagnostic must not collapse to a bare [REDACTED] token");
+    assert.equal(stored.code, null, "no code reached the stored row");
+    assert.ok(!JSON.stringify(stored).includes(secretShapedCode), "the raw invalid code text must not leak anywhere");
+    // The (redacted-as-normal) message still carries the failure explanation
+    // — omitting an invalid code does not blank the whole diagnostic.
+    assert.equal(stored.message, "a normal failure message");
   } finally {
     closeDb();
   }

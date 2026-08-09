@@ -39,13 +39,88 @@
  * the RFC 6350-standard field every server honors).
  */
 
-import { emitDetailCoverage, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import {
+  createConnectorFailure,
+  emitDetailCoverage,
+  nowIso,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { addressbookQueryAll, listAddressBooks, syncCollectionReport, type VCardResource } from "./carddav-client.ts";
-import { type DiscoveryFetch, discoverCardDav, nativeFetchAdapter } from "./discovery.ts";
+import {
+  CardDavDiscoveryError,
+  CardDavRedirectOriginError,
+  type DiscoveryFetch,
+  discoverCardDav,
+  nativeFetchAdapter,
+} from "./discovery.ts";
 import { validateRecord } from "./schemas.ts";
 import { categoriesOf, type ParsedVCard, parseVCards } from "./vcard.ts";
+
+/**
+ * Stable, machine-actionable failure classes for this connector's terminal
+ * errors. Each maps to a fixed `error.code` on DONE — a typed, non-secret
+ * channel the runtime carries verbatim onto `connector_error_code` (see
+ * connector-gap-bounding.ts's `boundConnectorErrorCode`), separate from and
+ * never a substitute for the free-form, redacted `error.message` text. A
+ * code here is attached only by explicit `instanceof`/branch dispatch on a
+ * KNOWN failure site below — never derived by pattern-matching an arbitrary
+ * caught error's message, which would reintroduce the exact class of bug
+ * this taxonomy exists to avoid (a connector-authored string driving what
+ * downstream treats as a trusted machine code).
+ */
+const APPLE_CONTACTS_ERROR_CODE = {
+  AUTH_FAILED: "auth_failed",
+  CARDDAV_REQUEST_FAILED: "carddav_request_failed",
+  DISCOVERY_FAILED: "discovery_failed",
+  UNSAFE_REDIRECT_REFUSED: "unsafe_redirect_refused",
+} as const;
+
+// discoverCardDav's PROPFIND step (carddav_discovery_propfind_failed) is the
+// one CardDavDiscoveryError this connector has always treated as transient
+// (an HTTP-status-shaped mid-discovery failure, unlike the structural ones —
+// missing redirect location, too-many-redirects, oversized response, no
+// current-user-principal, no addressbook-home-set — none of which the
+// original retryablePattern matched either). This prefix drives ONLY the
+// `retryable` boolean below, never the `code` value (code is always the
+// fixed DISCOVERY_FAILED literal via instanceof dispatch) — and the prefix
+// itself is a first-party literal this module's own discovery.ts throws
+// verbatim, not text a remote server or credential can influence, so this
+// is not the "derive code from arbitrary thrown text" pattern being
+// avoided elsewhere. Preserved so retry behavior is unchanged by moving
+// from string-pattern classification to typed-code classification.
+const DISCOVERY_PROPFIND_FAILED_PREFIX = "carddav_discovery_propfind_failed:";
+
+/**
+ * Classify a caught discovery-phase error into a typed connector failure.
+ * `instanceof` dispatch on the two typed error classes discovery.ts throws
+ * (never string-matching an arbitrary caught error's message) plus the one
+ * carddav_auth_rejected sentinel discoverCardDav documents as its stable
+ * auth-rejection signal.
+ */
+function classifyDiscoveryFailure(err: unknown): Error {
+  if (err instanceof CardDavRedirectOriginError) {
+    return createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.UNSAFE_REDIRECT_REFUSED, err.message, { cause: err });
+  }
+  if (err instanceof CardDavDiscoveryError) {
+    if (err.message === "carddav_auth_rejected") {
+      return createConnectorFailure(
+        APPLE_CONTACTS_ERROR_CODE.AUTH_FAILED,
+        "Apple ID or app-specific password was rejected",
+        {
+          cause: err,
+        }
+      );
+    }
+    return createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.DISCOVERY_FAILED, err.message, {
+      cause: err,
+      retryable: err.message.startsWith(DISCOVERY_PROPFIND_FAILED_PREFIX),
+    });
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
 
 const DEFAULT_ORIGIN = "https://contacts.icloud.com";
 const TRAILING_SLASHES_RE = /\/+$/;
@@ -237,6 +312,15 @@ async function collectAddressBook(
     fetchImpl,
     trustedOrigins,
     priorSyncToken: priorSync?.sync_token,
+  }).catch((err: unknown) => {
+    // resolveSyncResult only ever throws carddav_sync_collection_failed
+    // (an HTTP-status-shaped failure) — retryable, matching the original
+    // string-pattern behavior this classification replaces.
+    const message = err instanceof Error ? err.message : String(err);
+    throw createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, {
+      cause: err,
+      retryable: true,
+    });
   });
 
   const supportsSync = syncResult.supportsSyncCollection;
@@ -276,7 +360,18 @@ async function collectAddressBook(
       total: contactCount,
     });
   } else {
-    const resources = await addressbookQueryAll({ bookUrl: book.url, authHeader, fetchImpl, trustedOrigins });
+    // addressbookQueryAll only ever throws carddav_addressbook_query_failed
+    // (an HTTP-status-shaped failure) — retryable, matching the original
+    // string-pattern behavior this classification replaces.
+    const resources = await addressbookQueryAll({ bookUrl: book.url, authHeader, fetchImpl, trustedOrigins }).catch(
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        throw createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, {
+          cause: err,
+          retryable: true,
+        });
+      }
+    );
     for (const resource of resources) {
       await emitContactRecord(resource);
     }
@@ -321,8 +416,14 @@ async function collectAddressBook(
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "apple_contacts",
-    retryablePattern:
-      /ECONN|ETIMEDOUT|fetch failed|carddav_discovery_propfind_failed|carddav_sync_collection_failed|carddav_addressbook_query_failed/i,
+    // Every carddav_*_failed throw site below now goes through
+    // createConnectorFailure, which sets its own explicit `retryable` bit
+    // (see classifyDiscoveryFailure and the two per-call .catch sites) and
+    // is a TerminalError — the runtime's outer catch honors that bit
+    // directly and never consults retryablePattern for a TerminalError.
+    // This pattern is the fallback for genuinely unclassified throws only
+    // (a raw network error from an unwrapped call site, or a bug).
+    retryablePattern: /ECONN|ETIMEDOUT|fetch failed/i,
     isTombstone: (_stream, d) => d.deleted === true,
     validateRecord,
     auth: {
@@ -333,7 +434,10 @@ if (isMainModule(import.meta.url)) {
       const accountEmail = credentials.APPLE_ID || credentials.APPLE_ID_EMAIL;
       const appPassword = credentials.APPLE_APP_SPECIFIC_PASSWORD;
       if (!(accountEmail && appPassword)) {
-        throw new Error("apple_contacts_auth_failed");
+        throw createConnectorFailure(
+          APPLE_CONTACTS_ERROR_CODE.AUTH_FAILED,
+          "APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD credentials were not provided"
+        );
       }
       const originUrl = process.env.APPLE_CARDDAV_ORIGIN || DEFAULT_ORIGIN;
       const authHeader = buildAuthHeader(accountEmail, appPassword);
@@ -341,19 +445,22 @@ if (isMainModule(import.meta.url)) {
 
       await progress("Discovering CardDAV service", { stream: "address_books" });
       const discovery = await discoverCardDav({ originUrl, authHeader, fetchImpl }).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message === "carddav_auth_rejected") {
-          throw new Error("apple_contacts_auth_failed");
-        }
-        throw err;
+        throw classifyDiscoveryFailure(err);
       });
       const trustedOrigins = [...new Set(discovery.visitedOrigins)];
 
+      // listAddressBooks only ever throws carddav_list_addressbooks_failed —
+      // NOT retryable, matching the original string-pattern behavior (that
+      // pattern never matched this message, unlike the sibling sync/query
+      // failures below) this classification replaces.
       const books = await listAddressBooks({
         homeUrl: discovery.addressBookHomeUrl,
         authHeader,
         fetchImpl,
         trustedOrigins,
+      }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        throw createConnectorFailure(APPLE_CONTACTS_ERROR_CODE.CARDDAV_REQUEST_FAILED, message, { cause: err });
       });
       await progress("Discovered address books", {
         stream: "address_books",

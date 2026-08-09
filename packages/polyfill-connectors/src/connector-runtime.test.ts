@@ -13,6 +13,7 @@ import {
   closeBrowserContextPagesExcept,
   closeBrowserPage,
   composeNormalizedTerminalError,
+  createConnectorFailure,
   decorateBrowserManualAction,
   describeUnexpectedFailure,
   emitDetailCoverage,
@@ -1242,6 +1243,98 @@ test("ChatGPT's real normalizeChatGptTerminalError (which destructures only mess
   });
   assert.equal(result.code, "browser_surface_attach_exhausted");
   assert.match(result.message, /runtime_exception/, "ChatGPT's own message wrapping is preserved");
+});
+
+// ─── createConnectorFailure: the one shared constructor for a typed, ───────
+// validated connector failure code ───────────────────────────────────────
+//
+// `error.code` / `connector_error_code` is copied verbatim onto
+// `connector_error_json` with NO redaction (unlike `error.message`, which
+// always goes through `boundConnectorErrorMessage`/`redactStderrTail`). That
+// is safe only because `code` is constrained to a small, connector-declared
+// vocabulary that a connector author writes deliberately at each throw
+// site — never derived by pattern-matching arbitrary caught text. These
+// tests pin `createConnectorFailure` as the one validated entry point onto
+// that channel: a well-formed code survives, a malformed/oversized code
+// fails closed (throws, does not silently pass through or get truncated),
+// and `message` is ordinary text with no special treatment.
+
+test("createConnectorFailure attaches a well-formed code, message, and retryable bit to a TerminalError-shaped throw", () => {
+  const err = createConnectorFailure("auth_failed", "Apple ID or app-specific password was rejected", {
+    retryable: false,
+  }) as Error & { code?: string; retryable?: boolean };
+  assert.equal(err.message, "Apple ID or app-specific password was rejected");
+  assert.equal(err.code, "auth_failed");
+  assert.equal(err.retryable, false);
+});
+
+test("createConnectorFailure defaults retryable to false when omitted", () => {
+  const err = createConnectorFailure("discovery_failed", "discovery failed") as Error & { retryable?: boolean };
+  assert.equal(err.retryable, false);
+});
+
+test("createConnectorFailure accepts an explicit retryable: true", () => {
+  const err = createConnectorFailure("carddav_request_failed", "sync failed", { retryable: true }) as Error & {
+    retryable?: boolean;
+  };
+  assert.equal(err.retryable, true);
+});
+
+test("createConnectorFailure fails closed on a code that is too long", () => {
+  const maxLength = `a${"b".repeat(63)}`; // 64 chars total: the maximum allowed length.
+  assert.doesNotThrow(
+    () => createConnectorFailure(maxLength, "message"),
+    "the max-length code itself must be accepted"
+  );
+  const tooLong = `a${"b".repeat(64)}`; // 65 chars: one over the cap.
+  assert.throws(() => createConnectorFailure(tooLong, "message"), /connector_failure_invalid_code/);
+});
+
+test("createConnectorFailure fails closed on a code with disallowed characters", () => {
+  const badCodes = [
+    "Auth_Failed", // uppercase
+    "auth-failed", // hyphen (message-redaction charset, not the code charset)
+    "auth failed", // space
+    "auth.failed", // punctuation
+    "1auth_failed", // must start with a letter
+    "", // empty
+    "a", // single char, below the 2-char minimum
+  ];
+  for (const code of badCodes) {
+    assert.throws(
+      () => createConnectorFailure(code, "message"),
+      /connector_failure_invalid_code/,
+      `expected "${code}" to be rejected`
+    );
+  }
+});
+
+test("createConnectorFailure fails closed rather than truncating or stripping an invalid code into something valid", () => {
+  // A naive "sanitize" implementation might slice/lowercase/strip an
+  // invalid code down to something that passes — that would silently
+  // accept a connector bug (or a deliberately malformed code trying to
+  // smuggle content through the unredacted, un-length-capped-below-64
+  // channel) instead of surfacing it. Mixed-case, punctuation-bearing
+  // strings are exactly the shape a real secret (an API key, a bearer
+  // token) would take, and exactly what a naive lowercase()+truncate()
+  // "fix" would silently coerce into something charset-valid. This proves
+  // createConnectorFailure throws instead of coercing.
+  const mixedCaseCode = "sk_LIVE_AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+  assert.throws(() => createConnectorFailure(mixedCaseCode, "message"), /connector_failure_invalid_code/);
+  // Sanity: a lowered/truncated rewrite of the same string DOES pass —
+  // proving createConnectorFailure never performs that rewrite itself; the
+  // exception above is the only outcome for the original invalid input.
+  const rewritten = mixedCaseCode.toLowerCase().slice(0, 20);
+  assert.doesNotThrow(() => createConnectorFailure(rewritten, "message"));
+});
+
+test("createConnectorFailure's message is ordinary text with no code-channel special treatment", () => {
+  // message is NOT validated by createConnectorFailure at all — it is
+  // free-form text that goes through the SAME redaction as any other
+  // connector-authored message later in the pipeline (boundConnectorErrorMessage
+  // / redactStderrTail), never through the strict code charset check.
+  const err = createConnectorFailure("carddav_request_failed", "status=401, Authorization: Bearer abc123") as Error;
+  assert.equal(err.message, "status=401, Authorization: Bearer abc123");
 });
 
 // ─── describeUnexpectedFailure: an unclassified throw's own .message can be ─

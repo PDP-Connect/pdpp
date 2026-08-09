@@ -22,17 +22,7 @@
 //   - Any standalone 6-digit run gets replaced with `[REDACTED_OTP]`.
 //   - Long opaque hex/base64-shaped runs (>=24 alnum-ish chars) are
 //     replaced with `[REDACTED]` to catch raw API keys that show up
-//     without a labelled prefix in stack traces. A run that is PURE
-//     lowercase letters and underscores (e.g. `carddav_discovery_
-//     propfind_failed`, a connector's own error-class identifier) is
-//     exempted: real opaque secrets are generated, not authored, and
-//     always mix case, digits, or other charset variety — a pure
-//     lowercase_snake_case run of any length is the shape of a hand-written
-//     identifier, never a secret. Without this exemption, connector error
-//     codes long enough to describe themselves (which is most of them —
-//     see connector-failure-diagnostics.test.ts and any *_failed constant)
-//     get nuked to the single word `[REDACTED]`, destroying the terminal
-//     diagnostic instead of protecting a credential.
+//     without a labelled prefix in stack traces.
 //   - Short secrets: standalone runs of 8-23 alnum+symbol chars that appear
 //     immediately after a credential-marker assignment are covered by the
 //     keyed-secret rule above, so they are caught even when short.
@@ -51,11 +41,6 @@ const PEM_BLOCK_RE = /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?-----END [A-Z0-9 ]+-----
 
 const OTP_RE = /\b\d{6}\b/g;
 const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
-// Pure lowercase letters/underscores, no digits/uppercase/hyphens — the
-// shape of a hand-authored `snake_case_error_code`, never a generated
-// secret (API keys, hex digests, base64 blobs, JWT segments all mix case
-// or digits). See the module doc comment's "Long opaque..." bullet.
-const LOOKS_LIKE_CODE_IDENTIFIER_RE = /^[a-z]+(?:_[a-z]+)*$/;
 
 export interface RedactedStderr {
   redacted: boolean;
@@ -73,6 +58,6 @@ export function redactStderrTail(text: unknown): RedactedStderr {
   next = next.replace(PEM_BLOCK_RE, "[REDACTED_PEM]");
   next = next.replace(KEYED_SECRET_RE, (_match, marker: string) => `${marker}=[REDACTED]`);
   next = next.replace(OTP_RE, "[REDACTED_OTP]");
-  next = next.replace(LONG_OPAQUE_RE, (match) => (LOOKS_LIKE_CODE_IDENTIFIER_RE.test(match) ? match : "[REDACTED]"));
+  next = next.replace(LONG_OPAQUE_RE, "[REDACTED]");
   return { redacted: next !== text, text: next };
 }
