@@ -34,6 +34,13 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | records | snapshot_import_receipt | manual_as_of | — | true | — | — |
 | workouts | snapshot_import_receipt | manual_as_of | — | true | — | — |
 
+## polyfill/apple-photos
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| photos | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | false | — | — |
+
 ## polyfill/chase
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
@@ -117,7 +124,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | messages | checkpoint_window | scheduled_window | — | true | — | — |
 | threads | checkpoint_window | scheduled_window | — | true | — | — |
 | labels | full_inventory | scheduled_window | — | true | — | — |
-| message_bodies | checkpoint_window | scheduled_window | — | true | messages | — |
+| message_bodies | checkpoint_window | scheduled_window | — | false | messages | — |
 | attachments | parent_detail_accounting | scheduled_window | — | true | — | — |
 
 ## polyfill/google-calendar
@@ -139,13 +146,20 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
 | timeline_points | checkpoint_window | manual_as_of | — | true | — | — |
-| timeline_segments | checkpoint_window | manual_as_of | — | true | — | — |
+| timeline_segments | checkpoint_window | manual_as_of | — | false | — | — |
 
 ## polyfill/google-maps-data-portability
 
 | stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
 | --- | --- | --- | --- | --- | --- | --- |
 | archive_jobs | checkpoint_window | manual_as_of | — | true | — | — |
+
+## polyfill/google-messages
+
+| stream | coverage_strategy | freshness_strategy | coverage_policy | required | state_stream | availability.state |
+| --- | --- | --- | --- | --- | --- | --- |
+| messages | snapshot_import_receipt | device_heartbeat | — | true | — | — |
+| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | false | — | — |
 
 ## polyfill/google-takeout
 
@@ -155,6 +169,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | youtube_watch_history | snapshot_import_receipt | manual_as_of | — | true | — | — |
 | search_history | snapshot_import_receipt | manual_as_of | — | true | — | — |
 | photos | snapshot_import_receipt | manual_as_of | — | true | — | — |
+| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 
 ## polyfill/groupme
 
