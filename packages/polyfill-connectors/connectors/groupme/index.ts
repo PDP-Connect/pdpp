@@ -572,43 +572,19 @@ function makeUploader(): BlobUploader | undefined {
   };
 }
 
-async function collectGroups(
-  token: string,
-  cursor: ReturnType<typeof openFingerprintCursor>,
-  progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<void> {
-  await progressWithSignals("Fetching GroupMe groups", { stream: "groups", phase: "start" });
-  try {
-    const groups = await makeRequest<GroupMeGroup[]>(token, "/groups", { per_page: PAGE_SIZE });
-    await progressWithSignals("Fetched GroupMe groups", {
-      stream: "groups",
-      phase: "page",
-      item_count: groups.length,
-    });
-
-    for (const group of groups) {
-      const record = toGroupRecord(group);
-      if (cursor.shouldEmit(record)) {
-        await emitRecord("groups", record);
-      }
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message === "groupme_auth_failed") {
-      throw error;
-    }
-    await progressWithSignals(`Error fetching groups: ${error instanceof Error ? error.message : String(error)}`, {
-      stream: "groups",
-      phase: "error",
-    });
-  }
-}
-
 interface GroupMessagesResponse {
   count: number;
   messages: GroupMeMessage[];
 }
 
+/**
+ * Walks one group's message pages. Returns the raw item count enumerated
+ * across pages (the "considered" contribution for this group) — never
+ * aliased to the emitted count, since a page a caller filtered/suppressed
+ * was still genuinely observed. Propagates fetch/parse failures to the
+ * caller rather than swallowing them, so a mid-group failure cannot be
+ * mistaken for "this group has no more messages."
+ */
 async function collectGroupMessagesForGroup(
   token: string,
   group: GroupMeGroup,
@@ -617,7 +593,7 @@ async function collectGroupMessagesForGroup(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<void> {
+): Promise<number> {
   let beforeId: string | undefined;
   let pageIndex = 0;
   let totalSeen = 0;
@@ -663,42 +639,8 @@ async function collectGroupMessagesForGroup(
     beforeId = messages.at(-1)?.id;
     pageIndex += 1;
   }
-}
 
-async function collectGroupMessages(
-  token: string,
-  cursor: ReturnType<typeof openFingerprintCursor>,
-  uploader: BlobUploader | undefined,
-  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
-  progressWithSignals: ProgressFn,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<void> {
-  await progressWithSignals("Fetching GroupMe group messages", { stream: "group_messages", phase: "start" });
-  try {
-    const groups = await makeRequest<GroupMeGroup[]>(token, "/groups", { per_page: PAGE_SIZE });
-    for (const group of groups) {
-      await collectGroupMessagesForGroup(
-        token,
-        group,
-        cursor,
-        uploader,
-        emitAttachmentRecord,
-        progressWithSignals,
-        emitRecord
-      );
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message === "groupme_auth_failed") {
-      throw error;
-    }
-    await progressWithSignals(
-      `Error fetching group messages: ${error instanceof Error ? error.message : String(error)}`,
-      {
-        stream: "group_messages",
-        phase: "error",
-      }
-    );
-  }
+  return totalSeen;
 }
 
 /**
@@ -717,6 +659,67 @@ export interface CollectionOutcome {
   failed: boolean;
 }
 
+/**
+ * Shared try/catch/outcome wrapper for a stream's top-level collection pass.
+ * `body` runs the real fetch-and-emit work and returns the raw enumerated
+ * "considered" count on a clean pass. Every GroupMe stream (groups,
+ * group_messages, direct_messages, direct_chat_messages) needs the exact
+ * same shape here: auth failures propagate untouched (the whole run is
+ * dead, not just this stream), any other error is logged via
+ * `progressWithSignals` and converted to `{ considered: 0, failed: true }`
+ * rather than left to throw — the caller's `collect()` decides what a
+ * failed outcome means (skip STATE + coverage), this wrapper only owns
+ * catching the error and reporting it the same way every stream already did.
+ */
+async function runCollectionPass(
+  stream: string,
+  errorLabel: string,
+  progressWithSignals: ProgressFn,
+  body: () => Promise<number>
+): Promise<CollectionOutcome> {
+  try {
+    const considered = await body();
+    return { considered, failed: false };
+  } catch (error) {
+    if (error instanceof Error && error.message === "groupme_auth_failed") {
+      throw error;
+    }
+    await progressWithSignals(
+      `Error fetching ${errorLabel}: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        stream,
+        phase: "error",
+      }
+    );
+    return { considered: 0, failed: true };
+  }
+}
+
+export async function collectGroups(
+  token: string,
+  cursor: ReturnType<typeof openFingerprintCursor>,
+  progressWithSignals: ProgressFn,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>
+): Promise<CollectionOutcome> {
+  await progressWithSignals("Fetching GroupMe groups", { stream: "groups", phase: "start" });
+  return await runCollectionPass("groups", "groups", progressWithSignals, async () => {
+    const groups = await makeRequest<GroupMeGroup[]>(token, "/groups", { per_page: PAGE_SIZE });
+    await progressWithSignals("Fetched GroupMe groups", {
+      stream: "groups",
+      phase: "page",
+      item_count: groups.length,
+    });
+
+    for (const group of groups) {
+      const record = toGroupRecord(group);
+      if (cursor.shouldEmit(record)) {
+        await emitRecord("groups", record);
+      }
+    }
+    return groups.length;
+  });
+}
+
 export async function collectDirectChats(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
@@ -724,7 +727,7 @@ export async function collectDirectChats(
   emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct chats", { stream: "direct_messages", phase: "start" });
-  try {
+  return await runCollectionPass("direct_messages", "direct chats", progressWithSignals, async () => {
     const chats = await makeRequest<GroupMeDirectChat[]>(token, "/chats", { per_page: PAGE_SIZE });
     await progressWithSignals("Fetched GroupMe direct chats", {
       stream: "direct_messages",
@@ -738,20 +741,8 @@ export async function collectDirectChats(
         await emitRecord("direct_messages", record);
       }
     }
-    return { considered: chats.length, failed: false };
-  } catch (error) {
-    if (error instanceof Error && error.message === "groupme_auth_failed") {
-      throw error;
-    }
-    await progressWithSignals(
-      `Error fetching direct chats: ${error instanceof Error ? error.message : String(error)}`,
-      {
-        stream: "direct_messages",
-        phase: "error",
-      }
-    );
-    return { considered: 0, failed: true };
-  }
+    return chats.length;
+  });
 }
 
 interface DirectMessagesResponse {
@@ -837,8 +828,8 @@ export async function collectDirectChatMessages(
     stream: "direct_chat_messages",
     phase: "start",
   });
-  let considered = 0;
-  try {
+  return await runCollectionPass("direct_chat_messages", "direct messages", progressWithSignals, async () => {
+    let considered = 0;
     const chats = await makeRequest<GroupMeDirectChat[]>(token, "/chats", { per_page: PAGE_SIZE });
     for (const chat of chats) {
       considered += await collectDirectChatMessagesForChat(
@@ -851,20 +842,35 @@ export async function collectDirectChatMessages(
         emitRecord
       );
     }
-    return { considered, failed: false };
-  } catch (error) {
-    if (error instanceof Error && error.message === "groupme_auth_failed") {
-      throw error;
+    return considered;
+  });
+}
+
+export async function collectGroupMessages(
+  token: string,
+  cursor: ReturnType<typeof openFingerprintCursor>,
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  progressWithSignals: ProgressFn,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>
+): Promise<CollectionOutcome> {
+  await progressWithSignals("Fetching GroupMe group messages", { stream: "group_messages", phase: "start" });
+  return await runCollectionPass("group_messages", "group messages", progressWithSignals, async () => {
+    let considered = 0;
+    const groups = await makeRequest<GroupMeGroup[]>(token, "/groups", { per_page: PAGE_SIZE });
+    for (const group of groups) {
+      considered += await collectGroupMessagesForGroup(
+        token,
+        group,
+        cursor,
+        uploader,
+        emitAttachmentRecord,
+        progressWithSignals,
+        emitRecord
+      );
     }
-    await progressWithSignals(
-      `Error fetching direct messages: ${error instanceof Error ? error.message : String(error)}`,
-      {
-        stream: "direct_chat_messages",
-        phase: "error",
-      }
-    );
-    return { considered, failed: true };
-  }
+    return considered;
+  });
 }
 
 if (isMainModule(import.meta.url)) {
@@ -905,11 +911,13 @@ if (isMainModule(import.meta.url)) {
           }
         : undefined;
 
+      let groupsOutcome: CollectionOutcome | undefined;
       if (requested.has("groups")) {
-        await collectGroups(token, groupCursor, progressWithSignals, emitRecord);
+        groupsOutcome = await collectGroups(token, groupCursor, progressWithSignals, emitRecord);
       }
+      let groupMessagesOutcome: CollectionOutcome | undefined;
       if (requested.has("group_messages")) {
-        await collectGroupMessages(
+        groupMessagesOutcome = await collectGroupMessages(
           token,
           groupMessageCursor,
           uploader,
@@ -960,17 +968,31 @@ if (isMainModule(import.meta.url)) {
       // mapping to "groups" would still leave a groups-less run gapped —
       // emit each stream's own checkpoint directly instead, using the same
       // per-stream cursor state already computed above.
-      if (requested.has("group_messages")) {
+      //
+      // A stream's own checkpoint and coverage proof are gated on that
+      // stream's collection pass having completed cleanly — a fetch/parse
+      // failure must commit neither a STATE checkpoint nor a coverage claim
+      // for the boundary it never finished walking (see CollectionOutcome).
+      // The unconditional unified emit above still carries every cursor
+      // forward regardless of per-stream failure, so a failed stream doesn't
+      // lose a sibling's successfully-advanced fingerprints — only that
+      // failed stream's OWN checkpoint/coverage below is withheld.
+      if (requested.has("groups") && groupsOutcome && !groupsOutcome.failed) {
+        await emit({
+          type: "STATE",
+          stream: "groups",
+          cursor: { fingerprints: groupCursor.toState() },
+        });
+        await emit(buildFullScanCoverageMessage("groups", groupsOutcome.considered));
+      }
+      if (requested.has("group_messages") && groupMessagesOutcome && !groupMessagesOutcome.failed) {
         await emit({
           type: "STATE",
           stream: "group_messages",
           cursor: { fingerprints: groupMessageCursor.toState() },
         });
+        await emit(buildFullScanCoverageMessage("group_messages", groupMessagesOutcome.considered));
       }
-      // A stream's own checkpoint and coverage proof are gated on that
-      // stream's collection pass having completed cleanly — a fetch/parse
-      // failure must commit neither a STATE checkpoint nor a coverage claim
-      // for the boundary it never finished walking (see CollectionOutcome).
       if (requested.has("direct_messages") && directChatsOutcome && !directChatsOutcome.failed) {
         await emit({
           type: "STATE",
