@@ -17,6 +17,7 @@
 
 export * from "./builders/index.ts";
 export * from "./common/index.ts";
+export * from "./evidence/index.ts";
 export * from "./public/index.ts";
 export * from "./reference/index.ts";
 export {
