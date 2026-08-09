@@ -91,4 +91,54 @@ describe("GroupMe schemas", () => {
     const result = validateRecord("groups", record);
     assert.equal(result.ok, false);
   });
+
+  it("validates a hydrated attachments record", () => {
+    const record = {
+      id: "msg-1:attachment:0:abcd1234abcd1234",
+      message_id: "msg-1",
+      message_stream: "group_messages",
+      type: "image",
+      content_type: "image/jpeg",
+      size_bytes: 1024,
+      content_sha256: "abc123",
+      hydration_status: "hydrated",
+      hydration_error: null,
+      blob_ref: { blob_id: "blob_1", mime_type: "image/jpeg", sha256: "abc123", size_bytes: 1024 },
+    };
+    const result = validateRecord("attachments", record);
+    assert.equal(result.ok, true);
+  });
+
+  it("validates a failed-hydration attachments record with a null blob_ref", () => {
+    const record = {
+      id: "msg-1:attachment:0:abcd1234abcd1234",
+      message_id: "msg-1",
+      message_stream: "direct_chat_messages",
+      type: "file",
+      content_type: "application/octet-stream",
+      size_bytes: null,
+      content_sha256: null,
+      hydration_status: "failed",
+      hydration_error: "blob upload failed (404): Stream 'attachments' not found for connector groupme",
+      blob_ref: null,
+    };
+    const result = validateRecord("attachments", record);
+    assert.equal(result.ok, true);
+  });
+
+  it("rejects an attachments record missing the required message_id", () => {
+    const record = {
+      id: "msg-1:attachment:0:abcd1234abcd1234",
+      message_stream: "group_messages",
+      type: "image",
+      content_type: "image/jpeg",
+      size_bytes: null,
+      content_sha256: null,
+      hydration_status: "deferred",
+      hydration_error: null,
+      blob_ref: null,
+    };
+    const result = validateRecord("attachments", record);
+    assert.equal(result.ok, false);
+  });
 });

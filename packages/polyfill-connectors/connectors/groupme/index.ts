@@ -23,6 +23,7 @@
  * (API provides no deletion signal); messages not re-fetched are retained in state.
  */
 
+import { createHash } from "node:crypto";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import type { RecordData } from "../../src/connector-runtime.ts";
 import { runConnector } from "../../src/connector-runtime.ts";
@@ -271,9 +272,31 @@ interface NormalizedAttachment {
   url: string | null;
 }
 
-async function normalizeOneAttachment(
+export function attachmentContentType(att: GroupMeAttachment): string {
+  return att.type === "image" ? "image/jpeg" : "application/octet-stream";
+}
+
+/**
+ * Attachment record ids must be unique per attachment, not per type — the
+ * prior `attachment:${type}` record key collapsed every image (or every
+ * file) in a run onto one blob-upload record_key, which also meant every
+ * hydration after the first for a given type silently overwrote the same
+ * upstream record. Keyed on the owning message + the attachment's position
+ * within that message's attachment array, which is stable across reruns of
+ * the same message.
+ */
+export function attachmentRecordId(messageId: string, index: number, url: string | null): string {
+  const urlHash = url ? createHash("sha256").update(url).digest("hex").slice(0, 16) : "no-url";
+  return `${messageId}:attachment:${index}:${urlHash}`;
+}
+
+export async function normalizeOneAttachment(
   att: GroupMeAttachment,
-  uploader?: (url: string, mimeType: string, recordKey: string) => Promise<ReferenceBlobRef | null>
+  index: number,
+  messageId: string,
+  messageStream: "group_messages" | "direct_chat_messages",
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
 ): Promise<NormalizedAttachment> {
   const url = att.url || att.picture_url || null;
   const normalized: NormalizedAttachment = {
@@ -284,35 +307,64 @@ async function normalizeOneAttachment(
   };
 
   // Attempt blob hydration for images/files with URLs
-  if (!(uploader && url && (att.type === "image" || att.type === "file"))) {
+  if (!(url && (att.type === "image" || att.type === "file"))) {
     return normalized;
   }
-  try {
-    const blobRef = await uploader(url, `image/${att.type}`, `attachment:${att.type}`);
-    if (blobRef) {
-      normalized.blob_id = blobRef.blob_id;
+
+  const contentType = attachmentContentType(att);
+  const recordId = attachmentRecordId(messageId, index, url);
+  let blobRef: ReferenceBlobRef | null = null;
+  let hydrationStatus: "deferred" | "failed" | "hydrated" = "deferred";
+  let hydrationError: string | null = null;
+
+  if (uploader) {
+    try {
+      blobRef = await uploader(url, contentType, recordId);
+      if (blobRef) {
+        normalized.blob_id = blobRef.blob_id;
+        hydrationStatus = "hydrated";
+      }
+    } catch (error) {
+      // Per-item failure: log but continue, don't fail the whole record
+      hydrationStatus = "failed";
+      hydrationError = error instanceof Error ? error.message : String(error);
+      // eslint-disable-next-line no-console
+      console.warn(`groupme: blob upload failed for ${att.type}: ${hydrationError}`);
     }
-  } catch (error) {
-    // Per-item failure: log but continue, don't fail the whole record
-    // eslint-disable-next-line no-console
-    console.warn(
-      `groupme: blob upload failed for ${att.type}: ${error instanceof Error ? error.message : String(error)}`
-    );
   }
+
+  if (emitAttachmentRecord) {
+    await emitAttachmentRecord({
+      id: recordId,
+      message_id: messageId,
+      message_stream: messageStream,
+      type: att.type,
+      content_type: blobRef?.mime_type ?? contentType,
+      size_bytes: blobRef?.size_bytes ?? null,
+      content_sha256: blobRef?.sha256 ?? null,
+      hydration_status: hydrationStatus,
+      hydration_error: hydrationError,
+      blob_ref: blobRef,
+    });
+  }
+
   return normalized;
 }
 
-async function normalizeAttachments(
+export async function normalizeAttachments(
   attachments: GroupMeAttachment[] | undefined | null,
-  uploader?: (url: string, mimeType: string, recordKey: string) => Promise<ReferenceBlobRef | null>
+  messageId: string,
+  messageStream: "group_messages" | "direct_chat_messages",
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
 ): Promise<NormalizedAttachment[]> {
   if (!(attachments && Array.isArray(attachments))) {
     return [];
   }
 
   const result: NormalizedAttachment[] = [];
-  for (const att of attachments) {
-    result.push(await normalizeOneAttachment(att, uploader));
+  for (const [index, att] of attachments.entries()) {
+    result.push(await normalizeOneAttachment(att, index, messageId, messageStream, uploader, emitAttachmentRecord));
   }
   return result;
 }
@@ -368,7 +420,8 @@ function toGroupRecord(g: GroupMeGroup): RecordData {
 async function toGroupMessageRecord(
   msg: GroupMeMessage,
   groupId: string,
-  uploader?: (url: string, mimeType: string, recordKey: string) => Promise<ReferenceBlobRef | null>
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
 ): Promise<RecordData> {
   return {
     id: msg.id,
@@ -378,7 +431,7 @@ async function toGroupMessageRecord(
     text: msg.text ?? null,
     avatar_url: msg.avatar_url ?? null,
     created_at: convertTimestamp(msg.created_at, `group message ${msg.id}`),
-    attachments: await normalizeAttachments(msg.attachments, uploader),
+    attachments: await normalizeAttachments(msg.attachments, msg.id, "group_messages", uploader, emitAttachmentRecord),
     like_count: msg.favorited_by ? msg.favorited_by.length : null,
     system: msg.system ?? null,
   };
@@ -398,7 +451,8 @@ function toDirectChatRecord(chat: GroupMeDirectChat): RecordData {
 async function toDirectChatMessageRecord(
   msg: GroupMeMessage,
   chatId: string,
-  uploader?: (url: string, mimeType: string, recordKey: string) => Promise<ReferenceBlobRef | null>
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined
 ): Promise<RecordData> {
   return {
     id: msg.id,
@@ -408,7 +462,13 @@ async function toDirectChatMessageRecord(
     text: msg.text ?? null,
     avatar_url: msg.avatar_url ?? null,
     created_at: convertTimestamp(msg.created_at, `direct message ${msg.id}`),
-    attachments: await normalizeAttachments(msg.attachments, uploader),
+    attachments: await normalizeAttachments(
+      msg.attachments,
+      msg.id,
+      "direct_chat_messages",
+      uploader,
+      emitAttachmentRecord
+    ),
   };
 }
 
@@ -418,6 +478,7 @@ type ProgressFn = (message: string, extra?: ProgressExtra) => Promise<void>;
 // Runtime merges state per-stream, so all GroupMe state is under a single "groups" stream.
 // We emit all cursors under that unified namespace to ensure carry-forward on the next run.
 interface GroupMeUnifiedState {
+  attachments?: Record<string, string>;
   direct_chat_messages?: Record<string, string>;
   direct_chats?: Record<string, string>;
   group_messages?: Record<string, string>;
@@ -506,6 +567,7 @@ async function collectGroupMessagesForGroup(
   group: GroupMeGroup,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<void> {
@@ -541,7 +603,7 @@ async function collectGroupMessagesForGroup(
     }
 
     for (const msg of messages) {
-      const record = await toGroupMessageRecord(msg, group.id, uploader);
+      const record = await toGroupMessageRecord(msg, group.id, uploader, emitAttachmentRecord);
       if (cursor.shouldEmit(record)) {
         await emitRecord("group_messages", record);
       }
@@ -560,6 +622,7 @@ async function collectGroupMessages(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<void> {
@@ -567,7 +630,15 @@ async function collectGroupMessages(
   try {
     const groups = await makeRequest<GroupMeGroup[]>(token, "/groups", { per_page: PAGE_SIZE });
     for (const group of groups) {
-      await collectGroupMessagesForGroup(token, group, cursor, uploader, progressWithSignals, emitRecord);
+      await collectGroupMessagesForGroup(
+        token,
+        group,
+        cursor,
+        uploader,
+        emitAttachmentRecord,
+        progressWithSignals,
+        emitRecord
+      );
     }
   } catch (error) {
     if (error instanceof Error && error.message === "groupme_auth_failed") {
@@ -628,6 +699,7 @@ async function collectDirectChatMessagesForChat(
   chat: GroupMeDirectChat,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<void> {
@@ -663,7 +735,7 @@ async function collectDirectChatMessagesForChat(
     }
 
     for (const msg of messages) {
-      const record = await toDirectChatMessageRecord(msg, chat.id, uploader);
+      const record = await toDirectChatMessageRecord(msg, chat.id, uploader, emitAttachmentRecord);
       if (cursor.shouldEmit(record)) {
         await emitRecord("direct_chat_messages", record);
       }
@@ -682,6 +754,7 @@ async function collectDirectChatMessages(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<void> {
@@ -692,7 +765,15 @@ async function collectDirectChatMessages(
   try {
     const chats = await makeRequest<GroupMeDirectChat[]>(token, "/chats", { per_page: PAGE_SIZE });
     for (const chat of chats) {
-      await collectDirectChatMessagesForChat(token, chat, cursor, uploader, progressWithSignals, emitRecord);
+      await collectDirectChatMessagesForChat(
+        token,
+        chat,
+        cursor,
+        uploader,
+        emitAttachmentRecord,
+        progressWithSignals,
+        emitRecord
+      );
     }
   } catch (error) {
     if (error instanceof Error && error.message === "groupme_auth_failed") {
@@ -730,18 +811,42 @@ if (isMainModule(import.meta.url)) {
       const directChatMessageCursor = openFingerprintCursor(
         new Map(Object.entries(groupmeState.direct_chat_messages || {}))
       );
+      const attachmentCursor = openFingerprintCursor(new Map(Object.entries(groupmeState.attachments || {})));
+
+      const attachmentsRequested = requested.has("attachments");
+      const emitAttachmentRecord = attachmentsRequested
+        ? async (data: RecordData): Promise<void> => {
+            if (attachmentCursor.shouldEmit(data)) {
+              await emitRecord("attachments", data);
+            }
+          }
+        : undefined;
 
       if (requested.has("groups")) {
         await collectGroups(token, groupCursor, progressWithSignals, emitRecord);
       }
       if (requested.has("group_messages")) {
-        await collectGroupMessages(token, groupMessageCursor, uploader, progressWithSignals, emitRecord);
+        await collectGroupMessages(
+          token,
+          groupMessageCursor,
+          uploader,
+          emitAttachmentRecord,
+          progressWithSignals,
+          emitRecord
+        );
       }
       if (requested.has("direct_messages")) {
         await collectDirectChats(token, directChatCursor, progressWithSignals, emitRecord);
       }
       if (requested.has("direct_chat_messages")) {
-        await collectDirectChatMessages(token, directChatMessageCursor, uploader, progressWithSignals, emitRecord);
+        await collectDirectChatMessages(
+          token,
+          directChatMessageCursor,
+          uploader,
+          emitAttachmentRecord,
+          progressWithSignals,
+          emitRecord
+        );
       }
 
       // Emit all state under a unified namespace. The runtime merges per-stream,
@@ -754,6 +859,7 @@ if (isMainModule(import.meta.url)) {
           group_messages: groupMessageCursor.toState(),
           direct_chats: directChatCursor.toState(),
           direct_chat_messages: directChatMessageCursor.toState(),
+          attachments: attachmentCursor.toState(),
         } as GroupMeUnifiedState,
       });
       // The unified emit above only ever proves coverage for the "groups"
@@ -785,6 +891,13 @@ if (isMainModule(import.meta.url)) {
           type: "STATE",
           stream: "direct_chat_messages",
           cursor: { direct_chat_messages: directChatMessageCursor.toState() },
+        });
+      }
+      if (attachmentsRequested) {
+        await emit({
+          type: "STATE",
+          stream: "attachments",
+          cursor: { attachments: attachmentCursor.toState() },
         });
       }
     },

@@ -341,6 +341,99 @@
       },
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "attachments",
+      "description": "Image and file attachments referenced by GroupMe group and direct messages.",
+      "display": {
+        "label": "Your GroupMe attachments",
+        "detail": "Filename, content type, size, and a blob reference when the attachment was retained."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "message_stream": {
+            "type": "string",
+            "enum": ["group_messages", "direct_chat_messages"]
+          },
+          "type": {
+            "type": "string",
+            "enum": ["image", "file"]
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": ["integer", "null"]
+          },
+          "content_sha256": {
+            "type": ["string", "null"]
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": ["deferred", "failed", "hydrated"]
+          },
+          "hydration_error": {
+            "type": ["string", "null"]
+          },
+          "blob_ref": {
+            "type": ["object", "null"],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": ["blob_id", "mime_type", "sha256", "size_bytes"]
+          }
+        },
+        "required": [
+          "id",
+          "message_id",
+          "message_stream",
+          "type",
+          "content_type",
+          "hydration_status"
+        ]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "required": false,
+      "relationships": [
+        {
+          "name": "group_message",
+          "stream": "group_messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "direct_chat_message",
+          "stream": "direct_chat_messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "scheduled_window"
     }
   ]
 }

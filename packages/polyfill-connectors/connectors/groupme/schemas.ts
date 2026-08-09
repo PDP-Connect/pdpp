@@ -85,11 +85,32 @@ export const DirectChatMessageSchema = z.object({
   attachments: z.array(AttachmentSchema),
 });
 
+const BlobRefSchema = z.object({
+  blob_id: z.string(),
+  mime_type: z.string(),
+  sha256: z.string(),
+  size_bytes: z.number(),
+});
+
+export const AttachmentRecordSchema = z.object({
+  id: z.string(),
+  message_id: z.string(),
+  message_stream: z.enum(["group_messages", "direct_chat_messages"]),
+  type: z.enum(["image", "file"]),
+  content_type: z.string(),
+  size_bytes: z.number().nullable(),
+  content_sha256: z.string().nullable(),
+  hydration_status: z.enum(["deferred", "failed", "hydrated"]),
+  hydration_error: z.string().nullable(),
+  blob_ref: BlobRefSchema.nullable(),
+});
+
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   groups: GroupSchema,
   group_messages: GroupMessageSchema,
   direct_messages: DirectChatSchema,
   direct_chat_messages: DirectChatMessageSchema,
+  attachments: AttachmentRecordSchema,
 };
 
 export const validateRecord = makeValidateRecord(SCHEMAS);
