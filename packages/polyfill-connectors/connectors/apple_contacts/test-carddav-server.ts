@@ -28,6 +28,13 @@ export interface FakeServerOptions {
    *  simulating iCloud's regional-host resolution, instead of a
    *  same-origin redirect. */
   regionalHost?: boolean;
+  /** When true, /.well-known/carddav answers PROPFIND inline (207, no
+   *  redirect) with `current-user-principal` 404'd in its propstat — the
+   *  real behavior observed live against iCloud — instead of the
+   *  RFC-6764-typical redirect. `current-user-principal` is only answered
+   *  at the bare origin root ("/") in this mode, so the test exercises
+   *  discoverCardDav's origin-root fallback. */
+  wellKnownAnswersInlineWithoutPrincipal?: boolean;
   username: string;
 }
 
@@ -84,7 +91,13 @@ function checkAuth(req: IncomingMessage, username: string, password: string): bo
  * scenarios (add / edit / delete between two connector runs).
  */
 export async function startFakeCardDavServer(options: FakeServerOptions): Promise<FakeCardDavServer> {
-  const { username, password, disableSyncCollection = false, regionalHost = false } = options;
+  const {
+    username,
+    password,
+    disableSyncCollection = false,
+    regionalHost = false,
+    wellKnownAnswersInlineWithoutPrincipal = false,
+  } = options;
   const contacts = new Map<string, FakeContact>();
   const deletedHrefs = new Set<string>();
   const requestLog: Array<{ method: string; url: string }> = [];
@@ -92,15 +105,30 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
   let changeCounter = 1;
   let regionalOrigin: string | null = null;
 
+  const respondWellKnownPrincipalNotFound = (res: ServerResponse): void => {
+    // Mirrors the real iCloud shape: 207 Multi-Status, single <response>
+    // for the well-known resource itself, current-user-principal reported
+    // via a 404 propstat (RFC 4918 §14.22) rather than populated.
+    const responseBody = multistatus(
+      `<D:response><D:href>/.well-known/carddav/</D:href><D:propstat><D:prop><D:current-user-principal/></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response>`
+    );
+    res.writeHead(207, { "Content-Type": "application/xml" });
+    res.end(responseBody);
+  };
+
   const respondWellKnown = (res: ServerResponse, thisOrigin: () => string): void => {
+    if (wellKnownAnswersInlineWithoutPrincipal) {
+      respondWellKnownPrincipalNotFound(res);
+      return;
+    }
     const target = regionalOrigin && regionalOrigin !== thisOrigin() ? regionalOrigin : thisOrigin();
     res.writeHead(302, { Location: `${target}${PRINCIPAL_PATH}` });
     res.end();
   };
 
-  const respondCurrentUserPrincipal = (res: ServerResponse): void => {
+  const respondCurrentUserPrincipal = (res: ServerResponse, atHref: string): void => {
     const responseBody = multistatus(
-      `<D:response><D:href>${PRINCIPAL_PATH}</D:href><D:propstat><D:prop><D:current-user-principal><D:href>${PRINCIPAL_PATH}</D:href></D:current-user-principal></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`
+      `<D:response><D:href>${atHref}</D:href><D:propstat><D:prop><D:current-user-principal><D:href>${PRINCIPAL_PATH}</D:href></D:current-user-principal></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`
     );
     res.writeHead(207, { "Content-Type": "application/xml" });
     res.end(responseBody);
@@ -163,7 +191,15 @@ export async function startFakeCardDavServer(options: FakeServerOptions): Promis
     {
       match: (req, url, body) =>
         req.method === "PROPFIND" && url === PRINCIPAL_PATH && body.includes("current-user-principal"),
-      respond: (_req, res) => respondCurrentUserPrincipal(res),
+      respond: (_req, res) => respondCurrentUserPrincipal(res, PRINCIPAL_PATH),
+    },
+    {
+      // Origin-root fallback target: only reached (in real discoverCardDav
+      // usage) when the well-known step answered inline without the
+      // property, per wellKnownAnswersInlineWithoutPrincipal above.
+      match: (req, url, body) =>
+        req.method === "PROPFIND" && url === "/" && body.includes("current-user-principal"),
+      respond: (_req, res) => respondCurrentUserPrincipal(res, "/"),
     },
     {
       match: (req, url, body) =>

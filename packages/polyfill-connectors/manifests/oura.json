@@ -37,19 +37,19 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
-      "background_safe": true,
-      "rationale": "Oura sleep/readiness/activity data updates a few times per day; six-hourly refresh is enough."
+      "background_safe": false,
+      "rationale": "Oura is unproven pending credentialed live testing; scheduled background runs are deferred until owner validation completes."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "listed": false,
+      "status": "unproven"
     },
     "auth": {
       "kind": "env",

@@ -16,19 +16,19 @@
     "modality": "static_secret",
     "credential_capture": {
       "kind": "personal_access_token",
-      "label": "Notion internal integration token",
-      "description": "Use a Notion internal integration token for the workspace this connection should collect. The integration must be connected to the pages you want to collect.",
+      "label": "Notion Personal Access Token",
+      "description": "Create a Notion Personal Access Token with read-level access to your workspace. The token is permanent and inherits your workspace permissions.",
       "submit_label": "Create Notion connection and start first sync",
       "fields": [
         {
           "name": "secret",
-          "label": "Notion integration token",
+          "label": "Notion Personal Access Token",
           "type": "password",
           "required": true,
           "secret": true,
           "autocomplete": "off",
-          "help_url": "https://www.notion.so/profile/integrations",
-          "help_text": "Create an internal integration at notion.so/profile/integrations, then paste the token here. The integration must be connected to the pages you want to collect.",
+          "help_url": "https://www.notion.so/developers/tokens",
+          "help_text": "Go to Notion Developers (https://www.notion.so/developers/tokens), create a New token with read access, copy the token, and paste it here. The token acts as you in PDPP and accesses all pages in your workspace without requiring manual connections.",
           "env": ["NOTION_API_TOKEN"]
         }
       ]
@@ -37,19 +37,19 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 900,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
-      "background_safe": true,
-      "rationale": "Notion integration tokens are durable; hourly refresh is safe for typical workspaces."
+      "background_safe": false,
+      "rationale": "Notion is unproven pending credentialed live testing; scheduled background runs are deferred until owner validation completes."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "listed": false,
+      "status": "unproven"
     },
     "auth": {
       "kind": "env",
