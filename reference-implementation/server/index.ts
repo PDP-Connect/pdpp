@@ -6622,19 +6622,23 @@ export async function startServer(opts: ServerOpts = {}) {
 
   // Boot-epoch reconciliation — STAGE 6.
   // Walk the spine for orphaned run.started events from prior incarnations
-  // and emit run.abandoned for each. Runs synchronously before HTTP routes
-  // mount, so the dashboard never sees a half-reconciled state. Throws on
-  // any non-idempotency error; we propagate up so startServer rejects and
-  // traffic does not begin. See docs/run-reconciliation-design-brief.md §3.4.
+  // and emit run.abandoned for each, then re-project any run_history row
+  // still claiming `running` against an already-terminal spine. Runs
+  // synchronously before HTTP routes mount, so the dashboard never sees a
+  // half-reconciled state and no connection is refused a new run by a
+  // stale active-run read. Throws on any non-idempotency error; we
+  // propagate up so startServer rejects and traffic does not begin. See
+  // docs/run-reconciliation-design-brief.md §3.4.
   const reconciled = await reconcileOrphanedRunsAtBoot(bootEpoch);
-  if (reconciled.selected > 0) {
+  if (reconciled.selected > 0 || reconciled.repaired > 0) {
     logger.info(
       {
         abandoned: reconciled.abandoned,
         controller_id: bootEpoch.controller_id,
+        repaired: reconciled.repaired,
         selected: reconciled.selected,
       },
-      "boot-time orphan reconciliation: emitted run.abandoned events for prior-incarnation orphans"
+      "boot-time orphan reconciliation: terminalised prior-incarnation orphans and repaired run_history drift"
     );
   }
 
