@@ -2267,29 +2267,237 @@ export function resolveAttachmentStallTimeoutMs(env: NodeJS.ProcessEnv = process
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS;
 }
 
-export function makeAttachmentHydrator(args: {
+/** One in-transfer progress observation, bounded and pre-redacted at the
+ *  source: no attachment id, filename, subject, sender, or content ever
+ *  reaches this shape. `totalBytes` is present only when the source already
+ *  reported a trusted expected size (BODYSTRUCTURE / IMAP FETCH metadata) —
+ *  never inferred or guessed. */
+export interface AttachmentTransferProgress {
+  bytesTransferred: number;
+  elapsedMs: number;
+  phase: "transferring" | "complete";
+  totalBytes: number | null;
+}
+
+/**
+ * Resolve the in-transfer progress cadence from env. Both a minimum elapsed
+ * time AND a minimum byte delta must be satisfied before a new progress
+ * observation fires (see `enforceTransferProgress`) — either alone is
+ * ignorable by a pathological source (a firehose of 1-byte chunks would
+ * otherwise defeat a bytes-only gate; a single giant chunk every few ms
+ * would defeat a time-only gate). Non-positive or non-numeric overrides fall
+ * back to the default so a misconfigured env var can never turn the cadence
+ * gate into a flood.
+ */
+const ATTACHMENT_PROGRESS_MIN_INTERVAL_MS_ENV = "PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS";
+const ATTACHMENT_PROGRESS_MIN_BYTES_ENV = "PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_BYTES";
+export const DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS = 15_000;
+export const DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES = 256 * 1024;
+
+function resolveBoundedEnvInt(raw: string | undefined, fallback: number): number {
+  if (!(raw && POSITIVE_INTEGER_PATTERN.test(raw))) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function resolveAttachmentProgressMinIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveBoundedEnvInt(
+    env[ATTACHMENT_PROGRESS_MIN_INTERVAL_MS_ENV],
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS
+  );
+}
+
+export function resolveAttachmentProgressMinBytes(env: NodeJS.ProcessEnv = process.env): number {
+  return resolveBoundedEnvInt(env[ATTACHMENT_PROGRESS_MIN_BYTES_ENV], DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES);
+}
+
+/**
+ * Wrap an AsyncIterable so that observed chunk bytes drive a cadence-gated
+ * `onProgress` callback — bounded, redacted, and inert with respect to the
+ * transfer itself.
+ *
+ * Composed OUTSIDE `enforceStallTimeout` (see `makeAttachmentHydrator`): this
+ * wrapper never participates in stall detection, so nothing it does —
+ * including a slow or throwing `onProgress` — can affect stall timing.
+ * `onProgress` is fire-and-forget (never awaited inline in the chunk path)
+ * and any error it throws is swallowed, so it cannot add latency or turn a
+ * successful transfer into a failed one — the one exception is that a
+ * REJECTED `onProgress` promise is still observed via `.catch()`, which is
+ * enough to prevent an unhandled-rejection crash without blocking the loop.
+ *
+ * Cadence: an observation fires only once BOTH `minIntervalMs` elapsed AND
+ * `minBytes` new bytes arrived since the last one (see
+ * `resolveAttachmentProgressMinIntervalMs`/`resolveAttachmentProgressMinBytes`),
+ * so a run with many small/fast attachments cannot flood the event stream —
+ * most attachments will finish within one cadence window and emit only the
+ * `complete` signal, never a mid-transfer one. The `complete` signal always
+ * fires exactly once at end-of-stream, bypassing the cadence gate, so every
+ * transfer has a coherent start-adjacent/end pair regardless of size.
+ */
+function enforceTransferProgress(
+  content: AsyncIterable<Buffer | Uint8Array | string>,
+  args: {
+    minBytes: number;
+    minIntervalMs: number;
+    now: () => number;
+    onProgress: (progress: AttachmentTransferProgress) => void;
+    totalBytes: number | null;
+  }
+): AsyncIterable<Buffer | Uint8Array | string> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Buffer | Uint8Array | string> {
+      const inner = content[Symbol.asyncIterator]();
+      const startedAt = args.now();
+      let observed = 0;
+      let lastEmitAt = startedAt;
+      let lastEmitBytes = 0;
+      const safeEmit = (progress: AttachmentTransferProgress): void => {
+        try {
+          args.onProgress(progress);
+        } catch {
+          // A progress observer must never be able to fail the transfer.
+        }
+      };
+      return {
+        async next() {
+          const step = await inner.next();
+          if (step.done) {
+            safeEmit({
+              bytesTransferred: observed,
+              elapsedMs: args.now() - startedAt,
+              phase: "complete",
+              totalBytes: args.totalBytes,
+            });
+            return step;
+          }
+          const chunk = step.value;
+          observed += typeof chunk === "string" ? Buffer.byteLength(chunk) : (chunk as Buffer | Uint8Array).byteLength;
+          const nowMs = args.now();
+          if (nowMs - lastEmitAt >= args.minIntervalMs && observed - lastEmitBytes >= args.minBytes) {
+            lastEmitAt = nowMs;
+            lastEmitBytes = observed;
+            safeEmit({
+              bytesTransferred: observed,
+              elapsedMs: nowMs - startedAt,
+              phase: "transferring",
+              totalBytes: args.totalBytes,
+            });
+          }
+          return step;
+        },
+        return(value): Promise<IteratorResult<Buffer | Uint8Array | string>> {
+          if (typeof inner.return === "function") {
+            return inner.return(value);
+          }
+          return Promise.resolve({ done: true, value });
+        },
+      };
+    },
+  };
+}
+
+/** Bounded, non-secret PROGRESS text for one in-transfer observation: phase,
+ *  byte counters, and elapsed time only — matches
+ *  `buildServedAttachmentRecoveryProgressMessage`'s shape for the same
+ *  reason (a free-text `message` that a dashboard/log can render safely). */
+export function buildAttachmentTransferProgressMessage(progress: AttachmentTransferProgress): string {
+  const totalPart = progress.totalBytes === null ? "" : ` total_bytes=${progress.totalBytes}`;
+  return `Gmail attachment transfer phase=${progress.phase} bytes_transferred=${progress.bytesTransferred}${totalPart} elapsed_ms=${progress.elapsedMs}`;
+}
+
+/** A trusted, already-known expected size only — never inferred or guessed
+ *  from observed bytes. Prefers the IMAP download response's own reported
+ *  size (freshest), falling back to the BODYSTRUCTURE-derived size already
+ *  on the attachment record. */
+function trustedAttachmentTotalBytes(downloaded: AttachmentDownload, attachment: AttachmentRecord): number | null {
+  if (typeof downloaded.expectedSize === "number") {
+    return downloaded.expectedSize;
+  }
+  if (typeof attachment.size_bytes === "number") {
+    return attachment.size_bytes;
+  }
+  return null;
+}
+
+interface AttachmentHydratorArgs {
   connectorId: string;
   fetchAttachment: FetchAttachmentFn;
   maxBytes?: number;
-  /**
-   * Called at most once if a transfer stalls past `stallTimeoutMs`. MUST make
-   * the connection backing `fetchAttachment`'s returned content unusable
-   * (imapflow has no per-command cancel — see `fetchAttachmentPart`), so the
-   * caller is expected to treat the whole run as ending after this fires.
-   * Omitted in tests that don't exercise a real IMAP connection.
-   */
   onStall?: () => void;
+  onTransferProgress?: (progress: AttachmentTransferProgress) => void;
+  progressMinBytes?: number;
+  progressMinIntervalMs?: number;
+  progressNow?: () => number;
   stallTimeoutMs?: number;
   uploadBlob: UploadAttachmentBlobFn;
-}): HydrateAttachmentFn {
-  const maxBytes = args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
-  const stallTimeoutMs = args.stallTimeoutMs ?? DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS;
+}
+
+interface ResolvedAttachmentHydratorConfig {
+  maxBytes: number;
+  progressMinBytes: number;
+  progressMinIntervalMs: number;
+  progressNow: () => number;
+  stallTimeoutMs: number;
+}
+
+/** Compose the size cap, stall guard, and (optional) progress observer
+ *  around a downloaded attachment's content stream, in that fixed order —
+ *  see `enforceTransferProgress`'s doc comment for why progress MUST wrap
+ *  outside the stall guard, never inside it. Extracted from
+ *  `makeAttachmentHydrator` purely to keep that closure's cognitive
+ *  complexity under the repo's ceiling; behavior is unchanged. */
+function composeAttachmentContentGuards(
+  downloaded: AttachmentDownload,
+  attachment: AttachmentRecord,
+  args: AttachmentHydratorArgs,
+  resolved: ResolvedAttachmentHydratorConfig
+): AsyncIterable<Buffer | Uint8Array | string> {
+  const sizeGuarded = enforceMaxBytes(downloaded.content, resolved.maxBytes);
+  const stallGuarded = args.onStall
+    ? enforceStallTimeout(sizeGuarded, resolved.stallTimeoutMs, args.onStall)
+    : sizeGuarded;
+  if (!args.onTransferProgress) {
+    return stallGuarded;
+  }
+  return enforceTransferProgress(stallGuarded, {
+    minBytes: resolved.progressMinBytes,
+    minIntervalMs: resolved.progressMinIntervalMs,
+    now: resolved.progressNow,
+    onProgress: args.onTransferProgress,
+    totalBytes: trustedAttachmentTotalBytes(downloaded, attachment),
+  });
+}
+
+/**
+ * `onStall`: called at most once if a transfer stalls past `stallTimeoutMs`.
+ * MUST make the connection backing `fetchAttachment`'s returned content
+ * unusable (imapflow has no per-command cancel — see `fetchAttachmentPart`),
+ * so the caller is expected to treat the whole run as ending after this
+ * fires. Omitted in tests that don't exercise a real IMAP connection.
+ *
+ * `onTransferProgress`: cadence-gated in-transfer progress (see
+ * `enforceTransferProgress`). Composed OUTSIDE the stall guard: cannot
+ * affect stall timing, backpressure, or error propagation. Omitted entirely
+ * in tests that don't exercise it — `enforceTransferProgress` is only
+ * applied when this is provided, so a caller with no progress sink pays
+ * zero extra wrapping.
+ */
+export function makeAttachmentHydrator(args: AttachmentHydratorArgs): HydrateAttachmentFn {
+  const resolved: ResolvedAttachmentHydratorConfig = {
+    maxBytes: args.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES,
+    progressMinBytes: args.progressMinBytes ?? DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES,
+    progressMinIntervalMs: args.progressMinIntervalMs ?? DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS,
+    progressNow: args.progressNow ?? Date.now,
+    stallTimeoutMs: args.stallTimeoutMs ?? DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
+  };
   return async (msg, attachment) => {
-    if (typeof attachment.size_bytes === "number" && attachment.size_bytes > maxBytes) {
+    if (typeof attachment.size_bytes === "number" && attachment.size_bytes > resolved.maxBytes) {
       return hydrationFailureResult(
         attachment,
         "too_large",
-        new AttachmentTooLargeError(attachment.size_bytes, maxBytes)
+        new AttachmentTooLargeError(attachment.size_bytes, resolved.maxBytes)
       );
     }
     let downloaded: AttachmentDownload;
@@ -2298,16 +2506,15 @@ export function makeAttachmentHydrator(args: {
     } catch (err) {
       return hydrationFailureResult(attachment, "failed", err, { stage: "imap_download_failed" });
     }
-    if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > maxBytes) {
+    if (typeof downloaded.expectedSize === "number" && downloaded.expectedSize > resolved.maxBytes) {
       return hydrationFailureResult(
         attachment,
         "too_large",
-        new AttachmentTooLargeError(downloaded.expectedSize, maxBytes)
+        new AttachmentTooLargeError(downloaded.expectedSize, resolved.maxBytes)
       );
     }
     try {
-      const sizeGuarded = enforceMaxBytes(downloaded.content, maxBytes);
-      const guarded = args.onStall ? enforceStallTimeout(sizeGuarded, stallTimeoutMs, args.onStall) : sizeGuarded;
+      const guarded = composeAttachmentContentGuards(downloaded, attachment, args, resolved);
       const blobRef = await args.uploadBlob({
         content: guarded,
         connectorId: args.connectorId,
@@ -2634,6 +2841,20 @@ async function runAllMailPasses(
     // silently poisoning a completed stream.
     onStall: () => client.close(),
     stallTimeoutMs: resolveAttachmentStallTimeoutMs(),
+    // Fire-and-forget by construction (`enforceTransferProgress` calls this
+    // synchronously and never awaits it) — a slow or failed PROGRESS emit can
+    // never add latency to the transfer or turn it into a failure. `.catch()`
+    // only prevents an unhandled-rejection crash; it changes nothing about
+    // whether the attachment itself succeeds.
+    onTransferProgress: (progress) => {
+      emit({
+        type: "PROGRESS",
+        stream: "attachments",
+        message: buildAttachmentTransferProgressMessage(progress),
+      }).catch((): undefined => undefined);
+    },
+    progressMinBytes: resolveAttachmentProgressMinBytes(),
+    progressMinIntervalMs: resolveAttachmentProgressMinIntervalMs(),
     uploadBlob: buildRuntimeBlobUploader(),
   });
   // Accumulate honest attachments detail-coverage across BOTH the primary pass

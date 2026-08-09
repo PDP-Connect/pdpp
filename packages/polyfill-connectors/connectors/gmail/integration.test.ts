@@ -54,12 +54,16 @@ import {
   type AttachmentDetailCoverage,
   type AttachmentHydrationResult,
   AttachmentStallTimeoutError,
+  type AttachmentTransferProgress,
   addAttachmentBackfillRecordToSummary,
   attachmentBackfillPageByteBudget,
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
+  buildAttachmentTransferProgressMessage,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
+  DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES,
+  DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS,
   DEFAULT_ATTACHMENT_STALL_TIMEOUT_MS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
   emitMessagesPass,
@@ -76,6 +80,8 @@ import {
   redactEmailForProgress,
   resolveAttachmentBackfillPageByteBudget,
   resolveAttachmentBackfillWindowUids,
+  resolveAttachmentProgressMinBytes,
+  resolveAttachmentProgressMinIntervalMs,
   resolveAttachmentRecoveryPageByteBudget,
   resolveAttachmentStallTimeoutMs,
   resolveGmailAddressFromEnv,
@@ -940,6 +946,369 @@ test("makeAttachmentHydrator: stall-timeout error message carries only counts, n
   assert.match(error.message, /90000/);
   assert.match(error.message, /12345/);
   assert.doesNotMatch(error.message, /gmmsgid|@|subject|filename/i);
+});
+
+/**
+ * REVISE coverage for gmail-attachment-convergence-0809: existing
+ * FETCH_MSG_PROGRESS (every 500 MESSAGES) says nothing while a single
+ * attachment streams for 10-17 minutes. These tests pin the in-transfer
+ * progress signal added on top of the stall-timeout fix: bounded/redacted
+ * content, cadence throttling so it can't flood the event stream, a
+ * coherent start-adjacent/complete pair, and — critically — that none of
+ * this can perturb backpressure, stall timing, or error propagation.
+ *
+ * A controllable `now()` (an injected epoch-ms clock, not real wall time)
+ * drives the cadence gate deterministically without sleeping in tests.
+ */
+function makeControllableClock(startMs: number): { advance: (ms: number) => void; now: () => number } {
+  let current = startMs;
+  return {
+    advance: (ms: number) => {
+      current += ms;
+    },
+    now: () => current,
+  };
+}
+
+/** Like `scriptedContent`, but advances a controllable clock by
+ *  `msPerChunk` before yielding each chunk — for driving the progress
+ *  cadence gate deterministically without real sleeps. */
+function clockedContent(chunks: Buffer[], msPerChunk: number, advance: (ms: number) => void): AsyncIterable<Buffer> {
+  const queue = [...chunks];
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => {
+          const value = queue.shift();
+          if (value === undefined) {
+            return Promise.resolve({ done: true, value: undefined });
+          }
+          advance(msPerChunk);
+          return Promise.resolve({ done: false, value });
+        },
+      };
+    },
+  };
+}
+
+test("makeAttachmentHydrator: a long steadily-progressing transfer emits cadence-gated progress with a coherent complete signal", async () => {
+  const clock = makeControllableClock(1_000_000);
+  const observed: AttachmentTransferProgress[] = [];
+  // 10 chunks of 100KB each = 1MB total. Clock advances 5s per chunk (50s
+  // total) — well past the 15s default interval — and each chunk exceeds the
+  // default 256KB min-bytes threshold cumulatively, so several mid-transfer
+  // observations should fire in addition to the final `complete` one.
+  const chunkBytes = 100 * 1024;
+  const chunks = Array.from({ length: 10 }, () => Buffer.alloc(chunkBytes, 1));
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: clockedContent(chunks, 5000, clock.advance),
+        expectedSize: chunks.length * chunkBytes,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  const attachment = emitted.find((record) => record.stream === "attachments");
+  assert.equal(attachment?.data.hydration_status, "hydrated", "the transfer must still complete normally");
+  assert.ok(observed.length >= 2, "a long transfer must emit at least one mid-transfer observation plus completion");
+  const transferring = observed.filter((p) => p.phase === "transferring");
+  const complete = observed.filter((p) => p.phase === "complete");
+  assert.ok(transferring.length >= 1, "expected at least one transferring-phase observation");
+  assert.equal(complete.length, 1, "exactly one complete signal, regardless of how many mid-transfer ones fired");
+  assert.equal(
+    complete[0]?.bytesTransferred,
+    chunks.length * chunkBytes,
+    "complete signal reports the full byte count"
+  );
+  assert.equal(complete[0]?.totalBytes, chunks.length * chunkBytes, "trusted expectedSize is surfaced as totalBytes");
+  for (const p of observed) {
+    assert.ok(p.elapsedMs >= 0, "elapsed time must be non-negative and monotonic with the injected clock");
+  }
+  // Monotonic non-decreasing bytesTransferred and elapsedMs across the series.
+  for (let i = 1; i < observed.length; i += 1) {
+    const current = observed[i];
+    const previous = observed[i - 1];
+    assert.ok(current && previous);
+    assert.ok(current.bytesTransferred >= previous.bytesTransferred);
+    assert.ok(current.elapsedMs >= previous.elapsedMs);
+  }
+});
+
+test("makeAttachmentHydrator: a short transfer under one cadence window does not spam mid-transfer progress", async () => {
+  const clock = makeControllableClock(2_000_000);
+  const observed: AttachmentTransferProgress[] = [];
+  // Two small chunks, clock barely advances — nowhere near the default 15s /
+  // 256KB cadence gate. Only the unconditional `complete` signal should fire.
+  const chunks = [Buffer.from("small "), Buffer.from("attachment")];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: clockedContent(chunks, 10, clock.advance),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.equal(observed.length, 1, "a fast small transfer must emit exactly one signal: the final complete");
+  assert.equal(observed[0]?.phase, "complete");
+});
+
+test("makeAttachmentHydrator: totalBytes stays null when no trusted size was ever reported", async () => {
+  // Distinct from the cadence test above: this pins that an UNKNOWN size is
+  // never guessed or inferred from observed bytes — `makeAttachmentMsg`'s
+  // fixture attachment declares a BODYSTRUCTURE size, so that test's
+  // totalBytes is legitimately non-null. This test uses an attachment with
+  // no declared size at all.
+  const clock = makeControllableClock(2_500_000);
+  const observed: AttachmentTransferProgress[] = [];
+  const chunks = [Buffer.from("unsized")];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: clockedContent(chunks, 10, clock.advance),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const attachment: AttachmentRecord = {
+    blob_ref: null,
+    content_id: null,
+    content_sha256: null,
+    content_type: null,
+    encoding: null,
+    filename: null,
+    hydration_error: null,
+    hydration_status: "deferred",
+    id: "gmmsgid-unsized:9",
+    is_inline: false,
+    message_id: "gmmsgid-unsized",
+    message_received_at: FROZEN_NOW,
+    part_index: "9",
+    size_bytes: null,
+  };
+
+  const result = await hydrateAttachment(makeMsg({ emailId: "gmmsgid-unsized" }), attachment);
+
+  assert.equal(result.record.hydration_status, "hydrated");
+  assert.ok(observed.length >= 1);
+  for (const progress of observed) {
+    assert.equal(
+      progress.totalBytes,
+      null,
+      "no trusted size was ever reported, so totalBytes must stay null, not guessed"
+    );
+  }
+});
+
+test("enforceTransferProgress: payload never carries attachment identity, filename, subject, or content bytes", async () => {
+  const clock = makeControllableClock(3_000_000);
+  const observed: AttachmentTransferProgress[] = [];
+  const secretBytes = Buffer.from("invoice.pdf attachment from alice@example.com re: Q3 budget - CONFIDENTIAL");
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: {
+          [Symbol.asyncIterator]() {
+            let yielded = false;
+            return {
+              next: () => {
+                if (yielded) {
+                  return Promise.resolve({ done: true, value: undefined });
+                }
+                yielded = true;
+                clock.advance(20_000);
+                return Promise.resolve({ done: false, value: secretBytes });
+              },
+            };
+          },
+        },
+        expectedSize: secretBytes.byteLength,
+        mimeType: "application/pdf",
+      }),
+    onTransferProgress: (progress) => {
+      observed.push(progress);
+    },
+    progressNow: clock.now,
+    uploadBlob: async ({ content, mimeType }) => {
+      const buffered: Buffer[] = [];
+      for await (const chunk of content) {
+        buffered.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(buffered);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      return { blob_id: `blob_sha256_${sha256}`, mime_type: mimeType, sha256, size_bytes: uploaded.byteLength };
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(deps, makeAttachmentMsg());
+
+  assert.ok(observed.length >= 1);
+  for (const progress of observed) {
+    // The shape itself is closed: only these four fields can ever exist.
+    assert.deepEqual(Object.keys(progress).sort(), ["bytesTransferred", "elapsedMs", "phase", "totalBytes"]);
+    const rendered = buildAttachmentTransferProgressMessage(progress);
+    assert.doesNotMatch(rendered, /invoice|alice|example\.com|budget|confidential|gmmsgid/i);
+    assert.doesNotMatch(rendered, /attachment from|re:/i);
+  }
+});
+
+test("makeAttachmentHydrator: a stalled transfer still terminates even with progress tracking wired in", async () => {
+  // The load-bearing regression: progress tracking is composed OUTSIDE the
+  // stall guard, so it must be provably inert with respect to stall
+  // detection — this pins that a stall still fires (and still closes the
+  // connection) exactly as it did before progress tracking existed.
+  const clock = makeControllableClock(4_000_000);
+  let stallDetected = false;
+  const progressObserved: AttachmentTransferProgress[] = [];
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: scriptedContent([Buffer.from("first chunk")], 0, true),
+        expectedSize: null,
+        mimeType: "application/pdf",
+      }),
+    onStall: () => {
+      stallDetected = true;
+    },
+    onTransferProgress: (progress) => {
+      progressObserved.push(progress);
+    },
+    progressNow: clock.now,
+    stallTimeoutMs: 20,
+    uploadBlob: async ({ content }) => {
+      for await (const _chunk of content) {
+        // Drain until the stall guard throws.
+      }
+      throw new Error("uploadBlob must not observe a clean end-of-stream on a stalled source");
+    },
+  });
+  const { deps } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await assert.rejects(processMessage(deps, makeAttachmentMsg()), AttachmentStallTimeoutError);
+  assert.equal(stallDetected, true, "onStall must still fire — progress tracking must not weaken stall detection");
+  // The stalled next() never resolves through to the progress wrapper (it's
+  // composed outside the stall guard, so a stalled inner next() never
+  // reaches it) — no "complete" signal is fabricated for a transfer that
+  // never legitimately finished.
+  assert.deepEqual(progressObserved, [], "a stall must not fabricate a coherent completion signal");
+});
+
+test("resolveAttachmentProgressMinIntervalMs / resolveAttachmentProgressMinBytes: env overrides honored only when positive integer", () => {
+  assert.equal(resolveAttachmentProgressMinIntervalMs({}), DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS);
+  assert.equal(
+    resolveAttachmentProgressMinIntervalMs({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS: "5000" }),
+    5000
+  );
+  assert.equal(
+    resolveAttachmentProgressMinIntervalMs({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS: "0" }),
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS,
+    "non-positive override is ignored, cannot be used to flood the event stream"
+  );
+  assert.equal(
+    resolveAttachmentProgressMinIntervalMs({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS: "abc" }),
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_INTERVAL_MS
+  );
+
+  assert.equal(resolveAttachmentProgressMinBytes({}), DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES);
+  assert.equal(resolveAttachmentProgressMinBytes({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_BYTES: "1024" }), 1024);
+  assert.equal(
+    resolveAttachmentProgressMinBytes({ PDPP_GMAIL_ATTACHMENT_PROGRESS_MIN_BYTES: "0" }),
+    DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES,
+    "non-positive override is ignored, cannot be used to flood the event stream"
+  );
+});
+
+test("buildAttachmentTransferProgressMessage: renders phase/bytes/elapsed, omits total_bytes when untrusted", () => {
+  const withTotal = buildAttachmentTransferProgressMessage({
+    bytesTransferred: 524_288,
+    elapsedMs: 30_000,
+    phase: "transferring",
+    totalBytes: 4_774_421,
+  });
+  assert.match(withTotal, /phase=transferring/);
+  assert.match(withTotal, /bytes_transferred=524288/);
+  assert.match(withTotal, /total_bytes=4774421/);
+  assert.match(withTotal, /elapsed_ms=30000/);
+
+  const withoutTotal = buildAttachmentTransferProgressMessage({
+    bytesTransferred: 1024,
+    elapsedMs: 500,
+    phase: "complete",
+    totalBytes: null,
+  });
+  assert.doesNotMatch(withoutTotal, /total_bytes/, "unknown total must never be guessed or fabricated");
 });
 
 test("runtimeBlobUploadAvailable: requires an RS URL alias and owner token", () => {
