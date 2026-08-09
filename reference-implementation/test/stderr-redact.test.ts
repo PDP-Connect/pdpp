@@ -110,3 +110,56 @@ test("redactStderrTail does not redact short innocuous tokens", () => {
   assert.equal(text, "Error code: 42, status: OK, retries: 3");
   assert.equal(redacted, false);
 });
+
+// Regression coverage for the apple_contacts UAT failure where
+// `connector_error_json` collapsed to `{"message":"[REDACTED]"}`: a
+// connector's own long `snake_case_error_code` identifier (>=24 chars,
+// all-lowercase-and-underscore) was being caught by the long-opaque-token
+// rule meant for generated secrets (API keys, hex digests, base64 blobs),
+// destroying the diagnostic instead of protecting a credential.
+test("redactStderrTail preserves long snake_case connector error codes verbatim", () => {
+  const codes = [
+    "apple_contacts_auth_failed",
+    "carddav_discovery_propfind_failed",
+    "carddav_discovery_no_current_user_principal",
+    "carddav_discovery_no_addressbook_home_set",
+    "carddav_discovery_too_many_redirects",
+    "carddav_sync_collection_failed",
+    "carddav_addressbook_query_failed",
+    "carddav_list_addressbooks_failed",
+    "carddav_discovery_response_too_large",
+  ];
+  for (const code of codes) {
+    const { text, redacted } = redactStderrTail(code);
+    assert.equal(text, code, `expected "${code}" to survive redaction verbatim, got "${text}"`);
+    assert.equal(redacted, false, `expected redacted=false for "${code}"`);
+  }
+});
+
+test("redactStderrTail preserves a connector error code embedded in a larger message", () => {
+  const input = "carddav_discovery_propfind_failed: status=401";
+  const { text, redacted } = redactStderrTail(input);
+  assert.equal(text, input);
+  assert.equal(redacted, false);
+});
+
+test("redactStderrTail still redacts a real secret that happens to sit next to a connector error code", () => {
+  const secret = ["sk", "live", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].join("_"); // runtime-constructed so secret scanners don't flag the synthetic fixture
+  const input = `apple_contacts_auth_failed: token=${secret}`;
+  const { text, redacted } = redactStderrTail(input);
+  assert.ok(text.includes("apple_contacts_auth_failed"), "the error code must survive");
+  assert.ok(!text.includes(secret), `raw secret leaked: ${text}`);
+  assert.equal(redacted, true);
+});
+
+test("redactStderrTail does not exempt mixed-case or digit-bearing long runs", () => {
+  // Same length/shape as a connector code but NOT pure lowercase+underscore
+  // (mixed case, or digits) — must still be treated as opaque and redacted.
+  const mixedCase = "CardDavDiscoveryPropfindFailedXX";
+  const withDigits = "carddav_discovery_failed_20260809";
+  for (const value of [mixedCase, withDigits]) {
+    const { text, redacted } = redactStderrTail(`context: ${value}`);
+    assert.ok(!text.includes(value), `expected "${value}" to be redacted, got "${text}"`);
+    assert.equal(redacted, true);
+  }
+});

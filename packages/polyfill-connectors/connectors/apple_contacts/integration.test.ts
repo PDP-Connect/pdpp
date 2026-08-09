@@ -88,6 +88,66 @@ test("apple_contacts integration: discovers, syncs via sync-collection, and emit
     assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE", "contact_groups must emit DETAIL_COVERAGE");
     assert.equal(groupsCoverage.considered, 2);
     assert.equal(groupsCoverage.covered, 2);
+
+    // contacts must prove its own coverage the same way — otherwise a real
+    // two-contact run and a run that silently enumerated nothing both read
+    // as `unknown` coverage, indistinguishable from each other.
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE", "contacts must emit DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 2);
+    assert.equal(contactsCoverage.covered, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test("apple_contacts integration: a genuinely empty address book completes with proven-empty contacts coverage", async () => {
+  const server = await startFakeCardDavServer({ username: USERNAME, password: PASSWORD });
+  try {
+    // No contacts registered on the fake server at all — the address book
+    // exists and enumerates cleanly, it is just genuinely empty.
+    const result = await runConnectorProtocolSubprocess({
+      cwd: CWD,
+      entrypoint: ENTRYPOINT,
+      start: startMessage(),
+      env: {
+        APPLE_ID: USERNAME,
+        APPLE_APP_SPECIFIC_PASSWORD: PASSWORD,
+        APPLE_CARDDAV_ORIGIN: server.origin,
+      },
+    });
+
+    const done = result.messages.findLast((m) => m.type === "DONE");
+    assert.ok(done && done.type === "DONE");
+    assert.equal(done.status, "succeeded", "a zero-contact account is a successful run, not a failure");
+
+    const contacts = recordsOf(result.messages, "contacts");
+    assert.equal(contacts.length, 0);
+
+    // The zero must be PROVEN (considered === covered === 0), not merely
+    // absent — an empty stream with no DETAIL_COVERAGE reads as `unknown`
+    // coverage downstream, indistinguishable from "never actually asked the
+    // server." considered === covered === 0 is the only way a genuinely
+    // empty address book can report `complete` rather than `partial`.
+    const contactsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contacts");
+    assert.ok(contactsCoverage && contactsCoverage.type === "DETAIL_COVERAGE", "contacts must emit DETAIL_COVERAGE");
+    assert.equal(contactsCoverage.considered, 0);
+    assert.equal(contactsCoverage.covered, 0);
+
+    // contact_groups derives entirely from contacts' CATEGORIES field, so a
+    // zero-contact address book is also a zero-group address book — still
+    // proven-empty, not merely absent.
+    const groupsCoverage = result.messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "contact_groups");
+    assert.ok(groupsCoverage && groupsCoverage.type === "DETAIL_COVERAGE", "contact_groups must emit DETAIL_COVERAGE");
+    assert.equal(groupsCoverage.considered, 0);
+    assert.equal(groupsCoverage.covered, 0);
+
+    const addressBooksCoverage = result.messages.find(
+      (m) => m.type === "DETAIL_COVERAGE" && m.stream === "address_books"
+    );
+    assert.ok(addressBooksCoverage && addressBooksCoverage.type === "DETAIL_COVERAGE");
+    assert.equal(addressBooksCoverage.considered, 1, "the address book itself was discovered and enumerated");
+    assert.equal(addressBooksCoverage.covered, 1);
   } finally {
     await server.close();
   }

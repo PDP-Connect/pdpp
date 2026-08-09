@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emitSpineEvent } from "../lib/spine.ts";
+import { boundConnectorErrorMessage } from "../runtime/connector-gap-bounding.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { createSqliteSchedulerStore } from "../server/stores/scheduler-store.ts";
@@ -250,6 +251,55 @@ test("a connector-reported terminal error is preserved verbatim over the runtime
       message: "otp_not_provided",
       retryable: false,
     });
+  } finally {
+    closeDb();
+  }
+});
+
+// Regression for the apple_contacts UAT failure (2026-08-09): a connector's
+// own long snake_case error-class identifier (e.g.
+// `carddav_discovery_propfind_failed`, `apple_contacts_auth_failed`) was
+// caught by stderr-redact.ts's long-opaque-token rule (>=24 alnum-ish chars,
+// meant for generated secrets) and collapsed to the single word
+// "[REDACTED]" -- so `connector_error_json` on the finalized row became
+// `{"message":"[REDACTED]"}` with no way to tell what actually failed. This
+// exercises the real production path: `boundConnectorErrorMessage` (what
+// `buildTerminalConnectorFields` in runtime/index.ts calls before the
+// message ever reaches the spine event) feeding straight into the same
+// writer the tests above exercise, proving the connector's diagnostic
+// class survives end to end while a real secret alongside it still gets
+// redacted.
+test("a connector error message shaped like a long error-class identifier is not collapsed to [REDACTED]", async () => {
+  const dbPath = makeTemporaryDbPath("pdpp-run-history-writer-error-code-not-redacted-");
+  initDb(dbPath);
+  try {
+    const runId = "run_apple_contacts_error_code_preserved";
+    const connectorInstanceId = "cin_apple_contacts_error_code_preserved";
+    const rawMessage = "carddav_discovery_propfind_failed: status=401";
+    const boundedMessage = boundConnectorErrorMessage(rawMessage);
+    assert.equal(boundedMessage, rawMessage, "the connector-authored error class must survive bounding intact");
+
+    await emitSpineEvent(startedEvent(runId, connectorInstanceId));
+    await emitSpineEvent({
+      ...terminalEvent(runId, connectorInstanceId, "run.failed", "failed"),
+      data: {
+        connection_id: connectorInstanceId,
+        connector_error_code: "apple_contacts_auth_failed",
+        connector_error_message: boundedMessage,
+        connector_error_retryable: false,
+        connector_instance_id: connectorInstanceId,
+        reason: "connector_reported_failed",
+        source: { id: CONNECTOR_ID, kind: "connector" },
+      },
+    });
+
+    const stored = JSON.parse(readRunHistoryRow(runId)?.connector_error_json ?? "null");
+    assert.deepEqual(stored, {
+      code: "apple_contacts_auth_failed",
+      message: rawMessage,
+      retryable: false,
+    });
+    assert.notEqual(stored.message, "[REDACTED]", "the diagnostic must not collapse to a bare [REDACTED] token");
   } finally {
     closeDb();
   }

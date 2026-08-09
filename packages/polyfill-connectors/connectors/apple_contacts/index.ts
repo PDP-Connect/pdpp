@@ -209,7 +209,9 @@ async function emitAddressBookRecordIfRequested(args: {
  * from collect() to keep the top-level function's branching bounded — this
  * is the whole per-book unit of work in one place.
  */
-async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{ covered: boolean; groupsEmitted: number }> {
+async function collectAddressBook(
+  ctx: AddressBookCollectionCtx
+): Promise<{ contactsConsidered: number; covered: boolean; groupsEmitted: number }> {
   const {
     book,
     bookCursor,
@@ -305,7 +307,15 @@ async function collectAddressBook(ctx: AddressBookCollectionCtx): Promise<{ cove
   newState.contacts = contactsState;
   await emit({ type: "STATE", stream: "contacts", cursor: newState.contacts });
 
-  return { covered: bookCovered, groupsEmitted };
+  // Every enumerated resource is accounted for here regardless of whether the
+  // fingerprint cursor suppressed its RECORD emit as unchanged (contactCount
+  // increments unconditionally in emitContactRecord, above the shouldEmit
+  // gate) — the same considered===covered "proven empty" contract
+  // buildFullScanCoverageMessage documents. A genuinely empty address book
+  // (contactCount === 0) still proves its own completion this way, rather
+  // than reading as `unknown` coverage with no way to distinguish "verified
+  // zero contacts" from "never actually enumerated."
+  return { contactsConsidered: contactCount, covered: bookCovered, groupsEmitted };
 }
 
 if (isMainModule(import.meta.url)) {
@@ -359,10 +369,15 @@ if (isMainModule(import.meta.url)) {
       let covered = 0;
       let groupsConsidered = 0;
       let groupsCovered = 0;
+      let contactsConsidered = 0;
 
       for (const book of books) {
         considered += 1;
-        const { covered: bookCovered, groupsEmitted } = await collectAddressBook({
+        const {
+          contactsConsidered: bookContactsConsidered,
+          covered: bookCovered,
+          groupsEmitted,
+        } = await collectAddressBook({
           book,
           bookCursor,
           authHeader,
@@ -383,6 +398,25 @@ if (isMainModule(import.meta.url)) {
         // count emitted for this book (including a genuine zero-group book).
         groupsConsidered += groupsEmitted;
         groupsCovered += groupsEmitted;
+        contactsConsidered += bookContactsConsidered;
+      }
+
+      if (requested.has("contacts")) {
+        // Every enumerated contact is accounted for (emitted, or suppressed
+        // as unchanged by the fingerprint cursor) — considered === covered,
+        // including the genuine-zero-contacts case, per the same
+        // proven-empty contract contact_groups already uses below.
+        await emitDetailCoverage(
+          { emit },
+          {
+            stream: "contacts",
+            stateStream: "contacts",
+            requiredKeys: [],
+            hydratedKeys: [],
+            considered: contactsConsidered,
+            covered: contactsConsidered,
+          }
+        );
       }
 
       if (requested.has("contact_groups")) {
