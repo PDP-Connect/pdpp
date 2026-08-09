@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalConnectorKey } from "../../server/connector-key.ts";
@@ -24,9 +24,40 @@ const SEED_CONNECTOR_PATH = join(REF_ROOT, "connectors", "seed", "index.ts");
 const MANIFESTS_DIR = join(REF_ROOT, "manifests");
 const OWNER_AUTH_REQUIRED_PATTERN = /owner_session_required|owner placeholder auth|401/i;
 
-// The deterministic seed connector (connectors/seed/index.ts) emits fixtures for
-// these three worlds; no external credentials required.
-const DEFAULT_CONNECTORS = ["spotify", "github", "reddit"];
+// The deterministic seed connector (connectors/seed/index.ts) infers which
+// fixture family to emit from the requested stream names, so it can serve
+// any manifest in MANIFESTS_DIR that declares a connector_id (the shape
+// registerManifest/runConnector expect). Derived by listing that directory
+// rather than hand-naming the fixture set, so adding a manifest here is
+// enough to make it seedable — no second list to update. Excludes
+// provider_id-shaped fixtures (e.g. northstar-hr.json), which use a
+// different storage_binding-keyed registration path this command doesn't
+// drive.
+export function connectorsWithConnectorId(manifestsDir: string): string[] {
+  const names: string[] = [];
+  for (const file of readdirSync(manifestsDir)) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    const manifest = JSON.parse(readFileSync(join(manifestsDir, file), "utf8")) as {
+      connector_id?: unknown;
+      connector_key?: unknown;
+    };
+    const key =
+      (typeof manifest.connector_key === "string" && manifest.connector_key.trim()) ||
+      (typeof manifest.connector_id === "string" ? canonicalConnectorKey(manifest.connector_id) : null);
+    if (key) {
+      names.push(key);
+    }
+  }
+  return names.sort((a, b) => a.localeCompare(b));
+}
+
+function readDefaultConnectors(): string[] {
+  return connectorsWithConnectorId(MANIFESTS_DIR);
+}
+
+const DEFAULT_CONNECTORS = readDefaultConnectors();
 const OWNER_BOOTSTRAP_CLIENT = "pdpp-polyfill-owner-bootstrap";
 
 // A connector manifest, loaded from manifests/<name>.json: only the fields

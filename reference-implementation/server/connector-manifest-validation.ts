@@ -554,6 +554,137 @@ export function validateRefreshPolicyCapability(manifest: Record<string, unknown
   validateRefreshPolicyFields(policy as Record<string, unknown>, code);
 }
 
+const PROVEN_ALLOWED_KEYS = new Set(["local_collector", "provider_auth_lifecycle", "static_secret_live"]);
+const PROVEN_STATIC_SECRET_LIVE_ALLOWED_KEYS = new Set(["proven", "run_id", "date", "note"]);
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Validates a present `capabilities.proven.static_secret_live` object.
+function validateProvenStaticSecretLive(value: Record<string, unknown>, code: string): void {
+  const unknownKeys = Object.keys(value).filter((key) => !PROVEN_STATIC_SECRET_LIVE_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `capabilities.proven.static_secret_live has unsupported keys: ${unknownKeys.join(", ")}`,
+      code
+    );
+  }
+  if (typeof value.proven !== "boolean") {
+    throw invalidConnectorManifest("capabilities.proven.static_secret_live.proven must be a boolean", code);
+  }
+  if (value.run_id !== undefined && value.run_id !== null && !isNonEmptyString(value.run_id)) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.static_secret_live.run_id must be a non-empty string or null when declared",
+      code
+    );
+  }
+  if (value.date !== undefined && !(isNonEmptyString(value.date) && ISO_DATE_RE.test(value.date))) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.static_secret_live.date must be an ISO yyyy-mm-dd string when declared",
+      code
+    );
+  }
+  if (value.note !== undefined && !isNonEmptyString(value.note)) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.static_secret_live.note must be a non-empty string when declared",
+      code
+    );
+  }
+}
+
+// Validates the field shapes of a present `capabilities.proven` object
+// (order-preserving). Split out of validateProvenCapability so the latter
+// only handles the capabilities/proven presence-and-type gate plus the
+// cross-field proof-vs-modality consistency checks.
+function validateProvenFields(provenObj: Record<string, unknown>, code: string): void {
+  const unknownKeys = Object.keys(provenObj).filter((key) => !PROVEN_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(`capabilities.proven has unsupported keys: ${unknownKeys.join(", ")}`, code);
+  }
+  if (provenObj.local_collector !== undefined && typeof provenObj.local_collector !== "boolean") {
+    throw invalidConnectorManifest("capabilities.proven.local_collector must be a boolean when declared", code);
+  }
+  if (provenObj.provider_auth_lifecycle !== undefined && typeof provenObj.provider_auth_lifecycle !== "boolean") {
+    throw invalidConnectorManifest("capabilities.proven.provider_auth_lifecycle must be a boolean when declared", code);
+  }
+  if (provenObj.static_secret_live === undefined) {
+    return;
+  }
+  if (
+    !provenObj.static_secret_live ||
+    typeof provenObj.static_secret_live !== "object" ||
+    Array.isArray(provenObj.static_secret_live)
+  ) {
+    throw invalidConnectorManifest("capabilities.proven.static_secret_live must be an object when declared", code);
+  }
+  validateProvenStaticSecretLive(provenObj.static_secret_live as Record<string, unknown>, code);
+}
+
+// Validates that a manifest claiming a proof also declares the setup
+// modality / runtime binding that proof requires — a malformed manifest must
+// not be able to claim a proof its own declared shape cannot support.
+function validateProvenModalityConsistency(
+  provenObj: Record<string, unknown>,
+  manifest: Record<string, unknown>,
+  code: string
+): void {
+  const setupModality = (manifest.setup as Record<string, unknown> | undefined)?.modality;
+  if (
+    provenObj.static_secret_live &&
+    (provenObj.static_secret_live as Record<string, unknown>).proven === true &&
+    setupModality !== "static_secret"
+  ) {
+    throw invalidConnectorManifest(
+      'capabilities.proven.static_secret_live.proven=true requires setup.modality "static_secret"',
+      code
+    );
+  }
+  if (provenObj.provider_auth_lifecycle === true && setupModality !== "provider_authorization") {
+    throw invalidConnectorManifest(
+      'capabilities.proven.provider_auth_lifecycle=true requires setup.modality "provider_authorization"',
+      code
+    );
+  }
+  if (provenObj.local_collector !== true) {
+    return;
+  }
+  const bindings = (manifest.runtime_requirements as Record<string, unknown> | undefined)?.bindings;
+  const hasFilesystemBinding = Boolean(
+    bindings && typeof bindings === "object" && Object.hasOwn(bindings, "filesystem")
+  );
+  if (!hasFilesystemBinding) {
+    throw invalidConnectorManifest(
+      "capabilities.proven.local_collector=true requires runtime_requirements.bindings.filesystem",
+      code
+    );
+  }
+}
+
+/**
+ * Validates a present `capabilities.proven` declaration — the schema for the
+ * proof-gate traits `connection-setup-plan.ts` reads instead of hardcoding a
+ * connector-id allowlist (`capabilities.proven.local_collector`,
+ * `capabilities.proven.provider_auth_lifecycle`,
+ * `capabilities.proven.static_secret_live.proven`). A manifest claiming a
+ * proof its own `setup.modality` cannot support is rejected here rather than
+ * only being caught by a test, so the invariant holds for any manifest
+ * submitted through this validator, not just the shipped set.
+ */
+export function validateProvenCapability(manifest: Record<string, unknown>, code: string): void {
+  const { capabilities } = manifest;
+  if (capabilities === undefined || capabilities === null || typeof capabilities !== "object") {
+    return;
+  }
+  const { proven } = capabilities as Record<string, unknown>;
+  if (proven === undefined) {
+    return;
+  }
+  if (!proven || typeof proven !== "object" || Array.isArray(proven)) {
+    throw invalidConnectorManifest("capabilities.proven must be an object when declared", code);
+  }
+  const provenObj = proven as Record<string, unknown>;
+  validateProvenFields(provenObj, code);
+  validateProvenModalityConsistency(provenObj, manifest, code);
+}
+
 export function validateManifestSensitivity(manifest: Record<string, unknown>, code: string): void {
   // biome-ignore lint/style/useDestructuring: Explicit property or positional access documents this compatibility boundary.
   const sensitivity = manifest.sensitivity;
@@ -1636,6 +1767,7 @@ export function validateConnectorManifest(
 
   validateRuntimeRequirements(manifest, code);
   validateRefreshPolicyCapability(manifest, code);
+  validateProvenCapability(manifest, code);
   validateManifestSensitivity(manifest, code);
   validateManifestIcon(manifest, code);
 

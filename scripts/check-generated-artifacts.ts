@@ -108,7 +108,23 @@ try {
     stdio: "inherit",
   });
 
-  const pairs = [serviceWorker, syncScript, ...designScripts, ...recordroomScripts, cliListEnvelope];
+  // reference-implementation/server/connector-key.ts and
+  // connection-setup-plan.ts are imported by apps/console (browser/edge
+  // bundling) and must stay node:fs-free, so they cannot scan
+  // packages/polyfill-connectors/manifests/ at load time. The connector-id
+  // allowlists they'd otherwise hand-maintain are generated instead — see
+  // reference-implementation/scripts/generate-connector-registry.ts.
+  const connectorRegistry: ArtifactPair = {
+    generated: join(temporaryRoot, "connector-registry", "connector-registry.generated.ts"),
+    tracked: "reference-implementation/server/generated/connector-registry.generated.ts",
+  };
+  execFileSync(
+    "node",
+    ["--experimental-strip-types", "scripts/generate-connector-registry.ts", connectorRegistry.generated],
+    { cwd: join(root, "reference-implementation"), stdio: "inherit" }
+  );
+
+  const pairs = [serviceWorker, syncScript, ...designScripts, ...recordroomScripts, cliListEnvelope, connectorRegistry];
   for (const pair of pairs) {
     compare(pair);
   }

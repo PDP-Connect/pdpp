@@ -7,6 +7,13 @@ import {
   credentialValidationMode,
 } from "../../packages/polyfill-connectors/src/credential-probe.ts";
 import { legacyLocalAliasMap } from "./connector-key.ts";
+import {
+  BROWSER_BOUND_KEYS,
+  LEGACY_LOCAL_ALIASES,
+  LOCAL_COLLECTOR_PROVEN_KEYS,
+  PROVIDER_AUTH_LIFECYCLE_PROVEN_KEYS,
+  STATIC_SECRET_LIVE_PROVEN_KEYS,
+} from "./generated/connector-registry.generated.ts";
 
 export type ConnectorIntentModality = "local_collector" | "browser_bound" | "api_network" | "unknown";
 
@@ -229,33 +236,32 @@ export interface ConnectionSetupPlan {
   readonly validationMode: CredentialValidationMode;
 }
 
-export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS = [
-  "claude_code",
-  "codex",
-  "google_takeout",
-  "imessage",
-  "apple_photos",
-  "google_messages",
-] as const;
+// The enrollment-key (bundle-directory-id) form of every manifest declaring
+// capabilities.proven.local_collector === true. LEGACY_LOCAL_ALIASES is
+// generated from LOCAL_COLLECTOR_DEFINITIONS (the connector package's own
+// local-collector bundle registry) keyed by bundle id -> canonical manifest
+// key; inverting it here (rather than re-deriving from canonical keys
+// forward) means a local-collector connector whose bundle id already equals
+// its canonical key still resolves correctly. See
+// connector-registry.generated.ts.
+const CANONICAL_TO_ENROLLMENT_KEY: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(LEGACY_LOCAL_ALIASES).map(([enrollmentKey, canonicalKey]) => [canonicalKey, enrollmentKey])
+  )
+);
+
+export const SUPPORTED_LOCAL_COLLECTOR_CONNECTORS: readonly string[] = Object.freeze(
+  LOCAL_COLLECTOR_PROVEN_KEYS.map((canonicalKey) => CANONICAL_TO_ENROLLMENT_KEY[canonicalKey] ?? canonicalKey)
+);
 
 export type SupportedLocalCollectorConnector = (typeof SUPPORTED_LOCAL_COLLECTOR_CONNECTORS)[number];
 
-export const BROWSER_BOUND_CONNECTORS = [
-  "amazon",
-  "anthropic",
-  "chase",
-  "chatgpt",
-  "doordash",
-  "heb",
-  "linkedin",
-  "loom",
-  "meta",
-  "reddit",
-  "shopify",
-  "uber",
-  "usaa",
-  "wholefoods",
-] as const;
+// Every manifest declaring a runtime_requirements.bindings.browser binding —
+// see connector-registry.generated.ts. Equivalent to filtering the manifest
+// set through classifyConnectorIntentModality === "browser_bound", expressed
+// as generated data so this module (imported by apps/console; must stay
+// node:fs-free) never hand-copies the connector-id list.
+export const BROWSER_BOUND_CONNECTORS: readonly string[] = BROWSER_BOUND_KEYS;
 
 export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
 
@@ -286,33 +292,35 @@ export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 // next step. Real production connectors must NOT be added here until their
 // connector-specific inventory/test adapter is implemented and proven.
 //
-// "test_provider" is a synthetic connector used by the deterministic test suite
-// to exercise the full lifecycle without live provider credentials.
-export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS = ["test_provider", "google-maps-data-portability"] as const;
+// "test_provider" is a synthetic connector constructed only by the
+// deterministic test suite (test/provider-auth-lifecycle.test.ts fixtures);
+// it has no manifest file, so it cannot be manifest-derived and stays a
+// literal code-level addition alongside the generated,
+// capabilities.proven.provider_auth_lifecycle-backed entries. See
+// connector-registry.generated.ts.
+export const PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS: readonly string[] = Object.freeze([
+  "test_provider",
+  ...PROVIDER_AUTH_LIFECYCLE_PROVEN_KEYS,
+]);
 
 export type ProviderAuthLifecycleProvenConnector = (typeof PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS)[number];
 
 export function isProviderAuthLifecycleProven(connectorKey: string): boolean {
-  return (PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(
-    canonicalConnectorKey(connectorKey)
-  );
+  return PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS.includes(canonicalConnectorKey(connectorKey));
 }
 
 // Connector keys for which the static-secret credential flow (draft → capture →
 // first ingest) has been proven end-to-end via a live env-free container run.
-// Live proof recorded 2026-06-10T22:55Z (ri-owner-current-state.md window
-// "STORE-ONLY CREDENTIAL POSTURE LIVE AND PROVEN"):
-//   gmail  — run_1781131328336 completed/succeeded, env-free container
-//   github — run_1781131195649 completed/succeeded, env-free container
-//           + run_1781131489458 trigger_kind=scheduled unattended succeeded (4 records)
-//   slack  — run_1781131204868 completed/succeeded, env-free container
-//   ynab   — store path proven; captured credentials validated successfully
-export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS = ["gmail", "github", "slack", "ynab"] as const;
+// This is a proof gate, not a classification: it is generated from each
+// manifest's capabilities.proven.static_secret_live.proven declaration (see
+// connector-registry.generated.ts), which also carries the run_id/date/note
+// evidence for each proof — this module only reads the boolean.
+export const STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS: readonly string[] = STATIC_SECRET_LIVE_PROVEN_KEYS;
 
 export type StaticSecretLiveProvenConnector = (typeof STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS)[number];
 
 export function isStaticSecretLiveProven(connectorKey: string): boolean {
-  return (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS as readonly string[]).includes(canonicalConnectorKey(connectorKey));
+  return STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS.includes(canonicalConnectorKey(connectorKey));
 }
 
 /**

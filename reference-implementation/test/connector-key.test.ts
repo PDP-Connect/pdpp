@@ -79,25 +79,32 @@ test("canonicalConnectorKey accepts native bare slugs", () => {
 });
 
 test("canonicalConnectorKey maps legacy snake_case local aliases to canonical hyphenated keys", () => {
-  // Pin the exact alias set so a silent expansion of the legacy table
-  // (which would create new owner-visible aliases) breaks the test.
+  // Pin the exact alias set so a silent expansion of the generated table
+  // (which would create new owner-visible aliases) breaks the test. The set
+  // is generated from LOCAL_COLLECTOR_DEFINITIONS cross-referenced against
+  // each connector's manifest connector_key — see
+  // connector-registry.generated.ts — so it includes one entry per bundled
+  // local-collector connector, identity mappings included.
   assert.deepEqual(legacyLocalAliasMap(), {
+    apple_photos: "apple-photos",
     claude_code: "claude-code",
     codex: "codex",
-    google_takeout: "google-takeout",
-    apple_photos: "apple-photos",
     google_messages: "google-messages",
+    google_takeout: "google-takeout",
+    imessage: "imessage",
   });
   assert.equal(canonicalConnectorKey("claude_code"), "claude-code");
   assert.equal(canonicalConnectorKey("codex"), "codex");
   assert.equal(canonicalConnectorKey("google_takeout"), "google-takeout");
   assert.equal(canonicalConnectorKey("apple_photos"), "apple-photos");
   assert.equal(canonicalConnectorKey("google_messages"), "google-messages");
+  assert.equal(canonicalConnectorKey("imessage"), "imessage");
   assert.equal(isLegacyLocalAlias("claude_code"), true);
   assert.equal(isLegacyLocalAlias("codex"), true);
   assert.equal(isLegacyLocalAlias("google_takeout"), true);
   assert.equal(isLegacyLocalAlias("apple_photos"), true);
   assert.equal(isLegacyLocalAlias("google_messages"), true);
+  assert.equal(isLegacyLocalAlias("imessage"), true);
   assert.equal(isLegacyLocalAlias("gmail"), false);
   assert.equal(isLegacyLocalAlias(""), false);
 });
@@ -112,9 +119,7 @@ test("bundled local-collector connector ids all resolve to a canonical key the m
   // connector whose bundle id and manifest key differ without an alias here
   // reproduces the "no registered manifest declares a 'filesystem' or
   // 'browser' binding" 400 the google_takeout enroll smoke hit.
-  const { LOCAL_COLLECTOR_DEFINITIONS } = await import(
-    "../../packages/polyfill-connectors/src/collector-registry.ts"
-  );
+  const { LOCAL_COLLECTOR_DEFINITIONS } = await import("../../packages/polyfill-connectors/src/collector-registry.ts");
   for (const definition of LOCAL_COLLECTOR_DEFINITIONS) {
     const manifestPath = new URL(
       `../../packages/polyfill-connectors/manifests/${definition.entry}.json`,
