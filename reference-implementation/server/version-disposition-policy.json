@@ -1,0 +1,36 @@
+{
+  "$comment": "RI-owned operator registry for version-disposition.ts. NOT a connector manifest: connectors cannot author or influence these entries — see version-disposition.ts's module doc comment for why self-attestation here would be a security hole. Every connector/stream identity referenced here is DATA read generically by version-disposition.ts, not a TypeScript identity literal, so it lives outside RI production source per the zero-connector-knowledge guard (reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts). Edited only by RI maintainers via normal code review, same trust boundary as before this file existed.",
+  "point_in_time_real_field_streams": [
+    {
+      "connector": "github",
+      "stream": "user",
+      "realField": "follower / repo / gist counts"
+    },
+    { "connector": "slack", "stream": "channels", "realField": "num_members" },
+    {
+      "connector": "ynab",
+      "stream": "accounts",
+      "realField": "balance / cleared_balance / uncleared_balance"
+    }
+  ],
+  "recurring_point_in_time_snapshot_streams": [
+    { "connector": "claude-code", "stream": "sessions" },
+    { "connector": "codex", "stream": "sessions" }
+  ],
+  "reviewed_compaction_residue_reviewed_at": {
+    "usaa/accounts": "2026-06-05T13:57:05.707Z",
+    "usaa/statements": "2026-06-05T13:57:05.707Z",
+    "chase/statements": "2026-06-05T13:57:05.707Z"
+  },
+  "content_fingerprint_pending_streams": [
+    { "connector": "chase", "stream": "statements" },
+    { "connector": "usaa", "stream": "statements" }
+  ],
+  "owner_migration_pending_streams": [
+    { "connector": "usaa", "stream": "accounts" }
+  ],
+  "owner_retention_policy_streams": [
+    { "connector": "claude-code", "stream": "sessions" },
+    { "connector": "codex", "stream": "sessions" }
+  ]
+}

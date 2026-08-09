@@ -1,0 +1,51 @@
+{
+  "$comment": "RI-owned operator registry for compact-record-history.ts's local-device (exact-stable-JSON and inventory-churn-gate) policy families. Not a connector manifest: this is DATA read generically by compact-record-history.ts's own buildLocalDeviceExactJsonPolicies/buildInventoryChurnGatePolicies helpers, so the connector/stream identity lives outside compiled .ts source per the zero-connector-knowledge guard (reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts). Edited only by RI maintainers via normal code review.",
+  "exact_stable_json_families": [
+    {
+      "connector": "codex",
+      "streams": [
+        "messages",
+        "function_calls",
+        "sessions",
+        "skills",
+        "prompts",
+        "rules"
+      ]
+    },
+    {
+      "connector": "claude-code",
+      "dirName": "claude_code",
+      "streams": [
+        "messages",
+        "attachments",
+        "sessions",
+        "skills",
+        "memory_notes",
+        "slash_commands"
+      ]
+    }
+  ],
+  "inventory_churn_gate_families": [
+    {
+      "connector": "claude-code",
+      "dirName": "claude_code",
+      "streams": [
+        "backup_inventory",
+        "cache_inventory",
+        "config_inventory",
+        "file_history"
+      ]
+    },
+    {
+      "connector": "codex",
+      "streams": [
+        "history",
+        "session_index",
+        "shell_snapshots",
+        "config_inventory",
+        "cache_inventory",
+        "logs"
+      ]
+    }
+  ]
+}

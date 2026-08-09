@@ -10,6 +10,24 @@
       "filesystem": {
         "required": true
       }
+    },
+    "local_paths": {
+      "home_env_override": "CODEX_HOME",
+      "home_default_relative_to_user_home": ".codex",
+      "paths": [
+        {
+          "default_relative_to_home": "sessions",
+          "env_override": "CODEX_SESSIONS_DIR",
+          "label": "sessions directory",
+          "required_for_readiness": true
+        },
+        {
+          "default_relative_to_home": "state_5.sqlite",
+          "env_override": "CODEX_STATE_DB",
+          "label": "state database",
+          "required_for_readiness": true
+        }
+      ]
     }
   },
   "capabilities": {

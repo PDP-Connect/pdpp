@@ -8,7 +8,7 @@ const TOP_LEVEL_REGEX_7 = /Connector emitted RECORD for undeclared stream/;
 const TOP_LEVEL_REGEX_8 = /Ingest failed for items: 401/;
 const TOP_LEVEL_REGEX_9 = /Ingest failed for items: 400/;
 const TOP_LEVEL_REGEX_10 = /^not_ready: required external tool definitely-missing-tool is not available\./;
-const TOP_LEVEL_REGEX_11 = /^not_ready: Codex local source path\(s\) are missing or unreadable:/;
+const TOP_LEVEL_REGEX_11 = /^not_ready: required local source path\(s\) are missing or unreadable:/;
 const TOP_LEVEL_REGEX_12 = /1970/;
 const TOP_LEVEL_REGEX_13 = /next attempt at (.+)$/;
 const TOP_LEVEL_REGEX_14 = /^\d{4}-/;
@@ -3874,7 +3874,7 @@ test("scheduler default readiness checker skips missing manifest-declared extern
   }
 });
 
-test("scheduler default readiness checker probes SLACKDUMP_BIN with version when set", async () => {
+test("scheduler default readiness checker probes a manifest-declared executable_env_override with version when set", async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
   const manifest = {
     ...spotifyManifest,
@@ -3884,7 +3884,12 @@ test("scheduler default readiness checker probes SLACKDUMP_BIN with version when
       bindings: { network: { required: true } },
       external_tools: [
         {
-          detect: { args: ["stale-detect-args"], executable: "unused-slackdump", exit_code: 0 },
+          detect: {
+            args: ["version"],
+            executable: "unused-slackdump",
+            executable_env_override: "SLACKDUMP_BIN",
+            exit_code: 0,
+          },
           install_hint: "mount slackdump and set SLACKDUMP_BIN",
           license: "AGPL-3.0",
           name: "slackdump",
@@ -3947,7 +3952,7 @@ test("scheduler default readiness checker probes SLACKDUMP_BIN with version when
   }
 });
 
-test("scheduler default readiness checker applies local-source checks to canonical connector keys", async () => {
+test("scheduler default readiness checker applies local-source checks declared by the schedule's own manifest", async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-scheduler-canonical-local-source-"));
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const previousSessionsDir = process.env.CODEX_SESSIONS_DIR;
@@ -3967,6 +3972,24 @@ test("scheduler default readiness checker applies local-source checks to canonic
           },
           runtime_requirements: {
             bindings: { filesystem: { required: true }, network: { required: true } },
+            local_paths: {
+              home_default_relative_to_user_home: ".codex",
+              home_env_override: "CODEX_HOME",
+              paths: [
+                {
+                  default_relative_to_home: "sessions",
+                  env_override: "CODEX_SESSIONS_DIR",
+                  label: "sessions directory",
+                  required_for_readiness: true,
+                },
+                {
+                  default_relative_to_home: "state_5.sqlite",
+                  env_override: "CODEX_STATE_DB",
+                  label: "state database",
+                  required_for_readiness: true,
+                },
+              ],
+            },
           },
         },
         maxRetries: 0,

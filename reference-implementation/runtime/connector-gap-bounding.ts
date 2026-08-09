@@ -24,7 +24,11 @@
 //   normalizeConsideredInDiagnostics, GAP_SEVERITIES, INFORMATIONAL_GAP_REASONS,
 //   TRANSIENT_GAP_REASONS, VIOLATION_STRING_MAX, GAP_LIST_MAX,
 //   CONNECTOR_ERROR_MESSAGE_MAX, GAP_DIAGNOSTICS_BYTES_MAX,
-//   GAP_DIAGNOSTICS_DEPTH_MAX, GAP_DIAGNOSTICS_LIST_MAX, inferRecoveryAction.
+//   GAP_DIAGNOSTICS_DEPTH_MAX, GAP_DIAGNOSTICS_LIST_MAX, inferRecoveryAction,
+//   BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND (a manifest-selectable index into
+//   a closed set of RI-owned, provider-name-free posture/validation
+//   algorithms — see hasSurfaceSpecificCounts / deriveBrowserSurfacePosture /
+//   isBrowserSurfacePhase).
 //
 // No back-edge: this module must NOT import runtime/index.js.
 // No Playwright/CDP/raw-DOM terms. Closed connector evidence is revalidated
@@ -71,6 +75,22 @@ const BROWSER_SURFACE_FIELDS = [
 // BROWSER_BOUND_CONNECTORS in server/connection-setup-plan.ts — see
 // docs/inbox/report-clusters-bc-completion.md.
 export const BROWSER_SURFACE_KINDS = new Set(["chase_current_activity", "usaa_transaction_export"]);
+
+// A CLOSED set of generic evidence variants. Each variant names a structural
+// marker-count SHAPE and a fixed, RI-owned validation/posture-derivation
+// algorithm (see hasSurfaceSpecificCounts / deriveBrowserSurfacePosture /
+// isBrowserSurfacePhase below) — never a provider or connector name. A
+// manifest's `capabilities.browser_surface_kind` value SELECTS one of these
+// variants via this map; it cannot introduce a new variant, alter which
+// fields are structural for a variant, or change the derivation logic. Any
+// `browser_surface_kind` not present here fails closed (validation rejects
+// the evidence) rather than falling back to a default variant — this map
+// must stay in sync with BROWSER_SURFACE_KINDS 1:1, enforced by the same
+// manifest-parity test.
+const BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND = new Map([
+  ["chase_current_activity", "dashboard_activity_coverage"],
+  ["usaa_transaction_export", "account_detail_coverage"],
+]);
 const BROWSER_SURFACE_MANAGED_STATES = new Set(["isolated", "legacy_remote", "managed", "unknown"]);
 const BROWSER_SURFACE_POSTURES = new Set(["recognized", "verified_empty", "parser_zero", "unexpected"]);
 const BROWSER_SURFACE_ROUTES = new Set(["expected", "interstitial", "unknown"]);
@@ -267,15 +287,17 @@ function boundBrowserSurfaceDiagnostic(value: unknown): Record<string, unknown> 
   return output;
 }
 
-/** Reject non-zero fields that belong only to the other connector surface. */
+/** Reject non-zero fields that belong only to the sibling evidence variant. */
 function hasSurfaceSpecificCounts(input: Record<string, unknown>): boolean {
-  if (input.surface === "chase_current_activity") {
+  const variant = BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND.get(input.surface as string);
+  if (variant === "dashboard_activity_coverage") {
     return (
       input.account_detail_marker_count === 0 &&
       input.navigation_marker_count === 0 &&
       input.transaction_marker_count === 0
     );
   }
+  // account_detail_coverage
   return (
     input.activity_table_marker_count === 0 &&
     input.dashboard_marker_count === 0 &&
@@ -284,12 +306,18 @@ function hasSurfaceSpecificCounts(input: Record<string, unknown>): boolean {
   );
 }
 
-/** Derive durable posture from validated counts; caller-authored posture is not trusted. */
+/**
+ * Derive durable posture from validated counts; caller-authored posture is
+ * not trusted. Each evidence variant is a closed, RI-owned algorithm — a
+ * manifest may only SELECT a variant (BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND),
+ * never author or parameterize the derivation logic itself.
+ */
 function deriveBrowserSurfacePosture(
   input: Record<string, unknown>
 ): "recognized" | "verified_empty" | "parser_zero" | "unexpected" {
+  const variant = BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND.get(input.surface as string);
   const targetCount = input.target_count as number;
-  if (input.surface === "chase_current_activity") {
+  if (variant === "dashboard_activity_coverage") {
     const parserCount = input.parser_count as number;
     const emptyMarkerCount = input.verified_empty_marker_count as number;
     const structuralMarkerCount =
@@ -306,6 +334,7 @@ function deriveBrowserSurfacePosture(
     return "unexpected";
   }
 
+  // account_detail_coverage
   const structuralMarkerCount =
     (input.account_detail_marker_count as number) +
     (input.navigation_marker_count as number) +
@@ -313,10 +342,16 @@ function deriveBrowserSurfacePosture(
   return targetCount > 0 || structuralMarkerCount > 0 ? "recognized" : "unexpected";
 }
 
+/**
+ * Each evidence variant fixes its own phase label as part of the closed,
+ * RI-owned algorithm (see deriveBrowserSurfacePosture doc comment) — the
+ * manifest selects a variant, it does not author the phase value.
+ */
 function isBrowserSurfacePhase(surface: unknown, phase: unknown): boolean {
+  const variant = BROWSER_SURFACE_EVIDENCE_VARIANT_BY_KIND.get(surface as string);
   return (
-    (surface === "chase_current_activity" && phase === "final_snapshot") ||
-    (surface === "usaa_transaction_export" && phase === "no_export_affordance")
+    (variant === "dashboard_activity_coverage" && phase === "final_snapshot") ||
+    (variant === "account_detail_coverage" && phase === "no_export_affordance")
   );
 }
 

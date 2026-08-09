@@ -241,7 +241,7 @@ const SUPPORTED_RANGE_OPERATORS = new Set(["gte", "gt", "lte", "lt"]);
 // ---------------------------------------------------------------------------
 
 const EXTERNAL_TOOL_ALLOWED_KEYS = new Set(["detect", "install_hint", "license", "min_version", "name", "purpose"]);
-const EXTERNAL_TOOL_DETECT_ALLOWED_KEYS = new Set(["args", "executable", "exit_code"]);
+const EXTERNAL_TOOL_DETECT_ALLOWED_KEYS = new Set(["args", "executable", "executable_env_override", "exit_code"]);
 
 // Validates `runtime_requirements.bindings` (order-preserving). Returns `false`
 // when `bindings` is absent — the original validator returns from the whole
@@ -327,6 +327,12 @@ function validateStrictExternalToolDetect(detect: Record<string, unknown>, index
   if (!isNonEmptyString(detect.executable)) {
     throw invalidConnectorManifest(
       `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
+      code
+    );
+  }
+  if (detect.executable_env_override !== undefined && !isNonEmptyString(detect.executable_env_override)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.external_tools[${index}].detect.executable_env_override must be a non-empty string`,
       code
     );
   }
@@ -427,6 +433,91 @@ function validateExternalTools(
   }
 }
 
+const LOCAL_PATH_ENTRY_ALLOWED_KEYS = new Set([
+  "default_relative_to_home",
+  "env_override",
+  "label",
+  "required_for_readiness",
+]);
+
+// Validates one `local_paths.paths[index]` entry (order-preserving).
+function validateLocalPathEntry(entry: unknown, index: number, code: string): void {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw invalidConnectorManifest(`runtime_requirements.local_paths.paths[${index}] must be an object`, code);
+  }
+  const obj = entry as Record<string, unknown>;
+  const unknownKeys = Object.keys(obj).filter((key) => !LOCAL_PATH_ENTRY_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}] has unsupported keys: ${unknownKeys.join(", ")}`,
+      code
+    );
+  }
+  if (!isNonEmptyString(obj.default_relative_to_home)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].default_relative_to_home must be a non-empty string`,
+      code
+    );
+  }
+  if (!isNonEmptyString(obj.label)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].label must be a non-empty string`,
+      code
+    );
+  }
+  if (obj.env_override !== undefined && !isNonEmptyString(obj.env_override)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].env_override must be a non-empty string`,
+      code
+    );
+  }
+  if (obj.required_for_readiness !== undefined && typeof obj.required_for_readiness !== "boolean") {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths.paths[${index}].required_for_readiness must be a boolean`,
+      code
+    );
+  }
+}
+
+const LOCAL_PATHS_ALLOWED_KEYS = new Set(["home_default_relative_to_user_home", "home_env_override", "paths"]);
+
+// Validates `runtime_requirements.local_paths` (order-preserving).
+function validateLocalPaths(req: Record<string, unknown>, code: string): void {
+  const localPaths = req.local_paths;
+  if (localPaths === undefined || localPaths === null) {
+    return;
+  }
+  if (typeof localPaths !== "object" || Array.isArray(localPaths)) {
+    throw invalidConnectorManifest("runtime_requirements.local_paths must be an object when declared", code);
+  }
+  const obj = localPaths as Record<string, unknown>;
+  const unknownKeys = Object.keys(obj).filter((key) => !LOCAL_PATHS_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.local_paths has unsupported keys: ${unknownKeys.join(", ")}`,
+      code
+    );
+  }
+  if (!isNonEmptyString(obj.home_default_relative_to_user_home)) {
+    throw invalidConnectorManifest(
+      "runtime_requirements.local_paths.home_default_relative_to_user_home must be a non-empty string",
+      code
+    );
+  }
+  if (obj.home_env_override !== undefined && !isNonEmptyString(obj.home_env_override)) {
+    throw invalidConnectorManifest(
+      "runtime_requirements.local_paths.home_env_override must be a non-empty string",
+      code
+    );
+  }
+  if (!Array.isArray(obj.paths)) {
+    throw invalidConnectorManifest("runtime_requirements.local_paths.paths must be an array", code);
+  }
+  for (const [index, entry] of obj.paths.entries()) {
+    validateLocalPathEntry(entry, index, code);
+  }
+}
+
 // Decomposed into per-section validators (bindings, external_tools, tool detect).
 // Full manifest validation keeps main's hardened `detect.executable` contract;
 // runtime-requirements-only calls keep the branch's direct-helper compatibility
@@ -444,6 +535,7 @@ export function validateRuntimeRequirements(manifest: Record<string, unknown>, c
     return;
   }
   validateExternalTools(req, code, { allowLegacyCommand: !Array.isArray(manifest.streams) });
+  validateLocalPaths(req, code);
 }
 
 // Validates the interval fields of a refresh_policy (positive-integer shape +

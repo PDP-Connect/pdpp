@@ -17,7 +17,12 @@
  *   - external_tools REJECT (only reachable once bindings is present — see the
  *     short-circuit test): not an array; an unsupported tool key; a missing
  *     required string field (name/license/purpose); a duplicate tool name; a
- *     `detect` without a command; a negative `detect.exit_code`.
+ *     `detect` without a command; a negative `detect.exit_code`; in strict
+ *     (streams-bearing) mode, a non-string `detect.executable_env_override`.
+ *   - local_paths ACCEPT/REJECT (only reachable once bindings is present): a
+ *     valid declaration for a made-up connector id (proves the validator is
+ *     connector-agnostic); non-object `local_paths`; unsupported top-level or
+ *     per-path keys; missing required string fields.
  *   - SHORT-CIRCUIT: when `bindings` is absent, the function returns BEFORE
  *     external_tools is validated — so an invalid external_tools with no bindings
  *     is (by contract) not rejected here.
@@ -36,6 +41,12 @@ const CODE = "invalid_connector_manifest";
 // that probe external_tools include an (empty, valid) bindings object.
 function withBindingsAndTools(external_tools: unknown): Record<string, unknown> {
   return { runtime_requirements: { bindings: {}, external_tools } };
+}
+
+// A manifest with `streams` takes the STRICT detect-validation path
+// (allowLegacyCommand: false) — the path every real connector manifest uses.
+function withBindingsAndToolsStrict(external_tools: unknown): Record<string, unknown> {
+  return { runtime_requirements: { bindings: {}, external_tools }, streams: [] };
 }
 
 function assertRejects(manifest: Record<string, unknown>, messagePart: string): void {
@@ -143,6 +154,116 @@ test("validateRuntimeRequirements: rejects a detect without a command and a nega
       { detect: { command: "git --version", exit_code: -1 }, license: "a", name: "git", purpose: "b" },
     ]),
     "external_tools[0].detect.exit_code must be a non-negative integer"
+  );
+});
+
+// --- strict-mode detect.executable_env_override (real, streams-bearing manifests) ---
+
+test("validateRuntimeRequirements: strict mode accepts a valid detect.executable_env_override", () => {
+  assert.equal(
+    validateRuntimeRequirements(
+      withBindingsAndToolsStrict([
+        {
+          detect: { executable: "slackdump", executable_env_override: "SLACKDUMP_BIN", exit_code: 0 },
+          license: "a",
+          name: "slackdump",
+          purpose: "b",
+        },
+      ]),
+      CODE
+    ),
+    undefined
+  );
+});
+
+test("validateRuntimeRequirements: strict mode rejects a non-string detect.executable_env_override", () => {
+  assertRejects(
+    withBindingsAndToolsStrict([
+      { detect: { executable: "git", executable_env_override: 1 }, license: "a", name: "git", purpose: "b" },
+    ]),
+    "external_tools[0].detect.executable_env_override must be a non-empty string"
+  );
+  assertRejects(
+    withBindingsAndToolsStrict([
+      { detect: { executable: "git", executable_env_override: "" }, license: "a", name: "git", purpose: "b" },
+    ]),
+    "external_tools[0].detect.executable_env_override must be a non-empty string"
+  );
+});
+
+// --- local_paths (synthetic connector, proves genericity) -------------------
+
+function withBindingsAndLocalPaths(local_paths: unknown): Record<string, unknown> {
+  return { runtime_requirements: { bindings: {}, local_paths } };
+}
+
+test("validateRuntimeRequirements: accepts a valid local_paths declaration for a made-up connector", () => {
+  assert.equal(
+    validateRuntimeRequirements(
+      withBindingsAndLocalPaths({
+        home_default_relative_to_user_home: ".acme-widget",
+        home_env_override: "ACME_WIDGET_HOME",
+        paths: [
+          {
+            default_relative_to_home: "data",
+            env_override: "ACME_WIDGET_DATA_DIR",
+            label: "data directory",
+            required_for_readiness: true,
+          },
+        ],
+      }),
+      CODE
+    ),
+    undefined
+  );
+});
+
+test("validateRuntimeRequirements: rejects a non-object local_paths", () => {
+  assertRejects(withBindingsAndLocalPaths("x"), "local_paths must be an object when declared");
+});
+
+test("validateRuntimeRequirements: rejects an unsupported local_paths key", () => {
+  assertRejects(
+    withBindingsAndLocalPaths({ bogus: 1, home_default_relative_to_user_home: ".x", paths: [] }),
+    "local_paths has unsupported keys: bogus"
+  );
+});
+
+test("validateRuntimeRequirements: rejects a missing home_default_relative_to_user_home", () => {
+  assertRejects(
+    withBindingsAndLocalPaths({ paths: [] }),
+    "local_paths.home_default_relative_to_user_home must be a non-empty string"
+  );
+});
+
+test("validateRuntimeRequirements: rejects a non-array paths", () => {
+  assertRejects(
+    withBindingsAndLocalPaths({ home_default_relative_to_user_home: ".x", paths: "not-an-array" }),
+    "local_paths.paths must be an array"
+  );
+});
+
+test("validateRuntimeRequirements: rejects a local_paths.paths entry missing required fields", () => {
+  assertRejects(
+    withBindingsAndLocalPaths({ home_default_relative_to_user_home: ".x", paths: [{ label: "data directory" }] }),
+    "local_paths.paths[0].default_relative_to_home must be a non-empty string"
+  );
+  assertRejects(
+    withBindingsAndLocalPaths({
+      home_default_relative_to_user_home: ".x",
+      paths: [{ default_relative_to_home: "data" }],
+    }),
+    "local_paths.paths[0].label must be a non-empty string"
+  );
+});
+
+test("validateRuntimeRequirements: rejects an unsupported local_paths.paths entry key", () => {
+  assertRejects(
+    withBindingsAndLocalPaths({
+      home_default_relative_to_user_home: ".x",
+      paths: [{ bogus: 1, default_relative_to_home: "data", label: "data directory" }],
+    }),
+    "local_paths.paths[0] has unsupported keys: bogus"
   );
 });
 

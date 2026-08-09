@@ -1,6 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 /**
  * Server-derived `version_disposition` for record-version-churn rows.
  *
@@ -58,6 +61,31 @@ interface StreamListEntry {
 }
 
 /**
+ * All connector/stream identity used by this module is DATA, loaded from a
+ * sibling RI-owned JSON registry (version-disposition-policy.json) rather
+ * than compiled into this module's source as TypeScript identity literals.
+ * This is NOT a manifest: connectors cannot author or influence this file —
+ * a connector self-declaring its own churn-safety would defeat the entire
+ * purpose of server-derived disposition (see module doc comment above). The
+ * registry is edited only by RI maintainers via normal code review, the same
+ * trust boundary the inline literals had before this indirection existed —
+ * moving the identity out of `.ts` source just keeps this module itself free
+ * of compiled-in connector knowledge (reference-implementation/test/
+ * ri-zero-connector-knowledge-conformance.test.ts).
+ */
+interface VersionDispositionPolicy {
+  readonly content_fingerprint_pending_streams: readonly StreamListEntry[];
+  readonly owner_migration_pending_streams: readonly StreamListEntry[];
+  readonly owner_retention_policy_streams: readonly StreamListEntry[];
+  readonly point_in_time_real_field_streams: readonly (StreamListEntry & { readonly realField: string })[];
+  readonly recurring_point_in_time_snapshot_streams: readonly StreamListEntry[];
+  readonly reviewed_compaction_residue_reviewed_at: Readonly<Record<string, string>>;
+}
+
+const POLICY_PATH = fileURLToPath(new URL("./version-disposition-policy.json", import.meta.url));
+const POLICY: VersionDispositionPolicy = JSON.parse(readFileSync(POLICY_PATH, "utf8"));
+
+/**
  * Streams that version on a GENUINELY changing real field carried on the same
  * record as a stable identity, whose sampled metric has already been split into
  * its own append-keyed point-in-time stream. The retained entity history is the
@@ -69,11 +97,9 @@ interface StreamListEntry {
  * Connector id is matched against both the short id (`github`) and the
  * registry-URL form (`https://registry.pdpp.org/connectors/github`).
  */
-export const POINT_IN_TIME_REAL_FIELD_STREAMS = Object.freeze([
-  Object.freeze({ connector: "github", realField: "follower / repo / gist counts", stream: "user" }),
-  Object.freeze({ connector: "slack", realField: "num_members", stream: "channels" }),
-  Object.freeze({ connector: "ynab", realField: "balance / cleared_balance / uncleared_balance", stream: "accounts" }),
-]);
+export const POINT_IN_TIME_REAL_FIELD_STREAMS = Object.freeze(
+  POLICY.point_in_time_real_field_streams.map((entry) => Object.freeze({ ...entry }))
+);
 
 /**
  * Streams that legitimately re-version on every real session-growth pass. The
@@ -100,10 +126,9 @@ export const POINT_IN_TIME_REAL_FIELD_STREAMS = Object.freeze([
  * Connector id is matched against the short id, the registry-URL form, and the
  * `local-device:` multi-device prefix.
  */
-export const RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS = Object.freeze([
-  Object.freeze({ connector: "claude-code", stream: "sessions" }),
-  Object.freeze({ connector: "codex", stream: "sessions" }),
-]);
+export const RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS = Object.freeze(
+  POLICY.recurring_point_in_time_snapshot_streams.map((entry) => Object.freeze({ ...entry }))
+);
 
 /**
  * Per-stream review evidence: the ISO 8601 timestamp at which the owner
@@ -126,11 +151,7 @@ export const RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS = Object.freeze([
  * it stopped re-alarming on each new session.
  */
 export const REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT = Object.freeze(
-  new Map([
-    ["usaa/accounts", "2026-06-05T13:57:05.707Z"],
-    ["usaa/statements", "2026-06-05T13:57:05.707Z"],
-    ["chase/statements", "2026-06-05T13:57:05.707Z"],
-  ])
+  new Map(Object.entries(POLICY.reviewed_compaction_residue_reviewed_at))
 );
 
 // Registry-URL connector id → bare connector id (last path segment). Also
@@ -208,10 +229,9 @@ export type VersionRemediation = (typeof VERSION_REMEDIATIONS)[number];
  * Connector id is matched against the bare short id after `normalizeConnectorId`
  * (registry-URL and `local-device:` forms collapse to it).
  */
-export const CONTENT_FINGERPRINT_PENDING_STREAMS = Object.freeze([
-  Object.freeze({ connector: "chase", stream: "statements" }),
-  Object.freeze({ connector: "usaa", stream: "statements" }),
-]);
+export const CONTENT_FINGERPRINT_PENDING_STREAMS = Object.freeze(
+  POLICY.content_fingerprint_pending_streams.map((entry) => Object.freeze({ ...entry }))
+);
 
 /**
  * Streams whose retained entity history is the SOLE surviving copy of real
@@ -226,9 +246,9 @@ export const CONTENT_FINGERPRINT_PENDING_STREAMS = Object.freeze([
  * `reviewed_historical_residue` disposition. The migration itself is a separate
  * owner-gated change (`migrate-usaa-pre-split-balances-to-account-stats`).
  */
-export const OWNER_MIGRATION_PENDING_STREAMS = Object.freeze([
-  Object.freeze({ connector: "usaa", stream: "accounts" }),
-]);
+export const OWNER_MIGRATION_PENDING_STREAMS = Object.freeze(
+  POLICY.owner_migration_pending_streams.map((entry) => Object.freeze({ ...entry }))
+);
 
 /**
  * Recurring point-in-time snapshot streams whose only open lever is an owner
@@ -241,10 +261,9 @@ export const OWNER_MIGRATION_PENDING_STREAMS = Object.freeze([
  * (these lists are intentionally aligned with
  * RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS).
  */
-export const OWNER_RETENTION_POLICY_STREAMS = Object.freeze([
-  Object.freeze({ connector: "claude-code", stream: "sessions" }),
-  Object.freeze({ connector: "codex", stream: "sessions" }),
-]);
+export const OWNER_RETENTION_POLICY_STREAMS = Object.freeze(
+  POLICY.owner_retention_policy_streams.map((entry) => Object.freeze({ ...entry }))
+);
 
 function isInStreamList(list: readonly StreamListEntry[], connector: string, stream: string | undefined): boolean {
   return list.some((entry) => entry.connector === connector && entry.stream === stream);

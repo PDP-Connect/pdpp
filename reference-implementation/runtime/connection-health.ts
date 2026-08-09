@@ -3136,6 +3136,17 @@ function conditionClassifierText(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+// Deliberately keeps literal token-prefix shapes (github_pat_/gho_/ghp_,
+// xox[baprs]-) alongside the generic secret-syntax patterns
+// (`key: value`/`bearer …`) rather than moving them to a manifest-declared
+// list. This is a defense-in-depth leak filter applied to arbitrary
+// upstream/connector-authored condition text before it is persisted and
+// displayed — it must catch a real secret even when a manifest is stale,
+// missing, or the leak comes from a connector whose manifest never declared
+// this shape. Trusting only manifest-declared prefixes here would make the
+// filter's coverage a function of manifest completeness instead of a fixed
+// security invariant. LONG_OPAQUE_CONDITION_PATTERN (below) is the
+// content-agnostic backstop for prefix shapes this list doesn't name.
 const SECRET_CONDITION_PATTERN =
   /(authorization\s*[:=]|bearer\s+[A-Za-z0-9]|cookie\s*[:=]|credential\s*[:=]|github_pat_|gho_|ghp_|password\s*[:=]|secret\s*[:=]|token\s*[:=]|xox[baprs]-)/i;
 const LONG_OPAQUE_CONDITION_PATTERN = /\b[A-Za-z0-9_-]{24,}\b/;

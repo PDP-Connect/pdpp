@@ -108,13 +108,35 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // biome-ignore lint/correctness/noUnresolvedImports: Biome cannot resolve this installed package export; Node and TypeScript resolve it.
 import pg from "pg";
 
 const { Pool } = pg;
+
+/**
+ * The local-device policy families' connector/stream membership is DATA,
+ * loaded from a sibling RI-owned JSON registry rather than compiled into
+ * this script's source as literal call-site arguments — see the registry
+ * file's own $comment for why (reference-implementation/test/
+ * ri-zero-connector-knowledge-conformance.test.ts).
+ */
+interface LocalDevicePolicyFamily {
+  readonly connector: string;
+  readonly dirName?: string;
+  readonly streams: readonly string[];
+}
+interface LocalDevicePolicyRegistry {
+  readonly exact_stable_json_families: readonly LocalDevicePolicyFamily[];
+  readonly inventory_churn_gate_families: readonly LocalDevicePolicyFamily[];
+}
+const LOCAL_DEVICE_POLICY_PATH = fileURLToPath(
+  new URL("./compact-record-history-local-device-policy.json", import.meta.url)
+);
+const LOCAL_DEVICE_POLICY: LocalDevicePolicyRegistry = JSON.parse(readFileSync(LOCAL_DEVICE_POLICY_PATH, "utf8"));
 
 // ─── Shared types ───────────────────────────────────────────────────────
 
@@ -618,18 +640,12 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
   // are `codex` and `claude-code` (hyphen, not underscore). Multi-device
   // local-collector deployments use `local-device:codex` and
   // `local-device:claude-code`; both forms are covered by each policy.
-  ...buildLocalDeviceExactJsonPolicies("codex", [
-    "messages",
-    "function_calls",
-    "sessions",
-    "skills",
-    "prompts",
-    "rules",
-  ]),
-  ...buildLocalDeviceExactJsonPolicies(
-    "claude-code",
-    ["messages", "attachments", "sessions", "skills", "memory_notes", "slash_commands"],
-    "claude_code"
+  //
+  // Family membership (which connector/streams) is DATA read generically
+  // from LOCAL_DEVICE_POLICY (compact-record-history-local-device-policy.json)
+  // — see that file's own $comment.
+  ...LOCAL_DEVICE_POLICY.exact_stable_json_families.flatMap((family) =>
+    buildLocalDeviceExactJsonPolicies(family.connector, [...family.streams], family.dirName)
   ),
 
   // ─── Inventory churn-gate family ──────────────────────────────────────
@@ -648,19 +664,9 @@ export const COMPACTION_POLICIES: CompactionPolicy[] = [
   // (type, path_hash, classification, reason) stay inside the fingerprint and
   // are preserved as version boundaries. Inventory enumeration is a full scan,
   // so these are full-scan policies (a disappeared store re-emits on return).
-  ...buildInventoryChurnGatePolicies(
-    "claude-code",
-    ["backup_inventory", "cache_inventory", "config_inventory", "file_history"],
-    "claude_code"
+  ...LOCAL_DEVICE_POLICY.inventory_churn_gate_families.flatMap((family) =>
+    buildInventoryChurnGatePolicies(family.connector, [...family.streams], family.dirName)
   ),
-  ...buildInventoryChurnGatePolicies("codex", [
-    "history",
-    "session_index",
-    "shell_snapshots",
-    "config_inventory",
-    "cache_inventory",
-    "logs",
-  ]),
 ];
 
 function buildLocalDeviceExactJsonPolicies(

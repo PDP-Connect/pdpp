@@ -22,6 +22,7 @@
         "install_hint": "go install github.com/rusq/slackdump/v4/cmd/slackdump@latest",
         "detect": {
           "executable": "slackdump",
+          "executable_env_override": "SLACKDUMP_BIN",
           "args": ["version"],
           "exit_code": 0
         }

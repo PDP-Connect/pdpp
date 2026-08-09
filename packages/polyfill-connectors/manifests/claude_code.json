@@ -10,6 +10,18 @@
       "filesystem": {
         "required": true
       }
+    },
+    "local_paths": {
+      "home_env_override": "CLAUDE_CODE_HOME",
+      "home_default_relative_to_user_home": ".claude",
+      "paths": [
+        {
+          "default_relative_to_home": "projects",
+          "env_override": "CLAUDE_CODE_PROJECTS_DIR",
+          "label": "projects directory",
+          "required_for_readiness": true
+        }
+      ]
     }
   },
   "capabilities": {
