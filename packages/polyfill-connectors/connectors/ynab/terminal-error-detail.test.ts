@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { type BudgetCtx, collectCategoriesAndGroups } from "./index.ts";
+import { type BudgetCtx, collectCategoriesAndGroups, errorDetail } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 // Regression proof for live run_1786288330250, whose terminal row read
@@ -59,7 +59,7 @@ const CATEGORIES_RESPONSE = {
 /** Replace `globalThis.fetch` for the duration of one `ynab()` GET. */
 function stubFetch(handler: () => Promise<Response>): () => void {
   const original = globalThis.fetch;
-  globalThis.fetch = handler as unknown as typeof globalThis.fetch;
+  globalThis.fetch = (() => handler()) as typeof globalThis.fetch;
   return () => {
     globalThis.fetch = original;
   };
@@ -210,6 +210,82 @@ test("COUNTERWEIGHT: a successful run still emits its records and advances its c
     );
     assert.deepEqual(ctx.newState.categories, { [BUDGET_ID]: { server_knowledge: 4242 } });
     assert.deepEqual(ctx.newState.category_groups, { [BUDGET_ID]: { server_knowledge: 4242 } });
+  } finally {
+    restore();
+  }
+});
+
+// ─── The response body is third-party text too ──────────────────────────────
+//
+// Second RI owner security gate: the non-2xx path appended `body.slice(0, 200)`
+// raw. YNAB's own errors are a small closed envelope, but an intercepting proxy,
+// gateway error page, or WAF can return anything — including an echoed request
+// URL, a token, or account content — and a 200-char slice bounded the size while
+// enforcing nothing. `errorDetail` now prefers YNAB's documented
+// `{error:{id,name,detail}}` allowlist and redacts everything else through the
+// same deterministic sanitizer used for transport causes.
+
+test("errorDetail: a hostile JSON detail cannot leak a URL secret, credential, or email", () => {
+  const hostile = JSON.stringify({
+    error: {
+      id: "403.1",
+      name: "subscription_lapsed",
+      detail:
+        "callback https://user:pw@evil.example.com/cb?access_token=BODYSECRET failed; " +
+        "Authorization: Bearer BODYBEARER; password=BODYPASS; contact owner@example.com",
+    },
+  });
+  const detail = errorDetail(hostile);
+  for (const leak of ["BODYSECRET", "BODYBEARER", "BODYPASS", "owner@example.com", "user:pw", "evil.example.com"]) {
+    assert.doesNotMatch(detail, new RegExp(leak), `${leak} must not survive the body diagnostic`);
+  }
+  // The closed, useful part of the envelope still reaches the owner.
+  assert.match(detail, /403\.1/, "the provider error id must survive");
+  assert.match(detail, /subscription_lapsed/, "the provider error name must survive");
+});
+
+test("errorDetail: a non-envelope body (proxy/HTML dump) is redacted wholesale and bounded", () => {
+  const proxyDump = `<html>gateway error for https://user:pw@proxy.example.com/x?token=PROXYSECRET
+    contact ops@example.com</html>${"padding ".repeat(60)}`;
+  const detail = errorDetail(proxyDump);
+  for (const leak of ["PROXYSECRET", "ops@example.com", "user:pw", "proxy.example.com"]) {
+    assert.doesNotMatch(detail, new RegExp(leak), `${leak} must not survive an unrecognized body`);
+  }
+  assert.ok(detail.length <= 200, `expected a bounded diagnostic, got ${detail.length}`);
+});
+
+test("errorDetail: redaction runs BEFORE the 200-char bound, so no secret survives as a fragment", () => {
+  // The secret sits past the bound: slicing first would cut through the token.
+  const body = JSON.stringify({
+    error: { id: "500", name: "internal", detail: `${"padding ".repeat(30)}token=TAILSECRETVALUE` },
+  });
+  const detail = errorDetail(body);
+  assert.doesNotMatch(detail, /TAILSECRETVALUE/, "no whole secret");
+  assert.doesNotMatch(detail, /TAILSECRET/, "not even a truncated fragment");
+  assert.match(detail, /id=500/, "the provider error id still survives");
+});
+
+test("errorDetail: the ordinary YNAB error envelope still reads usefully end to end", async () => {
+  // COUNTERWEIGHT for the body work: sanitizing must not gut a benign error.
+  assert.match(errorDetail('{"error":{"id":"401","name":"unauthorized","detail":"Unauthorized"}}'), /401/);
+
+  const restore = stubFetch(() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ error: { id: "429.1", name: "too_many_requests", detail: "Slow down" } }), {
+        status: 400,
+      })
+    )
+  );
+  try {
+    const { ctx } = makeCtx(["categories", "category_groups"]);
+    await assert.rejects(collectCategoriesAndGroups(ctx), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /400/, "status survives");
+      assert.match(err.message, /\/budgets\/\{budget_id\}\/categories/, "templated endpoint survives");
+      assert.match(err.message, /too_many_requests/, "the provider error name survives");
+      assert.match(err.message, /Slow down/, "a benign provider detail is not gutted");
+      return true;
+    });
   } finally {
     restore();
   }

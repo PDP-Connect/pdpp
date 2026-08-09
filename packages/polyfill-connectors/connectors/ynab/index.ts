@@ -40,6 +40,7 @@ import {
   runConnector,
 } from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { redactTransportDetail } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { ynabPacingProfile } from "../../src/provider-profile.ts";
 import { validateRecord } from "./schemas.ts";
@@ -273,6 +274,55 @@ function endpointLabel(path: string): string {
   return path.replace(BUDGET_ID_PATH_SEGMENT, "/budgets/{budget_id}").replace(MONTH_PATH_SEGMENT, "/months/{month}");
 }
 
+/** Bound for the response-body diagnostic in a terminal message. */
+const ERROR_DETAIL_MAX = 200;
+
+/**
+ * Reduce a non-2xx response body to a diagnostic safe for a terminal message.
+ *
+ * The body is attacker- and proxy-influenced text: YNAB's own errors are a small
+ * closed envelope, but an intercepting proxy, a gateway error page, or a WAF can
+ * return anything, and an echoed request URL or account content in that text
+ * would land verbatim in a terminal DB row. Slicing to 200 chars bounded the size
+ * and enforced nothing.
+ *
+ * Two layers, allowlist first:
+ *
+ *  1. YNAB documents `{ error: { id, name, detail } }`. When the body parses to
+ *     that shape we emit only those fields — `id`/`name` are closed machine codes
+ *     (`401`/`unauthorized`, `403.1`/`subscription_lapsed`) and are exactly what
+ *     an operator needs. `detail` is free prose, so it still goes through the
+ *     shared redactor rather than being trusted for being inside a known shape.
+ *  2. Anything else — HTML, a proxy dump, malformed JSON — is not a shape we can
+ *     reason about, so it is redacted wholesale and bounded.
+ *
+ * `redactTransportDetail` is reused deliberately: one deterministic sanitizer for
+ * every third-party string that can reach terminal text, rather than a second
+ * policy that drifts from the first.
+ */
+export function errorDetail(body: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = null;
+  }
+  const envelope =
+    parsed && typeof parsed === "object" ? (parsed as { error?: Record<string, unknown> }).error : undefined;
+  if (envelope && typeof envelope === "object") {
+    const { id, name, detail } = envelope;
+    const fields = [
+      typeof id === "string" || typeof id === "number" ? `id=${String(id)}` : "",
+      typeof name === "string" ? `name=${name}` : "",
+      typeof detail === "string" && detail.length > 0 ? `detail=${detail}` : "",
+    ].filter((field) => field.length > 0);
+    if (fields.length > 0) {
+      return redactTransportDetail(fields.join(" ")).slice(0, ERROR_DETAIL_MAX);
+    }
+  }
+  return redactTransportDetail(body).slice(0, ERROR_DETAIL_MAX);
+}
+
 async function ynab<T>(
   path: string,
   token: string,
@@ -327,7 +377,7 @@ async function ynab<T>(
   }
   if (result.status < 200 || result.status >= 300) {
     throw new Error(
-      `ynab_http_${String(result.status)} [endpoint ${endpointLabel(path)}]: ${result.body.slice(0, 200)}`
+      `ynab_http_${String(result.status)} [endpoint ${endpointLabel(path)}]: ${errorDetail(result.body)}`
     );
   }
   return JSON.parse(result.body) as T;
