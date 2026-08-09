@@ -34,9 +34,9 @@ import { createInterface as createFileReader } from "node:readline";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import {
   type EnumerationScope,
+  projectDirMatchesSourceRoots,
   readEnumerationScope,
   scopeBoundsEnumeration,
-  shouldDescendIntoDirectory,
 } from "../../src/collection-scope-enumeration.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
@@ -1256,7 +1256,7 @@ export async function discoverClaudeJsonlSources(
   }
   const sources: ClaudeJsonlSource[] = [];
   for (const projectDir of projectDirs) {
-    if (!shouldDescendIntoDirectory(projectDir, scope)) {
+    if (!projectDirMatchesSourceRoots(projectDir, scope)) {
       continue;
     }
     const projectPath = join(baseDir, projectDir);
@@ -1279,6 +1279,25 @@ export async function discoverClaudeJsonlSources(
         sources.push({ forcedSessionId: entry.name, path: join(subagentsDir, relPath), projectDir });
       }
     }
+  }
+  // A declared root that selected NOTHING is almost always a mistyped or
+  // wrongly-formatted path, not a genuinely empty project. Reporting it as a
+  // clean bounded pass would commit `scoped: true` over an empty result set —
+  // the fabricated watermark in its purest form. A SKIP_RESULT is the honest
+  // outcome: the runtime already treats it as an unresolved attempt, so the
+  // stream cannot reach `complete`, and the owner gets an actionable message
+  // naming the expected root format.
+  if (sources.length === 0 && (scope?.source_roots?.length ?? 0) > 0) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "sessions",
+      reason: "scope_matched_no_sources",
+      message:
+        "Declared source_roots matched no Claude Code project directories, so nothing was collected. " +
+        "Roots may be an absolute project path (/home/you/code/project), or a bare project directory name.",
+      diagnostics: { declared_roots: scope?.source_roots?.length ?? 0, project_dirs_available: projectDirs.length },
+    });
+    return sources;
   }
   return sources;
 }

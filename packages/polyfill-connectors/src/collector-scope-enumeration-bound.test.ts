@@ -47,7 +47,7 @@ const CONNECTORS_DIR = join(import.meta.dirname, "..", "connectors");
 const POISONED_SENTINEL = '{"broken json PDPP_SENTINEL_MUST_NOT_BE_READ\n';
 
 /** The excluded file's path fragment — what a scanned-file cursor would name. */
-const CLAUDE_SENTINEL_PATH = join("proj-excluded", "session.jsonl");
+const CLAUDE_SENTINEL_PATH = join("-home-u-code-excluded", "session.jsonl");
 const CODEX_SENTINEL_PATH = join("2020", "01", "05");
 
 const noopEmit = (): Promise<void> => Promise.resolve();
@@ -59,12 +59,12 @@ const noopEmit = (): Promise<void> => Promise.resolve();
 async function seedClaudeHome(): Promise<{ claudeHome: string; projectsDir: string }> {
   const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-home-"));
   const projectsDir = join(claudeHome, "projects");
-  await mkdir(join(projectsDir, "proj-included"), { recursive: true });
-  await mkdir(join(projectsDir, "proj-excluded"), { recursive: true });
+  await mkdir(join(projectsDir, "-home-u-code-included"), { recursive: true });
+  await mkdir(join(projectsDir, "-home-u-code-excluded"), { recursive: true });
   await writeFile(
-    join(projectsDir, "proj-included", "session.jsonl"),
+    join(projectsDir, "-home-u-code-included", "session.jsonl"),
     `${JSON.stringify({
-      cwd: "/home/u/proj-included",
+      cwd: "/home/u/code/included",
       message: { content: [{ text: "hello", type: "text" }], role: "user" },
       sessionId: "11111111-1111-4111-8111-111111111111",
       timestamp: "2026-07-01T00:00:00.000Z",
@@ -73,7 +73,7 @@ async function seedClaudeHome(): Promise<{ claudeHome: string; projectsDir: stri
     })}\n`,
     "utf8"
   );
-  await writeFile(join(projectsDir, "proj-excluded", "session.jsonl"), POISONED_SENTINEL, "utf8");
+  await writeFile(join(projectsDir, "-home-u-code-excluded", "session.jsonl"), POISONED_SENTINEL, "utf8");
   return { claudeHome, projectsDir };
 }
 
@@ -148,17 +148,17 @@ test("claude_code discovery prunes out-of-root projects before any file is opene
 
   const unbounded = await discoverClaudeJsonlSources(projectsDir, noopEmit);
   assert.ok(
-    unbounded?.some((source) => source.path.includes("proj-excluded")),
+    unbounded?.some((source) => source.path.includes("-home-u-code-excluded")),
     "baseline: an unscoped discovery does return the source the bounded one must prune"
   );
 
-  const bounded = await discoverClaudeJsonlSources(projectsDir, noopEmit, { source_roots: ["proj-included"] });
+  const bounded = await discoverClaudeJsonlSources(projectsDir, noopEmit, { source_roots: ["/home/u/code/included"] });
   assert.ok(
-    bounded?.some((source) => source.path.includes("proj-included")),
+    bounded?.some((source) => source.path.includes("-home-u-code-included")),
     "the selected root must still be discovered"
   );
   assert.equal(
-    bounded?.some((source) => source.path.includes("proj-excluded")),
+    bounded?.some((source) => source.path.includes("-home-u-code-excluded")),
     false,
     "an out-of-root project must never reach the scan stage — pruning is the bound on work"
   );
@@ -207,7 +207,7 @@ test("claude_code: a real scoped run never reads the excluded project's poisoned
   const bounded = await runConnectorChild({
     connector: "claude_code",
     env,
-    scope: { source_roots: ["proj-included"] },
+    scope: { source_roots: ["/home/u/code/included"] },
     streams: ["sessions", "messages"],
   });
   assert.equal(
@@ -248,4 +248,51 @@ test("codex: a real scoped run never enumerates the pruned year", async () => {
     false,
     "the pruned year's rollout must never be opened by any code path"
   );
+});
+
+// A declared root that selects NOTHING is almost always a mistyped or
+// wrongly-formatted path. Reporting it as a clean bounded pass would commit
+// coverage over an empty result set — the fabricated watermark in its purest
+// form, reached through the path an owner is most likely to take.
+test("claude_code: a root matching zero projects surfaces an actionable skip, not a silent empty pass", async () => {
+  const { claudeHome, projectsDir } = await seedClaudeHome();
+  const out = await runConnectorChild({
+    connector: "claude_code",
+    env: { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: projectsDir },
+    scope: { source_roots: ["/nope/this/matches/nothing"] },
+    streams: ["sessions", "messages"],
+  });
+  assert.ok(out.includes("scope_matched_no_sources"), "a zero-match scope must be reported, never silently accepted");
+  assert.ok(
+    out.includes("SKIP_RESULT"),
+    "it must be a SKIP_RESULT so the stream cannot reach a proven-complete verdict"
+  );
+});
+
+// The natural form an owner actually types must work end to end, through the
+// real connector, not just in the matcher unit test.
+test("claude_code: a natural absolute owner path collects the project it names", async () => {
+  const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-natural-"));
+  const projectsDir = join(claudeHome, "projects");
+  await mkdir(join(projectsDir, "-home-u-code-real"), { recursive: true });
+  await writeFile(
+    join(projectsDir, "-home-u-code-real", "s.jsonl"),
+    `${JSON.stringify({
+      cwd: "/home/u/code/real",
+      message: { content: [{ text: "hello", type: "text" }], role: "user" },
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      timestamp: "2026-07-01T00:00:00.000Z",
+      type: "user",
+      uuid: "aaaaaaaa-1111-4111-8111-111111111111",
+    })}\n`,
+    "utf8"
+  );
+  const out = await runConnectorChild({
+    connector: "claude_code",
+    env: { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: projectsDir },
+    scope: { source_roots: ["/home/u/code/real"] },
+    streams: ["sessions", "messages"],
+  });
+  assert.equal(out.includes("scope_matched_no_sources"), false, "the natural path must match, not read as a typo");
+  assert.ok(out.includes('"type":"RECORD"'), "the named project must actually be collected");
 });

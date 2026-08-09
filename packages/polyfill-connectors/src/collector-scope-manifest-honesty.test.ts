@@ -97,8 +97,8 @@ test("a root-enforcing connector's source actually consults the shared containme
     const source = readFileSync(join(PACKAGE_ROOT, "..", "connectors", connectorId, "index.ts"), "utf8");
     assert.match(
       source,
-      /shouldDescendIntoDirectory|isPathWithinSourceRoots/,
-      `${connectorId} declares enforces_source_roots but never calls the shared path-containment helper`
+      /shouldDescendIntoDirectory|isPathWithinSourceRoots|projectDirMatchesSourceRoots/,
+      `${connectorId} declares enforces_source_roots but never calls a shared path-containment helper`
     );
   }
 });
