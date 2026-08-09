@@ -219,6 +219,7 @@ import {
   deleteConnectionRecordRowsPostgres,
   deleteConnectionRecordRowsSqlite,
   deleteRecord,
+  drainConnectorInstanceIndexWork,
   enumerateConnectionStreams,
   getDatasetBlobBytes,
   getDatasetRecordChangesBytes,
@@ -8728,9 +8729,38 @@ if (process.argv[1]?.endsWith("server/index.ts")) {
         )
       : Promise.resolve();
     await Promise.allSettled([...httpDrains, Promise.race([awaitStartupTasks, backfillDeadline]), drainConnectors]);
+    // Drain the deferred lexical/semantic index-maintenance lane
+    // (records.ts's scheduleRecordIndexMaintenance/runDeferredRecordIndexes)
+    // before closeDb() nulls the handle those jobs' storage-generation fence
+    // is guarding. Without this, a job that already passed its fence check
+    // and is mid-await on the now-closing handle throws "[db] No database is
+    // open" instead of completing cleanly.
+    //
+    // On timeout, closeDb() must NOT run: a job still genuinely in flight
+    // would be racing the handle it is actively using. Exiting WITHOUT
+    // closeDb() leaves that job to either finish naturally before the
+    // process actually terminates or be reclaimed by the OS along with the
+    // process's file descriptors -- neither closes the WAL file out from
+    // under a live query, which a synchronous closeDb() here would. Exit
+    // code 1 marks this an unclean shutdown (distinct from the normal
+    // exit(0) below) so an operator/orchestrator can tell the two apart.
+    let drained = true;
+    try {
+      await drainConnectorInstanceIndexWork(2000);
+    } catch (err) {
+      drained = false;
+      cliLogger.warn(
+        { err },
+        "deferred index work did not drain before shutdown; skipping closeDb to avoid closing storage under an active job"
+      );
+    }
     await closePostgresStorage();
-    closeDb();
-    process.exit(0);
+    if (drained) {
+      closeDb();
+      process.exit(0);
+    } else {
+      process.exit(1);
+    }
   };
   process.on("SIGTERM", exitOnSignal("SIGTERM"));
   process.on("SIGINT", exitOnSignal("SIGINT"));

@@ -1107,6 +1107,83 @@ export function withRecordIndexWorkForTests<T>(operation: () => Promise<T>): Pro
   return withIndexWork(operation);
 }
 
+/**
+ * Thrown by `drainConnectorInstanceIndexWork` when the deferred lane does
+ * not reach quiescence within the deadline. Deliberately NOT a silent
+ * false-success: a caller that got this must not proceed as though the lane
+ * drained -- see the two call sites (CLI shutdown, test barriers) for what
+ * "not draining" means for each.
+ */
+export class ConnectorInstanceIndexWorkDrainTimeoutError extends Error {
+  readonly pendingConnectorInstanceCount: number;
+  constructor(pendingConnectorInstanceCount: number, timeoutMs: number) {
+    super(
+      `deferred index work did not drain within ${timeoutMs}ms: ${pendingConnectorInstanceCount} connector instance(s) still have in-flight/queued work`
+    );
+    this.name = "ConnectorInstanceIndexWorkDrainTimeoutError";
+    this.pendingConnectorInstanceCount = pendingConnectorInstanceCount;
+  }
+}
+
+/**
+ * Deterministic settlement barrier for the deferred per-connector-instance
+ * index lane (`enqueueConnectorInstanceIndexWork`'s tail chain). Awaits
+ * every in-flight/queued tail to quiescence -- looping because draining a
+ * snapshot of tails can itself let a new record's deferred job get enqueued
+ * before that snapshot settles, which would otherwise leave a fresh tail
+ * unobserved.
+ *
+ * Throws `ConnectorInstanceIndexWorkDrainTimeoutError` if the lane has not
+ * reached quiescence by `timeoutMs` -- returning normally on timeout would
+ * let a caller (shutdown, a test assertion) proceed as though every job had
+ * settled when one is still genuinely in flight, which is exactly the false
+ * confidence this barrier exists to rule out. Never rejects for any OTHER
+ * reason: each enqueued operation (fire-and-forget index maintenance)
+ * already swallows its own operation failure internally, so a tail promise
+ * rejecting here would only ever be enqueueConnectorInstanceIndexWork's own
+ * bookkeeping, which this function does not propagate.
+ *
+ * This is the primitive BOTH shutdown (closeDb must not run out from under
+ * an in-flight job's storage handle -- the "[db] No database is open"
+ * defect) and tests (asserting on lexical/semantic content after a write)
+ * need: a real barrier owned by the scheduler, not a counter poll.
+ */
+export async function drainConnectorInstanceIndexWork(timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const tails = Array.from(connectorInstanceIndexTails.values());
+    if (tails.length === 0) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new ConnectorInstanceIndexWorkDrainTimeoutError(tails.length, timeoutMs);
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Draining is intentionally sequential to observe newly-enqueued tails between rounds.
+    await Promise.race([
+      Promise.allSettled(tails),
+      new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
+    ]);
+  }
+}
+
+/** Test-only alias, named for the call sites that only ever run in tests. */
+export function drainConnectorInstanceIndexWorkForTests(timeoutMs?: number): Promise<void> {
+  return drainConnectorInstanceIndexWork(timeoutMs);
+}
+
+/**
+ * Test-only: enqueue an arbitrary operation onto the SAME per-connector-
+ * instance tail chain `drainConnectorInstanceIndexWork` reads, so a test can
+ * hold a tail open indefinitely (a controlled stand-in for a genuinely stuck
+ * deferred index job) and prove the barrier's own timeout contract.
+ */
+export function enqueueConnectorInstanceIndexWorkForTests(
+  connectorInstanceId: string,
+  operation: () => Promise<void>
+): Promise<void> {
+  return enqueueConnectorInstanceIndexWork(connectorInstanceId, operation);
+}
+
 /** Test-only: hold an index-work permit under an EXPLICIT (possibly stale) generation. */
 export function withRecordIndexWorkForGenerationForTests<T>(
   generation: number,

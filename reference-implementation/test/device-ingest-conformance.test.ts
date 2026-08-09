@@ -22,6 +22,7 @@ import {
   __setSqliteRecordSortBackfillPhaseHookForTest,
   deleteAllRecords,
   deleteRecord,
+  drainConnectorInstanceIndexWork,
   ingestRecord,
   setClientEventEnqueueHook,
 } from "../server/records.ts";
@@ -86,6 +87,18 @@ async function within<T>(promise: Promise<T>, label: string, timeoutMs = 10_000)
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Durable record commit does not block on derived lexical/semantic index
+// maintenance (records.ts's scheduleRecordIndexMaintenance runs it on a
+// fire-and-forget per-connector-instance lane). A writer's own promise
+// resolving therefore proves the durable row landed, not that its derived
+// index converged -- drainConnectorInstanceIndexWork is the scheduler's own
+// settlement barrier (awaits the real per-instance tail chain to
+// quiescence), the deterministic way to observe that convergence before
+// asserting on lexical/semantic content.
+function waitForDeferredIndexWorkToDrain(timeoutMs = 10_000): Promise<void> {
+  return drainConnectorInstanceIndexWork(timeoutMs);
 }
 
 type CanonicalValue = null | string | number | boolean | CanonicalValue[] | { [key: string]: CanonicalValue };
@@ -2527,6 +2540,10 @@ async function runWriterCollisionOracle(driver: Driver): Promise<void> {
         Promise.all([holder, firstPromise, secondAcquired.promise]),
         `${writer.name} first writer completion and second-writer barrier`
       );
+      await within(
+        waitForDeferredIndexWorkToDrain(),
+        `${writer.name} ${order} deferred index work draining after the first writer`
+      );
       assert.deepEqual(
         await collisionSnapshot(driver, device, request, notifications),
         firstCollisionExpected(writer.name, order),
@@ -2536,6 +2553,10 @@ async function runWriterCollisionOracle(driver: Driver): Promise<void> {
       releaseSecond.resolve();
       await within(secondPromise, `${writer.name} second writer completion`);
       assert.equal(mustExist(deviceResult, "device result must exist").status, 201);
+      await within(
+        waitForDeferredIndexWorkToDrain(),
+        `${writer.name} ${order} deferred index work draining after the second writer`
+      );
       assert.deepEqual(
         await collisionSnapshot(driver, device, request, notifications),
         finalCollisionExpected(writer.name, order),

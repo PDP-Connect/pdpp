@@ -799,7 +799,13 @@ test("_ref dataset summary", async (t) => {
       assert.equal(body.earliest_ingested_at, null);
       assert.equal(body.latest_ingested_at, null);
       assert.deepEqual(body.top_connectors, []);
-      assert.equal(body.projection.state, "rebuilding");
+      // A never-converged projection auto-heals on the owner's own read
+      // (ensureDatasetSummaryProjectionHealthy in dataset-summary-read-model.ts):
+      // an empty instance has nothing to scan, so the synchronous rebuild
+      // this GET triggers completes within the same request and commits
+      // state "fresh", not a placeholder "rebuilding" that a caller would
+      // have to poll past.
+      assert.equal(body.projection.state, "fresh");
     });
   });
 

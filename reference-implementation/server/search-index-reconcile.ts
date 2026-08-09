@@ -29,6 +29,7 @@ import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import { referenceQueries } from "./queries/index.ts";
 import { lexicalIndexBackfillForManifest } from "./search.ts";
 import { getSemanticBackend, semanticIndexBackfillForManifest } from "./search-semantic.ts";
+import { currentStorageGeneration, isCurrentStorageGeneration } from "./storage-generation.ts";
 import {
   clearSearchIndexDirty,
   countDirtySearchIndexScopes,
@@ -84,15 +85,110 @@ export interface ReconcileScopeResult {
   readonly stream: string;
 }
 
+/** Thrown by the fence gate inside reconcileSearchIndexDirtyScope/runScopeBackfills to short-circuit to a dropped-work outcome. */
+class ScopeStorageGenerationStaleError extends Error {}
+
+function assertStorageGenerationCurrent(generation: number): void {
+  if (!isCurrentStorageGeneration(generation)) {
+    throw new ScopeStorageGenerationStaleError();
+  }
+}
+
+/**
+ * Runs both backfills for one already-resolved (manifest, targetStream)
+ * pair, pinned to this exact connector instance, then clears the scope's
+ * dirty flag. Extracted from reconcileSearchIndexDirtyScope specifically to
+ * keep the generation-fence recheck sequence (one call per storage-touching
+ * step, see that function's doc comment) at a shallower nesting depth than
+ * the manifest/stream resolution it runs after.
+ */
+async function runScopeBackfills(
+  scope: DirtySearchIndexScope,
+  manifest: Record<string, unknown>,
+  targetStream: Record<string, unknown>,
+  generation: number
+): Promise<ReconcileScopeResult> {
+  const { connectorId, connectorInstanceId, stream } = scope;
+  // Narrowed to the ONE dirty stream, not the whole manifest: the
+  // maintenance-sweep addendum flagged that the underlying backfill loops
+  // have no wall-clock deadline of their own, so bounding the manifest to
+  // exactly the stream that needs checking keeps one reconcile round's
+  // worst case proportional to one stream's drift-check, not every stream
+  // this connector declares.
+  const pinnedManifest = {
+    ...manifest,
+    connector_id: connectorId,
+    storage_binding: { connector_instance_id: connectorInstanceId },
+    streams: [targetStream],
+  };
+
+  await lexicalIndexBackfillForManifest({ manifest: pinnedManifest } as unknown as LexicalBackfillOptions);
+  assertStorageGenerationCurrent(generation);
+
+  // Distinguish "this stream does not declare semantic_fields" (semantic
+  // participation was never configured here -- clearing is correct, there
+  // is nothing to prove) from "this stream DOES declare semantic_fields but
+  // no server-wide backend is currently configured" (review-flagged gap:
+  // getSemanticBackend() returning null here could mean semantic retrieval
+  // is intentionally disabled for the whole server, OR that the backend is
+  // temporarily unavailable/warming -- either way, clearing the combined
+  // dirty flag in that case would silently declare "semantic is in sync"
+  // for a scope whose semantic index was never actually checked,
+  // permanently dropping pending proof). When semantic is configured for
+  // this stream but no backend exists right now, this reconcile only
+  // proves LEXICAL is in sync; the semantic half stays unproven and the
+  // flag is deliberately left set (with distinct evidence, not a generic
+  // failure) so a later attempt -- once a backend exists -- still gets a
+  // chance to actually check it.
+  const semanticFieldsDeclared = declaresSemanticFields(targetStream);
+  const semanticBackend = getSemanticBackend();
+  if (semanticFieldsDeclared && !semanticBackend) {
+    await recordSearchIndexDirtyFailure(
+      { connectorInstanceId, stream },
+      "semantic_fields is declared for this stream but no semantic backend is currently configured; semantic sync is unproven, dirty flag retained"
+    );
+    return { connectorId, connectorInstanceId, ok: false, stream };
+  }
+  if (semanticBackend) {
+    await semanticIndexBackfillForManifest({ manifest: pinnedManifest } as unknown as SemanticBackfillOptions);
+    assertStorageGenerationCurrent(generation);
+  }
+
+  await clearSearchIndexDirty({ connectorInstanceId, stream }, new Date().toISOString());
+  return { connectorId, connectorInstanceId, ok: true, stream };
+}
+
 /**
  * Reconcile ONE dirty scope: re-run both backfills pinned to this exact
  * connector instance, then clear the flag on success or record structured
  * failure evidence and leave it set on error.
+ *
+ * Storage-lifecycle fence (server/storage-generation.ts): `generation` is
+ * captured by the caller at round-start. `assertStorageGenerationCurrent`
+ * re-checks it before every storage-touching step below (and inside
+ * runScopeBackfills). Like every other fence check in this codebase (see
+ * withIndexWork's identical caveat in records.ts), this proves the
+ * generation was still current at the moment of that check -- it does NOT
+ * protect the awaits inside lexicalIndexBackfillForManifest/
+ * semanticIndexBackfillForManifest themselves; storage can still close
+ * mid-call between two of THEIR internal awaits. What this closes is the
+ * previously-completely-unfenced gap (this file never checked the
+ * generation at all) for the common shutdown/teardown race, not a
+ * guarantee against every possible interleaving. A mismatch at any gate
+ * means the work is dropped silently: the scope's dirty flag is left
+ * untouched (never cleared, no failure evidence written) and converges on
+ * the NEW generation's own reconcile, same as any other dropped deferred
+ * job.
  */
-export async function reconcileSearchIndexDirtyScope(scope: DirtySearchIndexScope): Promise<ReconcileScopeResult> {
+export async function reconcileSearchIndexDirtyScope(
+  scope: DirtySearchIndexScope,
+  generation: number = currentStorageGeneration()
+): Promise<ReconcileScopeResult> {
   const { connectorId, connectorInstanceId, stream } = scope;
   try {
+    assertStorageGenerationCurrent(generation);
     const manifest = await getRegisteredManifestById(connectorId);
+    assertStorageGenerationCurrent(generation);
     const manifestStreams = Array.isArray(manifest?.streams) ? (manifest.streams as Record<string, unknown>[]) : null;
     const targetStream = manifestStreams?.find((candidate) => candidate?.name === stream) ?? null;
     if (!(manifest && targetStream)) {
@@ -108,52 +204,15 @@ export async function reconcileSearchIndexDirtyScope(scope: DirtySearchIndexScop
       await clearSearchIndexDirty({ connectorInstanceId, stream }, new Date().toISOString());
       return { connectorId, connectorInstanceId, ok: true, stream };
     }
-    // Narrowed to the ONE dirty stream, not the whole manifest: the
-    // maintenance-sweep addendum flagged that the underlying backfill loops
-    // have no wall-clock deadline of their own, so bounding the manifest to
-    // exactly the stream that needs checking keeps one reconcile round's
-    // worst case proportional to one stream's drift-check, not every stream
-    // this connector declares.
-    const pinnedManifest = {
-      ...manifest,
-      connector_id: connectorId,
-      storage_binding: { connector_instance_id: connectorInstanceId },
-      streams: [targetStream],
-    };
-
-    await lexicalIndexBackfillForManifest({ manifest: pinnedManifest } as unknown as LexicalBackfillOptions);
-
-    // Distinguish "this stream does not declare semantic_fields" (semantic
-    // participation was never configured here -- clearing is correct, there
-    // is nothing to prove) from "this stream DOES declare semantic_fields
-    // but no server-wide backend is currently configured" (review-flagged
-    // gap: getSemanticBackend() returning null here could mean semantic
-    // retrieval is intentionally disabled for the whole server, OR that the
-    // backend is temporarily unavailable/warming -- either way, clearing
-    // the combined dirty flag in that case would silently declare "semantic
-    // is in sync" for a scope whose semantic index was never actually
-    // checked, permanently dropping pending proof). When semantic is
-    // configured for this stream but no backend exists right now, this
-    // reconcile only proves LEXICAL is in sync; the semantic half stays
-    // unproven and the flag is deliberately left set (with distinct
-    // evidence, not a generic failure) so a later attempt -- once a backend
-    // exists -- still gets a chance to actually check it.
-    const semanticFieldsDeclared = declaresSemanticFields(targetStream);
-    const semanticBackend = getSemanticBackend();
-    if (semanticFieldsDeclared && !semanticBackend) {
-      await recordSearchIndexDirtyFailure(
-        { connectorInstanceId, stream },
-        "semantic_fields is declared for this stream but no semantic backend is currently configured; semantic sync is unproven, dirty flag retained"
-      );
+    return await runScopeBackfills(scope, manifest, targetStream, generation);
+  } catch (err) {
+    if (err instanceof ScopeStorageGenerationStaleError || !isCurrentStorageGeneration(generation)) {
+      // The failure itself may BE storage having closed mid-flight; writing
+      // evidence would touch a different generation's table under the same
+      // scope key. Matches scheduleRecordIndexMaintenance's identical
+      // re-check in records.ts.
       return { connectorId, connectorInstanceId, ok: false, stream };
     }
-    if (semanticBackend) {
-      await semanticIndexBackfillForManifest({ manifest: pinnedManifest } as unknown as SemanticBackfillOptions);
-    }
-
-    await clearSearchIndexDirty({ connectorInstanceId, stream }, new Date().toISOString());
-    return { connectorId, connectorInstanceId, ok: true, stream };
-  } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await recordSearchIndexDirtyFailure({ connectorInstanceId, stream }, message).catch(() => {
       // Evidence write is itself best-effort; never mask the original failure.
@@ -187,6 +246,12 @@ export async function runSearchIndexDirtyReconcileRound(options?: {
 }): Promise<SearchIndexDirtyReconcileRoundResult> {
   const pageSize = options?.pageSize ?? DEFAULT_PAGE_SIZE;
   const deadline = Date.now() + (options?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS);
+  // Storage-lifecycle fence: captured ONCE for the whole round. Every scope
+  // in this round re-checks against this same captured value (not a fresh
+  // currentStorageGeneration() read per scope) so a storage close/reinit
+  // partway through a round consistently drops the REST of that round
+  // rather than silently resuming against a new, unrelated handle.
+  const generation = currentStorageGeneration();
   const scopes = await listDirtySearchIndexScopes(pageSize);
 
   let succeeded = 0;
@@ -195,13 +260,13 @@ export async function runSearchIndexDirtyReconcileRound(options?: {
   let attempted = 0;
 
   for (const scope of scopes) {
-    if (Date.now() >= deadline) {
+    if (Date.now() >= deadline || !isCurrentStorageGeneration(generation)) {
       incomplete = true;
       break;
     }
     attempted += 1;
     // biome-ignore lint/performance/noAwaitInLoops: Bounded round; each scope's reconcile is independent but sequential to keep this sweep's DB load predictable.
-    const result = await reconcileSearchIndexDirtyScope(scope);
+    const result = await reconcileSearchIndexDirtyScope(scope, generation);
     if (result.ok) {
       succeeded += 1;
     } else {
