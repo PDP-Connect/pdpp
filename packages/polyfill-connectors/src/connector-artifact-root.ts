@@ -82,11 +82,11 @@ export interface ConnectorArtifactRootEnv {
 export type ConnectorArtifactRootSource = "explicit-override" | "database-directory" | "local-development-fallback";
 
 export interface ConnectorArtifactRoot {
+  /** True when the root is deployment-owned (rules 1 and 2). */
+  deploymentOwned: boolean;
   /** Absolute path to the durable root. */
   root: string;
   source: ConnectorArtifactRootSource;
-  /** True when the root is deployment-owned (rules 1 and 2). */
-  deploymentOwned: boolean;
 }
 
 function trimmed(value: string | undefined): string | undefined {
@@ -156,8 +156,8 @@ export function describeConnectorArtifactRoot(resolved: ConnectorArtifactRoot): 
     default:
       return (
         `Durable artifact root ${resolved.root} (LOCAL-DEVELOPMENT FALLBACK — no ` +
-        `PDPP_CONNECTOR_ARTIFACT_ROOT and no PDPP_DB_PATH). This path is NOT on a ` +
-        `deployment-managed volume; artifacts here are lost when the container is replaced.`
+        "PDPP_CONNECTOR_ARTIFACT_ROOT and no PDPP_DB_PATH). This path is NOT on a " +
+        "deployment-managed volume; artifacts here are lost when the container is replaced."
       );
   }
 }
