@@ -21,6 +21,7 @@ import {
   getPdppCliPackageInfo,
   PDPP_CLI_DEFAULT_CLIENT_ID,
 } from "../../packages/cli/src/package-info.ts";
+import type { ProviderAuthManifestLike } from "../../packages/polyfill-connectors/src/provider-auth-adapter.ts";
 import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.ts";
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from "../lib/controller-boot.ts";
 import { exec, getOne, referenceQueries, transaction } from "../lib/db.ts";
@@ -132,7 +133,7 @@ import {
   type ConnectorInstanceWriteOwnership,
   withConnectorInstanceWrite,
 } from "./connector-instance-write-coordinator.ts";
-import { canonicalConnectorKey, isInternalConnectorId } from "./connector-key.ts";
+import { canonicalConnectorKey, isInternalConnectorId, legacyLocalAliasMap } from "./connector-key.ts";
 import { createResumableConnectorMaintenanceSweep } from "./connector-maintenance-sweep.ts";
 import {
   getConnectorSummaryEvidence,
@@ -158,6 +159,7 @@ import {
 } from "./deployment-diagnostics.ts";
 import { composeFleetHealthVerdict } from "./fleet-health.ts";
 import { deriveReferenceFreshness } from "./freshness.ts";
+import { LOCAL_COLLECTOR_PROVEN_KEYS } from "./generated/connector-registry.generated.ts";
 import {
   encodeHostedMcpSelection,
   encodeHostedMcpStreamSelection,
@@ -208,7 +210,6 @@ import {
   postgresQuery,
   resolveStorageBackend,
 } from "./postgres-storage.ts";
-import type { ProviderAuthManifestLike } from "../../packages/polyfill-connectors/src/provider-auth-adapter.ts";
 import { createGenericProviderAuthDispatch } from "./provider-auth/generic-dispatch.ts";
 import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
 import {
@@ -1157,41 +1158,44 @@ function generateReferenceSecret(prefix: string, bytes = 24) {
   return `${prefix}_${randomBytes(bytes).toString("base64url")}`;
 }
 
-// Keyed by canonical connector_key. The local-collector manifest files
-// retain their historical snake_case filenames (`claude_code.json`), but the
-// catalog row, the connector_instances row, and the record storage target all
-// use the canonical key (`claude-code`, `codex`) so a legacy-alias enroll
-// cannot fork the connector type away from its canonical identity.
-const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
-  ["claude-code", { displayName: "Claude Code", entryName: "claude_code.json" }],
-  ["codex", { displayName: "OpenAI Codex CLI", entryName: "codex.json" }],
-  ["google-takeout", { displayName: "Google Takeout", entryName: "google_takeout.json" }],
-  ["imessage", { displayName: "iMessage (macOS)", entryName: "imessage.json" }],
-  ["apple-photos", { displayName: "Apple Photos", entryName: "apple_photos.json" }],
-  ["google-messages", { displayName: "Google Messages (via gmcli)", entryName: "google_messages.json" }],
-]);
+// Canonical local-collector connector_key -> its manifest's filename. Both
+// sides are manifest-derived, never hand-listed: LOCAL_COLLECTOR_PROVEN_KEYS
+// is every manifest declaring capabilities.proven.local_collector, and
+// legacyLocalAliasMap() carries the historical snake_case bundle id those
+// manifest files are still named after (`claude_code.json`). The catalog row,
+// the connector_instances row, and the record storage target all use the
+// canonical key (`claude-code`) so a legacy-alias enroll cannot fork the
+// connector type away from its canonical identity.
+const REFERENCE_LOCAL_CONNECTOR_MANIFEST_FILENAMES: ReadonlyMap<string, string> = new Map(
+  LOCAL_COLLECTOR_PROVEN_KEYS.map((connectorKey) => {
+    const legacyAlias = Object.entries(legacyLocalAliasMap()).find(([, canonical]) => canonical === connectorKey)?.[0];
+    return [connectorKey, `${legacyAlias ?? connectorKey}.json`];
+  })
+);
 
 function readReferenceLocalConnectorCatalogManifest(connectorId: string) {
   const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
-  const local = REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.get(connectorKey);
-  if (!local) {
+  const entryName = REFERENCE_LOCAL_CONNECTOR_MANIFEST_FILENAMES.get(connectorKey);
+  if (!entryName) {
     return null;
   }
   try {
     const raw = readFileSync(
-      new URL(`../../packages/polyfill-connectors/manifests/${local.entryName}`, import.meta.url),
+      new URL(`../../packages/polyfill-connectors/manifests/${entryName}`, import.meta.url),
       "utf8"
     );
     const manifest = JSON.parse(raw);
     return {
       ...manifest,
       connector_id: connectorKey,
-      display_name: manifest.display_name || local.displayName,
+      // The manifest is the only source of the owner-facing name; there is no
+      // RI-side fallback string to disagree with it.
+      display_name: manifest.display_name || connectorKey,
     };
   } catch {
     return {
       connector_id: connectorKey,
-      display_name: local.displayName,
+      display_name: connectorKey,
       streams: [],
     };
   }
@@ -2020,9 +2024,8 @@ function providerIdentityGroupDescriptorFromManifests(
 function connectionConfigDeploymentFieldsFromManifest(
   manifest: ConnectorManifest
 ): readonly { envAlias: string | null; label: string; logicalKey: string; secret: boolean }[] {
-  const declared = (
-    manifest as unknown as { capabilities?: { auth?: { deployment_config?: unknown } | null } }
-  ).capabilities?.auth?.deployment_config;
+  const declared = (manifest as unknown as { capabilities?: { auth?: { deployment_config?: unknown } | null } })
+    .capabilities?.auth?.deployment_config;
   if (!Array.isArray(declared)) {
     return [];
   }
@@ -2179,15 +2182,15 @@ function buildControllerProviderAuthRunEnvResolver() {
       manifest as unknown as Parameters<typeof connectionConfigEntriesFromManifest>[0]
     );
     return resolveProviderAuthRunEnv({
+      connectionConfig,
       connectorId,
       connectorInstanceId,
       credentialStore: createRequestConnectorInstanceCredentialStore(),
-      ownerSubjectId,
-      sourceBinding: connectorInstance?.sourceBinding ?? null,
-      connectionConfig,
       legacyBundleFieldAliases:
         (manifest as { capabilities?: { auth?: { legacy_bundle_field_aliases?: Record<string, string> | null } } })
           ?.capabilities?.auth?.legacy_bundle_field_aliases ?? null,
+      ownerSubjectId,
+      sourceBinding: connectorInstance?.sourceBinding ?? null,
     });
   };
 }
@@ -5582,7 +5585,10 @@ export function buildAsApp(opts: ServerOpts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     resolveProviderIdentityGroup,
   };
-  mountRefProviderAppConfigGet(app, providerAppConfigCtx as unknown as Parameters<typeof mountRefProviderAppConfigGet>[1]);
+  mountRefProviderAppConfigGet(
+    app,
+    providerAppConfigCtx as unknown as Parameters<typeof mountRefProviderAppConfigGet>[1]
+  );
   mountRefProviderAppConfigPost(
     app,
     providerAppConfigCtx as unknown as Parameters<typeof mountRefProviderAppConfigPost>[1]
