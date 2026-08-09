@@ -524,6 +524,41 @@ runConnector({
       totalRecords += summary.records;
     }
 
+    // One chat record per successfully parsed export file: `importedExports`
+    // counts the files that yielded a chat, measured at the discovery walk
+    // above rather than from the emit count, so a steady-state run whose chats
+    // were all fingerprint-suppressed still reads covered. Files rejected by
+    // `parseExportFile` emit their own SKIP_RESULT and stay out of both counts,
+    // so a rejected export correctly reads partial.
+    if (requested.has("chats")) {
+      await emit(
+        buildDetailCoverageMessage({
+          stream: "chats",
+          stateStream: "chats",
+          requiredKeys: [],
+          hydratedKeys: [],
+          considered: importedExports,
+          covered: importedExports,
+        })
+      );
+    }
+
+    // `totalMessages` is the parsed message count summed across exports
+    // (`parsed.messages.length`), not the emitted count — every parsed message
+    // is either emitted or suppressed as unchanged by the fingerprint cursor.
+    if (requested.has("messages")) {
+      await emit(
+        buildDetailCoverageMessage({
+          stream: "messages",
+          stateStream: "messages",
+          requiredKeys: [],
+          hydratedKeys: [],
+          considered: totalMessages,
+          covered: totalMessages,
+        })
+      );
+    }
+
     if (requested.has("attachments")) {
       await emit(
         buildDetailCoverageMessage({

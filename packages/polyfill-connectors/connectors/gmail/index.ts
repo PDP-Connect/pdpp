@@ -449,6 +449,32 @@ export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailC
 }
 
 /**
+ * Build the self-coverage DETAIL_COVERAGE for a full-scan stream whose boundary
+ * is re-enumerated every run and gated by a per-record fingerprint cursor
+ * (`labels`, `threads`).
+ *
+ * `considered` is the enumerated boundary size, measured at the enumeration site
+ * — the mailbox list for `labels`, the aggregated thread map for `threads` —
+ * never the emitted count. Every in-boundary item is either emitted or
+ * suppressed as unchanged, so `covered` equals `considered` and a steady-state
+ * run reads covered rather than a false `partial`. There is no separate detail
+ * hydration phase, so the key sets stay empty and `stream === state_stream`.
+ *
+ * Extracted so both declarations are testable without standing up an IMAP
+ * fixture, matching `buildAttachmentDetailCoverageMessage` above.
+ */
+export function buildFullScanCoverageMessage(stream: string, considered: number): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream,
+    stateStream: stream,
+    requiredKeys: [],
+    hydratedKeys: [],
+    considered,
+    covered: considered,
+  });
+}
+
+/**
  * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles.
  *
  * Extracted from `runAllMailPasses` to keep that orchestrator under the
@@ -940,6 +966,12 @@ async function emitLabelsStream(
     priorFingerprints: readPriorLabelFingerprints(state),
   });
   const mailboxes: ListResponse[] = await client.list();
+  // The full mailbox list is the stream's boundary, measured here before the
+  // fingerprint gate below decides what to emit. Every mailbox is either
+  // emitted or suppressed as unchanged — none is dropped — so `considered` and
+  // `covered` are equal and a steady-state run reads covered rather than a
+  // false partial.
+  const consideredLabels = mailboxes.length;
   for (const mb of mailboxes) {
     const name = mb.path;
     const record = {
@@ -966,6 +998,7 @@ async function emitLabelsStream(
     stream: "labels",
     cursor: labelsCursor,
   });
+  await emit(buildFullScanCoverageMessage("labels", consideredLabels));
 }
 
 // ─── All Mail resolution + cursor ───────────────────────────────────────
@@ -2365,6 +2398,13 @@ async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor
     threadAgg.set(tid, next);
   }
   await emitChangedThreads(threadAgg.values(), cursor, emitRecord);
+  // The distinct threads aggregated from the full `1:*` scan are the boundary
+  // this pass weighed, counted from the aggregate map rather than from what
+  // `emitChangedThreads` emitted. Every aggregate is either emitted or
+  // suppressed as unchanged by the fingerprint cursor, so the boundary is fully
+  // accounted for; messages carrying no thread id never entered the map and are
+  // correctly outside both counts.
+  await emit(buildFullScanCoverageMessage("threads", threadAgg.size));
 }
 
 /**

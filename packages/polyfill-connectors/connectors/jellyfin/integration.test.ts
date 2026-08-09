@@ -327,6 +327,35 @@ test("e2e: header auth (X-Emby-Token) and no query param credentials", async () 
   }
 });
 
+test("e2e: items coverage declares the server-reported TotalRecordCount as the denominator", async () => {
+  const server = new FakeJellyfinServer();
+  const baseUrl = await server.start();
+
+  try {
+    const { ctx, messages, records } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-secret-key-12345" },
+      streams: [{ name: "items" }],
+    });
+
+    await collect(ctx);
+
+    const coverage = messages.find(
+      (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        message.type === "DETAIL_COVERAGE" && message.stream === "items"
+    );
+    assert.ok(coverage, "expected items DETAIL_COVERAGE");
+    assert.equal(coverage.state_stream, "items");
+    // The denominator is the server's own inventory size, not the emit count:
+    // the fake server reports 100 and serves 100 across two pages.
+    assert.equal(coverage.considered, 100);
+    assert.equal(coverage.covered, records.filter((r) => r.stream === "items").length);
+    assert.deepEqual(coverage.required_keys, []);
+    assert.deepEqual(coverage.hydrated_keys, []);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("e2e: SSRF protection via origin constraint", async () => {
   const server = new FakeJellyfinServer();
   const baseUrl = await server.start();

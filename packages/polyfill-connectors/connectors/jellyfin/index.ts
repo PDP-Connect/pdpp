@@ -66,7 +66,13 @@
 
 import { createHash } from "node:crypto";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import {
+  buildDetailCoverageMessage,
+  type CollectContext,
+  nowIso,
+  type RecordData,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { jellyfinPacingProfile } from "../../src/provider-profile.ts";
@@ -638,7 +644,7 @@ async function collectItemsForLibrary(
   conn: JellyfinConn,
   libraryId: string,
   ctx: Pick<CollectContext, "emitRecord">
-): Promise<number> {
+): Promise<{ considered: number; emitted: number }> {
   const { emitRecord } = ctx;
   let startIndex = 0;
   const pageSize = 500;
@@ -694,7 +700,12 @@ async function collectItemsForLibrary(
     pageCount += 1;
   }
 
-  return emitted;
+  // `priorTotal` holds the last validated `TotalRecordCount` — the source's own
+  // inventory size for this library, already load-bearing for the pagination
+  // stop above. A library that paginated at least once always has it; the
+  // `?? 0` only covers the unreachable no-page case (the loop runs at least
+  // once and throws when the field is missing).
+  return { considered: priorTotal ?? 0, emitted };
 }
 
 async function collectItems(
@@ -711,6 +722,7 @@ async function collectItems(
 
   const views = await fetchLibraries(conn);
   let totalItemsEmitted = 0;
+  let totalItemsConsidered = 0;
 
   for (const view of views) {
     const libraryId = (view as Record<string, string>)?.Id;
@@ -719,12 +731,29 @@ async function collectItems(
     }
 
     await progress("Fetching items from library", { stream: "items" });
-    totalItemsEmitted += await collectItemsForLibrary(conn, libraryId, ctx);
+    const library = await collectItemsForLibrary(conn, libraryId, ctx);
+    totalItemsEmitted += library.emitted;
+    totalItemsConsidered += library.considered;
 
     (state.items as Record<string, Record<string, unknown>>)[libraryId] = { last_fetched_at: now };
   }
 
   await emit({ type: "STATE", stream: "items", cursor: state.items });
+  // The denominator is the sum of each library's source-reported
+  // `TotalRecordCount`, measured at the pagination site and independent of what
+  // was emitted. `items` has no unchanged-suppression lane — every paged item is
+  // emitted — so `emitted` is the honest covered numerator, and a library that
+  // reported more items than it served reads partial rather than complete.
+  await emit(
+    buildDetailCoverageMessage({
+      stream: "items",
+      stateStream: "items",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: totalItemsConsidered,
+      covered: totalItemsEmitted,
+    })
+  );
   await progress(`Fetched ${totalItemsEmitted} items across all libraries`, {
     stream: "items",
     count: totalItemsEmitted,

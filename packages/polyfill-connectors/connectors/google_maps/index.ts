@@ -15,7 +15,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { CollectContext } from "../../src/connector-runtime.ts";
-import { runConnector } from "../../src/connector-runtime.ts";
+import { buildDetailCoverageMessage, runConnector } from "../../src/connector-runtime.ts";
 import { parseGoogleMapsExport } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
 import type { GoogleMapsState, ParseResult, TimelinePointRecord, TimelineSegmentRecord } from "./types.ts";
@@ -159,6 +159,22 @@ async function emitPoints(
     stream: "timeline_points",
     cursor: { last_timestamp: latest },
   });
+  // `points` is the whole merged, deduplicated import boundary, materialized
+  // before this loop — an independent enumeration-site measurement, never the
+  // emit count. Each point is either emitted or skipped by the incremental
+  // `since` cursor because a prior run already covered it, so the boundary is
+  // fully accounted for and a steady-state re-import reads covered instead of
+  // a false partial.
+  await ctx.emit(
+    buildDetailCoverageMessage({
+      stream: "timeline_points",
+      stateStream: "timeline_points",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: points.length,
+      covered: points.length,
+    })
+  );
   return latest;
 }
 
