@@ -5315,18 +5315,6 @@ async function projectConnectorSummaryForInstance(
   deps: ConnectorSummaryProjectionDeps,
   options: {
     readonly activeVisibleConnectionCount?: number;
-    /**
-     * Catalog-visibility gating (`isPublicReferenceConnector`) answers "should
-     * this connector appear when browsing/listing configured connections?" —
-     * correct for `listConnectorSummaries`/`getConnectorSummaryForRoute`
-     * (both list surfaces, scoped or not). It is the wrong question for
-     * `getConnectorDetail`: a connector reached by its own connector_id
-     * (not discovered via catalog browsing) with a real, already-resolved
-     * connection must still surface that connection's genuine data — an
-     * owner-addressed connector_id is not catalog browsing. Defaults to
-     * `true` (the pre-existing list/route behavior, unchanged).
-     */
-    readonly requireCatalogVisibility?: boolean;
   } = {}
 ): Promise<ConnectorSummary | null> {
   const {
@@ -5350,25 +5338,13 @@ async function projectConnectorSummaryForInstance(
     reasonCode: null,
     state: "current" as const,
   };
-  // A malformed/unparseable manifest is real, honest evidence about this
-  // connection — never a reason to silently drop it from the owner's
-  // summary list (design.md "Orthogonal projection evidence":
-  // manifest_declaration is independent of every other axis, including
-  // basic listability). `isPublicReferenceConnector`'s "is this connector
-  // publicly listed" gate reads `manifest.capabilities.public_listing`,
-  // which cannot be evaluated meaningfully when the manifest itself failed
-  // to parse — an unparseable manifest is skipped past that gate rather
-  // than treated as "not listed", and every capability-dependent field
-  // below already reads through `manifest.streams ?? []` /
-  // `manifest.capabilities?.x` on the safe empty placeholder, so nothing
-  // fabricates a capability the real manifest never declared.
-  if (
-    (options.requireCatalogVisibility ?? true) &&
-    manifestDeclaration.state === "current" &&
-    !isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)
-  ) {
-    return null;
-  }
+  // No catalog-visibility gate here, by design. `capabilities.public_listing`
+  // governs OFFER/DISCOVERY (the Add Source catalog) and auto-enrollment only —
+  // it answers "may the owner add this connector?", never "may the owner see a
+  // connection they already created?". Gating this projection on it hid real,
+  // record-bearing connections from the owner's own inventory while the
+  // `retained_count_summary` profile (ungated) kept showing them, so /sources
+  // and /sources/add disagreed about the same data.
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
   const activeVisibleConnectionCount = options.activeVisibleConnectionCount ?? 0;
   // Persisted source kind is the authority boundary, not a hint applied after
@@ -6209,19 +6185,24 @@ async function projectConnectorSummaryIdentityPage(
     pageProductEvidence: pageEvidence.product,
     retainedSizeSnapshot: pageEvidence.retainedSizeSnapshot,
   };
-  const activeVisibleConnectionCounts = new Map(
-    [...activeConnectionCounts].filter(([activeConnectorId]) => {
-      const manifest = pageDeps.manifestsByConnectorId.get(activeConnectorId);
-      return (
-        manifest !== undefined &&
-        isPublicReferenceConnector({ connector_id: activeConnectorId, manifest: JSON.stringify(manifest) }, manifest)
-      );
-    })
-  );
+  // `public_listing` governs OFFER/DISCOVERY and auto-enrollment only; it has no
+  // say over connections the owner has already created. This page is exactly
+  // that owner inventory, so the sibling-cardinality count is the plain active
+  // count — filtering it by catalog listability made an unlisted connector's
+  // singleton count 0 and silently denied it the legacy connector-wide run
+  // evidence `canUseConnectorWideRunSummaryFallback` grants every other
+  // single-connection connector.
+  //
+  // The page is built from owner-visible identities the keyset query already
+  // returned, so every row here is a row that will be returned: no post-LIMIT
+  // visibility filter, and therefore no page that silently shrinks while
+  // reporting a pre-filter `has_more`. The `.filter` below removes only rows
+  // whose manifest is entirely absent — a projection that cannot be built at
+  // all, not a visibility policy.
   return (
     await runWithConcurrency(rows, LIST_CONNECTOR_SUMMARIES_CONCURRENCY, (instance) =>
       projectConnectorSummaryForInstance(instance, pageDeps, {
-        activeVisibleConnectionCount: activeVisibleConnectionCounts.get(instance.connectorId) ?? 0,
+        activeVisibleConnectionCount: activeConnectionCounts.get(instance.connectorId) ?? 0,
       })
     )
   ).filter((summary): summary is ConnectorSummary => summary !== null);
@@ -6465,13 +6446,12 @@ export async function getConnectorSummaryForRoute(
   const activeConnectionCounts = await Promise.resolve(
     getConnectorInstanceStore().countActiveByOwnerConnectorIds(REFERENCE_OWNER_SUBJECT_ID, [match.connectorId])
   );
-  const manifest = deps.manifestsByConnectorId.get(match.connectorId);
-  const activeVisibleConnectionCount =
-    manifest &&
-    isPublicReferenceConnector({ connector_id: match.connectorId, manifest: JSON.stringify(manifest) }, manifest)
-      ? (activeConnectionCounts.get(match.connectorId) ?? 0)
-      : 0;
-  return projectConnectorSummaryForInstance(match, deps, { activeVisibleConnectionCount });
+  // Plain active sibling cardinality, ungated: `match` is a connection the owner
+  // already created and this route addressed it directly, so catalog listability
+  // is not a factor in either including the row or counting its siblings.
+  return projectConnectorSummaryForInstance(match, deps, {
+    activeVisibleConnectionCount: activeConnectionCounts.get(match.connectorId) ?? 0,
+  });
 }
 
 /**
@@ -6562,25 +6542,14 @@ export async function getConnectorDetail(
     connectorInstanceIds: [match.connectorInstanceId],
     includeRunSummaries: true,
   });
-  // Bounded aggregate scoped to exactly this one connector_id. This route's
-  // "active visible" has catalog gating off (see `requireCatalogVisibility:
-  // false` below), which reduces to plain `status === "active"` for a
-  // connector_id with a resolved manifest — exactly what this store
+  // Bounded aggregate scoped to exactly this one connector_id: plain
+  // `status === "active"` sibling cardinality, which is exactly what this store
   // aggregate counts. Never a fleet-wide in-memory count.
   const activeVisibleConnectionCounts = await Promise.resolve(
     getConnectorInstanceStore().countActiveByOwnerConnectorIds(REFERENCE_OWNER_SUBJECT_ID, [match.connectorId])
   );
   const summary = await projectConnectorSummaryForInstance(match, deps, {
     activeVisibleConnectionCount: activeVisibleConnectionCounts.get(match.connectorId) ?? 0,
-    // This route is reached by an owner-addressed connector_id, not by
-    // catalog browsing — catalog-visibility gating (`isPublicReferenceConnector`)
-    // answers "should this show up in the addable/listed catalog?", a
-    // different question from "does this specific, already-resolved
-    // connection have real data?" A private/unlisted connector's genuine
-    // connection must still be viewable through its own detail route (the
-    // exact regression closed here: this path used to read connector-wide
-    // data with no catalog gate at all).
-    requireCatalogVisibility: false,
   });
   if (isNullish(summary)) {
     // The connection resolved unambiguously, but the barrier-backed
