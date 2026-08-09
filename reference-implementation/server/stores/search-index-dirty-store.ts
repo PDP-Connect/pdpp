@@ -22,7 +22,7 @@
  * for that scope.
  */
 
-import { exec, execReturningOne, getOne, iterate, referenceQueries } from "../../lib/db.ts";
+import { exec, getOne, iterate, referenceQueries } from "../../lib/db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.ts";
 
 interface SqlClient {
@@ -83,46 +83,62 @@ export async function clearSearchIndexDirty(key: SearchIndexScopeKey, nowIso: st
 // is expected to be tiny in steady state (a crash/restart edge case, not
 // routine traffic) -- the goal is "a permanently-broken scope stops eating
 // every page's front slot," not "minimize retry cost of a large backlog."
-const BACKOFF_SCHEDULE_MS = [0, 5000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000];
+// Values are whole seconds (never sub-second) because SQLite's relative
+// date modifiers ('+N seconds') only support whole-second granularity --
+// the SAME schedule is baked into both queries/search/index-dirty/
+// record-failure.sql (SQLite CASE ladder) and the Postgres CASE expression
+// below; if this schedule ever changes, both must change together (there
+// is no single source of truth across the SQL/JS boundary, since LAND
+// review finding #1 requires the whole increment+backoff computation to
+// happen in ONE atomic statement per backend, which rules out computing
+// the delay in JS and passing it as a parameter).
+const BACKOFF_SCHEDULE_SECONDS = [0, 5, 15, 30, 60, 120, 300, 600];
 
-function backoffDelayMsForAttempt(attempts: number): number {
-  const index = Math.min(Math.max(attempts, 0), BACKOFF_SCHEDULE_MS.length - 1);
-  return BACKOFF_SCHEDULE_MS[index] ?? BACKOFF_SCHEDULE_MS.at(-1) ?? 600_000;
-}
+// Postgres CASE expression mirroring record-failure.sql's SQLite ladder
+// exactly, keyed on the POST-increment attempts value. to_char(...) forces
+// the exact toISOString() shape (YYYY-MM-DDTHH:MM:SS.mmmZ) rather than
+// Postgres's own ::text cast shape (space-separated, +00 offset), which
+// would otherwise silently break the lexicographic next_attempt_at <= ?
+// comparisons in list-dirty's eligibility filter against app-generated
+// ISO strings elsewhere in this table.
+const POSTGRES_BACKOFF_CASE = (() => {
+  const whens = BACKOFF_SCHEDULE_SECONDS.slice(1, -1)
+    .map((seconds, index) => `WHEN attempts + 1 = ${index + 1} THEN ${seconds}`)
+    .join("\n      ");
+  const last = BACKOFF_SCHEDULE_SECONDS.at(-1);
+  return `CASE
+      WHEN attempts + 1 <= 0 THEN 0
+      ${whens}
+      ELSE ${last}
+    END`;
+})();
 
 /**
  * Records a reconcile failure for this scope: dirty stays 1, structured
- * evidence for observability (I6), and attempts/next_attempt_at advance so
- * a repeatedly-failing scope backs off instead of permanently occupying
- * the oldest-first queue's front slot (see listDirtySearchIndexScopes).
+ * evidence for observability (I6), and attempts/next_attempt_at advance
+ * atomically (LAND review finding #1: previously two separate statements,
+ * so a crash between them could leave attempts incremented but backoff not
+ * yet applied) so a repeatedly-failing scope backs off instead of
+ * permanently occupying the oldest-first queue's front slot (see
+ * listDirtySearchIndexScopes).
  */
 export async function recordSearchIndexDirtyFailure(key: SearchIndexScopeKey, error: string): Promise<void> {
+  const nowIso = new Date().toISOString();
   if (isPostgresStorageBackend()) {
-    const { rows } = await postgresQuery<{ attempts: number }>(
-      `UPDATE search_index_dirty
-       SET last_error = $3, attempts = attempts + 1
-       WHERE connector_instance_id = $1 AND stream = $2
-       RETURNING attempts`,
-      [key.connectorInstanceId, key.stream, error]
-    );
-    const attempts = rows[0]?.attempts;
-    if (typeof attempts !== "number") {
-      return;
-    }
-    const nextAttemptAt = new Date(Date.now() + backoffDelayMsForAttempt(attempts)).toISOString();
     await postgresQuery(
-      "UPDATE search_index_dirty SET next_attempt_at = $3 WHERE connector_instance_id = $1 AND stream = $2",
-      [key.connectorInstanceId, key.stream, nextAttemptAt]
+      `UPDATE search_index_dirty
+       SET last_error = $3,
+           attempts = attempts + 1,
+           next_attempt_at = to_char(
+             ($4::timestamptz + ${POSTGRES_BACKOFF_CASE} * interval '1 second') AT TIME ZONE 'UTC',
+             'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+           )
+       WHERE connector_instance_id = $1 AND stream = $2`,
+      [key.connectorInstanceId, key.stream, error, nowIso]
     );
     return;
   }
-  const row = execReturningOne<{ attempts: number }>(referenceQueries.searchIndexDirtyRecordFailure, [
-    error,
-    key.connectorInstanceId,
-    key.stream,
-  ]);
-  const nextAttemptAt = new Date(Date.now() + backoffDelayMsForAttempt(row.attempts)).toISOString();
-  exec(referenceQueries.searchIndexDirtySetNextAttempt, [nextAttemptAt, key.connectorInstanceId, key.stream]);
+  exec(referenceQueries.searchIndexDirtyRecordFailure, [error, nowIso, key.connectorInstanceId, key.stream]);
 }
 
 export async function isSearchIndexScopeDirty(key: SearchIndexScopeKey): Promise<boolean> {

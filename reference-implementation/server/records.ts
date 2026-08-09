@@ -909,6 +909,27 @@ function removeIndexWorkWaiter(state: IndexWorkGenerationState, waiter: IndexWor
   }
 }
 
+// Shared cleanup predicate for a generation's admission bucket: drop it
+// only when it is genuinely idle (nothing acquired, nothing queued) AND it
+// is not the current generation (the current generation's bucket is kept
+// around for reuse, not recreated on every call). Called from BOTH
+// releaseIndexWork (the normal "job finished" path) and
+// dropIndexWorkStateIfIdleAndStale (LAND review finding #2: a rejected or
+// timed-out acquisition attempt never reaches releaseIndexWork at all,
+// since withIndexWork's try/finally only wraps the operation AFTER
+// `await acquireIndexWork(...)` returns -- a throw from acquireIndexWork
+// itself propagates before that finally block exists. Without this second
+// call site, a stale generation whose only admission attempts were ALL
+// rejected/timed-out would never have its bucket cleaned up, silently
+// contradicting the "old-generation buckets never revisited... drop them"
+// invariant documented below).
+function dropIndexWorkStateIfIdleAndStale(generation: number): void {
+  const state = indexWorkByGeneration.get(generation);
+  if (state && state.active === 0 && state.waiters.length === 0 && generation !== currentStorageGeneration()) {
+    indexWorkByGeneration.delete(generation);
+  }
+}
+
 async function acquireIndexWork(generation: number): Promise<void> {
   const state = indexWorkStateFor(generation);
   if (state.active < configuredIndexWorkLimit() && state.waiters.length === 0) {
@@ -916,30 +937,46 @@ async function acquireIndexWork(generation: number): Promise<void> {
     return;
   }
   if (state.waiters.length >= configuredIndexWorkQueueLimit()) {
+    // Immediate rejection: this generation's bucket was just created (or
+    // already existed) but this attempt never became a waiter and never
+    // incremented `active`, so it never reaches releaseIndexWork's cleanup.
+    // Clean up here instead if the bucket turns out to be idle and stale.
+    dropIndexWorkStateIfIdleAndStale(generation);
     throw new RecordIndexAdmissionError();
   }
-  await new Promise<void>((resolve, reject) => {
-    const waiter: IndexWorkWaiter = {
-      resolve: () => {
-        if (waiter.settled) {
-          return;
-        }
-        waiter.settled = true;
-        clearTimeout(waiter.timer);
-        resolve();
-      },
-      settled: false,
-      timer: setTimeout(() => {
-        if (waiter.settled) {
-          return;
-        }
-        waiter.settled = true;
-        removeIndexWorkWaiter(state, waiter);
-        reject(new RecordIndexAdmissionError());
-      }, configuredIndexWorkAcquireDeadlineMs()),
-    };
-    state.waiters.push(waiter);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const waiter: IndexWorkWaiter = {
+        resolve: () => {
+          if (waiter.settled) {
+            return;
+          }
+          waiter.settled = true;
+          clearTimeout(waiter.timer);
+          resolve();
+        },
+        settled: false,
+        timer: setTimeout(() => {
+          if (waiter.settled) {
+            return;
+          }
+          waiter.settled = true;
+          removeIndexWorkWaiter(state, waiter);
+          reject(new RecordIndexAdmissionError());
+        }, configuredIndexWorkAcquireDeadlineMs()),
+      };
+      state.waiters.push(waiter);
+    });
+  } catch (err) {
+    // Waiter-timeout rejection: removeIndexWorkWaiter already ran inside
+    // the timer callback above, so by the time this catch runs the waiter
+    // is gone from state.waiters. If that was the bucket's last trace of
+    // activity (no other waiter, nothing ever acquired against this
+    // generation), it is now idle and stale -- clean it up here since this
+    // rejection also never reaches releaseIndexWork.
+    dropIndexWorkStateIfIdleAndStale(generation);
+    throw err;
+  }
 }
 
 function releaseIndexWork(generation: number): void {
@@ -961,9 +998,7 @@ function releaseIndexWork(generation: number): void {
   // points at generations that already existed at capture time). Drop them
   // so this map cannot grow across a long-running process's history of
   // restarts/reinits.
-  if (state.active === 0 && state.waiters.length === 0 && generation !== currentStorageGeneration()) {
-    indexWorkByGeneration.delete(generation);
-  }
+  dropIndexWorkStateIfIdleAndStale(generation);
 }
 
 /**
@@ -1056,6 +1091,16 @@ export function recordIndexWorkStatsForTests(): { active: number; queued: number
 export function recordIndexWorkStatsForGenerationForTests(generation: number): { active: number; queued: number } {
   const state = indexWorkByGeneration.get(generation);
   return { active: state?.active ?? 0, queued: state?.waiters.length ?? 0 };
+}
+
+/**
+ * Test-only: whether a generation's admission bucket exists in the Map at
+ * all (distinct from "exists but active:0, queued:0" -- see LAND review
+ * finding #2, a bucket that only ever saw rejected/timed-out acquisitions
+ * must still be removable, not merely quiescent).
+ */
+export function recordIndexWorkGenerationBucketExistsForTests(generation: number): boolean {
+  return indexWorkByGeneration.has(generation);
 }
 
 export function withRecordIndexWorkForTests<T>(operation: () => Promise<T>): Promise<T> {

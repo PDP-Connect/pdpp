@@ -2412,7 +2412,7 @@ async function semanticBackfillIndexIsInSync({
   // `<= maxIndexRows`. expectedIndexRows (the actual number of indexable
   // text values in the CURRENT record set) is now always computed and
   // compared exactly, so any per-record shortfall is caught. See
-  // probe-semantic-crash-gap.test.ts.
+  // semantic-startup-backfill-catches-crash-abandoned-record.test.ts.
   const expectedIndexRows = usePostgres
     ? await postgresCountIndexableSemanticValues({ connectorInstanceId, declaredFields, stream })
     : countIndexableSemanticValues({ connectorInstanceId, declaredFields, stream });

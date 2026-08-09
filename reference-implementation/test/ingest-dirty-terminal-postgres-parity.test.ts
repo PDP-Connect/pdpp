@@ -16,6 +16,7 @@ import { registerConnector } from "../server/auth.ts";
 import { closeDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
 import { ingestRecord } from "../server/records.ts";
+import { __setLexicalBackfillPhaseHookForTest } from "../server/search.ts";
 import { runSearchIndexDirtyReconcileRound } from "../server/search-index-reconcile.ts";
 import { countDirtySearchIndexScopes, isSearchIndexScopeDirty } from "../server/stores/search-index-dirty-store.ts";
 
@@ -147,6 +148,91 @@ if (POSTGRES_URL) {
       indexRows.rows.map((r) => r.record_key),
       ["k1"]
     );
+  });
+
+  test("Postgres: a permanently-failing dirty scope cannot starve a later healthy scope out of every page (backoff/starvation parity with SQLite)", async () => {
+    const connectorId = "inv-pg-starvation-avoidance";
+    await registerConnector(manifestFor(connectorId));
+
+    const brokenInstanceId = "cin_pg_starvation_broken";
+    const healthyInstanceId = "cin_pg_starvation_healthy";
+
+    // The broken scope is ingested FIRST, so it is durably the OLDEST dirty
+    // scope (lowest marked_at) on Postgres too -- exactly the position that
+    // would starve everything behind it under a naive oldest-first-forever
+    // ordering. Mirrors the SQLite adversarial test in
+    // ingest-dirty-terminal-invariants.test.ts.
+    await ingestRecord(target(connectorId, brokenInstanceId), record("items", "k1", "will never reconcile"), {
+      deferIndexes: true,
+    });
+    await ingestRecord(target(connectorId, healthyInstanceId), record("items", "k1", "reconciles normally"), {
+      deferIndexes: true,
+    });
+
+    assert.equal(await isSearchIndexScopeDirty({ connectorInstanceId: brokenInstanceId, stream: "items" }), true);
+    assert.equal(await isSearchIndexScopeDirty({ connectorInstanceId: healthyInstanceId, stream: "items" }), true);
+
+    // Make the backfill phase throw FOR THE BROKEN INSTANCE ONLY, every
+    // single time, forever -- simulating a permanently-broken scope, not a
+    // transient blip that would eventually clear on its own. This hook is
+    // process-global (not backend-specific), so it applies to the Postgres
+    // code path exactly as it does to SQLite.
+    __setLexicalBackfillPhaseHookForTest((point, ctx) => {
+      if (point === "before-instance-fence" && ctx.connectorInstanceId === brokenInstanceId) {
+        throw new Error("permanently broken scope, by design of this test");
+      }
+    });
+
+    try {
+      // Page size 1 is deliberately adversarial: with NO starvation
+      // avoidance, the broken scope (oldest marked_at) would occupy this
+      // single slot on every round forever, and the healthy scope behind it
+      // would never even be ATTEMPTED, let alone converge -- on Postgres's
+      // own next_attempt_at/attempts columns and backoff CASE expression,
+      // not just SQLite's.
+      let healthyConverged = false;
+      for (let round = 0; round < 10 && !healthyConverged; round += 1) {
+        // biome-ignore lint/performance/noAwaitInLoops: Sequential rounds are the thing under test -- each round must observe the previous round's backoff state.
+        await runSearchIndexDirtyReconcileRound({ maxDurationMs: 5000, pageSize: 1 });
+        healthyConverged = !(await isSearchIndexScopeDirty({
+          connectorInstanceId: healthyInstanceId,
+          stream: "items",
+        }));
+      }
+
+      assert.equal(
+        healthyConverged,
+        true,
+        "the healthy scope must eventually be attempted and converge on Postgres despite a permanently-failing older scope"
+      );
+      assert.equal(
+        await isSearchIndexScopeDirty({ connectorInstanceId: brokenInstanceId, stream: "items" }),
+        true,
+        "the broken scope legitimately never converges (it always throws) -- it is starved OUT of contention, not silently fixed"
+      );
+
+      const rows = await postgresQuery<{ record_key: string }>(
+        "SELECT DISTINCT record_key FROM lexical_search_index WHERE connector_instance_id = $1",
+        [healthyInstanceId]
+      );
+      assert.deepEqual(
+        rows.rows.map((r) => r.record_key),
+        ["k1"],
+        "the healthy scope's record actually converged on Postgres"
+      );
+
+      const brokenRow = await postgresQuery<{ attempts: number; next_attempt_at: string | null }>(
+        "SELECT attempts, next_attempt_at FROM search_index_dirty WHERE connector_instance_id = $1 AND stream = $2",
+        [brokenInstanceId, "items"]
+      );
+      assert.ok((brokenRow.rows[0]?.attempts ?? 0) > 0, "the broken scope's attempts counter advanced on Postgres");
+      assert.ok(
+        brokenRow.rows[0]?.next_attempt_at,
+        "the broken scope's next_attempt_at was set on Postgres, same atomic-backoff shape as SQLite"
+      );
+    } finally {
+      __setLexicalBackfillPhaseHookForTest(null);
+    }
   });
 } else {
   test("SQLite/Postgres parity for the search-index dirty flag -- SKIPPED (set PDPP_TEST_POSTGRES_URL to run)", () => {

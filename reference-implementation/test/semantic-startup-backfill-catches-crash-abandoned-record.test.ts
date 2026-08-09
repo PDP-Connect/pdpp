@@ -1,6 +1,12 @@
-// Probe: does startup semantic backfill detect a record that was durably
-// written but never got its index maintenance run (simulating a crash
-// between commit and background index completion)?
+// Discriminating regression test: startup semantic backfill must detect and
+// repair a record that was durably written but never got its index
+// maintenance run (simulating a crash between commit and background index
+// completion). Originally written as a failing probe against
+// semanticBackfillIndexIsInSync's upper-bound-only comparison
+// (indexCount <= maxIndexRows), which could report "in sync" even while a
+// specific record's row was missing as long as the total count didn't
+// exceed the ceiling. Fixed by comparing indexCount to the EXACT expected
+// row count instead. This file now proves the fix, not the gap.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerConnector } from "../server/auth.ts";
@@ -49,7 +55,7 @@ const semanticManifest = {
   streams: [{ name: "items", query: { search: { semantic_fields: ["subject"] } } }],
 };
 
-test("PROBE: startup semantic backfill misses a record whose index maintenance never ran", async () => {
+test("startup semantic backfill catches a record whose index maintenance never ran (crash-abandoned deferred index work)", async () => {
   initDb(":memory:");
   configureSemanticBackend(makeStubBackend({ dimensions: 8 }));
   try {
@@ -91,7 +97,6 @@ test("PROBE: startup semantic backfill misses a record whose index maintenance n
       .prepare("SELECT DISTINCT record_key FROM semantic_search_blob WHERE connector_instance_id = ?")
       .all("cin_crash_gap_a") as { record_key: string }[];
     const keys = [...new Set([...rowidRows, ...blobRows].map((r) => r.record_key))].sort();
-    console.log("indexed keys after startup backfill:", keys);
     assert.deepEqual(keys, ["k1", "k2"], "startup backfill should have caught the crash-abandoned record k2");
   } finally {
     closeDb();

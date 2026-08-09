@@ -4,7 +4,8 @@
 // Focused invariant suite for the ingest -> search-index crash-convergence
 // terminal design (see /tmp/ingest-dirty-terminal-0809.md). Covers the
 // required invariant set (1)-(3) and (5); invariant (4) (crash/restart
-// converges both indexes) is covered by probe-semantic-crash-gap.test.ts /
+// converges both indexes) is covered by
+// semantic-startup-backfill-catches-crash-abandoned-record.test.ts /
 // probe-lexical-crash-gap.test.ts, and the generation-fence-specific half of
 // (5)/(6) by storage-generation-fence.test.ts.
 
