@@ -118,6 +118,10 @@ runtime diagnostics surface (`GET /_ref/deployment`).
 
 - Quickstart: everything (SQLite database, owner password, credential
   encryption key) lives on the `pdpp_data` volume. Back up the volume.
+- Bulk connector artifacts that must survive an upgrade — the Slack workspace
+  archive, downloaded statement PDFs — live under
+  `/var/lib/pdpp/connector-artifacts`, on that same volume. One volume covers
+  them; do not add a second mount.
 - Production: records live in the `pdpp-postgres-data` volume, semantic model
   files and first-boot state live in `pdpp-data`, and secrets live in `.env`.
   Back up all three together.

@@ -3,12 +3,14 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 import {
@@ -23,6 +25,23 @@ import {
 } from "./index.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Where the connector will look for `<workspace>`'s archive, given an artifact
+ * root the test owns. Derived from the SAME resolver the connector uses, so
+ * these tests pin the seam rather than re-encoding the on-disk layout: if the
+ * root moves again, the seed follows automatically.
+ *
+ * Tests drive it with `PDPP_CONNECTOR_ARTIFACT_ROOT` (rule 1) rather than
+ * `HOME`, because the connector no longer derives the archive path from the
+ * home directory — that was the container-replacement data-loss bug.
+ */
+function seedArchiveRoot(artifactRoot: string, workspace: string): string {
+  return resolveConnectorArtifactDir("slack", [workspace], {
+    PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
+  }).root;
+}
+
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
 const SLACK_MANIFEST = join(PACKAGE_ROOT, "manifests", "slack.json");
@@ -424,10 +443,10 @@ test("slack manifest explains the xoxc token and d-cookie fields with the offici
 });
 
 test("slack connector reports DONE.records_emitted from runtime-counted RECORDs", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-counter-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-counter-"));
   try {
     const workspace = "counter-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -466,7 +485,7 @@ test("slack connector reports DONE.records_emitted from runtime-counted RECORDs"
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -490,19 +509,16 @@ test("slack connector reports DONE.records_emitted from runtime-counted RECORDs"
     assert.equal(done?.status, "succeeded");
     assert.equal(done?.records_emitted, records.length);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector counts channel-scoped message RECORDs in DONE.records_emitted", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-counter-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-counter-"));
   try {
     const workspace = "scoped-counter-test";
     const archiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C02SCOPED"])
     );
@@ -553,7 +569,7 @@ test("slack connector counts channel-scoped message RECORDs in DONE.records_emit
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -577,15 +593,15 @@ test("slack connector counts channel-scoped message RECORDs in DONE.records_emit
     assert.equal(done?.status, "succeeded");
     assert.equal(done?.records_emitted, records.length);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector emits a bounded source-partition diagnostic when a prior channel is missing", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-missing-channel-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-missing-channel-"));
   try {
     const workspace = "missing-channel-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -600,7 +616,7 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -635,20 +651,17 @@ test("slack connector emits a bounded source-partition diagnostic when a prior c
     const cursor = messagesState(result);
     assert.deepEqual(cursor.observed_channel_ids, ["C_MISSING", "C_PRESENT"]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector heals a missing prior channel from an existing scoped archive", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-heal-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-heal-"));
   try {
     const workspace = "scoped-heal-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest(["C0MISSING"])
     );
@@ -677,7 +690,7 @@ test("slack connector heals a missing prior channel from an existing scoped arch
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -727,15 +740,15 @@ test("slack connector heals a missing prior channel from an existing scoped arch
       C0PRESENT: "1714032849.123456",
     });
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector does not emit a missing-partition diagnostic when prior channels remain present", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-clean-channel-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-clean-channel-"));
   try {
     const workspace = "clean-channel-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -750,7 +763,7 @@ test("slack connector does not emit a missing-partition diagnostic when prior ch
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -777,15 +790,15 @@ test("slack connector does not emit a missing-partition diagnostic when prior ch
     );
     assert.deepEqual(messagesState(result).observed_channel_ids, ["C_PRESENT"]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector uses per-channel message cursors with legacy global fallback", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-channel-cursor-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-channel-cursor-"));
   try {
     const workspace = "channel-cursor-test";
-    const archiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const archiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     await mkdir(archiveDir, { recursive: true });
     const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
     try {
@@ -804,7 +817,7 @@ test("slack connector uses per-channel message cursors with legacy global fallba
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -846,21 +859,18 @@ test("slack connector uses per-channel message cursors with legacy global fallba
     });
     assert.deepEqual(cursor.observed_channel_ids, ["C1", "C2"]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector uses an isolated scoped archive for targeted channel backfill", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-archive-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-archive-"));
   try {
     const workspace = "scoped-archive-test";
     const scopedChannelId = "C02SCOPE123";
-    const mainArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const mainArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest([scopedChannelId])
     );
@@ -889,7 +899,7 @@ test("slack connector uses an isolated scoped archive for targeted channel backf
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -916,21 +926,18 @@ test("slack connector uses an isolated scoped archive for targeted channel backf
     );
     assert.equal(messagesState(result).archive_dir, mainArchiveDir);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
   }
 });
 
 test("slack connector emits scoped archive rows even when they are older than the channel cursor", async () => {
-  const homeDir = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-hole-"));
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pdpp-slack-scoped-hole-"));
   try {
     const workspace = "scoped-hole-test";
     const scopedChannelId = "C02HOLE123";
-    const mainArchiveDir = join(homeDir, ".pdpp", "slackdump", workspace, "archive");
+    const mainArchiveDir = join(seedArchiveRoot(artifactRoot, workspace), "archive");
     const scopedArchiveDir = join(
-      homeDir,
-      ".pdpp",
-      "slackdump",
-      workspace,
+      seedArchiveRoot(artifactRoot, workspace),
       "archive-scoped",
       scopedArchiveDigest([scopedChannelId])
     );
@@ -951,7 +958,7 @@ test("slack connector emits scoped archive rows even when they are older than th
       cwd: PACKAGE_ROOT,
       entrypoint: SLACK_ENTRYPOINT,
       env: {
-        HOME: homeDir,
+        PDPP_CONNECTOR_ARTIFACT_ROOT: artifactRoot,
         PDPP_SLACK_SKIP_SLACKDUMP: "1",
         SLACK_COOKIE: "xoxd-fake",
         SLACK_TOKEN: "xoxc-1-2-3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -990,6 +997,89 @@ test("slack connector emits scoped archive rows even when they are older than th
     assert.deepEqual(cursor.channel_last_ts, { [scopedChannelId]: "1714033500.000000" });
     assert.deepEqual(cursor.observed_channel_ids, [scopedChannelId]);
   } finally {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  }
+});
+
+// The container-replacement regression, pinned at the connector boundary.
+//
+// The archive used to be computed from `homedir()`. The documented deployment
+// mounts only `/var/lib/pdpp`, so `$HOME` was on the container's writable layer
+// and every `docker rm` + `docker run` destroyed the accumulated archive —
+// nine consecutive real runs died on slackdump_timeout re-downloading it.
+//
+// This test recreates that split: the archive is seeded next to PDPP_DB_PATH
+// (the deployment's persistent volume) while HOME points at a DIFFERENT,
+// empty directory standing in for the discarded writable layer. The connector
+// must read the archive on the durable volume and ignore HOME entirely. Before
+// the fix it looked under HOME, found nothing, and failed.
+test("slack archive resolves next to PDPP_DB_PATH, not HOME (survives container replacement)", async () => {
+  const durableVolume = await mkdtemp(join(tmpdir(), "pdpp-slack-durable-"));
+  const discardedHome = await mkdtemp(join(tmpdir(), "pdpp-slack-discarded-home-"));
+  try {
+    const workspace = "recreate-test";
+    // Stand in for `-v pdpp_data:/var/lib/pdpp` + the baked
+    // PDPP_DB_PATH=/var/lib/pdpp/pdpp.sqlite that Core ships.
+    const dbPath = join(durableVolume, "pdpp.sqlite");
+    const archiveDir = join(
+      resolveConnectorArtifactDir("slack", [workspace], { PDPP_DB_PATH: dbPath }).root,
+      "archive"
+    );
+    await mkdir(archiveDir, { recursive: true });
+    const db = new DatabaseSync(join(archiveDir, "slackdump.sqlite"));
+    try {
+      createSlackArchiveSchema(db);
+      insertChannel(db, "C0DURABLE", "durable");
+      insertMessage(db, "C0DURABLE", "1714032849.123456", "survived the recreate");
+    } finally {
+      db.close();
+    }
+
+    // The archive must live on the durable volume, never under HOME.
+    assert.ok(archiveDir.startsWith(durableVolume), `expected archive under the durable volume, got ${archiveDir}`);
+    assert.ok(!archiveDir.startsWith(discardedHome));
+
+    const result = await runConnectorProtocolSubprocess({
+      cwd: PACKAGE_ROOT,
+      entrypoint: SLACK_ENTRYPOINT,
+      env: {
+        HOME: discardedHome,
+        PDPP_DB_PATH: dbPath,
+        PDPP_SLACK_SKIP_SLACKDUMP: "1",
+        SLACK_COOKIE: "xoxd-fake",
+        SLACK_TOKEN: VALID_SLACK_TOKEN,
+        SLACK_WORKSPACE: workspace,
+      },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "messages" }] },
+      },
+    });
+
+    const records = result.messages.filter(
+      (message): message is Extract<EmittedMessage, { type: "RECORD" }> => message.type === "RECORD"
+    );
+    const done = result.messages.findLast(
+      (message): message is Extract<EmittedMessage, { type: "DONE" }> => message.type === "DONE"
+    );
+    assert.equal(done?.status, "succeeded");
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.stream, "messages");
+
+    // The run log must state the durable root it chose, and must NOT claim the
+    // local-development fallback while running against a deployment path.
+    const progress = result.messages
+      .filter((message): message is Extract<EmittedMessage, { type: "PROGRESS" }> => message.type === "PROGRESS")
+      .map((message) => message.message)
+      .join("\n");
+    assert.match(progress, /Durable artifact root/);
+    assert.doesNotMatch(progress, /LOCAL-DEVELOPMENT FALLBACK/);
+
+    // HOME stayed untouched — nothing durable was written to the layer that
+    // container replacement discards.
+    assert.equal(existsSync(join(discardedHome, ".pdpp")), false);
+  } finally {
+    await rm(durableVolume, { recursive: true, force: true });
+    await rm(discardedHome, { recursive: true, force: true });
   }
 });

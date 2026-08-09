@@ -56,9 +56,9 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { describeConnectorArtifactRoot, resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import { readOptions } from "../../src/connector-options.ts";
 import {
   buildDetailCoverageMessage,
@@ -650,15 +650,28 @@ function buildChildEnv(token: string, cookie: string): NodeJS.ProcessEnv {
 interface ArchivePaths {
   archivePath: string;
   dumpDir: string;
+  /** One-line disclosure of where the archive root came from; logged once per run. */
+  rootDisclosure: string;
   sqlitePath: string;
 }
 
+// The archive is the connector's most expensive durable artifact: slackdump
+// resumes against it, so losing it forces a full multi-GB re-dump. It used to
+// live at `homedir()/.pdpp/slackdump`, which the documented single-volume
+// deployment does NOT persist — every container replacement restarted the sync
+// from zero. It now sits under the shared deployment-owned artifact root
+// (src/connector-artifact-root.ts), which lands inside /var/lib/pdpp on Core.
 function resolveArchivePaths(workspace: string): ArchivePaths {
-  const dumpDir = join(homedir(), ".pdpp/slackdump", workspace);
-  const archivePath = join(dumpDir, "archive");
+  const resolved = resolveConnectorArtifactDir("slack", [workspace]);
+  const archivePath = join(resolved.root, "archive");
   // default DB name under the archive dir
   const sqlitePath = join(archivePath, "slackdump.sqlite");
-  return { dumpDir, archivePath, sqlitePath };
+  return {
+    dumpDir: resolved.root,
+    archivePath,
+    sqlitePath,
+    rootDisclosure: describeConnectorArtifactRoot(resolved),
+  };
 }
 
 // slackdump downloads file-attachment bytes into `<archive>/__uploads/` (only
@@ -728,6 +741,7 @@ function resolveScopedArchivePaths(base: ArchivePaths, positionalChannels: reado
     dumpDir: base.dumpDir,
     archivePath,
     sqlitePath: join(archivePath, "slackdump.sqlite"),
+    rootDisclosure: base.rootDisclosure,
   };
 }
 
@@ -749,6 +763,7 @@ function listExistingScopedArchivePaths(base: ArchivePaths): ArchivePaths[] {
         archivePath,
         dumpDir: base.dumpDir,
         sqlitePath: join(archivePath, "slackdump.sqlite"),
+        rootDisclosure: base.rootDisclosure,
       };
     })
     .filter((paths) => existsSync(paths.sqlitePath))
@@ -2485,6 +2500,10 @@ if (isMainModule(import.meta.url)) {
       const messagesScope = requested.get("messages");
       const baseArchivePaths = resolveArchivePaths(workspace);
       const { dumpDir } = baseArchivePaths;
+      // State the archive root before any work: on the local-development
+      // fallback this is the run log's only warning that the archive is not
+      // on a deployment-managed volume.
+      progress(baseArchivePaths.rootDisclosure);
       const { archivePath, sqlitePath } = resolveScopedArchivePaths(baseArchivePaths, positionalChannels);
       await mkdir(dumpDir, { recursive: true });
 

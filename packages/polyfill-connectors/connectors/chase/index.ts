@@ -32,7 +32,7 @@
  */
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
@@ -48,6 +48,7 @@ import {
   browserSurfaceManagedState,
   buildBrowserSurfaceDiagnostic,
 } from "../../src/browser-surface-diagnostic.ts";
+import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
@@ -852,7 +853,13 @@ async function fillDateRange(page: Page, from: string, to: string): Promise<Date
 //     Cell 3: a.id=accountsTable-0-rowN-cell3-requestThisDocumentAnchor-download
 //            (also -pdf which OPENS instead of saves)
 
-const STATEMENT_ROOT = join(homedir(), ".pdpp", "chase-statements");
+// Downloaded statement PDFs are durable: emitted records carry `pdf_path` /
+// `document_url` pointing at these files, and Chase re-encrypts each PDF on
+// re-download (so a replacement has a different hash — the old references do
+// not simply re-resolve). They live on the deployment-owned artifact root, not
+// under homedir(), which the documented single-volume deployment discards on
+// container replacement. See src/connector-artifact-root.ts.
+const STATEMENT_ROOT = resolveConnectorArtifactDir("chase", ["statements"]).root;
 
 async function navigateToStatementsPage(page: Page): Promise<void> {
   // Warm overview first — direct-nav to the documents URL can bounce through

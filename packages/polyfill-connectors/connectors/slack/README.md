@@ -1,6 +1,6 @@
 # Slack connector
 
-Wraps [slackdump](https://github.com/rusq/slackdump) to pull a workspace's full history into PDPP. Slackdump maintains its own SQLite archive at `~/.pdpp/slackdump/<workspace>/archive/slackdump.sqlite`; the connector reads that archive and emits RECORDs.
+Wraps [slackdump](https://github.com/rusq/slackdump) to pull a workspace's full history into PDPP. Slackdump maintains its own SQLite archive under the deployment-owned artifact root — `<root>/slack/<workspace>/archive/slackdump.sqlite`, where `<root>` is `PDPP_CONNECTOR_ARTIFACT_ROOT` (Core pins it to `/var/lib/pdpp/connector-artifacts`). The connector reads that archive and emits RECORDs. The archive is durable and expensive to rebuild, so it must sit on the deployment's persistent volume; see `src/connector-artifact-root.ts`.
 
 ## How "pull only what's missing" works
 
@@ -32,7 +32,7 @@ PDPP_SLACK_SKIP_SLACKDUMP=1 node bin/orchestrate.js run slack
 ## Operational state on disk
 
 ```
-~/.pdpp/slackdump/<workspace>/archive/
+<artifact-root>/slack/<workspace>/archive/
 ├── slackdump.sqlite      # the archive (574k message rows = 186k unique messages across sessions)
 └── __uploads/            # downloaded file attachments
 ```

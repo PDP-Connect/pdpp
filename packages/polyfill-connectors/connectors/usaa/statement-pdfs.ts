@@ -6,7 +6,7 @@
  *
  * Phase A: for each row in /my/documents, drive the "Options" kebab -> "Download"
  * menu to trigger the PDF download. Save each PDF to
- *   ~/.pdpp/usaa-statements/<account_id>/<YYYY-MM>-<hash>.pdf
+ *   <connector-artifact-root>/usaa/statements/<account_id>/<YYYY-MM>-<hash>.pdf
  * and return an array of hydrated-statement records (pdf_path, pdf_sha256,
  * document_url as file://) alongside pdf bytes.
  *
@@ -25,7 +25,6 @@
  */
 
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
 import {
@@ -34,6 +33,7 @@ import {
   isLikelyPdfResponseBody,
   waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
+import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
 import {
@@ -63,7 +63,12 @@ import type {
   StatementTxnRecord,
 } from "./types.ts";
 
-const STATEMENT_ROOT = join(homedir(), ".pdpp", "usaa-statements");
+// Downloaded statement PDFs are durable: emitted records carry `pdf_path` /
+// `document_url` pointing at these files. They live on the deployment-owned
+// artifact root, not under homedir(), which the documented single-volume
+// deployment discards on container replacement. See
+// src/connector-artifact-root.ts.
+const STATEMENT_ROOT = resolveConnectorArtifactDir("usaa", ["statements"]).root;
 
 // ─── Selector regexes (kept here; Node-side, not pure data) ──────────────
 const OPTIONS_BUTTON_TEXT_RE = /^\s*(Options|More|\.{3})\s*$/i;
