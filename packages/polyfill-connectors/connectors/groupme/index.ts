@@ -25,8 +25,7 @@
 
 import { createHash } from "node:crypto";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
-import type { RecordData } from "../../src/connector-runtime.ts";
-import { runConnector } from "../../src/connector-runtime.ts";
+import { buildFullScanCoverageMessage, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { groupmePacingProfile } from "../../src/provider-profile.ts";
@@ -511,12 +510,16 @@ type ProgressFn = (message: string, extra?: ProgressExtra) => Promise<void>;
 
 // Runtime merges state per-stream, so all GroupMe state is under a single "groups" stream.
 // We emit all cursors under that unified namespace to ensure carry-forward on the next run.
+// Each field is wrapped `{ fingerprints: {...} }` — the shape `openFingerprintCursor`'s
+// `decodePriorFingerprints` actually decodes (see the fix note on the cursor
+// construction below); every other connector's per-stream state uses this same
+// wrapper (e.g. google_contacts, amazon, ynab).
 interface GroupMeUnifiedState {
-  attachments?: Record<string, string>;
-  direct_chat_messages?: Record<string, string>;
-  direct_chats?: Record<string, string>;
-  group_messages?: Record<string, string>;
-  groups?: Record<string, string>;
+  attachments?: { fingerprints: Record<string, string> };
+  direct_chat_messages?: { fingerprints: Record<string, string> };
+  direct_chats?: { fingerprints: Record<string, string> };
+  group_messages?: { fingerprints: Record<string, string> };
+  groups?: { fingerprints: Record<string, string> };
 }
 
 /**
@@ -698,12 +701,28 @@ async function collectGroupMessages(
   }
 }
 
-async function collectDirectChats(
+/**
+ * Whether a stream's collection pass reached its own clean end (`failed:
+ * false`) or was cut short by a fetch/parse failure it never recovered from.
+ * `considered` is the raw enumerated-boundary count, measured at each
+ * fetch's response — independent of how many records `emitRecord` actually
+ * received, so a run that filtered/suppressed everything still proves the
+ * boundary it walked. The caller (`collect()`) uses `failed` to gate both
+ * the STATE checkpoint and the DETAIL_COVERAGE proof: a failed pass must
+ * commit neither, since it never fully walked the boundary it would be
+ * claiming.
+ */
+export interface CollectionOutcome {
+  considered: number;
+  failed: boolean;
+}
+
+export async function collectDirectChats(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<void> {
+): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct chats", { stream: "direct_messages", phase: "start" });
   try {
     const chats = await makeRequest<GroupMeDirectChat[]>(token, "/chats", { per_page: PAGE_SIZE });
@@ -719,6 +738,7 @@ async function collectDirectChats(
         await emitRecord("direct_messages", record);
       }
     }
+    return { considered: chats.length, failed: false };
   } catch (error) {
     if (error instanceof Error && error.message === "groupme_auth_failed") {
       throw error;
@@ -730,6 +750,7 @@ async function collectDirectChats(
         phase: "error",
       }
     );
+    return { considered: 0, failed: true };
   }
 }
 
@@ -738,6 +759,14 @@ interface DirectMessagesResponse {
   direct_messages: GroupMeMessage[];
 }
 
+/**
+ * Walks one chat's message pages. Returns the raw item count enumerated
+ * across pages (the "considered" contribution for this chat) — never
+ * aliased to the emitted count, since a page a caller filtered/suppressed
+ * was still genuinely observed. Propagates fetch/parse failures to the
+ * caller rather than swallowing them, so a mid-chat failure cannot be
+ * mistaken for "this chat has no more messages."
+ */
 async function collectDirectChatMessagesForChat(
   token: string,
   chat: GroupMeDirectChat,
@@ -746,7 +775,7 @@ async function collectDirectChatMessagesForChat(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<void> {
+): Promise<number> {
   let beforeId: string | undefined;
   let pageIndex = 0;
   let totalSeen = 0;
@@ -792,24 +821,27 @@ async function collectDirectChatMessagesForChat(
     beforeId = messages.at(-1)?.id;
     pageIndex += 1;
   }
+
+  return totalSeen;
 }
 
-async function collectDirectChatMessages(
+export async function collectDirectChatMessages(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   uploader: BlobUploader | undefined,
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>
-): Promise<void> {
+): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct messages", {
     stream: "direct_chat_messages",
     phase: "start",
   });
+  let considered = 0;
   try {
     const chats = await makeRequest<GroupMeDirectChat[]>(token, "/chats", { per_page: PAGE_SIZE });
     for (const chat of chats) {
-      await collectDirectChatMessagesForChat(
+      considered += await collectDirectChatMessagesForChat(
         token,
         chat,
         cursor,
@@ -819,6 +851,7 @@ async function collectDirectChatMessages(
         emitRecord
       );
     }
+    return { considered, failed: false };
   } catch (error) {
     if (error instanceof Error && error.message === "groupme_auth_failed") {
       throw error;
@@ -830,6 +863,7 @@ async function collectDirectChatMessages(
         phase: "error",
       }
     );
+    return { considered, failed: true };
   }
 }
 
@@ -848,14 +882,19 @@ if (isMainModule(import.meta.url)) {
 
       const uploader = makeUploader();
 
+      // `openFingerprintCursor`'s `decodePriorFingerprints` only reads a
+      // `{ fingerprints: {...} }` shape (see google_contacts/amazon/ynab for
+      // the same convention) — passing a bare `Map` here silently decoded to
+      // an empty prior map every run, so dedup never actually carried
+      // forward across runs for any GroupMe stream. Pass each sub-state
+      // object directly; it already carries the `fingerprints` wrapper the
+      // STATE emits below now write.
       const groupmeState = (state.groups as GroupMeUnifiedState) || {};
-      const groupCursor = openFingerprintCursor(new Map(Object.entries(groupmeState.groups || {})));
-      const groupMessageCursor = openFingerprintCursor(new Map(Object.entries(groupmeState.group_messages || {})));
-      const directChatCursor = openFingerprintCursor(new Map(Object.entries(groupmeState.direct_chats || {})));
-      const directChatMessageCursor = openFingerprintCursor(
-        new Map(Object.entries(groupmeState.direct_chat_messages || {}))
-      );
-      const attachmentCursor = openFingerprintCursor(new Map(Object.entries(groupmeState.attachments || {})));
+      const groupCursor = openFingerprintCursor(groupmeState.groups);
+      const groupMessageCursor = openFingerprintCursor(groupmeState.group_messages);
+      const directChatCursor = openFingerprintCursor(groupmeState.direct_chats);
+      const directChatMessageCursor = openFingerprintCursor(groupmeState.direct_chat_messages);
+      const attachmentCursor = openFingerprintCursor(groupmeState.attachments);
 
       const attachmentsRequested = requested.has("attachments");
       const emitAttachmentRecord = attachmentsRequested
@@ -879,11 +918,13 @@ if (isMainModule(import.meta.url)) {
           emitRecord
         );
       }
+      let directChatsOutcome: CollectionOutcome | undefined;
       if (requested.has("direct_messages")) {
-        await collectDirectChats(token, directChatCursor, progressWithSignals, emitRecord);
+        directChatsOutcome = await collectDirectChats(token, directChatCursor, progressWithSignals, emitRecord);
       }
+      let directChatMessagesOutcome: CollectionOutcome | undefined;
       if (requested.has("direct_chat_messages")) {
-        await collectDirectChatMessages(
+        directChatMessagesOutcome = await collectDirectChatMessages(
           token,
           directChatMessageCursor,
           uploader,
@@ -894,17 +935,20 @@ if (isMainModule(import.meta.url)) {
       }
 
       // Emit all state under a unified namespace. The runtime merges per-stream,
-      // so this single emit carries all cursors forward to the next run.
+      // so this single emit carries all cursors forward to the next run. Each
+      // sub-state is wrapped `{ fingerprints: ... }` — the shape
+      // `openFingerprintCursor` actually decodes on the next run's read side
+      // above.
       await emit({
         type: "STATE",
         stream: "groups",
         cursor: {
-          groups: groupCursor.toState(),
-          group_messages: groupMessageCursor.toState(),
-          direct_chats: directChatCursor.toState(),
-          direct_chat_messages: directChatMessageCursor.toState(),
-          attachments: attachmentCursor.toState(),
-        } as GroupMeUnifiedState,
+          groups: { fingerprints: groupCursor.toState() },
+          group_messages: { fingerprints: groupMessageCursor.toState() },
+          direct_chats: { fingerprints: directChatCursor.toState() },
+          direct_chat_messages: { fingerprints: directChatMessageCursor.toState() },
+          attachments: { fingerprints: attachmentCursor.toState() },
+        } satisfies GroupMeUnifiedState,
       });
       // The unified emit above only ever proves coverage for the "groups"
       // stream (the runtime keys committed-checkpoint state off the STATE
@@ -920,28 +964,34 @@ if (isMainModule(import.meta.url)) {
         await emit({
           type: "STATE",
           stream: "group_messages",
-          cursor: { group_messages: groupMessageCursor.toState() },
+          cursor: { fingerprints: groupMessageCursor.toState() },
         });
       }
-      if (requested.has("direct_messages")) {
+      // A stream's own checkpoint and coverage proof are gated on that
+      // stream's collection pass having completed cleanly — a fetch/parse
+      // failure must commit neither a STATE checkpoint nor a coverage claim
+      // for the boundary it never finished walking (see CollectionOutcome).
+      if (requested.has("direct_messages") && directChatsOutcome && !directChatsOutcome.failed) {
         await emit({
           type: "STATE",
           stream: "direct_messages",
-          cursor: { direct_messages: directChatCursor.toState() },
+          cursor: { fingerprints: directChatCursor.toState() },
         });
+        await emit(buildFullScanCoverageMessage("direct_messages", directChatsOutcome.considered));
       }
-      if (requested.has("direct_chat_messages")) {
+      if (requested.has("direct_chat_messages") && directChatMessagesOutcome && !directChatMessagesOutcome.failed) {
         await emit({
           type: "STATE",
           stream: "direct_chat_messages",
-          cursor: { direct_chat_messages: directChatMessageCursor.toState() },
+          cursor: { fingerprints: directChatMessageCursor.toState() },
         });
+        await emit(buildFullScanCoverageMessage("direct_chat_messages", directChatMessagesOutcome.considered));
       }
       if (attachmentsRequested) {
         await emit({
           type: "STATE",
           stream: "attachments",
-          cursor: { attachments: attachmentCursor.toState() },
+          cursor: { fingerprints: attachmentCursor.toState() },
         });
       }
     },
