@@ -25,9 +25,7 @@ const FIXTURES_DIR = join(PACKAGE_ROOT, "fixtures");
  * `pilot-fixture.test.ts` invocation under `connectors/<connector>/`).
  */
 const PILOT_FIXTURE_EXEMPT: Record<string, string> = {
-  notion:
-    "Runtime ships without a connectors/notion/schemas.ts validator; pilot-fixture-test-helper has nothing to assert against.",
-  oura: "Runtime ships without a connectors/oura/schemas.ts validator; same gap as notion.",
+  // (empty as of 2026-08-09: notion and oura demoted to listed=false/status=unproven pending credentialed live proof-runs)
 };
 
 interface PublicListing {
@@ -49,6 +47,16 @@ interface Manifest {
   connector_id?: unknown;
   runtime_requirements?: {
     bindings?: { filesystem?: { required?: unknown }; local_device?: { required?: unknown } };
+  };
+  setup?: {
+    credential_capture?: {
+      fields?: Array<{
+        name?: string;
+        label?: string;
+        help_url?: string;
+        help_text?: string;
+      }>;
+    };
   };
 }
 
@@ -269,6 +277,34 @@ test("listed=proven manifests ship a pilot-real-shape fixture or sit on the docu
     offenders,
     [],
     `listed=proven connectors must commit a pilot-real-shape fixture under fixtures/<c>/scrubbed/pilot-real-shape/records/ or be added to PILOT_FIXTURE_EXEMPT with a documented reason: ${offenders.join(", ")}`
+  );
+});
+
+test("Notion setup uses Personal Access Token (not internal integrations or OAuth)", () => {
+  // Notion's 2026 API officially recommends PAT for trusted personal/self-hosted
+  // tools like PDPP. Internal integrations require manual page sharing (worse UX)
+  // and OAuth adds unnecessary redirect complexity. Verify setup fields point to
+  // the correct PAT workflow and never regress to stale internal/OAuth wording.
+  const notion = readManifest("notion");
+  const setupField = notion.setup?.credential_capture?.fields?.[0];
+  if (!setupField) {
+    throw new Error("Notion setup field missing");
+  }
+  assert(
+    setupField.help_url?.includes("notion.so/developers/tokens"),
+    "Notion help URL must link to Notion Developers tokens, not integrations profile"
+  );
+  assert(
+    !setupField.help_text?.toLowerCase().includes("internal integration"),
+    "Notion help text must not mention internal integrations (stale UX)"
+  );
+  assert(
+    !setupField.help_text?.toLowerCase().includes("connected to the pages"),
+    "Notion help text must not require manual page sharing with internal integration"
+  );
+  assert(
+    setupField.label?.toLowerCase().includes("personal access token"),
+    "Notion field label must explicitly say Personal Access Token"
   );
 });
 
