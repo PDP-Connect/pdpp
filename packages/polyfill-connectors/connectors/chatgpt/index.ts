@@ -34,10 +34,12 @@ import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
   buildDetailGap,
+  buildFullScanCoverageMessage,
   type CollectContext,
   type CollectionRateProgress,
   type DetailCoverageMessage,
   type DetailGapMessage,
+  type EmittedMessage,
   type NormalizeTerminalError,
   nowIso,
   type ProviderBudgetProgress,
@@ -2026,6 +2028,64 @@ export async function processConversationDetail(
 const PAGINATION_SAFETY_LIMIT = 5000;
 const GIZMO_MAX_PAGES = 50;
 
+/**
+ * One `/gizmos/mine` page, or the reason it never arrived. Separating "did this
+ * page arrive intact?" from "walk the pages" keeps the enumeration loop able to
+ * treat every failure identically: stop, and prove nothing.
+ */
+type GizmoPage =
+  | { ok: true; items: unknown[]; nextCursor: string | null }
+  | { ok: false; skip: Extract<EmittedMessage, { type: "SKIP_RESULT" }> };
+
+function classifyGizmoPage(res: ChatGptFetchResult, page: number): GizmoPage {
+  if (res.status === 404 || res.status === 403) {
+    return {
+      ok: false,
+      skip: {
+        type: "SKIP_RESULT",
+        stream: "custom_gpts",
+        reason: "not_available",
+        message: `gizmos/mine http ${res.status} (feature may be disabled for this account)`,
+      },
+    };
+  }
+  if (res.status !== 200) {
+    return {
+      ok: false,
+      skip: {
+        type: "SKIP_RESULT",
+        stream: "custom_gpts",
+        reason: "http_error",
+        message: `gizmos/mine http ${res.status}`,
+        diagnostics: { http_status: res.status },
+      },
+    };
+  }
+  // A 200 whose body failed to parse arrives here as `json: null` (the api
+  // swallows the parse error). Reading `?.items` off it yields [] — identical
+  // to a genuinely empty page — so without this guard a malformed body would be
+  // indistinguishable from a proven-empty enumeration and would emit
+  // zero-coverage proof it has not earned. A body we could not read is a failed
+  // enumeration.
+  if (!res.json) {
+    return {
+      ok: false,
+      skip: {
+        type: "SKIP_RESULT",
+        stream: "custom_gpts",
+        reason: "parse_error",
+        message: "gizmos/mine http 200 with an unreadable body",
+        diagnostics: { http_status: res.status, page },
+      },
+    };
+  }
+  return {
+    ok: true,
+    items: (res.json.items as unknown[] | undefined) || (res.json.gizmos as unknown[] | undefined) || [],
+    nextCursor: (res.json.cursor as string | null | undefined) ?? null,
+  };
+}
+
 export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   deps.emit({
     type: "PROGRESS",
@@ -2035,43 +2095,33 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
   let cursor: string | null = null;
   let pages = 0;
   let anyError = false;
+  // The enumerated boundary: every gizmo `/gizmos/mine` listed across all pages,
+  // counted here at the enumeration site. Deliberately NOT the emitted count —
+  // a raw item `buildGizmoRecord` drops is still an item the source listed, and
+  // aliasing the two would let a run that dropped everything read as complete
+  // (`DetailCoverageParams.considered`).
+  let considered = 0;
   do {
     const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}&limit=100` : "?limit=100";
-    const res = await deps.api.fetch(`/gizmos/mine${qs}`);
-    if (res.status === 404 || res.status === 403) {
-      deps.emit({
-        type: "SKIP_RESULT",
-        stream: "custom_gpts",
-        reason: "not_available",
-        message: `gizmos/mine http ${res.status} (feature may be disabled for this account)`,
-      });
+    const page = classifyGizmoPage(await deps.api.fetch(`/gizmos/mine${qs}`), pages);
+    if (!page.ok) {
+      deps.emit(page.skip);
       anyError = true;
       break;
     }
-    if (res.status !== 200) {
-      deps.emit({
-        type: "SKIP_RESULT",
-        stream: "custom_gpts",
-        reason: "http_error",
-        message: `gizmos/mine http ${res.status}`,
-        diagnostics: { http_status: res.status },
-      });
-      anyError = true;
-      break;
-    }
-    const items = (res.json?.items as unknown[] | undefined) || (res.json?.gizmos as unknown[] | undefined) || [];
-    for (const raw of items) {
+    considered += page.items.length;
+    for (const raw of page.items) {
       const rec = buildGizmoRecord(raw);
       if (rec) {
         await deps.emitRecord("custom_gpts", rec);
       }
     }
-    cursor = (res.json?.cursor as string | null | undefined) ?? null;
+    cursor = page.nextCursor;
     pages += 1;
     if (pages > GIZMO_MAX_PAGES) {
       break;
     }
-    if (!items.length) {
+    if (!page.items.length) {
       break;
     }
   } while (cursor);
@@ -2081,6 +2131,13 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
       stream: "custom_gpts",
       cursor: { fetched_at: nowIso() },
     });
+    // `custom_gpts` is a full scan with no detail-hydration phase, so the
+    // enumerated boundary is its own coverage. Emitting this only on a clean
+    // pass is the point: an account that owns zero gizmos then proves
+    // considered === covered === 0 instead of leaving a committed checkpoint
+    // with no positive evidence behind it, while every failure path above
+    // breaks out before reaching here and proves nothing.
+    deps.emit(buildFullScanCoverageMessage("custom_gpts", considered));
   }
 }
 

@@ -4758,6 +4758,119 @@ test("runCustomGptsStream: paginates gizmos/mine and emits STATE when complete",
   assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length, 1);
 });
 
+/**
+ * The discriminator behind ruling R2: a committed checkpoint with zero records
+ * proves nothing on its own. A SUCCESSFUL empty enumeration must say so
+ * positively (considered === covered === 0); a FAILED one must stay silent, so
+ * the two can never be confused downstream.
+ */
+function customGptsCoverage(
+  messages: readonly EmittedMessage[]
+): Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> | undefined {
+  return messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "custom_gpts"
+  );
+}
+
+test("runCustomGptsStream: successful EMPTY enumeration proves zero coverage", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: [] } }],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.length, 0, "an account with no gizmos emits no records");
+  const coverage = customGptsCoverage(messages);
+  assert.ok(coverage, "a successful empty enumeration must emit positive zero-coverage proof");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+  assert.equal(coverage.state_stream, "custom_gpts", "full scan: the stream is its own state stream");
+  assert.deepEqual(coverage.required_keys, []);
+  assert.deepEqual(coverage.hydrated_keys, []);
+  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length, 1);
+});
+
+for (const status of [404, 403, 500] as const) {
+  test(`runCustomGptsStream: FAILED enumeration (http ${status}) proves nothing`, async () => {
+    const { deps, messages } = makeHarness({
+      fetchQueue: [{ status, json: null }],
+      requested: ["custom_gpts"],
+    });
+
+    await runCustomGptsStream(deps);
+
+    assert.equal(
+      customGptsCoverage(messages),
+      undefined,
+      `http ${status} never saw the boundary and must not claim coverage`
+    );
+    assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+  });
+}
+
+test("runCustomGptsStream: http 200 with an unreadable body is a failure, not a proven-empty scan", async () => {
+  // The api swallows a JSON parse error into `json: null`, which reads as []
+  // downstream — indistinguishable from a genuinely empty page without a guard.
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: null }],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.length, 0);
+  assert.equal(customGptsCoverage(messages), undefined, "an unreadable body must not prove an empty boundary");
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.stream, "custom_gpts");
+  assert.equal(skip.reason, "parse_error");
+});
+
+test("runCustomGptsStream: COUNTERWEIGHT — a populated scan still emits records and counts the boundary", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      {
+        status: 200,
+        json: {
+          items: [
+            { id: "g-1", display_name: "Planner", sharing: "private" },
+            { id: "g-2", display_name: "Writer", sharing: "public" },
+          ],
+        },
+      },
+    ],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.filter((r) => r.stream === "custom_gpts").length, 2, "positive records are unchanged");
+  const coverage = customGptsCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 2, "considered counts what the source listed, measured at the enumeration site");
+  assert.equal(coverage.covered, 2);
+});
+
+test("runCustomGptsStream: considered counts enumerated items, not emitted records", async () => {
+  // A raw item `buildGizmoRecord` rejects is still an item the source listed.
+  // If `considered` were aliased to the emitted count this run would read as a
+  // clean 1-of-1 instead of the 1-of-2 it actually is.
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { items: [{ id: "g-1", display_name: "Planner" }, { not_a_gizmo: true }] } }],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.filter((r) => r.stream === "custom_gpts").length, 1, "the unusable item yields no record");
+  const coverage = customGptsCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 2, "both listed items were weighed");
+});
+
 test("runCustomGptsStream: 403 → SKIP_RESULT('not_available'), no STATE", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [{ status: 403, json: null }],
