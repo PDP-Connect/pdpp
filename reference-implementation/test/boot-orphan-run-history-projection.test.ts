@@ -261,6 +261,103 @@ test("boot reconciliation repairs a run_history row left running against an alre
   }
 });
 
+test("boot reconciliation repairs BOTH connections when two share one run_id", async () => {
+  const dbPath = tempDbPath();
+  initDb(dbPath);
+  try {
+    // run_id is NOT unique across connections (stores/run-history-writer.ts),
+    // and the live instance carried exactly this shape: two connections
+    // sharing one run_id, each with its own run_history row. Repair is
+    // per-row, so BOTH must be terminalised — a reader that treated run_id
+    // as the identity would leave one connection stuck running forever.
+    // Duplicate terminal events sharing one occurred_at are seeded too, so
+    // the earliest-terminal choice cannot depend on an unstable tie-break.
+    const SECOND_INSTANCE_ID = "cin_fedcba9876543210fedcba98";
+    const runId = "run_shared_1";
+    seedRunningRun(dbPath, { event_id: "evt_shared_1", run_id: runId });
+    const raw = new Database(dbPath);
+    try {
+      const ts = "2026-05-10T12:00:00.000Z";
+      raw
+        .prepare(
+          `
+        INSERT INTO run_history
+          (run_id, connector_instance_id, connector_id, trigger_kind, source_json,
+           status, known_gaps_json, started_at, records_emitted, attempt)
+        VALUES (?, ?, ?, 'manual', '{}', 'running', '[]', ?, 0, 1)
+        `
+        )
+        .run(runId, SECOND_INSTANCE_ID, CONNECTOR_ID, ts);
+      // Two terminal events sharing one occurred_at — also live-observed, and
+      // what makes an unordered tie-break non-deterministic.
+      const terminalTs = "2026-05-10T13:00:00.000Z";
+      for (const eventId of ["evt_shared_1_abandon_a", "evt_shared_1_abandon_b"]) {
+        raw
+          .prepare(
+            `
+          INSERT INTO spine_events
+            (event_id, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+             actor_type, actor_id, object_type, object_id, status, run_id, data_json, version)
+          VALUES (?, 'run.abandoned', ?, ?, 'default', 'trc_seed', 'runtime', ?, 'run', ?, 'abandoned', ?, ?, 'v1')
+          `
+          )
+          .run(
+            eventId,
+            terminalTs,
+            terminalTs,
+            CONNECTOR_ID,
+            runId,
+            runId,
+            JSON.stringify({ reason: "controller_terminated_before_run_finished" })
+          );
+      }
+    } finally {
+      raw.close();
+    }
+
+    const epoch = await emitControllerBootedAndStashEpoch({
+      bootEpoch: "boot-epoch-shared-1",
+      controllerId: "host-test",
+    });
+    const result = await reconcileOrphanedRunsAtBoot(epoch);
+    assert.equal(result.repaired, 2, "both connections' rows must be repaired, not just one");
+
+    const rows = readRunHistoryRows(dbPath, runId);
+    assert.equal(rows.length, 2);
+    for (const row of rows) {
+      assert.equal(row.status, "abandoned");
+      // The regression: one row kept a null reason when the query grouped.
+      assert.equal(
+        row.terminal_reason,
+        "controller_terminated_before_run_finished",
+        `connection ${row.connector_instance_id} must carry the terminal reason`
+      );
+      assert.equal(row.completed_at, "2026-05-10T13:00:00.000Z");
+    }
+  } finally {
+    closeDb();
+    clearCurrentBootEpoch();
+  }
+});
+
+function readRunHistoryRows(dbPath: string, runId: string) {
+  const raw = new Database(dbPath);
+  try {
+    return raw
+      .prepare(
+        "SELECT connector_instance_id, status, terminal_reason, completed_at FROM run_history WHERE run_id = ? ORDER BY connector_instance_id"
+      )
+      .all(runId) as {
+      completed_at: string | null;
+      connector_instance_id: string;
+      status: string;
+      terminal_reason: string | null;
+    }[];
+  } finally {
+    raw.close();
+  }
+}
+
 function tempDbPath() {
   return makeTemporaryDbPath("pdpp-boot-recon-proj-");
 }
