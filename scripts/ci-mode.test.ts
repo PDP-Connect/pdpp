@@ -38,6 +38,7 @@ import {
   STREAM_EVIDENCE_INVENTORY_PATHS,
   streamEvidenceInventoryGateRequired,
   workflowUpdatesForMode,
+  ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE,
   ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE,
   ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE,
   zeroConnectorKnowledgeGateRequired,
@@ -247,6 +248,7 @@ test("changeTouchesCiGateSelf pins the gate implementation and every conformance
     "packages/polyfill-connectors/src/connector-conformance.test.ts",
     "reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts",
     "reference-implementation/test/helpers/ri-zero-connector-knowledge-scan.ts",
+    "reference-implementation/test/helpers/ri-zero-connector-knowledge-data-load-scan.ts",
   ];
   assert.deepEqual(CI_GATE_SELF_PATHS, expectedSelfPaths);
   assert.deepEqual(
@@ -255,6 +257,7 @@ test("changeTouchesCiGateSelf pins the gate implementation and every conformance
   );
   assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`, expectedSelfPaths[6]);
   assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`, expectedSelfPaths[7]);
+  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`, expectedSelfPaths[8]);
   for (const path of expectedSelfPaths) {
     assert.equal(changeTouchesCiGateSelf([path]), true);
     assert.equal(ciModeSelfTestRequired([path]), true);
@@ -262,6 +265,13 @@ test("changeTouchesCiGateSelf pins the gate implementation and every conformance
   assert.equal(changeTouchesCiGateSelf(["scripts/other-script.ts"]), false);
   assert.equal(changeTouchesCiGateSelf(["packages/polyfill-connectors/package.json"]), false);
   assert.equal(changeTouchesCiGateSelf([]), false);
+});
+
+test("changeTouchesCiGateSelf specifically covers the data-load scanner (regression pin for the P1 fix — this file was previously invisible to every local-signoff trigger)", () => {
+  const dataLoadHelperPath = `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`;
+  assert.equal(zeroConnectorKnowledgeGateRequired([dataLoadHelperPath]), true);
+  assert.equal(ciModeSelfTestRequired([dataLoadHelperPath]), true);
+  assert.equal(changeTouchesCiGateSelf([dataLoadHelperPath]), true);
 });
 
 test("changeTouchesRiProduction flags RI production paths but not connectors/tests/manifests", () => {

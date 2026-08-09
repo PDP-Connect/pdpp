@@ -88,6 +88,26 @@ const GENERIC_URL_HOSTS = new Set([
 /** Env-var name shapes that are always generic (never provider-specific). */
 const GENERIC_ENV_PREFIXES = ["PDPP_", "NODE_", "CI_", "GITHUB_ACTIONS", "npm_", "NEKO_"];
 
+// The repository's full executable JS/TS extension set (matches this repo's
+// own module-resolution surface: `tsconfig.json`'s `allowJs`, and real
+// production/tooling files under these roots today — e.g.
+// `scripts/run-tests-failure.js`, `scripts/*.test.mjs`). A production file
+// under any of these extensions can carry the same hardcoded-identity/
+// endpoint/env-key/data-load violations as a `.ts` file; scanning only `.ts`
+// left every one of these siblings invisible to the guard. `.d.ts`
+// declaration files are excluded (type-only, no executable content to scan).
+const EXECUTABLE_JS_TS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);
+const TEST_FILE_SUFFIXES = [
+  ".test.ts",
+  ".test.tsx",
+  ".test.js",
+  ".test.jsx",
+  ".test.mts",
+  ".test.cts",
+  ".test.mjs",
+  ".test.cjs",
+];
+
 function walkTsFiles(dir: string, scanRootDir: string, repoRoot: string, out: string[]): void {
   let entries: string[];
   try {
@@ -102,10 +122,10 @@ function walkTsFiles(dir: string, scanRootDir: string, repoRoot: string, out: st
       walkTsFiles(abs, scanRootDir, repoRoot, out);
       continue;
     }
-    if (extname(entry) !== ".ts") {
+    if (!EXECUTABLE_JS_TS_EXTENSIONS.has(extname(entry))) {
       continue;
     }
-    if (entry.endsWith(".test.ts") || entry.endsWith(".d.ts")) {
+    if (entry.endsWith(".d.ts") || TEST_FILE_SUFFIXES.some((suffix) => entry.endsWith(suffix))) {
       continue;
     }
     // Exemption is checked relative to THIS FILE'S OWN scan root (e.g.
@@ -128,7 +148,7 @@ export function productionFiles({ repoRoot }: ScanRoots): string[] {
     const scanRootDir = join(riRoot, root);
     walkTsFiles(scanRootDir, scanRootDir, repoRoot, out);
   }
-  return out.sort();
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
 function connectorKeyFromManifestId(id: unknown): string | null {
@@ -183,9 +203,9 @@ function stripComments(source: string): string {
 
 function lineNumberAt(source: string, index: number): number {
   let line = 1;
-  for (let i = 0; i < index; i++) {
+  for (let i = 0; i < index; i += 1) {
     if (source.charCodeAt(i) === 10) {
-      line++;
+      line += 1;
     }
   }
   return line;
@@ -198,6 +218,7 @@ function lineTextAt(source: string, index: number): string {
 }
 
 const ENV_KEY_RE = /^[A-Z][A-Z0-9_]*_(CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN|API_KEY|ACCESS_TOKEN|PASSWORD)$/;
+const ABSOLUTE_URL_HOST_RE = /^https?:\/\/([^/\s:]+)/;
 
 /**
  * A small set of manifest-derived connector keys double as ordinary English
@@ -271,7 +292,7 @@ export function scanFile(absPath: string, relPath: string, connectorKeys: Set<st
       continue;
     }
 
-    const urlMatch = value.match(/^https?:\/\/([^/\s:]+)/);
+    const urlMatch = value.match(ABSOLUTE_URL_HOST_RE);
     if (urlMatch) {
       const host = (urlMatch[1] ?? "").toLowerCase();
       // `${...}` (template-literal interpolation, since the literal scanner

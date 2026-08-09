@@ -43,6 +43,20 @@
  *      EVERYTHING ELSE — including a call whose path argument could not be
  *      statically resolved at all — is a violation. There is no default-pass
  *      branch for "couldn't figure it out."
+ *   4. Rule (6): `eval(...)` and `node:child_process`'s shell-string exec
+ *      family (`exec`/`execSync`, bound via a real `node:child_process`
+ *      import — not the argv-array `execFile`/`execFileSync`/`spawn`/
+ *      `spawnSync` forms, and not an unrelated same-named local like this
+ *      codebase's own SQL `exec(query, params)` helper) are prohibited
+ *      outright, unconditionally on whether their argument looks path-shaped.
+ *      Both accept an arbitrary interpreted string this scanner cannot
+ *      soundly analyze — `eval("require")("./gmail-policy.json")` never
+ *      surfaces a literal `require`/`Import` callee node, and
+ *      `execSync("cat gmail-policy.json")` is an arbitrary shell command
+ *      line, not a structured path argument — so closing them by *detecting*
+ *      a data read would mean evaluating arbitrary shell semantics (unbounded
+ *      scope); closing them by flat prohibition matches this scanner's
+ *      existing "fails closed on what it cannot prove" posture instead.
  *
  * Residual, disclosed precisely (not silently accepted): this is still a
  * single-file analysis. It does not follow a value across a cross-module
@@ -255,7 +269,7 @@ function walk(node: Node, visit: (n: Node, parent: Node | null, ancestors: Node[
  * the fail-closed behavior this scanner wants.
  */
 function enclosingFunctionNameOf(ancestors: Node[]): string | null {
-  for (let i = ancestors.length - 1; i >= 0; i--) {
+  for (let i = ancestors.length - 1; i >= 0; i -= 1) {
     const ancestor = ancestors[i] as Node;
     const id = ancestor.id as Node | undefined;
     if (ancestor.type === "FunctionDeclaration" && id?.type === "Identifier") {
@@ -266,6 +280,7 @@ function enclosingFunctionNameOf(ancestors: Node[]): string | null {
 }
 
 function lineOf(node: Node): number {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `loc` is declared `?: {...} | null` on the loosely-typed Node interface (real Babel AST nodes can genuinely have a null/absent loc, e.g. synthetic nodes); `tsc --strict` on this file raises no error here, confirming the guard is live, not redundant.
   return node.loc?.start.line ?? 0;
 }
 
@@ -326,6 +341,7 @@ function calleeName(callee: Node): string | null {
   if (callee.type === "Identifier") {
     return callee.name as string;
   }
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `callee.property` is `unknown` on the loosely-typed Node interface's index signature; the `as Node` cast changes the STATIC type only, not runtime nullability (a real Babel AST node can have this field absent). `tsc --strict` raises no error on this file.
   if (callee.type === "MemberExpression" && (callee.property as Node)?.type === "Identifier") {
     return (callee.property as Node).name as string;
   }
@@ -341,85 +357,117 @@ function calleeName(callee: Node): string | null {
 // enclosing join/resolve call already established).
 type SegmentResult = { kind: "anchored"; relPath: string } | { kind: "bare"; text: string } | { kind: "unresolvable" };
 
+const UNRESOLVABLE: SegmentResult = { kind: "unresolvable" };
+
+/** `new URL(<path>, import.meta.url)` as a nested segment (not the top-level call rule (5) scans for directly). */
+function resolveNewUrlSegment(expr: Node, analysis: FileAnalysis, depth: number, visiting: Set<string>): SegmentResult {
+  const [first, second] = nodeArrayField(expr, "arguments");
+  if (!(first && second && isImportMetaUrl(second))) {
+    return UNRESOLVABLE;
+  }
+  const anchored = resolveAnchoredExpr(first, analysis, depth + 1, visiting);
+  return anchored.kind === "static" ? { kind: "anchored", relPath: anchored.relPath } : UNRESOLVABLE;
+}
+
+/** `join(...)`/`resolve(...)`/`fileURLToPath(...)` as a nested segment. */
+function resolveCallExpressionSegment(
+  expr: Node,
+  analysis: FileAnalysis,
+  depth: number,
+  visiting: Set<string>
+): SegmentResult {
+  const name = calleeName(expr.callee as Node);
+  if (name === "join" || name === "resolve") {
+    const joined = resolveJoinOrResolveCall(expr, analysis, depth, visiting);
+    return joined.kind === "static" ? { kind: "anchored", relPath: joined.relPath } : UNRESOLVABLE;
+  }
+  if (name === "fileURLToPath") {
+    const [first] = nodeArrayField(expr, "arguments");
+    if (first) {
+      const anchored = resolveAnchoredExpr(first, analysis, depth + 1, visiting);
+      return anchored.kind === "static" ? { kind: "anchored", relPath: anchored.relPath } : UNRESOLVABLE;
+    }
+  }
+  return UNRESOLVABLE;
+}
+
+/** A module-level `const` identifier reference, followed one hop via `analysis.moduleConsts` (cycle-guarded by `visiting`). */
+function resolveIdentifierSegment(
+  expr: Node,
+  analysis: FileAnalysis,
+  depth: number,
+  visiting: Set<string>
+): SegmentResult {
+  const name = expr.name as string;
+  if (visiting.has(name)) {
+    return UNRESOLVABLE;
+  }
+  const decl = analysis.moduleConsts.get(name);
+  if (!decl) {
+    return UNRESOLVABLE;
+  }
+  visiting.add(name);
+  const result = resolveSegment(decl, analysis, depth + 1, visiting);
+  visiting.delete(name);
+  return result;
+}
+
+/**
+ * `<expr>.href` / `<expr>.pathname` off a resolvable base (typically a `new
+ * URL(...)`) denotes the same resolved fragment as the base itself — e.g.
+ * `import(new URL("./auth.ts", import.meta.url).href)`. `import.meta.url` is
+ * handled separately via `isImportMetaUrl`/`isDirnameLikeExpr`. Any other
+ * member access (e.g. `local.entryName`, a runtime lookup) is not statically
+ * resolvable.
+ */
+function resolveMemberExpressionSegment(
+  expr: Node,
+  analysis: FileAnalysis,
+  depth: number,
+  visiting: Set<string>
+): SegmentResult {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `expr.property` is `unknown` on the loosely-typed Node interface's index signature; the `as Node` cast changes the STATIC type only, not runtime nullability. `tsc --strict` raises no error on this file.
+  const propName = (expr.property as Node)?.type === "Identifier" ? ((expr.property as Node).name as string) : null;
+  if (propName === "href" || propName === "pathname") {
+    return resolveSegment(expr.object as Node, analysis, depth + 1, visiting);
+  }
+  return UNRESOLVABLE;
+}
+
 /**
  * Resolve one expression to a segment fragment. `depth` guards recursion;
- * `visiting` guards identifier cycles.
+ * `visiting` guards identifier cycles. Dispatches by AST node type to one
+ * resolver per shape — each resolver owns exactly the recursion/fallback
+ * logic for its own shape, so this function stays a flat dispatch table.
  */
 function resolveSegment(expr: Node, analysis: FileAnalysis, depth: number, visiting: Set<string>): SegmentResult {
   if (depth > 12) {
-    return { kind: "unresolvable" };
+    return UNRESOLVABLE;
   }
-
   if (expr.type === "StringLiteral") {
     return { kind: "bare", text: expr.value as string };
   }
-
   if (expr.type === "TemplateLiteral") {
     const quasis = expr.quasis as Node[];
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `q.value` is `unknown` on Node's index signature; the `as { raw: string }` cast changes the STATIC type only, a real Babel TemplateElement's `raw` field is not statically guaranteed present at this cast site. `tsc --strict` raises no error on this file.
     return { kind: "bare", text: quasis.map((q) => (q.value as { raw: string }).raw ?? "").join(PLACEHOLDER) };
   }
-
   if (isDirnameLikeExpr(expr)) {
     return { kind: "anchored", relPath: analysis.fileDir };
   }
-
   if (expr.type === "NewExpression" && isIdentifier(expr.callee as Node, "URL")) {
-    const args = nodeArrayField(expr, "arguments");
-    const first = args[0];
-    const second = args[1];
-    if (first && second && isImportMetaUrl(second)) {
-      const anchored = resolveAnchoredExpr(first, analysis, depth + 1, visiting);
-      return anchored.kind === "static" ? { kind: "anchored", relPath: anchored.relPath } : { kind: "unresolvable" };
-    }
-    return { kind: "unresolvable" };
+    return resolveNewUrlSegment(expr, analysis, depth, visiting);
   }
-
   if (expr.type === "CallExpression") {
-    const name = calleeName(expr.callee as Node);
-    if (name === "join" || name === "resolve") {
-      const joined = resolveJoinOrResolveCall(expr, analysis, depth, visiting);
-      return joined.kind === "static" ? { kind: "anchored", relPath: joined.relPath } : { kind: "unresolvable" };
-    }
-    if (name === "fileURLToPath") {
-      const args = nodeArrayField(expr, "arguments");
-      if (args[0]) {
-        const anchored = resolveAnchoredExpr(args[0] as Node, analysis, depth + 1, visiting);
-        return anchored.kind === "static" ? { kind: "anchored", relPath: anchored.relPath } : { kind: "unresolvable" };
-      }
-    }
-    return { kind: "unresolvable" };
+    return resolveCallExpressionSegment(expr, analysis, depth, visiting);
   }
-
   if (expr.type === "Identifier") {
-    const name = expr.name as string;
-    if (visiting.has(name)) {
-      return { kind: "unresolvable" };
-    }
-    const decl = analysis.moduleConsts.get(name);
-    if (decl) {
-      visiting.add(name);
-      const result = resolveSegment(decl, analysis, depth + 1, visiting);
-      visiting.delete(name);
-      return result;
-    }
-    return { kind: "unresolvable" };
+    return resolveIdentifierSegment(expr, analysis, depth, visiting);
   }
-
   if (expr.type === "MemberExpression") {
-    // `import.meta.url` handled above via isImportMetaUrl/isDirnameLikeExpr.
-    // `<expr>.href` / `<expr>.pathname` off a resolvable base (typically a
-    // `new URL(...)`) denotes the same resolved fragment as the base itself
-    // — e.g. `import(new URL("./auth.ts", import.meta.url).href)`. Any
-    // other member access (e.g. `local.entryName`, a runtime lookup) is not
-    // statically resolvable.
-    const propName = (expr.property as Node)?.type === "Identifier" ? ((expr.property as Node).name as string) : null;
-    if (propName === "href" || propName === "pathname") {
-      return resolveSegment(expr.object as Node, analysis, depth + 1, visiting);
-    }
-    return { kind: "unresolvable" };
+    return resolveMemberExpressionSegment(expr, analysis, depth, visiting);
   }
-
-  return { kind: "unresolvable" };
+  return UNRESOLVABLE;
 }
 
 /** A segment used as plain text WITHIN a join/resolve call (never
@@ -465,7 +513,7 @@ function resolveJoinOrResolveCall(
     return { kind: "unresolvable" };
   }
   const resolvedParts: string[] = [];
-  for (let i = 1; i < args.length; i++) {
+  for (let i = 1; i < args.length; i += 1) {
     const r = resolveSegment(args[i] as Node, analysis, depth + 1, visiting);
     resolvedParts.push(segmentAsJoinArgText(r));
   }
@@ -526,7 +574,9 @@ function resolveToLiteralStringValue(expr: Node, analysis: FileAnalysis): string
 function isImportMetaUrl(node: Node): boolean {
   return (
     node.type === "MemberExpression" &&
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `node.object`/`node.property` are `unknown` on Node's index signature; the `as Node` casts change the STATIC type only, not runtime nullability. `tsc --strict` raises no error on this file.
     (node.object as Node)?.type === "MetaProperty" &&
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- same as above, for `node.property`.
     (node.property as Node)?.type === "Identifier" &&
     (node.property as Node).name === "url"
   );
@@ -539,10 +589,10 @@ function isDirnameLikeExpr(node: Node): boolean {
   // dirname(fileURLToPath(import.meta.url)) inlined at the call site.
   if (node.type === "CallExpression" && calleeName(node.callee as Node) === "dirname") {
     const args = nodeArrayField(node, "arguments");
-    const inner = args[0];
+    const [inner] = args;
     if (inner?.type === "CallExpression" && calleeName(inner.callee as Node) === "fileURLToPath") {
-      const innerArgs = nodeArrayField(inner, "arguments");
-      return innerArgs[0] !== undefined && isImportMetaUrl(innerArgs[0]);
+      const [innerFirst] = nodeArrayField(inner, "arguments");
+      return innerFirst !== undefined && isImportMetaUrl(innerFirst);
     }
   }
   return false;
@@ -682,6 +732,94 @@ function collectModuleConstsAndFunctions(program: Node): {
 }
 
 /**
+ * Local names bound to `node:child_process`'s shell-string exec family
+ * (`exec`, `execSync` — NOT `execFile`/`execFileSync`/`spawn`/`spawnSync`,
+ * which take an argv array and cannot run an arbitrary shell command like
+ * `cat gmail-policy.json`) via a real `import ... from "node:child_process"`
+ * declaration — either a named import (`import { execSync } from
+ * "node:child_process"`) or a namespace import accessed as a member
+ * (`import * as cp from "node:child_process"; cp.execSync(...)`). Keyed off
+ * the actual import binding, not the bare identifier text, so this cannot
+ * collide with an unrelated same-named local (e.g. this codebase's own
+ * `exec(query, params)` SQL helper in `lib/db.ts`).
+ */
+const SHELL_EXEC_EXPORTS = new Set(["exec", "execSync"]);
+
+/** `import * as NAME from "node:child_process"` — NAME.exec/execSync is a namespaced shell-exec call. */
+function namespaceSpecifierLocalName(specifier: Node): string | null {
+  const local = nodeField(specifier, "local");
+  return local?.type === "Identifier" ? (local.name as string) : null;
+}
+
+/** `import { exec as NAME } from "node:child_process"` (or unaliased) — NAME(...) is a direct shell-exec call. */
+function shellExecImportSpecifierLocalName(specifier: Node): string | null {
+  const imported = nodeField(specifier, "imported");
+  const local = nodeField(specifier, "local");
+  const importedName = imported?.type === "Identifier" ? (imported.name as string) : null;
+  if (!(importedName && SHELL_EXEC_EXPORTS.has(importedName) && local?.type === "Identifier")) {
+    return null;
+  }
+  return local.name as string;
+}
+
+function isChildProcessImportSource(stmt: Node): boolean {
+  const source = nodeField(stmt, "source");
+  return source?.type === "StringLiteral" && source.value === "node:child_process";
+}
+
+function collectChildProcessShellExecBindings(program: Node): { names: Set<string>; namespaces: Set<string> } {
+  const names = new Set<string>();
+  const namespaces = new Set<string>();
+  for (const stmt of nodeArrayField(program, "body")) {
+    if (stmt.type !== "ImportDeclaration" || !isChildProcessImportSource(stmt)) {
+      continue;
+    }
+    for (const specifier of nodeArrayField(stmt, "specifiers")) {
+      if (specifier.type === "ImportNamespaceSpecifier") {
+        const namespaceName = namespaceSpecifierLocalName(specifier);
+        if (namespaceName) {
+          namespaces.add(namespaceName);
+        }
+      } else if (specifier.type === "ImportSpecifier") {
+        const localName = shellExecImportSpecifierLocalName(specifier);
+        if (localName) {
+          names.add(localName);
+        }
+      }
+    }
+  }
+  return { names, namespaces };
+}
+
+const SHELL_EXEC_MEMBER_NAMES = new Set(["exec", "execSync"]);
+
+/** Rule (6) predicate: is `callee` an eval(...) call, or a direct/namespaced call to node:child_process's shell-string exec family? */
+function isProhibitedEvasionMechanismCall(
+  callee: Node,
+  bindings: { names: Set<string>; namespaces: Set<string> }
+): boolean {
+  if (isIdentifier(callee, "eval")) {
+    return true;
+  }
+  if (callee.type === "Identifier") {
+    return bindings.names.has(callee.name as string);
+  }
+  if (callee.type === "MemberExpression") {
+    const object = callee.object as Node;
+    const property = callee.property as Node;
+    return (
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `callee.object`/`callee.property` are `unknown` on Node's index signature; the `as Node` casts change the STATIC type only, not runtime nullability. `tsc --strict` raises no error on this file.
+      object?.type === "Identifier" &&
+      bindings.namespaces.has(object.name as string) &&
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- same as above, for `property`.
+      property?.type === "Identifier" &&
+      SHELL_EXEC_MEMBER_NAMES.has(property.name as string)
+    );
+  }
+  return false;
+}
+
+/**
  * Scan one production file's AST for JSON/YAML-consuming data-load call
  * sites, independent of which JS syntax shape reaches the file.
  */
@@ -689,9 +827,16 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
   const raw = readFileSync(absPath, "utf8");
   let ast: Node;
   try {
+    // The `typescript` and `jsx` Babel parser plugins are mutually exclusive
+    // for `.ts` (non-`.tsx`) sources — enabling both misparses a type-cast or
+    // generic like `<T>` as a JSX element. Select the plugin set by extension
+    // so `.tsx`/`.jsx` files (in scope since the P2/extension-scope fix) parse
+    // correctly instead of silently falling into the catch-and-report-nothing
+    // branch below on every real .tsx/.jsx production file.
+    const isJsxExtension = absPath.endsWith(".tsx") || absPath.endsWith(".jsx");
     ast = parse(raw, {
       errorRecovery: true,
-      plugins: ["typescript", "importAttributes"],
+      plugins: isJsxExtension ? ["typescript", "jsx", "importAttributes"] : ["typescript", "importAttributes"],
       sourceType: "module",
     }) as unknown as Node;
   } catch {
@@ -711,6 +856,7 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
   });
 
   const analysis: FileAnalysis = { allCalls, fileDir: dirname(relPath), localFunctions, moduleConsts, relPath };
+  const childProcessShellExecBindings = collectChildProcessShellExecBindings(program);
 
   // Build declarator-init -> name map up front so flowsIntoJsonParse's
   // variable-binding branch can resolve `const raw = readFileSync(...)`.
@@ -724,6 +870,7 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
   function flowsIntoJsonParse(callNode: Node, parent: Node | null): boolean {
     if (
       parent?.type === "CallExpression" &&
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `parent.callee` is `unknown` on Node's index signature; the `as Node` cast changes the STATIC type only, not runtime nullability. `tsc --strict` raises no error on this file.
       (parent.callee as Node)?.type === "MemberExpression" &&
       isIdentifier((parent.callee as Node).object as Node, "JSON") &&
       isIdentifier((parent.callee as Node).property as Node, "parse")
@@ -742,12 +889,12 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
       }
       if (
         n.type === "CallExpression" &&
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `n.callee` is `unknown` on Node's index signature; the `as Node` cast changes the STATIC type only, not runtime nullability. `tsc --strict` raises no error on this file.
         (n.callee as Node)?.type === "MemberExpression" &&
         isIdentifier((n.callee as Node).object as Node, "JSON") &&
         isIdentifier((n.callee as Node).property as Node, "parse")
       ) {
-        const args = nodeArrayField(n, "arguments");
-        const arg = args[0];
+        const [arg] = nodeArrayField(n, "arguments");
         if (arg && isIdentifier(arg, boundName)) {
           found = true;
         }
@@ -806,6 +953,145 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
     report(node, "unsanctioned-policy-resource-path");
   }
 
+  /** Rule (6): eval(...) and child_process shell-exec calls, prohibited outright. Returns true if this call site was handled (report or no-op). */
+  function checkProhibitedEvasionMechanism(node: Node, callee: Node): boolean {
+    if (node.type !== "CallExpression" || !isProhibitedEvasionMechanismCall(callee, childProcessShellExecBindings)) {
+      return false;
+    }
+    const siteKey = `${relPath}:${lineOf(node)}`;
+    if (!SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
+      report(node, "prohibited-data-load-evasion-mechanism");
+    }
+    return true;
+  }
+
+  /** require(...) / dynamic import(...) reaching a sibling JSON/YAML resource. Returns true if this call site was handled. */
+  function checkRequireOrDynamicImport(node: Node, callee: Node, enclosingFunctionName: string | null): boolean {
+    const isRequire = node.type === "CallExpression" && isIdentifier(callee, "require");
+    const isDynamicImport = node.type === "CallExpression" && callee.type === "Import";
+    if (!(isRequire || isDynamicImport)) {
+      return false;
+    }
+    const [first] = nodeArrayField(node, "arguments");
+    if (!first) {
+      return true;
+    }
+    const siteKey = `${relPath}:${lineOf(node)}`;
+    if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
+      return true;
+    }
+    // A bare specifier (no leading "./" or "../") — an npm package name,
+    // a node: builtin, or an absolute/scoped specifier — is ordinary code
+    // loading, never a relative sibling data file. Checked against the
+    // resolved LITERAL VALUE (following identifier/const indirection),
+    // not just the syntactic shape of `first` itself — a local `const
+    // webPushPackageName = "web-push"` is exactly as much a bare
+    // specifier as writing `import("web-push")` directly, and must not
+    // be misread as "./web-push" once anchored to the current file.
+    const literalValue = resolveToLiteralStringValue(first, analysis);
+    if (literalValue !== null && !isRelativeSpecifierLiteral(literalValue)) {
+      return true;
+    }
+    const resolved = resolvePathArgument(first, analysis, enclosingFunctionName);
+    const ext = resolved.kind === "static" && !resolved.relPath.includes(PLACEHOLDER) ? extname(resolved.relPath) : "";
+    if (resolved.kind === "static" && !isDataResourceExtension(ext)) {
+      // A statically-resolved non-data extension (.ts/.js/.node, etc.) is
+      // ordinary code loading, out of rule (5)'s scope.
+      return true;
+    }
+    classifyResolved(resolved, node);
+    return true;
+  }
+
+  /** readFileSync(...) / readFile(...) (fs and fs/promises; data-only in this codebase). Returns true if this call site was handled. */
+  function checkReadFileCall(
+    node: Node,
+    callee: Node,
+    parent: Node | null,
+    enclosingFunctionName: string | null
+  ): boolean {
+    const name = node.type === "CallExpression" ? calleeName(callee) : null;
+    if (!(node.type === "CallExpression" && (name === "readFileSync" || name === "readFile"))) {
+      return false;
+    }
+    const [first] = nodeArrayField(node, "arguments");
+    if (!first) {
+      return true;
+    }
+    const siteKey = `${relPath}:${lineOf(node)}`;
+    if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
+      return true;
+    }
+    const consumesJson = flowsIntoJsonParse(node, parent);
+    const resolved = resolvePathArgument(first, analysis, enclosingFunctionName);
+    const isFullyStatic = resolved.kind === "static" && !resolved.relPath.includes(PLACEHOLDER);
+    // The "no extension might be a renamed .json" heuristic only makes
+    // sense against a FULLY STATIC literal path (the finding-#4 evasion:
+    // `new URL("./policy", import.meta.url)`). A dynamic/interpolated
+    // path with no extension (e.g. `/proc/${pid}/status`) is a runtime OS
+    // path, not a renamed data file, and is correctly out of scope unless
+    // it is separately JSON.parse-consumed.
+    const looksLikeDataPath = isFullyStatic && isDataResourceExtension(extname(resolved.relPath));
+    if (!(consumesJson || looksLikeDataPath)) {
+      // Neither JSON.parse-consumed nor resolved to a data-shaped
+      // extension: out of rule (5)'s scope (e.g. a DDL .js-as-text read,
+      // a .gitignore read, a /proc status read, a raw secret-key-file
+      // read). If the path is unresolvable AND the read is never
+      // JSON-parsed, it cannot be a JSON/YAML policy load either.
+      return true;
+    }
+    classifyResolved(resolved, node);
+    return true;
+  }
+
+  function isDirectlyConsumedByReadOrImportCall(parent: Node | null): boolean {
+    return (
+      parent?.type === "CallExpression" &&
+      (calleeName(parent.callee as Node) === "readFileSync" ||
+        calleeName(parent.callee as Node) === "readFile" ||
+        isIdentifier(parent.callee as Node, "require") ||
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `parent.callee` is `unknown` on Node's index signature; the `as Node` cast changes the STATIC type only, not runtime nullability. `tsc --strict` raises no error on this file.
+        (parent.callee as Node)?.type === "Import")
+    );
+  }
+
+  // new URL(<path>, import.meta.url) not already consumed by a
+  // readFileSync/readFile/require/import call above (e.g. assigned to a
+  // constant and passed elsewhere, or used directly as a fetch-able
+  // resource reference) — still flagged if it resolves to a data-shaped
+  // path outside the sanctioned set, since constructing the reference is
+  // itself evidence of intent.
+  function checkStandaloneNewUrl(
+    node: Node,
+    callee: Node,
+    parent: Node | null,
+    enclosingFunctionName: string | null
+  ): void {
+    if (!(node.type === "NewExpression" && isIdentifier(callee, "URL"))) {
+      return;
+    }
+    // Skip if this NewExpression is directly the first argument of a
+    // readFileSync/readFile/require/import call — already handled above
+    // via resolvePathArgument's `new URL` branch reached from that call.
+    if (isDirectlyConsumedByReadOrImportCall(parent)) {
+      return;
+    }
+    const [first, second] = nodeArrayField(node, "arguments");
+    if (!(first && second && isImportMetaUrl(second))) {
+      return;
+    }
+    const siteKey = `${relPath}:${lineOf(node)}`;
+    if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
+      return;
+    }
+    const resolved = resolvePathArgument(first, analysis, enclosingFunctionName);
+    const ext = resolved.kind === "static" && !resolved.relPath.includes(PLACEHOLDER) ? extname(resolved.relPath) : "";
+    if (resolved.kind === "static" && !isDataResourceExtension(ext)) {
+      return;
+    }
+    classifyResolved(resolved, node);
+  }
+
   walk(program, (node, parent, ancestors) => {
     if (node.type !== "CallExpression" && node.type !== "NewExpression") {
       return;
@@ -813,116 +1099,16 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
     const callee = node.callee as Node;
     const enclosingFunctionName = enclosingFunctionNameOf(ancestors);
 
-    // require(...) / dynamic import(...)
-    const isRequire = node.type === "CallExpression" && isIdentifier(callee, "require");
-    const isDynamicImport = node.type === "CallExpression" && callee.type === "Import";
-    if (isRequire || isDynamicImport) {
-      const args = nodeArrayField(node, "arguments");
-      const first = args[0];
-      if (!first) {
-        return;
-      }
-      const siteKey = `${relPath}:${lineOf(node)}`;
-      if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
-        return;
-      }
-      // A bare specifier (no leading "./" or "../") — an npm package name,
-      // a node: builtin, or an absolute/scoped specifier — is ordinary code
-      // loading, never a relative sibling data file. Checked against the
-      // resolved LITERAL VALUE (following identifier/const indirection),
-      // not just the syntactic shape of `first` itself — a local `const
-      // webPushPackageName = "web-push"` is exactly as much a bare
-      // specifier as writing `import("web-push")` directly, and must not
-      // be misread as "./web-push" once anchored to the current file.
-      const literalValue = resolveToLiteralStringValue(first, analysis);
-      if (literalValue !== null && !isRelativeSpecifierLiteral(literalValue)) {
-        return;
-      }
-      const resolved = resolvePathArgument(first, analysis, enclosingFunctionName);
-      const ext =
-        resolved.kind === "static" && !resolved.relPath.includes(PLACEHOLDER) ? extname(resolved.relPath) : "";
-      if (resolved.kind === "static" && !isDataResourceExtension(ext)) {
-        // A statically-resolved non-data extension (.ts/.js/.node, etc.) is
-        // ordinary code loading, out of rule (5)'s scope.
-        return;
-      }
-      classifyResolved(resolved, node);
+    if (checkProhibitedEvasionMechanism(node, callee)) {
       return;
     }
-
-    // readFileSync(...) / readFile(...) (fs and fs/promises; data-only in
-    // this codebase — verified no production `.ts` file uses either to load
-    // executable code).
-    const name = node.type === "CallExpression" ? calleeName(callee) : null;
-    if (node.type === "CallExpression" && (name === "readFileSync" || name === "readFile")) {
-      const args = nodeArrayField(node, "arguments");
-      const first = args[0];
-      if (!first) {
-        return;
-      }
-      const siteKey = `${relPath}:${lineOf(node)}`;
-      if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
-        return;
-      }
-      const consumesJson = flowsIntoJsonParse(node, parent);
-      const resolved = resolvePathArgument(first, analysis, enclosingFunctionName);
-      const isFullyStatic = resolved.kind === "static" && !resolved.relPath.includes(PLACEHOLDER);
-      // The "no extension might be a renamed .json" heuristic only makes
-      // sense against a FULLY STATIC literal path (the finding-#4 evasion:
-      // `new URL("./policy", import.meta.url)`). A dynamic/interpolated
-      // path with no extension (e.g. `/proc/${pid}/status`) is a runtime OS
-      // path, not a renamed data file, and is correctly out of scope unless
-      // it is separately JSON.parse-consumed.
-      const looksLikeDataPath = isFullyStatic && isDataResourceExtension(extname(resolved.relPath));
-      if (!(consumesJson || looksLikeDataPath)) {
-        // Neither JSON.parse-consumed nor resolved to a data-shaped
-        // extension: out of rule (5)'s scope (e.g. a DDL .js-as-text read,
-        // a .gitignore read, a /proc status read, a raw secret-key-file
-        // read). If the path is unresolvable AND the read is never
-        // JSON-parsed, it cannot be a JSON/YAML policy load either.
-        return;
-      }
-      classifyResolved(resolved, node);
+    if (checkRequireOrDynamicImport(node, callee, enclosingFunctionName)) {
       return;
     }
-
-    // new URL(<path>, import.meta.url) not already consumed by a
-    // readFileSync/readFile/require/import call above (e.g. assigned to a
-    // constant and passed elsewhere, or used directly as a fetch-able
-    // resource reference) — still flagged if it resolves to a data-shaped
-    // path outside the sanctioned set, since constructing the reference is
-    // itself evidence of intent.
-    if (node.type === "NewExpression" && isIdentifier(callee, "URL")) {
-      // Skip if this NewExpression is directly the first argument of a
-      // readFileSync/readFile/require/import call — already handled above
-      // via resolvePathArgument's `new URL` branch reached from that call.
-      if (
-        parent?.type === "CallExpression" &&
-        (calleeName(parent.callee as Node) === "readFileSync" ||
-          calleeName(parent.callee as Node) === "readFile" ||
-          isIdentifier(parent.callee as Node, "require") ||
-          (parent.callee as Node)?.type === "Import")
-      ) {
-        return;
-      }
-      const args = nodeArrayField(node, "arguments");
-      const first = args[0];
-      const second = args[1];
-      if (!(first && second && isImportMetaUrl(second))) {
-        return;
-      }
-      const siteKey = `${relPath}:${lineOf(node)}`;
-      if (SANCTIONED_GENERIC_DATA_READ_CALL_SITES.has(siteKey)) {
-        return;
-      }
-      const resolved = resolvePathArgument(first, analysis, enclosingFunctionName);
-      const ext =
-        resolved.kind === "static" && !resolved.relPath.includes(PLACEHOLDER) ? extname(resolved.relPath) : "";
-      if (resolved.kind === "static" && !isDataResourceExtension(ext)) {
-        return;
-      }
-      classifyResolved(resolved, node);
+    if (checkReadFileCall(node, callee, parent, enclosingFunctionName)) {
+      return;
     }
+    checkStandaloneNewUrl(node, callee, parent, enclosingFunctionName);
   });
 
   // Static `import x from "./y.json" with { type: "json" }` (or legacy

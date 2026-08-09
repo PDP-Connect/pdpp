@@ -50,6 +50,7 @@ import { isExemptDataLoadPath, scanFileDataLoads } from "./helpers/ri-zero-conne
 import {
   formatViolationInventory,
   manifestDerivedConnectorKeys,
+  productionFiles,
   scanFile,
   scanRepository,
 } from "./helpers/ri-zero-connector-knowledge-scan.ts";
@@ -320,6 +321,108 @@ test("falsifiability (P4 fix): a renamed/no-extension sibling file loaded as JSO
         violations.some((v) => v.rule === "unsanctioned-policy-resource-path"),
         "a JSON.parse-consumed read of a no-extension sibling file must be flagged even though the path has no .json suffix"
       );
+    }
+  );
+});
+
+test("falsifiability (rule 6 / revise3 P2 fix): eval(require)(...) reaching a sibling JSON file is caught", () => {
+  // The exact live evasion from the revise3 independent re-gate: eval hides
+  // the require callee from calleeName entirely, so before this fix this
+  // shape produced zero violations, silently.
+  withSyntheticProductionFile(
+    "synthetic-eval-require-load.ts",
+    ['const POLICY = eval("require")("./gmail-policy.json");', ""].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "prohibited-data-load-evasion-mechanism"),
+        "eval(...) must be flagged outright, regardless of what it evaluates to"
+      );
+    }
+  );
+});
+
+test("falsifiability (rule 6 / revise3 P2 fix): child_process execSync(...) shelling out to read a sibling JSON file is caught", () => {
+  // The other live evasion from the revise3 re-gate: execSync("cat
+  // gmail-policy.json") is an arbitrary shell command line, entirely outside
+  // the scanner's readFileSync/require/import call vocabulary.
+  withSyntheticProductionFile(
+    "synthetic-child-process-execsync-load.ts",
+    [
+      'import { execSync } from "node:child_process";',
+      'const POLICY = JSON.parse(execSync("cat gmail-policy.json").toString());',
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "prohibited-data-load-evasion-mechanism"),
+        "child_process execSync(...) must be flagged outright, regardless of the shell command text"
+      );
+    }
+  );
+});
+
+test("falsifiability (rule 6 / revise3 P2 fix): a namespace-imported child_process.exec(...) shell-out is caught", () => {
+  withSyntheticProductionFile(
+    "synthetic-child-process-namespace-exec-load.ts",
+    [
+      'import * as childProcess from "node:child_process";',
+      'childProcess.exec("cat gmail-policy.json", (_err, stdout) => JSON.parse(stdout));',
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "prohibited-data-load-evasion-mechanism"),
+        "a namespace-imported child_process.exec(...) call must be flagged outright"
+      );
+    }
+  );
+});
+
+test("falsifiability (rule 6 counterweight): legitimate argv-array child_process calls (execFileSync/spawn) are NOT flagged by rule 6", () => {
+  // execFileSync/spawn take an argv array, not a shell command string, and
+  // are real, legitimate production usage elsewhere in this codebase (e.g.
+  // server/reference-revision.ts's `execFileSync("git", args, ...)`). Rule
+  // (6) must not over-broadly flag every child_process import.
+  withSyntheticProductionFile(
+    "synthetic-child-process-execfilesync-legitimate.ts",
+    [
+      'import { execFileSync } from "node:child_process";',
+      "export function gitRevision(): string {",
+      '  return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();',
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.deepEqual(
+        violations,
+        [],
+        "execFileSync (argv-array form) must not be flagged by the eval/shell-exec prohibition"
+      );
+    }
+  );
+});
+
+test("falsifiability (rule 6 counterweight): an unrelated same-named local `exec` function (not imported from child_process) is NOT flagged", () => {
+  // This codebase's own lib/db.ts declares `export function exec(query, params)`
+  // — a SQL helper with no relation to child_process. Rule (6) is keyed off
+  // the real import binding, not the bare identifier text, so this must not
+  // collide.
+  withSyntheticProductionFile(
+    "synthetic-unrelated-exec-local.ts",
+    [
+      "function exec(query: string, params: unknown[]): void {",
+      "  // pretend SQL execution, unrelated to child_process",
+      "}",
+      'exec("SELECT 1", []);',
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const violations = scanFileDataLoads(join(repoRoot, relPath), relPath, repoRoot);
+      assert.deepEqual(violations, [], "a locally-declared exec() unrelated to node:child_process must not be flagged");
     }
   );
 });
@@ -613,6 +716,83 @@ test("falsifiability (P3 fix): a live connector-identity violation inside a nest
     );
   } finally {
     rmSync(nestedDir, { force: true, recursive: true });
+  }
+});
+
+test("falsifiability (revise3 P2 fix): productionFiles discovers .js/.mjs/.cjs/.mts/.cts production siblings, not just .ts", () => {
+  // The live gap from the revise3 independent re-gate: scripts/run-tests-failure.js
+  // is a real, non-test, production .js file directly under a scanned
+  // production root (scripts/) that walkTsFiles's old `.ts`-only filter made
+  // completely invisible. Prove the extension set now covers the repo's
+  // real executable JS/TS surface by planting one synthetic file per
+  // extension and confirming productionFiles discovers each of them.
+  const extensions = [".js", ".mjs", ".cjs", ".mts", ".cts"];
+  const plantedRelPaths: string[] = [];
+  try {
+    for (const ext of extensions) {
+      const relPath = `reference-implementation/scripts/synthetic-extension-scope-probe${ext}`;
+      const absPath = join(repoRoot, relPath);
+      if (existsSync(absPath)) {
+        throw new Error(`refusing to overwrite a file that already exists on disk: ${absPath}`);
+      }
+      writeFileSync(absPath, "export const probe = true;\n");
+      plantedRelPaths.push(relPath);
+    }
+    const discovered = new Set(productionFiles({ repoRoot }));
+    for (const relPath of plantedRelPaths) {
+      assert.ok(discovered.has(relPath), `productionFiles must discover ${relPath}, not just .ts siblings`);
+    }
+  } finally {
+    for (const relPath of plantedRelPaths) {
+      rmSync(join(repoRoot, relPath), { force: true });
+    }
+  }
+});
+
+test("falsifiability (revise3 P2 fix): a live connector-identity violation in a .js production file is caught by the full scan", () => {
+  withSyntheticProductionFile(
+    "synthetic-js-extension-violation.js",
+    [
+      "export function isFirstParty(connectorId) {",
+      '  return connectorId === "gmail" || connectorId === "slack";',
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const absPath = join(repoRoot, relPath);
+      const violations = scanFile(absPath, relPath, new Set(["gmail", "slack"]), repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+        "a connector-identity violation in a .js production file must be caught, matching .ts coverage"
+      );
+    }
+  );
+});
+
+test("falsifiability (revise3 P2 counterweight): .d.ts declaration files and test-suffixed non-.ts extensions stay excluded", () => {
+  const plantedRelPaths: string[] = [];
+  try {
+    for (const fileName of [
+      "synthetic-extension-scope-declaration-probe.d.ts",
+      "synthetic-extension-scope-test-probe.test.mjs",
+      "synthetic-extension-scope-test-probe.test.js",
+    ]) {
+      const relPath = `reference-implementation/scripts/${fileName}`;
+      const absPath = join(repoRoot, relPath);
+      if (existsSync(absPath)) {
+        throw new Error(`refusing to overwrite a file that already exists on disk: ${absPath}`);
+      }
+      writeFileSync(absPath, "export const probe = true;\n");
+      plantedRelPaths.push(relPath);
+    }
+    const discovered = new Set(productionFiles({ repoRoot }));
+    for (const relPath of plantedRelPaths) {
+      assert.ok(!discovered.has(relPath), `productionFiles must NOT discover ${relPath} (declaration/test file)`);
+    }
+  } finally {
+    for (const relPath of plantedRelPaths) {
+      rmSync(join(repoRoot, relPath), { force: true });
+    }
   }
 });
 

@@ -24,6 +24,12 @@ Before posting, `ci:signoff` diffs `HEAD` against `--base` (default `origin/main
 
 If the diff touches the gate's own implementation, `ci:signoff` ALSO runs `ci:mode:test` — a change to the gate itself must run both the connector-conformance suite (to prove the gate's own logic still enforces what it claims) and its own unit tests, not just one or the other. A change to the gate cannot weaken its own enforcement without proving the weakened version still passes both.
 
+## Zero-connector-knowledge guard merge dependency
+
+`reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts`'s terminal assertion (`RI production code contains zero connector/provider-specific executable knowledge`) runs unconditionally inside `pnpm --dir reference-implementation test`, per the normative requirement in `reference-implementation-architecture` ("The guard runs as part of the reference implementation test suite"). That test script is also what the hosted `reference-implementation` required check and local `ci:signoff`'s `zeroConnectorKnowledgeGateRequired` trigger both run.
+
+As of 2026-08-09 this assertion fails against `main` with 91 real violations, all in two known, actively-being-remediated clusters: Cluster A (`server/provider-auth/*` and its credential stores, owned by the active provider-auth lane) and Cluster B (`server/connector-key.ts`, `server/connection-setup-plan.ts`, owned by the active allowlist lane). This is intentional per spec — the guard is not supposed to be tuned to pass early — which means **any branch carrying this guard (including its own follow-up hardening commits) is not independently mergeable to `main` until both lanes land and the terminal assertion is re-verified at zero violations.** There is no ratchet, baseline allowlist, or gated/weakened version of the terminal assertion; merging early would turn the required `reference-implementation` check red for every other RI PR. Track this dependency at the PR level (do not merge until Cluster A/B show zero violations against the target branch) rather than working around it in code.
+
 ## When to use local mode
 
 Use local mode only when hosted CI is unavailable for infrastructure reasons and the local verification commands have been run and recorded. Local mode is not a weaker quality bar; it is a different execution venue for the same merge gate.
