@@ -161,6 +161,48 @@ const provenManifestsByKey = new Map(
     .map(({ manifest }) => [manifestKey(manifest), manifest] as const)
     .filter((entry): entry is [string, ManifestLike] => entry[0] !== null)
 );
+
+// Fail loud on either direction of drift between "manifests claiming the
+// local_collector proof" and "LOCAL_COLLECTOR_DEFINITIONS entries" — walking
+// LOCAL_COLLECTOR_DEFINITIONS below (to get the canonical order) silently
+// drops a proven manifest that has no matching definition entry unless this
+// is checked explicitly first: that manifest never appears in the walk's
+// input at all, so there is nothing downstream that would notice its
+// disappearance. A contributor who ships a proven manifest without wiring
+// its LocalCollectorDefinition (or vice versa) must see CI fail here, not a
+// connector silently missing from the enrollment picker.
+const definitionKeysByBundleId = new Map(
+  LOCAL_COLLECTOR_DEFINITIONS.map((definition) => {
+    const manifest = manifestByBundleSlug.get(definition.connector_id);
+    return [definition.connector_id, manifest ? manifestKey(manifest) : null] as const;
+  })
+);
+const definitionCanonicalKeys = new Set(
+  [...definitionKeysByBundleId.values()].filter((key): key is string => key !== null)
+);
+const provenKeysMissingADefinition = [...provenManifestsByKey.keys()].filter(
+  (key) => !definitionCanonicalKeys.has(key)
+);
+if (provenKeysMissingADefinition.length > 0) {
+  throw new Error(
+    "capabilities.proven.local_collector=true declared for connector(s) with no matching " +
+      "LOCAL_COLLECTOR_DEFINITIONS entry in packages/polyfill-connectors/src/collector-registry.ts: " +
+      `${provenKeysMissingADefinition.join(", ")}. A proven local-collector manifest must have a ` +
+      "LocalCollectorDefinition wired into LOCAL_COLLECTOR_DEFINITIONS, or the proof claim must be removed."
+  );
+}
+const definitionsWithoutAProvenManifest = [...definitionKeysByBundleId.entries()].filter(
+  ([, canonicalKey]) => canonicalKey !== null && !provenManifestsByKey.has(canonicalKey)
+);
+if (definitionsWithoutAProvenManifest.length > 0) {
+  throw new Error(
+    "LOCAL_COLLECTOR_DEFINITIONS entry/entries with no matching capabilities.proven.local_collector=true " +
+      `manifest declaration: ${definitionsWithoutAProvenManifest.map(([bundleId]) => bundleId).join(", ")}. ` +
+      "A bundled LocalCollectorDefinition must have its manifest declare the proof, or the definition must " +
+      "be removed from LOCAL_COLLECTOR_DEFINITIONS."
+  );
+}
+
 const localCollectorProvenKeys = LOCAL_COLLECTOR_DEFINITIONS.map((definition) => {
   const manifest = manifestByBundleSlug.get(definition.connector_id);
   const canonicalKey = manifest ? manifestKey(manifest) : null;

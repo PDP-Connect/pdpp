@@ -40,11 +40,22 @@
  *    manifest declaring a connector_id/connector_key. A manifest alone only
  *    proves registration is possible, not that the seed connector can emit
  *    anything for it.
+ *
+ * 4. Fail-loud omission guard: a manifest claiming
+ *    capabilities.proven.local_collector=true with no matching
+ *    LOCAL_COLLECTOR_DEFINITIONS entry (packages/polyfill-connectors/src/
+ *    collector-registry.ts) must make the generator throw, not silently drop
+ *    the claim. Before this guard, LOCAL_COLLECTOR_PROVEN_KEYS is derived by
+ *    walking the fixed LOCAL_COLLECTOR_DEFINITIONS array, so a proven
+ *    manifest outside that array was structurally invisible to the
+ *    computation — no error, no drift, no CI signal. This test reproduces
+ *    that exact scenario against the real generator and real manifests
+ *    directory (a temporary sibling manifest file, removed in `finally`).
  */
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -80,8 +91,11 @@ const trackedRegistry = {
 };
 
 const riRoot = fileURLToPath(new URL("..", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const generatorScript = join(riRoot, "scripts/generate-connector-registry.ts");
 const trackedRegistryPath = join(riRoot, "server/generated/connector-registry.generated.ts");
+const polyfillManifestsDir = join(repoRoot, "packages/polyfill-connectors/manifests");
+const OMISSION_PROBE_KEY_RE = /zzz-test-omission-probe/;
 
 test("connector-registry.generated.ts has not drifted from what regenerating from the manifests on disk would produce", () => {
   const scratchDir = mkdtempSync(join(tmpdir(), "connector-registry-drift-"));
@@ -100,6 +114,43 @@ test("connector-registry.generated.ts has not drifted from what regenerating fro
     );
   } finally {
     rmSync(scratchDir, { force: true, recursive: true });
+  }
+});
+
+test("the generator throws (does not silently drop the claim) when a manifest declares capabilities.proven.local_collector=true with no matching LOCAL_COLLECTOR_DEFINITIONS entry", () => {
+  const probeConnectorKey = "zzz-test-omission-probe";
+  const probeManifestPath = join(polyfillManifestsDir, `${probeConnectorKey}.json`);
+  const probeManifest = {
+    capabilities: {
+      proven: { local_collector: true },
+    },
+    connector_id: `https://registry.pdpp.org/connectors/${probeConnectorKey}`,
+    connector_key: probeConnectorKey,
+    display_name: "Omission Probe (test fixture, not a real connector)",
+    protocol_version: "0.1.0",
+    runtime_requirements: { bindings: { filesystem: { required: true } } },
+    streams: [
+      {
+        name: "items",
+        primary_key: ["id"],
+        schema: { properties: { id: { type: "string" } }, type: "object" },
+      },
+    ],
+    version: "0.1.0",
+  };
+  writeFileSync(probeManifestPath, JSON.stringify(probeManifest, null, 2));
+  try {
+    assert.throws(
+      () =>
+        execFileSync("node", ["--experimental-strip-types", generatorScript, "/dev/null"], {
+          cwd: riRoot,
+          stdio: "pipe",
+        }),
+      OMISSION_PROBE_KEY_RE,
+      "generator must fail loud on a local_collector-proven manifest with no LOCAL_COLLECTOR_DEFINITIONS entry, not silently omit it from LOCAL_COLLECTOR_PROVEN_KEYS"
+    );
+  } finally {
+    unlinkSync(probeManifestPath);
   }
 });
 
