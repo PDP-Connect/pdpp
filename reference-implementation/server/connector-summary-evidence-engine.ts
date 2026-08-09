@@ -82,6 +82,31 @@ export type ManifestState = "current" | "unavailable" | "failed";
 export type DeclarationState = "declared" | "dormant" | "unexpected" | "unavailable";
 export type CountState = "known" | "known_zero" | "unobserved" | "stale" | "unknown";
 
+/**
+ * The one place a fresh per-stream `count_state` is derived, so the
+ * "`known_zero` needs positive proof" invariant cannot drift between
+ * callers. `observed` is the orthogonal observation axis (a record-source
+ * checkpoint entry for the stream), NOT an attempt outcome: whether a run
+ * failed is carried by the run/attempt surfaces and must never be folded
+ * into a count state.
+ *
+ *   - observed + records    -> `known`      (exact count)
+ *   - observed + no records -> `known_zero` (proven exact zero)
+ *   - never observed        -> `unobserved` (no count claim of any kind)
+ */
+export function deriveStreamCountState({
+  observed,
+  recordCount,
+}: {
+  readonly observed: boolean;
+  readonly recordCount: number;
+}): CountState {
+  if (recordCount > 0) {
+    return "known";
+  }
+  return observed ? "known_zero" : "unobserved";
+}
+
 export type RepairCandidateReason =
   | "missing"
   | "dirty"
@@ -1293,6 +1318,16 @@ function buildRepairedRow(inputs: RepairInputs): Row {
     ? new Set([...declaredStreams, ...canonicalStreams, ...retainedStreams, ...unexpectedStreams])
     : new Set([...canonicalStreams, ...retainedStreams]);
 
+  // The canonical `GROUP BY stream` read is SPARSE: a stream with no live
+  // records produces no row at all, so `canonical === undefined` conflates
+  // "provably zero" with "never successfully observed". The record-source
+  // checkpoint (`version_counter`, read in the same transaction) is the
+  // orthogonal observation axis that separates them: a checkpoint entry
+  // exists only once ingest allocated a version for that stream, so it is
+  // positive proof that the stream WAS canonically observed. Absent that
+  // proof, an absent canonical row is `unobserved`, never `known_zero`.
+  const observedStreams = new Set(checkpoint.streams.map((entry) => entry.stream));
+
   const streamRecords: StreamEvidence[] = [...unionStreams].sort().map((stream) => {
     const canonical = canonicalByStream.get(stream);
     // biome-ignore lint/style/noNonNullAssertion: The trusted boundary invariant is established by the preceding validation.
@@ -1307,7 +1342,14 @@ function buildRepairedRow(inputs: RepairInputs): Row {
           : "dormant"
       : "unavailable";
     const record_count = canonical ? Number(canonical.record_count || 0) : 0;
-    const count_state: CountState = record_count > 0 ? "known" : "known_zero";
+    // `known_zero` requires POSITIVE canonical proof of an exact zero: the
+    // stream was observed (checkpoint entry) and the canonical read returned
+    // no live records for it — e.g. everything it held was deleted. An
+    // absence of any observation carries no count claim at all.
+    const count_state: CountState = deriveStreamCountState({
+      observed: observedStreams.has(stream),
+      recordCount: record_count,
+    });
     return {
       count_state,
       declaration_state,
