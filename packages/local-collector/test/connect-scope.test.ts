@@ -2,13 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   buildConnectScopeRequest,
+  ConnectScopeValidationError,
   DEFAULT_CONNECT_RECENT_DAYS,
   describeConnectScopeChoice,
+  expandSourceRoot,
+  normalizeSourceRoots,
   recentSinceDays,
+  validateSinceLocally,
 } from "../src/connect-scope.ts";
 
 const NOW = "2026-08-09T00:00:00.000Z";
@@ -78,4 +85,66 @@ test("recentSinceDays matches @pdpp/reference-contract's day-math exactly (cross
     const contract = resolveNamedCollectionScope({ days, kind: "recent" }, NOW);
     assert.equal(local, contract?.since, `drift on recentSinceDays(${days}) vs reference-contract's resolver`);
   }
+});
+
+// --- expandSourceRoot / normalizeSourceRoots ---
+
+test("expandSourceRoot expands a bare ~ to homedir()", () => {
+  assert.equal(expandSourceRoot("~"), homedir());
+});
+
+test("expandSourceRoot expands ~/ prefix relative to homedir()", () => {
+  assert.equal(expandSourceRoot("~/code/project"), join(homedir(), "code", "project"));
+});
+
+test("expandSourceRoot leaves an absolute path resolved but otherwise unchanged", () => {
+  assert.equal(expandSourceRoot("/home/u/code/project"), "/home/u/code/project");
+});
+
+test("normalizeSourceRoots FAILS BEFORE any request is built when a path-like root does not exist on this host", () => {
+  const missing = join(tmpdir(), "pdpp-connect-scope-does-not-exist-xyz");
+  assert.throws(() => normalizeSourceRoots([missing]), ConnectScopeValidationError);
+});
+
+test("normalizeSourceRoots accepts and expands an existing ~-relative directory", () => {
+  const tempHome = mkdtempSync(join(tmpdir(), "pdpp-connect-scope-home-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const [normalized] = normalizeSourceRoots(["~"]);
+    assert.equal(normalized, tempHome);
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  }
+});
+
+test("normalizeSourceRoots passes a bare project-name root through unexpanded and unchecked (not a filesystem path on this host)", () => {
+  assert.deepEqual(normalizeSourceRoots(["proj-a"]), ["proj-a"]);
+});
+
+test("normalizeSourceRoots rejects an empty entry", () => {
+  assert.throws(() => normalizeSourceRoots([""]), ConnectScopeValidationError);
+});
+
+test("normalizeSourceRoots resolves an existing absolute directory to itself", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "pdpp-connect-scope-root-"));
+  assert.deepEqual(normalizeSourceRoots([tempDir]), [tempDir]);
+});
+
+// --- validateSinceLocally ---
+
+test("validateSinceLocally FAILS BEFORE any request is built on an unparseable --since value", () => {
+  assert.throws(() => validateSinceLocally("not-a-date"), ConnectScopeValidationError);
+});
+
+test("validateSinceLocally FAILS BEFORE any request is built on an empty --since value", () => {
+  assert.throws(() => validateSinceLocally("   "), ConnectScopeValidationError);
+});
+
+test("validateSinceLocally accepts and trims a parseable ISO timestamp", () => {
+  assert.equal(validateSinceLocally("  2026-07-01T00:00:00.000Z  "), "2026-07-01T00:00:00.000Z");
 });

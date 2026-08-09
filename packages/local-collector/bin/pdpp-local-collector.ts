@@ -30,7 +30,14 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
-import { buildConnectScopeRequest, type ConnectScopeChoice, describeConnectScopeChoice } from "../src/connect-scope.ts";
+import {
+  buildConnectScopeRequest,
+  type ConnectScopeChoice,
+  ConnectScopeValidationError,
+  describeConnectScopeChoice,
+  normalizeSourceRoots,
+  validateSinceLocally,
+} from "../src/connect-scope.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
 import {
   type BundledConnectorEntry,
@@ -359,10 +366,18 @@ Guided setup (start here):
           [--device-label <label>]  whatever it already declared — a request that
           [--sample <n>]            would WIDEN a server boundary is rejected, not
           [--profile <name>]        silently clamped. Exactly one of --recent/
-          [--json]                  --all/--since+--source-roots may be given; give
-                                     none to defer entirely to the server (which
+          [--force]                 --all/--since+--source-roots may be given; give
+          [--json]                  none to defer entirely to the server (which
                                      itself defaults to recent history, never an
                                      implicit full pass, when nothing is declared).
+                                     --since is validated locally before any request
+                                     is sent; --source-roots entries that look like
+                                     paths are ~-expanded, resolved, and must exist
+                                     on this host. If a profile already exists at the
+                                     target name, connect refuses to overwrite it
+                                     unless --force is given, which revokes the
+                                     existing device credential server-side first,
+                                     then overwrites the profile with the new one.
   connectors                      List connector ids this build accepts.
   logout  --connector <id>        Revoke this device's own credential on the
           [--profile <name>]        reference server, then delete the local profile
@@ -954,6 +969,15 @@ export async function runSetup(options: CliOptions, deps: RunSetupDeps = {}): Pr
  * combining them would leave it ambiguous which boundary the operator
  * actually meant, and silently picking one would be exactly the kind of
  * fabricated-intent bug this whole feature exists to prevent.
+ *
+ * `--since`/`--source-roots` are also validated LOCALLY here, before any
+ * server request is built: `--since` must parse as a date/time, and each
+ * `--source-roots` entry that looks like a filesystem path (has a `/`, is
+ * absolute, or starts with `~`) is `~`-expanded, resolved to an absolute
+ * path, and checked to exist on this host. The server has no filesystem to
+ * check a root against — it only validates request shape — so failing here
+ * turns a silently-ignored typo into an immediate, actionable error instead
+ * of a round trip that ends in a scoped connection that collects nothing.
  */
 export function resolveConnectScopeChoice(options: CliOptions): ConnectScopeChoice {
   const requested = [
@@ -973,11 +997,18 @@ export function resolveConnectScopeChoice(options: CliOptions): ConnectScopeChoi
     return { kind: "all" };
   }
   if (options.since || options.sourceRoots) {
-    return {
-      kind: "custom",
-      ...(options.since ? { since: options.since } : {}),
-      ...(options.sourceRoots ? { sourceRoots: options.sourceRoots } : {}),
-    };
+    try {
+      return {
+        kind: "custom",
+        ...(options.since ? { since: validateSinceLocally(options.since) } : {}),
+        ...(options.sourceRoots ? { sourceRoots: normalizeSourceRoots(options.sourceRoots) } : {}),
+      };
+    } catch (error) {
+      if (error instanceof ConnectScopeValidationError) {
+        throw new CollectorUsageError(error.message, { cause: error });
+      }
+      throw error;
+    }
   }
   return { kind: "unspecified" };
 }
@@ -996,6 +1027,7 @@ export interface ConnectOutput {
 export interface RunConnectDeps {
   enroll?: typeof enrollCollector;
   now?: () => string;
+  revokeExistingProfile?: (input: { baseUrl: string; deviceId: string; deviceToken: string }) => Promise<unknown>;
   runSample?: (options: CliOptions) => Promise<SampleRunOutput>;
 }
 
@@ -1020,11 +1052,90 @@ export interface RunConnectDeps {
  * Exactly one of `--recent`, `--all`, `--since`/`--source-roots` may be
  * given; passing none at all sends no `collection_scope` field, deferring
  * entirely to the server.
+ *
+ * A repeated `connect` at the same profile name (default: the connector id)
+ * refuses by default when a profile already exists there: overwriting it
+ * silently would orphan the OLD device credential live and un-revoked on
+ * the server while the local record of it — the only thing that could have
+ * revoked it — is gone. `--force` makes the intent explicit and makes it
+ * safe: the existing credential is revoked server-side FIRST (same
+ * self-revoke `logout` uses), and only after that succeeds does `connect`
+ * proceed to consume the new code and overwrite the profile. If the revoke
+ * fails, `connect` aborts before enrolling — the one-time code is not
+ * consumed and nothing is overwritten, so a failed `--force` leaves the
+ * operator able to retry.
  */
+type RevokeExistingProfileFn = (input: { baseUrl: string; deviceId: string; deviceToken: string }) => Promise<unknown>;
+
+/**
+ * `connect`'s overwrite guard: refuse to clobber an existing profile at
+ * `profileName` unless `--force` is given, and when it is, revoke that
+ * profile's device credential server-side BEFORE returning — so the caller
+ * only proceeds to consume the new one-time code once the old credential is
+ * confirmed gone. Extracted out of {@link runConnect} to keep that
+ * function's branching within the repo's cognitive-complexity budget; the
+ * behavior (and its tests) are unchanged by the extraction.
+ */
+async function guardConnectProfileOverwrite(
+  profileName: string,
+  force: boolean | undefined,
+  revokeExistingProfile: RevokeExistingProfileFn
+): Promise<void> {
+  const existingProfilePath = existingCollectorProfilePath(profileName);
+  if (!existingProfilePath) {
+    return;
+  }
+  if (!force) {
+    throw new CollectorUsageError(
+      `connect found an existing profile at ${existingProfilePath}. Connecting again would overwrite it and ` +
+        "leave its device credential live and un-revoked on the server, with no local record left to revoke " +
+        "it later. Pass --force to revoke the existing credential first, then connect and overwrite the profile."
+    );
+  }
+  const existingEnv = parseCollectorProfileEnv(readFileSync(existingProfilePath, "utf8"));
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches applyProfileEnv's established idiom.
+  const existingBaseUrl = existingEnv.PDPP_REFERENCE_BASE_URL?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches applyProfileEnv's established idiom.
+  const existingDeviceId = existingEnv.PDPP_LOCAL_DEVICE_ID?.trim();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Record<string, string> does not guarantee a key exists at runtime; matches applyProfileEnv's established idiom.
+  const existingDeviceToken = existingEnv.PDPP_LOCAL_DEVICE_TOKEN?.trim();
+  if (!(existingBaseUrl && existingDeviceId && existingDeviceToken)) {
+    return;
+  }
+  try {
+    await revokeExistingProfile({
+      baseUrl: existingBaseUrl,
+      deviceId: existingDeviceId,
+      deviceToken: existingDeviceToken,
+    });
+  } catch (error) {
+    const alreadyGone = error instanceof LocalDeviceHttpError && (error.status === 401 || error.status === 403);
+    if (alreadyGone) {
+      // Already revoked/invalid server-side: nothing further to revoke, safe to proceed.
+      return;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CollectorUsageError(
+      `connect --force could not confirm the existing credential at ${existingProfilePath} was revoked ` +
+        `server-side (${detail}). Nothing was overwritten and the one-time code was not consumed — retry ` +
+        "once the server is reachable.",
+      { cause: error }
+    );
+  }
+}
+
 export async function runConnect(options: CliOptions, deps: RunConnectDeps = {}): Promise<ConnectOutput> {
   const enroll = deps.enroll ?? enrollCollector;
   const runSample = deps.runSample ?? runCollectorSample;
   const now = deps.now ?? (() => new Date().toISOString());
+  const revokeExistingProfile: RevokeExistingProfileFn =
+    deps.revokeExistingProfile ??
+    ((input) =>
+      new LocalDeviceClient({
+        baseUrl: input.baseUrl,
+        deviceId: input.deviceId,
+        deviceToken: input.deviceToken,
+      }).selfRevoke());
 
   if (!options.code) {
     throw new CollectorUsageError("connect requires --code <one-time-code>");
@@ -1041,6 +1152,9 @@ export async function runConnect(options: CliOptions, deps: RunConnectDeps = {})
         `Supported: ${BUNDLED_CONNECTOR_IDS.join(", ")}.`
     );
   }
+
+  const profileName = options.profile ?? normalizedConnector;
+  await guardConnectProfileOverwrite(profileName, options.force, revokeExistingProfile);
 
   const scopeChoice = resolveConnectScopeChoice(options);
   const nowIso = now();
@@ -1066,7 +1180,6 @@ export async function runConnect(options: CliOptions, deps: RunConnectDeps = {})
     throw error;
   }
 
-  const profileName = options.profile ?? normalizedConnector;
   const profilePath = writeLocalCollectorProfile({
     baseUrl: options.baseUrl,
     connectorId: normalizedConnector,
@@ -2138,6 +2251,13 @@ function safeProfileFileName(name: string): string {
     throw new CollectorUsageError("--profile must be a simple profile file name");
   }
   return PROFILE_ENV_EXTENSION.test(trimmed) ? trimmed : `${trimmed}.env`;
+}
+
+/** Absolute path of an existing profile file for `name`, or `null` when none exists. Used by `connect`'s overwrite guard. */
+function existingCollectorProfilePath(name: string): string | null {
+  const profileDir = process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  const path = join(profileDir, safeProfileFileName(name));
+  return existsSync(path) ? path : null;
 }
 
 /**

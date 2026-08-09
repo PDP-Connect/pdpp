@@ -23,7 +23,86 @@
  * contract itself (see its `collectorScopeFingerprint` doc comment).
  */
 
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+
 export const DEFAULT_CONNECT_RECENT_DAYS = 30;
+
+/** Thrown by {@link normalizeSourceRoots}/{@link validateSinceLocally} before any request is built or sent. */
+export class ConnectScopeValidationError extends Error {}
+
+/**
+ * Expand a leading `~` (home directory) and resolve to an absolute,
+ * normalized path — the same shape `--source-roots` entries need to be
+ * useful as filesystem roots. A bare `~` or `~/…` is expanded against
+ * `homedir()`; every other value (including a bare connector-project name
+ * with no path separator, which a filesystem-class connector matches by
+ * final path segment) is resolved relative to the current working
+ * directory so `.`/`..`/mixed separators collapse consistently.
+ */
+export function expandSourceRoot(rawRoot: string): string {
+  let expanded = rawRoot;
+  if (rawRoot === "~") {
+    expanded = homedir();
+  } else if (rawRoot.startsWith("~/")) {
+    expanded = join(homedir(), rawRoot.slice(2));
+  }
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(process.cwd(), expanded);
+}
+
+/**
+ * Expand and validate `--source-roots` entries against the local
+ * filesystem BEFORE any request reaches the server. The server has no
+ * filesystem of its own to check against — it only validates the request's
+ * shape (non-empty strings) — so a typo or an un-expanded `~` here would
+ * otherwise sail through as a syntactically valid request that the
+ * connector later matches against zero real directories, exactly the
+ * silent-zero-coverage failure mode `source_roots` already had to be fixed
+ * for once (see `claude_code`'s `projectDirMatchesSourceRoots`). Failing
+ * locally, honestly, and before any network call is cheaper and clearer
+ * than failing after a round trip.
+ *
+ * A root that is a bare name with no path separator (e.g. a Claude Code
+ * project's flattened directory name) is not a filesystem path on this
+ * host and is passed through unexpanded — existence is not checked for it,
+ * since the connector, not this CLI, knows how to resolve it.
+ */
+export function normalizeSourceRoots(rawRoots: readonly string[]): string[] {
+  return rawRoots.map((raw) => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      throw new ConnectScopeValidationError("--source-roots entries must be non-empty");
+    }
+    const looksLikePath = trimmed === "~" || trimmed.startsWith("~/") || trimmed.includes("/") || isAbsolute(trimmed);
+    if (!looksLikePath) {
+      return trimmed;
+    }
+    const expanded = expandSourceRoot(trimmed);
+    if (!existsSync(expanded)) {
+      throw new ConnectScopeValidationError(
+        `--source-roots entry '${raw}' does not exist on this host (resolved to '${expanded}'). ` +
+          "Pass an existing directory path, or a bare project name if your connector matches by name."
+      );
+    }
+    return expanded;
+  });
+}
+
+/**
+ * Validate `--since` is a parseable timestamp before any request is sent.
+ * `Date.parse` accepts more than strict ISO-8601, but rejecting everything
+ * it rejects — and nothing it accepts — is the same leniency the server's
+ * own `new Date(value)` parse will apply, so this can never reject a value
+ * the server would have accepted, only catch the typos it wouldn't.
+ */
+export function validateSinceLocally(since: string): string {
+  const trimmed = since.trim();
+  if (!trimmed || Number.isNaN(Date.parse(trimmed))) {
+    throw new ConnectScopeValidationError(`--since '${since}' is not a parseable date/time`);
+  }
+  return trimmed;
+}
 
 export interface ConnectScopeChoice {
   readonly kind: "recent" | "all" | "custom" | "unspecified";

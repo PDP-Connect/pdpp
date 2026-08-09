@@ -97,6 +97,7 @@ const REQUESTED_SCOPE_SERVER_DEFAULT_PATTERN = /server default/;
 const REQUESTED_SCOPE_RECENT_7_PATTERN = /recent 7 day/;
 const REQUESTED_SCOPE_ALL_HISTORY_PATTERN = /all history/;
 const WIDENING_REJECTION_MESSAGE_PATTERN = /wider than the server-declared boundary|already declared a boundary/;
+const REQUIRES_FORCE_PATTERN = /--force/;
 
 test("runner exports the collector runtime capability profile with collector id", () => {
   assert.equal(COLLECTOR_RUNTIME_CAPABILITIES.id, "collector");
@@ -3600,6 +3601,285 @@ test("runConnect: JSON output never leaks the device_token or enrollment code", 
     const rendered = JSON.stringify(output);
     assert.equal(rendered.includes("super-secret-device-token"), false);
     assert.equal(rendered.includes("super-secret-one-time-code"), false);
+  });
+});
+
+// --- connect: --source-roots / --since local validation (before any enroll call) ---
+
+test("resolveConnectScopeChoice FAILS BEFORE any request when --source-roots names a path that does not exist on this host", () => {
+  const missing = join(tmpdir(), "pdpp-runner-test-does-not-exist-xyz");
+  assert.throws(
+    () => resolveConnectScopeChoice({ command: "connect", sourceRoots: [missing] } as CliOptions),
+    CollectorUsageError
+  );
+});
+
+test("resolveConnectScopeChoice FAILS BEFORE any request on an unparseable --since", () => {
+  assert.throws(
+    () => resolveConnectScopeChoice({ command: "connect", since: "definitely-not-a-date" } as CliOptions),
+    CollectorUsageError
+  );
+});
+
+test("runConnect never calls enroll when --source-roots fails local validation (no one-time code consumed)", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    const missing = join(tmpdir(), "pdpp-runner-test-runconnect-missing-root");
+    let enrollCalled = false;
+    await assert.rejects(
+      () =>
+        runConnect(
+          {
+            baseUrl: "https://pdpp.example.com",
+            code: "one-time-code",
+            command: "connect",
+            connector: "codex",
+            json: true,
+            profile: "codex",
+            queuePath: "unused.sqlite",
+            sourceRoots: [missing],
+          } as CliOptions,
+          {
+            enroll: () => {
+              enrollCalled = true;
+              return Promise.resolve({
+                connector_id: "codex",
+                device_id: "fresh-device",
+                device_token: "fresh-token",
+                local_binding_name: "test-binding",
+                source_instance_id: "dsrc-fresh",
+              });
+            },
+          }
+        ),
+      CollectorUsageError
+    );
+    assert.equal(enrollCalled, false, "a locally-invalid source root must never reach the server");
+  });
+});
+
+test("runConnect expands a ~-relative --source-roots entry into the collection_scope request", async () => {
+  const profileDir = tempDirSync();
+  const tempHome = mkdtempSync(join(tmpdir(), "pdpp-runner-test-home-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    await withProfileDir(profileDir, async () => {
+      let seenScope: { since?: string; source_roots?: string[] } | null | undefined;
+      await runConnect(
+        {
+          baseUrl: "https://pdpp.example.com",
+          code: "one-time-code",
+          command: "connect",
+          connector: "codex",
+          json: true,
+          profile: "codex",
+          queuePath: "unused.sqlite",
+          sourceRoots: ["~"],
+        } as CliOptions,
+        {
+          enroll: (input) => {
+            seenScope = input.collectionScope;
+            return Promise.resolve({
+              connector_id: "codex",
+              device_id: "fresh-device",
+              device_token: "fresh-token",
+              local_binding_name: "test-binding",
+              source_instance_id: "dsrc-fresh",
+            });
+          },
+        }
+      );
+      assert.deepEqual(seenScope, { source_roots: [tempHome] });
+    });
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  }
+});
+
+// --- connect: repeated connect must not silently overwrite/orphan a live credential ---
+
+test("runConnect FAILS BEFORE overwriting an existing profile without --force, and never calls enroll", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    writeLocalCollectorProfile({
+      baseUrl: "https://pdpp.example.com",
+      connectorId: "codex",
+      deviceId: "old-device",
+      deviceToken: "old-token",
+      name: "codex",
+      sourceInstanceId: "dsrc-old",
+    });
+    let enrollCalled = false;
+    await assert.rejects(
+      () =>
+        runConnect(
+          {
+            baseUrl: "https://pdpp.example.com",
+            code: "one-time-code",
+            command: "connect",
+            connector: "codex",
+            json: true,
+            profile: "codex",
+            queuePath: "unused.sqlite",
+          } as CliOptions,
+          {
+            enroll: () => {
+              enrollCalled = true;
+              return Promise.resolve({
+                connector_id: "codex",
+                device_id: "new-device",
+                device_token: "new-token",
+                local_binding_name: "test-binding",
+                source_instance_id: "dsrc-new",
+              });
+            },
+          }
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof CollectorUsageError);
+        assert.match(err.message, REQUIRES_FORCE_PATTERN);
+        return true;
+      }
+    );
+    assert.equal(enrollCalled, false, "connect must refuse before consuming the one-time code");
+    const stillOld = parseCollectorProfileEnv(await readFile(join(profileDir, "codex.env"), "utf8"));
+    assert.equal(stillOld.PDPP_LOCAL_DEVICE_ID, "old-device", "the existing profile must be left untouched");
+  });
+});
+
+test("runConnect --force revokes the existing credential server-side before overwriting the profile", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    writeLocalCollectorProfile({
+      baseUrl: "https://pdpp.example.com",
+      connectorId: "codex",
+      deviceId: "old-device",
+      deviceToken: "old-token",
+      name: "codex",
+      sourceInstanceId: "dsrc-old",
+    });
+    let revokedDeviceId: string | undefined;
+    const output = await runConnect(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "connect",
+        connector: "codex",
+        force: true,
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+      } as CliOptions,
+      {
+        enroll: () =>
+          Promise.resolve({
+            connector_id: "codex",
+            device_id: "new-device",
+            device_token: "new-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-new",
+          }),
+        revokeExistingProfile: (input) => {
+          revokedDeviceId = input.deviceId;
+          return Promise.resolve({ revoked: true });
+        },
+      }
+    );
+    assert.equal(revokedDeviceId, "old-device", "the OLD credential must be revoked, not the new one");
+    assert.equal(output.device_id, "new-device");
+    const nowStored = parseCollectorProfileEnv(await readFile(output.profile_path, "utf8"));
+    assert.equal(nowStored.PDPP_LOCAL_DEVICE_ID, "new-device");
+  });
+});
+
+test("runConnect --force aborts before enrolling (no code consumed) when the existing credential cannot be confirmed revoked", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    writeLocalCollectorProfile({
+      baseUrl: "https://pdpp.example.com",
+      connectorId: "codex",
+      deviceId: "old-device",
+      deviceToken: "old-token",
+      name: "codex",
+      sourceInstanceId: "dsrc-old",
+    });
+    let enrollCalled = false;
+    await assert.rejects(
+      () =>
+        runConnect(
+          {
+            baseUrl: "https://pdpp.example.com",
+            code: "one-time-code",
+            command: "connect",
+            connector: "codex",
+            force: true,
+            json: true,
+            profile: "codex",
+            queuePath: "unused.sqlite",
+          } as CliOptions,
+          {
+            enroll: () => {
+              enrollCalled = true;
+              return Promise.resolve({
+                connector_id: "codex",
+                device_id: "new-device",
+                device_token: "new-token",
+                local_binding_name: "test-binding",
+                source_instance_id: "dsrc-new",
+              });
+            },
+            revokeExistingProfile: () => Promise.reject(new Error("network unreachable")),
+          }
+        ),
+      CollectorUsageError
+    );
+    assert.equal(enrollCalled, false, "an unconfirmed revoke must never proceed to consume the new code");
+    const stillOld = parseCollectorProfileEnv(await readFile(join(profileDir, "codex.env"), "utf8"));
+    assert.equal(stillOld.PDPP_LOCAL_DEVICE_ID, "old-device");
+  });
+});
+
+test("runConnect --force proceeds when the existing credential is already revoked/invalid server-side (401)", async () => {
+  const profileDir = tempDirSync();
+  await withProfileDir(profileDir, async () => {
+    writeLocalCollectorProfile({
+      baseUrl: "https://pdpp.example.com",
+      connectorId: "codex",
+      deviceId: "old-device",
+      deviceToken: "old-token",
+      name: "codex",
+      sourceInstanceId: "dsrc-old",
+    });
+    const output = await runConnect(
+      {
+        baseUrl: "https://pdpp.example.com",
+        code: "one-time-code",
+        command: "connect",
+        connector: "codex",
+        force: true,
+        json: true,
+        profile: "codex",
+        queuePath: "unused.sqlite",
+      } as CliOptions,
+      {
+        enroll: () =>
+          Promise.resolve({
+            connector_id: "codex",
+            device_id: "new-device",
+            device_token: "new-token",
+            local_binding_name: "test-binding",
+            source_instance_id: "dsrc-new",
+          }),
+        revokeExistingProfile: () =>
+          Promise.reject(new LocalDeviceHttpError(401, JSON.stringify({ error: { code: "authentication_error" } }))),
+      }
+    );
+    assert.equal(output.device_id, "new-device");
   });
 });
 
