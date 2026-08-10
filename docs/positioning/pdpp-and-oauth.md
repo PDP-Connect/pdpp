@@ -83,5 +83,5 @@ later analysis:
 
 ## References
 
-- `apps/site/content/docs/spec-core.md` — grant fields (§6), grant integrity / "signable" (L1383), continuous-access token guidance (L1379), retention parallel to OAuth scope compliance (L606), GNAP/RFC 9396 comparison.
+- `apps/site/content/docs/spec-core.md` — grant fields (§7), grant integrity / "signable" (L1441), continuous-access token guidance (L1435), retention parallel to OAuth scope compliance (L860), GNAP/RFC 9396 comparison.
 - RFC 9396 (Rich Authorization Requests); RFC 6749 (OAuth 2.0); RFC 7662 (Token Introspection); RFC 6750 (Bearer Token Usage).

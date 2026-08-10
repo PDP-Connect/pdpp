@@ -30,9 +30,9 @@ Sections 4-8 define the protocol surfaces that implementations evaluate independ
 | Section | Governs | Other layers |
 | --- | --- | --- |
 | [Section 4: Record Model](#record-model) | Portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. | Source collection, connector execution, and storage-engine choices. |
-| [Section 5: Selection Request](#selection-request) | What a client asks an authorization server to approve, plus the manifest-backed validation and consent rendering needed before a grant is issued. | Product-specific consent flows, screen layouts, and hosted authorization-server deployments. |
-| [Section 6: Grant](#grant) | The immutable consent artifact and the constraints a resource server enforces for a token-bound client. | Grant database schema, signed-token format, hosted registries, and deployment topology. |
-| [Section 7: Manifest Format](#manifest-format) | Manifest fields that make selection, consent display, and resource-server enforcement auditable. | Registry authority; manifests may be distributed through any mechanism that preserves connector identity and version identity. |
+| [Section 5: Manifest Format](#manifest-format) | Manifest fields that make selection, consent display, and resource-server enforcement auditable. | Registry authority; manifests may be distributed through any mechanism that preserves connector identity and version identity. |
+| [Section 6: Selection Request](#selection-request) | What a client asks an authorization server to approve, plus the manifest-backed validation and consent rendering needed before a grant is issued. | Product-specific consent flows, screen layouts, and hosted authorization-server deployments. |
+| [Section 7: Grant](#grant) | The immutable consent artifact and the constraints a resource server enforces for a token-bound client. | Grant database schema, signed-token format, hosted registries, and deployment topology. |
 | [Section 8: Resource Server Interface](#resource-server-interface) | The interoperable record-query and blob-fetch interface under grant enforcement. | Authorization-server deployment, storage backend, collection runtime, operator dashboard, and hosted service choices. |
 
 ### Relationship to existing standards
@@ -306,7 +306,7 @@ Streams reference each other via foreign key fields in `data`:
 }
 ```
 
-The manifest declares `primary_key` per stream. Foreign key relationships are declared in the manifest's `relationships` field (see Section 7).
+The manifest declares `primary_key` per stream. Foreign key relationships are declared in the manifest's `relationships` field (see Section 5).
 
 ### Binary data (blob_ref)
 
@@ -354,384 +354,7 @@ When a record references a record in a different stream on the same resource ser
 
 ---
 
-## 5. Selection Request {#selection-request}
-
-**Note:** This section defines what a client asks an authorization server to approve, plus the manifest-backed validation and consent rendering needed before a grant is issued. Product-specific consent flows, screen layouts, and hosted authorization-server deployments are out of scope for this document.
-
-A client requests specific personal data by including `authorization_details` in an OAuth 2.0 authorization request, following RFC 9396.
-
-```json
-{
-  "response_type": "code",
-  "client_id": "music_recommendations",
-  "redirect_uri": "https://app.example.com/callback",
-  "scope": "openid",
-  "client_display": {
-    "name": "Concert Finder",
-    "uri": "https://concertfinder.example.com",
-    "logo_uri": "https://concertfinder.example.com/logo.png",
-    "policy_uri": "https://concertfinder.example.com/privacy",
-    "tos_uri": "https://concertfinder.example.com/terms"
-  },
-  "authorization_details": [
-    {
-      "type": "https://pdpp.org/data-access",
-      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
-      "purpose_code": "https://pdpp.org/purpose/personalization",
-      "purpose_description": "Recommend concerts based on your listening history",
-      "access_mode": "single_use",
-      "streams": [
-        {
-          "name": "top_artists",
-          "necessity": "required",
-          "time_range": { "since": "2025-09-28T00:00:00Z" }
-        },
-        {
-          "name": "saved_tracks",
-          "necessity": "optional"
-        }
-      ],
-      "client_claims": {
-        "commitments": ["Data used only for concert recommendations"]
-      }
-    }
-  ]
-}
-```
-
-### Client display metadata {#client-display}
-
-The top-level `client_display` object carries inline client display metadata for the requesting application. PDPP reuses the human-readable client metadata model from OAuth 2.0 Dynamic Client Registration (RFC 7591 Section 2.2), but transports it inline in the authorization request rather than requiring a dynamic client registration endpoint.
-
-Inside `client_display`, PDPP drops the `client_` prefix from `client_name` and `client_uri` because the enclosing object is already client-scoped. The metadata model is otherwise aligned with RFC 7591.
-
-| Field | Type | Required | Status | Description |
-|-------|------|----------|--------|-------------|
-| `client_display.name` | string | yes | Inline client metadata | Inline equivalent of RFC 7591 `client_name`. Human-readable application name. |
-| `client_display.uri` | URI | no | Inline client metadata | Inline equivalent of RFC 7591 `client_uri`. The client's homepage. |
-| `client_display.logo_uri` | URI | no | Inline client metadata | RFC 7591 `logo_uri`. URL to a square image representing the client. |
-| `client_display.policy_uri` | URI | no | Inline client metadata | RFC 7591 `policy_uri`. URL for the client's privacy policy. |
-| `client_display.tos_uri` | URI | no | Inline client metadata | RFC 7591 `tos_uri`. URL for the client's terms of service. |
-
-`client_display` is entity-scoped: it describes the client, not a specific authorization request. It appears at the top level of the authorization request, outside `authorization_details`.
-
-`client_display` is an inline carrier, not necessarily the AS's final rendered identity record. The AS MAY replace or augment inline values with locally registered metadata, validated software-statement metadata, or trust-registry metadata.
-
-**Metadata resolution and rendering obligations:**
-
-1. The AS MUST resolve requester identity metadata from the best available source. Source precedence is local registration or trust-registry metadata, then validated software-statement metadata if supported, then inline `client_display`, then `client_id` fallback.
-2. If the resolved metadata contains a display name, the AS MUST display it to the user during consent. If no display name is available, the AS MUST display `client_id` as the requester identity.
-3. If the resolved metadata contains `policy_uri` or `tos_uri`, the AS MAY display them as secondary links or disclosures.
-4. If the server has a positive trust signal for the client (e.g., domain verification, trust registry membership), it MUST render that status distinctly (e.g., a "verified" badge). If it has no positive trust signal, it MUST treat the client as unverified and SHOULD display an "unverified app" indicator.
-5. The AS MUST treat `logo_uri` as untrusted content until it has been accepted under local policy. It MUST NOT fetch and render a client-supplied remote logo in the consent UI unless the client is verified or the asset has been proxied, cached, and approved under local policy. For unverified clients, the AS SHOULD generate a monogram from the resolved display name.
-6. If neither resolved metadata nor inline `client_display` provides a display name, the consent UI SHOULD clearly indicate that the client has not provided display metadata.
-
-### Pre-registered public client discovery {#pre-registered-public-clients}
-
-An authorization server MAY support clients that are public and pre-registered by the deployment rather than dynamically registered. Dynamic public-client self-registration is the preferred discoverable path when `registration_endpoint` is advertised. When AS metadata advertises `pre_registered_public` in `pdpp_registration_modes_supported`, the reference publishes `pdpp_pre_registered_public_clients` so agents and third-party clients can discover usable fallback or example `client_id` values without an out-of-band walkthrough.
-
-Each `pdpp_pre_registered_public_clients` entry contains `client_id`, `client_name`, and `token_endpoint_auth_method`. These entries are public client metadata, not authority to access data. The user grant remains the authorization boundary, and the field MUST NOT contain secrets, access tokens, owner-scoped clients, dynamically registered clients, or private registration state.
-
-### Client claims {#client-claims}
-
-The optional `client_claims` object within each `authorization_details` entry carries client-authored, non-enforceable statements about the specific authorization being requested. These are request-scoped, not entity-scoped: a client may make different commitments for different authorization requests.
-
-| Field | Type | Required | Status | Description |
-|-------|------|----------|--------|-------------|
-| `client_claims.commitments` | string[] | no | Attributed client claim | Free-text policy commitments relevant to this request (e.g., "Data used only for this study"). |
-
-**Trust boundary:** Client claims are self-asserted and unverifiable by the server. The AS MUST render `client_claims` content separately from protocol-enforced grant terms and MUST attribute it to the client (e.g., "[client name] says:"). The AS MUST NOT render client claims in the same visual register as protocol-enforced grant terms, structured policy declarations, or manifest-authored data descriptions.
-
-**Relationship to `purpose_description`:** `purpose_description` is a first-class request field describing what the authorization is for. It is part of the authorization semantics the user reviews. `client_claims.commitments` are supplementary promises that are not reducible to structured protocol fields. Both are client-authored, but `purpose_description` is the primary purpose statement while `commitments` are additional assurances.
-
-**Commitments that ARE machine-readable:** Structured grant fields (e.g., `retention.max_duration`, `access_mode`) SHOULD be rendered by the AS as server-generated display text (e.g., "Deleted within 90 days", "Ongoing access until you revoke it"). Clients SHOULD NOT duplicate machine-readable constraints as free-text commitments. If a commitment duplicates a structured field, the structured field is authoritative.
-
-### Semantic classes and consent-surface rendering
-
-PDPP uses three primary semantic classes across selection requests and grants:
-
-- **Protocol-enforced constraints:** Values the AS and/or RS actually validate or enforce, such as stream selection, field projection, `time_range`, `resources`, and `access_mode`.
-- **Structured policy declarations:** Machine-readable statements that matter for consent, local policy, and implementation-defined audit or transparency mechanisms, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`, with one explicit exception: `https://pdpp.org/purpose/ai_training` adds a protocol-level consent requirement.
-- **Attributed client claims:** Client-authored statements that may matter to the user but are not protocol facts. In v0.1 this is `client_claims`.
-
-`client_display` is a separate category: requester identity metadata used to identify who is asking, not a grant constraint. Inline values may be client-asserted, but the AS renders them under its own resolution and trust policy.
-
-PDPP does not standardize consent screen layout, visual design, or copywriting. It does normatively constrain semantic rendering. A conformant AS MUST preserve the distinction between protocol-enforced terms, structured policy declarations, manifest-authored data descriptions, and client-authored claims. It MUST NOT flatten these categories into a single undifferentiated consent surface.
-
-### Request-level parameters
-
-| Parameter | Type | Required | Status | Description |
-|-----------|------|----------|--------|-------------|
-| `source` | object | yes | Protocol-enforced | Source binding: `{ kind, id }`. `kind` is `"connector"` or `"provider_native"` and discriminates whether the data source is served through a polyfill connector or natively by the provider; `id` is the kind-keyed source identifier. For `kind: "connector"`, `id` is the connector identifier as defined by the deployment's connector registry. Exactly one source per authorization detail; `kind` and `id` are both required and no other members are permitted. |
-| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.org/purpose/ai_training` (see below). |
-| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
-| `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See Section 6. |
-| `retention` | object | no | Structured policy declaration | Requested retention constraints: `{ max_duration, on_expiry }`. |
-| `streams` | StreamRequest[] | yes (unless `profile` is used) | Protocol-enforced | Requested streams with per-stream parameters. |
-| `profile` | string | no | Protocol-enforced at issuance time | Reference to a manifest-defined profile (alternative to explicit streams). |
-| `client_claims` | object | no | Attributed client claim | Client-authored, non-enforceable claims about this request. See [Client claims](#client-claims). |
-
-#### Source kinds {#source-kinds}
-
-| `source.kind` | Meaning |
-|---|---|
-| `"connector"` | The source is a manifest-declared collection source: a connector bridges a platform that does not itself speak PDPP. `source.id` is the connector identifier as defined by the deployment's connector registry (the value top-level `connector_id` carried in earlier drafts). URI forms of first-party registry connectors are accepted at request time and canonicalized to their registry key; the grant persists the canonical form. Consent is rendered from the connector's manifest-declared streams and display metadata (Section 7). |
-| `"provider_native"` | The source is the provider's own PDPP-speaking interface, serving records directly: the platform hosts its own authorization and resource server roles and is accountable for its own artifacts. `source.id` identifies that provider source (the value earlier drafts carried as `provider_id`). The consent surface presents the provider source's declared streams under the same rendering obligations as Section 7; display-metadata conventions for provider-native sources are expected to mature with real provider integrations. |
-
-An authorization server that receives a `source.kind` value it does not recognize MUST reject the authorization request with 400 `invalid_request`: consent cannot be rendered for an unrecognized source kind.
-
-#### AI training consent {#ai-training-consent}
-
-The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.org/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
-
-### Stream selection parameters
-
-Per-stream, within the `streams` array. All are optional except `name`.
-
-| Parameter | Type | Status | Description |
-|-----------|------|--------|-------------|
-| `name` | string | Protocol-enforced | Stream name, or `*` for all streams (resolved at consent time against the manifest). |
-| `necessity` | enum | Consent-flow control at issuance time | `required` (default) or `optional`. Optional streams are presented as user choices during consent. |
-| `time_range.since` | ISO 8601 | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. |
-| `time_range.until` | ISO 8601 | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. A hard cap: applies to future resources as well as past ones. |
-| `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. AS returns 400 `invalid_request` if both are present. |
-| `fields` | string[] | Protocol-enforced | Field allowlist. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
-| `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the manifest `primary_key` at grant issuance. The RS filters by exact primary-key match. |
-
-**Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field` in their manifest. The authorization server MUST reject selection requests that specify `time_range` on a stream without a `consent_time_field`. The presence of `consent_time_field` in the manifest is the authoritative signal that a stream is time-range-capable. (The `selection.time_range` boolean has been removed from the manifest (see Section 7).)
-
-**Note on wildcards:** `"streams": [{ "name": "*" }]` requests all streams the connector supports. This is resolved at consent time against the manifest and frozen as an explicit list in the grant.
-
-**Note on `streams` vs `profile`:** `streams` and `profile` are mutually exclusive in a request. An authorization server MUST return 400 `invalid_request` if both are present.
-
-**Note on defaults:** Omitting `fields` (and `view`) means all fields in the stream are authorized. Omitting `time_range` means no temporal constraint. Clients SHOULD request only the data they need (see Section 11, Data Minimization).
-
-### Profiles
-
-Connectors may define profiles (presets) in their manifest. A client can reference a profile instead of constructing explicit stream selections:
-
-```json
-{
-  "type": "https://pdpp.org/data-access",
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/instagram" },
-  "profile": "social_summary"
-}
-```
-
-The authorization server expands the profile into explicit streams before issuing the grant, pinned to the manifest version at consent time.
-
-Every field in the issued grant is derived from either the selection request, client registration, or authorization server policy. The grant never contains values whose source is ambiguous.
-
----
-
-## 6. Grant {#grant}
-
-**Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope for this document.
-
-The grant is an immutable consent artifact. It is the output of the authorization flow.
-
-The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
-
-```json
-{
-  "version": "0.1.0",
-  "grant_id": "grt_8f72a1b3",
-  "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc123" },
-  "client": { "client_id": "music_recommendations" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
-  "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/personalization",
-  "purpose_description": "Recommend concerts based on your listening history",
-  "access_mode": "single_use",
-  "streams": [
-    {
-      "name": "top_artists",
-      "time_range": { "since": "2025-09-28T00:00:00Z" },
-      "fields": ["id", "name", "genres", "popularity", "source_updated_at"]
-    }
-  ],
-  "retention": {
-    "max_duration": "P1Y",
-    "on_expiry": "delete"
-  },
-  "expires_at": "2027-04-06T00:00:00Z"
-}
-```
-
-### Grant fields
-
-**The following field table is normative.** TypeScript types in Section 13 are non-normative.
-
-| Field | Type | Required | Status | Description |
-|-------|------|----------|--------|-------------|
-| `version` | string | yes | Protocol metadata | Protocol version. |
-| `grant_id` | string | yes | Protocol metadata | Unique identifier. |
-| `issued_at` | ISO 8601 | yes | Protocol metadata | When the grant was issued. |
-| `subject` | object | yes | Identity binding | The user. At minimum `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. No format constraint is imposed. |
-| `client` | object | yes | Identity binding | The client. At minimum `{ client_id }`. |
-| `source` | object | yes | Protocol-enforced | Source binding: `{ kind, id }`, resolved from the selection request at issuance. Same shape and semantics as the request-level `source` field (Section 5): `kind` is `"connector"` or `"provider_native"`; `id` is the kind-keyed source identifier. |
-| `manifest_version` | string | yes | Protocol metadata | Version of the source's manifest (the versioned declaration of the source's streams, schemas, and selection capabilities) that the grant was validated against. Applies to both source kinds. Audit and pinning metadata; the RS is not required to fetch the manifest at request time. |
-| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (see Appendix A). |
-| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose. |
-| `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. |
-| `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
-| `profile` | string | no | Informational | Which manifest profile was used (informational). |
-| `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
-| `expires_at` | ISO 8601 or null | no | Protocol-enforced | Grant expiry. null means no expiry. |
-
-### StreamGrant fields
-
-| Field | Type | Required | Status | Description |
-|-------|------|----------|--------|-------------|
-| `name` | string | yes | Protocol-enforced | Stream name. Always a concrete name; no wildcards in issued grants. |
-| `view` | string | no | Informational | The view name selected at consent time (informational). |
-| `fields` | string[] | no | Protocol-enforced | Resolved field allowlist, authoritative for RS enforcement. Top-level field names only. Absent means all fields are authorized. |
-| `time_range` | TimeRange | no | Protocol-enforced | Authorized temporal window. Absent means no temporal constraint. |
-| `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
-
-**Note:** `view` and `fields` may both appear in a `StreamGrant`: `view` is informational, `fields` are the enforcement list resolved at consent time. In a `StreamRequest`, they are mutually exclusive. The AS resolves the view to its field list at issuance time and stores the result in `fields`. View evolution never silently widens an existing grant; re-consent is required for new fields added to a view after grant issuance.
-
-### Time concepts
-
-The grant carries three orthogonal time-related concepts that must not be conflated:
-
-| Concept | Fields | Meaning |
-|---------|--------|---------|
-| Grant validity period | `issued_at`, `expires_at` | How long the authorization itself is active. |
-| Data temporal scope | `streams[].time_range` | Which records the client is authorized to see, filtered by time. |
-| Access pattern | `access_mode` | Whether the grant can be exercised once or continuously. |
-
-A grant can be short-lived (expires in 1 hour) but cover all historical data (no `time_range`). A grant can be long-lived but cover only data from the last 6 months (`time_range.since`). A grant can be `single_use` but cover a large historical window. These combinations are all valid and distinct.
-
-### Version layering
-
-Three independent version axes exist in PDPP. They MUST NOT be conflated:
-
-| Axis | Field | Meaning |
-|------|-------|---------|
-| Grant schema version | `grant.version` | Version of the PDPP grant schema. RS MUST reject grants with unsupported major versions, returning 400 `unsupported_version`. |
-| Manifest version | `grant.manifest_version` | `manifest_version` identifies the manifest version against which the AS validated and resolved the grant at issuance time. The RS enforces the resolved grant as issued; it is not required to fetch the manifest at request time. If the RS implementation does not support grants generated against the pinned manifest version (e.g., due to incompatible schema changes introduced in a major manifest version bump), it returns 403 `grant_invalid`. This is a code-level compatibility check, not a runtime manifest fetch. |
-| HTTP API contract version | `PDPP-Version` request header | Version of the RS HTTP API contract. RS returns 400 `unsupported_version` if the requested version is not supported. If the header is absent, the RS uses the current stable version and returns the selected version in the response header (see Section 8). |
-
-### Access modes {#access-modes}
-
-| Mode | Behavior |
-|------|----------|
-| `single_use` | The grant is consumed at first token issuance. The AS marks the grant consumed atomically with issuance of the first client access token. The AS MUST reject subsequent attempts to issue new client access tokens against the same consumed grant. The RS honors all tokens issued against the grant until token expiry or revocation. The client MAY retry or resume pagination using the same access token. Failure to complete retrieval before token expiry does not un-consume the grant. The runtime does not persist STATE from single_use collection runs. |
-| `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
-
-### time_range semantics
-
-`time_range` filters records by their stream's declared `consent_time_field` (see Section 7). The filter is:
-
-```
-record.consent_time_field >= time_range.since  (if since is present)
-record.consent_time_field <  time_range.until  (if until is present)
-```
-
-`time_range.until` is a hard cap. It applies equally to records that existed at grant issuance and to records created afterward. A `continuous` grant with `time_range.until` set to a past date is valid: it is a historical-only grant that will never disclose new records. This is not an error.
-
-For `continuous` grants without `time_range.until`, future records in a granted stream are included as they are collected, provided their `consent_time_field` falls within any `since` constraint. Stream names are frozen at consent time; future stream types require a new grant.
-
-### Standing authorization
-
-Grants freeze stream names at consent time. Within a granted stream, future records are included for `continuous` grants (subject to `time_range` constraints). Future stream types (streams not listed in the grant) are not included; they require a new grant.
-
-### Grant narrowing
-
-Grant narrowing (reducing the scope of an existing grant) is not supported in v0.1. Scope reduction is achieved via revoke-and-reissue: the client revokes the existing grant and the user issues a new, narrower grant. Authorization server UIs SHOULD model this flow as revocation followed by a new grant request.
-
-### Records from revoked grants
-
-Revocation stops future access only. Records already delivered to the client before revocation are governed by the grant's `retention` policy and applicable legal obligations. PDPP does not retroactively reach into client-side data stores.
-
-### Retention
-
-Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
-
-```json
-{
-  "max_duration": "P6M",
-  "on_expiry": "delete"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `max_duration` | ISO 8601 duration | How long the client may retain collected data. |
-| `on_expiry` | enum | `delete` or `anonymize`. Note: `archive` is not supported in v0.1. |
-
-### Examples
-
-**Specific data, single use:**
-```json
-{
-  "version": "0.1.0",
-  "grant_id": "grt_001",
-  "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc" },
-  "client": { "client_id": "concert_app" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
-  "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/personalization",
-  "access_mode": "single_use",
-  "streams": [
-    {
-      "name": "top_artists",
-      "time_range": { "since": "2025-09-28T00:00:00Z" },
-      "fields": ["id", "name", "genres", "popularity", "source_updated_at"]
-    }
-  ]
-}
-```
-
-**Continuous access for an AI agent:**
-```json
-{
-  "version": "0.1.0",
-  "grant_id": "grt_002",
-  "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc" },
-  "client": { "client_id": "personal_agent" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/openai" },
-  "manifest_version": "2.0.0",
-  "purpose_code": "https://pdpp.org/purpose/agent_context",
-  "access_mode": "continuous",
-  "streams": [
-    { "name": "conversations" },
-    { "name": "messages" }
-  ],
-  "expires_at": null
-}
-```
-
-**Health data with field selection and retention:**
-```json
-{
-  "version": "0.1.0",
-  "grant_id": "grt_003",
-  "issued_at": "2026-04-06T15:00:00Z",
-  "subject": { "id": "user_abc" },
-  "client": { "client_id": "sleep_analysis" },
-  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/oura" },
-  "manifest_version": "1.0.0",
-  "purpose_code": "https://pdpp.org/purpose/analytics",
-  "access_mode": "single_use",
-  "streams": [
-    {
-      "name": "sleep_sessions",
-      "time_range": { "since": "2026-01-01T00:00:00Z", "until": "2026-04-01T00:00:00Z" },
-      "fields": ["day", "total_sleep_duration", "sleep_score"]
-    }
-  ],
-  "retention": { "max_duration": "P90D", "on_expiry": "delete" }
-}
-```
-
----
-
-## 7. Manifest Format {#manifest-format}
+## 5. Manifest Format {#manifest-format}
 
 **Note:** This section defines manifest syntax only. Connector runtime behavior (collection, state management, interaction) is defined in the [PDPP Collection Profile](spec-collection-profile).
 
@@ -931,6 +554,383 @@ Grants store `manifest_version`. The authorization server validates grants again
 The recommended evolution path: add new fields freely; never remove existing fields; create a new stream version (e.g., `playlists_v2`) if a breaking change is unavoidable.
 
 **RS enforcement:** The RS enforces the resolved grant as issued. All enforcement constraints (stream names, field lists, time ranges) are embedded in the grant itself; the RS is not required to fetch the manifest at request time. If the RS implementation does not support grants generated against the pinned manifest version (e.g., due to incompatible schema changes in a major manifest version bump), it returns 403 `grant_invalid`. This is a code-level compatibility check, not a runtime manifest fetch.
+
+---
+
+## 6. Selection Request {#selection-request}
+
+**Note:** This section defines what a client asks an authorization server to approve, plus the manifest-backed validation and consent rendering needed before a grant is issued. Product-specific consent flows, screen layouts, and hosted authorization-server deployments are out of scope for this document.
+
+A client requests specific personal data by including `authorization_details` in an OAuth 2.0 authorization request, following RFC 9396.
+
+```json
+{
+  "response_type": "code",
+  "client_id": "music_recommendations",
+  "redirect_uri": "https://app.example.com/callback",
+  "scope": "openid",
+  "client_display": {
+    "name": "Concert Finder",
+    "uri": "https://concertfinder.example.com",
+    "logo_uri": "https://concertfinder.example.com/logo.png",
+    "policy_uri": "https://concertfinder.example.com/privacy",
+    "tos_uri": "https://concertfinder.example.com/terms"
+  },
+  "authorization_details": [
+    {
+      "type": "https://pdpp.org/data-access",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+      "purpose_code": "https://pdpp.org/purpose/personalization",
+      "purpose_description": "Recommend concerts based on your listening history",
+      "access_mode": "single_use",
+      "streams": [
+        {
+          "name": "top_artists",
+          "necessity": "required",
+          "time_range": { "since": "2025-09-28T00:00:00Z" }
+        },
+        {
+          "name": "saved_tracks",
+          "necessity": "optional"
+        }
+      ],
+      "client_claims": {
+        "commitments": ["Data used only for concert recommendations"]
+      }
+    }
+  ]
+}
+```
+
+### Client display metadata {#client-display}
+
+The top-level `client_display` object carries inline client display metadata for the requesting application. PDPP reuses the human-readable client metadata model from OAuth 2.0 Dynamic Client Registration (RFC 7591 Section 2.2), but transports it inline in the authorization request rather than requiring a dynamic client registration endpoint.
+
+Inside `client_display`, PDPP drops the `client_` prefix from `client_name` and `client_uri` because the enclosing object is already client-scoped. The metadata model is otherwise aligned with RFC 7591.
+
+| Field | Type | Required | Status | Description |
+|-------|------|----------|--------|-------------|
+| `client_display.name` | string | yes | Inline client metadata | Inline equivalent of RFC 7591 `client_name`. Human-readable application name. |
+| `client_display.uri` | URI | no | Inline client metadata | Inline equivalent of RFC 7591 `client_uri`. The client's homepage. |
+| `client_display.logo_uri` | URI | no | Inline client metadata | RFC 7591 `logo_uri`. URL to a square image representing the client. |
+| `client_display.policy_uri` | URI | no | Inline client metadata | RFC 7591 `policy_uri`. URL for the client's privacy policy. |
+| `client_display.tos_uri` | URI | no | Inline client metadata | RFC 7591 `tos_uri`. URL for the client's terms of service. |
+
+`client_display` is entity-scoped: it describes the client, not a specific authorization request. It appears at the top level of the authorization request, outside `authorization_details`.
+
+`client_display` is an inline carrier, not necessarily the AS's final rendered identity record. The AS MAY replace or augment inline values with locally registered metadata, validated software-statement metadata, or trust-registry metadata.
+
+**Metadata resolution and rendering obligations:**
+
+1. The AS MUST resolve requester identity metadata from the best available source. Source precedence is local registration or trust-registry metadata, then validated software-statement metadata if supported, then inline `client_display`, then `client_id` fallback.
+2. If the resolved metadata contains a display name, the AS MUST display it to the user during consent. If no display name is available, the AS MUST display `client_id` as the requester identity.
+3. If the resolved metadata contains `policy_uri` or `tos_uri`, the AS MAY display them as secondary links or disclosures.
+4. If the server has a positive trust signal for the client (e.g., domain verification, trust registry membership), it MUST render that status distinctly (e.g., a "verified" badge). If it has no positive trust signal, it MUST treat the client as unverified and SHOULD display an "unverified app" indicator.
+5. The AS MUST treat `logo_uri` as untrusted content until it has been accepted under local policy. It MUST NOT fetch and render a client-supplied remote logo in the consent UI unless the client is verified or the asset has been proxied, cached, and approved under local policy. For unverified clients, the AS SHOULD generate a monogram from the resolved display name.
+6. If neither resolved metadata nor inline `client_display` provides a display name, the consent UI SHOULD clearly indicate that the client has not provided display metadata.
+
+### Pre-registered public client discovery {#pre-registered-public-clients}
+
+An authorization server MAY support clients that are public and pre-registered by the deployment rather than dynamically registered. Dynamic public-client self-registration is the preferred discoverable path when `registration_endpoint` is advertised. When AS metadata advertises `pre_registered_public` in `pdpp_registration_modes_supported`, the reference publishes `pdpp_pre_registered_public_clients` so agents and third-party clients can discover usable fallback or example `client_id` values without an out-of-band walkthrough.
+
+Each `pdpp_pre_registered_public_clients` entry contains `client_id`, `client_name`, and `token_endpoint_auth_method`. These entries are public client metadata, not authority to access data. The user grant remains the authorization boundary, and the field MUST NOT contain secrets, access tokens, owner-scoped clients, dynamically registered clients, or private registration state.
+
+### Client claims {#client-claims}
+
+The optional `client_claims` object within each `authorization_details` entry carries client-authored, non-enforceable statements about the specific authorization being requested. These are request-scoped, not entity-scoped: a client may make different commitments for different authorization requests.
+
+| Field | Type | Required | Status | Description |
+|-------|------|----------|--------|-------------|
+| `client_claims.commitments` | string[] | no | Attributed client claim | Free-text policy commitments relevant to this request (e.g., "Data used only for this study"). |
+
+**Trust boundary:** Client claims are self-asserted and unverifiable by the server. The AS MUST render `client_claims` content separately from protocol-enforced grant terms and MUST attribute it to the client (e.g., "[client name] says:"). The AS MUST NOT render client claims in the same visual register as protocol-enforced grant terms, structured policy declarations, or manifest-authored data descriptions.
+
+**Relationship to `purpose_description`:** `purpose_description` is a first-class request field describing what the authorization is for. It is part of the authorization semantics the user reviews. `client_claims.commitments` are supplementary promises that are not reducible to structured protocol fields. Both are client-authored, but `purpose_description` is the primary purpose statement while `commitments` are additional assurances.
+
+**Commitments that ARE machine-readable:** Structured grant fields (e.g., `retention.max_duration`, `access_mode`) SHOULD be rendered by the AS as server-generated display text (e.g., "Deleted within 90 days", "Ongoing access until you revoke it"). Clients SHOULD NOT duplicate machine-readable constraints as free-text commitments. If a commitment duplicates a structured field, the structured field is authoritative.
+
+### Semantic classes and consent-surface rendering
+
+PDPP uses three primary semantic classes across selection requests and grants:
+
+- **Protocol-enforced constraints:** Values the AS and/or RS actually validate or enforce, such as stream selection, field projection, `time_range`, `resources`, and `access_mode`.
+- **Structured policy declarations:** Machine-readable statements that matter for consent, local policy, and implementation-defined audit or transparency mechanisms, but are not generally self-enforcing at the protocol layer. In v0.1 this includes `purpose_code`, `purpose_description`, and `retention`, with one explicit exception: `https://pdpp.org/purpose/ai_training` adds a protocol-level consent requirement.
+- **Attributed client claims:** Client-authored statements that may matter to the user but are not protocol facts. In v0.1 this is `client_claims`.
+
+`client_display` is a separate category: requester identity metadata used to identify who is asking, not a grant constraint. Inline values may be client-asserted, but the AS renders them under its own resolution and trust policy.
+
+PDPP does not standardize consent screen layout, visual design, or copywriting. It does normatively constrain semantic rendering. A conformant AS MUST preserve the distinction between protocol-enforced terms, structured policy declarations, manifest-authored data descriptions, and client-authored claims. It MUST NOT flatten these categories into a single undifferentiated consent surface.
+
+### Request-level parameters
+
+| Parameter | Type | Required | Status | Description |
+|-----------|------|----------|--------|-------------|
+| `source` | object | yes | Protocol-enforced | Source binding: `{ kind, id }`. `kind` is `"connector"` or `"provider_native"` and discriminates whether the data source is served through a polyfill connector or natively by the provider; `id` is the kind-keyed source identifier. For `kind: "connector"`, `id` is the connector identifier as defined by the deployment's connector registry. Exactly one source per authorization detail; `kind` and `id` are both required and no other members are permitted. |
+| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (absolute URI). See Appendix A for the initial registry. The AS MUST accept any syntactically valid absolute-URI purpose code. For unrecognized codes, the AS MUST display `purpose_description` if present, or the raw URI if not, and MUST NOT reject the request solely because the purpose code is unrecognized. Consent properties associated with purpose codes in the registry are advisory, not protocol-enforced, with the exception of `https://pdpp.org/purpose/ai_training` (see below). |
+| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose, displayed to the user during consent. Clients SHOULD provide this field. When present, the AS MUST display it. For standard purpose codes, the AS MAY display a human-readable label from the registry when `purpose_description` is absent. |
+| `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. See Section 7. |
+| `retention` | object | no | Structured policy declaration | Requested retention constraints: `{ max_duration, on_expiry }`. |
+| `streams` | StreamRequest[] | yes (unless `profile` is used) | Protocol-enforced | Requested streams with per-stream parameters. |
+| `profile` | string | no | Protocol-enforced at issuance time | Reference to a manifest-defined profile (alternative to explicit streams). |
+| `client_claims` | object | no | Attributed client claim | Client-authored, non-enforceable claims about this request. See [Client claims](#client-claims). |
+
+#### Source kinds {#source-kinds}
+
+| `source.kind` | Meaning |
+|---|---|
+| `"connector"` | The source is a manifest-declared collection source: a connector bridges a platform that does not itself speak PDPP. `source.id` is the connector identifier as defined by the deployment's connector registry (the value top-level `connector_id` carried in earlier drafts). URI forms of first-party registry connectors are accepted at request time and canonicalized to their registry key; the grant persists the canonical form. Consent is rendered from the connector's manifest-declared streams and display metadata (Section 5). |
+| `"provider_native"` | The source is the provider's own PDPP-speaking interface, serving records directly: the platform hosts its own authorization and resource server roles and is accountable for its own artifacts. `source.id` identifies that provider source (the value earlier drafts carried as `provider_id`). The consent surface presents the provider source's declared streams under the same rendering obligations as Section 5; display-metadata conventions for provider-native sources are expected to mature with real provider integrations. |
+
+An authorization server that receives a `source.kind` value it does not recognize MUST reject the authorization request with 400 `invalid_request`: consent cannot be rendered for an unrecognized source kind.
+
+#### AI training consent {#ai-training-consent}
+
+The AS MUST obtain explicit affirmative user consent before issuing any grant with `purpose_code` value `https://pdpp.org/purpose/ai_training`. This is the sole purpose code with a mandatory consent requirement at the protocol level.
+
+### Stream selection parameters
+
+Per-stream, within the `streams` array. All are optional except `name`.
+
+| Parameter | Type | Status | Description |
+|-----------|------|--------|-------------|
+| `name` | string | Protocol-enforced | Stream name, or `*` for all streams (resolved at consent time against the manifest). |
+| `necessity` | enum | Consent-flow control at issuance time | `required` (default) or `optional`. Optional streams are presented as user choices during consent. |
+| `time_range.since` | ISO 8601 | Protocol-enforced | Earliest data to include (inclusive, >=), evaluated against the stream's `consent_time_field`. |
+| `time_range.until` | ISO 8601 | Protocol-enforced | Latest data to include (exclusive, <), evaluated against the stream's `consent_time_field`. A hard cap: applies to future resources as well as past ones. |
+| `view` | string | Protocol-enforced at issuance time | Named view defined by the authorization server. Mutually exclusive with `fields` in a request; both MUST NOT be present simultaneously. AS returns 400 `invalid_request` if both are present. |
+| `fields` | string[] | Protocol-enforced | Field allowlist. Schema-required fields are always included regardless of this list. In v0.1, restricted to top-level field names only. Mutually exclusive with `view`. |
+| `resources` | string[] | Protocol-enforced | Specific record IDs to authorize. Values are canonical key strings: minified JSON array for compound keys, plain string for simple keys. The AS validates arity and type against the manifest `primary_key` at grant issuance. The RS filters by exact primary-key match. |
+
+**Note on `time_range`:** `time_range` is only valid for streams that declare a `consent_time_field` in their manifest. The authorization server MUST reject selection requests that specify `time_range` on a stream without a `consent_time_field`. The presence of `consent_time_field` in the manifest is the authoritative signal that a stream is time-range-capable. (The `selection.time_range` boolean has been removed from the manifest (see Section 5).)
+
+**Note on wildcards:** `"streams": [{ "name": "*" }]` requests all streams the connector supports. This is resolved at consent time against the manifest and frozen as an explicit list in the grant.
+
+**Note on `streams` vs `profile`:** `streams` and `profile` are mutually exclusive in a request. An authorization server MUST return 400 `invalid_request` if both are present.
+
+**Note on defaults:** Omitting `fields` (and `view`) means all fields in the stream are authorized. Omitting `time_range` means no temporal constraint. Clients SHOULD request only the data they need (see Section 11, Data Minimization).
+
+### Profiles
+
+Connectors may define profiles (presets) in their manifest. A client can reference a profile instead of constructing explicit stream selections:
+
+```json
+{
+  "type": "https://pdpp.org/data-access",
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/instagram" },
+  "profile": "social_summary"
+}
+```
+
+The authorization server expands the profile into explicit streams before issuing the grant, pinned to the manifest version at consent time.
+
+Every field in the issued grant is derived from either the selection request, client registration, or authorization server policy. The grant never contains values whose source is ambiguous.
+
+---
+
+## 7. Grant {#grant}
+
+**Note:** This section defines the immutable consent artifact and the constraints a resource server enforces for a token-bound client. Grant database schema, signed-token format, hosted registries, and deployment topology are out of scope for this document.
+
+The grant is an immutable consent artifact. It is the output of the authorization flow.
+
+The authorization server issues an access token bound to the grant. The client uses the access token (not the raw grant) to authenticate with the resource server. The resource server resolves the token to the grant and enforces its constraints on every request. Grant lifecycle (active, expired, revoked) is tracked by the authorization server, not stored in the grant itself.
+
+```json
+{
+  "version": "0.1.0",
+  "grant_id": "grt_8f72a1b3",
+  "issued_at": "2026-04-06T15:00:00Z",
+  "subject": { "id": "user_abc123" },
+  "client": { "client_id": "music_recommendations" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+  "manifest_version": "2.0.0",
+  "purpose_code": "https://pdpp.org/purpose/personalization",
+  "purpose_description": "Recommend concerts based on your listening history",
+  "access_mode": "single_use",
+  "streams": [
+    {
+      "name": "top_artists",
+      "time_range": { "since": "2025-09-28T00:00:00Z" },
+      "fields": ["id", "name", "genres", "popularity", "source_updated_at"]
+    }
+  ],
+  "retention": {
+    "max_duration": "P1Y",
+    "on_expiry": "delete"
+  },
+  "expires_at": "2027-04-06T00:00:00Z"
+}
+```
+
+### Grant fields
+
+**The following field table is normative.** TypeScript types in Section 13 are non-normative.
+
+| Field | Type | Required | Status | Description |
+|-------|------|----------|--------|-------------|
+| `version` | string | yes | Protocol metadata | Protocol version. |
+| `grant_id` | string | yes | Protocol metadata | Unique identifier. |
+| `issued_at` | ISO 8601 | yes | Protocol metadata | When the grant was issued. |
+| `subject` | object | yes | Identity binding | The user. At minimum `{ id }`. The `subject.id` is an opaque string, unique within the issuing AS's namespace. No format constraint is imposed. |
+| `client` | object | yes | Identity binding | The client. At minimum `{ client_id }`. |
+| `source` | object | yes | Protocol-enforced | Source binding: `{ kind, id }`, resolved from the selection request at issuance. Same shape and semantics as the request-level `source` field (Section 6): `kind` is `"connector"` or `"provider_native"`; `id` is the kind-keyed source identifier. |
+| `manifest_version` | string | yes | Protocol metadata | Version of the source's manifest (the versioned declaration of the source's streams, schemas, and selection capabilities) that the grant was validated against. Applies to both source kinds. Audit and pinning metadata; the RS is not required to fetch the manifest at request time. |
+| `purpose_code` | URI | yes | Structured policy declaration | Machine-readable purpose (see Appendix A). |
+| `purpose_description` | string | no | Structured policy declaration | Human-readable purpose. |
+| `access_mode` | enum | yes | Protocol-enforced | `single_use` or `continuous`. |
+| `streams` | StreamGrant[] | yes | Protocol-enforced | Granted streams. Always expanded; no wildcards. See StreamGrant fields table below. |
+| `profile` | string | no | Informational | Which manifest profile was used (informational). |
+| `retention` | object | no | Structured policy declaration | Policy commitment by the data recipient (see below). |
+| `expires_at` | ISO 8601 or null | no | Protocol-enforced | Grant expiry. null means no expiry. |
+
+### StreamGrant fields
+
+| Field | Type | Required | Status | Description |
+|-------|------|----------|--------|-------------|
+| `name` | string | yes | Protocol-enforced | Stream name. Always a concrete name; no wildcards in issued grants. |
+| `view` | string | no | Informational | The view name selected at consent time (informational). |
+| `fields` | string[] | no | Protocol-enforced | Resolved field allowlist, authoritative for RS enforcement. Top-level field names only. Absent means all fields are authorized. |
+| `time_range` | TimeRange | no | Protocol-enforced | Authorized temporal window. Absent means no temporal constraint. |
+| `resources` | string[] | no | Protocol-enforced | Authorized record IDs in canonical key string encoding. Absent means all records. |
+
+**Note:** `view` and `fields` may both appear in a `StreamGrant`: `view` is informational, `fields` are the enforcement list resolved at consent time. In a `StreamRequest`, they are mutually exclusive. The AS resolves the view to its field list at issuance time and stores the result in `fields`. View evolution never silently widens an existing grant; re-consent is required for new fields added to a view after grant issuance.
+
+### Time concepts
+
+The grant carries three orthogonal time-related concepts that must not be conflated:
+
+| Concept | Fields | Meaning |
+|---------|--------|---------|
+| Grant validity period | `issued_at`, `expires_at` | How long the authorization itself is active. |
+| Data temporal scope | `streams[].time_range` | Which records the client is authorized to see, filtered by time. |
+| Access pattern | `access_mode` | Whether the grant can be exercised once or continuously. |
+
+A grant can be short-lived (expires in 1 hour) but cover all historical data (no `time_range`). A grant can be long-lived but cover only data from the last 6 months (`time_range.since`). A grant can be `single_use` but cover a large historical window. These combinations are all valid and distinct.
+
+### Version layering
+
+Three independent version axes exist in PDPP. They MUST NOT be conflated:
+
+| Axis | Field | Meaning |
+|------|-------|---------|
+| Grant schema version | `grant.version` | Version of the PDPP grant schema. RS MUST reject grants with unsupported major versions, returning 400 `unsupported_version`. |
+| Manifest version | `grant.manifest_version` | `manifest_version` identifies the manifest version against which the AS validated and resolved the grant at issuance time. The RS enforces the resolved grant as issued; it is not required to fetch the manifest at request time. If the RS implementation does not support grants generated against the pinned manifest version (e.g., due to incompatible schema changes introduced in a major manifest version bump), it returns 403 `grant_invalid`. This is a code-level compatibility check, not a runtime manifest fetch. |
+| HTTP API contract version | `PDPP-Version` request header | Version of the RS HTTP API contract. RS returns 400 `unsupported_version` if the requested version is not supported. If the header is absent, the RS uses the current stable version and returns the selected version in the response header (see Section 8). |
+
+### Access modes {#access-modes}
+
+| Mode | Behavior |
+|------|----------|
+| `single_use` | The grant is consumed at first token issuance. The AS marks the grant consumed atomically with issuance of the first client access token. The AS MUST reject subsequent attempts to issue new client access tokens against the same consumed grant. The RS honors all tokens issued against the grant until token expiry or revocation. The client MAY retry or resume pagination using the same access token. Failure to complete retrieval before token expiry does not un-consume the grant. The runtime does not persist STATE from single_use collection runs. |
+| `continuous` | The grant is fulfilled repeatedly. The client may query the resource server incrementally over time. Active until expiry or revocation. |
+
+### time_range semantics
+
+`time_range` filters records by their stream's declared `consent_time_field` (see Section 5). The filter is:
+
+```
+record.consent_time_field >= time_range.since  (if since is present)
+record.consent_time_field <  time_range.until  (if until is present)
+```
+
+`time_range.until` is a hard cap. It applies equally to records that existed at grant issuance and to records created afterward. A `continuous` grant with `time_range.until` set to a past date is valid: it is a historical-only grant that will never disclose new records. This is not an error.
+
+For `continuous` grants without `time_range.until`, future records in a granted stream are included as they are collected, provided their `consent_time_field` falls within any `since` constraint. Stream names are frozen at consent time; future stream types require a new grant.
+
+### Standing authorization
+
+Grants freeze stream names at consent time. Within a granted stream, future records are included for `continuous` grants (subject to `time_range` constraints). Future stream types (streams not listed in the grant) are not included; they require a new grant.
+
+### Grant narrowing
+
+Grant narrowing (reducing the scope of an existing grant) is not supported in v0.1. Scope reduction is achieved via revoke-and-reissue: the client revokes the existing grant and the user issues a new, narrower grant. Authorization server UIs SHOULD model this flow as revocation followed by a new grant request.
+
+### Records from revoked grants
+
+Revocation stops future access only. Records already delivered to the client before revocation are governed by the grant's `retention` policy and applicable legal obligations. PDPP does not retroactively reach into client-side data stores.
+
+### Retention
+
+Retention is a structured policy declaration and policy commitment by the data recipient (the client). PDPP does not technically enforce retention. Enforcement is through legal agreements, contractual obligations, or trust registry mechanisms. This is consistent with how OAuth 2.0 treats scope compliance: the protocol makes the commitment legible and machine-readable; external mechanisms enforce it.
+
+```json
+{
+  "max_duration": "P6M",
+  "on_expiry": "delete"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_duration` | ISO 8601 duration | How long the client may retain collected data. |
+| `on_expiry` | enum | `delete` or `anonymize`. Note: `archive` is not supported in v0.1. |
+
+### Examples
+
+**Specific data, single use:**
+```json
+{
+  "version": "0.1.0",
+  "grant_id": "grt_001",
+  "issued_at": "2026-04-06T15:00:00Z",
+  "subject": { "id": "user_abc" },
+  "client": { "client_id": "concert_app" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
+  "manifest_version": "2.0.0",
+  "purpose_code": "https://pdpp.org/purpose/personalization",
+  "access_mode": "single_use",
+  "streams": [
+    {
+      "name": "top_artists",
+      "time_range": { "since": "2025-09-28T00:00:00Z" },
+      "fields": ["id", "name", "genres", "popularity", "source_updated_at"]
+    }
+  ]
+}
+```
+
+**Continuous access for an AI agent:**
+```json
+{
+  "version": "0.1.0",
+  "grant_id": "grt_002",
+  "issued_at": "2026-04-06T15:00:00Z",
+  "subject": { "id": "user_abc" },
+  "client": { "client_id": "personal_agent" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/openai" },
+  "manifest_version": "2.0.0",
+  "purpose_code": "https://pdpp.org/purpose/agent_context",
+  "access_mode": "continuous",
+  "streams": [
+    { "name": "conversations" },
+    { "name": "messages" }
+  ],
+  "expires_at": null
+}
+```
+
+**Health data with field selection and retention:**
+```json
+{
+  "version": "0.1.0",
+  "grant_id": "grt_003",
+  "issued_at": "2026-04-06T15:00:00Z",
+  "subject": { "id": "user_abc" },
+  "client": { "client_id": "sleep_analysis" },
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/oura" },
+  "manifest_version": "1.0.0",
+  "purpose_code": "https://pdpp.org/purpose/analytics",
+  "access_mode": "single_use",
+  "streams": [
+    {
+      "name": "sleep_sessions",
+      "time_range": { "since": "2026-01-01T00:00:00Z", "until": "2026-04-01T00:00:00Z" },
+      "fields": ["day", "total_sleep_duration", "sleep_score"]
+    }
+  ],
+  "retention": { "max_duration": "P90D", "on_expiry": "delete" }
+}
+```
 
 ---
 
@@ -1352,7 +1352,7 @@ A conformant authorization server:
 
 1. Accepts selection requests using the RFC 9396 `authorization_details` envelope with `type: "https://pdpp.org/data-access"`.
 2. Validates selection requests against the connector manifest: rejects unknown streams, unsupported selection parameters (e.g., `time_range` on a stream without `consent_time_field`), and unrecognized profiles.
-3. Issues grants that conform to the grant schema defined in Section 6 (normative field tables). All grant fields are derived from the selection request, client registration, or AS policy.
+3. Issues grants that conform to the grant schema defined in Section 7 (normative field tables). All grant fields are derived from the selection request, client registration, or AS policy.
 4. Expands wildcards (`"name": "*"`) and profiles into explicit stream lists before issuing the grant.
 5. Returns 400 `invalid_request` when both `streams` and `profile` are present in a request.
 6. MUST NOT reject a `purpose_code` solely because it is not in the PDPP registry. For unrecognized codes, displays `purpose_description` if present, or the raw URI. MAY reject a `purpose_code` based on local policy.
@@ -1536,7 +1536,7 @@ The recommended future direction for this capability is manifest-declared parame
 
 ### Extensions
 
-PDPP capabilities beyond this specification (for example, search or aggregation interfaces) are defined in companion profiles, not by extending Core semantics. Implementations MUST NOT change the meaning of Core-granted access via extensions: a grant issued under this specification authorizes exactly what Sections 6 and 8 define, regardless of what additional capabilities a deployment offers. Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present. Unrecognized declared capabilities MUST be ignorable by clients. A full capability-advertisement grammar is deliberately deferred to a future version.
+PDPP capabilities beyond this specification (for example, search or aggregation interfaces) are defined in companion profiles, not by extending Core semantics. Implementations MUST NOT change the meaning of Core-granted access via extensions: a grant issued under this specification authorizes exactly what Sections 7 and 8 define, regardless of what additional capabilities a deployment offers. Optional capabilities MUST be discoverable via declared metadata rather than assumed to be present. Unrecognized declared capabilities MUST be ignorable by clients. A full capability-advertisement grammar is deliberately deferred to a future version.
 
 ### Specification governance
 

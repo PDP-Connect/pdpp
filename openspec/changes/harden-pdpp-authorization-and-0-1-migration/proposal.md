@@ -84,7 +84,7 @@ hold regardless of the seam-spike's outcome.
 
 - This is a specification-only change. It adds one new OpenSpec capability
   (`pdpp-authorization-hardening`) and does not edit any root `spec-*.md` file. Root
-  spec edits (`spec-core.md` Sections 7-10 and 12, and a new migration-profile
+  spec edits (`spec-core.md` Sections 5, 8-10, and 12, and a new migration-profile
   document) follow in a subsequent change after this proposal is accepted, per this
   repository's convention of proposing before editing root specs.
 - Out of scope, deferred to a subsequent change gated on the seam-spike's outcome: the

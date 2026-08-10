@@ -179,9 +179,9 @@ The request- and grant-level `source: { kind, id }` object names where authorize
 
 | # | Concept | Description | Flow | Audience |
 |---|---------|-------------|------|----------|
-| 86 | Source binding | Every selection request and issued grant names its data source with one `source: { kind, id }` object; both members required, no others permitted; the grant resolves it from the request at issuance (spec-core §5 request-level params, §6 grant fields) | Spine | Eng, Std |
-| 87 | Source kinds (connector vs provider_native) | `source.kind` is `"connector"` (a polyfill connector bridges a platform that does not speak PDPP; `id` is the connector registry key) or `"provider_native"` (the platform serves records directly under its own AS/RS roles; `id` identifies that provider source) (spec-core §5 Source kinds) | Branch | Eng, Std |
-| 88 | Unrecognized source kind rejection | An AS that receives a `source.kind` it does not recognize MUST reject with 400 `invalid_request`; consent cannot be rendered for an unrecognized source kind (spec-core §5) | Branch | Eng |
+| 86 | Source binding | Every selection request and issued grant names its data source with one `source: { kind, id }` object; both members required, no others permitted; the grant resolves it from the request at issuance (spec-core §6 request-level params, §7 grant fields) | Spine | Eng, Std |
+| 87 | Source kinds (connector vs provider_native) | `source.kind` is `"connector"` (a polyfill connector bridges a platform that does not speak PDPP; `id` is the connector registry key) or `"provider_native"` (the platform serves records directly under its own AS/RS roles; `id` identifies that provider source) (spec-core §6 Source kinds) | Branch | Eng, Std |
+| 88 | Unrecognized source kind rejection | An AS that receives a `source.kind` it does not recognize MUST reject with 400 `invalid_request`; consent cannot be rendered for an unrecognized source kind (spec-core §6) | Branch | Eng |
 
 ---
 

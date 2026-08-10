@@ -33,8 +33,8 @@ import { Button } from "../../ui/button.tsx";
 // rules, dots, and borders — never in loud background fills. A small legend at
 // the foot teaches the coding.
 //
-// Props contract — provenance of each field (see spec §5 Client Display, Client
-// Claims, §7 Stream Display):
+// Props contract — provenance of each field (see spec §6 Client Display, Client
+// Claims, §5 Stream Display):
 //
 // FROM resolved client display metadata (entity-scoped) → CLIENT authorship:
 //   requester.name, requester.monogram, requester.uri, requester.policyUri,

@@ -12,17 +12,17 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 
 1. When a selection request omits a selector, should the default be all available data
    or none? OAuth deployments typically default broad; Open Banking requires explicit
-   selection. ([spec-core §5](https://www.pdpp.dev/docs/spec-core))
+   selection. ([spec-core §6](https://www.pdpp.dev/docs/spec-core))
 
 2. Which adoption postures should the design optimize for: platforms implementing the
    resource server natively, platforms endorsing a connector over their existing API,
    or community connectors covering platforms that do neither?
    Related: question 14 covers the provider-native declaration document.
-   ([spec-core §5](https://www.pdpp.dev/docs/spec-core))
+   ([spec-core §6](https://www.pdpp.dev/docs/spec-core))
 
 3. Should Core standardize a grant-bundling primitive for agent access? Agents favor a
    single token and base URL; today every source requires its own grant, and bundling
-   exists only as a reference-implementation feature. ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant))
+   exists only as a reference-implementation feature. ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant))
 
 4. Should grants support manifest-declared subset templates, so consent can be bounded
    semantically ("only messages from this sender") rather than only by stream, fields,
@@ -53,7 +53,7 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 10. Should the protocol-level consent requirement for AI-training purposes stand, be
     generalized to other purposes, or be removed? It is the one exception to
     `purpose_code` and `retention` being declarations enforced by contract rather than
-    by the protocol. ([spec-core §5](https://www.pdpp.dev/docs/spec-core))
+    by the protocol. ([spec-core §6](https://www.pdpp.dev/docs/spec-core))
 
 11. What condition should trigger requiring sender-constrained tokens (DPoP, mTLS)
     rather than recommending them over the bearer-plus-introspection baseline?
@@ -61,15 +61,15 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 
 12. Should the protocol define an erasure signal, with delivery and acknowledgment
     semantics, distinct from revocation? Revocation stops future access but does not
-    request deletion of already-disclosed data. ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant))
+    request deletion of already-disclosed data. ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant))
 
 13. Should a future version support issuing a narrowed child grant to another party,
     such as an accountant? Grants are client-bound and the spec currently states no
-    transfer or delegation boundary at all. ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant))
+    transfer or delegation boundary at all. ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant))
 
 14. What document plays the manifest's role for `provider_native` sources, declaring
     streams, schemas, and selection capabilities? Current semantics are
-    reference-implementation convention. ([spec-core §5](https://www.pdpp.dev/docs/spec-core))
+    reference-implementation convention. ([spec-core §6](https://www.pdpp.dev/docs/spec-core))
 
 15. Should Core define a resource-server mode that indexes a source and fetches records
     at read time rather than storing them? This affects freshness metadata,
@@ -81,7 +81,7 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 
 17. Should webhook-triggered collection be specified as a companion profile?
     `access_mode` reserves room for an `event_driven` value.
-    ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant))
+    ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant))
 
 18. What evidence strategy should each stream declare so coverage and freshness can be
     distinguished from absence of instrumentation? A system needs to tell complete
@@ -102,10 +102,10 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 
 22. After a `single_use` grant is consumed, should the spec require deletion, require
     retention as a consent record, or leave it to local policy?
-    ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant))
+    ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant))
 
 23. Should view names such as `basic` and `full` carry consistent meaning across
-    connectors, or remain connector-defined? ([spec-core §7](https://www.pdpp.dev/docs/spec-core))
+    connectors, or remain connector-defined? ([spec-core §5](https://www.pdpp.dev/docs/spec-core))
 
 24. Should PDPP adopt Client ID Metadata Documents for client identity now, or wait for
     the IETF draft to stabilize? ([spec-core §3](https://www.pdpp.dev/docs/spec-core))

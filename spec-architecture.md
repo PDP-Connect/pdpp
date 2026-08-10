@@ -112,12 +112,12 @@ Event-driven ingestion (a platform pushes events to the personal server) is defe
 
 | Component | Defined by the spec? | Notes |
 |-----------|----------------------|-------|
-| Grant object | **Yes** | The parameterized consent artifact (Core Section 6) |
+| Grant object | **Yes** | The parameterized consent artifact (Core Section 7) |
 | Record model | **Yes** | Streams, schemas, keys, blob_ref, resource_ref (Core Section 4) |
-| Source binding | **Yes** | `source: { kind, id }` on requests and grants (Core Section 5) |
-| Connector manifest | **Yes** | What a connector produces and requires (Core Section 7) |
+| Source binding | **Yes** | `source: { kind, id }` on requests and grants (Core Section 6) |
+| Connector manifest | **Yes** | What a connector produces and requires (Core Section 5) |
 | Connector run protocol | **Yes** | START/RECORD/STATE/INTERACTION/DONE (Collection Profile) |
-| Selection request format | **Yes** | RFC 9396 authorization_details (Core Section 5) |
+| Selection request format | **Yes** | RFC 9396 authorization_details (Core Section 6) |
 | Resource server query interface | **Yes** | How clients query records under a grant (Core Section 8) |
 | Personal server storage | **No** | Implementation choice |
 | Webhook ingestion | **No** | Deferred; see spec-deferred |
@@ -129,7 +129,7 @@ For the Collection Profile, the standardized `START` message carries a portable 
 
 ## How connector versioning works
 
-The personal server stores connector manifests. A grant carries a `source` binding; for `kind: "connector"`, `source.id` is the connector identifier as defined by the deployment's connector registry (Core Section 5). The grant also pins `manifest_version`, the version of the source's manifest it was validated against.
+The personal server stores connector manifests. A grant carries a `source` binding; for `kind: "connector"`, `source.id` is the connector identifier as defined by the deployment's connector registry (Core Section 6). The grant also pins `manifest_version`, the version of the source's manifest it was validated against.
 
 When a connector is updated:
 
@@ -139,7 +139,7 @@ When a connector is updated:
 4. If the new version removes streams, the personal server still has the old data and existing grants can still serve it; new collection runs for removed streams fail, and the runtime should handle that without corrupting state
 5. If the new version changes a stream schema, that is a breaking change. Two approaches: versioned streams (`playlists_v2` as a distinct stream) or schema evolution (the server accepts both shapes and widens types)
 
-The spec recommends additive-only schema changes: new fields are fine; removing or changing fields is breaking (Core Section 7, Versioning).
+The spec recommends additive-only schema changes: new fields are fine; removing or changing fields is breaking (Core Section 5, Versioning).
 
 ## How standing authorization works for AI agents
 
@@ -147,7 +147,7 @@ A request with `streams: [{ "name": "*" }]` is expanded at consent time into the
 
 **Future records within a stream:** included. If the user creates a new playlist after a `continuous` grant is issued, it appears in the granted `playlists` stream, subject to any `time_range` constraint.
 
-**Future streams:** not included. If the connector adds a stream in a new version, existing grants do not cover it. Scope changes use revoke-and-reissue; grant amendment is not defined in v0.1 (Core Section 6, Grant narrowing).
+**Future streams:** not included. If the connector adds a stream in a new version, existing grants do not cover it. Scope changes use revoke-and-reissue; grant amendment is not defined in v0.1 (Core Section 7, Grant narrowing).
 
 **Enforcement:** the resource server checks each request against the grant's `streams` list and rejects streams outside it. The grant is self-contained; enforcement does not require fetching the manifest at request time.
 
