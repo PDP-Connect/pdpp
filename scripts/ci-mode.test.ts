@@ -40,6 +40,7 @@ import {
   workflowUpdatesForMode,
   ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE,
   ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE,
+  ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE,
   ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE,
   zeroConnectorKnowledgeGateRequired,
 } from "./ci-mode.ts";
@@ -249,6 +250,7 @@ test("changeTouchesCiGateSelf pins the gate implementation and every conformance
     "reference-implementation/test/ri-zero-connector-knowledge-conformance.test.ts",
     "reference-implementation/test/helpers/ri-zero-connector-knowledge-scan.ts",
     "reference-implementation/test/helpers/ri-zero-connector-knowledge-data-load-scan.ts",
+    "reference-implementation/test/helpers/ri-zero-connector-knowledge-identity-scan.ts",
   ];
   assert.deepEqual(CI_GATE_SELF_PATHS, expectedSelfPaths);
   assert.deepEqual(
@@ -258,6 +260,7 @@ test("changeTouchesCiGateSelf pins the gate implementation and every conformance
   assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`, expectedSelfPaths[6]);
   assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`, expectedSelfPaths[7]);
   assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`, expectedSelfPaths[8]);
+  assert.equal(`reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`, expectedSelfPaths[9]);
   for (const path of expectedSelfPaths) {
     assert.equal(changeTouchesCiGateSelf([path]), true);
     assert.equal(ciModeSelfTestRequired([path]), true);
@@ -272,6 +275,13 @@ test("changeTouchesCiGateSelf specifically covers the data-load scanner (regress
   assert.equal(zeroConnectorKnowledgeGateRequired([dataLoadHelperPath]), true);
   assert.equal(ciModeSelfTestRequired([dataLoadHelperPath]), true);
   assert.equal(changeTouchesCiGateSelf([dataLoadHelperPath]), true);
+});
+
+test("changeTouchesCiGateSelf specifically covers the identity scanner (ast-authority-0810: a change to the rules (1)/(6)/(7)/(4b) constant-folder or its SHARED_LIBRARY_KIND_DISPATCH_ALLOWLIST must not silently bypass gate-self)", () => {
+  const identityHelperPath = `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`;
+  assert.equal(zeroConnectorKnowledgeGateRequired([identityHelperPath]), true);
+  assert.equal(ciModeSelfTestRequired([identityHelperPath]), true);
+  assert.equal(changeTouchesCiGateSelf([identityHelperPath]), true);
 });
 
 test("changeTouchesRiProduction flags RI production paths but not connectors/tests/manifests", () => {

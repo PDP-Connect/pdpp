@@ -33,6 +33,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 
 import { isExemptDataLoadPath, scanFileDataLoads } from "./ri-zero-connector-knowledge-data-load-scan.ts";
+import { scanFileIdentity } from "./ri-zero-connector-knowledge-identity-scan.ts";
 
 export interface ScanRoots {
   /** Absolute path to the repository root. */
@@ -84,11 +85,27 @@ const SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT = "packages/polyfill-connectors/src
  * exempt from rules (6)/(7) — see that constant's doc comment for what each
  * entry is and why. Exact-file, not a directory/prefix allowlist: adding a
  * new entry requires deliberately widening this Set, not an incidental path
- * match. */
+ * match.
+ *
+ * `provider-auth-adapters.ts` was ADDED by the AST-authority pass
+ * (ri-zero-knowledge-ast-authority-0810): its dynamic `await import(
+ * "../connectors/google_maps_data_portability/provider-auth.ts")` registry
+ * entry was invisible to the prior regex scanner (which only matched a
+ * `polyfill-connectors/connectors/` path segment on an `import`/`export`
+ * line, never a dynamic `import()` call reached via a relative,
+ * package-root-relative specifier) — genuinely undetected, not
+ * newly-introduced. Inspected and confirmed to be the same deterministic,
+ * eagerly-loaded, opaque-`exchanger_kind`-mapping registry SHAPE as
+ * `manual-upload-validation.ts`/`collector-registry.ts` (see this file's own
+ * header doc comment), not a second hidden dispatch seam: it is the ONLY
+ * file in this root using dynamic `import()` to reach a connector module
+ * (verified by grep across the whole root), and its module list is a
+ * closed, eagerly-enumerated array literal, not a runtime-constructed path. */
 const SHARED_LIBRARY_KIND_DISPATCH_ALLOWLIST = new Set([
   "packages/polyfill-connectors/src/manual-upload-validation.ts",
   "packages/polyfill-connectors/src/collector-registry.ts",
   "packages/polyfill-connectors/src/auto-login/heb.ts",
+  "packages/polyfill-connectors/src/provider-auth-adapters.ts",
 ]);
 
 const REGISTRY_ID_PREFIX = "https://registry.pdpp.org/connectors/";
@@ -307,103 +324,21 @@ const ENV_KEY_RE = /^[A-Z][A-Z0-9_]*_(CLIENT_ID|CLIENT_SECRET|REFRESH_TOKEN|API_
 const ABSOLUTE_URL_HOST_RE = /^https?:\/\/([^/\s:]+)/;
 
 /**
- * A small set of manifest-derived connector keys double as ordinary English
- * words or generic technical terms (`meta`, `oura`, `notion`, `loom`,
- * `strava`, `steam`, `pocket`, `shopify`-adjacent brand words, etc.) and can
- * appear in production code with no connector-identity meaning at all (e.g.
- * a `meta` field on an unrelated JSON envelope). A bare string-literal match
- * against the manifest-derived key set is therefore not sufficient signal by
- * itself — it must appear in an IDENTITY CONTEXT: alongside a sibling string
- * literal that is also a known connector key (an allowlist/array of keys), or
- * immediately after an identity-shaped identifier (`connector`, `connectorId`,
- * `connectorKey`, `canonicalId`, `provider`, `providerId`) via `===`/`==`/`:`/
- * a case clause. This keeps the guard from flagging incidental short-word
- * collisions while still catching every real allowlist/dispatch/branch shape
- * found in the audit.
- */
-const IDENTITY_CONTEXT_BEFORE_RE =
-  /(?:connector(?:Id|Key|_id|_key)?|canonicalId|canonical_key|provider(?:Id|_id)?)\s*(?:===|==|!==|!=|:)\s*$/i;
-const CASE_CONTEXT_BEFORE_RE = /\bcase\s*$/;
-
-function hasIdentityContext(source: string, matchStart: number): boolean {
-  const before = source.slice(Math.max(0, matchStart - 80), matchStart);
-  return IDENTITY_CONTEXT_BEFORE_RE.test(before) || CASE_CONTEXT_BEFORE_RE.test(before);
-}
-
-/**
- * Separate, narrower context regex for rule (6): `validation.kind` values
- * are compared against a bare `kind` identifier (e.g. `kind === "whatsapp_chat_export"`)
- * — a generic word that would false-positive constantly if added to
- * IDENTITY_CONTEXT_BEFORE_RE's connector/provider-identifier set (e.g. any
- * unrelated `kind === "record"` discriminator). Kept as its own regex so
- * this rule's context requirement stays narrow to the actual violation shape
- * without widening rule (1)'s blast radius.
- */
-const VALIDATION_KIND_CONTEXT_BEFORE_RE = /\bkind\s*(?:===|==|!==|!=|:)\s*$/i;
-
-function hasValidationKindContext(source: string, matchStart: number): boolean {
-  const before = source.slice(Math.max(0, matchStart - 80), matchStart);
-  return VALIDATION_KIND_CONTEXT_BEFORE_RE.test(before) || CASE_CONTEXT_BEFORE_RE.test(before);
-}
-
-// Matches an import/export/require specifier that resolves into a THIRD-
-// PARTY connector's own module directory under the polyfill-connectors
-// package, e.g. `"../../../packages/polyfill-connectors/connectors/whatsapp/validation.ts"`
-// or a bare `"@pdpp/polyfill-connectors/connectors/whatsapp/..."`-style
-// specifier. Deliberately scoped to `polyfill-connectors/connectors/`
-// specifically, not any path segment literally named `connectors` --
-// `reference-implementation/connectors/seed/` is RI's OWN deterministic
-// fixture connector (no third-party provider knowledge, referenced
-// legitimately by cli/commands/seed.ts) and must not be flagged.
-// `packages/polyfill-connectors/src/...` (the connector-agnostic
-// shared/dispatch layer) and `.../manifests/...` (data, not code) are also
-// not matched.
-const CONNECTOR_MODULE_IMPORT_RE = /(['"`])[^'"`]*\bpolyfill-connectors\/connectors\/[^/'"`]+\/[^'"`]*\1/g;
-// A file INSIDE packages/polyfill-connectors/src/ importing a sibling
-// connector never spells out the `polyfill-connectors/connectors/` segment
-// CONNECTOR_MODULE_IMPORT_RE requires -- it's a plain package-relative
-// specifier (e.g. `"../connectors/whatsapp/validation.ts"`, matching the
-// REAL specifier shape `manual-upload-validation.ts` itself uses). Only
-// applied when `relPath` is under SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT (see
-// the caller below), so this narrower, root-relative shape never
-// widens rule (7)'s blast radius for RI's own files.
-const SHARED_LIBRARY_RELATIVE_CONNECTOR_IMPORT_RE = /(['"`])\.\.?\/(?:[^'"`]*\/)?connectors\/[^/'"`]+\/[^'"`]*\1/g;
-const IMPORT_OR_REQUIRE_LINE_RE = /\b(?:import|export)\b[^;\n]*\bfrom\b|\brequire\s*\(/;
-
-function scanFileConnectorModuleImports(raw: string, relPath: string): Violation[] {
-  const source = stripComments(raw);
-  const violations: Violation[] = [];
-  const isSharedLibraryFile = relPath.startsWith(`${SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT}/`);
-  const pattern = isSharedLibraryFile ? SHARED_LIBRARY_RELATIVE_CONNECTOR_IMPORT_RE : CONNECTOR_MODULE_IMPORT_RE;
-  for (const match of source.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    // Require the match to sit on an actual import/export/require line, not
-    // an unrelated string literal that merely contains this substring (e.g.
-    // a doc comment path reference already stripped, or a log message).
-    const lineStart = source.lastIndexOf("\n", index) + 1;
-    const lineEnd = source.indexOf("\n", index);
-    const line = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd);
-    if (!IMPORT_OR_REQUIRE_LINE_RE.test(line)) {
-      continue;
-    }
-    violations.push({
-      file: relPath,
-      line: lineNumberAt(source, index),
-      rule: "connector-module-import",
-      snippet: lineTextAt(raw, index),
-    });
-  }
-  return violations;
-}
-
-/**
- * Scans one production file's source for the five violation shapes:
- * (1) a string literal equal to a known manifest-derived connector key,
- *     appearing in identity-comparison/collection context;
- * (2) [covered by (1) generically — array/set/object-key/switch/=== all
- *     surface as a bare string literal match against the known-key set];
- * (3) a literal absolute URL whose host isn't on the generic allowlist;
- * (4) a provider-shaped credential env-var name literal;
+ * Scans one production file's source for the seven violation shapes:
+ * (1)/(6)/(7)/(4b) — connector-identity literals, validation-kind literals,
+ *     connector-module imports, and connector-manifest-import-then-extract —
+ *     are AST-based (see `ri-zero-connector-knowledge-identity-scan.ts`'s
+ *     module doc comment): a bounded constant-folder resolves string values
+ *     and import specifiers through `const`/one-hop-parameter indirection so
+ *     ordinary indirection (a kind literal assigned then compared,
+ *     `.includes()`/`switch`/re-export/dynamic-import, importing a connector
+ *     manifest and reading `.kind` off it) is caught the same as an inline
+ *     literal, not just a bare `===` sitting next to an identity-shaped name.
+ * (3) a literal absolute URL whose host isn't on the generic allowlist —
+ *     still a text-structural regex scan (see this module's own doc
+ *     comment: standalone URL literals have no meaningful indirection shape
+ *     worth an AST pass for).
+ * (4) a provider-shaped credential env-var name literal — same posture as (3).
  * (5) a JSON/YAML data-resource load (readFileSync/readFile/require/dynamic
  *     import/static json-attribute import/new URL, resolved via a bounded
  *     AST-based constant-folder — see
@@ -411,16 +346,6 @@ function scanFileConnectorModuleImports(raw: string, relPath: string): Violation
  *     sanctioned-and-provenance-checked manifest-root read, an explicitly
  *     allowlisted RI-owned policy resource, nor an explicitly reviewed
  *     generic-data-read call site.
- * (6) a string literal equal to a known manifest-derived `validation.kind`
- *     value, appearing in identity-comparison/collection context — a
- *     SEPARATE identity namespace from rule (1)'s `connector_key`, added
- *     after a real `kind === "whatsapp_chat_export"` branch shipped in RI
- *     production code invisible to every existing rule.
- * (7) an import specifier that resolves into a connector's own module
- *     directory (`connectors/<name>/...`, in either polyfill-connectors
- *     package root) from RI production code — RI may import shared,
- *     connector-agnostic infrastructure from `packages/polyfill-connectors/src/`,
- *     but never a specific connector's own implementation module.
  */
 export function scanFile(
   absPath: string,
@@ -433,51 +358,12 @@ export function scanFile(
   const source = stripComments(raw);
   const violations: Violation[] = [];
 
-  // First pass: collect every string-literal match with its list membership,
-  // so a "sibling literal in the same array/object" context can be detected
-  // without a full parser (two-or-more known-connector-key literals close
-  // together is itself the allowlist shape we're catching).
   const literalMatches = [...source.matchAll(STRING_LITERAL_RE)].map((m) => ({
     index: m.index ?? 0,
     value: m[2] ?? "",
   }));
-  const connectorLiteralIndexes = literalMatches.filter((m) => connectorKeys.has(m.value)).map((m) => m.index);
-  const validationKindLiteralIndexes = literalMatches.filter((m) => validationKinds.has(m.value)).map((m) => m.index);
-
-  function hasNearbyConnectorSibling(index: number): boolean {
-    // Another known-connector-key literal within 200 chars (same array/object
-    // literal in practice) is itself the allowlist/dispatch-table shape.
-    return connectorLiteralIndexes.some((other) => other !== index && Math.abs(other - index) <= 200);
-  }
-
-  function hasNearbyValidationKindSibling(index: number): boolean {
-    return validationKindLiteralIndexes.some((other) => other !== index && Math.abs(other - index) <= 200);
-  }
 
   for (const { index, value } of literalMatches) {
-    if (connectorKeys.has(value) && (hasIdentityContext(source, index) || hasNearbyConnectorSibling(index))) {
-      violations.push({
-        file: relPath,
-        line: lineNumberAt(source, index),
-        rule: "hardcoded-connector-identity-literal",
-        snippet: lineTextAt(raw, index),
-      });
-      continue;
-    }
-
-    if (
-      validationKinds.has(value) &&
-      (hasValidationKindContext(source, index) || hasNearbyValidationKindSibling(index))
-    ) {
-      violations.push({
-        file: relPath,
-        line: lineNumberAt(source, index),
-        rule: "hardcoded-validation-kind-literal",
-        snippet: lineTextAt(raw, index),
-      });
-      continue;
-    }
-
     const urlMatch = value.match(ABSOLUTE_URL_HOST_RE);
     if (urlMatch) {
       const host = (urlMatch[1] ?? "").toLowerCase();
@@ -508,8 +394,16 @@ export function scanFile(
     }
   }
 
+  const isSharedLibraryFile = relPath.startsWith(`${SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT}/`);
+  violations.push(
+    ...scanFileIdentity(absPath, relPath, connectorKeys, validationKinds, isSharedLibraryFile).map((v) => ({
+      file: v.file,
+      line: v.line,
+      rule: v.rule,
+      snippet: v.snippet,
+    }))
+  );
   violations.push(...scanFileDataLoads(absPath, relPath, repoRoot));
-  violations.push(...scanFileConnectorModuleImports(raw, relPath));
 
   // Multiple literals on one line (e.g. a multi-entry array literal) each
   // independently match the same rule; collapse to one report per
@@ -525,12 +419,16 @@ export function scanFile(
   });
 }
 
-const SHARED_LIBRARY_KIND_DISPATCH_RULES = new Set(["hardcoded-validation-kind-literal", "connector-module-import"]);
+const SHARED_LIBRARY_KIND_DISPATCH_RULES = new Set([
+  "hardcoded-validation-kind-literal",
+  "connector-module-import",
+  "hardcoded-connector-manifest-import",
+]);
 
 /**
  * Scans one {@link SHARED_LIBRARY_KIND_DISPATCH_SCAN_ROOT} file for ONLY
- * rules (6)/(7) — see that constant's doc comment for why rules (1)/(3)/(4)/
- * (5) do not apply here. Exported (not inlined into
+ * rules (6)/(7)/(4b) — see that constant's doc comment for why rules (1)/(3)/
+ * (4)/(5) do not apply here. Exported (not inlined into
  * {@link scanSharedLibraryKindDispatchRoot}) so falsifiability tests can
  * exercise it directly against a synthetic file, mirroring how `scanFile`
  * itself is unit-tested.

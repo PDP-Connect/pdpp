@@ -49,14 +49,20 @@ export const CONNECTOR_CONFORMANCE_TEST_FILES = [
 // detects what it claims to detect, so all are gate-self paths too. The
 // data-load helper is the AST constant-folder plus both security-critical
 // allowlists (SANCTIONED_POLICY_RESOURCES, SANCTIONED_GENERIC_DATA_READ_CALL_SITES)
-// for rule (5)'s sibling-JSON evasion closure — a change here (e.g. widening
-// an allowlist or loosening the resolver) is exactly the kind of silent
+// for rule (5)'s sibling-JSON evasion closure; the identity helper is the AST
+// constant-folder for rules (1)/(6)/(7)/(4b) (connector-identity/validation-
+// kind literals, connector-module imports, connector-manifest-import-then-
+// extract) plus the SHARED_LIBRARY_KIND_DISPATCH_ALLOWLIST it feeds into via
+// ri-zero-connector-knowledge-scan.ts — a change here (e.g. widening an
+// allowlist or loosening the resolver) is exactly the kind of silent
 // weakening this list exists to catch, so it cannot be exempt from its own
 // gate-self trigger.
 export const ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE = "test/ri-zero-connector-knowledge-conformance.test.ts";
 export const ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE = "test/helpers/ri-zero-connector-knowledge-scan.ts";
 export const ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE =
   "test/helpers/ri-zero-connector-knowledge-data-load-scan.ts";
+export const ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE =
+  "test/helpers/ri-zero-connector-knowledge-identity-scan.ts";
 
 export const CI_GATE_SELF_PATHS = [
   "scripts/ci-mode.ts",
@@ -66,6 +72,7 @@ export const CI_GATE_SELF_PATHS = [
   `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_TEST_FILE}`,
   `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_HELPER_FILE}`,
   `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_DATA_LOAD_HELPER_FILE}`,
+  `reference-implementation/${ZERO_CONNECTOR_KNOWLEDGE_IDENTITY_HELPER_FILE}`,
 ];
 
 // RI production code — everything the zero-connector-knowledge guard scans.

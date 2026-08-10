@@ -112,6 +112,27 @@
           }
         }
       }
+    },
+    {
+      // test/helpers/ri-zero-connector-knowledge-identity-scan.ts
+      // (ast-authority-0810). Same confirmed `@babel/parser` resolver-gap
+      // class as the data-load-scan.ts override immediately above — same
+      // package, same version, same import shape (`import { parse } from
+      // "@babel/parser"`), verified the same way (`tsc --noEmit` resolves it
+      // cleanly; `node --input-type=module -e
+      // "console.log(import.meta.resolve('@babel/parser'))"` resolves to
+      // node_modules/.pnpm/@babel+parser@7.29.2/node_modules/@babel/parser/lib/index.js).
+      // This guard's own runtime test suite
+      // (ri-zero-connector-knowledge-conformance.test.ts) is the authority
+      // that the import actually resolves and works.
+      "includes": ["test/helpers/ri-zero-connector-knowledge-identity-scan.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnresolvedImports": "off"
+          }
+        }
+      }
     }
   ]
 }

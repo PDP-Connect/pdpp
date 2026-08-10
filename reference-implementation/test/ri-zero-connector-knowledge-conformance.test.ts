@@ -1020,18 +1020,24 @@ test("falsifiability (terminal-redteam-0810 #3): a synthetic second generic-name
 });
 
 test("falsifiability (terminal-redteam-0810 #3 counterweight): every real allowlisted registry/self-reference file is excluded from the scan's own file set and never appears in its violations", () => {
-  // Three real, legitimate files -- not one. Auditing the actual tree (not
+  // Four real, legitimate files -- not one. Auditing the actual tree (not
   // just the file this task set out to fix) surfaced collector-registry.ts
   // (a second, pre-existing connector-importing registry, same shape as
-  // manual-upload-validation.ts but for the collector-definition pattern)
-  // and auto-login/heb.ts (imports only ITS OWN connector's sibling
-  // parsers.ts -- self-referential, not cross-connector knowledge). Treating
-  // either as a violation would have been a false positive on real,
-  // unrelated production code, not a fix.
+  // manual-upload-validation.ts but for the collector-definition pattern),
+  // auto-login/heb.ts (imports only ITS OWN connector's sibling
+  // parsers.ts -- self-referential, not cross-connector knowledge), and
+  // provider-auth-adapters.ts (a deterministic, eagerly-loaded, opaque-
+  // exchanger_kind registry reached via dynamic `import()` rather than a
+  // static specifier -- the AST-authority pass (ast-authority-0810) is the
+  // first version of this scanner to see dynamic-import call sites at all,
+  // and this is the one real pre-existing file that shape newly surfaces).
+  // Treating any of these as a violation would have been a false positive
+  // on real, unrelated production code, not a fix.
   const allowlistedRelPaths = [
     "packages/polyfill-connectors/src/manual-upload-validation.ts",
     "packages/polyfill-connectors/src/collector-registry.ts",
     "packages/polyfill-connectors/src/auto-login/heb.ts",
+    "packages/polyfill-connectors/src/provider-auth-adapters.ts",
   ];
   for (const relPath of allowlistedRelPaths) {
     assert.ok(existsSync(join(repoRoot, relPath)), `expected ${relPath} to exist as a real fixture`);
@@ -1099,4 +1105,443 @@ test("falsifiability (terminal-redteam-0810 #3): scanSharedLibraryKindDispatchFi
 test("RI shared-library trust boundary (packages/polyfill-connectors/src/, excluding the allowlisted registry file) contains zero validation-kind branches or connector-module imports outside that registry", () => {
   const violations = scanSharedLibraryKindDispatchRoot({ repoRoot });
   assert.deepEqual(violations, [], formatViolationInventory(violations));
+});
+
+// ─── ri-zero-knowledge-ast-authority-0810: AST-based identity scan (rules
+// (1)/(6)/(7), plus new rule (4b)) — mutation/evasion tests for ordinary
+// indirection the prior regex scanner missed, plus legitimate counterweights
+// that must stay green. Each test writes a synthetic fixture via `scanFile`
+// directly (the same unit-level pattern the original falsifiability tests
+// above use) so these are exercised in isolation, independent of whatever
+// real production code happens to exist today. ──────────────────────────────
+
+test("AST authority: a validation-kind literal assigned to a variable, then compared, is caught (value-flow bypass)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-kind-var-indirection.ts");
+    writeFileSync(
+      badFile,
+      [
+        'const TARGET_KIND = "whatsapp_chat_export";',
+        "export function isTargetKind(kind: string | null): boolean {",
+        "  return kind === TARGET_KIND;",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(
+      badFile,
+      "synthetic-kind-var-indirection.ts",
+      new Set(),
+      repoRoot,
+      new Set(["whatsapp_chat_export"])
+    );
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-validation-kind-literal"),
+      `a kind literal reached through one hop of const indirection must still be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority: a connector-key array built as a const, then checked via .includes(), is caught (membership bypass)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-includes-membership.ts");
+    writeFileSync(
+      badFile,
+      [
+        'const FIRST_PARTY_CONNECTORS = ["gmail", "slack"];',
+        "export function isFirstParty(connectorId: string): boolean {",
+        "  return FIRST_PARTY_CONNECTORS.includes(connectorId);",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-includes-membership.ts", new Set(["gmail", "slack"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `array-literal membership via .includes() must be caught even though there is no bare === next to an identity-shaped identifier, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority: a connector-key Set checked via .has() is caught (Set-membership bypass)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-has-membership.ts");
+    writeFileSync(
+      badFile,
+      [
+        'const KNOWN = new Set(["gmail", "slack"]);',
+        "export function isKnown(id: string): boolean {",
+        "  return KNOWN.has(id);",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-has-membership.ts", new Set(["gmail", "slack"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `Set-literal membership via .has() must be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority: a switch statement dispatching on an aliased validation-kind value is caught (switch-case bypass)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-switch-alias.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function dispatch(rawKind: string | null): string {",
+        "  const kind = rawKind;",
+        "  switch (kind) {",
+        '    case "whatsapp_chat_export":',
+        '      return "file-backed";',
+        "    default:",
+        '      return "unknown";',
+        "  }",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(
+      badFile,
+      "synthetic-switch-alias.ts",
+      new Set(),
+      repoRoot,
+      new Set(["whatsapp_chat_export"])
+    );
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-validation-kind-literal"),
+      `a switch case testing a manifest-derived kind value must be caught even though the regex scanner's old identity-context window never looked at switch cases, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority: a template-literal identity string with no interpolation resolves exactly like a plain literal (template-composition bypass, static case)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-template-literal-identity.ts");
+    writeFileSync(
+      badFile,
+      ["export function isGmail(connectorId: string): boolean {", "  return connectorId === `gmail`;", "}", ""].join(
+        "\n"
+      )
+    );
+    const violations = scanFile(
+      badFile,
+      "synthetic-template-literal-identity.ts",
+      new Set(["gmail", "slack"]),
+      repoRoot
+    );
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `a backtick template with no interpolation is a plain string value and must be treated identically to a quoted literal, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority: dynamic import() of a connector's own module is caught (dynamic-import bypass)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-dynamic-import-connector.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export async function loadWhatsAppValidator() {",
+        '  return import("../../../packages/polyfill-connectors/connectors/whatsapp/validation.ts");',
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-dynamic-import-connector.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "connector-module-import"),
+      `a dynamic import() reaching a connector's own module must be caught the same as a static import, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority: a require(...) reaching a connector's own module is caught (CommonJS-require bypass)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-require-connector.ts");
+    writeFileSync(
+      badFile,
+      [
+        'const { validateWhatsAppChatExportArtifactFromFile } = require("../../../packages/polyfill-connectors/connectors/whatsapp/validation.ts");',
+        "export { validateWhatsAppChatExportArtifactFromFile };",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-require-connector.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "connector-module-import"),
+      `a CommonJS require(...) reaching a connector's own module must be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test('AST authority: a re-export (`export { x } from "connector module"`) is caught (re-export bypass)', () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-reexport-connector.ts");
+    writeFileSync(
+      badFile,
+      [
+        'export { validateWhatsAppChatExportArtifactFromFile } from "../../../packages/polyfill-connectors/connectors/whatsapp/validation.ts";',
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-reexport-connector.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "connector-module-import"),
+      `a barrel re-export of a connector's own module must be caught the same as a direct import, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test('AST authority: a wildcard re-export (`export * from "connector module"`) is caught (re-export bypass)', () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const badFile = join(dir, "synthetic-wildcard-reexport-connector.ts");
+    writeFileSync(
+      badFile,
+      ['export * from "../../../packages/polyfill-connectors/connectors/whatsapp/validation.ts";', ""].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-wildcard-reexport-connector.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "connector-module-import"),
+      `a wildcard re-export (export * from) of a connector's own module must be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority: importing a connector manifest JSON directly and reading .setup.manual_or_upload.validation.kind off it is caught (manifest-import-then-extract bypass, rule 4b)", () => {
+  withSyntheticProductionFile(
+    "synthetic-manifest-import-extract-kind.ts",
+    [
+      'import whatsappManifest from "../manifests/whatsapp-manifest-import-probe.json" with { type: "json" };',
+      "export function isWhatsAppKind(kind: string | null): boolean {",
+      "  return kind === whatsappManifest.setup.manual_or_upload.validation.kind;",
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const fakeManifestPath = join(repoRoot, "reference-implementation/manifests/whatsapp-manifest-import-probe.json");
+      writeFileSync(
+        fakeManifestPath,
+        JSON.stringify({
+          connector_id: "synthetic-whatsapp-probe",
+          setup: { manual_or_upload: { validation: { kind: "whatsapp_chat_export" } } },
+        })
+      );
+      try {
+        const violations = scanFile(join(repoRoot, relPath), relPath, new Set(), repoRoot, new Set());
+        assert.ok(
+          violations.some((v) => v.rule === "hardcoded-connector-manifest-import"),
+          `importing a connector manifest JSON directly and reading its .kind field must be caught as the same knowledge rule (6) forbids, reached via a different seam, got: ${JSON.stringify(violations)}`
+        );
+      } finally {
+        rmSync(fakeManifestPath, { force: true });
+      }
+    }
+  );
+});
+
+test("AST authority: importing a connector manifest JSON and reading .connector_key off it is caught (manifest-import-then-extract bypass, rule 4b)", () => {
+  withSyntheticProductionFile(
+    "synthetic-manifest-import-extract-connector-key.ts",
+    [
+      'import gmailManifest from "../manifests/gmail-manifest-import-probe.json" with { type: "json" };',
+      "export function isGmail(): string {",
+      "  return gmailManifest.connector_key;",
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const fakeManifestPath = join(repoRoot, "reference-implementation/manifests/gmail-manifest-import-probe.json");
+      writeFileSync(
+        fakeManifestPath,
+        JSON.stringify({ connector_id: "synthetic-gmail-probe", connector_key: "gmail" })
+      );
+      try {
+        const violations = scanFile(join(repoRoot, relPath), relPath, new Set(), repoRoot, new Set());
+        assert.ok(
+          violations.some((v) => v.rule === "hardcoded-connector-manifest-import"),
+          `importing a connector manifest and reading .connector_key off it must be caught, got: ${JSON.stringify(violations)}`
+        );
+      } finally {
+        rmSync(fakeManifestPath, { force: true });
+      }
+    }
+  );
+});
+
+// --- Counterweights: legitimate code the AST authority must NOT flag -------
+
+test("AST authority counterweight: an unrelated switch discriminator (not a manifest-derived kind) is not flagged, even with a variable alias", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const goodFile = join(dir, "synthetic-unrelated-switch-alias.ts");
+    writeFileSync(
+      goodFile,
+      [
+        "export function classify(rawGranularity: string): string {",
+        "  const granularity = rawGranularity;",
+        "  switch (granularity) {",
+        '    case "daily":',
+        '      return "day";',
+        '    case "weekly":',
+        '      return "week";',
+        "    default:",
+        '      return "unknown";',
+        "  }",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(
+      goodFile,
+      "synthetic-unrelated-switch-alias.ts",
+      new Set(),
+      repoRoot,
+      new Set(["whatsapp_chat_export"])
+    );
+    assert.deepEqual(
+      violations,
+      [],
+      `an unrelated switch discriminator whose case literals are not manifest-derived kinds must not be flagged just because the value flows through a variable, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority counterweight: .includes()/.has() on an array/Set of NON-connector strings is not flagged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const goodFile = join(dir, "synthetic-unrelated-membership.ts");
+    writeFileSync(
+      goodFile,
+      [
+        'const ALLOWED_STATUSES = ["pending", "complete", "failed"];',
+        'const ALLOWED_ROLES = new Set(["owner", "viewer"]);',
+        "export function isAllowedStatus(status: string): boolean {",
+        "  return ALLOWED_STATUSES.includes(status) || ALLOWED_ROLES.has(status);",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(goodFile, "synthetic-unrelated-membership.ts", new Set(["gmail", "slack"]), repoRoot);
+    assert.deepEqual(
+      violations,
+      [],
+      `membership checks whose collection literal contains no manifest-derived connector key must not be flagged, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority counterweight: re-exporting the shared connector-agnostic dispatcher module is not flagged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const goodFile = join(dir, "synthetic-reexport-shared-dispatcher.ts");
+    writeFileSync(
+      goodFile,
+      [
+        'export { validateManualUploadArtifactFromFileByKind } from "../../../packages/polyfill-connectors/src/manual-upload-validation.ts";',
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(goodFile, "synthetic-reexport-shared-dispatcher.ts", new Set(), repoRoot);
+    assert.deepEqual(
+      violations,
+      [],
+      `re-exporting the shared, connector-agnostic dispatcher module must not be flagged, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority counterweight: a dynamic import() whose specifier cannot be statically resolved (runtime-interpolated) is not flagged (disclosed residual, not a silent pass of a proven violation)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));
+  try {
+    const goodFile = join(dir, "synthetic-unresolvable-dynamic-import.ts");
+    writeFileSync(
+      goodFile,
+      [
+        "export async function loadPlugin(pluginName: string) {",
+        `  return import(\`./plugins/${DOLLAR}{pluginName}.ts\`);`,
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(goodFile, "synthetic-unresolvable-dynamic-import.ts", new Set(), repoRoot);
+    assert.ok(
+      violations.every((v) => v.rule !== "connector-module-import"),
+      `a genuinely runtime-interpolated import specifier that cannot be proven to reach a connector module must not be flagged as connector-module-import (it is never proven to be one) — this is the module's disclosed residual, not a bypass, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("AST authority counterweight: importing a manifest for a legitimate generic purpose (reading display_name, not identity/kind) is not flagged", () => {
+  withSyntheticProductionFile(
+    "synthetic-manifest-import-generic-read.ts",
+    [
+      'import connectorManifest from "../manifests/generic-display-name-probe.json" with { type: "json" };',
+      "export function displayName(): string {",
+      "  return connectorManifest.display_name;",
+      "}",
+      "",
+    ].join("\n"),
+    (relPath) => {
+      const fakeManifestPath = join(repoRoot, "reference-implementation/manifests/generic-display-name-probe.json");
+      writeFileSync(
+        fakeManifestPath,
+        JSON.stringify({ connector_id: "synthetic-generic-probe", display_name: "Synthetic Probe" })
+      );
+      try {
+        const violations = scanFile(join(repoRoot, relPath), relPath, new Set(), repoRoot, new Set());
+        assert.ok(
+          violations.every((v) => v.rule !== "hardcoded-connector-manifest-import"),
+          `reading a non-identity/kind field (display_name) off an imported manifest must not be flagged — rule (4b) is scoped to connector_key/connector_id/kind extraction specifically, got: ${JSON.stringify(violations)}`
+        );
+      } finally {
+        rmSync(fakeManifestPath, { force: true });
+      }
+    }
+  );
+});
+
+test("AST authority counterweight: the allowlisted provider-auth-adapters.ts dynamic-import registry is not flagged by the shared-library scan", () => {
+  const violations = scanSharedLibraryKindDispatchRoot({ repoRoot });
+  assert.ok(
+    violations.every((v) => v.file !== "packages/polyfill-connectors/src/provider-auth-adapters.ts"),
+    `the real, legitimate provider-auth-adapters.ts dynamic-import registry (allowlisted after being newly discovered by this AST pass) must not appear in violations, got: ${JSON.stringify(violations.filter((v) => v.file === "packages/polyfill-connectors/src/provider-auth-adapters.ts"))}`
+  );
 });
