@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { effectiveCpuCount } from "./cpu-quota.ts";
 
 export class LocalTransformerExecutorError extends Error {
   code: string;
@@ -109,11 +110,24 @@ interface ChildSession {
 const DEFAULT_DEADLINE_MS = 30_000;
 const DEFAULT_TERM_GRACE_MS = 5000;
 const DEFAULT_KILL_GRACE_MS = 2000;
-const DEFAULT_WORK_LIMIT = 1;
 const DEFAULT_QUEUE_LIMIT = 32;
 const MAX_WORK_LIMIT = 8;
 const MAX_QUEUE_LIMIT = 256;
 const PROC_RSS_PATTERN = /^VmRSS:\s+(\d+)\s+kB$/m;
+
+/**
+ * CPU-derived default work limit, capped at MAX_WORK_LIMIT. Mirrors
+ * server/search-semantic.ts's defaultSemanticWorkLimit() — this executor's
+ * own workLimit is the layer that actually bounds concurrent child-process
+ * embed calls; sizing only the semantic-work semaphore above it (limit up
+ * to 8) while leaving this default at a hardcoded 1 would still serialize
+ * every call here regardless of the semaphore's admission count. See
+ * cpu-quota.ts for why this reads the cgroup quota instead of
+ * os.availableParallelism() directly.
+ */
+function defaultWorkLimit(): number {
+  return Math.min(effectiveCpuCount(), MAX_WORK_LIMIT);
+}
 
 function positiveEnv(name: string, fallback: number, maximum: number) {
   const parsed = Number.parseInt(process.env[name] || "", 10);
@@ -208,7 +222,7 @@ export class LocalTransformerExecutor {
     this.#workLimit = boundedPositive(
       options.workLimit,
       "PDPP_LOCAL_TRANSFORMER_WORK_LIMIT",
-      DEFAULT_WORK_LIMIT,
+      defaultWorkLimit(),
       MAX_WORK_LIMIT
     );
     this.#queueLimit = boundedPositive(

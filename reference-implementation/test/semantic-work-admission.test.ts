@@ -97,3 +97,50 @@ test("timed semantic admission removes its waiter without stealing a later FIFO 
     restoreEnv("PDPP_SEMANTIC_WORK_QUEUE_LIMIT", previousQueue);
   }
 });
+
+test("with no PDPP_SEMANTIC_WORK_LIMIT set, admission is not pinned to 1 on a multi-core host", async () => {
+  // Regression for the stale hardcoded DEFAULT_SEMANTIC_WORK_LIMIT=1: this
+  // proves the *unset* env var path now derives its default from the CPU
+  // count (server/cpu-quota.ts) instead of always admitting exactly one job
+  // at a time. This suite's own CI/dev host reliably reports >1 CPU via
+  // os.availableParallelism(); a regression back to a hardcoded 1 would fail
+  // this test by never reaching `active: 2`.
+  const previousLimit = process.env.PDPP_SEMANTIC_WORK_LIMIT;
+  delete process.env.PDPP_SEMANTIC_WORK_LIMIT;
+  const firstEntered = deferred();
+  const secondEntered = deferred();
+  const releaseBoth = deferred();
+  const base = makeStubBackend({ dimensions: 8 });
+  const backend = {
+    ...base,
+    embedDocument: async (text: string) => {
+      if (text === "first") {
+        firstEntered.resolve();
+      }
+      if (text === "second") {
+        secondEntered.resolve();
+      }
+      if (text === "first" || text === "second") {
+        await releaseBoth.promise;
+      }
+      return base.embedDocument(text);
+    },
+  };
+
+  initDb(":memory:");
+  configureSemanticBackend(backend);
+  try {
+    const first = upsert("first", "first");
+    await firstEntered.promise;
+    const second = upsert("second", "second");
+    await secondEntered.promise;
+    // Both admitted concurrently: the default limit is > 1 on this host.
+    assert.equal(semanticWorkStatsForTests().active, 2);
+    releaseBoth.resolve();
+    await Promise.all([first, second]);
+  } finally {
+    configureSemanticBackend(null);
+    closeDb();
+    restoreEnv("PDPP_SEMANTIC_WORK_LIMIT", previousLimit);
+  }
+});

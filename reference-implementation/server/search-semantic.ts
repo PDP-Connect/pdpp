@@ -65,6 +65,7 @@ import {
   resolveFanInBindings,
 } from "./connection-identity.ts";
 import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
+import { effectiveCpuCount } from "./cpu-quota.ts";
 import { getDb } from "./db.ts";
 import { LocalTransformerExecutor } from "./local-transformer-executor.ts";
 import { assertGrantedManifestReadAuthority, assertOwnerSearchFilterAuthority } from "./manifest-read-authority.ts";
@@ -507,9 +508,10 @@ const LOCAL_EMBEDDING_PROFILES: Record<string, SemanticEmbeddingProfile> = {
 const DISTANCE_METRICS = new Set<SemanticDistanceMetric>(["cosine", "dot", "l2"]);
 const EMBEDDING_BACKEND_ENV = "PDPP_SEMANTIC_EMBEDDING_BACKEND";
 export const DEFAULT_SEMANTIC_EMBEDDING_INPUT_MAX_CHARS = 2048;
-// The child-executor receipt found no work limit that was materially faster
-// than one across two warmed rounds, so reliability wins by default.
-const DEFAULT_SEMANTIC_WORK_LIMIT = 1;
+// Allowed values, both for an explicit PDPP_SEMANTIC_WORK_LIMIT and for the
+// CPU-derived default below. Eight is a hard ceiling so request fan-out
+// cannot overrun the local model host.
+const SEMANTIC_WORK_LIMIT_STEPS = [1, 2, 4, 8] as const;
 const DEFAULT_SEMANTIC_WORK_QUEUE_LIMIT = 16;
 const DEFAULT_SEMANTIC_WORK_ACQUIRE_DEADLINE_MS = 30_000;
 const TRANSIENT_LOCAL_EXECUTOR_CODES = new Set([
@@ -550,15 +552,38 @@ export class SemanticWorkAdmissionError extends Error {
 let activeSemanticWork = 0;
 const semanticWorkWaiters: SemanticWorkWaiter[] = [];
 
+/**
+ * Highest allowed step at or below the effective CPU count. The benchmark
+ * harness (scripts/benchmark-local-transformer.ts) measured concurrency
+ * [1, 2, 4, 8] on a 24-core host and found 8 reproducibly ~2-3x faster than
+ * 1 (median 520ms vs 1496ms for 100 embeds, repeated run: 363ms vs 553ms;
+ * output bitwise-identical to the concurrency-1 baseline at every step —
+ * see /tmp/embedding-transformer-benchmark-0809.json). That result does not
+ * transfer to a CPU-constrained deployment: os.availableParallelism()
+ * ignores cgroup quotas (verified: reports 24 inside `docker run --cpus=1`
+ * on this host), so sizing off it directly would set limit=8 inside the
+ * shipped Fly.io reference config's single shared vCPU
+ * (deploy/flyio/fly.toml). effectiveCpuCount() reads the actual cgroup
+ * quota first, so a 1-vCPU container still gets limit=1.
+ */
+export function semanticWorkLimitStepForCpuCount(cpuCount: number): number {
+  let selected: number = SEMANTIC_WORK_LIMIT_STEPS[0];
+  for (const step of SEMANTIC_WORK_LIMIT_STEPS) {
+    if (step <= cpuCount) {
+      selected = step;
+    }
+  }
+  return selected;
+}
+
+function defaultSemanticWorkLimit(): number {
+  return semanticWorkLimitStepForCpuCount(effectiveCpuCount());
+}
+
 function configuredSemanticWorkLimit() {
-  const requested = parsePositiveInteger(
-    process.env.PDPP_SEMANTIC_WORK_LIMIT,
-    DEFAULT_SEMANTIC_WORK_LIMIT,
-    "PDPP_SEMANTIC_WORK_LIMIT"
-  );
-  // The operational benchmark selects a value from this explicit set. Eight
-  // is a hard ceiling so request fan-out cannot overrun the local model host.
-  return [1, 2, 4, 8].includes(requested) ? requested : DEFAULT_SEMANTIC_WORK_LIMIT;
+  const fallback = defaultSemanticWorkLimit();
+  const requested = parsePositiveInteger(process.env.PDPP_SEMANTIC_WORK_LIMIT, fallback, "PDPP_SEMANTIC_WORK_LIMIT");
+  return (SEMANTIC_WORK_LIMIT_STEPS as readonly number[]).includes(requested) ? requested : fallback;
 }
 
 function configuredSemanticWorkQueueLimit() {

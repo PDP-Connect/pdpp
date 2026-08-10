@@ -93,13 +93,18 @@ async function afterIo() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function executorFor(children: FakeChild[], options: Omit<LocalTransformerExecutorOptions, "spawnChild"> = {}) {
+function executorFor(
+  children: FakeChild[],
+  options: Omit<LocalTransformerExecutorOptions, "spawnChild"> = {},
+  onSpawnEnv?: (env: NodeJS.ProcessEnv) => void
+) {
   return new LocalTransformerExecutor({
     deadlineMs: 100,
     killGraceMs: 10,
     termGraceMs: 10,
     ...options,
-    spawnChild: () => {
+    spawnChild: (_command, _args, spawnOptions) => {
+      onSpawnEnv?.(spawnOptions.env);
       const child = new FakeChild();
       children.push(child);
       return child as unknown as TransformerChild;
@@ -109,6 +114,14 @@ function executorFor(children: FakeChild[], options: Omit<LocalTransformerExecut
 
 function assertCode(code: string) {
   return (error: unknown) => error instanceof LocalTransformerExecutorError && error.code === code;
+}
+
+function restoreEnv(name: string, previous: string | undefined): void {
+  if (previous === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = previous;
+  }
 }
 
 function promiseState(promise: Promise<unknown>) {
@@ -176,6 +189,41 @@ test("local transformer executor bounds parent admission before writing and reco
   await assert.doesNotReject(Promise.all([second, third]));
   child.onEnd = () => child.exit();
   await executor.close();
+});
+
+test("with no workLimit option and no PDPP_LOCAL_TRANSFORMER_WORK_LIMIT set, the child env is not pinned to 1 on a multi-core host", async () => {
+  // Regression for the stale hardcoded DEFAULT_WORK_LIMIT=1: proves the
+  // *default* path (neither the constructor option nor the env var
+  // supplied) now forwards a CPU-derived limit to the child, not a
+  // hardcoded 1. This test's own host reliably reports >1 CPU via
+  // os.availableParallelism(), so a regression back to a hardcoded default
+  // would fail this assertion.
+  const previous = process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT;
+  delete process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT;
+  const children: FakeChild[] = [];
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  try {
+    const executor = executorFor(children, {}, (env) => {
+      capturedEnv = env;
+    });
+    const first = executor.embed("first", "backend-a", {});
+    assert.ok(capturedEnv, "spawnChild must have been called");
+    const forwarded = Number(capturedEnv?.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT);
+    assert.ok(
+      Number.isInteger(forwarded) && forwarded > 1,
+      `expected a CPU-derived work limit > 1, got ${capturedEnv?.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT}`
+    );
+    // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
+    const child = children[0];
+    assert.ok(child);
+    const firstJob = JSON.parse(child.writes[0] ?? "{}") as Record<string, unknown>;
+    child.reply({ ...firstJob, vector: [1] });
+    await assert.doesNotReject(first);
+    child.onEnd = () => child.exit();
+    await executor.close();
+  } finally {
+    restoreEnv("PDPP_LOCAL_TRANSFORMER_WORK_LIMIT", previous);
+  }
 });
 
 test("unexpected child exit fences and rejects the generation after confirmed exit", async () => {
