@@ -1652,6 +1652,15 @@ if (isMainModule(import.meta.url)) {
         enumerationScopeFingerprint(enumerationScope)
       );
       await emitCoverageDiagnostics({ emitRecord, inventory, requested });
+      // Commit the static coverage proof now, independent of everything that
+      // follows. `inventory` classifies every known store (shell content,
+      // config, cache, file-history, etc.) from a path stat, not from the
+      // JSONL scan below — a later failure in that scan has nothing to do
+      // with whether this classification is honest, so it must not hold this
+      // snapshot hostage. `emitCoverageDiagnosticsState`'s later calls still
+      // supersede this one (STATE is last-wins per stream) once the full
+      // collection pass legitimately completes.
+      await emitCoverageDiagnosticsState({ emit, inventory, requested });
       // The owner-declared boundary rides on the stream scopes the runtime
       // already threads through. Read once here and applied at ENUMERATION so a
       // bounded run does not open files it was never asked to collect.
@@ -1915,8 +1924,11 @@ if (isMainModule(import.meta.url)) {
             cursor: { file_mtimes: newMemoryNoteMtimes, fetched_at: nowIso() },
           });
         }
-        // Coverage STATE is emitted only after every requested collection pass
-        // has completed successfully; a later failure cannot commit this proof.
+        // Re-commit coverage STATE now that the full collection pass
+        // completed. This supersedes the early static-only snapshot written
+        // right after the inventory pass (see the top of `collect()`) with
+        // the same content — the inventory itself did not change — but keeps
+        // the STATE cursor's `fetched_at` current for a full, successful run.
         await emitCoverageDiagnosticsState({ emit, inventory, requested });
 
         if (requested.has("messages") || requested.has("attachments")) {

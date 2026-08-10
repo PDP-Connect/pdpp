@@ -121,8 +121,10 @@ test("codex coverage truth: derived coverage records included in STATE snapshot"
 
   const coverageStates = states(result.messages, "coverage_diagnostics");
   assert(coverageStates.length > 0, "must emit coverage_diagnostics STATE");
-
-  const stateSnapshot = (coverageStates[0]?.cursor as { stores?: Record<string, unknown> })?.stores;
+  // The FIRST commit is the early static-only snapshot (no derived records
+  // yet — see emitStaticCoverageState); the LAST commit is the final
+  // static+derived snapshot this test is actually about.
+  const stateSnapshot = (coverageStates.at(-1)?.cursor as { stores?: Record<string, unknown> })?.stores;
   assert(stateSnapshot, "STATE must include stores snapshot");
 
   // Derived stores must appear in the snapshot (for snapshot_import_receipt proof)

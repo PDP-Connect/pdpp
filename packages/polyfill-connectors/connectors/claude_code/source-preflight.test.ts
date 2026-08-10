@@ -115,11 +115,20 @@ test("claude_code inventory streams emit safe metadata, one STATE per stream, an
   const states = result.messages.filter(
     (msg): msg is Extract<EmittedMessage, { type: "STATE" }> => msg.type === "STATE"
   );
+  // Every inventory stream writes at most one STATE per collection pass,
+  // EXCEPT coverage_diagnostics: it commits an early static-only snapshot
+  // right after the inventory pass (so a later failure can't discard already-
+  // classified store evidence), then a full successful run supersedes it
+  // with a second, current-`fetched_at` write. See coverage-state-survives-
+  // failure semantics in connectors/codex — claude_code shares the pattern.
+  const nonCoverageStates = states.filter((entry) => entry.stream !== "coverage_diagnostics");
   assert.equal(
-    new Set(states.map((entry) => entry.stream)).size,
-    states.length,
-    "each inventory stream writes at most one STATE per collection pass"
+    new Set(nonCoverageStates.map((entry) => entry.stream)).size,
+    nonCoverageStates.length,
+    "each non-coverage inventory stream writes at most one STATE per collection pass"
   );
+  const coverageStateCount = states.filter((entry) => entry.stream === "coverage_diagnostics").length;
+  assert.equal(coverageStateCount, 2, "coverage_diagnostics writes an early static snapshot, then a final one");
   const firstFileHistoryState = states.find((entry) => entry.stream === "file_history");
   assert.equal(firstFileHistoryState !== undefined, true);
   const fileHistoryCursor = (firstFileHistoryState as Extract<EmittedMessage, { type: "STATE" }>).cursor as {

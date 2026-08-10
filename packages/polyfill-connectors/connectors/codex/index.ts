@@ -1818,6 +1818,42 @@ async function emitCoverageDiagnostics(input: {
   }
 }
 
+/**
+ * Commit the STATE snapshot for the STATIC (inventory-classified) coverage
+ * rows only, right after the inventory pass — before rollout scanning ever
+ * starts. `bufferedState.coverage_diagnostics` is last-wins per stream, so a
+ * later {@link emitDerivedCoverage} call in a run that goes on to finish
+ * simply supersedes this snapshot with the richer static+derived one.
+ *
+ * Exists because a run that ends early — a sample-limit abort, a mid-scan
+ * failure — never reaches {@link emitDerivedCoverage}, which used to be the
+ * ONLY place `coverage_diagnostics` STATE was written. The inventory pass
+ * that classifies `shell_snapshots`/`history`/etc. has nothing to do with
+ * rollout scanning and already succeeded by this point, so its proof must
+ * not be held hostage by a scan that hasn't even started yet: without this,
+ * a store whose classification correctly changed (e.g. `missing` →
+ * `inventory_only`) never gets a chance to refresh in the durable checkpoint
+ * on any run that doesn't run to full completion, even though a fresh
+ * `coverage_diagnostics` RECORD for it was already emitted and durably
+ * ingested — a permanent split between the live per-store diagnostic and
+ * the committed coverage-axis proof.
+ */
+async function emitStaticCoverageState(input: {
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  nowIso: () => string;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (!input.requested.has("coverage_diagnostics")) {
+    return;
+  }
+  emit({
+    type: "STATE",
+    stream: "coverage_diagnostics",
+    cursor: { fetched_at: input.nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(input.inventory.coverage) },
+  });
+  await waitForEmitDrain();
+}
+
 /** Emit one inventory stream's records under a fingerprint gate that excludes
  *  incidental `mtime_epoch`/`size_bytes`, then write a per-stream STATE cursor
  *  carrying the fingerprints forward. Inventory enumeration is a full scan, so
@@ -2125,6 +2161,13 @@ async function main(): Promise<void> {
     enumerationScopeFingerprint(enumerationScope)
   );
   await emitCoverageDiagnostics({ emitRecord, inventory, requested });
+  // Commit the static coverage proof now, independent of everything that
+  // follows — see emitStaticCoverageState. assertRequestedCodexSources can
+  // still throw right after this, and a sample-limit abort can still kill
+  // the process during rollout scanning; either way this snapshot already
+  // reached bufferedState and survives as the checkpoint if nothing later
+  // supersedes it.
+  await emitStaticCoverageState({ inventory, nowIso, requested });
   await assertRequestedCodexSources(dirs, requested);
 
   // The owner-declared boundary rides on the stream scopes the runtime already
