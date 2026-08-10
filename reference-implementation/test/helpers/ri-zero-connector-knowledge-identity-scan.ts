@@ -5,87 +5,32 @@
  * AST-based identity/dispatch scanner backing the zero-connector-knowledge
  * conformance guard's rules (1), (6), and (7).
  *
- * The terminal invariant (ri-zero-knowledge-terminal-revise-0810) is
- * deliberately simpler than the shape-enumeration this module used to do
- * (`===`/`switch`/`.includes()`/`.has()` specifically): in a scanned
- * production root, any STATICALLY RESOLVABLE string expression equal to a
- * manifest-derived connector key or validation kind is prohibited, no matter
- * where it appears in the AST — an object-literal key or value, an array/Set
- * element, a `let`/`const` declaration's initializer, a destructured
- * property key, a comparison operand, a switch case — every one of those
- * positions is, structurally, just "a string literal (or something that
- * resolves to one) appears at this AST location." Enumerating consumption
- * shapes one at a time (the prior design) is a losing game against ordinary
- * authorship: the most idiomatic TypeScript dispatch shape in this
- * codebase's own style, `const HANDLERS = { gmail: ..., slack: ... }`,
- * doesn't have a `===` or `.includes()` anywhere in it, and neither does
- * `const KNOWN_KEY = "gmail";` sitting unused, or `const { gmail: g } =
- * REGISTRY;`. This module instead resolves EVERY string-literal-bearing
- * position in the file — walking the whole AST rather than a curated list of
- * "comparison sites" — and checks each resolved value against the manifest-
- * derived vocabulary. A resolved value is:
+ * Invariant: every node in the file is a candidate. The walk hands each node
+ * to `resolveStringValue`; if it resolves to a static string equal to a
+ * manifest-derived connector key or validation kind, it's a violation,
+ * regardless of what kind of node holds it or where it sits in the tree.
  *
- *   1. A `StringLiteral`.
- *   2. A `TemplateLiteral` with no interpolated expressions (all-static
- *      quasis) — same posture as before.
- *   3. A `BinaryExpression` `+` of two resolvable string values (NEW: bounded
- *      concatenation folding — `"gm" + "ail"` resolves to `"gmail"`).
- *   4. An `Identifier` resolved through one hop of `const` indirection
- *      (module- or function-scope, cycle-guarded) or one hop of same-file
- *      non-exported function parameter indirection (all call sites must
- *      agree) — unchanged from before.
+ * One exception: an object/pattern property KEY DECLARATION (`{ meta: x }`)
+ * is a slot name, not an asserted value, so it's only trusted as identity
+ * evidence when the object is proven used as a dispatch table
+ * (`objectExpressionsUsedAsDispatchTables`) — narrowed further by
+ * `GENERIC_KEY_NAME_VOCABULARY_COLLISIONS`. This carve-out is scoped to that
+ * one declaration shape and nothing else: a membership check (`"meta" in
+ * obj`), a call argument, a return value, or any other value position is
+ * checked unconditionally and is never exempt, even for a colliding name —
+ * `"meta" in registry` is exactly the dynamic identity-membership shape this
+ * scanner exists to catch.
  *
- * The AST positions checked are not an enumerated list of "shapes a
- * connector-identity check might take" — they are every position in the tree
- * where a resolvable-string-typed child can occur: `ObjectExpression`
- * property keys (identifier or string-literal) and values, `ObjectPattern`
- * (destructuring) property keys, `ArrayExpression`/`NewExpression Set(...)`
- * elements, `VariableDeclarator` initializers (so a `let`/`const` bound to a
- * connector-key literal is itself the violation site, independent of whether
- * it is later compared against anything), `BinaryExpression` comparison
- * operands, and `SwitchCase` tests. `.includes()`/`.has()`/`.indexOf()`/`in`
- * membership checks need no special-casing under this design: the array/
- * object LITERAL itself is already a checked position (its elements/values),
- * so a hardcoded vocabulary term is caught the moment it is written into a
- * collection literal, whether or not that collection is ever queried.
+ * `resolveStringValue` also drives rules (7)/(4b) below: connector-module
+ * import/require/re-export specifiers, and direct manifest-JSON imports
+ * whose `.connector_key`/`.connector_id`/`.kind` field is read off.
  *
- * This module still parses with `@babel/parser` (the same real-AST
- * dependency `ri-zero-connector-knowledge-data-load-scan.ts` already uses
- * for rule (5), both now sharing `ri-zero-connector-knowledge-ast-shared.ts`
- * for the generic tree-walk plumbing) and separately:
- *
- *   - Finds every IMPORT/RE-EXPORT/DYNAMIC-IMPORT specifier that resolves
- *     (via the same relative-path constant-folder) into a connector's own
- *     module directory, including specifiers assembled via template-literal
- *     composition.
- *   - Finds any production import of a connector MANIFEST JSON file
- *     (`with { type: "json" }`, `require`, or dynamic `import()`) followed
- *     by a member-access chain reading `.connector_key`/`.connector_id`/
- *     `...validation.kind` off the imported binding — importing the data
- *     file directly and pulling the same fact out is exactly as much
- *     hardcoded-at-this-call-site knowledge as importing the module.
- *
- * Residual, disclosed precisely (matching the data-load scanner's own
- * disclosed posture): single-file analysis; a value that crosses a
- * cross-module function call, is reassigned after declaration (`let`
- * bindings' initializers ARE checked as a literal-bearing position, but a
- * `let` is never trusted as a resolvable SOURCE for a later reference to
- * it), or involves runtime string concatenation with a non-const/non-literal
- * value is UNRESOLVABLE. Destructuring a COMPUTED property (`const { [key]:
- * x } = obj`) is unresolvable — `key` is a runtime expression, not a
- * literal-bearing position. Unlike rule (5) — where "unresolvable" itself is
- * a violation ("no unknown data loads pass") — rules (1)/(6)/(7) only flag a
- * resolved match against the manifest-derived vocabulary or a resolved
- * connector-module specifier; an unresolvable value that never concretely
- * proves to be connector-identity knowledge is not flagged by this scanner
- * (it may still be caught by other rules, e.g. rule (5) if it is also a data
- * load). This is a deliberate, narrower failure posture than rule (5): rule
- * (5) closes "did ANY data reach this file", where "don't know" must fail
- * closed; rules (1)/(6)/(7) close "does an identifier PROVABLY carry a
- * manifest-derived connector fact", where "don't know" correctly means "not
- * proven" rather than "assume the worst" — an unresolvable generic string is
- * common, legitimate code (e.g. an unrelated runtime-supplied discriminator)
- * that a fail-closed posture here would flood with false positives.
+ * Disclosed residual: single-file analysis; a value crossing a cross-module
+ * call, a reassigned `let`, or runtime concatenation with a non-const value
+ * is unresolvable. Unlike rule (5) (data loads, where "unknown" fails
+ * closed), rules (1)/(6)/(7) only flag a *proven* match — an unresolvable
+ * generic string is common, legitimate code that a fail-closed posture here
+ * would flood with false positives.
  */
 
 import { readFileSync } from "node:fs";
@@ -321,17 +266,19 @@ function resolveImportSpecifierPath(
   return joinRelative(fileDir, resolved.value);
 }
 
-// --- Universal literal-position detection (rules 1/6): rather than
-// enumerate AST shapes that "consume" a resolved value (comparison,
-// membership call, switch), walk every node in the file and collect every
-// AST POSITION that can syntactically hold a resolvable string value --
-// object-literal keys and values, destructuring-pattern keys, array/Set
-// elements, variable-declarator initializers, comparison operands, and
-// switch-case tests. A hardcoded vocabulary term is caught the moment it is
-// WRITTEN at any of these positions, independent of whether or how it is
-// later consumed -- this is what makes `const HANDLERS = { gmail: fn }` and
-// `const UNUSED_KEY = "gmail";` violations without needing a `.includes()`
-// or `===` anywhere in the file.
+// --- Universal literal-position detection (rules 1/6): every node in the
+// file is a candidate -- `scanLiteralPositions` hands EVERY visited node to
+// `resolveStringValue` and checks whatever resolves. There is no list of
+// "positions a value can be written into" to fall behind; a `CallExpression`
+// argument, a `ReturnStatement` argument, a class field initializer, a
+// `TSEnumMember` initializer, a default-parameter value, a tagged-template
+// quasi, and every shape the prior enumerated design already covered
+// (object/pattern property values, array/Set elements, declarator
+// initializers, comparison operands, switch-case tests) are all just nodes
+// in the tree, visited the same way. The only exclusion is object/pattern
+// property KEYS, gated on {@link objectExpressionsUsedAsDispatchTables} --
+// see that function's doc comment for why keys (not values) are the one
+// position where naming ambiguity is real.
 
 /** One AST position the scanner treats as potentially holding a resolvable
  * string value, paired with the name of its own lexically-enclosing
@@ -344,46 +291,21 @@ interface LiteralPosition {
   node: Node;
 }
 
-/** `ObjectExpression`/`ObjectPattern` property KEY, if it is a literal-typed
- * key position: a non-computed `Identifier` key (`{ gmail: ... }`) or a
- * `StringLiteral` key (`{ "gmail": ... }`) -- covers both object-literal
- * dispatch tables and destructuring-pattern property keys (`const { gmail:
- * g } = REGISTRY`), the same key shape in both directions. A `computed:
- * true` key is a runtime expression, not a literal position, and is
- * deliberately not resolved here (matches the module's disclosed residual:
- * arbitrary computed property access is unresolvable). Returns null if this
- * property has no literal-typed key.
- *
- * An `Identifier` key names the property by its literal TEXT (`{ gmail:
- * ... }` means the key IS the string "gmail") -- it is NOT a variable
- * reference, so it is wrapped as a synthetic `StringLiteral`-shaped node
- * (same `loc`, for correct line reporting) rather than passed through
- * `resolveStringValue`'s own `Identifier` branch, which resolves an
- * identifier by looking up a same-named `const`/parameter binding -- the
- * wrong lookup entirely for a key that IS its own name. */
-/**
- * Reviewed, closed carve-out for a property/pattern KEY name that is a real
- * manifest-derived connector key but is ALSO this codebase's own generic
- * vocabulary for something unrelated to connector identity. Deliberately
- * scoped to KEY positions only (never VALUE positions, never import/manifest
- * rules) -- a key is a NAME (`{ meta: x }` means "this slot is called
- * meta"), while a value is an ASSERTION (`x === "meta"` or `{ id: "meta" }`
- * means "this concretely IS meta"), so the ambiguity that motivates this
- * carve-out only exists on the naming side. `meta` collides with the `meta`
- * (Meta/Facebook) connector_key and is also this codebase's single most
- * common generic JSON-envelope field name (`{ data, meta: {...} }`
- * pagination/warning wrapper) and destructuring target (`const { meta } =
- * acc`) -- reviewed 2026-08-10 (ri-zero-knowledge-terminal-revise-0810): no
- * RI production file uses the KEY name "meta" to mean the Meta connector
- * anywhere in the current tree (grep-verified against every flagged site
- * before adding this entry), so this entry does not reopen a real gap. A
- * genuine `{ meta: CONNECTOR_SPECIFIC_HANDLER }` dispatch table would still
- * need `meta` to be a VALUE somewhere (unaffected) or use a different key
- * name for its OTHER connectors, at least one of which would still trip the
- * dispatch-table-value check.
- */
+/** A property/pattern KEY DECLARATION name that is a real connector key but
+ * ALSO this codebase's generic vocabulary for something unrelated (e.g.
+ * `meta`, the JSON-envelope field name, colliding with the `meta`/Facebook
+ * connector). Scoped strictly to a literal key declaration (`{ meta: x }`
+ * names a slot) -- never a membership check (`"meta" in obj`), comparison,
+ * or a value written into a proven dispatch table, all of which are
+ * assertions and remain flagged unconditionally. Reviewed per entry: no RI
+ * production file uses the name to mean the colliding connector. */
 const GENERIC_KEY_NAME_VOCABULARY_COLLISIONS = new Set(["meta"]);
 
+/** `ObjectExpression`/`ObjectPattern` property KEY as a literal position, or
+ * null if computed (a runtime expression, unresolvable by design) or absent.
+ * An `Identifier` key names the property by its own text, so it is wrapped
+ * as a synthetic `StringLiteral` node rather than resolved as a variable
+ * reference. */
 function objectPropertyKeyLiteralNode(property: Node): Node | null {
   if (property.type !== "ObjectProperty" && property.type !== "ObjectMethod") {
     return null;
@@ -491,96 +413,54 @@ function objectExpressionsUsedAsDispatchTables(program: Node, analysis: FileAnal
   return provenTables;
 }
 
-/** Collect every literal-bearing AST position in the file: object/pattern
- * property keys (only for objects proven to be dispatch tables, see
- * {@link objectExpressionsUsedAsDispatchTables}) and values (unconditional --
- * a value is an assertion, not a naming choice), array/Set elements,
- * variable-declarator initializers, binary comparison operands, and
- * switch-case tests. */
-/** `ObjectExpression`/`ObjectPattern` branch of {@link collectLiteralPositions}:
- * appends the property KEY (only for a table proven used as dispatch, or
- * always for a destructuring pattern) and, for a real object literal, the
- * property VALUE. Split out purely to keep `collectLiteralPositions` itself
- * under the cognitive-complexity budget. */
-function pushObjectPositions(
-  node: Node,
-  enclosingFunctionName: string | null,
-  dispatchTables: ReadonlySet<Node>,
-  sites: LiteralPosition[]
-): void {
-  const checkKeys = node.type === "ObjectPattern" || dispatchTables.has(node);
-  for (const property of nodeArrayField(node, "properties")) {
-    const keyNode = checkKeys ? objectPropertyKeyLiteralNode(property) : null;
-    if (keyNode) {
-      sites.push({ enclosingFunctionName, node: keyNode });
-    }
-    // Values: only for ObjectExpression (a literal being WRITTEN).
-    // ObjectPattern's "value" side is a binding target (a variable being
-    // declared), not a value position -- `const { gmail: TARGET } = x`
-    // has no literal at TARGET.
-    if (node.type === "ObjectExpression" && property.type === "ObjectProperty") {
-      sites.push({ enclosingFunctionName, node: property.value as Node });
-    }
-  }
-}
-
-/** `ArrayExpression` and `new Set([...])` branch of {@link collectLiteralPositions}. */
-function pushCollectionLiteralPositions(
-  node: Node,
-  enclosingFunctionName: string | null,
-  sites: LiteralPosition[]
-): void {
-  if (node.type === "ArrayExpression") {
-    for (const element of nodeArrayField(node, "elements")) {
-      sites.push({ enclosingFunctionName, node: element });
-    }
-    return;
-  }
-  if (node.type === "NewExpression" && isIdentifier(node.callee as Node, "Set")) {
-    const [first] = nodeArrayField(node, "arguments");
-    if (first?.type === "ArrayExpression") {
-      for (const element of nodeArrayField(first, "elements")) {
-        sites.push({ enclosingFunctionName, node: element });
-      }
-    }
-  }
-}
-
-function collectLiteralPositions(program: Node, analysis: FileAnalysis): LiteralPosition[] {
+/** Every object/pattern property KEY node decided by the key-collision rule
+ * (see {@link objectPropertyKeyLiteralNode}) rather than the generic value
+ * walk below -- collected up front so the generic walk can skip exactly
+ * these nodes by identity. Scoped to literal key DECLARATIONS only: a
+ * membership/call/return value (including `x in obj`, a real dynamic
+ * identity-membership check against a registry) is never covered by this
+ * carve-out and is always pushed as an ordinary value position. */
+function objectPropertyKeyPositions(
+  program: Node,
+  dispatchTables: ReadonlySet<Node>
+): { decidedKeys: Set<Node>; sites: LiteralPosition[] } {
+  const decidedKeys = new Set<Node>();
   const sites: LiteralPosition[] = [];
+  walk(program, (node, parent, ancestors) => {
+    if (node.type !== "ObjectProperty" && node.type !== "ObjectMethod") {
+      return;
+    }
+    const key = node.key as Node | undefined;
+    if (key && (key.type === "Identifier" || key.type === "StringLiteral")) {
+      decidedKeys.add(key);
+    }
+    const owner = parent as Node;
+    const checkKeys = owner.type === "ObjectPattern" || dispatchTables.has(owner);
+    const keyNode = checkKeys ? objectPropertyKeyLiteralNode(node) : null;
+    if (keyNode) {
+      sites.push({ enclosingFunctionName: enclosingFunctionNameOf(ancestors), node: keyNode });
+    }
+  });
+  return { decidedKeys, sites };
+}
+
+/** Every literal-bearing AST position in the file: every node is a candidate
+ * -- `resolveStringValue` decides what actually resolves, so pushing a node
+ * whose shape it doesn't recognize just costs a wasted attempt. The one
+ * exclusion is an object/pattern property KEY declaration, gated by
+ * {@link objectPropertyKeyPositions} instead of the generic push (see that
+ * function's doc comment for why membership/call/return values, including
+ * `x in obj`, are deliberately NOT covered by this exclusion). Every real
+ * value position -- object VALUES, class fields, call arguments, return
+ * values, everything else -- is pushed unconditionally. */
+function collectLiteralPositions(program: Node, analysis: FileAnalysis): LiteralPosition[] {
   const dispatchTables = objectExpressionsUsedAsDispatchTables(program, analysis);
+  const { decidedKeys, sites } = objectPropertyKeyPositions(program, dispatchTables);
   walk(program, (node, _parent, ancestors) => {
-    const enclosingFunctionName = enclosingFunctionNameOf(ancestors);
-    if (node.type === "ObjectExpression" || node.type === "ObjectPattern") {
-      pushObjectPositions(node, enclosingFunctionName, dispatchTables, sites);
+    if (decidedKeys.has(node) || node.type === "ObjectProperty" || node.type === "ObjectMethod") {
       return;
     }
-    if (node.type === "ArrayExpression" || node.type === "NewExpression") {
-      pushCollectionLiteralPositions(node, enclosingFunctionName, sites);
-      return;
-    }
-    if (node.type === "VariableDeclarator" && node.init) {
-      sites.push({ enclosingFunctionName, node: node.init as Node });
-      return;
-    }
-    if (node.type === "BinaryExpression" && ["!=", "!==", "==", "===", "+"].includes(node.operator as string)) {
-      // `+` (concatenation) operands are also checked as standalone
-      // positions here (in addition to resolveStringValue's own concat
-      // FOLDING when a `+` expression is itself the value at some other
-      // site) -- catches `"gm" + suffix` where `suffix` is unresolvable but
-      // "gm" alone is not a vocabulary term, while a bare literal operand
-      // that IS a full vocabulary term on its own is still caught even if
-      // concatenated with something unresolvable, matching "prohibited
-      // anywhere" rather than only at the fully-folded top level.
-      sites.push(
-        { enclosingFunctionName, node: node.left as Node },
-        { enclosingFunctionName, node: node.right as Node }
-      );
-      return;
-    }
-    if (node.type === "SwitchCase" && node.test) {
-      sites.push({ enclosingFunctionName, node: node.test as Node });
-    }
+    sites.push({ enclosingFunctionName: enclosingFunctionNameOf(ancestors), node });
   });
   return sites;
 }

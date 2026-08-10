@@ -1809,3 +1809,141 @@ test("AST authority counterweight: the allowlisted provider-auth-adapters.ts dyn
     `the real, legitimate provider-auth-adapters.ts dynamic-import registry (allowlisted after being newly discovered by this AST pass) must not appear in violations, got: ${JSON.stringify(violations.filter((v) => v.file === "packages/polyfill-connectors/src/provider-auth-adapters.ts"))}`
   );
 });
+
+// --- Universal revise (ri-zero-knowledge-universal-revise-0810): every node
+// is a candidate position, not an enumerated shape list. Table-driven so
+// each attack from the independent gate report is a single explicit row. ---
+
+const UNIVERSAL_POSITION_ATTACKS: Array<{ name: string; fileName: string; source: string }> = [
+  {
+    fileName: "attack-call-argument.ts",
+    name: 'call-argument position (scheduleConnectorPoll("gmail"))',
+    source: ["function scheduleConnectorPoll(connectorKey: string) {}", 'scheduleConnectorPoll("gmail");', ""].join(
+      "\n"
+    ),
+  },
+  {
+    fileName: "attack-bare-call-argument.ts",
+    name: 'bare call argument to an arbitrary function (logger-shaped: doSomething("gmail"))',
+    source: ['doSomething("gmail");', ""].join("\n"),
+  },
+  {
+    fileName: "attack-computed-member-read.ts",
+    name: 'computed member-expression read off a registry (CONNECTOR_HANDLERS["gmail"])',
+    source: ['const handler = CONNECTOR_HANDLERS["gmail"];', "handler.run();", ""].join("\n"),
+  },
+  {
+    fileName: "attack-return-statement.ts",
+    name: 'return statement argument (return "gmail")',
+    source: ["function getProvider(): string {", '  return "gmail";', "}", ""].join("\n"),
+  },
+  {
+    fileName: "attack-class-static-field.ts",
+    name: 'class static field (static provider = "gmail")',
+    source: ["class Foo {", '  static provider = "gmail";', "}", "export { Foo };", ""].join("\n"),
+  },
+  {
+    fileName: "attack-ts-enum.ts",
+    name: 'TS enum member initializer (enum Providers { Gmail = "gmail" })',
+    source: ["export enum Providers {", '  Gmail = "gmail",', "}", ""].join("\n"),
+  },
+  {
+    fileName: "attack-default-parameter.ts",
+    name: 'default parameter value ((provider = "gmail") => provider)',
+    source: ['export const f = (provider = "gmail") => provider;', ""].join("\n"),
+  },
+  {
+    fileName: "attack-tagged-template.ts",
+    name: "tagged template literal (sql`...gmail...`)",
+    source: ["declare function sql(strings: TemplateStringsArray): string;", "sql`gmail`;", ""].join("\n"),
+  },
+];
+
+for (const attack of UNIVERSAL_POSITION_ATTACKS) {
+  test(`universal revise attack: ${attack.name} is caught`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-universal-"));
+    try {
+      const badFile = join(dir, attack.fileName);
+      writeFileSync(badFile, attack.source);
+      const violations = scanFile(badFile, attack.fileName, new Set(["gmail", "slack"]), repoRoot);
+      assert.ok(
+        violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+        `${attack.name} must be caught by the universal per-node walk, got: ${JSON.stringify(violations)}`
+      );
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+}
+
+test("universal revise counterweight: an object-literal KEY that collides with the generic vocabulary is not flagged, but the SAME name used as a VALUE elsewhere in the same object is still flagged (values are never exempt)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-universal-"));
+  try {
+    const badFile = join(dir, "synthetic-meta-key-vs-value.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function buildEnvelope(acc: { meta: unknown }) {",
+        "  const { meta } = acc;",
+        '  return { data: [], meta, canonicalId: "meta" };',
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-meta-key-vs-value.ts", new Set(["meta"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `a VALUE equal to "meta" must still be flagged even though the KEY-position collision carve-out exists, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test('universal revise counterweight: a string-literal "x in obj" membership check against an unknown registry is NOT exempted, even for a generic-collision name (membership is a dynamic identity check, not a key declaration)', () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-universal-"));
+  try {
+    const badFile = join(dir, "synthetic-in-membership-dispatch.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function hasHandler(registry: Record<string, unknown>): boolean {",
+        '  return "gmail" in registry;',
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-in-membership-dispatch.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `"gmail" in registry must be caught as an ordinary value position -- "in" membership checks get no carve-out, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test('universal revise counterweight: a generic-collision name used in an "x in obj" membership check is ALSO still flagged (no blanket exemption for that expression position)', () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-universal-"));
+  try {
+    const badFile = join(dir, "synthetic-meta-in-membership.ts");
+    writeFileSync(
+      badFile,
+      ["export function hasMeta(obj: Record<string, unknown>): boolean {", '  return "meta" in obj;', "}", ""].join(
+        "\n"
+      )
+    );
+    const violations = scanFile(badFile, "synthetic-meta-in-membership.ts", new Set(["meta"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `"meta" in obj must still be caught -- the key-collision carve-out is scoped to literal key DECLARATIONS only, never membership checks, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("RI production code still contains zero connector/provider-specific executable knowledge after the universal per-node rewrite (regression, not just the synthetic attacks above)", () => {
+  const violations = scanRepository({ repoRoot });
+  assert.deepEqual(violations, [], formatViolationInventory(violations));
+});
