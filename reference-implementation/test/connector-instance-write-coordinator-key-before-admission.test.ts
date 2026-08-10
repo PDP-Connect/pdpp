@@ -29,9 +29,12 @@
  * same-key waiter it competes against already parked on the key. A wall-
  * clock assertion cannot distinguish "admitted because unrelated same-key
  * pressure no longer blocks it" from "admitted because the scheduler
- * happened to be fast this run" — event ordering can. A generous safety
- * timeout exists ONLY to fail the test cleanly instead of hanging if a
- * regression reintroduces the block; it never gates the pass/fail verdict.
+ * happened to be fast this run" — event ordering can. A safety timeout
+ * exists ONLY to fail the test cleanly instead of hanging if a regression
+ * reintroduces the block; it never gates the pass/fail verdict, and its
+ * timer handle is explicitly cancelled (`cancellableTimeout`) the instant
+ * the real race settles, so a passing run does not keep an idle timer
+ * pinning the event loop open for the rest of the safety window.
  */
 
 import assert from "node:assert/strict";
@@ -47,6 +50,24 @@ const SAFETY_TIMEOUT_MS = 5000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A `setTimeout`-backed deadline whose timer handle is cancellable, so a
+ * race that resolves before the deadline fires does not leave a live timer
+ * pinning the event loop open — `node --test` (and any caller awaiting
+ * process exit) must observe the process end promptly once the real work
+ * finishes, not after the full safety-timeout duration.
+ */
+function cancellableTimeout<T>(ms: number, value: T): { cancel: () => void; promise: Promise<T> } {
+  let timer: ReturnType<typeof setTimeout>;
+  const promise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(value), ms);
+  });
+  return {
+    cancel: () => clearTimeout(timer),
+    promise,
+  };
 }
 
 function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -138,6 +159,7 @@ test("an unrelated instance's writer RUNS while activeLimit()-many same-key wait
       let holder: Promise<void> | undefined;
       let sameKeyWaiters: Promise<unknown>[] = [];
       let other: Promise<void> | undefined;
+      const safetyTimer = cancellableTimeout(SAFETY_TIMEOUT_MS, "timed-out" as const);
       try {
         holder = withConnectorInstanceWrite(hotInstance, async () => {
           events.push("hot-holder:running");
@@ -191,10 +213,14 @@ test("an unrelated instance's writer RUNS while activeLimit()-many same-key wait
           otherRan.resolve();
           return Promise.resolve();
         });
-        const raced = await Promise.race([
-          otherRan.promise.then(() => "ran" as const),
-          delay(SAFETY_TIMEOUT_MS).then(() => "timed-out" as const),
-        ]);
+        const raced = await Promise.race([otherRan.promise.then(() => "ran" as const), safetyTimer.promise]);
+        // Cancel immediately once the race settles either way — an
+        // uncancelled timer would keep its handle alive in the event loop
+        // for the rest of SAFETY_TIMEOUT_MS even after `raced` resolves,
+        // delaying process exit long after the assertions below finish
+        // (observed: assertions report ~3ms, but the process itself took
+        // ~5.36s to exit under the prior `delay(...)`-based race).
+        safetyTimer.cancel();
 
         // THE ORDERING PROOF: the unrelated writer's operation must have
         // observably run BEFORE the hot holder was released and BEFORE any
@@ -239,7 +265,11 @@ test("an unrelated instance's writer RUNS while activeLimit()-many same-key wait
         // Unconditional: an assertion thrown above must still release the
         // holder so every same-key waiter (and the unrelated writer, if it
         // never ran) can settle before the test function returns — with
-        // PDPP_INGEST_LOCK_WAIT_MS set to 60s, nothing else will.
+        // PDPP_INGEST_LOCK_WAIT_MS set to 60s, nothing else will. The
+        // safety timer is cancelled unconditionally too (idempotent if
+        // already cancelled above) so an early throw — before the race is
+        // even reached — cannot leave its handle alive either.
+        safetyTimer.cancel();
         holderRelease.resolve();
         await Promise.allSettled([holder, other, ...sameKeyWaiters].filter(Boolean));
         __setConnectorInstanceWritePhaseHookForTest(null);
