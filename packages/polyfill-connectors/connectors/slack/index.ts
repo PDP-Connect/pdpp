@@ -1331,7 +1331,7 @@ async function mergeScopedMessageArchivePasses(deps: {
   // `deps.credentials`/`deps.emit` are threaded for type consistency but
   // unused here.
   const requested = messageFamilyRequestedOnly(deps.streamDeps.requested);
-  const sinceEpochSeconds = parseSinceEpochSeconds(deps.requested, "messages");
+  const sinceTs = parseSinceTs(deps.requested, "messages");
   for (const archive of deps.scopedArchives) {
     if (!existsSync(archive.paths.sqlitePath)) {
       continue;
@@ -1348,7 +1348,7 @@ async function mergeScopedMessageArchivePasses(deps: {
           {
             allowLegacyMessageCursorFallback: false,
             ignoreMessageChannelCursors: false,
-            sinceEpochSeconds: sinceEpochSeconds ?? null,
+            sinceTs: sinceTs ?? null,
           }
         )
       );
@@ -1877,7 +1877,7 @@ export async function runUsersStream(deps: StreamDeps): Promise<void> {
 interface MessageCursorThresholds {
   channelLastTs: Record<string, string>;
   legacyLastTs: string | null;
-  sinceEpochSeconds: number | null;
+  sinceTs: string | null;
 }
 
 export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: string[]; sql: string } {
@@ -1910,12 +1910,15 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // unchanged. Pairs at/below the threshold are dropped by both shapes. The
   // no-cursor first run has no predicate and keeps the full aggregation.
   //
-  // collection_scope.since is a declared boundary (epoch seconds). Unlike cursor
-  // predicates (which are monotonically advancing commitments), a since boundary
-  // is a declarative claim "only collect from this point onward." If supplied,
-  // it is composed with cursor predicates via AND: a row must pass both to be
-  // included. Slack's ts format is "seconds.microseconds", so we compare seconds
-  // to the boundary: CAST(m.TS AS INTEGER) extracts seconds numerically.
+  // collection_scope.since is a declared boundary (ISO 8601 instant, converted
+  // to Slack ts format). Unlike cursor predicates (which are monotonically
+  // advancing commitments), a since boundary is a declarative claim "only
+  // collect from this point onward." If supplied, it is composed with cursor
+  // predicates via AND: a row must pass both to be included. Slack's ts format
+  // is fixed-shape "seconds.microseconds" (zero-padded); lexical comparison on
+  // the full ts string matches chronological order and preserves sub-second
+  // precision (e.g., a boundary of "2026-08-09T22:26:25.500Z" excludes earlier
+  // microseconds in the same second).
   const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let dedupWhere = "";
   if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
@@ -1928,9 +1931,11 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
     params.push(thresholds.legacyLastTs);
   }
   // Compose since boundary (if supplied) with cursor predicates via AND.
-  if (thresholds.sinceEpochSeconds !== null) {
-    const sincePredicate = "CAST(m.TS AS INTEGER) >= ?";
-    params.push(String(thresholds.sinceEpochSeconds));
+  // sinceTs is already in canonical "seconds.microseconds" format; lexical
+  // comparison matches chronological order and preserves sub-second precision.
+  if (thresholds.sinceTs !== null) {
+    const sincePredicate = "m.TS >= ?";
+    params.push(thresholds.sinceTs);
     if (dedupWhere) {
       dedupWhere = dedupWhere + " AND " + sincePredicate;
     } else {
@@ -2010,20 +2015,37 @@ function runMessagesUnifiedPass(
 }
 
 /**
- * Parse a stream's declared `time_range.since` into epoch seconds for the
- * SQL WHERE clause. Returns `null` for an absent, malformed, or unparseable
- * bound — never throws, since a scope-less run (the default) must behave
- * exactly as before this stop condition existed. Slack message ts is
- * "seconds.microseconds"; the SQL predicate uses CAST(m.TS AS INTEGER) to
- * extract seconds for direct numeric comparison.
+ * Convert a stream's declared `time_range.since` (ISO 8601 instant) to a
+ * canonical Slack ts threshold (seconds.microseconds format, zero-padded).
+ * Returns `null` for absent, malformed, or unparseable bounds — never throws,
+ * since a scope-less run (the default) must behave exactly as before.
+ *
+ * Slack ts is fixed-shape "seconds.microseconds" where seconds is Unix epoch
+ * and microseconds is 6 decimal digits, zero-padded. ISO instants can have
+ * milliseconds (3 decimal places) or microseconds (6 places), which are expanded
+ * to the Slack format: "2026-08-09T22:26:25.500Z" → "1723248385.500000".
+ * Lexical comparison on the full ts string matches chronological order.
  */
-function parseSinceEpochSeconds(requested: CollectContext["requested"], stream: string): number | null {
+function parseSinceTs(requested: CollectContext["requested"], stream: string): string | null {
   const since = requested.get(stream)?.time_range?.since;
   if (typeof since !== "string" || !since.trim()) {
     return null;
   }
-  const parsed = Date.parse(since);
-  return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
+  const epochMs = Date.parse(since);
+  if (Number.isNaN(epochMs)) {
+    return null;
+  }
+  // Extract the fractional seconds (milliseconds or microseconds) from the ISO instant.
+  // ISO format: "2026-08-09T22:26:25.500Z" or "2026-08-09T22:26:25.123456Z"
+  // After the decimal: up to 6 digits, then 'Z' or timezone.
+  const fracMatch = since.match(/\.(\d{1,6})/);
+  let fractionalPart = "000000";
+  if (fracMatch?.[1]) {
+    // Pad with trailing zeros to 6 digits (microseconds).
+    fractionalPart = fracMatch[1].padEnd(6, "0");
+  }
+  const epochSeconds = Math.floor(epochMs / 1000);
+  return `${epochSeconds}.${fractionalPart}`;
 }
 
 function messageProgressLabel(channelCursorCount: number, priorTs: string | null): string {
@@ -2394,7 +2416,7 @@ async function runRequestedStreams(
   options: {
     allowLegacyMessageCursorFallback?: boolean;
     ignoreMessageChannelCursors?: boolean;
-    sinceEpochSeconds?: number | null;
+    sinceTs?: string | null;
   } = {}
 ): Promise<MessagesPassResult> {
   if (deps.requested.has("workspace")) {
@@ -2425,7 +2447,7 @@ async function runRequestedStreams(
     result = await runMessagesUnifiedPass(deps, {
       channelLastTs,
       legacyLastTs: priorTs,
-      sinceEpochSeconds: options.sinceEpochSeconds ?? null,
+      sinceTs: options.sinceTs ?? null,
     });
   }
   if (deps.requested.has("files")) {
@@ -2718,7 +2740,7 @@ if (isMainModule(import.meta.url)) {
         runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
           allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
           ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
-          sinceEpochSeconds: parseSinceEpochSeconds(requested, "messages"),
+          sinceTs: parseSinceTs(requested, "messages"),
         })
       );
       if (messageFamilyRequested && isUnscopedMessageBoundary && reconciledSourceCache.scopedArchives.length > 0) {

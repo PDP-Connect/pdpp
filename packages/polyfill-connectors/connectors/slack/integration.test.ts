@@ -368,18 +368,18 @@ test("buildMessageRowsQuery: since boundary composed with legacy cursor via AND"
   const thresholds = {
     channelLastTs: {},
     legacyLastTs: "1700000000.000000",
-    sinceEpochSeconds: 1_700_000_200, // epoch seconds
+    sinceTs: "1700000200.500000", // Slack ts format: seconds.microseconds
   };
   const query = buildMessageRowsQuery(thresholds);
   // The query should include both predicates:
   // - m.TS > ? (from legacyLastTs)
-  // - CAST(m.TS AS INTEGER) >= ? (from sinceEpochSeconds)
+  // - m.TS >= ? (from sinceTs, lexical comparison)
   assert.match(query.sql, /m\.TS\s+>\s+/);
-  assert.match(query.sql, /CAST\(m\.TS\s+AS\s+INTEGER\)/);
+  assert.match(query.sql, /m\.TS\s+>=\s+/);
   assert.match(query.sql, /AND/);
   // Params should include both thresholds
   assert.ok(query.params.includes("1700000000.000000"), "has legacy cursor param");
-  assert.ok(query.params.includes("1700000200"), "has since epoch param");
+  assert.ok(query.params.includes("1700000200.500000"), "has since ts param");
 });
 
 test("buildMessageRowsQuery: since boundary alone (no cursor)", () => {
@@ -387,11 +387,33 @@ test("buildMessageRowsQuery: since boundary alone (no cursor)", () => {
   const thresholds = {
     channelLastTs: {},
     legacyLastTs: null,
-    sinceEpochSeconds: 1_700_000_200,
+    sinceTs: "1700000200.500000",
   };
   const query = buildMessageRowsQuery(thresholds);
-  assert.match(query.sql, /WHERE.*CAST\(m\.TS\s+AS\s+INTEGER\)/);
-  assert.ok(query.params.includes("1700000200"), "has since epoch param");
+  assert.match(query.sql, /WHERE.*m\.TS\s+>=\s+/);
+  assert.ok(query.params.includes("1700000200.500000"), "has since ts param");
+});
+
+test("buildMessageRowsQuery: preserves sub-second boundary precision (same-second cases)", () => {
+  // Slack ts is "seconds.microseconds" (fixed-shape, zero-padded). A boundary
+  // with milliseconds (e.g., "2026-08-09T22:26:25.500Z") converts to
+  // "1723248385.500000" and lexically excludes earlier microseconds in the same
+  // second (e.g., "1723248385.400000" < "1723248385.500000").
+  const thresholds = {
+    channelLastTs: {},
+    legacyLastTs: null,
+    sinceTs: "1723248385.500000", // Boundary at .5 seconds
+  };
+  const query = buildMessageRowsQuery(thresholds);
+  const sqlParam = query.params.find((p) => p.startsWith("1723248385."));
+  assert.equal(sqlParam, "1723248385.500000", "converts ISO boundary to Slack ts format");
+  // Lexical comparison of ts strings:
+  // "1723248385.400000" < "1723248385.500000" (excluded, same second, earlier micros)
+  // "1723248385.500000" >= "1723248385.500000" (included, at boundary)
+  // "1723248385.600000" >= "1723248385.500000" (included, same second, later micros)
+  assert.ok("1723248385.400000" < "1723248385.500000");
+  assert.ok("1723248385.500000" >= "1723248385.500000");
+  assert.ok("1723248385.600000" >= "1723248385.500000");
 });
 
 test("emitMessagesPass: non-monotonic row order with SQL-filtered since boundary", async () => {
