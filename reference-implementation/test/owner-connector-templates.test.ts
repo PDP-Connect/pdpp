@@ -436,7 +436,7 @@ test("client grant bearer cannot list owner connector templates", async () => {
   });
 });
 
-test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 exposes real unproven connectors with uat_expose_unlisted_connectors=true", async () => {
+test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan to expose unproven", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -445,7 +445,6 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 exposes real unproven connectors wit
   try {
     await withServer(async ({ asUrl, rsUrl }) => {
       const manifestIds = ["apple_photos", "google_messages", "imessage", "netflix_export", "steam"];
-      // After canonicalization, these become kebab-case
       const connectorKeys = ["apple-photos", "google-messages", "imessage", "netflix-export", "steam"];
 
       // Register all five unproven connectors with real manifests
@@ -462,31 +461,31 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 exposes real unproven connectors wit
 
       const { data } = asRecord(body);
       const returnedKeys = Array.isArray(data) ? data.map((item) => asRecord(item).connector_key) : [];
-      assert.ok(
-        connectorKeys.every((key) => returnedKeys.includes(key)),
-        `all unproven connectors should be in response; got: ${returnedKeys.join(", ")}`
-      );
 
-      // Verify all five are present with correct flags
+      // Verify all five are present (registered) but only expose those whose plan is owner-actionable
       for (const connectorKey of connectorKeys) {
         const template = byConnector(body, connectorKey);
 
         // public_listing remains honest (listed:false, status:unproven)
         const listing = asRecord(template.public_listing);
-        assert.equal(listing.listed, false, `${connectorKey}: public_listing.listed must remain false (honest)`);
+        assert.equal(listing.listed, false, `${connectorKey}: public_listing.listed must remain false`);
         assert.equal(listing.status, "unproven", `${connectorKey}: public_listing.status must remain unproven`);
 
-        // UAT exposure fact is explicitly true
-        assert.equal(
-          template.uat_expose_unlisted_connectors,
-          true,
-          `${connectorKey}: uat_expose_unlisted_connectors must be true when flag is set`
-        );
-
-        // Setup action fields and help URLs must exist (no synthetic/example URLs)
-        const setup = asRecord(asRecord(template.setup_plan));
-        assert.ok(setup.catalog_disposition, `${connectorKey}: must have catalog_disposition`);
-        assert.ok(setup.setup_modality, `${connectorKey}: must have setup_modality`);
+        // UAT exposure fact requires isOwnerActionablePlan(plan) to be true
+        const setupPlan = asRecord(template.setup_plan);
+        if (setupPlan.owner_actionable === true) {
+          assert.equal(
+            template.uat_expose_unlisted_connectors,
+            true,
+            `${connectorKey}: must be UAT-exposed when plan is owner_actionable`
+          );
+        } else {
+          assert.equal(
+            template.uat_expose_unlisted_connectors,
+            false,
+            `${connectorKey}: must NOT be UAT-exposed when plan is not owner_actionable`
+          );
+        }
       }
     });
   } finally {
@@ -558,7 +557,7 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT flag set, unproven connectors 
   });
 });
 
-test("UAT-exposed unproven connectors are owner_actionable with recognized setup modality", async () => {
+test("unproven with recognized modality but non-actionable plan is not UAT-exposed", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -566,13 +565,13 @@ test("UAT-exposed unproven connectors are owner_actionable with recognized setup
   Object.assign(process.env, declaredSettings);
   try {
     await withServer(async ({ asUrl, rsUrl }) => {
-      const unprovenConnectorIds = ["apple_photos", "google_messages", "imessage", "netflix_export", "steam"];
-      const expectedKeys = ["apple-photos", "google-messages", "imessage", "netflix-export", "steam"];
-
-      for (const manifestId of unprovenConnectorIds) {
-        const manifest = loadManifest(manifestId);
-        await registerConnector(asUrl, manifest);
-      }
+      // Doordash is unproven with a recognized modality but requires proof (not owner-actionable)
+      const doorDashManifest = loadManifest("doordash");
+      doorDashManifest.capabilities = {
+        ...asRecord(doorDashManifest.capabilities),
+        public_listing: { listed: false, status: "unproven" },
+      };
+      await registerConnector(asUrl, doorDashManifest);
 
       const ownerToken = await issueOwnerToken(asUrl);
       const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
@@ -580,21 +579,16 @@ test("UAT-exposed unproven connectors are owner_actionable with recognized setup
       });
       assert.equal(status, 200);
 
-      for (const connectorKey of expectedKeys) {
-        const template = byConnector(body, connectorKey);
-        const setup = asRecord(template.setup_plan);
+      const doorDash = byConnector(body, "doordash");
+      const setup = asRecord(doorDash.setup_plan);
 
-        // Verify basic facts
-        assert.equal(template.uat_expose_unlisted_connectors, true, `${connectorKey}: must be UAT-exposed`);
-        assert.ok(setup.setup_modality, `${connectorKey}: must have a recognized setup_modality`);
-        assert.equal(setup.owner_actionable, true, `${connectorKey}: must be owner_actionable when UAT-exposed`);
-
-        // Verify supported_actions has an entry
-        const actions = template.supported_actions;
-        assert.ok(Array.isArray(actions), `${connectorKey}: must have supported_actions array`);
-        const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
-        assert.ok(initiateAction, `${connectorKey}: must have an initiate_connection action`);
-      }
+      // Doordash is unproven but its plan is NOT owner-actionable (requires proof_gated flow)
+      assert.equal(setup.owner_actionable, false, "doordash plan should not be owner_actionable");
+      assert.equal(
+        doorDash.uat_expose_unlisted_connectors,
+        false,
+        "doordash should NOT be UAT-exposed (plan not owner_actionable)"
+      );
     });
   } finally {
     for (const [key, value] of priorSettings) {

@@ -250,12 +250,10 @@ function projectSetupPlan(
   plan: ReturnType<typeof buildConnectionSetupPlan>,
   uatExposeUnlistedConnectors?: boolean
 ): Record<string, unknown> {
-  // Owner-facing actionability: manifest is listed AND actionable, OR UAT is exposing with setup path
+  // Owner-facing actionability: manifest is listed AND actionable, OR UAT is exposing an actionable plan
   const isActionableManifest = isActionablePublicListing(manifest);
-  const isUatWithSetup = uatExposeUnlistedConnectors === true && plan.setupModality && !["unknown", "unsupported"].includes(plan.setupModality);
-  // For listed actionable manifests, require full plan actionability. For UAT-exposed, having setup is enough.
   const isActionablePlan = isOwnerActionablePlan(plan);
-  const ownerActionable = isUatWithSetup || (isActionableManifest && isActionablePlan);
+  const ownerActionable = (isActionableManifest || uatExposeUnlistedConnectors) && isActionablePlan;
   return {
     catalog_disposition: plan.catalogDisposition,
     deployment_readiness: plan.deploymentReadiness,
@@ -293,12 +291,11 @@ function projectTemplate(
     projectConnectionSummary(ctx, instance)
   );
   // Explicit UAT exposure fact: true only when deployment opts in, AND connector is unproven unlisted,
-  // AND the plan has a recognized setup modality (not unknown/unsupported).
+  // AND the plan is owner-actionable (passes existing setup/proof/support checks).
   const listing = manifest.capabilities?.public_listing;
   const isUnproven = listing?.listed === false && typeof listing?.status === "string" && listing.status === "unproven";
-  const hasRecognizedModality = plan.setupModality && !["unknown", "unsupported"].includes(plan.setupModality);
   const uatExposeUnlistedConnectors =
-    ctx.uatExposeUnlistedConnectors === true && isUnproven && hasRecognizedModality;
+    ctx.uatExposeUnlistedConnectors === true && isUnproven && isOwnerActionablePlan(plan);
   return {
     connection_count: connections.length,
     connections,
