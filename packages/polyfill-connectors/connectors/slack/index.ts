@@ -145,6 +145,8 @@ function safeAll<T>(db: DatabaseSync, sql: string): T[] {
 const SOURCE_PARTITION_MISSING_REASON = "source_partition_missing";
 const OPTIONAL_STREAM_FAILED_REASON = "optional_stream_failed";
 const MAX_MISSING_CHANNEL_IDS_IN_DIAGNOSTIC = 100;
+const SLACK_TS_PATTERN = /^(\d+)\.(\d{6})$/;
+const ISO_FRACTION_PATTERN = /\.(\d{1,6})/;
 
 function normalizeStringRecord(value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1954,13 +1956,13 @@ interface MessageCursorThresholds {
  * Handles variable-width epochs (pre-2001: 9 digits, current: 10 digits).
  */
 function parseSlackTs(ts: string): [number, number] {
-  const match = ts.match(/^(\d+)\.(\d{6})$/);
-  if (!match || !match[1] || !match[2]) {
+  const match = ts.match(SLACK_TS_PATTERN);
+  if (!(match?.[1] && match[2])) {
     throw new Error(`Invalid Slack ts format: ${ts} (expected "seconds.microseconds")`);
   }
-  const epochSeconds = parseInt(match[1], 10);
-  const microseconds = parseInt(match[2], 10);
-  if (!Number.isFinite(epochSeconds) || !Number.isFinite(microseconds)) {
+  const epochSeconds = Number.parseInt(match[1], 10);
+  const microseconds = Number.parseInt(match[2], 10);
+  if (!(Number.isFinite(epochSeconds) && Number.isFinite(microseconds))) {
     throw new Error(`Invalid Slack ts components: ${ts}`);
   }
   return [epochSeconds, microseconds];
@@ -2034,9 +2036,9 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
       )`;
     params.push(String(sinceSecs), String(sinceSecs), String(sinceMicros));
     if (dedupWhere) {
-      dedupWhere = dedupWhere + " AND " + sincePredicate;
+      dedupWhere = `${dedupWhere} AND ${sincePredicate}`;
     } else {
-      dedupWhere = "WHERE " + sincePredicate;
+      dedupWhere = `WHERE ${sincePredicate}`;
     }
   }
 
@@ -2096,10 +2098,7 @@ function* iterateMessageRows(db: DatabaseSync, thresholds: MessageCursorThreshol
  * `emitMessagesPass` from this file so integration.test.ts can drive
  * it without opening sqlite.
  */
-function runMessagesUnifiedPass(
-  deps: StreamDeps,
-  thresholds: MessageCursorThresholds
-): Promise<MessagesPassResult> {
+function runMessagesUnifiedPass(deps: StreamDeps, thresholds: MessageCursorThresholds): Promise<MessagesPassResult> {
   // Slack message TS strings collate lexically the same way they order
   // chronologically (fixed-width integer-dot-decimal), so string > works.
   // iterateMessageRows is a lazy generator: emitMessagesPass pulls one row
@@ -2151,7 +2150,7 @@ export function parseIsoInstantToSlackTs(instant: string): string {
   //   "2026-08-09T22:26:25.123456Z" (6 decimal places, microseconds)
   //   "2026-08-09T22:26:25Z" (no decimal, no fraction)
   // Regex captures up to 6 fractional digits; pad with trailing zeros to 6.
-  const fracMatch = instant.match(/\.(\d{1,6})/);
+  const fracMatch = instant.match(ISO_FRACTION_PATTERN);
   const fractionalPart = fracMatch?.[1] ? fracMatch[1].padEnd(6, "0") : "000000";
   return `${epochSeconds}.${fractionalPart}`;
 }
