@@ -479,7 +479,7 @@ test("collectStream: nonzero results return correct considered and covered count
   assert.equal(result.covered, 3);
 });
 
-test("collectStream: enumerate all items even if runtime drops some via schema mismatch", async () => {
+test("collectStream: schema-invalid item not counted in covered, still emitted for runtime SKIP_RESULT", async () => {
   const harness = makeRecordingEmit(validateRecord);
   const broken: RedditChild = {
     kind: "t3",
@@ -489,7 +489,7 @@ test("collectStream: enumerate all items even if runtime drops some via schema m
       title: "broken",
       permalink: "/r/test/comments/broken01/broken/",
       url: null,
-      created_utc: 0,
+      created_utc: 0,  // Invalid: isoFromUnix(0) → null, schema rejects empty created_utc
     },
   };
   const valid = makePost("t3_valid", 200);
@@ -510,10 +510,10 @@ test("collectStream: enumerate all items even if runtime drops some via schema m
     delay: NO_DELAY,
   });
 
-  assert.equal(result.considered, 2, "considered includes both enumerated items");
-  assert.equal(result.covered, 2, "covered also reflects both items sent to runtime");
-  assert.equal(harness.emitted.length, 1, "runtime schema validation drops broken item via SKIP_RESULT");
-  assert.equal(harness.skipped.length, 1, "SKIP_RESULT logged for broken record");
+  assert.equal(result.considered, 2, "considered: both enumerated items (weighed)");
+  assert.equal(result.covered, 1, "covered: only schema-valid item (contract: weighed-but-dropped ≠ covered)");
+  assert.equal(harness.emitted.length, 1, "runtime receives only valid record");
+  assert.equal(harness.skipped.length, 1, "runtime SKIP_RESULT logs broken record");
 });
 
 // ─── Invariant 11: real collectAllStreams emits DETAIL_COVERAGE ───────────
@@ -555,11 +555,25 @@ test("collectAllStreams: zero-count stream emits DETAIL_COVERAGE with considered
   assert.equal(coverageMsg.covered, 0, "covered matches considered");
 });
 
-test("collectAllStreams: nonzero-count stream emits DETAIL_COVERAGE with correct counts", async () => {
+test("collectAllStreams: one valid + one invalid child emits DETAIL_COVERAGE with considered=2, covered=1", async () => {
   const harness = makeRecordingEmit(validateRecord);
+  const broken: RedditChild = {
+    kind: "t1",
+    data: {
+      name: "t1_broken",
+      subreddit: "test",
+      body: "broken",
+      link_id: "t3_post01",
+      parent_id: "t3_post01",
+      permalink: "/r/test/comments/post01/x/broken/",
+      score: 0,
+      created_utc: 0,  // Invalid
+    },
+  };
+  const valid = makeComment("t1_valid", 500);
   const { fetch } = makeScriptedFetch({
     [`${USER_PATH}/comments.json`]: [
-      okResult(listing([makeComment("t1_x", 500), makeComment("t1_y", 400)])),
+      okResult(listing([broken, valid])),
     ],
   });
 
@@ -579,6 +593,8 @@ test("collectAllStreams: nonzero-count stream emits DETAIL_COVERAGE with correct
     (m) => m.type === "DETAIL_COVERAGE" && m.stream === "comments"
   );
   assert.ok(coverageMsg && coverageMsg.type === "DETAIL_COVERAGE");
-  assert.equal(coverageMsg.considered, 2);
-  assert.equal(coverageMsg.covered, 2);
+  assert.equal(coverageMsg.considered, 2, "both enumerated items");
+  assert.equal(coverageMsg.covered, 1, "only schema-valid item counts as covered");
+  assert.equal(harness.emitted.length, 1, "runtime emits only valid record");
+  assert.equal(harness.skipped.length, 1, "runtime SKIP_RESULT logs invalid record");
 });

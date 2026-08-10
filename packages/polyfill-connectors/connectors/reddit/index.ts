@@ -50,7 +50,7 @@
 import type { Page } from "playwright";
 import { ensureRedditSession } from "../../src/auto-login/reddit.ts";
 import {
-  buildFullScanCoverageMessage,
+  buildDetailCoverageMessage,
   type BrowserCollectContext,
   type EmittedMessage,
   politeDelay,
@@ -244,8 +244,18 @@ export async function collectStream(args: CollectStreamArgs): Promise<CollectStr
   const items = await paginate(fetchPath, stream.endpoint, sinceEpoch, capture, delay, progress, stream.name);
 
   const latestEpoch = maxCreatedEpoch(items, sinceEpoch ?? 0);
+  let covered = 0;
   for (const c of items) {
-    await emitRecord(stream.name, stream.toRecord(c));
+    const record = stream.toRecord(c);
+    // Validate record using the canonical schema. Connectors must count covered
+    // independently at validation boundary: only schema-ok records count toward
+    // coverage, schema-invalid records are weighed but not covered.
+    const validation = validateRecord(stream.name, record);
+    if (validation.ok) {
+      covered += 1;
+    }
+    // Still emit to runtime so SKIP_RESULT remains authoritative for runtime layer.
+    await emitRecord(stream.name, record);
   }
   await progress("Emitted Reddit stream records", {
     stream: stream.name,
@@ -261,7 +271,7 @@ export async function collectStream(args: CollectStreamArgs): Promise<CollectStr
     cursor: { last_created_utc: latestEpoch },
   });
 
-  return { considered: items.length, covered: items.length };
+  return { considered: items.length, covered };
 }
 
 /** Build the list of streams this connector can populate, bound to a
@@ -338,7 +348,14 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
       progress,
       capture,
     });
-    await emit(buildFullScanCoverageMessage(stream.name, result.considered));
+    await emit(buildDetailCoverageMessage({
+      stream: stream.name,
+      stateStream: stream.name,
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: result.considered,
+      covered: result.covered,
+    }));
   }
 }
 
