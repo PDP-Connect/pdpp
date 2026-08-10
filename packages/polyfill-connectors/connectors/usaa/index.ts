@@ -60,6 +60,7 @@ import {
   type StatementHydration,
   type StatementHydrationCursor,
 } from "../../src/statement-hydration-carry-forward.ts";
+import { computeInboxCoverage, type InboxCoverageRow } from "./inbox-coverage.ts";
 import {
   buildAccountRecord,
   buildAccountStatsRecord,
@@ -306,6 +307,22 @@ export async function emitAccountsStream(
       type: "STATE",
       stream: "account_stats",
       cursor: { observed_on: observedOn, fetched_at: nowIso() },
+    });
+    // `account_stats` is `singleton_presence`: a daily snapshot re-derived
+    // from the same full account-dashboard scan every run. buildAccountStatsRecord
+    // never drops a row, so every enumerated account is accounted for —
+    // `considered === covered === accounts.length`, including 0/0 on a
+    // genuinely empty account list (verified-empty, not unmeasured). Without
+    // this, the STATE commit above is a checkpoint with no measurement behind
+    // it, and the Collection Report reads `unknown` forever regardless of how
+    // many successful runs commit it (define-connector-progress-evidence-contract).
+    await emitDetailCoverage(deps, {
+      stream: "account_stats",
+      stateStream: "account_stats",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: accounts.length,
+      covered: accounts.length,
     });
   }
   if (!emitEntity) {
@@ -2437,8 +2454,10 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
       priorFingerprints: readPriorInboxMessageFingerprints(state),
     });
     const year = new Date().getFullYear();
+    const resolvedRows: InboxCoverageRow[] = [];
     for (const m of msgs) {
       const record = buildInboxMessageRecord(m, year, nowIso());
+      resolvedRows.push({ resolved: record !== null });
       if (!record) {
         continue;
       }
@@ -2457,6 +2476,21 @@ async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, 
       type: "STATE",
       stream: "inbox_messages",
       cursor,
+    });
+    // `inbox_messages` is `checkpoint_window`: a full re-scan of the inbox
+    // page every run. See inbox-coverage.ts for why `covered` is an objective
+    // per-row accounting rather than `msgs.length` — a row dropped for an
+    // unparseable date must lower `covered` below `considered`, reading an
+    // honest `partial`, not a false `complete`. `considered: 0` when the
+    // inbox genuinely holds nothing is verified-empty, not unmeasured.
+    const inboxCoverage = computeInboxCoverage(resolvedRows);
+    await emitDetailCoverage(deps, {
+      stream: "inbox_messages",
+      stateStream: "inbox_messages",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: inboxCoverage.considered,
+      covered: inboxCoverage.covered,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2527,6 +2561,16 @@ interface CreditCardBillingEmitOptions {
   observedOn: string;
 }
 
+/** The credit-card boundary both streams enumerate: dashboard accounts whose
+ *  type matches USAA's credit-card route. Exported so the coverage
+ *  `considered`/`covered` arithmetic (`considered === covered ===
+ *  creditCardAccounts(accounts).length`, including 0 when the owner holds no
+ *  credit cards) is independently unit-testable without driving a live page
+ *  through `runCreditCardBillingStream`'s multi-second per-card settle delay. */
+export function creditCardAccounts(accounts: readonly DashboardAccount[]): DashboardAccount[] {
+  return accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
+}
+
 async function runCreditCardBillingStream(
   deps: EmitDeps,
   page: Page,
@@ -2540,7 +2584,7 @@ async function runCreditCardBillingStream(
       stream: "credit_card_billing",
       message: "Fetching credit card billing details",
     });
-    const cards = accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
+    const cards = creditCardAccounts(accounts);
     for (const a of cards) {
       await page
         .goto(`https://www.usaa.com${a.account_url}`, {
@@ -2574,6 +2618,21 @@ async function runCreditCardBillingStream(
         stream: "credit_card_billing_stats",
         cursor: { observed_on: observedOn, fetched_at: nowIso() },
       });
+      // `credit_card_billing_stats` is `singleton_presence`, re-derived from the
+      // same full credit-card-account boundary (`cards`) every run.
+      // buildCreditCardBillingStatsRecord never drops a row, so every card in
+      // the boundary is accounted for — `considered === covered === cards.length`,
+      // including 0/0 when the account genuinely holds no credit cards
+      // (verified-empty). See the matching account_stats comment in
+      // emitAccountsStream for why a bare STATE commit is not proof on its own.
+      await emitDetailCoverage(deps, {
+        stream: "credit_card_billing_stats",
+        stateStream: "credit_card_billing_stats",
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: cards.length,
+        covered: cards.length,
+      });
     }
     if (!emitEntity) {
       return;
@@ -2597,6 +2656,20 @@ async function runCreditCardBillingStream(
       type: "STATE",
       stream: "credit_card_billing",
       cursor,
+    });
+    // `credit_card_billing` is `checkpoint_window`: a full re-scan of the
+    // credit-card accounts every run. buildCreditCardBillingRecord never
+    // drops a row (unlike inbox_messages' date-parse guard), so every card
+    // enumerated this run is accounted for — `considered === covered ===
+    // cards.length`, including 0/0 when there are no credit cards
+    // (verified-empty, not unmeasured).
+    await emitDetailCoverage(deps, {
+      stream: "credit_card_billing",
+      stateStream: "credit_card_billing",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: cards.length,
+      covered: cards.length,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
