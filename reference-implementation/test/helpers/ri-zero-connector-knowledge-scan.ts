@@ -423,6 +423,10 @@ const SHARED_LIBRARY_KIND_DISPATCH_RULES = new Set([
   "hardcoded-validation-kind-literal",
   "connector-module-import",
   "hardcoded-connector-manifest-import",
+  // A file the identity scanner cannot parse at all cannot be proven free of
+  // rules (6)/(7)/(4b) either — must stay in this narrower allowlist too, or
+  // an unparseable shared-library file would silently pass this scan.
+  "unparseable-production-file",
 ]);
 
 /**

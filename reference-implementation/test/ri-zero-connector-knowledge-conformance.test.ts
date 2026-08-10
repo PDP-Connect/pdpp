@@ -1943,6 +1943,92 @@ test('universal revise counterweight: a generic-collision name used in an "x in 
   }
 });
 
+// ─── ri-parse-closure-0810: fail-open parse-error closure ───────────────────
+//
+// `scanFileIdentity`'s parser previously had two independent gaps that both
+// resolved to the same silent "report nothing" outcome: (a) the standard
+// `decorators` Babel plugin was never enabled, so any real, valid (erasable,
+// per this repo's `tsconfig.json`) decorator syntax threw a parse error, and
+// (b) that parse error — for ANY cause, not just decorators — was swallowed
+// by a bare `catch { return []; }`, certifying an unparseable production file
+// as carrying zero connector knowledge rather than flagging it. These tests
+// prove both: a decorator argument carrying real connector identity is now
+// parsed and caught (closing gap (a) as a prerequisite), a genuinely
+// malformed file now emits a typed `unparseable-production-file` violation
+// instead of silently passing (closing gap (b)), and a generic decorator
+// with no connector identity stays clean (counterweight: enabling the
+// `decorators` plugin must not itself start flagging ordinary code).
+
+test("parse closure: a decorator argument carrying a connector-identity literal is caught", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-parse-closure-"));
+  try {
+    const badFile = join(dir, "synthetic-decorator-identity.ts");
+    writeFileSync(
+      badFile,
+      [
+        "class ConnectorRegistration {",
+        '  @Register("gmail")',
+        "  static configure(): void {}",
+        "}",
+        "export { ConnectorRegistration };",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-decorator-identity.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `a connector-identity literal inside a decorator call argument must be caught -- if this fails with zero violations, the file failed to parse at all (the decorators plugin isn't enabled) and was silently swallowed rather than genuinely scanned, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("parse closure counterweight: valid generic decorator syntax with no connector identity is not flagged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-parse-closure-"));
+  try {
+    const goodFile = join(dir, "synthetic-decorator-generic.ts");
+    writeFileSync(
+      goodFile,
+      [
+        "function Logged(target: unknown, propertyKey: string): void {",
+        "  // generic, manifest-agnostic decorator -- no connector/provider knowledge",
+        "}",
+        "class RecordProcessor {",
+        "  @Logged",
+        "  process(): void {}",
+        "}",
+        "export { RecordProcessor };",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(goodFile, "synthetic-decorator-generic.ts", new Set(["gmail"]), repoRoot);
+    assert.deepEqual(
+      violations,
+      [],
+      `valid decorator syntax carrying no connector identity must parse cleanly and produce zero violations, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("parse closure: a malformed production file emits a typed parse-failure violation instead of silently passing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-parse-closure-"));
+  try {
+    const badFile = join(dir, "synthetic-malformed.ts");
+    // Genuinely unparseable: an unclosed brace with no valid recovery.
+    writeFileSync(badFile, ["export function broken(kind: string) {", "  if (kind === {{{", ""].join("\n"));
+    const violations = scanFile(badFile, "synthetic-malformed.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "unparseable-production-file" && v.file === "synthetic-malformed.ts"),
+      `a file this scanner cannot parse must emit a typed unparseable-production-file violation (with file/location/reason), never silently pass with zero findings, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("RI production code still contains zero connector/provider-specific executable knowledge after the universal per-node rewrite (regression, not just the synthetic attacks above)", () => {
   const violations = scanRepository({ repoRoot });
   assert.deepEqual(violations, [], formatViolationInventory(violations));

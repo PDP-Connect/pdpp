@@ -28,9 +28,13 @@
  * Disclosed residual: single-file analysis; a value crossing a cross-module
  * call, a reassigned `let`, or runtime concatenation with a non-const value
  * is unresolvable. Unlike rule (5) (data loads, where "unknown" fails
- * closed), rules (1)/(6)/(7) only flag a *proven* match — an unresolvable
- * generic string is common, legitimate code that a fail-closed posture here
- * would flood with false positives.
+ * closed), rules (1)/(6)/(7) only flag a *proven* match at the VALUE level —
+ * an unresolvable generic string is common, legitimate code that a
+ * fail-closed posture here would flood with false positives. A file this
+ * scanner cannot parse at all is a different failure mode, not a value
+ * ambiguity: `scanFileIdentity` fails closed on that, reporting an
+ * `unparseable-production-file` violation rather than silently returning no
+ * findings — a file the scanner cannot read is a file it cannot prove clean.
  */
 
 import { readFileSync } from "node:fs";
@@ -667,8 +671,15 @@ export function scanFileIdentity(
   let program: Node;
   try {
     program = parseSource(raw, absPath);
-  } catch {
-    return [];
+  } catch (error) {
+    // A file this scanner cannot parse is a file it cannot prove carries
+    // zero connector knowledge — reporting nothing here would silently
+    // certify unsupported or malformed production source as clean. Fail
+    // closed: a parse failure is itself a violation, not a skip.
+    const loc = error instanceof Error && "loc" in error ? (error as { loc?: { line?: number } }).loc : undefined;
+    const line = loc?.line ?? 0;
+    const reason = error instanceof Error ? error.message : String(error);
+    return [{ file: relPath, line, rule: "unparseable-production-file", snippet: reason }];
   }
 
   const { moduleConsts, localFunctions } = collectConstsAndFunctions(program);
