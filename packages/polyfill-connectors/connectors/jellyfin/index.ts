@@ -83,8 +83,11 @@ import { validateItemsResponse, validateRecord, validateSystemInfo, validateView
 let MAX_JSON_BYTES = 50 * 1024 * 1024; // 50MB per response (streaming byte cap, injectable for testing)
 let MAX_PAGES_PER_STREAM = 1000; // Guard against infinite pagination (injectable for testing)
 
-// Leading YYYY-MM-DD of any date/datetime string; used to normalize PremiereDate.
-const LEADING_DATE_RE = /^(\d{4}-\d{2}-\d{2})/;
+// Accepts an exact bare date, or a bare date followed by a structurally
+// valid ISO-8601 time-of-day suffix (same time-component shape the
+// libraries/items schemas' own ISO_DATETIME_RE accepts) — never an
+// arbitrary trailing suffix. Used to normalize PremiereDate.
+const DATE_OR_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(\.\d{1,7})?(Z|[+-]\d{2}:\d{2})?)?$/;
 
 // ─── HTTP Governor ────────────────────────────────────────────────────────
 
@@ -412,6 +415,20 @@ function libraryRecord(view: Record<string, unknown>, fetchedAt: string): Record
 }
 
 /**
+ * Is (year, month, day) a real UTC calendar date? Constructs the date via
+ * Date.UTC (never the local-timezone Date constructor, so this never
+ * timezone-shifts the input) and checks the result's UTC fields round-trip
+ * exactly — JS Date silently overflows invalid components (e.g. month 99 or
+ * Feb 30 rolls forward into a later real date) rather than rejecting them,
+ * so a round-trip mismatch is what catches that.
+ */
+function isRealUtcCalendarDate(year: number, month: number, day: number): boolean {
+  const ms = Date.UTC(year, month - 1, day);
+  const rebuilt = new Date(ms);
+  return rebuilt.getUTCFullYear() === year && rebuilt.getUTCMonth() === month - 1 && rebuilt.getUTCDate() === day;
+}
+
+/**
  * Normalize Jellyfin's `PremiereDate` to the `items.release_date` schema's
  * bare `YYYY-MM-DD` shape. Jellyfin serializes PremiereDate as a full
  * .NET DateTime round-trip string (e.g. "1994-09-23T00:00:00.0000000Z"),
@@ -420,17 +437,35 @@ function libraryRecord(view: Record<string, unknown>, fetchedAt: string): Record
  * rather than relaxing the schema to accept a shape release_date was never
  * meant to carry.
  *
- * Absence is preserved honestly: missing/null/non-string/unparseable input
- * becomes null rather than a fabricated date, and a value that merely
- * doesn't parse does not discard the rest of the record — only this field
- * degrades to null.
+ * Only two input shapes are accepted: an exact bare date, or a bare date
+ * followed by a structurally valid ISO-8601 time-of-day suffix. An
+ * arbitrary trailing suffix (e.g. "2021-01-01garbage") is NOT a datetime
+ * and is rejected, not silently truncated to its leading digits. The
+ * extracted date is also checked against the real UTC calendar (rejects
+ * e.g. "2021-99-99" and "2021-02-30") so a structurally-shaped but
+ * impossible date cannot pass through.
+ *
+ * Absence is preserved honestly: missing/null/non-string/unparseable/
+ * impossible-calendar-date input becomes null rather than a fabricated
+ * date, and a value that merely doesn't parse does not discard the rest of
+ * the record — only this field degrades to null.
  */
 function normalizeReleaseDate(premiereDate: unknown): string | null {
   if (typeof premiereDate !== "string") {
     return null;
   }
-  const match = premiereDate.match(LEADING_DATE_RE);
-  return match?.[1] ?? null;
+  const match = premiereDate.match(DATE_OR_DATETIME_RE);
+  if (!match) {
+    return null;
+  }
+  const [, yearStr, monthStr, dayStr] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  if (!isRealUtcCalendarDate(year, month, day)) {
+    return null;
+  }
+  return `${yearStr}-${monthStr}-${dayStr}`;
 }
 
 /**
