@@ -50,6 +50,7 @@
 import type { Page } from "playwright";
 import { ensureRedditSession } from "../../src/auto-login/reddit.ts";
 import {
+  buildFullScanCoverageMessage,
   type BrowserCollectContext,
   type EmittedMessage,
   politeDelay,
@@ -230,7 +231,12 @@ export interface CollectStreamArgs {
   stream: RedditStreamConfig;
 }
 
-export async function collectStream(args: CollectStreamArgs): Promise<void> {
+interface CollectStreamResult {
+  considered: number;
+  covered: number;
+}
+
+export async function collectStream(args: CollectStreamArgs): Promise<CollectStreamResult> {
   const { capture, delay, emit, emitRecord, fetchPath, progress, state, stream } = args;
   await progress(stream.progressMessage, { stream: stream.name });
 
@@ -254,6 +260,8 @@ export async function collectStream(args: CollectStreamArgs): Promise<void> {
     stream: stream.name,
     cursor: { last_created_utc: latestEpoch },
   });
+
+  return { considered: items.length, covered: items.length };
 }
 
 /** Build the list of streams this connector can populate, bound to a
@@ -305,6 +313,35 @@ function makePageFetch(page: Page): RedditListingFetch {
   return (path) => redditFetch(page, path);
 }
 
+// ─── Exported collect for testing ────────────────────────────────────────
+
+export async function collectAllStreams(ctx: BrowserCollectContext): Promise<void> {
+  const { capture, credentials, emit, emitRecord, emittedAt, page, progress, requested, state } = ctx;
+
+  const user = credentials.REDDIT_USERNAME;
+  if (!user) {
+    throw new Error("reddit_auth_failed: REDDIT_USERNAME missing");
+  }
+  const userPath = `/user/${encodeURIComponent(user)}`;
+  const fetchPath = makePageFetch(page);
+
+  for (const stream of buildStreamTable(userPath, emittedAt)) {
+    if (!requested.has(stream.name)) {
+      continue;
+    }
+    const result = await collectStream({
+      stream,
+      fetchPath,
+      state,
+      emit,
+      emitRecord,
+      progress,
+      capture,
+    });
+    await emit(buildFullScanCoverageMessage(stream.name, result.considered));
+  }
+}
+
 // ─── Entry ──────────────────────────────────────────────────────────────
 
 if (isMainModule(import.meta.url)) {
@@ -319,29 +356,7 @@ if (isMainModule(import.meta.url)) {
       await ensureRedditSession({ capture, context, page, sendInteraction });
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
-      const { capture, credentials, emit, emitRecord, emittedAt, page, progress, requested, state } = ctx;
-
-      const user = credentials.REDDIT_USERNAME;
-      if (!user) {
-        throw new Error("reddit_auth_failed: REDDIT_USERNAME missing");
-      }
-      const userPath = `/user/${encodeURIComponent(user)}`;
-      const fetchPath = makePageFetch(page);
-
-      for (const stream of buildStreamTable(userPath, emittedAt)) {
-        if (!requested.has(stream.name)) {
-          continue;
-        }
-        await collectStream({
-          stream,
-          fetchPath,
-          state,
-          emit,
-          emitRecord,
-          progress,
-          capture,
-        });
-      }
+      await collectAllStreams(ctx);
     },
   });
 }

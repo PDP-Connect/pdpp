@@ -26,7 +26,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeRecordingEmit } from "../../src/test-harness.ts";
-import { buildStreamTable, collectStream, paginate, type RedditListingFetch } from "./index.ts";
+import { buildStreamTable, collectAllStreams, collectStream, paginate, type RedditListingFetch } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { RedditChild, RedditFetchResult, RedditListing } from "./types.ts";
 
@@ -427,4 +427,158 @@ test("collectStream: a record missing required created_utc lands in SKIP_RESULT,
   assert.equal(harness.emitted.length, 0, "broken record must not land in emitted[]");
   assert.equal(harness.skipped.length, 1, "broken record must land in skipped[]");
   assert.equal(harness.skipped[0]?.stream, "submitted");
+});
+
+// ─── Invariant 10: collectStream tracks coverage ──────────────────────────
+
+test("collectStream: zero results return considered=0 and covered=0", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [okResult(listing([], null))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(result.considered, 0);
+  assert.equal(result.covered, 0);
+});
+
+test("collectStream: nonzero results return correct considered and covered counts", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [
+      okResult(listing([makePost("t3_a", 300), makePost("t3_b", 200), makePost("t3_c", 100)])),
+    ],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(result.considered, 3);
+  assert.equal(result.covered, 3);
+});
+
+test("collectStream: enumerate all items even if runtime drops some via schema mismatch", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const broken: RedditChild = {
+    kind: "t3",
+    data: {
+      name: "t3_broken01",
+      subreddit: "test",
+      title: "broken",
+      permalink: "/r/test/comments/broken01/broken/",
+      url: null,
+      created_utc: 0,
+    },
+  };
+  const valid = makePost("t3_valid", 200);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [okResult(listing([broken, valid]))],
+  });
+  const stream = buildStreamTable(USER_PATH, EMITTED_AT).find((s) => s.name === "submitted");
+  assert.ok(stream);
+
+  const result = await collectStream({
+    stream,
+    fetchPath: fetch,
+    state: {},
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: async () => undefined,
+    capture: null,
+    delay: NO_DELAY,
+  });
+
+  assert.equal(result.considered, 2, "considered includes both enumerated items");
+  assert.equal(result.covered, 2, "covered also reflects both items sent to runtime");
+  assert.equal(harness.emitted.length, 1, "runtime schema validation drops broken item via SKIP_RESULT");
+  assert.equal(harness.skipped.length, 1, "SKIP_RESULT logged for broken record");
+});
+
+// ─── Invariant 11: real collectAllStreams emits DETAIL_COVERAGE ───────────
+
+/** Create a mock page that redirects evaluate calls to a scripted fetch */
+function createMockPageForFetch(fetch: RedditListingFetch) {
+  return {
+    evaluate: async (fn: (args: unknown) => Promise<unknown>, args: unknown): Promise<unknown> => {
+      const { path } = args as { path: string };
+      return fetch(path);
+    },
+  };
+}
+
+test("collectAllStreams: zero-count stream emits DETAIL_COVERAGE with considered=0, covered=0", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/submitted.json`]: [okResult(listing([], null))],
+  });
+
+  await collectAllStreams({
+    capture: null,
+    credentials: { REDDIT_USERNAME: "anon" },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: EMITTED_AT,
+    page: createMockPageForFetch(fetch) as any,
+    progress: async () => undefined,
+    requested: new Set(["submitted"]),
+    state: {},
+  });
+
+  const coverageMsg = harness.protocolMessages.find(
+    (m) => m.type === "DETAIL_COVERAGE" && m.stream === "submitted"
+  );
+  assert.ok(coverageMsg, "DETAIL_COVERAGE must be emitted for empty stream");
+  assert.ok(coverageMsg && coverageMsg.type === "DETAIL_COVERAGE");
+  assert.equal(coverageMsg.considered, 0, "zero enumeration proves boundary was checked");
+  assert.equal(coverageMsg.covered, 0, "covered matches considered");
+});
+
+test("collectAllStreams: nonzero-count stream emits DETAIL_COVERAGE with correct counts", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const { fetch } = makeScriptedFetch({
+    [`${USER_PATH}/comments.json`]: [
+      okResult(listing([makeComment("t1_x", 500), makeComment("t1_y", 400)])),
+    ],
+  });
+
+  await collectAllStreams({
+    capture: null,
+    credentials: { REDDIT_USERNAME: "anon" },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: EMITTED_AT,
+    page: createMockPageForFetch(fetch) as any,
+    progress: async () => undefined,
+    requested: new Set(["comments"]),
+    state: {},
+  });
+
+  const coverageMsg = harness.protocolMessages.find(
+    (m) => m.type === "DETAIL_COVERAGE" && m.stream === "comments"
+  );
+  assert.ok(coverageMsg && coverageMsg.type === "DETAIL_COVERAGE");
+  assert.equal(coverageMsg.considered, 2);
+  assert.equal(coverageMsg.covered, 2);
 });
