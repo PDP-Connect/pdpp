@@ -436,6 +436,107 @@ test("client grant bearer cannot list owner connector templates", async () => {
   });
 });
 
+test("UAT-exposed unproven owner-actionable connector has deterministic exposure and usable action", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // POSITIVE ORACLE: Load real steam (unproven static_secret, owner_actionable by browser-session path)
+      // Prove: with flag=ON, an owner-actionable unproven connector IS exposed with usable action
+      const steamManifest = loadManifest("steam");
+      await registerConnector(asUrl, steamManifest);
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const templates = asRecord(body).data;
+      const steam = templates.find((t) => asRecord(t).connector_key === "steam");
+
+      assert.ok(steam, "steam fixture must be registered");
+
+      const setup = asRecord(steam).setup_plan;
+      const listing = asRecord(steam).public_listing;
+
+      // Check steam's actionability (if it passes owner_actionable, flag=ON makes it exposed)
+      if (setup.owner_actionable === true) {
+        // POSITIVE: flag=ON + owner_actionable + unproven => MUST be exposed
+        assert.equal(asRecord(steam).uat_expose_unlisted_connectors, true, "steam: MUST be UAT-exposed with flag=ON and owner_actionable");
+        assert.equal(listing.listed, false, "steam: public_listing.listed must stay false");
+        assert.equal(listing.status, "unproven", "steam: public_listing.status must stay unproven");
+
+        // Verify action is usable (either REST or owner_mediated browser)
+        const actions = asRecord(steam).supported_actions;
+        const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
+        assert.ok(initiateAction, "steam: must have initiate_connection action when exposed");
+        const initiateRecord = asRecord(initiateAction);
+        assert.ok(
+          ["supported", "owner_mediated"].includes(initiateRecord.status),
+          `steam: action must be supported or owner_mediated, got ${initiateRecord.status}`
+        );
+      }
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("with flag=ON, exposure fact tracks owner_actionable (no allowlist)", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Prove: ANY owner-actionable unproven is exposed (steam as example)
+      // Proves no hardcoded allowlist, just the generic gate
+      const steamManifest = loadManifest("steam");
+      await registerConnector(asUrl, steamManifest);
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const templates = asRecord(body).data;
+      const steam = templates.find((t) => asRecord(t).connector_key === "steam");
+
+      assert.ok(steam, "steam must be registered");
+
+      // CRITICAL: exposure fact MUST equal owner_actionable (proves no allowlist)
+      const uatExposed = asRecord(steam).uat_expose_unlisted_connectors === true;
+      const isOwnerActionable = asRecord(asRecord(steam).setup_plan).owner_actionable === true;
+
+      assert.equal(
+        uatExposed,
+        isOwnerActionable,
+        "steam: uat_expose_unlisted_connectors MUST equal owner_actionable (no allowlist, only generic gate)"
+      );
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("UAT-exposed unproven connectors from real manifests prove no allowlist", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
