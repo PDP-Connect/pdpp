@@ -1,0 +1,539 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Verified-coverage conformance gate.
+ *
+ * Contract under test: every successful exercised stream whose manifest
+ * declares any `coverage_strategy` from the shared
+ * `@pdpp/reference-contract` `CoverageProofStrategy` union
+ * (`checkpoint_window`, `full_inventory`, `parent_detail_accounting`,
+ * `snapshot_import_receipt`, `singleton_presence`) and is `required`
+ * (default true) MUST prove its coverage claim under
+ * `@pdpp/reference-contract`'s shared, pure `evaluateStreamCoherence` oracle
+ * (packages/reference-contract/src/evidence/coherence.ts) — the SAME
+ * function the reference implementation calls at its projection boundary
+ * (reference-implementation/server/connector-coverage-policy.ts). This gate
+ * derives a run-local evidence envelope from the connector's actual emitted
+ * STATE / DETAIL_COVERAGE / SKIP_RESULT / DETAIL_GAP messages and asks that
+ * shared oracle whether `proven === true` — it does not re-implement the
+ * coherence rule, and it does not accept a bare message presence check as
+ * sufficient authority. A `STATE` checkpoint commit alone is not proof:
+ * that is the exact invariant `evaluateStreamCoherence` exists to enforce
+ * (its `checkpoint_only` verdict), independent of this gate's own logic.
+ *
+ * This gate does not grep connector source for `emitDetailCoverage` call
+ * sites — a call site proves intent, not runtime behavior (it could be
+ * unreachable, gated wrong, or emit an empty/malformed message). Instead it
+ * runs each connector's REAL collection code (the same exported entrypoint
+ * or orchestration function production `collect()` calls — see each
+ * driver's comment in coverage-conformance-drivers.ts for the exact
+ * production call site it mirrors) against a small, deterministic,
+ * credential-free fixture and evaluates the actual emitted protocol
+ * messages, the same evidence the runtime and downstream projections
+ * consume.
+ *
+ * Honesty contract:
+ *   - A stream this gate has no driver for is UNEXERCISED. It is asserted
+ *     against the checked-in ratchet (KNOWN_UNEXERCISED_COVERAGE) below —
+ *     never silently passed, and never allowed to grow without a reviewable
+ *     diff (see the ratchet test).
+ *   - A stream this gate exercised, on a successful run, whose derived
+ *     evidence envelope does not evaluate to `proven: true` under the
+ *     shared oracle is a genuine FAIL — the contract violation this gate
+ *     exists to catch.
+ *   - A driver itself failing (DONE.status === "failed", or a thrown
+ *     exception) is ALSO a genuine FAIL, not an escape hatch — every
+ *     registered driver is a deliberately-authored happy-path fixture, so a
+ *     failed run means the fixture (or the connector) regressed, and the
+ *     gate must say so rather than silently exempting every stream that
+ *     driver was supposed to prove.
+ */
+
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+  type CoverageProofStrategy,
+  evaluateStreamCoherence,
+  type StreamEvidenceEnvelope,
+  type StreamProofDeclaration,
+} from "@pdpp/reference-contract/evidence";
+import {
+  KNOWN_SCAFFOLD_CONNECTORS,
+  PRODUCTION_READY_CONNECTORS,
+  REAL_UNLISTED_CONNECTORS,
+} from "./connector-conformance-roster.ts";
+import type { EmittedMessage } from "./connector-runtime-protocol.ts";
+import {
+  AMAZON_ZERO_RESULT_DRIVER,
+  CONNECTOR_DRIVERS,
+  type DriverResult,
+  KNOWN_UNEXERCISED_COVERAGE,
+  REDDIT_MALFORMED_DRIVER,
+} from "./coverage-conformance-drivers.ts";
+
+const MANIFESTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "manifests");
+
+/**
+ * Every member of the shared `@pdpp/reference-contract` `CoverageProofStrategy`
+ * union. TypeScript unions produce no runtime values, so this Set is hand-kept
+ * in sync with that type (the same pattern
+ * `stream-evidence-strategy-manifest.test.ts`'s `VALID_COVERAGE_STRATEGIES`
+ * already uses) — but it is typed AGAINST `CoverageProofStrategy[]`, so a
+ * future member added to or removed from the shared union that this array
+ * does not mirror is a compile error here, not silent drift. A required
+ * stream declaring ANY of these owes strategy-specific positive evidence
+ * under the shared oracle — not just full_inventory/checkpoint_window.
+ */
+const ALL_COVERAGE_PROOF_STRATEGIES: readonly CoverageProofStrategy[] = [
+  "checkpoint_window",
+  "full_inventory",
+  "parent_detail_accounting",
+  "snapshot_import_receipt",
+  "singleton_presence",
+];
+const PROOF_REQUIRED_STRATEGIES: ReadonlySet<string> = new Set(ALL_COVERAGE_PROOF_STRATEGIES);
+
+interface ManifestStream {
+  coverage_policy?: unknown;
+  coverage_strategy?: unknown;
+  name?: unknown;
+  required?: unknown;
+}
+
+interface ConnectorManifest {
+  streams?: ManifestStream[];
+}
+
+function readManifest(connectorKey: string): ConnectorManifest | null {
+  const manifestPath = join(MANIFESTS_DIR, `${connectorKey}.json`);
+  if (!existsSync(manifestPath)) {
+    return null;
+  }
+  return JSON.parse(readFileSync(manifestPath, "utf8")) as ConnectorManifest;
+}
+
+/** Required (default true) streams declaring a proof-demanding strategy. */
+function proofRequiredStreams(manifest: ConnectorManifest): string[] {
+  return (manifest.streams ?? [])
+    .filter((s) => s.required !== false && PROOF_REQUIRED_STRATEGIES.has(String(s.coverage_strategy)))
+    .map((s) => String(s.name));
+}
+
+const ACCEPTED_ABSENCE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
+
+/** The shared oracle's proof declaration for one manifest stream. */
+function proofDeclarationFor(manifest: ConnectorManifest, stream: string): StreamProofDeclaration {
+  const entry = (manifest.streams ?? []).find((s) => s.name === stream);
+  const policy = typeof entry?.coverage_policy === "string" ? entry.coverage_policy : null;
+  const acceptedAbsence: StreamProofDeclaration["accepted_absence"] =
+    policy !== null && ACCEPTED_ABSENCE_POLICIES.has(policy)
+      ? (policy as NonNullable<StreamProofDeclaration["accepted_absence"]>)
+      : null;
+  return {
+    accepted_absence: acceptedAbsence,
+    coverage_strategy: (entry?.coverage_strategy as StreamProofDeclaration["coverage_strategy"]) ?? null,
+  };
+}
+
+function allTargetConnectorKeys(): string[] {
+  const rosterKeys = new Set([...Object.keys(PRODUCTION_READY_CONNECTORS), ...Object.keys(REAL_UNLISTED_CONNECTORS)]);
+  for (const scaffold of KNOWN_SCAFFOLD_CONNECTORS) {
+    rosterKeys.delete(scaffold);
+  }
+  return [...rosterKeys].sort((a, b) => a.localeCompare(b));
+}
+
+/** Full inventory: every (connector, proof-required stream) pair across the roster. */
+function allRequiredStreamPairs(): Array<{ connectorKey: string; stream: string }> {
+  const pairs: Array<{ connectorKey: string; stream: string }> = [];
+  for (const connectorKey of allTargetConnectorKeys()) {
+    const manifest = readManifest(connectorKey);
+    if (!manifest) {
+      continue;
+    }
+    for (const stream of proofRequiredStreams(manifest)) {
+      pairs.push({ connectorKey, stream });
+    }
+  }
+  return pairs;
+}
+
+function doneMessage(messages: readonly EmittedMessage[]): Extract<EmittedMessage, { type: "DONE" }> | undefined {
+  return messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DONE" }> => (m as { type?: unknown }).type === "DONE"
+  );
+}
+
+/**
+ * Derive the run-local `StreamEvidenceEnvelope` for one stream from the raw
+ * protocol messages a driver captured — STATE (checkpoint + collected count,
+ * via RECORD tally), DETAIL_COVERAGE (considered/covered), SKIP_RESULT
+ * (skipped), and DETAIL_GAP with status "pending" (pending_detail_gaps) —
+ * PLUS `skippedRecords`, the direct-import-harness counterpart of
+ * SKIP_RESULT (see `SkippedRecordFact` in coverage-conformance-drivers.ts):
+ * a driver that calls a connector's exported function directly via
+ * `makeRecordingEmit` never gets a real SKIP_RESULT protocol message for a
+ * validation failure — that failure lands in the harness's own `.skipped`
+ * bookkeeping instead. Without folding `skippedRecords` in here, a stream
+ * whose every considered record failed schema validation would still read
+ * `checkpoint: "committed"` with no `skipped` evidence, and the shared
+ * oracle would have nothing telling it the attempt was unresolved — exactly
+ * the gap a genuinely broken Reddit fixture exposed (considered=1,
+ * covered=0, yet the aggregate gate passed, because the validation failure
+ * only ever reached `harness.skipped`, never `messages`). This is the one
+ * piece of run-local aggregation this gate owns; everything downstream of
+ * the envelope is the shared oracle's judgement, not this gate's.
+ *
+ * `checkpoint` is stamped `"committed"` when a STATE message was emitted for
+ * this stream this run (the connector advanced/held its cursor), else
+ * `null` — mirroring the RI's own checkpoint semantics
+ * (reference-implementation/server/runtime-collection-facts.ts): a raw
+ * cursor value, not further classified, since none of this gate's fixtures
+ * ever produce a "pending"/"disabled" checkpoint shape.
+ */
+function deriveStreamEnvelope(
+  messages: readonly EmittedMessage[],
+  stream: string,
+  skippedRecords: readonly { stream: string }[] = []
+): StreamEvidenceEnvelope {
+  const stateForStream = messages.some(
+    (m) => (m as { type?: unknown; stream?: unknown }).type === "STATE" && (m as { stream?: unknown }).stream === stream
+  );
+  const collected = messages.filter(
+    (m) =>
+      (m as { type?: unknown; stream?: unknown }).type === "RECORD" && (m as { stream?: unknown }).stream === stream
+  ).length;
+  const coverageMsgs = messages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      (m as { type?: unknown }).type === "DETAIL_COVERAGE" && (m as { stream?: unknown }).stream === stream
+  );
+  const protocolSkip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      (m as { type?: unknown }).type === "SKIP_RESULT" && (m as { stream?: unknown }).stream === stream
+  );
+  const harnessSkip = skippedRecords.find((s) => s.stream === stream);
+  const pendingGaps = messages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+      (m as { type?: unknown }).type === "DETAIL_GAP" &&
+      (m as { stream?: unknown }).stream === stream &&
+      (m as { status?: unknown }).status === "pending"
+  ).length;
+
+  // A stream may emit more than one DETAIL_COVERAGE across a run (e.g. a
+  // per-budget loop); sum considered/covered when every emission carries a
+  // measured value, otherwise fall through to "no measurement" (null) rather
+  // than silently dropping a partial sum.
+  let considered: number | null = null;
+  let covered: number | null = null;
+  if (coverageMsgs.length > 0) {
+    const consideredValues = coverageMsgs.map((m) => (m as { considered?: unknown }).considered);
+    const coveredValues = coverageMsgs.map((m) => (m as { covered?: unknown }).covered);
+    if (consideredValues.every((v) => typeof v === "number")) {
+      considered = consideredValues.reduce((a, b) => a + b, 0);
+    }
+    if (coveredValues.every((v) => typeof v === "number")) {
+      covered = coveredValues.reduce((a, b) => a + b, 0);
+    }
+  }
+
+  let skipped: StreamEvidenceEnvelope["skipped"] = null;
+  if (protocolSkip) {
+    skipped = { reason: protocolSkip.reason };
+  } else if (harnessSkip) {
+    skipped = { reason: "schema_validation_failed" };
+  }
+
+  return {
+    checkpoint: stateForStream ? "committed" : null,
+    collected,
+    considered,
+    covered,
+    pending_detail_gaps: pendingGaps,
+    skipped,
+  };
+}
+
+// ─── The gate: run every registered driver once, evaluate every connector ──
+
+test("verified-coverage conformance: every exercised required full_inventory/checkpoint_window stream proves coverage under the shared @pdpp/reference-contract oracle", async () => {
+  const driverEntries = Object.entries(CONNECTOR_DRIVERS);
+  const results = await Promise.all(
+    driverEntries.map(async ([connectorKey, driver]) => {
+      try {
+        return { connectorKey, result: await driver.run() };
+      } catch (error) {
+        return {
+          connectorKey,
+          result: { exercised: true, messages: [] } as DriverResult,
+          thrown: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+  );
+  const driverResults = new Map(results.map((r) => [r.connectorKey, r]));
+
+  const failures: string[] = [];
+  const unexercisedSummary: string[] = [];
+  const provenSummary: string[] = [];
+
+  for (const { connectorKey, stream } of allRequiredStreamPairs()) {
+    const label = `${connectorKey}.${stream}`;
+    const driverEntry = CONNECTOR_DRIVERS[connectorKey];
+    const covers = driverEntry?.coveredStreams.includes(stream) ?? false;
+
+    if (!covers) {
+      unexercisedSummary.push(label);
+      continue;
+    }
+
+    const entry = driverResults.get(connectorKey);
+    if (entry && "thrown" in entry) {
+      failures.push(`${label}: driver threw (${entry.thrown}) — a registered happy-path fixture must not throw`);
+      continue;
+    }
+    const driverResult = entry?.result;
+    if (!driverResult?.exercised) {
+      failures.push(`${label}: driver reported unexercised (${driverResult?.reason ?? "no reason given"})`);
+      continue;
+    }
+
+    const done = doneMessage(driverResult.messages);
+    if (done?.status === "failed") {
+      failures.push(
+        `${label}: driver's DONE reported status=failed — a registered happy-path fixture must succeed, not silently exempt this stream`
+      );
+      continue;
+    }
+
+    const manifest = readManifest(connectorKey);
+    if (!manifest) {
+      failures.push(`${label}: manifest missing — cannot derive a proof declaration`);
+      continue;
+    }
+    const envelope = deriveStreamEnvelope(driverResult.messages, stream, driverResult.skippedRecords);
+    const declaration = proofDeclarationFor(manifest, stream);
+    const verdict = evaluateStreamCoherence(envelope, declaration);
+
+    if (!verdict.proven) {
+      failures.push(
+        `${label}: shared oracle reports proven=false, reason=${verdict.reason} (envelope: checkpoint=${JSON.stringify(envelope.checkpoint)}, collected=${envelope.collected}, considered=${envelope.considered}, covered=${envelope.covered})`
+      );
+      continue;
+    }
+
+    provenSummary.push(label);
+  }
+
+  const provenLine = `${provenSummary.length} stream(s) proven: ${provenSummary.join(", ")}`;
+  const unexercisedLine = `${unexercisedSummary.length} stream(s) unexercised (checked against the ratchet, not asserted here): ${unexercisedSummary.join(", ")}`;
+
+  assert.deepEqual(
+    failures,
+    [],
+    `verified-coverage contract violated for ${failures.length} exercised stream(s):\n${failures.map((f) => `  - ${f}`).join("\n")}\n${provenLine}\n${unexercisedLine}`
+  );
+  assert.ok(
+    provenSummary.length > 0,
+    `expected at least one stream to be proven this run — the gate is not exercising anything.\n${unexercisedLine}`
+  );
+});
+
+// ─── Ratchet: unexercised coverage cannot silently grow ────────────────────
+
+test("ratchet: every unexercised required stream is a deliberate, checked-in entry — no silent new gaps, no stale entries", () => {
+  const actuallyUnexercised = new Set<string>();
+  for (const { connectorKey, stream } of allRequiredStreamPairs()) {
+    const driverEntry = CONNECTOR_DRIVERS[connectorKey];
+    const covers = driverEntry?.coveredStreams.includes(stream) ?? false;
+    if (!covers) {
+      actuallyUnexercised.add(`${connectorKey}.${stream}`);
+    }
+  }
+
+  const newUnlistedGaps = [...actuallyUnexercised]
+    .filter((label) => !KNOWN_UNEXERCISED_COVERAGE.has(label))
+    .sort((a, b) => a.localeCompare(b));
+  const staleListedEntries = [...KNOWN_UNEXERCISED_COVERAGE]
+    .filter((label) => !actuallyUnexercised.has(label))
+    .sort((a, b) => a.localeCompare(b));
+
+  assert.deepEqual(
+    newUnlistedGaps,
+    [],
+    `${newUnlistedGaps.length} required stream(s) are unexercised without a checked-in reason — a new production-ready/real-unlisted connector or manifest edit bypassed this gate silently. Add a deliberate entry to KNOWN_UNEXERCISED_COVERAGE in coverage-conformance-drivers.ts naming why, or register a driver: ${newUnlistedGaps.join(", ")}`
+  );
+  assert.deepEqual(
+    staleListedEntries,
+    [],
+    `${staleListedEntries.length} entries in KNOWN_UNEXERCISED_COVERAGE no longer correspond to an actually-unexercised required stream (a driver now covers them, or the manifest no longer requires them) — remove the stale entry so the allowlist reflects reality: ${staleListedEntries.join(", ")}`
+  );
+});
+
+// ─── Capability pins: permanent claims about what each driver proves ──────
+//
+// Unlike a "known gap" pin (which asserts today's broken state and would
+// itself start failing the moment a connector lane lands its fix), these
+// assert properties that stay true regardless of the current pass/fail
+// state of any one connector: the driver mechanism itself reaches the real
+// production code path and the shared oracle can express both a nonzero and
+// a genuinely empty (considered=covered=0) proven verdict from it. They
+// exist to prove the gate is not vacuous — if these ever fail, the DRIVERS
+// or the ENVELOPE DERIVATION are broken, independent of whether
+// Reddit/Jellyfin/YNAB currently pass the aggregate gate above.
+
+test("capability: Amazon's real emitOrdersCoverage path proves under the shared oracle for a nonzero 'orders' run", async () => {
+  const driver = CONNECTOR_DRIVERS.amazon;
+  assert.ok(driver);
+  const result = await driver.run();
+  if (!result.exercised) {
+    assert.fail(`amazon driver reported unexercised: ${result.reason}`);
+  }
+  const manifest = readManifest("amazon");
+  assert.ok(manifest);
+  const envelope = deriveStreamEnvelope(result.messages, "orders", result.skippedRecords);
+  const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, "orders"));
+  assert.deepEqual(verdict, { proven: true, reason: "enumeration_boundary" });
+  assert.equal(envelope.considered, 1);
+  assert.equal(envelope.covered, 1);
+});
+
+test("capability: Amazon's real emitOrdersCoverage path proves verified emptiness under the shared oracle when the boundary is genuinely empty", async () => {
+  const result = await AMAZON_ZERO_RESULT_DRIVER.run();
+  if (!result.exercised) {
+    assert.fail(`amazon zero-result driver reported unexercised: ${result.reason}`);
+  }
+  const manifest = readManifest("amazon");
+  assert.ok(manifest);
+  const envelope = deriveStreamEnvelope(result.messages, "orders", result.skippedRecords);
+  const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, "orders"));
+  assert.deepEqual(verdict, { proven: true, reason: "enumeration_boundary" });
+  assert.equal(envelope.considered, 0);
+  assert.equal(envelope.covered, 0);
+});
+
+test("capability: Reddit's real collectAllStreams path proves under the shared oracle for all six required checkpoint_window streams with a schema-valid fixture", async () => {
+  const driver = CONNECTOR_DRIVERS.reddit;
+  assert.ok(driver);
+  const result = await driver.run();
+  if (!result.exercised) {
+    assert.fail(`reddit driver reported unexercised: ${result.reason}`);
+  }
+  const manifest = readManifest("reddit");
+  assert.ok(manifest);
+  for (const stream of ["submitted", "comments", "saved", "upvoted", "downvoted", "hidden"]) {
+    const envelope = deriveStreamEnvelope(result.messages, stream, result.skippedRecords);
+    // The happy-path fixture must be schema-valid end to end: considered ===
+    // covered === 1 proves every considered record was ALSO accounted for,
+    // not merely that a considered count was reported (which the earlier,
+    // schema-invalid `t3_coverage_conformance` fixture also produced while
+    // silently reporting covered=0 — a gap the oracle-fidelity fix below
+    // closes).
+    assert.equal(envelope.considered, 1, `${stream}: considered`);
+    assert.equal(envelope.covered, 1, `${stream}: covered — a schema-invalid fixture record would read 0 here`);
+    assert.deepEqual(envelope.skipped, null, `${stream}: no validation-rejected record expected`);
+    const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, stream));
+    assert.equal(verdict.proven, true, `${stream}: expected proven, got ${verdict.reason}`);
+  }
+});
+
+test("mutation: a schema-invalid Reddit record is not laundered into proven coverage — proves skippedRecords fidelity, not just message presence", async () => {
+  const manifest = readManifest("reddit");
+  assert.ok(manifest);
+  const result = await REDDIT_MALFORMED_DRIVER.run();
+  if (!result.exercised) {
+    assert.fail(`reddit malformed driver reported unexercised: ${result.reason}`);
+  }
+  for (const stream of ["submitted", "comments", "saved", "upvoted", "downvoted", "hidden"]) {
+    const envelope = deriveStreamEnvelope(result.messages, stream, result.skippedRecords);
+    // The malformed fixture considers exactly one record per stream, and
+    // that record fails schema validation — proving the harness actually
+    // saw the failure (considered=1) rather than silently dropping it
+    // (which would read considered=null, a different and less informative
+    // failure mode).
+    assert.equal(envelope.considered, 1, `${stream}: considered (the record was weighed)`);
+    assert.equal(envelope.covered, 0, `${stream}: covered (the record was rejected, not accounted for)`);
+    assert.ok(envelope.skipped, `${stream}: skippedRecords must surface as envelope.skipped`);
+    const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, stream));
+    assert.equal(
+      verdict.proven,
+      false,
+      `${stream}: a validation-rejected record must not read proven (got reason=${verdict.reason})`
+    );
+    assert.equal(
+      verdict.reason,
+      "unresolved_attempt",
+      `${stream}: the shared oracle's rule 1 (unresolved attempt) must fire before the checkpoint/considered rules ever get a chance to launder this`
+    );
+  }
+});
+
+test("mutation: without skippedRecords fidelity, the malformed Reddit fixture would have falsely read proven (regression proof for the oracle-fidelity fix)", async () => {
+  // Re-derive the envelope EXACTLY as the pre-fix deriveStreamEnvelope did —
+  // ignoring skippedRecords entirely — to prove this is not a hypothetical
+  // gap: the malformed fixture's `checkpoint_window` streams, evaluated
+  // without the skip evidence, read PROVEN via `enumeration_boundary`'s
+  // "closed window bounds rather than counts" branch, exactly the false
+  // pass this change closes.
+  const result = await REDDIT_MALFORMED_DRIVER.run();
+  if (!result.exercised) {
+    assert.fail(`reddit malformed driver reported unexercised: ${result.reason}`);
+  }
+  const manifest = readManifest("reddit");
+  assert.ok(manifest);
+  const envelopeWithoutSkipFidelity = deriveStreamEnvelope(result.messages, "submitted", []);
+  assert.deepEqual(
+    envelopeWithoutSkipFidelity.skipped,
+    null,
+    "confirms the pre-fix code path: with skippedRecords withheld, the envelope reports no skip at all"
+  );
+  const verdictWithoutFix = evaluateStreamCoherence(
+    envelopeWithoutSkipFidelity,
+    proofDeclarationFor(manifest, "submitted")
+  );
+  assert.equal(
+    verdictWithoutFix.proven,
+    true,
+    "demonstrates the exact false-pass the skippedRecords fix closes: identical facts, minus the skip evidence, read proven"
+  );
+});
+
+test("capability: Apple Contacts' real subprocess entrypoint proves under the shared oracle for all three required full_inventory streams", async () => {
+  const driver = CONNECTOR_DRIVERS.apple_contacts;
+  assert.ok(driver);
+  const result = await driver.run();
+  if (!result.exercised) {
+    assert.fail(`apple_contacts driver reported unexercised: ${result.reason}`);
+  }
+  const manifest = readManifest("apple_contacts");
+  assert.ok(manifest);
+  for (const stream of ["address_books", "contacts", "contact_groups"]) {
+    const envelope = deriveStreamEnvelope(result.messages, stream);
+    const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, stream));
+    assert.equal(verdict.proven, true, `${stream}: expected proven, got ${verdict.reason}`);
+  }
+});
+
+test("capability: the ynab ratchet correctly names every real required full_inventory stream (no driver registered, by design)", () => {
+  const manifest = readManifest("ynab");
+  assert.ok(manifest);
+  const requiredStreams = proofRequiredStreams(manifest);
+  assert.ok(
+    requiredStreams.length > 0,
+    "ynab must declare required proof-demanding streams for this pin to be meaningful"
+  );
+  assert.equal(
+    "ynab" in CONNECTOR_DRIVERS,
+    false,
+    "ynab is deliberately undriven here (paced governor) — see coverage-conformance-drivers.ts"
+  );
+  for (const stream of requiredStreams) {
+    assert.ok(
+      KNOWN_UNEXERCISED_COVERAGE.has(`ynab.${stream}`),
+      `ynab.${stream} is required but missing from KNOWN_UNEXERCISED_COVERAGE`
+    );
+  }
+});

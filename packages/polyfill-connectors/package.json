@@ -44,6 +44,7 @@
   "devDependencies": {
     "@babel/parser": "7.29.2",
     "@biomejs/biome": "2.5.6",
+    "@pdpp/reference-contract": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
     "@types/ws": "^8.18.1",
     "better-sqlite3": "^13.0.2",
