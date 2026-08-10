@@ -42,6 +42,7 @@ import {
   type DetailGapMessage,
   type EmittedMessage,
   emitDetailCoverage,
+  emitDetailGap,
   type InteractionRequest,
   type InteractionResponse,
   nowIso,
@@ -68,6 +69,7 @@ import {
   buildCreditCardBillingRecord,
   buildCreditCardBillingStatsRecord,
   buildInboxMessageRecord,
+  creditCardId,
   hashId,
   isoDate,
   mmddyyyy,
@@ -2425,7 +2427,11 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
   });
 }
 
-async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, unknown>): Promise<void> {
+/** Exported (in addition to being called from `collect()`) purely so its
+ *  DETAIL_COVERAGE emit-path wiring is directly testable with a mocked Page —
+ *  never emit coverage after a caught scrape failure, only after a
+ *  successful enumeration. See singleton-checkpoint-coverage.test.ts. */
+export async function runInboxStream(deps: EmitDeps, page: Page, state: Record<string, unknown>): Promise<void> {
   try {
     await deps.emit({
       type: "PROGRESS",
@@ -2554,7 +2560,7 @@ export function readPriorCreditCardBillingFingerprints(state: Record<string, unk
  *  (`credit_card_billing`) and the observation (`credit_card_billing_stats`)
  *  are independently scoped. `observedOn` is the UTC sample date. The entity
  *  cursor is only supplied when the entity is requested. */
-interface CreditCardBillingEmitOptions {
+export interface CreditCardBillingEmitOptions {
   emitEntity: boolean;
   emitStats: boolean;
   fingerprintCursor: FingerprintCursor | undefined;
@@ -2571,7 +2577,94 @@ export function creditCardAccounts(accounts: readonly DashboardAccount[]): Dashb
   return accounts.filter((a) => CREDIT_CARD_TYPE_RE.test(a.account_type));
 }
 
-async function runCreditCardBillingStream(
+/** Emit a retryable DETAIL_GAP for one card whose page navigation failed,
+ *  on whichever of the two credit-card streams are requested this run.
+ *  Mirrors the statement PDF gap pattern (statement-coverage.ts's
+ *  `temporary_unavailable`) — a navigation failure is always retried on the
+ *  next run, so it is recoverable, not terminal. */
+async function emitCreditCardNavFailureGaps(
+  deps: EmitDeps,
+  cardId: string,
+  { emitEntity, emitStats }: Pick<CreditCardBillingEmitOptions, "emitEntity" | "emitStats">
+): Promise<void> {
+  if (emitEntity) {
+    await emitDetailGap(deps, {
+      stream: "credit_card_billing",
+      recordKey: cardId,
+      reason: "temporary_unavailable",
+      locator: { kind: "usaa.credit_card_billing", card_id: cardId },
+    });
+  }
+  if (emitStats) {
+    await emitDetailGap(deps, {
+      stream: "credit_card_billing_stats",
+      recordKey: cardId,
+      reason: "temporary_unavailable",
+      locator: { kind: "usaa.credit_card_billing_stats", card_id: cardId },
+    });
+  }
+}
+
+/** Navigate to one card's page. Returns `true` on success. On failure,
+ *  reports the failure as a retryable DETAIL_GAP and returns `false` — the
+ *  caller must NOT proceed to scrape on a failed navigation, since that
+ *  would attribute whatever page happens to be loaded (the prior card, the
+ *  dashboard, an error page) to this card's id. */
+async function navigateToCardOrGap(
+  deps: EmitDeps,
+  page: Page,
+  a: DashboardAccount,
+  cardId: string,
+  options: Pick<CreditCardBillingEmitOptions, "emitEntity" | "emitStats">
+): Promise<boolean> {
+  const navigated = await page
+    .goto(`https://www.usaa.com${a.account_url}`, {
+      waitUntil: "domcontentloaded",
+      timeout: ACCOUNT_NAV_TIMEOUT_MS,
+    })
+    .then((): true => true)
+    .catch((): false => false);
+  if (!navigated) {
+    await emitCreditCardNavFailureGaps(deps, cardId, options);
+  }
+  return navigated;
+}
+
+/** Scrape and emit one successfully-navigated card's billing detail onto
+ *  whichever of the two credit-card streams are requested. Entity gate: a
+ *  per-card fingerprint that excludes the run-clock `fetched_at`. After the
+ *  Family-2 split the entity body carries only card identity/settings
+ *  (account_id, nickname, credit_limit_cents, APRs, card_holders), so it
+ *  re-emits only on a real settings change — a balance/rewards/cycle-status
+ *  tick no longer versions it. The volatile per-cycle fields go to
+ *  `credit_card_billing_stats`, keyed `{card_id}:{observed_on}` so same-day
+ *  re-pulls are idempotent and a later day appends a new point in the
+ *  series. */
+async function emitCreditCardBillingForCard(
+  deps: EmitDeps,
+  page: Page,
+  a: DashboardAccount,
+  options: CreditCardBillingEmitOptions
+): Promise<void> {
+  const { emitEntity, emitStats, fingerprintCursor, observedOn } = options;
+  await politeDelay(CC_SETTLE_DELAY_MS);
+  const billing = await scrapeCreditCardBilling(page);
+  if (emitEntity) {
+    const rec = buildCreditCardBillingRecord(a, billing, nowIso());
+    if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
+      await deps.emitRecord("credit_card_billing", rec);
+    }
+  }
+  if (emitStats) {
+    await deps.emitRecord("credit_card_billing_stats", buildCreditCardBillingStatsRecord(a, billing, observedOn));
+  }
+}
+
+/** Exported (in addition to being called from `collect()`) purely so its
+ *  DETAIL_COVERAGE emit-path wiring is directly testable with a mocked Page —
+ *  never emit coverage after a caught scrape failure, only after a
+ *  successful enumeration. See singleton-checkpoint-coverage.test.ts. */
+export async function runCreditCardBillingStream(
   deps: EmitDeps,
   page: Page,
   accounts: readonly DashboardAccount[],
@@ -2585,32 +2678,17 @@ async function runCreditCardBillingStream(
       message: "Fetching credit card billing details",
     });
     const cards = creditCardAccounts(accounts);
+    // Cards whose per-card page navigation failed: excluded from `covered`
+    // on both streams (see navigateToCardOrGap / emitCreditCardNavFailureGaps).
+    const navFailedIds = new Set<string>();
     for (const a of cards) {
-      await page
-        .goto(`https://www.usaa.com${a.account_url}`, {
-          waitUntil: "domcontentloaded",
-          timeout: ACCOUNT_NAV_TIMEOUT_MS,
-        })
-        .catch((): undefined => undefined);
-      await politeDelay(CC_SETTLE_DELAY_MS);
-      const billing = await scrapeCreditCardBilling(page);
-      // Entity gate: a per-card fingerprint that excludes the run-clock
-      // `fetched_at`. After the Family-2 split the entity body carries only
-      // card identity/settings (account_id, nickname, credit_limit_cents,
-      // APRs, card_holders), so it re-emits only on a real settings change —
-      // a balance/rewards/cycle-status tick no longer versions it. The
-      // volatile per-cycle fields go to `credit_card_billing_stats`, keyed
-      // `{card_id}:{observed_on}` so same-day re-pulls are idempotent and a
-      // later day appends a new point in the series.
-      if (emitEntity) {
-        const rec = buildCreditCardBillingRecord(a, billing, nowIso());
-        if (!fingerprintCursor || fingerprintCursor.shouldEmit(rec)) {
-          await deps.emitRecord("credit_card_billing", rec);
-        }
+      const cardId = creditCardId(a);
+      const navigated = await navigateToCardOrGap(deps, page, a, cardId, { emitEntity, emitStats });
+      if (!navigated) {
+        navFailedIds.add(cardId);
+        continue;
       }
-      if (emitStats) {
-        await deps.emitRecord("credit_card_billing_stats", buildCreditCardBillingStatsRecord(a, billing, observedOn));
-      }
+      await emitCreditCardBillingForCard(deps, page, a, options);
     }
     if (emitStats) {
       await deps.emit({
@@ -2621,17 +2699,19 @@ async function runCreditCardBillingStream(
       // `credit_card_billing_stats` is `singleton_presence`, re-derived from the
       // same full credit-card-account boundary (`cards`) every run.
       // buildCreditCardBillingStatsRecord never drops a row, so every card in
-      // the boundary is accounted for — `considered === covered === cards.length`,
-      // including 0/0 when the account genuinely holds no credit cards
-      // (verified-empty). See the matching account_stats comment in
-      // emitAccountsStream for why a bare STATE commit is not proof on its own.
+      // the boundary is accounted for except one whose navigation failed this
+      // run (excluded above, reported as a DETAIL_GAP instead) —
+      // `considered === cards.length`, `covered === considered -
+      // navFailedIds.size`, including 0/0 when the account genuinely holds no
+      // credit cards (verified-empty). See the matching account_stats comment
+      // in emitAccountsStream for why a bare STATE commit is not proof alone.
       await emitDetailCoverage(deps, {
         stream: "credit_card_billing_stats",
         stateStream: "credit_card_billing_stats",
         requiredKeys: [],
         hydratedKeys: [],
         considered: cards.length,
-        covered: cards.length,
+        covered: cards.length - navFailedIds.size,
       });
     }
     if (!emitEntity) {
@@ -2660,16 +2740,17 @@ async function runCreditCardBillingStream(
     // `credit_card_billing` is `checkpoint_window`: a full re-scan of the
     // credit-card accounts every run. buildCreditCardBillingRecord never
     // drops a row (unlike inbox_messages' date-parse guard), so every card
-    // enumerated this run is accounted for — `considered === covered ===
-    // cards.length`, including 0/0 when there are no credit cards
-    // (verified-empty, not unmeasured).
+    // enumerated this run is accounted for except one whose navigation
+    // failed (excluded above) — `considered === cards.length`, `covered ===
+    // considered - navFailedIds.size`, including 0/0 when there are no
+    // credit cards (verified-empty, not unmeasured).
     await emitDetailCoverage(deps, {
       stream: "credit_card_billing",
       stateStream: "credit_card_billing",
       requiredKeys: [],
       hydratedKeys: [],
       considered: cards.length,
-      covered: cards.length,
+      covered: cards.length - navFailedIds.size,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

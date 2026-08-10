@@ -1,0 +1,326 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Executable wiring tests for `runInboxStream` and `runCreditCardBillingStream`
+ * — the actual exported functions the connector calls, driven with a mocked
+ * Playwright `Page`, not source inspection.
+ *
+ * These prove, by actually running the code:
+ *   1. A successful scrape emits DETAIL_COVERAGE with the right considered/covered.
+ *   2. A caught navigation failure (page.goto throws) emits SKIP_RESULT and
+ *      NO DETAIL_COVERAGE for inbox_messages — proving the existing catch
+ *      block still short-circuits before the new coverage call is reached.
+ *   3. A caught scrape failure (page.evaluate throws) emits SKIP_RESULT and
+ *      NO DETAIL_COVERAGE for inbox_messages.
+ *   4. runCreditCardBillingStream emits DETAIL_COVERAGE for both
+ *      credit_card_billing and credit_card_billing_stats after a successful
+ *      per-card scrape of every card.
+ *   5. A caught mid-loop scrape failure emits SKIP_RESULT and NO
+ *      DETAIL_COVERAGE for either credit-card stream.
+ *   6. THE WRONG-PAGE COUNTEREXAMPLE: when one card's page.goto silently
+ *      rejects (the pre-existing `.catch(() => undefined)` swallow this fix
+ *      closes), the connector must NOT scrape and attribute that page's
+ *      content to the failed card — it must emit a DETAIL_GAP for that card,
+ *      exclude it from `covered`, and STILL correctly scrape and emit every
+ *      other (successfully-navigated) card. Before the fix, this test fails:
+ *      the swallowed failure fell through to scrapeCreditCardBilling on
+ *      whatever page was still loaded, silently mis-attributing that card's
+ *      billing data.
+ *
+ * `politeDelay` (real setTimeout, 5-6s per card/inbox call in production) is
+ * neutralized with `node:test`'s fake timers so these tests run in
+ * milliseconds — no live browser, no real waits.
+ */
+
+import assert from "node:assert/strict";
+import { mock, test } from "node:test";
+import type { Page } from "playwright";
+import type { DetailCoverageMessage, DetailGapMessage, EmittedMessage } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+import { makeRecordingEmit } from "../../src/test-harness.ts";
+import { type EmitDeps, runCreditCardBillingStream, runInboxStream } from "./index.ts";
+import { validateRecord } from "./schemas.ts";
+import type { DashboardAccount, InboxRow } from "./types.ts";
+
+function makeHarness(): {
+  deps: EmitDeps;
+  emitted: Array<{ stream: string; data: unknown }>;
+  messages: EmittedMessage[];
+} {
+  const harness = makeRecordingEmit(validateRecord);
+  const deps: EmitDeps = { emit: harness.emit, emitRecord: harness.emitRecord };
+  return { deps, emitted: harness.emitted, messages: harness.protocolMessages };
+}
+
+function coverageFor(messages: EmittedMessage[], stream: string): DetailCoverageMessage | undefined {
+  return messages.find(
+    (m): m is DetailCoverageMessage => m.type === "DETAIL_COVERAGE" && m.stream === stream && m.state_stream === stream
+  );
+}
+
+function skipsFor(messages: EmittedMessage[], stream: string): Extract<EmittedMessage, { type: "SKIP_RESULT" }>[] {
+  return messages.filter(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT" && m.stream === stream
+  );
+}
+
+function gapsFor(messages: EmittedMessage[], stream: string): DetailGapMessage[] {
+  return messages.filter((m): m is DetailGapMessage => m.type === "DETAIL_GAP" && m.stream === stream);
+}
+
+/** Runs `fn` with `node:test`'s fake setTimeout enabled and auto-ticking, so
+ *  any `politeDelay(ms)` inside resolves immediately instead of waiting for
+ *  real wall-clock time. Ticks a large fixed amount after every macrotask
+ *  turn, well past the largest real delay constant in this connector
+ *  (CC_SETTLE_DELAY_MS = 6000ms), so every pending politeDelay clears. */
+async function withFastTimers<T>(fn: () => Promise<T>): Promise<T> {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  const ticker = setInterval(() => {
+    mock.timers.tick(10_000);
+  }, 0);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(ticker);
+    mock.timers.reset();
+  }
+}
+
+function makeCard(overrides: Partial<DashboardAccount> = {}): DashboardAccount {
+  return {
+    account_id_raw: "ACCT-CC-0001",
+    account_url: "/my/credit-card?accountId=ACCT-CC-0001",
+    account_type: "credit-card",
+    name: "USAA RATE ADVANTAGE VISA",
+    last_four: "0001",
+    balance_cents: null,
+    raw_text: "USAA RATE ADVANTAGE VISA Ending in *0001",
+    ...overrides,
+  };
+}
+
+// ─── inbox_messages wiring ──────────────────────────────────────────────
+
+function makeInboxPage(rows: InboxRow[] | (() => InboxRow[]), gotoFails = false): Page {
+  return Object.assign({} as Page, {
+    goto: () => (gotoFails ? Promise.reject(new Error("net::ERR_CONNECTION_RESET")) : Promise.resolve(null)),
+    evaluate: () => Promise.resolve(typeof rows === "function" ? rows() : rows),
+  });
+}
+
+test("wiring: runInboxStream emits DETAIL_COVERAGE with considered/covered after a successful scrape", async () => {
+  await withFastTimers(async () => {
+    const run = makeHarness();
+    const page = makeInboxPage([
+      { status: "Read", date_short: "6/1", preview: "Statement ready" },
+      { status: "Unread", date_short: "6/2", preview: "New alert" },
+    ]);
+    await runInboxStream(run.deps, page, {});
+
+    assert.equal(run.emitted.filter((e) => e.stream === "inbox_messages").length, 2, "both rows emitted");
+    const cov = coverageFor(run.messages, "inbox_messages");
+    assert.ok(cov, "successful scrape emits inbox_messages coverage");
+    assert.equal(cov?.considered, 2);
+    assert.equal(cov?.covered, 2);
+    assert.equal(skipsFor(run.messages, "inbox_messages").length, 0, "no skip on a successful run");
+  });
+});
+
+test("wiring: runInboxStream emits SKIP_RESULT and NO coverage when page.goto throws", async () => {
+  await withFastTimers(async () => {
+    const run = makeHarness();
+    const page = makeInboxPage([{ status: "Read", date_short: "6/1", preview: "x" }], /* gotoFails */ true);
+    await runInboxStream(run.deps, page, {});
+
+    assert.equal(run.emitted.filter((e) => e.stream === "inbox_messages").length, 0, "no records on a nav failure");
+    const skips = skipsFor(run.messages, "inbox_messages");
+    assert.equal(skips.length, 1, "a caught navigation failure emits exactly one SKIP_RESULT");
+    assert.equal(skips[0]?.reason, "scrape_failed");
+    assert.equal(
+      coverageFor(run.messages, "inbox_messages"),
+      undefined,
+      "the existing catch block short-circuits BEFORE the new coverage call — a failed run must never claim proof"
+    );
+  });
+});
+
+test("wiring: runInboxStream emits SKIP_RESULT and NO coverage when the scrape itself throws", async () => {
+  await withFastTimers(async () => {
+    const run = makeHarness();
+    const page = Object.assign({} as Page, {
+      goto: () => Promise.resolve(null),
+      evaluate: () => Promise.reject(new Error("page crashed mid-scrape")),
+    });
+    await runInboxStream(run.deps, page, {});
+
+    const skips = skipsFor(run.messages, "inbox_messages");
+    assert.equal(skips.length, 1, "a caught scrape failure emits exactly one SKIP_RESULT");
+    assert.equal(
+      coverageFor(run.messages, "inbox_messages"),
+      undefined,
+      "a scrape exception must never reach the coverage call"
+    );
+  });
+});
+
+test("wiring: runInboxStream on a genuinely empty inbox proves verified-empty via a real run, not just the pure helper", async () => {
+  await withFastTimers(async () => {
+    const run = makeHarness();
+    const page = makeInboxPage([]);
+    await runInboxStream(run.deps, page, {});
+
+    assert.equal(run.emitted.length, 0);
+    const cov = coverageFor(run.messages, "inbox_messages");
+    assert.ok(cov, "a successful empty-inbox scrape still declares coverage");
+    assert.equal(cov?.considered, 0);
+    assert.equal(cov?.covered, 0);
+  });
+});
+
+// ─── credit_card_billing / credit_card_billing_stats wiring ────────────
+
+/** Per-card-aware fake Page: `.goto` records which card URL was navigated
+ *  to (or fails it, per `failUrls`) and `.evaluate` returns billing data
+ *  keyed to whichever URL was last successfully navigated — so a bug that
+ *  scrapes after a swallowed failed navigation is directly observable: the
+ *  billing data attributed to the failed card would be the PRIOR card's
+ *  data, not that card's own (or, for the first card, no valid nav ever
+ *  happened at all). */
+function makeCreditCardPage(failUrls: Set<string> = new Set()): {
+  billingByUrl: Record<string, Record<string, string>>;
+  gotoCalls: string[];
+  page: Page;
+} {
+  const gotoCalls: string[] = [];
+  let currentUrl = "https://www.usaa.com/my/usaa"; // dashboard, pre-loop
+  const billingByUrl: Record<string, Record<string, string>> = {
+    "https://www.usaa.com/my/usaa": { "Current Balance": "$0.00" }, // the wrong-page tell
+  };
+  const page = Object.assign({} as Page, {
+    goto: (url: string) => {
+      gotoCalls.push(url);
+      if (failUrls.has(url)) {
+        return Promise.reject(new Error("net::ERR_CONNECTION_RESET"));
+      }
+      currentUrl = url;
+      return Promise.resolve(null);
+    },
+    evaluate: () => Promise.resolve(billingByUrl[currentUrl] ?? {}),
+  });
+  return { billingByUrl, gotoCalls, page };
+}
+
+test("wiring: runCreditCardBillingStream emits DETAIL_COVERAGE for both streams after a successful scan", async () => {
+  await withFastTimers(async () => {
+    const cards = [
+      makeCard({ account_id_raw: "CC1", account_url: "/my/credit-card?accountId=CC1" }),
+      makeCard({ account_id_raw: "CC2", account_url: "/my/credit-card?accountId=CC2", last_four: "0002" }),
+    ];
+    const { page, billingByUrl } = makeCreditCardPage();
+    billingByUrl[`https://www.usaa.com${cards[0]?.account_url}`] = { "Current Balance": "$100.00" };
+    billingByUrl[`https://www.usaa.com${cards[1]?.account_url}`] = { "Current Balance": "$200.00" };
+
+    const run = makeHarness();
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    await runCreditCardBillingStream(run.deps, page, cards, {
+      emitEntity: true,
+      emitStats: true,
+      fingerprintCursor,
+      observedOn: "2026-06-01",
+    });
+
+    const statsEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing_stats");
+    assert.equal(run.emitted.filter((e) => e.stream === "credit_card_billing").length, 2);
+    assert.equal(statsEmitted.length, 2);
+    const balances = statsEmitted
+      .map((e) => (e.data as { current_balance_cents?: number }).current_balance_cents)
+      .sort((a, b) => (a ?? 0) - (b ?? 0));
+    assert.deepEqual(
+      balances,
+      [10_000, 20_000],
+      "each card's own scraped balance — proves the two cards were navigated and scraped independently, not both reading one page"
+    );
+    const entityCov = coverageFor(run.messages, "credit_card_billing");
+    const statsCov = coverageFor(run.messages, "credit_card_billing_stats");
+    assert.ok(entityCov, "credit_card_billing declares coverage after a successful scan");
+    assert.equal(entityCov?.considered, 2);
+    assert.equal(entityCov?.covered, 2);
+    assert.ok(statsCov, "credit_card_billing_stats declares coverage after a successful scan");
+    assert.equal(statsCov?.considered, 2);
+    assert.equal(statsCov?.covered, 2);
+  });
+});
+
+test("wiring: runCreditCardBillingStream emits SKIP_RESULT and NO coverage when a scrape throws mid-loop", async () => {
+  await withFastTimers(async () => {
+    const cards = [makeCard({ account_id_raw: "CC1" })];
+    const page = Object.assign({} as Page, {
+      goto: () => Promise.resolve(null),
+      evaluate: () => Promise.reject(new Error("page crashed mid-scrape")),
+    });
+
+    const run = makeHarness();
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    await runCreditCardBillingStream(run.deps, page, cards, {
+      emitEntity: true,
+      emitStats: true,
+      fingerprintCursor,
+      observedOn: "2026-06-01",
+    });
+
+    const skips = skipsFor(run.messages, "credit_card_billing");
+    assert.equal(skips.length, 1, "a caught mid-loop scrape failure emits exactly one SKIP_RESULT");
+    assert.equal(coverageFor(run.messages, "credit_card_billing"), undefined);
+    assert.equal(coverageFor(run.messages, "credit_card_billing_stats"), undefined);
+  });
+});
+
+test("wiring: a card whose navigation fails does NOT scrape/attribute the wrong page — gapped, excluded from covered, siblings still correct", async () => {
+  await withFastTimers(async () => {
+    const cc1 = makeCard({ account_id_raw: "CC1", account_url: "/my/credit-card?accountId=CC1", last_four: "0001" });
+    const cc2 = makeCard({ account_id_raw: "CC2", account_url: "/my/credit-card?accountId=CC2", last_four: "0002" });
+    const cc1Url = `https://www.usaa.com${cc1.account_url}`;
+    const cc2Url = `https://www.usaa.com${cc2.account_url}`;
+    // CC1's navigation fails (the pre-existing swallowed .catch case);
+    // CC2 navigates successfully.
+    const { page, billingByUrl, gotoCalls } = makeCreditCardPage(new Set([cc1Url]));
+    billingByUrl[cc2Url] = { "Current Balance": "$50.00" };
+
+    const run = makeHarness();
+    const fingerprintCursor = openFingerprintCursor(undefined, { excludeFromFingerprint: ["fetched_at"] });
+    await runCreditCardBillingStream(run.deps, page, [cc1, cc2], {
+      emitEntity: true,
+      emitStats: true,
+      fingerprintCursor,
+      observedOn: "2026-06-01",
+    });
+
+    assert.deepEqual(gotoCalls, [cc1Url, cc2Url], "both cards were attempted");
+
+    const entityEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing");
+    const statsEmitted = run.emitted.filter((e) => e.stream === "credit_card_billing_stats");
+    assert.equal(entityEmitted.length, 1, "only the successfully-navigated card (CC2) emits an entity record");
+    assert.equal(statsEmitted.length, 1, "only CC2 emits a stats observation");
+    const [cc2Stats] = statsEmitted;
+    assert.ok(cc2Stats, "CC2's stats record was captured");
+    assert.equal(
+      (cc2Stats.data as { current_balance_cents?: number }).current_balance_cents,
+      5000,
+      "CC2's own scraped balance, not CC1's page or the pre-loop dashboard's stale $0.00"
+    );
+
+    const entityGaps = gapsFor(run.messages, "credit_card_billing");
+    const statsGaps = gapsFor(run.messages, "credit_card_billing_stats");
+    assert.equal(entityGaps.length, 1, "the failed-navigation card gets a DETAIL_GAP, not silent loss");
+    assert.equal(entityGaps[0]?.reason, "temporary_unavailable");
+    assert.equal(statsGaps.length, 1, "the stats stream also gets a DETAIL_GAP for the same card");
+
+    const entityCov = coverageFor(run.messages, "credit_card_billing");
+    const statsCov = coverageFor(run.messages, "credit_card_billing_stats");
+    assert.equal(entityCov?.considered, 2, "considered is still the full 2-card boundary");
+    assert.equal(entityCov?.covered, 1, "covered excludes the failed-navigation card — never a false complete");
+    assert.equal(statsCov?.considered, 2);
+    assert.equal(statsCov?.covered, 1);
+  });
+});
