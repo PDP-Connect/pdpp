@@ -287,6 +287,66 @@ test("collectGroupMessages: clean pass across multiple groups sums considered fr
   }
 });
 
+test("collectGroupMessages: a declared since bound stops the newest-first walk cleanly, without fetching further pages", async () => {
+  // Page is newest-first: m1 is in-bounds, m2/m3 are before `since`. A
+  // second page is queued so a bug that ignores `since` (fetches to the
+  // natural PAGE_SIZE end / page cap) would consume it and inflate
+  // `considered` — the assertion on fetchCount below is what catches that.
+  let fetchCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((): Promise<Response> => {
+    fetchCount += 1;
+    if (fetchCount === 1) {
+      return Promise.resolve(new Response(JSON.stringify({ response: [group({ id: "group-1" })] }), { status: 200 }));
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          response: {
+            count: 3,
+            messages: [
+              groupMessage({ id: "m1", created_at: 1_700_000_300 }),
+              groupMessage({ id: "m2", created_at: 1_700_000_050 }),
+              groupMessage({ id: "m3", created_at: 1_700_000_000 }),
+            ],
+          },
+        }),
+        { status: 200 }
+      )
+    );
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emit, emitRecord, emitted } = makeHarness();
+    // since = 1_700_000_100 excludes m2 (1_700_000_050) and m3 (1_700_000_000), includes m1 (1_700_000_300).
+    const outcome = await collectGroupMessages(
+      TOKEN,
+      cursor,
+      undefined,
+      undefined,
+      noopProgress,
+      emit,
+      emitRecord,
+      undefined,
+      1_700_000_100
+    );
+
+    assert.deepEqual(
+      emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id),
+      ["m1"],
+      "only the in-window message emits"
+    );
+    assert.equal(outcome.failed, false, "an honest since-bound stop is a clean pass, not a failure");
+    assert.equal(
+      fetchCount,
+      2,
+      "the groups list plus exactly one message page — the since bound stops before a 2nd page"
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("collectGroupMessages: genuine zero groups reports failed: false, considered: 0", async () => {
   const restore = stubFetch({ response: [] });
   try {
@@ -494,6 +554,62 @@ test("collectDirectChatMessages: clean pass across multiple chats sums considere
     assert.equal(emitted.filter((r) => r.stream === "direct_chat_messages").length, 3);
   } finally {
     restore();
+  }
+});
+
+test("collectDirectChatMessages: a declared since bound stops the newest-first walk cleanly, without fetching further pages", async () => {
+  let fetchCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((): Promise<Response> => {
+    fetchCount += 1;
+    if (fetchCount === 1) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ response: [directChat({ id: "chat-1" })] }), { status: 200 })
+      );
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          response: {
+            count: 2,
+            direct_messages: [
+              directMessage({ id: "d1", created_at: 1_700_000_300 }),
+              directMessage({ id: "d2", created_at: 1_700_000_000 }),
+            ],
+          },
+        }),
+        { status: 200 }
+      )
+    );
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emit, emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(
+      TOKEN,
+      cursor,
+      undefined,
+      undefined,
+      noopProgress,
+      emit,
+      emitRecord,
+      undefined,
+      1_700_000_100
+    );
+
+    assert.deepEqual(
+      emitted.filter((r) => r.stream === "direct_chat_messages").map((r) => (r.data as { id: string }).id),
+      ["d1"],
+      "only the in-window message emits"
+    );
+    assert.equal(outcome.failed, false, "an honest since-bound stop is a clean pass, not a failure");
+    assert.equal(
+      fetchCount,
+      2,
+      "the chats list plus exactly one message page — the since bound stops before a 2nd page"
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

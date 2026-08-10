@@ -644,7 +644,8 @@ async function collectGroupMessagesForGroup(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  maxPages: number = MAX_PAGES_PER_STREAM,
+  sinceEpochSeconds: number | null = null
 ): Promise<PerConversationWalkResult> {
   let beforeId: string | undefined;
   let pageIndex = 0;
@@ -678,6 +679,16 @@ async function collectGroupMessagesForGroup(
     }
 
     for (const msg of messages) {
+      // GroupMe pages messages newest-first (before_id walks backward), so
+      // once a message falls before the declared `since` boundary every
+      // message after it in this and all subsequent pages is also out of
+      // bounds. Stopping here is an honest, fully-considered end of the
+      // DECLARED scope, not a truncation — `truncated` stays false so the
+      // caller still commits STATE and a coverage claim for the boundary it
+      // was asked to walk.
+      if (sinceEpochSeconds !== null && msg.created_at < sinceEpochSeconds) {
+        return { totalSeen, truncated: false };
+      }
       const record = await toGroupMessageRecord(msg, group.id, uploader, emitAttachmentRecord);
       if (cursor.shouldEmit(record)) {
         await emitRecord("group_messages", record);
@@ -861,7 +872,8 @@ async function collectDirectChatMessagesForChat(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  maxPages: number = MAX_PAGES_PER_STREAM,
+  sinceEpochSeconds: number | null = null
 ): Promise<PerConversationWalkResult> {
   let beforeId: string | undefined;
   let pageIndex = 0;
@@ -895,6 +907,12 @@ async function collectDirectChatMessagesForChat(
     }
 
     for (const msg of messages) {
+      // Same newest-first walk-back logic as collectGroupMessagesForGroup: a
+      // message before the declared `since` ends the DECLARED scope cleanly,
+      // not via truncation.
+      if (sinceEpochSeconds !== null && msg.created_at < sinceEpochSeconds) {
+        return { totalSeen, truncated: false };
+      }
       const record = await toDirectChatMessageRecord(msg, chat.id, uploader, emitAttachmentRecord);
       if (cursor.shouldEmit(record)) {
         await emitRecord("direct_chat_messages", record);
@@ -922,7 +940,8 @@ export async function collectDirectChatMessages(
   progressWithSignals: ProgressFn,
   emit: (msg: EmittedMessage) => Promise<void>,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  maxPages: number = MAX_PAGES_PER_STREAM,
+  sinceEpochSeconds: number | null = null
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct messages", {
     stream: "direct_chat_messages",
@@ -953,7 +972,8 @@ export async function collectDirectChatMessages(
           emitAttachmentRecord,
           progressWithSignals,
           emitRecord,
-          maxPages
+          maxPages,
+          sinceEpochSeconds
         );
         considered += chatResult.totalSeen;
         truncated = truncated || chatResult.truncated;
@@ -972,7 +992,8 @@ export async function collectGroupMessages(
   progressWithSignals: ProgressFn,
   emit: (msg: EmittedMessage) => Promise<void>,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  maxPages: number = MAX_PAGES_PER_STREAM,
+  sinceEpochSeconds: number | null = null
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe group messages", { stream: "group_messages", phase: "start" });
   return await runCollectionPass(
@@ -1000,7 +1021,8 @@ export async function collectGroupMessages(
           emitAttachmentRecord,
           progressWithSignals,
           emitRecord,
-          maxPages
+          maxPages,
+          sinceEpochSeconds
         );
         considered += groupResult.totalSeen;
         truncated = truncated || groupResult.truncated;
@@ -1024,6 +1046,22 @@ export async function collectGroupMessages(
  * cursors. There is no prior persisted state to migrate — GroupMe has never
  * shipped a build that read these keys.
  */
+/**
+ * Parse a stream's declared `time_range.since` into epoch seconds for the
+ * newest-first `before_id` walk to compare against `created_at` directly
+ * (avoids a per-message ISO-string reparse). Returns `null` for an absent,
+ * malformed, or unparseable bound — never throws, since a scope-less run
+ * (the default) must behave exactly as before this stop condition existed.
+ */
+function parseSinceEpochSeconds(requested: CollectContext["requested"], stream: string): number | null {
+  const since = requested.get(stream)?.time_range?.since;
+  if (typeof since !== "string" || !since.trim()) {
+    return null;
+  }
+  const parsed = Date.parse(since);
+  return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
+}
+
 export async function collect({
   state,
   requested,
@@ -1068,7 +1106,9 @@ export async function collect({
       emitAttachmentRecord,
       progressWithSignals,
       emit,
-      emitRecord
+      emitRecord,
+      MAX_PAGES_PER_STREAM,
+      parseSinceEpochSeconds(requested, "group_messages")
     );
   }
   let directChatsOutcome: CollectionOutcome | undefined;
@@ -1084,7 +1124,9 @@ export async function collect({
       emitAttachmentRecord,
       progressWithSignals,
       emit,
-      emitRecord
+      emitRecord,
+      MAX_PAGES_PER_STREAM,
+      parseSinceEpochSeconds(requested, "direct_chat_messages")
     );
   }
 
