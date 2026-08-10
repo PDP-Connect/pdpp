@@ -118,6 +118,15 @@ const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = ne
  * site starts failing the gate again, fail-closed by construction).
  */
 const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
+  // cpu-quota.ts's cgroupMounted(): reads /proc/self/cgroup, a Linux kernel
+  // process-introspection path exposing THIS process's own cgroup
+  // membership, to size embedding concurrency to the host's real CPU/memory
+  // quota. Extensionless absolute OS paths are conservatively treated as
+  // possible renamed data files by this scanner's own isDataResourceExtension
+  // heuristic (ext === "" counts as data-shaped) -- this is that heuristic's
+  // documented /proc/${pid}/status false-positive class (see this file's own
+  // checkReadFileCall comment), not a connector/provider identity read.
+  "reference-implementation/server/cpu-quota.ts:58",
   // readJson<T>(path): path is the CLI's own token-cache directory, operator/OS-derived, never connector-identity data.
   "reference-implementation/cli/lib/cache.ts:125",
   // readJsonInput(pathOrDash): explicit CLI `--file`/stdin argument, generic JSON-in-JSON-out CLI utility.
