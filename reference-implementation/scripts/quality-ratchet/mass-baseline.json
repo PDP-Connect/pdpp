@@ -23,6 +23,7 @@
     "runtime/owner-state.ts": 12,
     "runtime/pipe-errors.ts": 1,
     "runtime/progress-validators.ts": 27,
+    "runtime/record-message-validator.ts": 1,
     "runtime/recovery-decision.ts": 30,
     "runtime/recovery-quarantine.ts": 1,
     "runtime/rendered-verdict.ts": 75,
@@ -189,7 +190,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.ts": 11
   },
-  "total": 6948,
+  "total": 6949,
   "meta": {
     "biomeVersion": "2.5.6",
     "maxAllowedComplexity": 5

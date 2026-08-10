@@ -60,6 +60,7 @@ import {
   validateProgressCollectionRate,
   validateProgressProviderBudget,
 } from "./progress-validators.ts";
+import { assertValidRecordEnvelope } from "./record-message-validator.ts";
 import { classifyRecoveryGap } from "./recovery-decision.ts";
 import { DEFAULT_QUARANTINE_POLICY } from "./recovery-quarantine.ts";
 import { redactStderrTail } from "./stderr-redact.ts";
@@ -4182,6 +4183,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
     }
 
     async function handleRecordMessage(msg: ConnectorMessage): Promise<void> {
+      assertValidRecordEnvelope(msg);
       const { key, data, emitted_at, op } = msg;
       // The scope-membership check below is what proves `stream` is a
       // declared stream name; a non-string simply misses the map.
