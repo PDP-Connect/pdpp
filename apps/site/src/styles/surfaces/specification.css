@@ -82,6 +82,39 @@
   margin-inline: 0;
 }
 
+/* The outer `container` supplies the mobile page inset. Fumadocs' own px-4
+   would add a second 1rem inset to the article. */
+@media (max-width: 767.98px) {
+  /* The concept masthead is 4rem on mobile. Fumadocs uses this value as the
+     sticky subnav offset; 3rem let that row overlap the masthead on scroll. */
+  [data-pdpp-doc-theme] #nd-docs-layout {
+    --fd-banner-height: 4rem;
+    --fd-docs-height: calc(100dvh - 4rem);
+    /* The table scrollport outsets through the article's right inset. The grid
+       otherwise clips that extra width before it reaches the outer container. */
+    overflow-x: visible;
+  }
+
+  /* Keep one sticky navigation affordance: the sidebar trigger. The separate
+     TOC popover duplicates that navigation and is the row that crosses the
+     article while scrolling. */
+  [data-pdpp-doc-theme] #nd-subnav {
+    background: var(--pdpp-concept-paper) !important;
+    /* Paint over the table's right-hand bleed without extending the subnav
+       border or changing the position of its controls. */
+    box-shadow: var(--spacing-pad) 0 var(--pdpp-concept-paper);
+    backdrop-filter: none;
+  }
+
+  [data-pdpp-doc-theme] [data-toc-popover] {
+    display: none;
+  }
+
+  [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
+    padding-inline: 0 !important;
+  }
+}
+
 @media (min-width: 768px) {
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
     --pdpp-docs-gutter: 1.5rem;
@@ -385,11 +418,9 @@
 }
 
 [data-pdpp-doc-theme] .pdpp-docs-body table {
-  display: block;
   width: 100%;
   max-width: 100%;
-  margin: 24px 0;
-  overflow-x: auto;
+  margin: 0;
   font-family: var(--font-sans);
   font-size: 15px;
   font-variant-numeric: tabular-nums;
@@ -397,6 +428,14 @@
   background: transparent;
   border: none;
   border-radius: 0;
+}
+
+[data-pdpp-doc-theme] .pdpp-docs-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  margin: 24px 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
 }
 
 /* Fumadocs `.prose` paints tables as fd-card boxes; reset so concept ruled
@@ -457,6 +496,70 @@
   white-space: nowrap;
 }
 
+/* Tables retain their column model on phones. The default first-column
+   nowrap is useful at reading widths, but on a narrow screen it can consume
+   the table and leave the remaining cells as a thin, clipped strip. */
+@media (max-width: 767.98px) {
+  [data-pdpp-doc-theme] .pdpp-docs-table-scroll {
+    width: calc(100% + var(--spacing-pad));
+    max-width: none;
+    margin-inline-end: calc(-1 * var(--spacing-pad));
+  }
+
+  [data-pdpp-doc-theme] .pdpp-docs-body table {
+    display: table;
+    overflow: visible;
+    table-layout: fixed;
+  }
+
+  /* Three-plus columns retain an 11rem reading measure. The scrollport is
+     visibly outset on the right, signalling that more columns are available. */
+  [data-pdpp-doc-theme]
+    .pdpp-docs-table-scroll
+    > table:has(tr > :nth-child(3)) {
+    width: 33rem;
+    max-width: none;
+  }
+
+  [data-pdpp-doc-theme]
+    .pdpp-docs-table-scroll
+    > table:has(tr > :nth-child(4)) {
+    width: 44rem;
+  }
+
+  [data-pdpp-doc-theme]
+    .pdpp-docs-table-scroll
+    > table:has(tr > :nth-child(5)) {
+    width: 55rem;
+  }
+
+  [data-pdpp-doc-theme]
+    .pdpp-docs-table-scroll
+    > table:has(tr > :nth-child(6)) {
+    width: 66rem;
+  }
+
+  [data-pdpp-doc-theme]
+    .pdpp-docs-table-scroll
+    > table:has(tr > :nth-child(7)) {
+    width: 77rem;
+  }
+
+  [data-pdpp-doc-theme]
+    .pdpp-docs-table-scroll
+    > table:has(tr > :nth-child(8)) {
+    width: 88rem;
+  }
+
+  [data-pdpp-doc-theme] .pdpp-docs-body th:first-child,
+  [data-pdpp-doc-theme] .pdpp-docs-body td:first-child,
+  [data-pdpp-doc-theme] .pdpp-docs-body th :not(pre) > code,
+  [data-pdpp-doc-theme] .pdpp-docs-body td :not(pre) > code {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
 [data-pdpp-doc-theme] .pdpp-docs-body [data-card="true"] {
   background: none;
   border: none;
@@ -509,6 +612,18 @@
 }
 
 /* ─── Left rail (Fumadocs sidebar slot → spec-rail.tsx) ──────────────────── */
+
+/* Below the rail's in-flow width the sidebar becomes a fixed drawer
+   (#nd-sidebar-mobile, `invisible fixed`), but fumadocs' grid still reserves
+   its `sidebar` area from --fd-sidebar-width. On a 390px viewport that spent
+   181px on a rail that is not in flow and left the article 169px, which
+   clipped the h1 mid-word. Zero the reserved column; the drawer and its
+   Open Sidebar trigger are unaffected. */
+@media (max-width: 768px) {
+  [data-pdpp-doc-theme] #nd-docs-layout {
+    --fd-sidebar-width: 0px;
+  }
+}
 
 [data-pdpp-doc-theme] #nd-sidebar {
   --fd-sidebar-width: var(--spacing-rail);
