@@ -1126,20 +1126,37 @@ function intersectUidRanges(rangeStr: string, searchUids: readonly number[]): st
 }
 
 /**
+ * Thrown when a message's internalDate is missing or unparseable during exact
+ * boundary filtering. This prevents the run from emitting records and committing
+ * STATE, preserving retryability and preventing false complete claims.
+ *
+ * The message lacks proof of its position relative to the declared scope, so
+ * the entire enumeration must fail and be retried rather than silently
+ * excluding it or returning a false partial.
+ */
+class MissingOrInvalidInternalDateError extends Error {
+  constructor(uid: number | string, detail: string) {
+    super(`UID ${uid}: cannot verify internalDate for exact boundary filtering: ${detail}`);
+    this.name = "MissingOrInvalidInternalDateError";
+  }
+}
+
+/**
  * Compare message timestamp against declared boundary using epoch milliseconds.
  * Returns true if message is at or after the boundary, false if before.
- * Returns null if either timestamp is invalid/missing, signaling the need to
- * withhold coverage rather than silently include/exclude.
+ * Throws MissingOrInvalidInternalDateError if internalDate is missing or
+ * unparseable, preventing silent inclusion or false coverage claims.
  *
  * Lexical comparison of ISO strings fails when offsets differ; epoch comparison
  * is timezone-safe and handles arbitrary precision correctly.
  */
-function isAtOrAfterBoundary(messageTimestamp: Date | string | undefined, boundaryIso: string): boolean | null {
-  // Reject missing/invalid internalDate when exact boundary is declared.
+function isAtOrAfterBoundary(messageTimestamp: Date | string | undefined, boundaryIso: string, uid: number | string): boolean {
+  // Reject missing internalDate when exact boundary is declared.
   // IMAP does not guarantee internalDate presence; without it, we cannot
-  // prove the message is in scope, so withhold coverage rather than guess.
+  // prove the message is in scope. Throw to prevent silent exclusion and
+  // false complete claims; retryability is preserved.
   if (!messageTimestamp) {
-    return null;
+    throw new MissingOrInvalidInternalDateError(uid, "missing");
   }
 
   try {
@@ -1147,13 +1164,19 @@ function isAtOrAfterBoundary(messageTimestamp: Date | string | undefined, bounda
     const boundaryTime = new Date(boundaryIso).getTime();
 
     // Reject unparseable timestamps; can't compare without valid epoch values.
-    if (Number.isNaN(msgTime) || Number.isNaN(boundaryTime)) {
-      return null;
+    if (Number.isNaN(msgTime)) {
+      throw new MissingOrInvalidInternalDateError(uid, `unparseable: "${messageTimestamp}"`);
+    }
+    if (Number.isNaN(boundaryTime)) {
+      throw new Error(`boundary ISO is unparseable: "${boundaryIso}" (internal error)`);
     }
 
     return msgTime >= boundaryTime;
-  } catch {
-    return null;
+  } catch (e) {
+    if (e instanceof MissingOrInvalidInternalDateError) {
+      throw e;
+    }
+    throw new MissingOrInvalidInternalDateError(uid, `exception: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -1188,17 +1211,11 @@ export async function collectMetadata(
     // IMAP SINCE is day-granular; post-filter on exact ISO boundary to honor
     // the stream's declared time_range.since at the second precision. When an
     // exact boundary is declared, every message MUST have a valid internalDate
-    // to prove it's in scope. Missing or unparseable internalDate withholds
-    // coverage and prevents false complete claims.
+    // to prove it's in scope. Throws MissingOrInvalidInternalDateError if unable
+    // to verify, preventing STATE commit and preserving retryability.
     if (sinceIso) {
-      const boundaryCheck = isAtOrAfterBoundary(m.internalDate, sinceIso);
-      if (boundaryCheck === null) {
-        // internalDate missing, invalid, or unparseable. Cannot prove this
-        // message is in scope. Withhold it and return early to signal
-        // incomplete coverage (no partial claims).
-        return metas;
-      }
-      if (!boundaryCheck) {
+      const isInBoundary = isAtOrAfterBoundary(m.internalDate, sinceIso, m.uid ?? "unknown");
+      if (!isInBoundary) {
         // Message before the exact boundary. Skip it; IMAP SINCE (day-granular)
         // included it but exact scope (second-precise) excludes it.
         continue;

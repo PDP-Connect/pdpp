@@ -3636,10 +3636,10 @@ test("collectMetadata: cursor + since intersection preserves incremental fetch r
       }
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
     const metas = await collectMetadata(client, "200:*", "09-Aug-2026", "2026-08-09T00:00:00Z");
 
@@ -3668,10 +3668,10 @@ test("collectMetadata: same-day pre-boundary records are filtered out (day-granu
       }
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
     const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-09T14:00:00Z");
 
@@ -3697,10 +3697,10 @@ test("collectMetadata: verified empty — IMAP search returns no UIDs", async ()
       throw new Error("fetch must not be called on empty search");
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
     const metas = await collectMetadata(client, "1:*", "09-Aug-2030", "2026-08-09T00:00:00Z");
 
@@ -3725,10 +3725,10 @@ test("collectMetadata: interrupted search (exception) withholdsProof — fetch n
       throw new Error("fetch must not be called if search fails");
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
     try {
       await collectMetadata(client, "1:*", "09-Aug-2026", "2026-08-09T00:00:00Z");
@@ -3763,10 +3763,10 @@ test("collectMetadata: without sinceDate/sinceIso (null), full range unchanged b
       }
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
     // sinceDate=null, sinceIso=null → no search, no post-filter
     const metas = await collectMetadata(client, "200:*", null, null);
@@ -3805,10 +3805,10 @@ test("collectMetadata: offset-equivalence in boundary comparison (epoch millisec
       }
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
     // Boundary: 2026-08-09T14:00:00Z (UTC)
     // UID 100: 2026-08-09T14:00:00Z (exact match)
@@ -3846,20 +3846,21 @@ test("collectMetadata: missing internalDate with exact since withholdsProof and 
       }
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
-    // exact sinceIso requires all messages to prove they're in scope
-    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
-
-    assert.equal(
-      metas.length,
-      1,
-      "stops at message with missing internalDate; does not include it or later messages"
-    );
-    assert.equal((metas[0]?.emailId as string), "valid", "only the valid message should be returned");
+    // exact sinceIso requires all messages to prove they're in scope.
+    // Missing internalDate throws error to prevent STATE commit.
+    try {
+      await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
+      assert.fail("should throw on missing internalDate");
+    } catch (e) {
+      assert.ok(e instanceof Error, "error thrown");
+      assert.match(e.message, /UID 101/, "error identifies problematic UID");
+      assert.match(e.message, /missing/, "error indicates missing internalDate");
+    }
   } finally {
     globalThis.process.stdout.write = originalEmit;
   }
@@ -3883,15 +3884,19 @@ test("collectMetadata: unparseable internalDate with exact since withholdsProof"
       }
     });
 
-    const client = {
+    const client: Pick<ImapFlow, "search" | "fetch"> = {
       search,
       fetch,
-    } as any;
+    };
 
-    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
-
-    assert.equal(metas.length, 1, "stops at unparseable internalDate");
-    assert.equal((metas[0]?.emailId as string), "valid");
+    try {
+      await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
+      assert.fail("should throw on unparseable internalDate");
+    } catch (e) {
+      assert.ok(e instanceof Error, "error thrown");
+      assert.match(e.message, /UID 101/, "error identifies problematic UID");
+      assert.match(e.message, /unparseable/, "error indicates unparseable internalDate");
+    }
   } finally {
     globalThis.process.stdout.write = originalEmit;
   }
