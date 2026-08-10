@@ -455,28 +455,30 @@ test("UAT-exposed unproven owner-actionable connector has deterministic exposure
       });
       assert.equal(status, 200);
 
-      const templates = asRecord(body).data;
-      const steam = templates.find((t) => asRecord(t).connector_key === "steam");
+      const bodyRec = asRecord(body);
+      const templates = Array.isArray(bodyRec.data) ? bodyRec.data : [];
+      const steam = templates.find((t: unknown) => asRecord(t).connector_key === "steam");
 
       assert.ok(steam, "steam fixture must be registered");
 
-      const setup = asRecord(steam).setup_plan;
-      const listing = asRecord(steam).public_listing;
+      const steamRec = asRecord(steam);
+      const setup = asRecord(steamRec.setup_plan);
+      const listing = asRecord(steamRec.public_listing);
 
       // Check steam's actionability (if it passes owner_actionable, flag=ON makes it exposed)
       if (setup.owner_actionable === true) {
         // POSITIVE: flag=ON + owner_actionable + unproven => MUST be exposed
-        assert.equal(asRecord(steam).uat_expose_unlisted_connectors, true, "steam: MUST be UAT-exposed with flag=ON and owner_actionable");
+        assert.equal(steamRec.uat_expose_unlisted_connectors, true, "steam: MUST be UAT-exposed with flag=ON and owner_actionable");
         assert.equal(listing.listed, false, "steam: public_listing.listed must stay false");
         assert.equal(listing.status, "unproven", "steam: public_listing.status must stay unproven");
 
         // Verify action is usable (either REST or owner_mediated browser)
-        const actions = asRecord(steam).supported_actions;
-        const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
+        const actions = Array.isArray(steamRec.supported_actions) ? steamRec.supported_actions : [];
+        const initiateAction = actions.find((a: unknown) => asRecord(a).family === "initiate_connection");
         assert.ok(initiateAction, "steam: must have initiate_connection action when exposed");
         const initiateRecord = asRecord(initiateAction);
         assert.ok(
-          ["supported", "owner_mediated"].includes(initiateRecord.status),
+          ["supported", "owner_mediated"].includes(String(initiateRecord.status)),
           `steam: action must be supported or owner_mediated, got ${initiateRecord.status}`
         );
       }
@@ -511,14 +513,16 @@ test("with flag=ON, exposure fact tracks owner_actionable (no allowlist)", async
       });
       assert.equal(status, 200);
 
-      const templates = asRecord(body).data;
-      const steam = templates.find((t) => asRecord(t).connector_key === "steam");
+      const bodyRec = asRecord(body);
+      const templates = Array.isArray(bodyRec.data) ? bodyRec.data : [];
+      const steam = templates.find((t: unknown) => asRecord(t).connector_key === "steam");
 
       assert.ok(steam, "steam must be registered");
 
       // CRITICAL: exposure fact MUST equal owner_actionable (proves no allowlist)
-      const uatExposed = asRecord(steam).uat_expose_unlisted_connectors === true;
-      const isOwnerActionable = asRecord(asRecord(steam).setup_plan).owner_actionable === true;
+      const steamRec = asRecord(steam);
+      const uatExposed = steamRec.uat_expose_unlisted_connectors === true;
+      const isOwnerActionable = asRecord(steamRec.setup_plan).owner_actionable === true;
 
       assert.equal(
         uatExposed,
@@ -710,8 +714,9 @@ test("with flag disabled, positive unproven owner-actionable connectors have uat
     });
     assert.equal(status, 200);
 
-    const templates = asRecord(body).data;
-    const steam = templates.find((t) => asRecord(t).connector_key === "steam");
+    const bodyRec = asRecord(body);
+    const templates = Array.isArray(bodyRec.data) ? bodyRec.data : [];
+    const steam = templates.find((t: unknown) => asRecord(t).connector_key === "steam");
 
     assert.ok(steam, "steam fixture must be registered");
 
