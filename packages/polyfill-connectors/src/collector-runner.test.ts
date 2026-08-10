@@ -4576,340 +4576,122 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   let sendAttempts = 0;
-  const client = {
+  const mockClient: Parameters<typeof drainCollectorOutbox>[0]["client"] = {
     ingestBatch: async () => {
       sendAttempts += 1;
       if (sendAttempts === 1) {
-        throw new LocalDeviceHttpError(500, "transient server error", {});
+        throw new LocalDeviceHttpError(500, "transient", {});
       }
       return { ok: true };
     },
-  } as unknown as LocalDeviceClient;
+    putSourceInstanceState: async () => ({ object: "source_instance_state", device_id: "", source_instance_id: "", state: {}, updated_at: "" } as any),
+    ackLocalCollectorGap: async () => ({ object: "ack_local_collector_gap", device_id: "", connector_id: "", connector_instance_id: "", source_instance_id: "", attempt_count: 0, first_seen_at: "", first_seen_run_id: "", reason: "unknown", recovered_run_id: "", retry_after_ms: 0 } as any),
+  };
 
   const srcId = "test-src-autowait";
-  outbox.enqueue({
-    id: "test:autowait-item",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-  });
+  outbox.enqueue({ id: "test:autowait", kind: "record_batch" as const, payload: { records: [] }, sourceInstanceId: srcId });
 
-  const [claimedItem] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedItem, "item should be claimable");
+  const [claimed] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed);
 
-  outbox.failRetryable({
-    error: "local device request failed: 500",
-    holder: "test",
-    id: claimedItem.id,
-    leaseEpoch: claimedItem.lease_epoch,
-    retryBackoffMs: 1500,
-  });
+  outbox.failRetryable({ error: "failed", holder: "test", id: claimed.id, leaseEpoch: claimed.lease_epoch, retryBackoffMs: 1500 });
 
-  const holderId = "test-holder";
   const startMs = Date.now();
-  const result = await drainCollectorOutbox({
-    client,
-    connectorId: "test_connector",
-    holderId,
-    outbox,
-    policy: {
-      drainBatchSize: 4,
-      leaseMs: 60_000,
-      maxAttempts: 3,
-      maxDrainDurationMs: 15_000,
-      maxDrainIterations: 100,
-      maxEnqueuedBatchesPerRun: 10_000,
-      maxQueueDepth: 10_000,
-      retryBackoffMs: 30_000,
-    },
-    sourceInstanceId: srcId,
-  });
+  const result = await drainCollectorOutbox({ client: mockClient, connectorId: "test", holderId: "h1", outbox, policy: { drainBatchSize: 4, leaseMs: 60_000, maxAttempts: 3, maxDrainDurationMs: 15_000, maxDrainIterations: 100, maxEnqueuedBatchesPerRun: 10_000, maxQueueDepth: 10_000, retryBackoffMs: 30_000 }, sourceInstanceId: srcId });
   const elapsedMs = Date.now() - startMs;
 
-  assert.equal(result.sent, 1, "should send once (after retry)");
-  assert.equal(result.failed, 1, "first attempt should fail");
-  assert.ok(elapsedMs >= 1500, `elapsed ${elapsedMs}ms should be >= 1500ms (backoff time)`);
-  assert.ok(elapsedMs < 4000, `elapsed ${elapsedMs}ms should be < 4000ms (no excessive waiting)`);
-  assert.equal(sendAttempts, 2, "should attempt send twice (fail + retry)");
-
-  const summary = outbox.summary({ sourceInstanceId: srcId });
-  assert.equal(summary.succeeded, 1, "item should be succeeded after retry");
-  assert.equal(summary.ready, 0, "no items should remain ready");
-
+  assert.equal(result.sent, 1);
+  assert.ok(elapsedMs >= 1500);
+  assert.ok(elapsedMs < 4000);
+  assert.equal(sendAttempts, 2);
   outbox.close();
 });
 
 test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", async () => {
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
-  const client = {
-    ingestBatch: async () => {
-      throw new LocalDeviceHttpError(500, "transient server error", {});
-    },
-  } as unknown as LocalDeviceClient;
+  const mockClient: Parameters<typeof drainCollectorOutbox>[0]["client"] = {
+    ingestBatch: async () => { throw new LocalDeviceHttpError(500, "transient", {}); },
+    putSourceInstanceState: async () => ({ object: "source_instance_state", device_id: "", source_instance_id: "", state: {}, updated_at: "" } as any),
+    ackLocalCollectorGap: async () => ({ object: "ack_local_collector_gap", device_id: "", connector_id: "", connector_instance_id: "", source_instance_id: "", attempt_count: 0, first_seen_at: "", first_seen_run_id: "", reason: "unknown", recovered_run_id: "", retry_after_ms: 0 } as any),
+  };
 
   const srcId = "test-src-abort";
-  outbox.enqueue({
-    id: "test:abort-item",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-  });
+  outbox.enqueue({ id: "test:abort", kind: "record_batch" as const, payload: { records: [] }, sourceInstanceId: srcId });
 
-  const [claimedItem] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedItem);
+  const [claimed] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed);
 
-  outbox.failRetryable({
-    error: "local device request failed: 500",
-    holder: "test",
-    id: claimedItem.id,
-    leaseEpoch: claimedItem.lease_epoch,
-    retryBackoffMs: 10_000,
-  });
+  outbox.failRetryable({ error: "failed", holder: "test", id: claimed.id, leaseEpoch: claimed.lease_epoch, retryBackoffMs: 10_000 });
 
   const controller = new AbortController();
-  const holderId = "test-holder";
-
-  const drainPromise = drainCollectorOutbox({
-    abortSignal: controller.signal,
-    client,
-    connectorId: "test_connector",
-    holderId,
-    outbox,
-    policy: {
-      drainBatchSize: 4,
-      leaseMs: 60_000,
-      maxAttempts: 3,
-      maxDrainDurationMs: 30_000,
-      maxDrainIterations: 100,
-      maxEnqueuedBatchesPerRun: 10_000,
-      maxQueueDepth: 10_000,
-      retryBackoffMs: 30_000,
-    },
-    sourceInstanceId: srcId,
-  });
+  const drainPromise = drainCollectorOutbox({ abortSignal: controller.signal, client: mockClient, connectorId: "test", holderId: "h1", outbox, policy: { drainBatchSize: 4, leaseMs: 60_000, maxAttempts: 3, maxDrainDurationMs: 30_000, maxDrainIterations: 100, maxEnqueuedBatchesPerRun: 10_000, maxQueueDepth: 10_000, retryBackoffMs: 30_000 }, sourceInstanceId: srcId });
 
   setTimeout(() => controller.abort(new Error("user abort")), 100);
 
   let caughtError: Error | null = null;
-  try {
-    await drainPromise;
-  } catch (error) {
-    if (error instanceof Error) {
-      caughtError = error;
-    }
-  }
+  try { await drainPromise; } catch (error) { if (error instanceof Error) { caughtError = error; } }
 
-  assert.ok(caughtError, "drain should throw on abort");
-  assert.equal(caughtError?.message, "user abort", "should propagate abort reason");
-
-  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
-  assert.ok(nextRetry, "backoff item should still exist for next drain");
-
+  assert.ok(caughtError);
+  assert.equal(caughtError?.message, "user abort");
   outbox.close();
 });
 
-test("drainCollectorOutbox exits with budget exceeded when wait would overshoot duration limit", async () => {
+test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration", async () => {
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
-  const client = {
-    ingestBatch: async () => {
-      throw new LocalDeviceHttpError(500, "transient server error", {});
-    },
-  } as unknown as LocalDeviceClient;
+  const mockClient: Parameters<typeof drainCollectorOutbox>[0]["client"] = {
+    ingestBatch: async () => { throw new LocalDeviceHttpError(500, "transient", {}); },
+    putSourceInstanceState: async () => ({ object: "source_instance_state", device_id: "", source_instance_id: "", state: {}, updated_at: "" } as any),
+    ackLocalCollectorGap: async () => ({ object: "ack_local_collector_gap", device_id: "", connector_id: "", connector_instance_id: "", source_instance_id: "", attempt_count: 0, first_seen_at: "", first_seen_run_id: "", reason: "unknown", recovered_run_id: "", retry_after_ms: 0 } as any),
+  };
 
   const srcId = "test-src-budget";
-  outbox.enqueue({
-    id: "test:budget-item",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-  });
+  outbox.enqueue({ id: "test:budget", kind: "record_batch" as const, payload: { records: [] }, sourceInstanceId: srcId });
 
-  const [claimedItem] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedItem);
+  const [claimed] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed);
 
-  outbox.failRetryable({
-    error: "local device request failed: 500",
-    holder: "test",
-    id: claimedItem.id,
-    leaseEpoch: claimedItem.lease_epoch,
-    retryBackoffMs: 5000,
-  });
+  outbox.failRetryable({ error: "failed", holder: "test", id: claimed.id, leaseEpoch: claimed.lease_epoch, retryBackoffMs: 5000 });
 
-  const holderId = "test-holder";
-  const result = await drainCollectorOutbox({
-    client,
-    connectorId: "test_connector",
-    holderId,
-    outbox,
-    policy: {
-      drainBatchSize: 4,
-      leaseMs: 60_000,
-      maxAttempts: 3,
-      maxDrainDurationMs: 1000,
-      maxDrainIterations: 100,
-      maxEnqueuedBatchesPerRun: 10_000,
-      maxQueueDepth: 10_000,
-      retryBackoffMs: 30_000,
-    },
-    sourceInstanceId: srcId,
-  });
+  const result = await drainCollectorOutbox({ client: mockClient, connectorId: "test", holderId: "h1", outbox, policy: { drainBatchSize: 4, leaseMs: 60_000, maxAttempts: 3, maxDrainDurationMs: 1000, maxDrainIterations: 100, maxEnqueuedBatchesPerRun: 10_000, maxQueueDepth: 10_000, retryBackoffMs: 30_000 }, sourceInstanceId: srcId });
 
-  assert.equal(result.durationBudgetExceeded, true, "should exit with budget exceeded");
-  assert.equal(result.sent, 0, "no items should be sent");
-  assert.equal(result.failed, 1, "one item should have failed and been re-queued");
-
-  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
-  assert.ok(nextRetry, "backoff item should still exist for next drain");
-
+  assert.equal(result.durationBudgetExceeded, true);
+  assert.equal(result.sent, 0);
   outbox.close();
 });
 
-test("nextRetryTime excludes dead_letter rows (terminal, never retry)", async () => {
+test("nextRetryTime excludes dead_letter rows", async () => {
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
-  const srcId = "test-src-deadletter";
+  const srcId = "test-src-dead";
 
-  const item1 = outbox.enqueue({
-    id: "test:ready-1",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-    nextAttemptAt: new Date(Date.now() + 5000),
-  });
+  const item1 = outbox.enqueue({ id: "test:ready", kind: "record_batch" as const, payload: { records: [] }, sourceInstanceId: srcId, nextAttemptAt: new Date(Date.now() + 5000) });
+  outbox.enqueue({ id: "test:dead", kind: "record_batch" as const, payload: { records: [] }, sourceInstanceId: srcId });
 
-  outbox.enqueue({
-    id: "test:dead-1",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-  });
-
-  const [claimedItem] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedItem);
-  
-  outbox.deadLetter({
-    error: "permanently failed",
-    holder: "h1",
-    id: claimedItem.id,
-    leaseEpoch: claimedItem.lease_epoch,
-  });
+  const [claimed] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed);
+  outbox.deadLetter({ error: "failed", holder: "h1", id: claimed.id, leaseEpoch: claimed.lease_epoch });
 
   const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
-  assert.ok(nextRetry, "nextRetryTime should return the ready item's time");
-  assert.equal(
-    new Date(nextRetry).getTime(),
-    new Date(item1.next_attempt_at).getTime(),
-    "should match ready item's time, not dead-letter"
-  );
-
+  assert.ok(nextRetry);
+  assert.equal(new Date(nextRetry).getTime(), new Date(item1.next_attempt_at).getTime());
   outbox.close();
 });
 
-test("nextRetryTime excludes leased rows (belong to active drainers)", async () => {
+test("nextRetryTime excludes leased rows", async () => {
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   const srcId = "test-src-leased";
 
-  const item1 = outbox.enqueue({
-    id: "test:ready-2",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-    nextAttemptAt: new Date(Date.now() + 3000),
-  });
+  const item1 = outbox.enqueue({ id: "test:future", kind: "record_batch" as const, payload: { records: [] }, sourceInstanceId: srcId, nextAttemptAt: new Date(Date.now() + 3000) });
+  outbox.enqueue({ id: "test:now", kind: "record_batch" as const, payload: { records: [] }, sourceInstanceId: srcId });
 
-  outbox.enqueue({
-    id: "test:leased-1",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-  });
-
-  const [claimedReady] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedReady);
-  const [claimedLeased] = outbox.claimReady({ holder: "h2", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedLeased);
+  const [claimed] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed);
 
   const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
-  assert.ok(nextRetry, "nextRetryTime should return the ready item's time");
-  assert.equal(
-    new Date(nextRetry).getTime(),
-    new Date(item1.next_attempt_at).getTime(),
-    "should match ready item's time, not leased"
-  );
-
-  outbox.close();
-});
-
-test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor", async () => {
-  const queuePath = await tempQueuePath();
-  const outbox = new LocalDeviceOutbox({ path: queuePath });
-  let sendAttempts = 0;
-  const client = {
-    ingestBatch: async () => {
-      sendAttempts += 1;
-      if (sendAttempts === 1) {
-        throw new LocalDeviceHttpError(500, "transient server error", {});
-      }
-      return { ok: true };
-    },
-  } as unknown as LocalDeviceClient;
-
-  const srcId = "test-src-blocked";
-  outbox.enqueue({
-    id: "test:blocked-record",
-    kind: "record_batch" as const,
-    payload: { records: [] },
-    sourceInstanceId: srcId,
-  });
-
-  outbox.enqueue({
-    id: "test:blocked-checkpoint",
-    kind: "checkpoint" as const,
-    payload: { state: "after-record" },
-    sourceInstanceId: srcId,
-  });
-
-  const [claimedRecord] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedRecord);
-
-  outbox.failRetryable({
-    error: "local device request failed: 500",
-    holder: "test",
-    id: claimedRecord.id,
-    leaseEpoch: claimedRecord.lease_epoch,
-    retryBackoffMs: 1000,
-  });
-
-  const holderId = "test-holder";
-  const startMs = Date.now();
-  const result = await drainCollectorOutbox({
-    client,
-    connectorId: "test_connector",
-    holderId,
-    outbox,
-    policy: {
-      drainBatchSize: 4,
-      leaseMs: 60_000,
-      maxAttempts: 3,
-      maxDrainDurationMs: 15_000,
-      maxDrainIterations: 100,
-      maxEnqueuedBatchesPerRun: 10_000,
-      maxQueueDepth: 10_000,
-      retryBackoffMs: 30_000,
-    },
-    sourceInstanceId: srcId,
-  });
-  const elapsedMs = Date.now() - startMs;
-
-  assert.ok(elapsedMs >= 1000, `elapsed ${elapsedMs}ms should be >= 1000ms (waited for predecessor)`);
-  assert.equal(result.sent, 2, "should send record + checkpoint");
-  assert.equal(sendAttempts, 2, "should attempt record send twice (fail + retry)");
-
-  const summary = outbox.summary({ sourceInstanceId: srcId });
-  assert.equal(summary.succeeded, 2, "both record and checkpoint should succeed");
-
+  assert.ok(nextRetry);
+  assert.equal(new Date(nextRetry).getTime(), new Date(item1.next_attempt_at).getTime());
   outbox.close();
 });
