@@ -4037,7 +4037,7 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         detailGapStore as unknown as Parameters<typeof maybeTerminateGap>[0],
         storedGap.gap_id,
         errorInfo,
-        resolveTerminalGapPolicy(connectorId)
+        await resolveTerminalGapPolicy(connectorId)
       );
       return recordTerminalDetailGap(outcome, msg, gapStream, gapReason, gapParentStream, errorInfo);
     }

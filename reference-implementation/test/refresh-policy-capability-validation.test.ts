@@ -141,3 +141,44 @@ test("validateRefreshPolicyCapability: rejects recommended_interval below minimu
 test("validateRefreshPolicyCapability: rejects a bad interaction_posture", () => {
   assertRejects(validPolicy({ interaction_posture: "telepathy" }), "interaction_posture");
 });
+
+// --- max_cooldown_cycles / max_recovery_attempts: bounded, connector-declared
+// recovery/retry budgets (§10-A/§10-B). These gate WHEN a stuck connection
+// surfaces as needs_attention / a gap goes terminal — never WHETHER. A
+// connector must not be able to self-attest an unbounded/extreme value that
+// would defeat that escalation, so both fields are validated against a small
+// positive-integer range instead of the unbounded isPositiveInteger check the
+// interval fields use.
+
+test("validateRefreshPolicyCapability: accepts max_cooldown_cycles / max_recovery_attempts within range", () => {
+  assert.equal(
+    validateRefreshPolicyCapability(validPolicy({ max_cooldown_cycles: 8, max_recovery_attempts: 3 }), CODE),
+    undefined
+  );
+  assert.equal(validateRefreshPolicyCapability(validPolicy({ max_cooldown_cycles: 1 }), CODE), undefined, "min bound");
+  assert.equal(validateRefreshPolicyCapability(validPolicy({ max_cooldown_cycles: 24 }), CODE), undefined, "max bound");
+  assert.equal(validateRefreshPolicyCapability(validPolicy({ max_recovery_attempts: 1 }), CODE), undefined, "min bound");
+  assert.equal(validateRefreshPolicyCapability(validPolicy({ max_recovery_attempts: 20 }), CODE), undefined, "max bound");
+});
+
+test("validateRefreshPolicyCapability: REJECTS an absurd/extreme max_cooldown_cycles or max_recovery_attempts — a connector must not self-attest out of escalation", () => {
+  assertRejects(validPolicy({ max_cooldown_cycles: 999_999_999 }), "max_cooldown_cycles must be an integer between");
+  assertRejects(validPolicy({ max_cooldown_cycles: 25 }), "max_cooldown_cycles must be an integer between");
+  assertRejects(validPolicy({ max_cooldown_cycles: 0 }), "max_cooldown_cycles must be an integer between");
+  assertRejects(validPolicy({ max_cooldown_cycles: -5 }), "max_cooldown_cycles must be an integer between");
+  assertRejects(validPolicy({ max_cooldown_cycles: 1.5 }), "max_cooldown_cycles must be an integer between");
+  assertRejects(
+    validPolicy({ max_cooldown_cycles: Number.POSITIVE_INFINITY }),
+    "max_cooldown_cycles must be an integer between"
+  );
+
+  assertRejects(validPolicy({ max_recovery_attempts: 999_999_999 }), "max_recovery_attempts must be an integer between");
+  assertRejects(validPolicy({ max_recovery_attempts: 21 }), "max_recovery_attempts must be an integer between");
+  assertRejects(validPolicy({ max_recovery_attempts: 0 }), "max_recovery_attempts must be an integer between");
+  assertRejects(validPolicy({ max_recovery_attempts: -5 }), "max_recovery_attempts must be an integer between");
+  assertRejects(validPolicy({ max_recovery_attempts: 1.5 }), "max_recovery_attempts must be an integer between");
+});
+
+test("validateRefreshPolicyCapability: max_cooldown_cycles / max_recovery_attempts are optional (absent is valid)", () => {
+  assert.equal(validateRefreshPolicyCapability(validPolicy(), CODE), undefined);
+});

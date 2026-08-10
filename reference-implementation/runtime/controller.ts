@@ -2003,11 +2003,11 @@ function maxPressureGapAttemptCount(gaps: readonly PendingPressureGap[]): number
   return max;
 }
 
-function buildSchedulerBackoffApi(
+async function buildSchedulerBackoffApi(
   schedule: Schedule,
   facts: ScheduleHistoryFacts,
   ineligibilityReason: string | null
-): SchedulerBackoffApi | null {
+): Promise<SchedulerBackoffApi | null> {
   if (!schedule.enabled || ineligibilityReason) {
     return null;
   }
@@ -2056,7 +2056,7 @@ function buildSchedulerBackoffApi(
   // `recommended_health_state` (cooling_off → needs_attention for a dead-but-
   // 429ing provider), never the dispatch decision.
   const consecutiveCooldownCycles = maxPressureGapAttemptCount(facts.pendingPressureGaps);
-  const cooldown: SourcePressureCooldownDecision = computeConnectionSourcePressureCooldown(
+  const cooldown: SourcePressureCooldownDecision = await computeConnectionSourcePressureCooldown(
     schedule.connector_id,
     facts.pendingPressureGaps,
     intervalMs,
@@ -2121,12 +2121,12 @@ function mergeBackoffAndCooldown(
   };
 }
 
-function scheduleToApi(
+async function scheduleToApi(
   schedule: Schedule | null,
   runtimeProjection: RuntimeProjection | null = null,
   policy: RefreshPolicy | null = null,
   historyFacts: ScheduleHistoryFacts = EMPTY_SCHEDULE_HISTORY_FACTS
-): ScheduleApi | null {
+): Promise<ScheduleApi | null> {
   if (!schedule) {
     return null;
   }
@@ -2163,7 +2163,7 @@ function scheduleToApi(
   // happens to sit at the top of the persisted history.
   const lastFinishedAt = runtimeProjection?.last_finished_at || null;
   const nextDueAt = schedule.enabled && !ineligibilityReason ? computeNextDueAt(schedule, lastFinishedAt) : null;
-  const schedulerBackoff = buildSchedulerBackoffApi(schedule, historyFacts, ineligibilityReason);
+  const schedulerBackoff = await buildSchedulerBackoffApi(schedule, historyFacts, ineligibilityReason);
   // Historical run timestamps (`last_started_at`, `last_finished_at`,
   // `last_successful_at`) remain truthful audit anchors and stay surfaced
   // even for a gated row -- they describe what already happened, not
@@ -2717,7 +2717,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceLeaseManager,
           historyIndex
         );
-        return scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
+        return await scheduleToApi(
+          schedule,
+          runtimeProjection,
+          policy,
+          historyIndex.get(schedule.connector_instance_id)
+        );
       })
     );
     return apis.flatMap((api) => (api ? [api] : []));
@@ -2746,7 +2751,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceLeaseManager,
           historyIndex
         );
-        const api = scheduleToApi(
+        const api = await scheduleToApi(
           schedule,
           runtimeProjection,
           policy,
@@ -2788,7 +2793,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       browserSurfaceLeaseManager,
       historyIndex
     );
-    return scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
+    return await scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
   }
 
   async function upsertSchedule(
@@ -2825,7 +2830,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       });
     }
     const historyIndex = await loadScheduleHistoryIndex();
-    const schedule = scheduleToApi(
+    const schedule = await scheduleToApi(
       await getScheduleRecord(connectorInstanceId),
       getRuntimeProjection(resolvedConnectorId, connectorInstanceId, browserSurfaceLeaseManager, historyIndex),
       policy,
@@ -2859,7 +2864,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     await schedulerStore.setScheduleEnabled(connectorInstanceId, enabled, nowIso());
     const historyIndex = await loadScheduleHistoryIndex();
-    return scheduleToApi(
+    return await scheduleToApi(
       await getScheduleRecord(connectorInstanceId),
       getRuntimeProjection(
         resolvedConnectorId,
@@ -3353,7 +3358,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // reads `isSourcePressureCooldownDeferring`, so the escalation health
     // state is unused here — but using one production entry keeps the seam
     // uniform.
-    const cooldown = computeConnectionSourcePressureCooldown(
+    const cooldown = await computeConnectionSourcePressureCooldown(
       connectorId,
       pendingPressureGaps,
       baseIntervalMs,

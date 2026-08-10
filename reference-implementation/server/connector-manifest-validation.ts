@@ -204,8 +204,25 @@ export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   "rate_limit_sensitivity",
   "bot_detection_sensitivity",
   "background_safe",
+  "max_cooldown_cycles",
+  "max_recovery_attempts",
   "rationale",
 ]);
+
+// Bounds for the two self-attested recovery/retry-budget fields
+// (`max_cooldown_cycles`, `max_recovery_attempts`). These gate WHEN a stuck
+// connection surfaces as `needs_attention` (§10-B) or a gap goes `terminal`
+// (§10-A) — never WHETHER it eventually does (a connector can never opt out
+// of escalation/terminalization by declaring an absurd budget). The range is
+// centered on the RI-owned generic defaults (DEFAULT_COOLDOWN_PROFILE=12,
+// DEFAULT_TERMINAL_GAP_PROFILE=5 in the respective runtime modules) with
+// headroom for a legitimately slower-recovering provider, capped well short
+// of "effectively never". This is the manifest-validation gate; the
+// consuming modules additionally clamp to their own RI hard ceiling at the
+// read site as defense in depth — a rejected-here value should never reach
+// production code, but the read-site clamp holds even if it does.
+export const REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE = { max: 24, min: 1 } as const;
+export const REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE = { max: 20, min: 1 } as const;
 export const RUNTIME_REQUIREMENT_BINDINGS = new Set(["browser", "filesystem", "interactive", "network"]);
 export const STREAM_AVAILABILITY_STATES = new Set(["supported", "unsupported_in_mode", "experimental", "deprecated"]);
 export const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(["future_modes", "mode", "reason", "state"]);
@@ -567,6 +584,34 @@ function validateRefreshPolicyIntervals(pol: Record<string, unknown>, code: stri
   }
 }
 
+// Validates the two self-attested recovery/retry-budget fields
+// (`max_cooldown_cycles`, `max_recovery_attempts`) against a bounded range —
+// a connector MAY declare its own observed budget, but MUST NOT be able to
+// self-attest an unbounded/extreme value that would let a stuck connection
+// escape escalation (§10-B) or a dead resource escape terminalization
+// (§10-A). Order-preserving; split out of validateRefreshPolicyFields to
+// keep each helper's complexity within bounds.
+function validateRefreshPolicyRecoveryBudgets(pol: Record<string, unknown>, code: string): void {
+  if (pol.max_cooldown_cycles !== undefined) {
+    const { max, min } = REFRESH_POLICY_MAX_COOLDOWN_CYCLES_RANGE;
+    if (!isPositiveInteger(pol.max_cooldown_cycles) || (pol.max_cooldown_cycles as number) < min || (pol.max_cooldown_cycles as number) > max) {
+      throw invalidConnectorManifest(
+        `capabilities.refresh_policy.max_cooldown_cycles must be an integer between ${min} and ${max} when declared`,
+        code
+      );
+    }
+  }
+  if (pol.max_recovery_attempts !== undefined) {
+    const { max, min } = REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE;
+    if (!isPositiveInteger(pol.max_recovery_attempts) || (pol.max_recovery_attempts as number) < min || (pol.max_recovery_attempts as number) > max) {
+      throw invalidConnectorManifest(
+        `capabilities.refresh_policy.max_recovery_attempts must be an integer between ${min} and ${max} when declared`,
+        code
+      );
+    }
+  }
+}
+
 // Validates the enum + boolean fields of a refresh_policy (interaction posture,
 // sensitivity levels, background/assisted flags). Order-preserving; split out of
 // validateRefreshPolicyFields to keep each helper's complexity within bounds.
@@ -624,6 +669,7 @@ function validateRefreshPolicyFields(pol: Record<string, unknown>, code: string)
   }
   validateRefreshPolicyIntervals(pol, code);
   validateRefreshPolicyEnumsAndFlags(pol, code);
+  validateRefreshPolicyRecoveryBudgets(pol, code);
 }
 
 export function validateRefreshPolicyCapability(manifest: Record<string, unknown>, code: string): void {

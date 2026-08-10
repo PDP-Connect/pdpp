@@ -675,7 +675,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     // recovery". This threads ADDITIVELY: it only sharpens the health-state
     // recommendation, never the dispatch/drain decision below.
     const consecutiveCooldownCycles = maxPressureGapAttemptCount(freshPressureGaps);
-    const cooldown = computeConnectionSourcePressureCooldown(
+    const cooldown = await computeConnectionSourcePressureCooldown(
       connectorId,
       freshPressureGaps,
       scheduleIntervalMs,

@@ -21,17 +21,38 @@
  * a gap (it arms the source-pressure cooldown instead, §4).
  *
  * maxRecoveryAttempts is a ProviderProfile field. A connector MAY declare its own
- * value (ChatGPT does — the only registry override here), but it can NEVER opt OUT
- * of terminalization: `resolveTerminalGapPolicy` falls every unregistered connector
- * back to a conservative `DEFAULT_TERMINAL_GAP_PROFILE` (spec §10-A option (b) —
+ * value via its manifest's `capabilities.refresh_policy.max_recovery_attempts`
+ * (ChatGPT does — see packages/polyfill-connectors/manifests/chatgpt.json), but
+ * it can NEVER opt OUT of terminalization: `resolveTerminalGapPolicy` falls
+ * every connector with no declared value (or an unresolvable manifest) back to
+ * a conservative `DEFAULT_TERMINAL_GAP_PROFILE` (spec §10-A option (b) —
  * "make the DEFAULT terminal behaviour safe"). This is distinct from the §3 rule-6
  *safety/ban prior* (`pacingMinIntervalMs`, which stays strictly per-provider with
  * NO default): maxRecoveryAttempts is a terminalization budget (how long before a
  * deleted resource is declared gone), not a rate prior — so a safe shared default
  * is correct, and a SILENT skip (the pre-fix null-gate) is the real §10-A bug.
  *
+ * maxRecoveryAttempts ONLY gates how many pending recovery attempts occur
+ * before a gap that `classifyRecoveryError` has ALREADY classified
+ * non-transient flips to terminal — it never touches the transient/
+ * non-transient classification itself (`classifyRecoveryError` takes no
+ * profile input at all). A connector-declared value can therefore only make
+ * terminalization slower, never disable it or redefine what "permanently
+ * gone" means. Two independent gates bound the declared value against a
+ * malicious/buggy self-attestation: manifest validation rejects an
+ * out-of-range declaration outright, and `RI_MAX_RECOVERY_ATTEMPTS_CEILING`
+ * below clamps whatever the manifest says at the read site regardless.
+ *
+ * `terminalGapProfileForConnector` (and therefore `resolveTerminalGapPolicy`)
+ * does real I/O — a DB-backed manifest lookup (`getConnectorManifest`) — to
+ * read that self-attested value instead of consulting a hardcoded
+ * per-connector registry. Both real call sites (`runtime/index.ts`) are
+ * already inside `async` functions.
+ *
  * Ref: docs/research/slvp-ideal-whole-system-spec-2026-06-11.md §10-A
  */
+
+import { getConnectorManifest } from "../auth.ts";
 
 // ─── Non-transient error classification ────────────────────────────────────
 
@@ -112,16 +133,22 @@ export function isAuthFailure(errorInfo: ErrorInfo | null | undefined): boolean 
 
 // ─── Provider profiles ─────────────────────────────────────────────────────
 //
-// Each provider declares its own profile.  There is NO cross-provider default
-// for maxRecoveryAttempts — a missing or inherited value is a build-time error,
-// not a silent borrow of ChatGPT's number (spec §3 rule 6).
+// Each provider declares its own profile via its manifest's
+// `capabilities.refresh_policy.max_recovery_attempts`. There is NO
+// cross-provider default for an explicit declaration — a missing value
+// resolves to null (§3 rule 6); ONLY `resolveTerminalGapPolicy` supplies the
+// safe shared fallback for that case.
 
 interface ProviderProfile {
   readonly maxRecoveryAttempts: number;
 }
 
 /**
- * ChatGPT provider profile for the terminal-gap classifier.
+ * ChatGPT's declared terminal-gap profile, read from its manifest's
+ * `capabilities.refresh_policy.max_recovery_attempts` (currently 3) via
+ * `terminalGapProfileForConnector("chatgpt")`. Kept here only as a
+ * documented reference of the live number — NOT the source of truth; the
+ * manifest is. See packages/polyfill-connectors/manifests/chatgpt.json.
  *
  * maxRecoveryAttempts: after this many in_progress attempts against a
  * non-transient error, the gap transitions to terminal.  Derived from the
@@ -140,16 +167,16 @@ export const CHATGPT_PROVIDER_PROFILE: Readonly<ProviderProfile> = Object.freeze
  * The §10-A silent-lie hole (GAP 2): gap CREATION is universal (`emitDetailGap`
  * is a generic SDK helper; the `DETAIL_GAP` runtime handler is connector-
  * AGNOSTIC) but gap TERMINALIZATION used to be opt-in (gated to a chatgpt-only
- * registry). A connector with no registered profile could therefore emit a
+ * registry). A connector with no declared profile could therefore emit a
  * 404/410/permanent gap that could NEVER go terminal → it stayed `pending`
  * forever → the "recovered everything still available / 100% done" surface lied.
  *
  * The fix is spec §10-A option (b): the DEFAULT terminal behaviour is SAFE.
  * Every connector — declared or not — terminalizes unfillable gaps under this
  * conservative declared default, so no gap path bypasses §10-A. A connector MAY
- * override the budget by registering an explicit profile below, but it can NEVER
- * opt OUT of terminalization. "A connector cannot emit a gap that never goes
- * terminal" is now true by construction, not by registry membership.
+ * override the budget via its manifest, but it can NEVER opt OUT of
+ * terminalization. "A connector cannot emit a gap that never goes terminal" is
+ * now true by construction, not by registry membership.
  *
  * This is NOT a cross-provider safety/pressure BORROW: `maxRecoveryAttempts` is
  * a *terminalization* budget (how many times to retry a deleted resource before
@@ -163,28 +190,48 @@ export const DEFAULT_TERMINAL_GAP_PROFILE: Readonly<ProviderProfile> = Object.fr
   maxRecoveryAttempts: 5,
 });
 
-// Per-connector profile registry. A connector with an EXPLICIT profile here
-// overrides the default budget with its own observed non-transient-error
-// behaviour. A connector NOT listed here does NOT opt out of terminalization —
-// it falls back to DEFAULT_TERMINAL_GAP_PROFILE via `resolveTerminalGapPolicy`
-// (spec §10-A option (b)). The registry value is an override, never a gate.
-const TERMINAL_GAP_PROFILES: Readonly<Record<string, ProviderProfile>> = Object.freeze({
-  chatgpt: CHATGPT_PROVIDER_PROFILE,
-});
+/**
+ * RI-owned hard ceiling on `maxRecoveryAttempts`, enforced at the read site
+ * regardless of what a connector's manifest declares. A connector-declared
+ * value is clamped to this ceiling — never trusted unbounded — so a
+ * self-attested budget can only ever make terminalization slower, never
+ * disable it. It ONLY changes when a gap ALREADY classified non-transient by
+ * `classifyRecoveryError` (which takes no profile input) transitions to
+ * terminal; it can never redefine what "permanently gone" means. Matches the
+ * manifest-validation upper bound
+ * (`REFRESH_POLICY_MAX_RECOVERY_ATTEMPTS_RANGE.max` in
+ * connector-manifest-validation.ts) as defense in depth.
+ */
+export const RI_MAX_RECOVERY_ATTEMPTS_CEILING = 20;
 
 /**
- * Resolve the EXPLICIT per-connector terminal-gap profile, or null when the
- * connector has not registered one. NULL here means "no override" — NOT "do not
- * terminalize". Callers MUST NOT branch `if (profile) terminalize()` on this
- * (that is the §10-A silent-skip hole GAP 1/2 closed); use
- * `resolveTerminalGapPolicy` instead, which always returns a real policy.
- * Matches on the canonical connector key prefix so instance-scoped ids
- * (`chatgpt:default`) resolve to the `chatgpt` profile.
+ * Clamp a candidate `maxRecoveryAttempts` value to the RI hard ceiling.
+ * Returns `null` when the value is not a usable finite positive integer at
+ * all — the caller treats that identically to "no declared override".
+ */
+function clampRecoveryAttempts(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.min(Math.floor(value), RI_MAX_RECOVERY_ATTEMPTS_CEILING);
+}
+
+/**
+ * Resolve the EXPLICIT per-connector terminal-gap profile — the connector's
+ * manifest-declared `capabilities.refresh_policy.max_recovery_attempts`
+ * (clamped to `RI_MAX_RECOVERY_ATTEMPTS_CEILING`) — or null when the
+ * connector has no declared value or its manifest cannot be resolved. NULL
+ * here means "no override" — NOT "do not terminalize". Callers MUST NOT
+ * branch `if (profile) terminalize()` on this (that is the §10-A silent-skip
+ * hole GAP 1/2 closed); use `resolveTerminalGapPolicy` instead, which always
+ * returns a real policy. Matches on the canonical connector key prefix so
+ * instance-scoped ids (`chatgpt:default`) resolve to the `chatgpt` manifest.
+ * Does real I/O (a DB-backed manifest lookup) — see the module doc comment.
  *
  * @param {string} connectorId
- * @returns {{ maxRecoveryAttempts: number } | null}
+ * @returns {Promise<{ maxRecoveryAttempts: number } | null>}
  */
-export function terminalGapProfileForConnector(connectorId: string): ProviderProfile | null {
+export async function terminalGapProfileForConnector(connectorId: string): Promise<ProviderProfile | null> {
   if (typeof connectorId !== "string" || !connectorId) {
     return null;
   }
@@ -192,7 +239,12 @@ export function terminalGapProfileForConnector(connectorId: string): ProviderPro
   if (!base) {
     return null;
   }
-  return TERMINAL_GAP_PROFILES[base] ?? null;
+  const manifest = await getConnectorManifest(base).catch(() => null);
+  const declared = clampRecoveryAttempts(
+    (manifest as { capabilities?: { refresh_policy?: { max_recovery_attempts?: unknown } } } | null)?.capabilities
+      ?.refresh_policy?.max_recovery_attempts
+  );
+  return declared !== null ? { maxRecoveryAttempts: declared } : null;
 }
 
 /**
@@ -204,10 +256,10 @@ export function terminalGapProfileForConnector(connectorId: string): ProviderPro
  * that makes "a connector emits a gap that never goes terminal" impossible.
  *
  * @param {string} connectorId
- * @returns {{ maxRecoveryAttempts: number }}
+ * @returns {Promise<{ maxRecoveryAttempts: number }>}
  */
-export function resolveTerminalGapPolicy(connectorId: string): ProviderProfile {
-  return terminalGapProfileForConnector(connectorId) ?? DEFAULT_TERMINAL_GAP_PROFILE;
+export async function resolveTerminalGapPolicy(connectorId: string): Promise<ProviderProfile> {
+  return (await terminalGapProfileForConnector(connectorId)) ?? DEFAULT_TERMINAL_GAP_PROFILE;
 }
 
 // ─── maybeTerminateGap ─────────────────────────────────────────────────────
