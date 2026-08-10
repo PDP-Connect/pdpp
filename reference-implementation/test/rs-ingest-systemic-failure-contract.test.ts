@@ -43,13 +43,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { closeDb, getDb, initDb } from "./../server/db.ts";
+import { closePostgresStorage, initPostgresStorage, postgresQuery } from "./../server/postgres-storage.ts";
 import { classifyIngestFailure, ingestRecord, ingestRecords } from "./../server/records.ts";
 import { mountRsRecordsIngest } from "./../server/routes/rs-mutation.ts";
 import { writeSqliteRunHistoryForSpineEvent } from "./../server/stores/run-history-writer.ts";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.ts";
+import { withTemporaryPostgresDatabase } from "./helpers/postgres-temp-database.ts";
 
 const STREAM = "items";
 const RUN_TERMINAL_RE = /run .* is already terminal/;
 const IDENTITY_MISMATCH_RE = /key and data\.id disagree/;
+const FIXED_TEMPLATE_RE = /systemic\/retryable record failure/;
+const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
 function freshDb(t: TestContext): void {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-ingest-systemic-contract-"));
@@ -258,7 +263,15 @@ test("a SINGLE systemic failure (run_terminal) among otherwise-valid records fai
     (err: unknown) => {
       const typed = err as { code?: string; message?: string };
       assert.equal(typed.code, "ingest_batch_storage_error", "the typed 503-mapped code must be surfaced");
-      assert.match(typed.message ?? "", RUN_TERMINAL_RE);
+      // The public `.message` is the FIXED, bounded template — it must NEVER
+      // embed the underlying run_terminal message. See
+      // rs-ingest-systemic-failure-redaction.test.ts for the full external
+      // HTTP-response/persisted-event proof (rs-mutation.ts's catch site
+      // maps to a plain `new Error(message)` before this point, so the raw
+      // detail does not survive even as far as this in-process error object
+      // — checked here at the operation-throw boundary, not after mapping).
+      assert.match(typed.message ?? "", FIXED_TEMPLATE_RE);
+      assert.doesNotMatch(typed.message ?? "", RUN_TERMINAL_RE);
       return true;
     }
   );
@@ -338,3 +351,175 @@ test("typed 503: ingest_batch_storage_error maps to HTTP 503 in the status table
   const { codeToStatus } = await import("./../server/routes/ref-error-status.ts");
   assert.equal(codeToStatus.ingest_batch_storage_error, 503);
 });
+
+// --- Postgres route-path parity ----------------------------------------
+//
+// Production runs on Postgres, not SQLite — the classification, envelope,
+// and non-2xx-on-systemic-failure behavior proven above must hold on the
+// real backend, not just the one the rest of this file happens to default
+// to. ingestRecord/ingestRecords/classifyIngestFailure all dispatch on
+// isPostgresStorageBackend() internally (records.ts), so once
+// initPostgresStorage runs, mountRealIngestRoute exercises the exact same
+// route code against real Postgres writes with zero mocking of the
+// classification or storage path — not a claim of "backend-agnostic",
+// a proof against the actual backend production uses.
+//
+// Runs ONLY against a disposable, per-test database on the repo's dedicated
+// test-only Postgres listener (127.0.0.1:55447 — see
+// helpers/dedicated-postgres-test-url.ts's isDedicatedPostgresTestDatabaseName
+// grammar). dedicatedPostgresTestUrl rejects anything else outright,
+// including any shared dev/production instance on a different host or port
+// — this suite must never connect to, seed, or mutate such an instance.
+// withTemporaryPostgresDatabase (helpers/postgres-temp-database.ts) creates
+// a fresh CREATE DATABASE before the test body and force-DROPs it after,
+// regardless of pass/fail, so no row this suite writes outlives the test.
+
+async function seedActiveConnectionPostgres(connectorId: string, connectorInstanceId: string): Promise<void> {
+  const now = new Date().toISOString();
+  await postgresQuery("INSERT INTO connectors(connector_id, manifest, created_at) VALUES ($1, '{}', $2)", [
+    connectorId,
+    now,
+  ]);
+  await postgresQuery(
+    `INSERT INTO connector_instances(
+       connector_instance_id, owner_subject_id, connector_id, display_name, status,
+       source_kind, source_binding_key, source_binding_json, created_at, updated_at
+     ) VALUES ($1, 'owner', $2, 'Postgres systemic contract probe', 'active', 'account', $3, '{}', $4, $5)`,
+    [connectorInstanceId, connectorId, connectorInstanceId, now, now]
+  );
+}
+
+async function startRunPostgres(runId: string, connectorId: string, connectorInstanceId: string): Promise<void> {
+  await postgresQuery(
+    `INSERT INTO run_history(run_id, connector_instance_id, connector_id, source_json, status, known_gaps_json, started_at, attempt)
+     VALUES($1, $2, $3, '{}'::jsonb, 'running', '[]'::jsonb, now(), 1)`,
+    [runId, connectorInstanceId, connectorId]
+  );
+}
+
+async function cancelRunPostgres(runId: string, connectorInstanceId: string): Promise<void> {
+  const result = await postgresQuery<{ status: string }>(
+    `UPDATE run_history SET status = 'cancelled', completed_at = now()
+     WHERE run_id = $1 AND connector_instance_id = $2 AND status = 'running'
+     RETURNING status`,
+    [runId, connectorInstanceId]
+  );
+  assert.equal(
+    result.rows[0]?.status,
+    "cancelled",
+    "test setup: the run_history row transitioned to cancelled on Postgres"
+  );
+}
+
+async function readCommittedRecordPostgres(
+  connectorInstanceId: string,
+  key: string
+): Promise<{ record_key: string } | undefined> {
+  const result = await postgresQuery<{ record_key: string }>(
+    "SELECT record_key FROM records WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = false",
+    [connectorInstanceId, STREAM, key]
+  );
+  return result.rows[0];
+}
+
+if (POSTGRES_URL) {
+  test("Postgres route path: a single systemic failure (run_terminal) fails the WHOLE request non-2xx against the REAL Postgres backend", async () => {
+    await withTemporaryPostgresDatabase(
+      {
+        closeConnections: closePostgresStorage,
+        connectionString: POSTGRES_URL,
+        databaseName: `pdpp_test_ingest_systemic_${process.pid}`,
+      },
+      async (url) => {
+        initDb(":memory:");
+        await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+        try {
+          const connectorId = "pg-systemic-probe";
+          const connectorInstanceId = "cin_pg_systemic_probe";
+          const runId = "run_pg_systemic_probe";
+
+          await seedActiveConnectionPostgres(connectorId, connectorInstanceId);
+          await startRunPostgres(runId, connectorId, connectorInstanceId);
+          await cancelRunPostgres(runId, connectorInstanceId);
+
+          const { handler, jsonBody, res } = mountRealIngestRoute({ connectorId, connectorInstanceId });
+
+          await assert.rejects(
+            async () =>
+              await handler(
+                ingestRequest('{"key":"pg1","data":{"id":"pg1"}}', { connectorId, connectorInstanceId, runId }),
+                res
+              ),
+            (err: unknown) => {
+              const typed = err as { code?: string; message?: string };
+              assert.equal(
+                typed.code,
+                "ingest_batch_storage_error",
+                "the typed 503-mapped code must be surfaced on Postgres"
+              );
+              // Same fixed, bounded public template as SQLite — no raw
+              // run_terminal detail leaking through on the Postgres path either.
+              assert.match(typed.message ?? "", FIXED_TEMPLATE_RE);
+              assert.doesNotMatch(typed.message ?? "", RUN_TERMINAL_RE);
+              return true;
+            },
+            "a fenced write for a cancelled run must surface as a non-2xx systemic failure against real Postgres"
+          );
+          assert.equal(jsonBody(), undefined, "no 200 envelope must ever be built for a systemic failure on Postgres");
+          assert.equal(await readCommittedRecordPostgres(connectorInstanceId, "pg1"), undefined);
+        } finally {
+          await closePostgresStorage();
+          closeDb();
+        }
+      }
+    );
+  });
+
+  test("Postgres route path: ALL records failing PERMANENTLY (invalid_record_identity) resolves the 200 envelope against real Postgres, never throws", async () => {
+    await withTemporaryPostgresDatabase(
+      {
+        closeConnections: closePostgresStorage,
+        connectionString: POSTGRES_URL,
+        databaseName: `pdpp_test_ingest_permanent_${process.pid}`,
+      },
+      async (url) => {
+        initDb(":memory:");
+        await initPostgresStorage({ backend: "postgres", databaseUrl: url });
+        try {
+          const connectorId = "pg-all-permanent-probe";
+          const connectorInstanceId = "cin_pg_all_permanent_probe";
+
+          await seedActiveConnectionPostgres(connectorId, connectorInstanceId);
+          const { handler, jsonBody, res } = mountRealIngestRoute({ connectorId, connectorInstanceId });
+
+          const body = '{"key":"not_pg2","data":{"id":"pg2"}}\n{"key":"not_pg3","data":{"id":"pg3"}}';
+          await handler(ingestRequest(body, { connectorId, connectorInstanceId }), res);
+
+          const envelope = jsonBody() as {
+            errors: readonly string[];
+            records_accepted: number;
+            records_rejected: number;
+          };
+          assert.equal(envelope.records_accepted, 0);
+          assert.equal(envelope.records_rejected, 2);
+          assert.ok(
+            envelope.errors.every((e) => IDENTITY_MISMATCH_RE.test(e)),
+            "both rejections must be the real permanent identity-mismatch error on Postgres, not a generic message"
+          );
+          assert.equal(await readCommittedRecordPostgres(connectorInstanceId, "pg2"), undefined);
+        } finally {
+          await closePostgresStorage();
+          closeDb();
+        }
+      }
+    );
+  });
+} else {
+  test("Postgres route-path systemic classification parity (skipped: no dedicated PDPP_TEST_POSTGRES_URL)", {
+    skip: true,
+  }, () => {
+    // See test/run-history-duplicate-run-id-identity.test.ts for this
+    // repo's dedicated-test-Postgres convention (127.0.0.1:55447, disposable
+    // per-test database via withTemporaryPostgresDatabase).
+  });
+}

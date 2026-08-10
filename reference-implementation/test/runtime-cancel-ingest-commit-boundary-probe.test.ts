@@ -444,7 +444,11 @@ test("HTTP wire-through: POST /v1/ingest/:stream's ?run_id= query param reaches 
     (err: unknown) => {
       const typed = err as { code?: string; message?: string };
       assert.equal(typed.code, "ingest_batch_storage_error");
-      assert.match(typed.message ?? "", RUN_TERMINAL_ERROR_RE);
+      // The public `.message` is a fixed, bounded template — it must NEVER
+      // embed the underlying run_terminal detail (external-boundary
+      // redaction; see rs-ingest-systemic-failure-redaction.test.ts for the
+      // full HTTP-response/persisted-event proof).
+      assert.doesNotMatch(typed.message ?? "", RUN_TERMINAL_ERROR_RE);
       return true;
     },
     "a fenced write for a cancelled run must surface as a non-2xx systemic failure, not a 200 partial-rejection envelope"

@@ -151,16 +151,46 @@ export class RecordsIngestNotFoundError extends Error {
  * write is never rolled back, and retrying the same batch is safe because
  * ingest is idempotent per the manifest's primary_key/upsert semantics, so
  * an accepted-prefix does not duplicate on retry.
+ *
+ * `.message` is a FIXED, bounded template carrying only the stream name and
+ * a count — both already public (the stream name is manifest-declared; the
+ * caller submitted the count itself). It NEVER interpolates the underlying
+ * classified failure's own message. That underlying text originates from
+ * `classifyIngestFailure`'s catch-all (any error a host does not recognize —
+ * a raw SQLite/Postgres driver error, in production) and can carry SQL
+ * fragments, bound-parameter values, or other storage-internal detail that
+ * must never reach the external HTTP response or the persisted
+ * `mutation.rejected` spine event (an owner-facing "trace show" artifact,
+ * not an internal-only sink). The raw detail is preserved ONLY on
+ * `firstRetryableFailureMessage` — a field this Error carries but that is
+ * NOT part of `.message`, so a caller with a legitimate internal-diagnostics
+ * reason to read it (server-side logging) opts in explicitly rather than
+ * inheriting it through ordinary `.message` propagation. No existing
+ * internal-only diagnostics channel is wired into this route today, so this
+ * field is deliberately inert (read by nothing yet) rather than routed
+ * through a fabricated one; wiring a real sink is a separate, deliberate
+ * decision, not an incidental side effect of this fix.
  */
 export class RecordsIngestSystemicFailureError extends Error {
   readonly code: "ingest_batch_storage_error";
+  /** Raw diagnostic detail — NEVER read by callers building an external response or persisted event. */
+  readonly firstRetryableFailureMessage: string | null;
   readonly retryableFailureCount: number;
 
-  constructor(message: string, retryableFailureCount: number) {
-    super(message);
+  constructor(
+    streamName: string,
+    retryableFailureCount: number,
+    submittedCount: number,
+    diagnosticFirstRetryableFailureMessage: string | null
+  ) {
+    super(
+      `Ingest for stream '${streamName}' had ${retryableFailureCount} systemic/retryable record failure(s) ` +
+        `out of ${submittedCount} submitted; retry the batch`
+    );
     this.name = "RecordsIngestSystemicFailureError";
     this.code = "ingest_batch_storage_error";
     this.retryableFailureCount = retryableFailureCount;
+    this.firstRetryableFailureMessage = diagnosticFirstRetryableFailureMessage;
   }
 }
 
@@ -371,11 +401,11 @@ export async function executeRecordsIngest(
   // retryable failure is strictly safer than the 200 envelope this replaces.
   const retryableFailureCount = countRetryableFailures(parsed.lineErrors);
   if (retryableFailureCount > 0) {
-    const firstMessage = firstRetryableFailureMessage(parsed.lineErrors);
     throw new RecordsIngestSystemicFailureError(
-      `Ingest for stream '${input.streamName}' had ${retryableFailureCount} systemic/retryable record failure(s) ` +
-        `out of ${lines.length} submitted; first: ${firstMessage ?? "(no message)"}`,
-      retryableFailureCount
+      input.streamName,
+      retryableFailureCount,
+      lines.length,
+      firstRetryableFailureMessage(parsed.lineErrors)
     );
   }
 
