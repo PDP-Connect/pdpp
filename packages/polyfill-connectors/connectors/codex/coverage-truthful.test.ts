@@ -315,11 +315,6 @@ test("codex coverage truth: existing file re-parsed counts as examined", async (
   assert(messagesRecord1, "first run must have coverage record");
   assert.equal(messagesRecord1.data.status, "collected", "first run with emitted records should show collected");
 
-  // Extract STATE to verify examined info
-  const states1 = result1.messages.filter(
-    (m): m is Extract<any, { type: "STATE" }> => m.type === "STATE" && m.stream === "coverage_diagnostics"
-  );
-
   // Second run with fresh invocation should re-scan files
   const result2 = await runConnectorProtocolSubprocess({
     allowFailedDone: true,
