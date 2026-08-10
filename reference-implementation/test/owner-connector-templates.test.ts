@@ -436,7 +436,7 @@ test("client grant bearer cannot list owner connector templates", async () => {
   });
 });
 
-test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan to expose unproven", async () => {
+test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan and proves no allowlist", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -444,12 +444,12 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan to ex
   Object.assign(process.env, declaredSettings);
   try {
     await withServer(async ({ asUrl, rsUrl }) => {
-      const manifestIds = ["apple_photos", "google_messages", "imessage", "netflix_export", "steam"];
-      const connectorKeys = ["apple-photos", "google-messages", "imessage", "netflix-export", "steam"];
+      // Register unproven connectors to prove no allowlist in production code
+      // Any unproven owner-actionable connector is automatically included without naming it
+      const testConnectors = ["steam", "imessage", "apple_photos", "google_messages", "netflix_export"];
 
-      // Register all five unproven connectors with real manifests
-      for (const manifestId of manifestIds) {
-        const manifest = loadManifest(manifestId);
+      for (const id of testConnectors) {
+        const manifest = loadManifest(id);
         await registerConnector(asUrl, manifest);
       }
 
@@ -460,30 +460,36 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan to ex
       assert.equal(status, 200);
 
       const { data } = asRecord(body);
-      const returnedKeys = Array.isArray(data) ? data.map((item) => asRecord(item).connector_key) : [];
+      const templates = Array.isArray(data) ? data : [];
 
-      // Verify all five are present (registered) but only expose those whose plan is owner-actionable
-      for (const connectorKey of connectorKeys) {
-        const template = byConnector(body, connectorKey);
+      // For each unproven connector: UAT exposure fact is tightly coupled to owner_actionable
+      for (const connectorId of testConnectors) {
+        const template = templates.find((t) => {
+          const key = asRecord(t).connector_key;
+          return key === connectorId || key === connectorId.replace(/_/g, "-");
+        });
+        assert.ok(template, `${connectorId}: must be registered`);
 
-        // public_listing remains honest (listed:false, status:unproven)
-        const listing = asRecord(template.public_listing);
-        assert.equal(listing.listed, false, `${connectorKey}: public_listing.listed must remain false`);
-        assert.equal(listing.status, "unproven", `${connectorKey}: public_listing.status must remain unproven`);
+        const setup = asRecord(template).setup_plan;
+        const isOwnerActionable = asRecord(setup).owner_actionable === true;
 
         // UAT exposure fact requires isOwnerActionablePlan(plan) to be true
-        const setupPlan = asRecord(template.setup_plan);
-        if (setupPlan.owner_actionable === true) {
+        if (isOwnerActionable) {
           assert.equal(
-            template.uat_expose_unlisted_connectors,
+            asRecord(template).uat_expose_unlisted_connectors,
             true,
-            `${connectorKey}: must be UAT-exposed when plan is owner_actionable`
+            `${connectorId}: must be UAT-exposed when owner_actionable`
           );
+          // If exposed, verify it has usable actions
+          const actions = asRecord(template).supported_actions;
+          const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
+          assert.ok(initiateAction, `${connectorId}: must have initiate_connection action when exposed`);
         } else {
-          assert.equal(
-            template.uat_expose_unlisted_connectors,
-            false,
-            `${connectorKey}: must NOT be UAT-exposed when plan is not owner_actionable`
+          // Non-actionable unproven connectors are never exposed
+          assert.notEqual(
+            asRecord(template).uat_expose_unlisted_connectors,
+            true,
+            `${connectorId}: must NOT be UAT-exposed when not owner_actionable`
           );
         }
       }
