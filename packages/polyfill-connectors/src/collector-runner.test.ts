@@ -4571,3 +4571,196 @@ test("runCollectorConnector recovers acknowledged local gaps only after a succes
     await harness.close();
   }
 });
+
+test("drainCollectorOutbox auto-waits for backoff-delayed items and retries within budget", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  let sendAttempts = 0;
+  const client: Pick<LocalDeviceClient, "ingestBatch"> = {
+    ingestBatch: async () => {
+      sendAttempts += 1;
+      if (sendAttempts === 1) {
+        throw new LocalDeviceHttpError(500, "transient server error", {});
+      }
+    },
+  };
+
+  const srcId = "test-src-autowait";
+  outbox.enqueue({
+    id: "test:autowait-item",
+    kind: "record_batch",
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+  });
+
+  const [claimed] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed, "item should be claimable");
+
+  outbox.failRetryable({
+    error: "local device request failed: 500",
+    holder: "test",
+    id: claimed.id,
+    leaseEpoch: claimed.lease_epoch,
+    retryBackoffMs: 1500,
+  });
+
+  const holderId = "test-holder";
+  const startMs = Date.now();
+  const result = await drainCollectorOutbox({
+    client,
+    connectorId: "test_connector",
+    holderId,
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 15_000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      retryBackoffMs: 30_000,
+    },
+    sourceInstanceId: srcId,
+  });
+  const elapsedMs = Date.now() - startMs;
+
+  assert.equal(result.sent, 1, "should send once (after retry)");
+  assert.equal(result.failed, 1, "first attempt should fail");
+  assert.ok(elapsedMs >= 1500, `elapsed ${elapsedMs}ms should be >= 1500ms (backoff time)`);
+  assert.ok(elapsedMs < 4000, `elapsed ${elapsedMs}ms should be < 4000ms (no excessive waiting)`);
+  assert.equal(sendAttempts, 2, "should attempt send twice (fail + retry)");
+
+  const summary = outbox.summary({ sourceInstanceId: srcId });
+  assert.equal(summary.succeeded, 1, "item should be succeeded after retry");
+  assert.equal(summary.ready, 0, "no items should remain ready");
+
+  outbox.close();
+});
+
+test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const client: Pick<LocalDeviceClient, "ingestBatch"> = {
+    ingestBatch: async () => {
+      throw new LocalDeviceHttpError(500, "transient server error", {});
+    },
+  };
+
+  const srcId = "test-src-abort";
+  outbox.enqueue({
+    id: "test:abort-item",
+    kind: "record_batch",
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+  });
+
+  const [claimed] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed);
+
+  outbox.failRetryable({
+    error: "local device request failed: 500",
+    holder: "test",
+    id: claimed.id,
+    leaseEpoch: claimed.lease_epoch,
+    retryBackoffMs: 10_000,
+  });
+
+  const controller = new AbortController();
+  const holderId = "test-holder";
+
+  const drainPromise = drainCollectorOutbox({
+    abortSignal: controller.signal,
+    client,
+    connectorId: "test_connector",
+    holderId,
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 30_000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      retryBackoffMs: 30_000,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  setTimeout(() => controller.abort(new Error("user abort")), 100);
+
+  let caughtError: Error | null = null;
+  try {
+    await drainPromise;
+  } catch (error) {
+    if (error instanceof Error) {
+      caughtError = error;
+    }
+  }
+
+  assert.ok(caughtError, "drain should throw on abort");
+  assert.equal(caughtError?.message, "user abort", "should propagate abort reason");
+
+  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
+  assert.ok(nextRetry, "backoff item should still exist for next drain");
+
+  outbox.close();
+});
+
+test("drainCollectorOutbox exits with budget exceeded when wait would overshoot duration limit", async () => {
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const client: Pick<LocalDeviceClient, "ingestBatch"> = {
+    ingestBatch: async () => {
+      throw new LocalDeviceHttpError(500, "transient server error", {});
+    },
+  };
+
+  const srcId = "test-src-budget";
+  outbox.enqueue({
+    id: "test:budget-item",
+    kind: "record_batch",
+    payload: { records: [] },
+    sourceInstanceId: srcId,
+  });
+
+  const [claimed] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimed);
+
+  outbox.failRetryable({
+    error: "local device request failed: 500",
+    holder: "test",
+    id: claimed.id,
+    leaseEpoch: claimed.lease_epoch,
+    retryBackoffMs: 5000,
+  });
+
+  const holderId = "test-holder";
+  const result = await drainCollectorOutbox({
+    client,
+    connectorId: "test_connector",
+    holderId,
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 1000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      retryBackoffMs: 30_000,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  assert.equal(result.durationBudgetExceeded, true, "should exit with budget exceeded");
+  assert.equal(result.sent, 0, "no items should be sent");
+  assert.equal(result.failed, 1, "one item should have failed and been re-queued");
+
+  const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
+  assert.ok(nextRetry, "backoff item should still exist for next drain");
+
+  outbox.close();
+});
