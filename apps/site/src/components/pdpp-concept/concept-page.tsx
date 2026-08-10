@@ -52,7 +52,7 @@ export function PdppConceptDoc({ children, className }: ConceptDocProps) {
         // components.css — not on this shell (tables/terminal stay wide).
         "min-w-0 max-w-full pt-[calc(var(--spacing-section-gap)/1.5)] pb-[calc(var(--spacing-section-gap)*1.25)]",
         // max-lg
-        "max-lg:pt-[calc(var(--spacing-section-gap)/3)] max-lg:pb-[calc(var(--spacing-section-gap)*0.75)]",
+        "max-md:pt-0 max-lg:pt-[calc(var(--spacing-section-gap)/3)] max-lg:pb-[calc(var(--spacing-section-gap)*0.75)]",
         "[&_[data-slot=pdpp-concept-text]_a]:link-prose",
         "[&_a:not([class])]:link-prose",
         className
