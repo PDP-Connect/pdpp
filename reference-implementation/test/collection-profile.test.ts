@@ -1295,6 +1295,81 @@ test("Collection Profile conformance", async (t) => {
   );
 
   await t.test(
+    "a declared collection_scope.since is folded ONLY into manifest streams with a non-empty consent_time_field — non-temporal streams stay unscoped",
+    async () => {
+      const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+      const { asPort, rsPort } = server;
+      const manifest = {
+        ...MINIMAL_MANIFEST,
+        connector_id: "test-hosted-mixed-temporal-scope",
+        streams: [
+          {
+            consent_time_field: "source_updated_at",
+            name: "temporal_items",
+            primary_key: ["id"],
+            schema: {
+              properties: {
+                id: { type: "string" },
+                source_updated_at: { type: "string" },
+                value: { type: "string" },
+              },
+              required: ["value"],
+              type: "object",
+            },
+            semantics: "append_only",
+          },
+          {
+            // No consent_time_field: this stream has no manifest-declared
+            // notion of "when" a row happened, so a since bound must not be
+            // asserted against it.
+            name: "non_temporal_items",
+            primary_key: ["id"],
+            schema: {
+              properties: { id: { type: "string" }, value: { type: "string" } },
+              required: ["value"],
+              type: "object",
+            },
+            semantics: "append_only",
+          },
+        ],
+      };
+      const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+      const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-hosted-mixed-temporal-scope-"));
+      const capturePath = join(tmpDir, "start.json");
+      const { connectorPath, cleanup } = createStartCaptureConnector(capturePath);
+      const declaredSince = "2026-08-01T00:00:00.000Z";
+      const storedScope = buildStoredCollectionScope({ since: declaredSince }, "2026-08-01T00:00:00.000Z");
+
+      try {
+        const result = await runTestConnector({
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest,
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          state: { [COLLECTION_SCOPE_STATE_KEY]: storedScope },
+        });
+
+        assert.equal(result.status, "succeeded");
+        const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+        assert.deepEqual(captured.scope, {
+          streams: [
+            { name: "temporal_items", time_range: { since: declaredSince } },
+            { name: "non_temporal_items" },
+          ],
+        });
+      } finally {
+        cleanup();
+        rmSync(tmpDir, { force: true, recursive: true });
+        await closeServer(server);
+      }
+    }
+  );
+
+  await t.test(
     "an ordinary hosted run with no declared collection_scope omits time_range entirely (unscoped, unchanged default behavior)",
     async () => {
       const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });

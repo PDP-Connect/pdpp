@@ -1109,18 +1109,28 @@ function buildStartScope(
 
   // No explicit per-run scope: fold in the connection's own durably-declared
   // `collection_scope.since` (owner-set via
-  // `PUT /v1/owner/connections/:id/collection-scope`) as every default
-  // stream's `time_range.since`. This is the only place a hosted (non
+  // `PUT /v1/owner/connections/:id/collection-scope`) as the default
+  // `time_range.since` for streams the MANIFEST itself declares as temporal
+  // (a non-empty `consent_time_field`). This is the only place a hosted (non
   // local-device) run's scope reaches the connector: `runNow` never builds an
   // explicit `providedScope` for an ordinary sync, so without this the owner's
-  // declared boundary would be persisted but never delivered. Connectors that
-  // don't bound their query by `since` simply ignore the field; the emission
-  // gate (`passesTimeRange`) still drops any record a connector emits outside
-  // it for streams with a `consent_time_field`.
-  const defaultTimeRange = declaredCollectionScopeSince ? { time_range: { since: declaredCollectionScopeSince } } : {};
+  // declared boundary would be persisted but never delivered. Gating by
+  // `consent_time_field` matters: a stream with no such field has no
+  // manifest-declared notion of "when" a row happened, so attaching a
+  // `time_range` to it would assert a temporal scope the stream can neither
+  // define nor enforce (and the emission gate, `passesTimeRange`, only ever
+  // checks a `consent_time_field` value in the first place — a non-temporal
+  // stream given a `time_range` would have it silently ignored downstream
+  // too, so omitting it here keeps the START message honest about which
+  // streams the boundary actually applies to).
   const streams = (manifest?.streams || [])
     .filter((stream) => !streamUnsupportedInDefaultScope(stream))
-    .map((stream) => ({ name: stream.name, ...defaultTimeRange }));
+    .map((stream) => ({
+      name: stream.name,
+      ...(declaredCollectionScopeSince && stream.consent_time_field
+        ? { time_range: { since: declaredCollectionScopeSince } }
+        : {}),
+    }));
   if (!streams.length) {
     throw new Error("START.scope requires at least one stream");
   }
