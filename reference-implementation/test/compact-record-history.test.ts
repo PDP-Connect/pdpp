@@ -202,7 +202,6 @@ test("COMPACTION_POLICIES exposes the registered policies (short-name canonical 
     ["codex", "shell_snapshots"],
     ["codex", "config_inventory"],
     ["codex", "cache_inventory"],
-    ["codex", "logs"],
   ];
   // ri-zero-knowledge-terminal-revise-0810: COMPACTION_POLICIES is now built
   // by iterating every shipped manifest's own streams (readdirSync order),
