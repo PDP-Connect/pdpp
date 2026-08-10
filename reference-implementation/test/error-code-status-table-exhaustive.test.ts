@@ -60,6 +60,7 @@ const EXPECTED_CODE_TO_STATUS = {
   grant_invalid: 403,
   grant_revoked: 403,
   grant_stream_not_allowed: 403,
+  ingest_batch_storage_error: 503,
   insufficient_scope: 403,
   interaction_id_mismatch: 409,
   invalid_argument: 400,
