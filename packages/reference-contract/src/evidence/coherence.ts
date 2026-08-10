@@ -143,11 +143,16 @@ function readCount(value: number | null | undefined): number | null {
  * Whether the strategy enumerates a bounded window/inventory/snapshot/singleton
  * whose `collected` count is only the CHANGED records of this run rather than a
  * coverage numerator. For these, a measured `considered` boundary plus a closed
- * (committed) window is the proof; `collected < considered` means unchanged
- * records were suppressed, not that items were missed.
+ * (committed) window is the proof WHEN NO `covered` NUMERATOR WAS SUPPLIED;
+ * `collected < considered` then means unchanged records were suppressed, not
+ * that items were missed. This does not extend to an explicit `covered` count:
+ * when the connector supplies one, it is a coverage numerator regardless of
+ * strategy, and `covered < considered` is always a real shortfall (see the
+ * caller in `evaluateStreamCoherence`).
  *
- * `parent_detail_accounting` is deliberately excluded: it owes a per-item
- * accounting, so its numerator must actually satisfy the denominator.
+ * `parent_detail_accounting` is deliberately excluded even from the
+ * no-`covered`-supplied case: it owes a per-item accounting, so its numerator
+ * must actually satisfy the denominator.
  */
 function strategyBoundsWindowRatherThanCounting(strategy: CoverageProofStrategy | null): boolean {
   return (
@@ -200,6 +205,14 @@ export function isCheckpointOnlyClaim(envelope: StreamEvidenceEnvelope, declarat
  * measured `considered: 0` is a positive statement ("I enumerated the boundary
  * and it held nothing"), satisfied by `covered`/`collected` of 0. Rule 5 is the
  * invariant: a committed checkpoint that reaches this point proves nothing.
+ *
+ * Within rule 2, an explicit `covered` count is always treated as a coverage
+ * numerator, for every strategy: `covered < considered` is a real shortfall
+ * regardless of whether the window closed. Only when `covered` is absent do
+ * the window-bounding strategies (`checkpoint_window`/`full_inventory`/
+ * `snapshot_import_receipt`/`singleton_presence`) get to lean on a closed
+ * checkpoint instead of a numerator, because their `collected` may legitimately
+ * be a changed-record count rather than a full accounting.
  */
 export function evaluateStreamCoherence(
   envelope: StreamEvidenceEnvelope,
@@ -221,14 +234,30 @@ export function evaluateStreamCoherence(
   //    strategy keyword to stand.
   const considered = readCount(envelope.considered);
   if (considered !== null) {
+    const covered = readCount(envelope.covered);
+    // `covered`, when the connector supplies it, is a coverage numerator —
+    // strategy-independent — so a shortfall against `considered` is always a
+    // real gap, never waved through by a closed window. This is what stops a
+    // window-bounding strategy from laundering an explicit undercount (e.g. a
+    // multi-budget `singleton_presence` run where only one of two enumerated
+    // items was accounted for) into `proven` just because its checkpoint
+    // closed.
+    if (covered !== null && covered < considered) {
+      return { proven: false, reason: "boundary_shortfall" };
+    }
     // A window-bounding strategy that closed its window has measured its
-    // boundary; its `collected` is a changed-record count, not a numerator, so
-    // it does not owe `collected >= considered`. The checkpoint only refines a
-    // boundary that was actually measured — it can never supply one.
-    if (strategyBoundsWindowRatherThanCounting(strategy) && checkpointClosedWindow(envelope.checkpoint)) {
+    // boundary; when no `covered` numerator was supplied, its `collected` is
+    // a changed-record count, not a numerator, so it does not owe
+    // `collected >= considered`. The checkpoint only refines a boundary that
+    // was actually measured — it can never supply one.
+    if (
+      covered === null &&
+      strategyBoundsWindowRatherThanCounting(strategy) &&
+      checkpointClosedWindow(envelope.checkpoint)
+    ) {
       return { proven: true, reason: "enumeration_boundary" };
     }
-    const satisfied = readCount(envelope.covered) ?? readCount(envelope.collected) ?? 0;
+    const satisfied = covered ?? readCount(envelope.collected) ?? 0;
     return satisfied < considered
       ? { proven: false, reason: "boundary_shortfall" }
       : { proven: true, reason: "enumeration_boundary" };

@@ -49,11 +49,11 @@
 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CollectContext } from "./connector-runtime.ts";
-import type { EmittedMessage } from "./connector-runtime-protocol.ts";
-import { makeRecordingEmit, type RecordingEmit } from "./test-harness.ts";
+import type { CollectContext } from "../../src/connector-runtime.ts";
+import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
+import { makeRecordingEmit, type RecordingEmit } from "../../src/test-harness.ts";
 
-const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 /**
  * A record `emitRecord()` rejected via schema validation — the direct-call
@@ -245,8 +245,8 @@ function buildRedditCollectContext(
 }
 
 async function driveReddit(): Promise<DriverResult> {
-  const { collectAllStreams } = await import("../connectors/reddit/index.ts");
-  const { validateRecord } = await import("../connectors/reddit/schemas.ts");
+  const { collectAllStreams } = await import("../reddit/index.ts");
+  const { validateRecord } = await import("../reddit/schemas.ts");
 
   return runDirectImportDriver(validateRecord, async (harness) => {
     // submitted.json needs a t3 post; every other endpoint (comments, saved,
@@ -270,8 +270,8 @@ async function driveReddit(): Promise<DriverResult> {
  * registered in CONNECTOR_DRIVERS.
  */
 async function driveRedditMalformed(): Promise<DriverResult> {
-  const { collectAllStreams } = await import("../connectors/reddit/index.ts");
-  const { validateRecord } = await import("../connectors/reddit/schemas.ts");
+  const { collectAllStreams } = await import("../reddit/index.ts");
+  const { validateRecord } = await import("../reddit/schemas.ts");
 
   return runDirectImportDriver(validateRecord, async (harness) => {
     const malformedPost = { kind: "t3" as const, data: { ...validRedditPost().data, name: "t3_has_underscore" } };
@@ -293,7 +293,7 @@ async function driveRedditMalformed(): Promise<DriverResult> {
 
 async function driveJellyfin(): Promise<DriverResult> {
   const { createServer } = await import("node:http");
-  const { runConnectorProtocolSubprocess } = await import("./test-harness.ts");
+  const { runConnectorProtocolSubprocess } = await import("../../src/test-harness.ts");
 
   const server = createServer((req, res) => {
     const path = req.url ?? "";
@@ -364,8 +364,8 @@ async function driveJellyfin(): Promise<DriverResult> {
 // connectors/apple_contacts/integration.test.ts already proves.
 
 async function driveAppleContacts(): Promise<DriverResult> {
-  const { runConnectorProtocolSubprocess } = await import("./test-harness.ts");
-  const { buildVCard, startFakeCardDavServer } = await import("../connectors/apple_contacts/test-carddav-server.ts");
+  const { runConnectorProtocolSubprocess } = await import("../../src/test-harness.ts");
+  const { buildVCard, startFakeCardDavServer } = await import("../apple_contacts/test-carddav-server.ts");
 
   const username = "owner@example.com";
   const password = "app-specific-pw";
@@ -404,8 +404,8 @@ async function driveAppleContacts(): Promise<DriverResult> {
  * hard failure for every stream it would have proven, not silently exempted.
  */
 async function driveAppleContactsAuthFailure(): Promise<DriverResult> {
-  const { runConnectorProtocolSubprocess } = await import("./test-harness.ts");
-  const { startFakeCardDavServer } = await import("../connectors/apple_contacts/test-carddav-server.ts");
+  const { runConnectorProtocolSubprocess } = await import("../../src/test-harness.ts");
+  const { startFakeCardDavServer } = await import("../apple_contacts/test-carddav-server.ts");
 
   const username = "owner@example.com";
   const server = await startFakeCardDavServer({ username, password: "app-specific-pw" });
@@ -445,7 +445,7 @@ const GOOGLE_MESSAGES_ENTRYPOINT = join(PACKAGE_ROOT, "connectors/google_message
 const FAKE_GMCLI = join(PACKAGE_ROOT, "connectors/google_messages/fixtures/fake-gmcli.mjs");
 
 async function driveGoogleMessagesWithMode(mode: string): Promise<DriverResult> {
-  const { runConnectorProtocolSubprocess } = await import("./test-harness.ts");
+  const { runConnectorProtocolSubprocess } = await import("../../src/test-harness.ts");
   const result = await runConnectorProtocolSubprocess({
     allowFailedDone: true,
     cwd: PACKAGE_ROOT,
@@ -512,8 +512,8 @@ export const GOOGLE_MESSAGES_NOT_PAIRED_DRIVER: ConnectorDriver = {
 // own collect() calls directly, matching connectors/amazon/integration.test.ts.
 
 async function driveAmazon(): Promise<DriverResult> {
-  const { emitOrderAndItems, emitOrdersCoverage, newOrdersCoverage } = await import("../connectors/amazon/index.ts");
-  const { validateRecord } = await import("../connectors/amazon/schemas.ts");
+  const { emitOrderAndItems, emitOrdersCoverage, newOrdersCoverage } = await import("../amazon/index.ts");
+  const { validateRecord } = await import("../amazon/schemas.ts");
 
   return runDirectImportDriver(validateRecord, async (harness) => {
     const ordersCoverage = newOrdersCoverage();
@@ -551,8 +551,8 @@ async function driveAmazon(): Promise<DriverResult> {
  * merely a nonzero run that happens to pass.
  */
 async function driveAmazonZeroResult(): Promise<DriverResult> {
-  const { emitOrdersCoverage, newOrdersCoverage } = await import("../connectors/amazon/index.ts");
-  const { validateRecord } = await import("../connectors/amazon/schemas.ts");
+  const { emitOrdersCoverage, newOrdersCoverage } = await import("../amazon/index.ts");
+  const { validateRecord } = await import("../amazon/schemas.ts");
 
   return runDirectImportDriver(validateRecord, async (harness) => {
     const ordersCoverage = newOrdersCoverage();
@@ -659,9 +659,9 @@ async function driveGroupMeAttachments(
   routes: Record<string, unknown | { status: number; body: unknown }>
 ): Promise<DriverResult> {
   const { __resetHttpGovernorForTests, __setZeroDelayHttpGovernorForTests, collect } = await import(
-    "../connectors/groupme/index.ts"
+    "../groupme/index.ts"
   );
-  const { validateRecord } = await import("../connectors/groupme/schemas.ts");
+  const { validateRecord } = await import("../groupme/schemas.ts");
 
   __setZeroDelayHttpGovernorForTests();
   try {
@@ -723,6 +723,7 @@ export const GROUPME_ATTACHMENTS_WITHHELD_DRIVER: ConnectorDriver = {
 // for this gate.
 
 const YNAB_BUDGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const YNAB_BUDGET_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const YNAB_ACCOUNT = "11111111-1111-4111-8111-111111111111";
 
 function ynabAccount(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -750,8 +751,8 @@ function ynabAccount(id: string, overrides: Record<string, unknown> = {}): Recor
  *     (a per-budget-derived stream) never stages a coverage claim at all.
  */
 async function driveYnabAccountStats(request: <T>(path: string) => Promise<T>): Promise<DriverResult> {
-  const { ynabCollect } = await import("../connectors/ynab/index.ts");
-  const { validateRecord } = await import("../connectors/ynab/schemas.ts");
+  const { ynabCollect } = await import("../ynab/index.ts");
+  const { validateRecord } = await import("../ynab/schemas.ts");
 
   return runDirectImportDriver(validateRecord, async (harness) => {
     await ynabCollect(
@@ -789,6 +790,44 @@ function fakeYnabRequestWithZeroBudgets<T>(path: string): Promise<T> {
 export const YNAB_ACCOUNT_STATS_ZERO_BUDGETS_DRIVER: ConnectorDriver = {
   coveredStreams: ["account_stats"],
   run: () => driveYnabAccountStats(fakeYnabRequestWithZeroBudgets),
+};
+
+/**
+ * Two budgets, one malformed account: budget A's account is schema-valid,
+ * budget B's account has a non-UUID `id` — `accountStatsRecord`'s `id`
+ * (`{account_id}:{observed_on}`, see connectors/ynab/schemas.ts's
+ * `accountStatsSchema`) fails the same regex, so `validateRecord` rejects it
+ * and `accountStatsCovered` in index.ts's real `collectAccountsAndStats`
+ * loop is never incremented for it. This is production's own per-account
+ * accounting, not a synthetic envelope: `account_stats` reads
+ * considered=2, covered=1 — the exact real YNAB two-budget
+ * `singleton_presence` shortfall the coverage-oracle covered-count fix
+ * exists to catch (see coverage-conformance.test.ts's aggregate-gate
+ * mutation test).
+ */
+function fakeYnabRequestWithTwoBudgetsOneMalformedAccount<T>(path: string): Promise<T> {
+  if (path === "/budgets") {
+    return Promise.resolve({
+      data: {
+        budgets: [
+          { id: YNAB_BUDGET, name: "Fixture Budget A" },
+          { id: YNAB_BUDGET_B, name: "Fixture Budget B" },
+        ],
+      },
+    } as T);
+  }
+  if (path === `/budgets/${YNAB_BUDGET}/accounts`) {
+    return Promise.resolve({ data: { accounts: [ynabAccount(YNAB_ACCOUNT)], server_knowledge: 100 } } as T);
+  }
+  if (path === `/budgets/${YNAB_BUDGET_B}/accounts`) {
+    return Promise.resolve({ data: { accounts: [ynabAccount("not-a-uuid")], server_knowledge: 100 } } as T);
+  }
+  return Promise.reject(new Error(`ynab_http_404 [endpoint ${path}]: not_found`));
+}
+
+export const YNAB_ACCOUNT_STATS_TWO_BUDGETS_ONE_MALFORMED_DRIVER: ConnectorDriver = {
+  coveredStreams: ["account_stats"],
+  run: () => driveYnabAccountStats(fakeYnabRequestWithTwoBudgetsOneMalformedAccount),
 };
 
 export interface ConnectorDriver {

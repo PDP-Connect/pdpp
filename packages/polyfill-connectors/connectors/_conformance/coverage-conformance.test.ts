@@ -94,8 +94,8 @@ import {
   KNOWN_SCAFFOLD_CONNECTORS,
   PRODUCTION_READY_CONNECTORS,
   REAL_UNLISTED_CONNECTORS,
-} from "./connector-conformance-roster.ts";
-import type { EmittedMessage } from "./connector-runtime-protocol.ts";
+} from "../../src/connector-conformance-roster.ts";
+import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import {
   AMAZON_ZERO_RESULT_DRIVER,
   APPLE_CONTACTS_AUTH_FAILURE_DRIVER,
@@ -109,10 +109,42 @@ import {
   GROUPME_ATTACHMENTS_WITHHELD_DRIVER,
   KNOWN_UNEXERCISED_COVERAGE,
   REDDIT_MALFORMED_DRIVER,
+  YNAB_ACCOUNT_STATS_TWO_BUDGETS_ONE_MALFORMED_DRIVER,
   YNAB_ACCOUNT_STATS_ZERO_BUDGETS_DRIVER,
 } from "./coverage-conformance-drivers.ts";
 
-const MANIFESTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "manifests");
+/**
+ * The aggregate gate's mechanical proof that `parent_detail_accounting` was
+ * actually exercised this run, with the discriminating verdict the strategy
+ * exists to prove. `parent_detail_accounting` is the one strategy the shared
+ * oracle excludes from window-bounding (coherence.ts's
+ * `strategyBoundsWindowRatherThanCounting`), so its whole reason for being in
+ * `ALL_COVERAGE_PROOF_STRATEGIES` is that `boundary_shortfall` must be
+ * reachable — a bare `proven: true` would prove nothing distinctive about it.
+ * `attachments` is `required: false` in groupme.json, so it cannot flow
+ * through `allRequiredStreamPairs()`/`provenSummary` the way the other four
+ * strategies do; this function is what stands in its place, called directly
+ * from the aggregate gate below (not narratively referenced from a separate
+ * `test(...)` block the gate has no mechanical link to — see the red-team
+ * finding this replaces).
+ */
+async function runParentDetailAccountingProbe(): Promise<{ ok: boolean; report: string }> {
+  const result = await GROUPME_ATTACHMENTS_SHORTFALL_DRIVER.run();
+  if (!result.exercised) {
+    return { ok: false, report: `parent_detail_accounting probe (groupme.attachments) unexercised: ${result.reason}` };
+  }
+  const envelope = deriveStreamEnvelope(result.messages, "attachments", result.skippedRecords);
+  const verdict = evaluateStreamCoherence(envelope, { coverage_strategy: "parent_detail_accounting" });
+  if (verdict.reason !== "boundary_shortfall" || verdict.proven !== false) {
+    return {
+      ok: false,
+      report: `parent_detail_accounting probe (groupme.attachments) expected proven=false/reason=boundary_shortfall, got proven=${verdict.proven}/reason=${verdict.reason} (envelope: considered=${envelope.considered}, covered=${envelope.covered})`,
+    };
+  }
+  return { ok: true, report: "groupme.attachments: real boundary_shortfall reached (parent_detail_accounting)" };
+}
+
+const MANIFESTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "manifests");
 
 /**
  * Every member of the shared `@pdpp/reference-contract` `CoverageProofStrategy`
@@ -405,15 +437,16 @@ test("verified-coverage conformance: every exercised required stream proves cove
     `expected at least one stream to be proven this run — the gate is not exercising anything.\n${unexercisedLine}`
   );
 
-  // Every one of the 5 shared CoverageProofStrategy variants must have at
-  // least one proven stream backing it somewhere in this run — either here
-  // (checkpoint_window/full_inventory/snapshot_import_receipt/
-  // singleton_presence) or in the dedicated parent_detail_accounting
-  // capability pin below (attachments is required:false, so it cannot
-  // appear in provenSummary above). Asserted here, not just narratively in
-  // the module doc, so a future driver regression that silently drops one
-  // strategy's only proof fails loudly instead of shrinking the claim
-  // unnoticed.
+  // Every one of the 5 shared CoverageProofStrategy variants must be
+  // mechanically exercised somewhere in THIS gate run — the four
+  // window-bounding strategies via a proven required stream in
+  // provenSummary above, and parent_detail_accounting via a direct call to
+  // the real GroupMe probe (it is excluded from window-bounding by design,
+  // and its own manifest stream is required:false so it cannot appear in
+  // provenSummary itself — see runParentDetailAccountingProbe's doc comment).
+  // This gate CALLS the probe directly rather than trusting a narratively
+  // adjacent `test(...)` block to have run: deleting or breaking that
+  // separate capability-pin test can no longer leave this assertion green.
   const provenStrategies = new Set<CoverageProofStrategy>();
   for (const label of provenSummary) {
     const [connectorKey, stream] = label.split(".", 2) as [string, string];
@@ -423,9 +456,16 @@ test("verified-coverage conformance: every exercised required stream proves cove
       provenStrategies.add(strategy);
     }
   }
-  const strategiesProvenElsewhere: readonly CoverageProofStrategy[] = ["parent_detail_accounting"];
+
+  const parentDetailProbe = await runParentDetailAccountingProbe();
+  assert.ok(parentDetailProbe.ok, parentDetailProbe.report);
+
   for (const strategy of ALL_COVERAGE_PROOF_STRATEGIES) {
-    if (strategiesProvenElsewhere.includes(strategy)) {
+    if (strategy === "parent_detail_accounting") {
+      // Verified above via the direct probe call, not window-bounding
+      // proof — a bare `provenStrategies.has(...)` check would be the wrong
+      // question for the one strategy where `boundary_shortfall`, not
+      // `proven: true`, IS the expected/discriminating outcome.
       continue;
     }
     assert.ok(
@@ -548,13 +588,20 @@ test("mutation: a schema-invalid Reddit record is not laundered into proven cove
   }
 });
 
-test("mutation: without skippedRecords fidelity, the malformed Reddit fixture would have falsely read proven (regression proof for the oracle-fidelity fix)", async () => {
-  // Re-derive the envelope EXACTLY as the pre-fix deriveStreamEnvelope did —
-  // ignoring skippedRecords entirely — to prove this is not a hypothetical
-  // gap: the malformed fixture's `checkpoint_window` streams, evaluated
-  // without the skip evidence, read PROVEN via `enumeration_boundary`'s
-  // "closed window bounds rather than counts" branch, exactly the false
-  // pass this change closes.
+test("mutation: without skippedRecords fidelity, the malformed Reddit fixture no longer falsely reads proven — the explicit-covered-numerator fix (coherence.ts) independently closes this, on top of the skippedRecords fidelity fix", async () => {
+  // Re-derive the envelope EXACTLY as the pre-skippedRecords-fix
+  // deriveStreamEnvelope did — ignoring skippedRecords entirely. Before the
+  // reference-contract oracle fix (the explicit-covered-count rule), this
+  // read PROVEN via `enumeration_boundary`'s "closed window bounds rather
+  // than counts" branch, because a window-bounding strategy's `covered`
+  // shortfall was ignored once the checkpoint closed — the exact false pass
+  // the skippedRecords fidelity change closed for THIS gate. The oracle fix
+  // now rejects the identical envelope on its own terms: Reddit's malformed
+  // fixture emits an explicit `covered: 0` against `considered: 1` (never
+  // absent), so rule 2's covered-numerator check catches it even with
+  // `skipped: null` — two independent defenses against the same shape of
+  // bug, not a redundant assertion (skippedRecords fidelity still matters
+  // for streams that don't emit an explicit covered count at all).
   const result = await REDDIT_MALFORMED_DRIVER.run();
   if (!result.exercised) {
     assert.fail(`reddit malformed driver reported unexercised: ${result.reason}`);
@@ -567,15 +614,18 @@ test("mutation: without skippedRecords fidelity, the malformed Reddit fixture wo
     null,
     "confirms the pre-fix code path: with skippedRecords withheld, the envelope reports no skip at all"
   );
-  const verdictWithoutFix = evaluateStreamCoherence(
+  assert.equal(envelopeWithoutSkipFidelity.considered, 1);
+  assert.equal(envelopeWithoutSkipFidelity.covered, 0, "the malformed record was never credited");
+  const verdictWithoutSkipFidelity = evaluateStreamCoherence(
     envelopeWithoutSkipFidelity,
     proofDeclarationFor(manifest, "submitted")
   );
   assert.equal(
-    verdictWithoutFix.proven,
-    true,
-    "demonstrates the exact false-pass the skippedRecords fix closes: identical facts, minus the skip evidence, read proven"
+    verdictWithoutSkipFidelity.proven,
+    false,
+    "the explicit covered:0 < considered:1 numerator check now catches this independently of skip fidelity"
   );
+  assert.equal(verdictWithoutSkipFidelity.reason, "boundary_shortfall");
 });
 
 test("capability: Apple Contacts' real subprocess entrypoint proves under the shared oracle for all three required full_inventory streams", async () => {
@@ -689,6 +739,37 @@ test("mutation: a zero-budget YNAB run emits no account_stats coverage — absen
     assert.equal(coverage, undefined, "no budgets ran, so no account_stats coverage should be fabricated");
   }
   assert.equal(verdict.proven, false, `zero budgets must not read proven (got reason=${verdict.reason})`);
+});
+
+test("mutation: a real two-budget YNAB run with one malformed account leaves account_stats covered < considered — the shared oracle must reject it, not launder it via the closed checkpoint window", async () => {
+  const { envelope, verdict } = await runAndEvaluate(
+    YNAB_ACCOUNT_STATS_TWO_BUDGETS_ONE_MALFORMED_DRIVER,
+    "account_stats",
+    "ynab"
+  );
+  // Drives production's real collectAccountsAndStats loop end to end; this
+  // is not a synthetic envelope or a hardcoded fixture count — considered=2
+  // and covered=1 fall out of validateRecord actually rejecting budget B's
+  // malformed account_stats record.
+  assert.equal(envelope.considered, 2, "both budgets' accounts were enumerated");
+  assert.equal(envelope.covered, 1, "only budget A's account was validly accounted for");
+  assert.equal(
+    verdict.proven,
+    false,
+    `an explicit covered shortfall must fail even though singleton_presence is window-bounding and the checkpoint closed (got proven=true, reason=${verdict.reason})`
+  );
+  // `trackAndEmit` still attempts the malformed record, so the real runtime's
+  // skip bookkeeping fires (rule 1, unresolved_attempt) before rule 2's
+  // considered/covered comparison ever runs — a schema-invalid row is a
+  // strictly stronger signal than a bare shortfall, and rule 1 correctly
+  // outranks rule 2 (see coherence.ts's precedence doc). This still proves
+  // the exact claim this test exists for: covered=1 < considered=2 is NEVER
+  // laundered into `proven: true` through the real production loop, for
+  // either reason. The explicit-covered-numerator rule itself (a shortfall
+  // with NO skip in play) is proven directly by
+  // packages/reference-contract/test/evidence-coherence.test.ts's
+  // "an explicit covered shortfall on a closed window..." cases.
+  assert.equal(verdict.reason, "unresolved_attempt");
 });
 
 test("capability: the ynab ratchet correctly names every remaining real required stream (account_stats is now driven; the rest stay undriven by design)", () => {

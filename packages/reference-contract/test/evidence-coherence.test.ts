@@ -102,6 +102,87 @@ test("a closed window proves its measured boundary despite a changed-record-only
   });
 });
 
+// ─── Reference-contract rule: an explicit `covered` numerator is
+// strategy-independent — a closed window must NEVER launder a `covered`
+// shortfall into proven, unlike an absent `covered` (asserted above).
+// Regression coverage for a real YNAB two-budget `singleton_presence` run
+// (considered=2, covered=1) that the pre-fix oracle read as proven solely
+// because the checkpoint had closed. ──────────────────────────────────────
+
+for (const strategy of [
+  "checkpoint_window",
+  "full_inventory",
+  "snapshot_import_receipt",
+  "singleton_presence",
+] as const) {
+  test(`an explicit covered shortfall on a closed window is a real boundary_shortfall, never laundered by the checkpoint (${strategy})`, () => {
+    assert.deepEqual(
+      evaluateStreamCoherence(envelope({ checkpoint: "committed", collected: 1, considered: 2, covered: 1 }), {
+        coverage_strategy: strategy,
+      }),
+      { proven: false, reason: "boundary_shortfall" }
+    );
+  });
+}
+
+test("a satisfied explicit covered count on a closed window still proves the boundary", () => {
+  for (const strategy of [
+    "checkpoint_window",
+    "full_inventory",
+    "snapshot_import_receipt",
+    "singleton_presence",
+  ] as const) {
+    assert.deepEqual(
+      evaluateStreamCoherence(envelope({ checkpoint: "committed", collected: 2, considered: 2, covered: 2 }), {
+        coverage_strategy: strategy,
+      }),
+      { proven: true, reason: "enumeration_boundary" }
+    );
+  }
+});
+
+test("verified-empty stays proven when both considered and covered are explicitly 0, for every window-bounding strategy", () => {
+  for (const strategy of [
+    "checkpoint_window",
+    "full_inventory",
+    "snapshot_import_receipt",
+    "singleton_presence",
+  ] as const) {
+    assert.deepEqual(
+      evaluateStreamCoherence(envelope({ checkpoint: "committed", collected: 0, considered: 0, covered: 0 }), {
+        coverage_strategy: strategy,
+      }),
+      { proven: true, reason: "enumeration_boundary" }
+    );
+  }
+});
+
+test("precedence is unchanged: an unresolved attempt still outranks an explicit covered shortfall", () => {
+  assert.deepEqual(
+    evaluateStreamCoherence(
+      envelope({
+        checkpoint: "committed",
+        collected: 1,
+        considered: 2,
+        covered: 1,
+        skipped: { reason: "opaque_failure" },
+      }),
+      { coverage_strategy: "singleton_presence" }
+    ),
+    { proven: false, reason: "unresolved_attempt" }
+  );
+});
+
+test("precedence is unchanged: checkpoint_only is still reported when considered is entirely absent", () => {
+  assert.deepEqual(
+    evaluateStreamCoherence(envelope({ checkpoint: "committed" }), { coverage_strategy: "singleton_presence" }),
+    {
+      proven: false,
+      reason: "checkpoint_only",
+    }
+  );
+});
+
 test("a manifest declaring no proof strategy yields not-proven, never a synthesized completeness", () => {
   assert.deepEqual(evaluateStreamCoherence(envelope({ collected: 500 }), {}), {
     proven: false,

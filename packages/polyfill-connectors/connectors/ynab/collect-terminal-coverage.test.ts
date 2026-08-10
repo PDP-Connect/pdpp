@@ -324,26 +324,32 @@ test("ynabCollect: a malformed account/payee_location row leaves covered < consi
   assert.equal(payeeLocCov?.considered, 2);
   assert.equal(payeeLocCov?.covered, 1);
 
-  // `full_inventory` is a window-bounding strategy: once `considered` is
-  // measured and the checkpoint closes, evaluateStreamCoherence proves the
-  // ENUMERATED BOUNDARY (rule 2's window-bounding branch), independent of
-  // `covered` — a closed window's `collected`/`covered` legitimately reads
-  // below `considered` for suppressed-unchanged rows too, so a per-row
-  // shortfall alone can't distinguish "suppressed" from "dropped" at this
-  // gate (see reference-contract/test/evidence-coherence.test.ts "a closed
-  // window proves its measured boundary despite a changed-record-only
-  // collected count"). The dropped-row signal survives as `covered <
-  // considered` on the DETAIL_COVERAGE message itself (asserted above),
-  // which is what the partial/complete PROJECTION reads — proven here
-  // that the connector still reports it honestly rather than the
-  // evaluator rejecting the run outright.
+  // `full_inventory` is a window-bounding strategy for an ABSENT `covered`
+  // count: once `considered` is measured and the checkpoint closes without
+  // an explicit numerator, evaluateStreamCoherence proves the ENUMERATED
+  // BOUNDARY on `collected` alone, because a closed window's `collected` may
+  // legitimately read below `considered` for suppressed-unchanged rows (see
+  // reference-contract/test/evidence-coherence.test.ts "a closed window
+  // proves its measured boundary despite a changed-record-only collected
+  // count"). That does NOT extend to an EXPLICIT `covered` numerator: when
+  // the connector supplies one (as YNAB always does — see
+  // AccountsBudgetFact's doc comment), it is a coverage numerator regardless
+  // of strategy, so `covered: 1 < considered: 2` here is a genuine
+  // boundary_shortfall — the window closing does not launder it, unlike an
+  // absent-covered run. This is the exact real-world shape the
+  // coverage-oracle covered-count fix exists to catch (a real YNAB
+  // multi-budget run undercounting `account_stats`/`accounts`).
   const accountsVerdict = coherenceFor(messages, "accounts", "full_inventory");
-  assert.equal(accountsVerdict.proven, true, "a closed window with a measured boundary proves coverage");
-  assert.equal(accountsVerdict.reason, "enumeration_boundary");
+  assert.equal(
+    accountsVerdict.proven,
+    false,
+    "an explicit covered shortfall is a real gap, not proven by a closed window"
+  );
+  assert.equal(accountsVerdict.reason, "boundary_shortfall");
 
   const payeeLocVerdict = coherenceFor(messages, "payee_locations", "full_inventory");
-  assert.equal(payeeLocVerdict.proven, true);
-  assert.equal(payeeLocVerdict.reason, "enumeration_boundary");
+  assert.equal(payeeLocVerdict.proven, false);
+  assert.equal(payeeLocVerdict.reason, "boundary_shortfall");
 });
 
 // ─── Incremental server_knowledge: an incremental accounts call must not
