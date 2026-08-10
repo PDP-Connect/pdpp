@@ -16,6 +16,14 @@ import {
 } from "./local-device-envelope.ts";
 import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
 
+/**
+ * Stream name a connector's per-store proof claims (e.g. `collected`) ride
+ * on. Kept in sync with the same literal in `collector-runner.ts` and
+ * `ref-control.ts` — the wire contract, not a shared module, is the source
+ * of truth for connectors written outside this package.
+ */
+const LOCAL_COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
+
 export const CODEX_CONNECTOR_ID = "codex";
 export const CLAUDE_CODE_CONNECTOR_ID = "claude-code";
 export const AMAZON_CONNECTOR_ID = "amazon";
@@ -139,6 +147,11 @@ export interface LocalDeviceRuntimeConfig {
    * result (this runtime is batch, not streaming, so there is no cheaper
    * abort point) — appropriate for a local-disk read like chat.db, not a
    * paginated network source. Unset queues every record the connector emits.
+   *
+   * Counts SUBSTANTIVE records only — `coverage_diagnostics` proof rows
+   * (e.g. `collected`) are never part of the sampled count, so a small
+   * limit like `0` truncates data without being satisfied by a diagnostic
+   * row alone. See {@link LocalDeviceRuntimeResult.recordsQueued}.
    */
   sampleLimit?: number;
   sourceInstanceId: string;
@@ -148,6 +161,15 @@ export interface LocalDeviceRuntimeConfig {
 export interface LocalDeviceRuntimeResult {
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
+  /**
+   * Records actually queued for ingest. `sampleLimit` bounds only the
+   * SUBSTANTIVE (non-`coverage_diagnostics`) portion of this count — on an
+   * UNTRUNCATED run (substantive records fit within `sampleLimit`, or no
+   * `sampleLimit` was given) this number may additionally include the
+   * run's `coverage_diagnostics` proof rows, which ride along uncounted
+   * against the limit. On a TRUNCATED run, `coverage_diagnostics` rows are
+   * withheld entirely — see `truncatedBySample`.
+   */
   recordsQueued: number;
   /** Total records the connector emitted before any `sampleLimit` truncation. */
   recordsSeen: number;
@@ -201,8 +223,23 @@ export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): 
 
   const { sampleLimit } = config;
   const recordsSeen = allRecords.length;
-  const records = sampleLimit !== undefined && sampleLimit >= 0 ? allRecords.slice(0, sampleLimit) : allRecords;
-  const truncatedBySample = records.length < allRecords.length;
+  // `coverage_diagnostics` records are a per-store proof claim (e.g.
+  // `collected`), not sampled content — they must never ride through a
+  // sample-limit slice that cuts off the data records they vouch for. Sample
+  // ONLY the substantive records; a truncated run drops its coverage claims
+  // instead of asserting proof over data it never queued. This is
+  // ordering-independent (`allRecords` is partitioned by stream, not
+  // position), so it holds whether a connector emits diagnostics before or
+  // after its data. `sampleLimit: 0` truncates whenever any substantive
+  // record exists (0 < substantiveRecords.length); a verified-empty run
+  // with zero substantive records is never "truncated" by a limit it never
+  // needed, so its diagnostics still ride through.
+  const diagnosticRecords = allRecords.filter((record) => record.stream === LOCAL_COVERAGE_DIAGNOSTICS_STREAM);
+  const substantiveRecords = allRecords.filter((record) => record.stream !== LOCAL_COVERAGE_DIAGNOSTICS_STREAM);
+  const sampledSubstantive =
+    sampleLimit !== undefined && sampleLimit >= 0 ? substantiveRecords.slice(0, sampleLimit) : substantiveRecords;
+  const truncatedBySample = sampledSubstantive.length < substantiveRecords.length;
+  const records = truncatedBySample ? sampledSubstantive : [...sampledSubstantive, ...diagnosticRecords];
 
   let recordsQueued = 0;
   let enqueuedBatches = 0;
