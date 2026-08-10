@@ -19,6 +19,12 @@
  *   malformed_messages -> chats list ok; messages list returns output missing required fields
  *   not_json        -> chats list exits 0 with non-JSON stdout
  *   full_page       -> chats list returns 1 chat; messages list returns exactly --limit rows (truncation-proxy test)
+ *   custom          -> chats/messages list read their JSON arrays verbatim from
+ *                      FAKE_GMCLI_CHATS_JSON / FAKE_GMCLI_MESSAGES_JSON (each a
+ *                      JSON-encoded array in the same shape as CHATS_HEALTHY /
+ *                      MESSAGES_HEALTHY below). Lets STATE/checkpoint tests drive
+ *                      exact per-run message sets (new/late/same-timestamp rows,
+ *                      archive replacement) without adding a static mode per case.
  */
 
 const mode = process.env.FAKE_GMCLI_MODE || "healthy";
@@ -103,6 +109,8 @@ if (isChatsList) {
     process.stdout.write(CHATS_MALFORMED);
   } else if (mode === "not_json") {
     process.stdout.write("this is not json output from gmcli");
+  } else if (mode === "custom") {
+    process.stdout.write(process.env.FAKE_GMCLI_CHATS_JSON ?? CHATS_HEALTHY);
   } else {
     process.stdout.write(CHATS_HEALTHY);
   }
@@ -114,6 +122,8 @@ if (isMessagesList) {
     process.stdout.write(MESSAGES_MALFORMED);
   } else if (mode === "full_page") {
     process.stdout.write(fullPageMessages());
+  } else if (mode === "custom") {
+    process.stdout.write(process.env.FAKE_GMCLI_MESSAGES_JSON ?? MESSAGES_HEALTHY);
   } else {
     process.stdout.write(MESSAGES_HEALTHY);
   }

@@ -67,9 +67,11 @@ const isoDateTimeSchema = z.string().regex(ISO_DT_RE, "must be an ISO-8601 datet
 /**
  * messages stream: one record per gmcli Message row (`gmcli messages list
  * --conv <id> --json --full`, bounded by GMCLI_MESSAGES_PER_CHAT_LIMIT
- * per conversation). Cursor: sent_at (best-effort — see index.ts's "no
- * guaranteed exactly-once/gapless resume" note; gmcli's own incremental
- * semantics were not independently verified from source).
+ * per conversation). Cursor: a connector-side per-message-id content
+ * fingerprint (index.ts's STATE section) — best-effort de-duplication, not
+ * a gmcli-side incremental cursor; gmcli exposes no "since" pagination
+ * token, so every run re-fetches the same bounded window per conversation
+ * and the fingerprint gate is what stops that from re-emitting duplicates.
  */
 export const messagesSchema = z.object({
   id: pdppSafeText.max(512),

@@ -67,11 +67,41 @@
  *   - gmkit is beta software from a single maintainer with no numbered
  *     release tags (pre-1.0, git-describe-injected version) — treat its
  *     behavior and CLI surface as subject to change without notice.
- *   - Resume/incremental semantics are best-effort only: gmcli's exact
- *     resume-cursor behavior was not independently verified from source, so
- *     this connector makes NO exactly-once/gapless resume claim. Cursor
- *     advancement here is a courtesy "don't re-emit what we've already
- *     seen" optimization, not a durable guarantee.
+ *   - Resume/incremental semantics are best-effort only: gmcli exposes no
+ *     "since" cursor (see BOUNDING above — `--limit` is a flat cap, not a
+ *     pagination token), so every run re-fetches the same bounded window
+ *     per conversation from scratch. This connector's own STATE cursor
+ *     (see STATE below) is therefore a connector-side, not gmcli-side,
+ *     de-duplication courtesy: it makes NO exactly-once/gapless resume
+ *     claim, only "don't re-emit a message whose fetched content is
+ *     byte-identical to what a prior run already emitted." It does NOT fix
+ *     the per-chat truncation gap: with `--order asc --limit N`, a
+ *     conversation that hit its limit is fetching the same oldest-N-message
+ *     prefix every run, forever — any message beyond that prefix (i.e. every
+ *     NEWER message in a long conversation) is never fetched at all, so the
+ *     fingerprint cursor has nothing to evaluate it against and cannot make
+ *     it discoverable. This connector has no forward-advancing window over
+ *     `--limit`; only raising GMCLI_MESSAGES_PER_CHAT_LIMIT and re-running
+ *     surfaces more of a truncated conversation, per the existing
+ *     `gmcli_per_chat_limit_reached` SKIP_RESULT's own guidance.
+ *
+ * STATE: `state.messages` carries a per-message-id content fingerprint
+ * (`openFingerprintCursor`, shared with groupme/slack/gmail/ynab) seeded
+ * from the prior run's cursor. A re-fetched message whose fingerprint is
+ * unchanged is NOT re-emitted as a RECORD this run — this is what stops
+ * every run from duplicating the same bounded per-chat window into
+ * downstream storage. The cursor is carry-forward only (no `pruneStale`):
+ * gmcli gives no deletion signal for messages that scroll out of the
+ * `--limit` window or a conversation gmcli stops returning, so an id once
+ * seen stays remembered rather than being dropped and re-emitted as "new"
+ * later. STATE is written after every message in this run's fetch has been
+ * evaluated by the cursor and queued for emission — never before — and the
+ * local-collector runtime itself only durably commits a buffered STATE
+ * cursor after the record batches emitted in the same run have been
+ * enqueued (see collector-runner.ts's flushPendingBatch-before-checkpoint
+ * ordering), so a crash or interruption before that point leaves the prior
+ * checkpoint (or none) in place rather than a checkpoint claiming coverage
+ * this run never durably queued.
  *   - Media attachments are NOT downloaded. gmcli has a `gmcli media
  *     download` subcommand; it is explicitly out of scope for this cut.
  *
@@ -94,7 +124,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { emitDetailCoverage, runConnector } from "../../src/connector-runtime.ts";
+import { type CollectContext, emitDetailCoverage, runConnector } from "../../src/connector-runtime.ts";
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import type { CoverageRecord } from "../../src/local-source-inventory.ts";
 import type { GmcliResult } from "./fixtures.ts";
@@ -506,6 +537,91 @@ export async function fetchAndParseGmcliMessages(invoke: GmcliInvoker = runGmcli
 
 export type GmcliInvoker = (args: readonly string[]) => Promise<GmcliResult>;
 
+export async function collect({ state, requested, emit, emitRecord, progress }: CollectContext): Promise<void> {
+  const outcome = await fetchAndParseGmcliMessages();
+
+  if (requested.has("coverage_diagnostics")) {
+    await emitRecord("coverage_diagnostics", buildCoverageRecord(outcome.coverageStatus, outcome.coverageReason));
+  }
+
+  if (outcome.skip) {
+    await emit({ type: "SKIP_RESULT", stream: "messages", ...outcome.skip });
+    return;
+  }
+
+  const parsed = outcome.parsed ?? [];
+  if (outcome.truncated && outcome.truncated.length > 0) {
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: "gmcli_per_chat_limit_reached",
+      message: `${String(outcome.truncated.length)} conversation(s) reached the per-chat message limit; older history in those conversations was not fetched this run. Increase GMCLI_MESSAGES_PER_CHAT_LIMIT and re-run to fetch more.`,
+    });
+  }
+  if (!requested.has("messages")) {
+    return;
+  }
+
+  // Per-message-id content fingerprint, seeded from the prior run's
+  // STATE cursor (see the file header's STATE section). gmcli returns
+  // the same bounded per-conversation window every run (no server-side
+  // "since" cursor exists to narrow the re-fetch) — this gate is what
+  // stops that repeated fetch from re-emitting a RECORD for a message
+  // this run already durably queued in a prior run. A message whose
+  // fingerprint changed (or is new) is always emitted; `considered`/
+  // `covered` below still count every fetched message regardless of
+  // whether the gate emitted it, since a fetched-but-unchanged message
+  // was genuinely considered and is already durably covered from its
+  // prior emission.
+  const cursor = openFingerprintCursor(state.messages);
+
+  await progress(`Google Messages phase=emit pass=emit messages=${String(parsed.length)}`);
+  for (const message of parsed) {
+    const record = { ...message };
+    if (cursor.shouldEmit(record)) {
+      await emitRecord("messages", record);
+    }
+  }
+  await progress(`Google Messages phase=emit pass=emit done messages=${String(parsed.length)}`);
+
+  // STATE is written only after every fetched message has passed
+  // through the cursor and any resulting RECORD has been handed to
+  // emitRecord above — never before. The local-collector runtime only
+  // durably commits a buffered STATE cursor after this run's record
+  // batches have been enqueued (collector-runner.ts flushes pending
+  // record batches before it drains the checkpoint), so a crash or
+  // interruption between here and that commit leaves the prior
+  // checkpoint (or none, on a first run) in place rather than a
+  // checkpoint claiming coverage this run never durably queued.
+  await emit({
+    type: "STATE",
+    stream: "messages",
+    cursor: { fingerprints: cursor.toState() },
+  });
+
+  // `messages` is this connector's only required stream and previously
+  // never proved its own coverage, leaving it permanently unmeasured
+  // even on a fully successful run. gmcli's per-conversation query
+  // already gives an exact enumerated count (`parsed.length`) every
+  // run — every fetched message is unconditionally considered above, so
+  // considered === covered even though the fingerprint gate may not
+  // re-emit an unchanged one as a fresh RECORD. A truncated run's
+  // SKIP_RESULT (emitted above) already outranks this in the coverage
+  // precedence order, so this always-emit is safe even when the fetch
+  // was bounded.
+  await emitDetailCoverage(
+    { emit },
+    {
+      stream: "messages",
+      stateStream: "messages",
+      requiredKeys: [],
+      hydratedKeys: [],
+      considered: parsed.length,
+      covered: parsed.length,
+    }
+  );
+}
+
 runConnectorGuarded();
 
 function runConnectorGuarded(): void {
@@ -515,56 +631,6 @@ function runConnectorGuarded(): void {
   runConnector({
     name: "google_messages",
     validateRecord,
-    async collect({ requested, emit, emitRecord, progress }) {
-      const outcome = await fetchAndParseGmcliMessages();
-
-      if (requested.has("coverage_diagnostics")) {
-        await emitRecord("coverage_diagnostics", buildCoverageRecord(outcome.coverageStatus, outcome.coverageReason));
-      }
-
-      if (outcome.skip) {
-        await emit({ type: "SKIP_RESULT", stream: "messages", ...outcome.skip });
-        return;
-      }
-
-      const parsed = outcome.parsed ?? [];
-      if (outcome.truncated && outcome.truncated.length > 0) {
-        await emit({
-          type: "SKIP_RESULT",
-          stream: "messages",
-          reason: "gmcli_per_chat_limit_reached",
-          message: `${String(outcome.truncated.length)} conversation(s) reached the per-chat message limit; older history in those conversations was not fetched this run. Increase GMCLI_MESSAGES_PER_CHAT_LIMIT and re-run to fetch more.`,
-        });
-      }
-      if (!requested.has("messages")) {
-        return;
-      }
-
-      await progress(`Google Messages phase=emit pass=emit messages=${String(parsed.length)}`);
-      for (const message of parsed) {
-        await emitRecord("messages", { ...message });
-      }
-      await progress(`Google Messages phase=emit pass=emit done messages=${String(parsed.length)}`);
-
-      // `messages` is this connector's only required stream and previously
-      // never proved its own coverage, leaving it permanently unmeasured
-      // even on a fully successful run. gmcli's per-conversation query
-      // already gives an exact enumerated count (`parsed.length`) every
-      // run — every fetched message is unconditionally emitted above, so
-      // considered === covered. A truncated run's SKIP_RESULT (emitted
-      // above) already outranks this in the coverage precedence order, so
-      // this always-emit is safe even when the fetch was bounded.
-      await emitDetailCoverage(
-        { emit },
-        {
-          stream: "messages",
-          stateStream: "messages",
-          requiredKeys: [],
-          hydratedKeys: [],
-          considered: parsed.length,
-          covered: parsed.length,
-        }
-      );
-    },
+    collect,
   });
 }
