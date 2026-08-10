@@ -7,11 +7,20 @@
  * Each driver exercises a connector's REAL collection code — the same
  * `index.ts` entrypoint or exported orchestration function its own
  * integration test drives — against synthetic, credential-free fixtures
- * (a fake local HTTP/CardDAV server, a scripted fetch, or an in-memory page
- * stub). No connector source file is modified: every driver reaches the
- * connector only through an already-public surface (an exported function,
- * or the real stdin/stdout Collection Profile protocol via
- * `runConnectorProtocolSubprocess`).
+ * (a fake local HTTP/CardDAV server, a fake subprocess binary, a scripted
+ * fetch, or an in-memory page/request stub). No connector source file is
+ * modified: every driver reaches the connector only through an already-public
+ * surface (an exported function, or the real stdin/stdout Collection Profile
+ * protocol via `runConnectorProtocolSubprocess`).
+ *
+ * Two driver shapes cover every connector this gate drives:
+ *   - `runDirectImportDriver` — calls an exported collection function
+ *     in-process with a fake `CollectContext`; used for connectors with no
+ *     rate governor whose production entrypoint takes a context object
+ *     (Reddit, Amazon, GroupMe) or an injectable request seam (YNAB).
+ *   - the subprocess drivers (Jellyfin, Apple Contacts, Google Messages) go
+ *     through the real stdin/stdout protocol via `runConnectorProtocolSubprocess`
+ *     against a fake local server or fake CLI binary.
  *
  * A driver returns `{ exercised: true, messages }` when it successfully ran
  * the connector to a real DONE (or the exported orchestration function
@@ -20,48 +29,46 @@
  * fixture path exists — the gate reports that honestly rather than asserting
  * anything about a stream it never touched.
  *
- * Deliberately excluded: YNAB. Its module-level HTTP governor
- * (`createConnectorHttpGovernor` in connectors/ynab/index.ts) paces every
- * request — including requests made by directly calling an exported
- * per-stream collection function — through a real GCRA bucket with a
- * 20-second floor interval and no test-mode bypass. Driving it here would
- * make this shared gate either slow (tens of seconds per stream) or flaky
- * (a shared module-level governor instance across sequential in-process
- * calls), neither of which belongs in a fast, deterministic CI gate. YNAB's
- * own dedicated suites (e.g. scheduled-transactions-coverage.test.ts,
- * budgets-considered.test.ts) already prove/disprove DETAIL_COVERAGE
- * per-stream against the real production callback; this gate defers to them
- * and reports YNAB's required full_inventory streams as unexercised here
- * rather than re-running (or worse, crudely bypassing) that pacing.
+ * Deliberately excluded from the aggregate gate: YNAB's per-budget streams
+ * that route through its real governed `ynab()` fetch. Its module-level HTTP
+ * governor (`createConnectorHttpGovernor` in connectors/ynab/index.ts) paces
+ * every request through a real GCRA bucket with a 20-second floor interval
+ * and no test-mode bypass. `ynabCollect`'s own sanctioned DI seam — an
+ * injected `request` function (see `driveYnabAccountStats` below) — avoids
+ * the governor entirely without bypassing or weakening it, so `account_stats`
+ * (this gate's `singleton_presence` driver) is driven through it; the
+ * remaining YNAB streams stay off this gate and rely on YNAB's own dedicated
+ * suites (e.g. scheduled-transactions-coverage.test.ts, budgets-considered.test.ts).
  *
  * This module intentionally covers only the connectors this gate can
  * currently drive cheaply (a few seconds, no real network pacing) without
  * live credentials. Every other production-ready connector's required
- * full_inventory/checkpoint_window streams are reported `unexercised`, not
- * silently skipped and not assumed broken.
+ * stream is reported `unexercised`, not silently skipped and not assumed
+ * broken.
  */
 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { CollectContext } from "./connector-runtime.ts";
 import type { EmittedMessage } from "./connector-runtime-protocol.ts";
-import { makeRecordingEmit } from "./test-harness.ts";
+import { makeRecordingEmit, type RecordingEmit } from "./test-harness.ts";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * A record `emitRecord()` rejected via schema validation — the direct-call
  * counterpart of a real runtime SKIP_RESULT. Drivers that call a connector's
- * exported function directly (Reddit, Amazon) use `makeRecordingEmit`, whose
- * `emitRecord` shape-check failures land in its own `.skipped` bookkeeping
- * array, NOT in the `messages`/`emit()` stream — the real runtime would emit
- * an actual SKIP_RESULT protocol message for the same failure, but
- * `makeRecordingEmit` (by design, for ordinary unit tests) never
- * synthesizes one. A driver MUST surface these here so
- * `deriveStreamEnvelope` sees the same "this stream had an unresolved
- * validation failure" fact the runtime's SKIP_RESULT would carry — omitting
- * this silently drops evidence and lets a stream with 100% invalid records
- * still read as `checkpoint_only`/`enumeration_boundary` proven, because the
- * shared oracle never saw the failure.
+ * exported function directly (Reddit, Amazon, GroupMe, YNAB) use
+ * `makeRecordingEmit`, whose `emitRecord` shape-check failures land in its
+ * own `.skipped` bookkeeping array, NOT in the `messages`/`emit()` stream —
+ * the real runtime would emit an actual SKIP_RESULT protocol message for the
+ * same failure, but `makeRecordingEmit` (by design, for ordinary unit tests)
+ * never synthesizes one. `runDirectImportDriver` surfaces these
+ * automatically so `deriveStreamEnvelope` sees the same "this stream had an
+ * unresolved validation failure" fact the runtime's SKIP_RESULT would carry
+ * — omitting this silently drops evidence and lets a stream with 100%
+ * invalid records still read as `checkpoint_only`/`enumeration_boundary`
+ * proven, because the shared oracle never saw the failure.
  */
 export interface SkippedRecordFact {
   readonly stream: string;
@@ -70,6 +77,72 @@ export interface SkippedRecordFact {
 export type DriverResult =
   | { exercised: true; messages: readonly EmittedMessage[]; skippedRecords?: readonly SkippedRecordFact[] }
   | { exercised: false; reason: string };
+
+/**
+ * Run a connector's exported collection function in-process against a
+ * schema-aware recording harness, and fold `harness.skipped` into
+ * `skippedRecords` automatically. `harness.emit` already accumulates every
+ * protocol message into `harness.protocolMessages` — callers must NOT
+ * separately re-wrap `emit` to collect messages themselves; that would only
+ * duplicate what this harness already tracks (an earlier version of this
+ * file did exactly that in every driver).
+ *
+ * `body` receives the harness's `emit`/`emitRecord` so it can build whatever
+ * shape of context/args the connector's real entrypoint needs (a full
+ * `CollectContext`, or a narrower deps bag like Amazon's `emitOrderAndItems`
+ * — those are structurally different enough across connectors that this
+ * helper does not try to unify the context shape itself, only the
+ * harness/capture plumbing around it).
+ */
+async function runDirectImportDriver(
+  validateRecord: Parameters<typeof makeRecordingEmit>[0],
+  body: (harness: RecordingEmit) => Promise<void>
+): Promise<DriverResult> {
+  const harness = makeRecordingEmit(validateRecord);
+  await body(harness);
+  return {
+    exercised: true,
+    messages: harness.protocolMessages,
+    skippedRecords: harness.skipped.map((s) => ({ stream: s.stream })),
+  };
+}
+
+/**
+ * The fields of a real `CollectContext` every direct-import driver in this
+ * file needs to override are `credentials`/`requested`/`scope`/`state`; the
+ * rest (`assist`, `capture`, `completeAssistance`, `detailGaps`,
+ * `requestDetailGapPage`, `sendInteraction`) are the same honest no-op stubs
+ * none of Reddit/GroupMe/Amazon's collection paths read, matching how each
+ * connector's own integration tests construct a fixture context.
+ */
+function baseCollectContextStubs(
+  harness: RecordingEmit
+): Pick<
+  CollectContext,
+  | "assist"
+  | "capture"
+  | "completeAssistance"
+  | "detailGaps"
+  | "emit"
+  | "emitRecord"
+  | "emittedAt"
+  | "progress"
+  | "requestDetailGapPage"
+  | "sendInteraction"
+> {
+  return {
+    assist: () => Promise.reject(new Error("assist not implemented in coverage-conformance driver")),
+    capture: null,
+    completeAssistance: () => Promise.resolve(),
+    detailGaps: [],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: "2026-04-24T12:00:00.000Z",
+    progress: () => Promise.resolve(),
+    requestDetailGapPage: () => Promise.resolve([]),
+    sendInteraction: () => Promise.reject(new Error("sendInteraction not implemented in coverage-conformance driver")),
+  };
+}
 
 // ─── Reddit: collectAllStreams, the exact function production's collect() ──
 // ─── callback calls — driven like reddit/integration.test.ts's own oracle ──
@@ -156,27 +229,17 @@ const REDDIT_REQUESTED_STREAMS = ["submitted", "comments", "saved", "upvoted", "
  *  tests construct this context. */
 function buildRedditCollectContext(
   fetchPath: (path: string) => Promise<{ status: number; json: unknown }>,
-  emit: (msg: EmittedMessage) => Promise<void>,
-  emitRecord: (stream: string, data: Record<string, unknown>) => Promise<void>
+  harness: RecordingEmit
 ) {
   return {
-    assist: () => Promise.reject(new Error("assist not implemented in coverage-conformance driver")),
-    capture: null,
-    completeAssistance: () => Promise.resolve(),
+    ...baseCollectContextStubs(harness),
     // biome-ignore lint/suspicious/noExplicitAny: no real Playwright BrowserContext exists in this fixture; collectAllStreams never reads `context` (only `page`), so an empty stand-in is honest, not a disguised real value.
     context: {} as any,
     credentials: { REDDIT_USERNAME: "coverage-conformance" },
-    detailGaps: [],
-    emit,
-    emitRecord,
-    emittedAt: "2026-04-24T12:00:00.000Z",
     // biome-ignore lint/suspicious/noExplicitAny: no real Playwright Page exists in this fixture; only the one evaluate() call collectAllStreams's private redditFetch makes is implemented, matching Reddit's own createMockPageForFetch in integration.test.ts.
     page: createMockRedditPage(fetchPath) as any,
-    progress: async () => undefined,
-    requestDetailGapPage: () => Promise.resolve([]),
     requested: new Map(REDDIT_REQUESTED_STREAMS.map((name) => [name, { name }])),
     scope: { streams: REDDIT_REQUESTED_STREAMS.map((name) => ({ name })) },
-    sendInteraction: () => Promise.reject(new Error("sendInteraction not implemented in coverage-conformance driver")),
     state: {},
   };
 }
@@ -185,28 +248,17 @@ async function driveReddit(): Promise<DriverResult> {
   const { collectAllStreams } = await import("../connectors/reddit/index.ts");
   const { validateRecord } = await import("../connectors/reddit/schemas.ts");
 
-  const harness = makeRecordingEmit(validateRecord);
-  const messages: EmittedMessage[] = [];
-  const emit = (msg: EmittedMessage): Promise<void> => {
-    messages.push(msg);
-    return harness.emit(msg);
-  };
+  return runDirectImportDriver(validateRecord, async (harness) => {
+    // submitted.json needs a t3 post; every other endpoint (comments, saved,
+    // upvoted, downvoted, hidden) needs a t1 comment — see submittedRecord /
+    // commentRecord / savedRecord / voteRecord in buildStreamTable's toRecord.
+    const postListing = { data: { children: [validRedditPost()], after: null } };
+    const commentListing = { data: { children: [validRedditComment()], after: null } };
+    const fetchPath = (path: string) =>
+      Promise.resolve({ status: 200, json: path.includes("/submitted.json") ? postListing : commentListing });
 
-  // submitted.json needs a t3 post; every other endpoint (comments, saved,
-  // upvoted, downvoted, hidden) needs a t1 comment — see submittedRecord /
-  // commentRecord / savedRecord / voteRecord in buildStreamTable's toRecord.
-  const postListing = { data: { children: [validRedditPost()], after: null } };
-  const commentListing = { data: { children: [validRedditComment()], after: null } };
-  const fetchPath = (path: string) =>
-    Promise.resolve({ status: 200, json: path.includes("/submitted.json") ? postListing : commentListing });
-
-  await collectAllStreams(buildRedditCollectContext(fetchPath, emit, harness.emitRecord));
-
-  return {
-    exercised: true,
-    messages,
-    skippedRecords: harness.skipped.map((s) => ({ stream: s.stream })),
-  };
+    await collectAllStreams(buildRedditCollectContext(fetchPath, harness));
+  });
 }
 
 /**
@@ -221,27 +273,16 @@ async function driveRedditMalformed(): Promise<DriverResult> {
   const { collectAllStreams } = await import("../connectors/reddit/index.ts");
   const { validateRecord } = await import("../connectors/reddit/schemas.ts");
 
-  const harness = makeRecordingEmit(validateRecord);
-  const messages: EmittedMessage[] = [];
-  const emit = (msg: EmittedMessage): Promise<void> => {
-    messages.push(msg);
-    return harness.emit(msg);
-  };
+  return runDirectImportDriver(validateRecord, async (harness) => {
+    const malformedPost = { kind: "t3" as const, data: { ...validRedditPost().data, name: "t3_has_underscore" } };
+    const malformedComment = { kind: "t1" as const, data: { ...validRedditComment().data, name: "t1_has_underscore" } };
+    const postListing = { data: { children: [malformedPost], after: null } };
+    const commentListing = { data: { children: [malformedComment], after: null } };
+    const fetchPath = (path: string) =>
+      Promise.resolve({ status: 200, json: path.includes("/submitted.json") ? postListing : commentListing });
 
-  const malformedPost = { kind: "t3" as const, data: { ...validRedditPost().data, name: "t3_has_underscore" } };
-  const malformedComment = { kind: "t1" as const, data: { ...validRedditComment().data, name: "t1_has_underscore" } };
-  const postListing = { data: { children: [malformedPost], after: null } };
-  const commentListing = { data: { children: [malformedComment], after: null } };
-  const fetchPath = (path: string) =>
-    Promise.resolve({ status: 200, json: path.includes("/submitted.json") ? postListing : commentListing });
-
-  await collectAllStreams(buildRedditCollectContext(fetchPath, emit, harness.emitRecord));
-
-  return {
-    exercised: true,
-    messages,
-    skippedRecords: harness.skipped.map((s) => ({ stream: s.stream })),
-  };
+    await collectAllStreams(buildRedditCollectContext(fetchPath, harness));
+  });
 }
 
 // ─── Jellyfin: real subprocess entrypoint against a fake local HTTP server ──
@@ -353,6 +394,118 @@ async function driveAppleContacts(): Promise<DriverResult> {
   }
 }
 
+/**
+ * Apple Contacts with a rejected credential: the real subprocess entrypoint
+ * fails cleanly with DONE.status === "failed" (verified against
+ * connectors/apple_contacts/integration.test.ts's own "fails cleanly on
+ * rejected credentials" test) — a genuine, real-production failed run, not
+ * a synthetic DONE message. Used by the aggregate gate's "failed/partial
+ * never pass" capability pin to prove a failed driver run is treated as a
+ * hard failure for every stream it would have proven, not silently exempted.
+ */
+async function driveAppleContactsAuthFailure(): Promise<DriverResult> {
+  const { runConnectorProtocolSubprocess } = await import("./test-harness.ts");
+  const { startFakeCardDavServer } = await import("../connectors/apple_contacts/test-carddav-server.ts");
+
+  const username = "owner@example.com";
+  const server = await startFakeCardDavServer({ username, password: "app-specific-pw" });
+  try {
+    const result = await runConnectorProtocolSubprocess({
+      allowFailedDone: true,
+      cwd: PACKAGE_ROOT,
+      entrypoint: join(PACKAGE_ROOT, "connectors/apple_contacts/index.ts"),
+      env: { APPLE_ID: username, APPLE_APP_SPECIFIC_PASSWORD: "wrong-password", APPLE_CARDDAV_ORIGIN: server.origin },
+      start: {
+        type: "START",
+        scope: { streams: [{ name: "address_books" }, { name: "contacts" }, { name: "contact_groups" }] },
+        state: {},
+      },
+    });
+    return { exercised: true, messages: result.messages };
+  } finally {
+    await server.close();
+  }
+}
+
+export const APPLE_CONTACTS_AUTH_FAILURE_DRIVER: ConnectorDriver = {
+  coveredStreams: ["address_books", "contacts", "contact_groups"],
+  run: driveAppleContactsAuthFailure,
+};
+
+// ─── Google Messages: real subprocess entrypoint against a fake gmcli binary ─
+//
+// The only registered `snapshot_import_receipt` driver. gmcli is wrapped
+// arms-length as a subprocess (see connectors/google_messages/index.ts's file
+// header) — the connector's own integration.test.ts already proves the real
+// START -> RECORD/SKIP_RESULT/DONE wire protocol against a fake gmcli binary
+// (fixtures/fake-gmcli.mjs) selected via GMCLI_BIN + FAKE_GMCLI_MODE, so no
+// real gmcli install or paired Android device is needed here either.
+
+const GOOGLE_MESSAGES_ENTRYPOINT = join(PACKAGE_ROOT, "connectors/google_messages/index.ts");
+const FAKE_GMCLI = join(PACKAGE_ROOT, "connectors/google_messages/fixtures/fake-gmcli.mjs");
+
+async function driveGoogleMessagesWithMode(mode: string): Promise<DriverResult> {
+  const { runConnectorProtocolSubprocess } = await import("./test-harness.ts");
+  const result = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: PACKAGE_ROOT,
+    entrypoint: GOOGLE_MESSAGES_ENTRYPOINT,
+    env: { GMCLI_BIN: FAKE_GMCLI, FAKE_GMCLI_MODE: mode, PDPP_OWNER_TOKEN: "", PDPP_RS_URL: "", RS_URL: "" },
+    start: {
+      type: "START",
+      scope: { streams: [{ name: "messages" }] },
+      state: {},
+    },
+  });
+  return { exercised: true, messages: result.messages };
+}
+
+function driveGoogleMessages(): Promise<DriverResult> {
+  return driveGoogleMessagesWithMode("healthy");
+}
+
+/**
+ * Genuinely empty archive (`gmcli chats list` returns zero conversations):
+ * proves the `considered === covered === 0` verified-empty shape is
+ * reachable through the real subprocess path for a `snapshot_import_receipt`
+ * stream, not merely a nonzero run that happens to pass.
+ */
+export const GOOGLE_MESSAGES_EMPTY_DRIVER: ConnectorDriver = {
+  coveredStreams: ["messages"],
+  run: () => driveGoogleMessagesWithMode("empty"),
+};
+
+/**
+ * gmcli returns messages output missing required fields for the one fetched
+ * conversation: the connector's real schema-drift handling emits a genuine
+ * `SKIP_RESULT` for the `messages` stream itself (reason `gmcli_query_failed`
+ * — see connectors/google_messages/integration.test.ts's "schema drift:
+ * malformed messages output" test), proving the mutation-detection path for
+ * this strategy runs through real production error handling, not a
+ * synthetic envelope.
+ */
+export const GOOGLE_MESSAGES_MALFORMED_DRIVER: ConnectorDriver = {
+  coveredStreams: ["messages"],
+  run: () => driveGoogleMessagesWithMode("malformed_messages"),
+};
+
+/**
+ * gmcli reports the device as unpaired: the connector cannot enumerate any
+ * conversation, so it emits a real `SKIP_RESULT` (reason `gmcli_not_paired`)
+ * for `messages` — but this connector treats an unpaired device as a soft,
+ * user-actionable skip rather than a hard run failure, so DONE still reports
+ * `status: "succeeded"` (verified against
+ * connectors/google_messages/integration.test.ts's own "not paired" test).
+ * This is a second, independent real-production route to `unresolved_attempt`
+ * distinct from the schema-drift mutation above — proves the gate reads the
+ * SKIP_RESULT itself, not the run's overall success/failure, as what
+ * withholds proof for this stream.
+ */
+export const GOOGLE_MESSAGES_NOT_PAIRED_DRIVER: ConnectorDriver = {
+  coveredStreams: ["messages"],
+  run: () => driveGoogleMessagesWithMode("not_paired"),
+};
+
 // ─── Amazon: emitOrderAndItems/emitOrdersCoverage, no browser required ────
 //
 // No governor, no network: these are pure exported functions the connector's
@@ -362,37 +515,30 @@ async function driveAmazon(): Promise<DriverResult> {
   const { emitOrderAndItems, emitOrdersCoverage, newOrdersCoverage } = await import("../connectors/amazon/index.ts");
   const { validateRecord } = await import("../connectors/amazon/schemas.ts");
 
-  const harness = makeRecordingEmit(validateRecord);
-  const messages: EmittedMessage[] = [];
-  const emit = (msg: EmittedMessage): Promise<void> => {
-    messages.push(msg);
-    return harness.emit(msg);
-  };
+  return runDirectImportDriver(validateRecord, async (harness) => {
+    const ordersCoverage = newOrdersCoverage();
+    const deps = {
+      capture: null,
+      emit: harness.emit,
+      emitRecord: harness.emitRecord,
+      emittedAt: "2026-04-22T12:00:00.000Z",
+      ordersCoverage,
+      progress: (): Promise<void> => Promise.resolve(),
+      skipDetail: false,
+      wantsItems: false,
+      wantsOrders: true,
+    };
+    const listOrder = {
+      orderId: "111-1234567-8901234",
+      orderDateRaw: "January 5, 2026",
+      orderTotal: "$42.99",
+      deliveryStatus: "Delivered",
+      items: [{ asin: "B01ABCDEFG", name: "Fixture Widget", url: "https://amazon.com/dp/B01ABCDEFG" }],
+    };
 
-  const ordersCoverage = newOrdersCoverage();
-  const deps = {
-    capture: null,
-    emit,
-    emitRecord: harness.emitRecord,
-    emittedAt: "2026-04-22T12:00:00.000Z",
-    ordersCoverage,
-    progress: (): Promise<void> => Promise.resolve(),
-    skipDetail: false,
-    wantsItems: false,
-    wantsOrders: true,
-  };
-  const listOrder = {
-    orderId: "111-1234567-8901234",
-    orderDateRaw: "January 5, 2026",
-    orderTotal: "$42.99",
-    deliveryStatus: "Delivered",
-    items: [{ asin: "B01ABCDEFG", name: "Fixture Widget", url: "https://amazon.com/dp/B01ABCDEFG" }],
-  };
-
-  await emitOrderAndItems(deps, listOrder, null, "2026-01-05");
-  await emitOrdersCoverage(deps, ordersCoverage);
-
-  return { exercised: true, messages, skippedRecords: harness.skipped.map((s) => ({ stream: s.stream })) };
+    await emitOrderAndItems(deps, listOrder, null, "2026-01-05");
+    await emitOrdersCoverage(deps, ordersCoverage);
+  });
 }
 
 /**
@@ -408,36 +554,247 @@ async function driveAmazonZeroResult(): Promise<DriverResult> {
   const { emitOrdersCoverage, newOrdersCoverage } = await import("../connectors/amazon/index.ts");
   const { validateRecord } = await import("../connectors/amazon/schemas.ts");
 
-  const harness = makeRecordingEmit(validateRecord);
-  const messages: EmittedMessage[] = [];
-  const emit = (msg: EmittedMessage): Promise<void> => {
-    messages.push(msg);
-    return harness.emit(msg);
-  };
-
-  const ordersCoverage = newOrdersCoverage();
-  const deps = {
-    capture: null,
-    emit,
-    emitRecord: harness.emitRecord,
-    emittedAt: "2026-04-22T12:00:00.000Z",
-    ordersCoverage,
-    progress: (): Promise<void> => Promise.resolve(),
-    skipDetail: false,
-    wantsItems: false,
-    wantsOrders: true,
-  };
-
-  // No emitOrderAndItems call: the year sweep considered zero orders.
-  await emitOrdersCoverage(deps, ordersCoverage);
-
-  return { exercised: true, messages, skippedRecords: harness.skipped.map((s) => ({ stream: s.stream })) };
+  return runDirectImportDriver(validateRecord, async (harness) => {
+    const ordersCoverage = newOrdersCoverage();
+    const deps = {
+      capture: null,
+      emit: harness.emit,
+      emitRecord: harness.emitRecord,
+      emittedAt: "2026-04-22T12:00:00.000Z",
+      ordersCoverage,
+      progress: (): Promise<void> => Promise.resolve(),
+      skipDetail: false,
+      wantsItems: false,
+      wantsOrders: true,
+    };
+    // No emitOrderAndItems call: the year sweep considered zero orders.
+    await emitOrdersCoverage(deps, ordersCoverage);
+  });
 }
+
+// ─── GroupMe: collect(), the exact function production's runConnector calls ─
+//
+// The only registered `parent_detail_accounting` driver. GroupMe's real
+// module-level governor paces at 10s/request; these drivers use GroupMe's
+// own `__setZeroDelayHttpGovernorForTests()` test seam (the same one
+// attachment-detail-coverage.test.ts uses) to avoid paying that pacing for
+// a handful of in-process fixture requests. No browser dependency —
+// `collect()` takes a real `CollectContext` and fetches through ordinary
+// `globalThis.fetch`, stubbed by path exactly like GroupMe's own test file.
+// Driving `collect()` directly (rather than a lower-level per-stream
+// helper) is required because the `attachments` DETAIL_COVERAGE is only
+// emitted from `collect()` itself, gated on whether the REQUESTED parent
+// streams (`group_messages`, `direct_chat_messages`) completed cleanly this
+// run — see index.ts's `attachmentParentsProvenClean`.
+
+const GROUPME_GROUP = {
+  id: "group-1",
+  name: "Fixture Group",
+  description: null,
+  avatar_url: null,
+  created_at: 1_700_000_000,
+  updated_at: 1_700_000_050,
+  members_count: 2,
+  messages_count: 1,
+};
+
+const GROUPME_CHAT = {
+  id: "chat-1",
+  last_message: "hey",
+  last_message_at: 1_700_000_000,
+  other_user: { id: "user-2", name: "Fixture Friend", avatar_url: null },
+  avatar_url: null,
+};
+
+function groupMessageWithAttachment(id: string): Record<string, unknown> {
+  return {
+    id,
+    text: "look at this",
+    created_at: 1_700_000_100,
+    user_id: "user-2",
+    name: "Fixture Friend",
+    avatar_url: null,
+    attachments: [{ type: "image", url: "https://i.groupme.com/coverage-conformance.jpg" }],
+    favorited_by: [],
+    system: false,
+  };
+}
+
+/** Stub `globalThis.fetch` by request pathname, mirroring GroupMe's own
+ *  attachment-detail-coverage.test.ts `stubFetchByPath`. Returns a restore
+ *  function; callers MUST call it even on a thrown error (try/finally). */
+function stubGroupMeFetchByPath(routes: Record<string, unknown | { status: number; body: unknown }>): () => void {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    const route = routes[url.pathname];
+    if (route === undefined) {
+      throw new Error(`unstubbed path in coverage-conformance GroupMe driver: ${url.pathname}`);
+    }
+    if (typeof route === "object" && route !== null && "status" in route) {
+      const failure = route as { status: number; body: unknown };
+      return Promise.resolve(new Response(JSON.stringify(failure.body), { status: failure.status }));
+    }
+    return Promise.resolve(new Response(JSON.stringify({ response: route }), { status: 200 }));
+  }) as typeof globalThis.fetch;
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+const GROUPME_STREAMS = ["groups", "group_messages", "direct_messages", "direct_chat_messages", "attachments"];
+
+/**
+ * Drives `collect()` against the given `group_messages`/`direct_chat_messages`
+ * fetch routes, with the zero-delay governor seam (see the file-header
+ * comment above) and fetch stubbing/governor restore handled once here for
+ * both capability-pin scenarios below — only the routes differ:
+ *   - shortfall: a group message with one attachment, no blob-upload backend
+ *     configured -> `hydration_status: "deferred"` -> real `boundary_shortfall`.
+ *   - withheld: `group_messages` fails (HTTP 500) -> GroupMe's own
+ *     `attachmentParentsProvenClean` withholds the `attachments`
+ *     DETAIL_COVERAGE entirely, not a shortfall verdict.
+ */
+async function driveGroupMeAttachments(
+  routes: Record<string, unknown | { status: number; body: unknown }>
+): Promise<DriverResult> {
+  const { __resetHttpGovernorForTests, __setZeroDelayHttpGovernorForTests, collect } = await import(
+    "../connectors/groupme/index.ts"
+  );
+  const { validateRecord } = await import("../connectors/groupme/schemas.ts");
+
+  __setZeroDelayHttpGovernorForTests();
+  try {
+    return await runDirectImportDriver(validateRecord, async (harness) => {
+      const restore = stubGroupMeFetchByPath(routes);
+      try {
+        await collect({
+          ...baseCollectContextStubs(harness),
+          credentials: { GROUPME_ACCESS_TOKEN: "coverage-conformance" },
+          requested: new Map(GROUPME_STREAMS.map((name) => [name, { name }])),
+          scope: { streams: GROUPME_STREAMS.map((name) => ({ name })) },
+          state: {},
+        });
+      } finally {
+        restore();
+      }
+    });
+  } finally {
+    __resetHttpGovernorForTests();
+  }
+}
+
+/** Not registered in `CONNECTOR_DRIVERS`: `attachments` is `required: false`
+ *  in groupme.json, so it never appears in `allRequiredStreamPairs()` — its
+ *  proof lives entirely in the dedicated capability-pin tests below, the
+ *  same pattern `AMAZON_ZERO_RESULT_DRIVER`/`REDDIT_MALFORMED_DRIVER` use for
+ *  claims the aggregate gate's required-stream loop cannot itself express. */
+export const GROUPME_ATTACHMENTS_SHORTFALL_DRIVER: ConnectorDriver = {
+  coveredStreams: ["attachments"],
+  run: () =>
+    driveGroupMeAttachments({
+      "/v3/groups": [GROUPME_GROUP],
+      "/v3/chats": [GROUPME_CHAT],
+      "/v3/groups/group-1/messages": { count: 1, messages: [groupMessageWithAttachment("gmsg-1")] },
+      "/v3/chats/chat-1/messages": { count: 0, direct_messages: [] },
+    }),
+};
+
+export const GROUPME_ATTACHMENTS_WITHHELD_DRIVER: ConnectorDriver = {
+  coveredStreams: ["attachments"],
+  run: () =>
+    driveGroupMeAttachments({
+      "/v3/groups": [GROUPME_GROUP],
+      "/v3/chats": [GROUPME_CHAT],
+      "/v3/groups/group-1/messages": { status: 500, body: { error: "server error" } },
+      "/v3/chats/chat-1/messages": { count: 1, direct_messages: [groupMessageWithAttachment("dmsg-1")] },
+    }),
+};
+
+// ─── YNAB: ynabCollect via its sanctioned `request` DI seam ────────────────
+//
+// The only registered `singleton_presence` driver. `ynabCollect`'s second
+// parameter is an injectable `request` function (the sole seam, matching
+// `ynab()`'s own signature) — production wires the real governed `ynab()`;
+// this driver passes a synchronous fake instead, so the run never touches
+// `httpGovernor`/`fetch` and never trips `ynabPacingProfile()`'s real
+// per-request pacing floor. This is YNAB's own dedicated test seam (see
+// connectors/ynab/collect-terminal-coverage.test.ts), not a bypass invented
+// for this gate.
+
+const YNAB_BUDGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const YNAB_ACCOUNT = "11111111-1111-4111-8111-111111111111";
+
+function ynabAccount(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    name: "Checking",
+    type: "checking",
+    on_budget: true,
+    closed: false,
+    balance: 100_000,
+    cleared_balance: 100_000,
+    uncleared_balance: 0,
+    deleted: false,
+    ...overrides,
+  };
+}
+
+/**
+ * Drives `ynabCollect` with the given fake `request`, keyed by path suffix,
+ * mirroring connectors/ynab/collect-terminal-coverage.test.ts's own
+ * `fakeRequest`. Shared by both capability-pin scenarios below — only the
+ * fake `request` differs:
+ *   - nonzero: one budget with one account -> real `enumeration_boundary`.
+ *   - zero-budget: `ynabCollect` never iterates a budget, so `account_stats`
+ *     (a per-budget-derived stream) never stages a coverage claim at all.
+ */
+async function driveYnabAccountStats(request: <T>(path: string) => Promise<T>): Promise<DriverResult> {
+  const { ynabCollect } = await import("../connectors/ynab/index.ts");
+  const { validateRecord } = await import("../connectors/ynab/schemas.ts");
+
+  return runDirectImportDriver(validateRecord, async (harness) => {
+    await ynabCollect(
+      {
+        ...baseCollectContextStubs(harness),
+        credentials: { YNAB_PERSONAL_ACCESS_TOKEN: "coverage-conformance" },
+        requested: new Map([
+          ["accounts", { name: "accounts" }],
+          ["account_stats", { name: "account_stats" }],
+        ]),
+        scope: { streams: [{ name: "accounts" }, { name: "account_stats" }] },
+        state: {},
+      },
+      request
+    );
+  });
+}
+
+function fakeYnabRequestWithOneAccount<T>(path: string): Promise<T> {
+  if (path === "/budgets") {
+    return Promise.resolve({ data: { budgets: [{ id: YNAB_BUDGET, name: "Fixture Budget" }] } } as T);
+  }
+  if (path === `/budgets/${YNAB_BUDGET}/accounts`) {
+    return Promise.resolve({ data: { accounts: [ynabAccount(YNAB_ACCOUNT)], server_knowledge: 100 } } as T);
+  }
+  return Promise.reject(new Error(`ynab_http_404 [endpoint ${path}]: not_found`));
+}
+
+function fakeYnabRequestWithZeroBudgets<T>(path: string): Promise<T> {
+  return path === "/budgets"
+    ? Promise.resolve({ data: { budgets: [] } } as T)
+    : Promise.reject(new Error(`ynab_http_404 [endpoint ${path}]: not_found`));
+}
+
+export const YNAB_ACCOUNT_STATS_ZERO_BUDGETS_DRIVER: ConnectorDriver = {
+  coveredStreams: ["account_stats"],
+  run: () => driveYnabAccountStats(fakeYnabRequestWithZeroBudgets),
+};
 
 export interface ConnectorDriver {
   /** Manifest stream names this driver actually exercises. A driver may
-   *  cover a subset of the connector's required full_inventory/
-   *  checkpoint_window streams; the gate reports the remainder unexercised. */
+   *  cover a subset of the connector's required streams; the gate reports
+   *  the remainder unexercised. */
   coveredStreams: readonly string[];
   run: () => Promise<DriverResult>;
 }
@@ -448,17 +805,19 @@ export const CONNECTOR_DRIVERS: Record<string, ConnectorDriver> = {
     coveredStreams: ["address_books", "contacts", "contact_groups"],
     run: driveAppleContacts,
   },
+  google_messages: { coveredStreams: ["messages"], run: driveGoogleMessages },
   jellyfin: { coveredStreams: ["libraries", "items"], run: driveJellyfin },
   reddit: {
     coveredStreams: ["submitted", "comments", "saved", "upvoted", "downvoted", "hidden"],
     run: driveReddit,
   },
+  ynab: { coveredStreams: ["account_stats"], run: () => driveYnabAccountStats(fakeYnabRequestWithOneAccount) },
 };
 
 /**
- * A second, standalone driver used only by the zero-result discriminating
- * test — not registered in CONNECTOR_DRIVERS (the aggregate gate exercises
- * each connector once, via its normal nonzero fixture).
+ * Standalone drivers used only by their respective discriminating tests —
+ * not registered in `CONNECTOR_DRIVERS` (the aggregate gate exercises each
+ * connector once, via its normal nonzero fixture above).
  */
 export const AMAZON_ZERO_RESULT_DRIVER: ConnectorDriver = {
   coveredStreams: ["orders"],
@@ -466,11 +825,9 @@ export const AMAZON_ZERO_RESULT_DRIVER: ConnectorDriver = {
 };
 
 /**
- * A third, standalone driver used only by the mutation counterexample test
- * — not registered in CONNECTOR_DRIVERS. Every one of Reddit's 6 streams
- * sees one considered, schema-invalid record; proves the gate correctly
- * fails these streams (unresolved_attempt) rather than laundering a
- * validation-rejected record into proven coverage.
+ * Every one of Reddit's 6 streams sees one considered, schema-invalid
+ * record; proves the gate correctly fails these streams (unresolved_attempt)
+ * rather than laundering a validation-rejected record into proven coverage.
  */
 export const REDDIT_MALFORMED_DRIVER: ConnectorDriver = {
   coveredStreams: ["submitted", "comments", "saved", "upvoted", "downvoted", "hidden"],
@@ -481,9 +838,9 @@ export const REDDIT_MALFORMED_DRIVER: ConnectorDriver = {
 // ─── currently cannot exercise, checked in so the gap cannot silently grow ──
 //
 // Every (connector, stream) pair a production-ready or real-unlisted
-// connector declares as required full_inventory/checkpoint_window, that has
-// no registered driver above (or whose driver does not cover it), MUST
-// appear here. The conformance test fails on two independent kinds of
+// connector declares as required with a proof-demanding coverage_strategy,
+// that has no registered driver above (or whose driver does not cover it),
+// MUST appear here. The conformance test fails on two independent kinds of
 // drift:
 //   1. a NEW unlisted gap — a stream became proof-required and unexercised
 //      (a new connector shipped, or a manifest edit widened requiredness)
@@ -549,9 +906,8 @@ export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([
   "google_contacts.contact_groups",
   "google_maps.timeline_points",
   "google_maps_data_portability.archive_jobs",
-  // Google Messages / Google Takeout (REAL_UNLISTED_CONNECTORS): export-file
-  // snapshot-import receipts, no driver yet.
-  "google_messages.messages",
+  // Google Takeout (REAL_UNLISTED_CONNECTORS): export-file snapshot-import
+  // receipts, no driver yet.
   "google_takeout.location_history",
   "google_takeout.youtube_watch_history",
   "google_takeout.search_history",
@@ -606,14 +962,14 @@ export const KNOWN_UNEXERCISED_COVERAGE: ReadonlySet<string> = new Set([
   "whatsapp.messages",
   "whatsapp.attachments",
   // YNAB: module-level paced HTTP governor (createConnectorHttpGovernor,
-  // 20s floor interval) — see the module doc above for why this gate does
-  // not drive it. YNAB's own dedicated per-stream suites
-  // (accounts.test.ts, budgets-considered.test.ts,
-  // category-groups-checkpoint.test.ts, scheduled-transactions-coverage.test.ts,
-  // etc.) are the proof surface for these streams.
+  // 20s floor interval) for every stream except account_stats, which this
+  // gate drives through ynabCollect's own DI seam (see driveYnabAccountStats
+  // above). YNAB's own dedicated per-stream suites (accounts.test.ts,
+  // budgets-considered.test.ts, category-groups-checkpoint.test.ts,
+  // scheduled-transactions-coverage.test.ts, collect-terminal-coverage.test.ts,
+  // etc.) are the proof surface for the remaining streams.
   "ynab.budgets",
   "ynab.accounts",
-  "ynab.account_stats",
   "ynab.category_groups",
   "ynab.categories",
   "ynab.payees",

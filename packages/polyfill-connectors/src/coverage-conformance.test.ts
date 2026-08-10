@@ -18,9 +18,9 @@
  * STATE / DETAIL_COVERAGE / SKIP_RESULT / DETAIL_GAP messages and asks that
  * shared oracle whether `proven === true` — it does not re-implement the
  * coherence rule, and it does not accept a bare message presence check as
- * sufficient authority. A `STATE` checkpoint commit alone is not proof:
- * that is the exact invariant `evaluateStreamCoherence` exists to enforce
- * (its `checkpoint_only` verdict), independent of this gate's own logic.
+ * sufficient authority. A `STATE` checkpoint commit alone is not proof: that
+ * is the exact invariant `evaluateStreamCoherence` exists to enforce (its
+ * `checkpoint_only` verdict), independent of this gate's own logic.
  *
  * This gate does not grep connector source for `emitDetailCoverage` call
  * sites — a call site proves intent, not runtime behavior (it could be
@@ -32,6 +32,35 @@
  * credential-free fixture and evaluates the actual emitted protocol
  * messages, the same evidence the runtime and downstream projections
  * consume.
+ *
+ * Strategy coverage — what proves what, honestly:
+ *   - `checkpoint_window` / `full_inventory` (Reddit, Jellyfin, Apple
+ *     Contacts, Amazon): the aggregate gate below exercises these end to
+ *     end, including the shortfall-adjacent `unresolved_attempt` mutation
+ *     (a schema-invalid record must not be laundered into proven coverage —
+ *     see the Reddit mutation tests). These two strategies are
+ *     window-bounding under the shared oracle (`considered` + a closed
+ *     checkpoint proves the boundary; `covered` is not additionally
+ *     required to satisfy `considered`) — see coherence.ts's
+ *     `strategyBoundsWindowRatherThanCounting`.
+ *   - `snapshot_import_receipt` (Google Messages `messages`): also
+ *     window-bounding. Driven end to end below, including a genuinely
+ *     empty archive (verified-empty) and a real schema-drift SKIP_RESULT
+ *     (unresolved_attempt) and a real failed/not-paired run.
+ *   - `singleton_presence` (YNAB `account_stats`): also window-bounding.
+ *     Driven end to end below via `ynabCollect`'s DI seam, including the
+ *     zero-budget absence case.
+ *   - `parent_detail_accounting` (GroupMe `attachments`, `required: false`
+ *     — see the dedicated capability-pin section): the ONE strategy the
+ *     shared oracle excludes from window-bounding, so its numerator must
+ *     actually satisfy its denominator. This is the only strategy where
+ *     `boundary_shortfall` is reachable, and it is proven here through
+ *     GroupMe's real per-attachment hydration accounting (an unconfigured
+ *     blob backend leaves `covered < considered`), not a synthetic
+ *     envelope. `attachments` is not required, so it cannot appear in the
+ *     aggregate required-stream gate/ratchet below — its proof lives
+ *     entirely in the capability-pin tests, the same pattern already used
+ *     for Amazon's zero-result and Reddit's malformed pins.
  *
  * Honesty contract:
  *   - A stream this gate has no driver for is UNEXERCISED. It is asserted
@@ -69,10 +98,18 @@ import {
 import type { EmittedMessage } from "./connector-runtime-protocol.ts";
 import {
   AMAZON_ZERO_RESULT_DRIVER,
+  APPLE_CONTACTS_AUTH_FAILURE_DRIVER,
   CONNECTOR_DRIVERS,
+  type ConnectorDriver,
   type DriverResult,
+  GOOGLE_MESSAGES_EMPTY_DRIVER,
+  GOOGLE_MESSAGES_MALFORMED_DRIVER,
+  GOOGLE_MESSAGES_NOT_PAIRED_DRIVER,
+  GROUPME_ATTACHMENTS_SHORTFALL_DRIVER,
+  GROUPME_ATTACHMENTS_WITHHELD_DRIVER,
   KNOWN_UNEXERCISED_COVERAGE,
   REDDIT_MALFORMED_DRIVER,
+  YNAB_ACCOUNT_STATS_ZERO_BUDGETS_DRIVER,
 } from "./coverage-conformance-drivers.ts";
 
 const MANIFESTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "manifests");
@@ -176,17 +213,18 @@ function doneMessage(messages: readonly EmittedMessage[]): Extract<EmittedMessag
  * PLUS `skippedRecords`, the direct-import-harness counterpart of
  * SKIP_RESULT (see `SkippedRecordFact` in coverage-conformance-drivers.ts):
  * a driver that calls a connector's exported function directly via
- * `makeRecordingEmit` never gets a real SKIP_RESULT protocol message for a
- * validation failure — that failure lands in the harness's own `.skipped`
- * bookkeeping instead. Without folding `skippedRecords` in here, a stream
- * whose every considered record failed schema validation would still read
- * `checkpoint: "committed"` with no `skipped` evidence, and the shared
- * oracle would have nothing telling it the attempt was unresolved — exactly
- * the gap a genuinely broken Reddit fixture exposed (considered=1,
- * covered=0, yet the aggregate gate passed, because the validation failure
- * only ever reached `harness.skipped`, never `messages`). This is the one
- * piece of run-local aggregation this gate owns; everything downstream of
- * the envelope is the shared oracle's judgement, not this gate's.
+ * `runDirectImportDriver`/`makeRecordingEmit` never gets a real SKIP_RESULT
+ * protocol message for a validation failure — that failure lands in the
+ * harness's own `.skipped` bookkeeping instead. Without folding
+ * `skippedRecords` in here, a stream whose every considered record failed
+ * schema validation would still read `checkpoint: "committed"` with no
+ * `skipped` evidence, and the shared oracle would have nothing telling it
+ * the attempt was unresolved — exactly the gap a genuinely broken Reddit
+ * fixture exposed (considered=1, covered=0, yet the aggregate gate passed,
+ * because the validation failure only ever reached `harness.skipped`, never
+ * `messages`). This is the one piece of run-local aggregation this gate
+ * owns; everything downstream of the envelope is the shared oracle's
+ * judgement, not this gate's.
  *
  * `checkpoint` is stamped `"committed"` when a STATE message was emitted for
  * this stream this run (the connector advanced/held its cursor), else
@@ -257,9 +295,35 @@ function deriveStreamEnvelope(
   };
 }
 
+/** Run a driver and evaluate one of its streams under the shared oracle in
+ *  one call — the common shape every capability-pin test below needs.
+ *  Throws (failing the test with a clear message) if the driver reports
+ *  itself unexercised, since every capability-pin driver is a deliberately-
+ *  authored happy/mutation-path fixture that must always run. */
+async function runAndEvaluate(
+  driver: ConnectorDriver | undefined,
+  stream: string,
+  manifestKey: string
+): Promise<{
+  envelope: StreamEvidenceEnvelope;
+  result: DriverResult;
+  verdict: ReturnType<typeof evaluateStreamCoherence>;
+}> {
+  assert.ok(driver, `no driver registered for ${manifestKey}.${stream}`);
+  const result = await driver.run();
+  if (!result.exercised) {
+    throw new Error(`driver for ${manifestKey}.${stream} reported unexercised: ${result.reason}`);
+  }
+  const manifest = readManifest(manifestKey);
+  assert.ok(manifest, `manifest missing for ${manifestKey}`);
+  const envelope = deriveStreamEnvelope(result.messages, stream, result.skippedRecords);
+  const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, stream));
+  return { envelope, result, verdict };
+}
+
 // ─── The gate: run every registered driver once, evaluate every connector ──
 
-test("verified-coverage conformance: every exercised required full_inventory/checkpoint_window stream proves coverage under the shared @pdpp/reference-contract oracle", async () => {
+test("verified-coverage conformance: every exercised required stream proves coverage under the shared @pdpp/reference-contract oracle", async () => {
   const driverEntries = Object.entries(CONNECTOR_DRIVERS);
   const results = await Promise.all(
     driverEntries.map(async ([connectorKey, driver]) => {
@@ -340,6 +404,35 @@ test("verified-coverage conformance: every exercised required full_inventory/che
     provenSummary.length > 0,
     `expected at least one stream to be proven this run — the gate is not exercising anything.\n${unexercisedLine}`
   );
+
+  // Every one of the 5 shared CoverageProofStrategy variants must have at
+  // least one proven stream backing it somewhere in this run — either here
+  // (checkpoint_window/full_inventory/snapshot_import_receipt/
+  // singleton_presence) or in the dedicated parent_detail_accounting
+  // capability pin below (attachments is required:false, so it cannot
+  // appear in provenSummary above). Asserted here, not just narratively in
+  // the module doc, so a future driver regression that silently drops one
+  // strategy's only proof fails loudly instead of shrinking the claim
+  // unnoticed.
+  const provenStrategies = new Set<CoverageProofStrategy>();
+  for (const label of provenSummary) {
+    const [connectorKey, stream] = label.split(".", 2) as [string, string];
+    const manifest = readManifest(connectorKey);
+    const strategy = manifest ? proofDeclarationFor(manifest, stream).coverage_strategy : null;
+    if (strategy) {
+      provenStrategies.add(strategy);
+    }
+  }
+  const strategiesProvenElsewhere: readonly CoverageProofStrategy[] = ["parent_detail_accounting"];
+  for (const strategy of ALL_COVERAGE_PROOF_STRATEGIES) {
+    if (strategiesProvenElsewhere.includes(strategy)) {
+      continue;
+    }
+    assert.ok(
+      provenStrategies.has(strategy),
+      `expected at least one proven stream for strategy ${strategy} in this run's required-stream loop — proven strategies: ${[...provenStrategies].join(", ")}`
+    );
+  }
 });
 
 // ─── Ratchet: unexercised coverage cannot silently grow ────────────────────
@@ -382,34 +475,18 @@ test("ratchet: every unexercised required stream is a deliberate, checked-in ent
 // production code path and the shared oracle can express both a nonzero and
 // a genuinely empty (considered=covered=0) proven verdict from it. They
 // exist to prove the gate is not vacuous — if these ever fail, the DRIVERS
-// or the ENVELOPE DERIVATION are broken, independent of whether
-// Reddit/Jellyfin/YNAB currently pass the aggregate gate above.
+// or the ENVELOPE DERIVATION are broken, independent of whether any one
+// connector currently passes the aggregate gate above.
 
 test("capability: Amazon's real emitOrdersCoverage path proves under the shared oracle for a nonzero 'orders' run", async () => {
-  const driver = CONNECTOR_DRIVERS.amazon;
-  assert.ok(driver);
-  const result = await driver.run();
-  if (!result.exercised) {
-    assert.fail(`amazon driver reported unexercised: ${result.reason}`);
-  }
-  const manifest = readManifest("amazon");
-  assert.ok(manifest);
-  const envelope = deriveStreamEnvelope(result.messages, "orders", result.skippedRecords);
-  const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, "orders"));
+  const { envelope, verdict } = await runAndEvaluate(CONNECTOR_DRIVERS.amazon, "orders", "amazon");
   assert.deepEqual(verdict, { proven: true, reason: "enumeration_boundary" });
   assert.equal(envelope.considered, 1);
   assert.equal(envelope.covered, 1);
 });
 
 test("capability: Amazon's real emitOrdersCoverage path proves verified emptiness under the shared oracle when the boundary is genuinely empty", async () => {
-  const result = await AMAZON_ZERO_RESULT_DRIVER.run();
-  if (!result.exercised) {
-    assert.fail(`amazon zero-result driver reported unexercised: ${result.reason}`);
-  }
-  const manifest = readManifest("amazon");
-  assert.ok(manifest);
-  const envelope = deriveStreamEnvelope(result.messages, "orders", result.skippedRecords);
-  const verdict = evaluateStreamCoherence(envelope, proofDeclarationFor(manifest, "orders"));
+  const { envelope, verdict } = await runAndEvaluate(AMAZON_ZERO_RESULT_DRIVER, "orders", "amazon");
   assert.deepEqual(verdict, { proven: true, reason: "enumeration_boundary" });
   assert.equal(envelope.considered, 0);
   assert.equal(envelope.covered, 0);
@@ -517,7 +594,104 @@ test("capability: Apple Contacts' real subprocess entrypoint proves under the sh
   }
 });
 
-test("capability: the ynab ratchet correctly names every real required full_inventory stream (no driver registered, by design)", () => {
+// ─── snapshot_import_receipt: Google Messages `messages` ───────────────────
+
+test("capability: Google Messages' real subprocess entrypoint proves under the shared oracle for a nonzero snapshot_import_receipt run", async () => {
+  const { envelope, verdict } = await runAndEvaluate(CONNECTOR_DRIVERS.google_messages, "messages", "google_messages");
+  assert.equal(verdict.proven, true, `expected proven, got ${verdict.reason}`);
+  assert.equal(envelope.considered, 2);
+  assert.equal(envelope.covered, 2);
+});
+
+test("capability: Google Messages' real subprocess entrypoint proves verified emptiness for a genuinely empty archive", async () => {
+  const { envelope, verdict } = await runAndEvaluate(GOOGLE_MESSAGES_EMPTY_DRIVER, "messages", "google_messages");
+  assert.equal(verdict.proven, true, `expected proven, got ${verdict.reason}`);
+  assert.equal(envelope.considered, 0);
+  assert.equal(envelope.covered, 0);
+});
+
+test("mutation: gmcli schema drift on messages produces a real SKIP_RESULT, not laundered into proven coverage", async () => {
+  const { envelope, result, verdict } = await runAndEvaluate(
+    GOOGLE_MESSAGES_MALFORMED_DRIVER,
+    "messages",
+    "google_messages"
+  );
+  const skip = result.exercised
+    ? result.messages.find(
+        (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+          m.type === "SKIP_RESULT" && m.stream === "messages"
+      )
+    : undefined;
+  assert.ok(skip, "expected a real production SKIP_RESULT for messages, not a synthetic envelope");
+  assert.deepEqual(envelope.skipped, { reason: skip?.reason });
+  assert.equal(verdict.proven, false, `a schema-drift SKIP_RESULT must not read proven (got reason=${verdict.reason})`);
+  assert.equal(verdict.reason, "unresolved_attempt");
+});
+
+test("mutation: gmcli not-paired failure produces a real SKIP_RESULT for messages, not laundered into proven coverage", async () => {
+  // Unlike the schema-drift mutation above, this connector treats an
+  // unpaired device as a soft, user-actionable skip: DONE still reports
+  // "succeeded" (verified against connectors/google_messages/
+  // integration.test.ts's own "not paired" test) — proving the gate reads
+  // the real SKIP_RESULT itself as what withholds proof, not the run's
+  // overall success/failure.
+  const { envelope, result, verdict } = await runAndEvaluate(
+    GOOGLE_MESSAGES_NOT_PAIRED_DRIVER,
+    "messages",
+    "google_messages"
+  );
+  const done = result.exercised ? doneMessage(result.messages) : undefined;
+  assert.equal(done?.status, "succeeded", "sanity: this connector treats not-paired as a soft skip, not a run failure");
+  const skip = result.exercised
+    ? result.messages.find(
+        (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+          m.type === "SKIP_RESULT" && m.stream === "messages"
+      )
+    : undefined;
+  assert.equal(skip?.reason, "gmcli_not_paired");
+  assert.deepEqual(envelope.skipped, { reason: "gmcli_not_paired" });
+  assert.equal(verdict.proven, false, `a not-paired SKIP_RESULT must not read proven (got reason=${verdict.reason})`);
+  assert.equal(verdict.reason, "unresolved_attempt");
+});
+
+test("mutation: a driver's genuinely failed DONE (Apple Contacts, rejected credentials) fails every stream it was meant to prove, not silently exempted", async () => {
+  const result = await APPLE_CONTACTS_AUTH_FAILURE_DRIVER.run();
+  if (!result.exercised) {
+    assert.fail(`apple_contacts auth-failure driver reported unexercised: ${result.reason}`);
+  }
+  const done = doneMessage(result.messages);
+  assert.equal(done?.status, "failed", "a rejected-credential run's real DONE must report failed");
+  assert.equal(done?.error?.code, "auth_failed");
+  // The aggregate gate's own failed-DONE check (see the main test above)
+  // is what actually turns this into a hard failure for
+  // address_books/contacts/contact_groups; this pin exists so that check
+  // has a permanent, real-production counterexample to run against,
+  // independent of whether Apple Contacts' happy-path fixture currently
+  // passes.
+});
+
+// ─── singleton_presence: YNAB `account_stats` ──────────────────────────────
+
+test("capability: YNAB's real ynabCollect path (via its DI request seam) proves under the shared oracle for a nonzero singleton_presence run", async () => {
+  const { envelope, verdict } = await runAndEvaluate(CONNECTOR_DRIVERS.ynab, "account_stats", "ynab");
+  assert.equal(verdict.proven, true, `expected proven, got ${verdict.reason}`);
+  assert.equal(envelope.considered, 1);
+  assert.equal(envelope.covered, 1);
+});
+
+test("mutation: a zero-budget YNAB run emits no account_stats coverage — absence of evidence must not be laundered into proven", async () => {
+  const { result, verdict } = await runAndEvaluate(YNAB_ACCOUNT_STATS_ZERO_BUDGETS_DRIVER, "account_stats", "ynab");
+  if (result.exercised) {
+    const coverage = result.messages.find(
+      (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        m.type === "DETAIL_COVERAGE" && m.stream === "account_stats"
+    );
+    assert.equal(coverage, undefined, "no budgets ran, so no account_stats coverage should be fabricated");
+  }
+  assert.equal(verdict.proven, false, `zero budgets must not read proven (got reason=${verdict.reason})`);
+});
+
+test("capability: the ynab ratchet correctly names every remaining real required stream (account_stats is now driven; the rest stay undriven by design)", () => {
   const manifest = readManifest("ynab");
   assert.ok(manifest);
   const requiredStreams = proofRequiredStreams(manifest);
@@ -525,15 +699,72 @@ test("capability: the ynab ratchet correctly names every real required full_inve
     requiredStreams.length > 0,
     "ynab must declare required proof-demanding streams for this pin to be meaningful"
   );
-  assert.equal(
-    "ynab" in CONNECTOR_DRIVERS,
-    false,
-    "ynab is deliberately undriven here (paced governor) — see coverage-conformance-drivers.ts"
-  );
+  assert.equal("ynab" in CONNECTOR_DRIVERS, true, "ynab.account_stats is now driven via ynabCollect's DI seam");
   for (const stream of requiredStreams) {
+    if (CONNECTOR_DRIVERS.ynab?.coveredStreams.includes(stream)) {
+      continue;
+    }
     assert.ok(
       KNOWN_UNEXERCISED_COVERAGE.has(`ynab.${stream}`),
       `ynab.${stream} is required but missing from KNOWN_UNEXERCISED_COVERAGE`
     );
   }
+});
+
+// ─── parent_detail_accounting: GroupMe `attachments` (required: false) ────
+//
+// The one strategy the shared oracle excludes from window-bounding
+// (coherence.ts's strategyBoundsWindowRatherThanCounting deliberately omits
+// it): its numerator must actually satisfy its denominator, so
+// `boundary_shortfall` is reachable ONLY through this strategy. `attachments`
+// is `required: false` in groupme.json, so it cannot appear in
+// allRequiredStreamPairs()/the aggregate gate/ratchet above — these pins are
+// its entire proof surface, mirroring how AMAZON_ZERO_RESULT_DRIVER and
+// REDDIT_MALFORMED_DRIVER already prove claims outside the required-stream
+// loop.
+
+test("capability: GroupMe's real collect() path reaches a genuine boundary_shortfall for parent_detail_accounting when a blob backend is unconfigured", async () => {
+  const { envelope, verdict } = await runAndEvaluate(GROUPME_ATTACHMENTS_SHORTFALL_DRIVER, "attachments", "groupme");
+  assert.equal(envelope.considered, 1, "the one attachment was considered");
+  assert.equal(envelope.covered, 0, "no blob backend configured — hydration_status stays 'deferred', never covered");
+  assert.equal(
+    verdict.proven,
+    false,
+    `an uncovered attachment must not read proven under parent_detail_accounting (got reason=${verdict.reason})`
+  );
+  assert.equal(
+    verdict.reason,
+    "boundary_shortfall",
+    "parent_detail_accounting is excluded from window-bounding — covered < considered must surface as a real shortfall, not enumeration_boundary"
+  );
+});
+
+test("mutation: GroupMe withholds attachments coverage entirely when a requested parent stream fails, rather than reporting a partial boundary", async () => {
+  const result = await GROUPME_ATTACHMENTS_WITHHELD_DRIVER.run();
+  if (!result.exercised) {
+    assert.fail(`groupme withheld driver reported unexercised: ${result.reason}`);
+  }
+  const coverage = result.messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "attachments"
+  );
+  assert.equal(
+    coverage,
+    undefined,
+    "group_messages failed this run — attachments' boundary is unknown/partial, so no coverage claim should be emitted at all"
+  );
+});
+
+test("capability: groupme.attachments is required:false and therefore absent from the aggregate required-stream gate/ratchet by construction", () => {
+  const manifest = readManifest("groupme");
+  assert.ok(manifest);
+  const requiredStreams = proofRequiredStreams(manifest);
+  assert.ok(
+    !requiredStreams.includes("attachments"),
+    "attachments must stay required:false in the manifest for this pin's premise to hold — its proof lives in the capability pins above, not the required-stream loop"
+  );
+  assert.ok(
+    !KNOWN_UNEXERCISED_COVERAGE.has("groupme.attachments"),
+    "attachments is not a required stream, so it must not appear in the required-stream ratchet either"
+  );
 });
