@@ -85,19 +85,13 @@ const RUNTIME_GENERIC_DISPLAY_MESSAGES: Record<string, string> = {
   user_disabled: "This was turned off in your collection settings",
 };
 
-// Verify that all generic reason codes have vetted display copy.
-const missingCopy = [...RUNTIME_GENERIC_REASON_CODES].filter(
-  (code) => !(code in RUNTIME_GENERIC_DISPLAY_MESSAGES)
-);
+const missingCopy = [...RUNTIME_GENERIC_REASON_CODES].filter((code) => !(code in RUNTIME_GENERIC_DISPLAY_MESSAGES));
 if (missingCopy.length > 0) {
   throw new Error(
     `RUNTIME_GENERIC_DISPLAY_MESSAGES is missing vetted copy for: ${missingCopy.join(", ")} — ` +
       "every code in recovery-reason-codes.ts's RUNTIME_GENERIC_REASON_CODES must have an entry."
   );
 }
-
-// Re-export from the authoritative source
-export { RUNTIME_GENERIC_REASON_CODES } from "./recovery-reason-codes.ts";
 
 /**
  * RI's generic-only registry. Does NOT include connector-specific copy —

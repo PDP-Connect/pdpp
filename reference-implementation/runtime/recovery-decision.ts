@@ -32,10 +32,10 @@
  */
 
 import {
-  CONNECTOR_DEFECT_REASONS,
-  INFORMATIONAL_RECOVERY_REASONS,
-  OWNER_REQUIRED_REASONS,
-  PROVIDER_PRESSURE_REASONS,
+  CONNECTOR_DEFECT_REASONS as CONNECTOR_DEFECT_REASON_CODES,
+  INFORMATIONAL_RECOVERY_REASONS as INFORMATIONAL_RECOVERY_REASON_CODES,
+  OWNER_REQUIRED_REASONS as OWNER_REQUIRED_REASON_CODES,
+  PROVIDER_PRESSURE_REASONS as PROVIDER_PRESSURE_REASON_CODES,
 } from "./recovery-reason-codes.ts";
 
 // ─── Recovery classes (design.md D4) ─────────────────────────────────────────
@@ -63,10 +63,6 @@ export type RecoveryClass =
   | "informational"
   /** Reason absent or unrecognized; treated as generic recoverable work. */
   | "unknown";
-
-// Re-export reason sets from the authoritative source (recovery-reason-codes.ts).
-// This preserves the existing import API while ensuring all consumers use the same Set instances.
-export { PROVIDER_PRESSURE_REASONS, OWNER_REQUIRED_REASONS, CONNECTOR_DEFECT_REASONS, INFORMATIONAL_RECOVERY_REASONS };
 
 /** Recovery classes that count as durable, drainable non-pressure recovery work. */
 export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set<RecoveryClass>([
@@ -181,16 +177,16 @@ export function classifyRecoveryReason(reason: string | null | undefined): Recov
   if (!normalized) {
     return "unknown";
   }
-  if (PROVIDER_PRESSURE_REASONS.has(normalized)) {
+  if (PROVIDER_PRESSURE_REASON_CODES.has(normalized)) {
     return "provider_pressure";
   }
-  if (OWNER_REQUIRED_REASONS.has(normalized)) {
+  if (OWNER_REQUIRED_REASON_CODES.has(normalized)) {
     return "owner_required";
   }
-  if (CONNECTOR_DEFECT_REASONS.has(normalized)) {
+  if (CONNECTOR_DEFECT_REASON_CODES.has(normalized)) {
     return "connector_defect";
   }
-  if (INFORMATIONAL_RECOVERY_REASONS.has(normalized)) {
+  if (INFORMATIONAL_RECOVERY_REASON_CODES.has(normalized)) {
     return "informational";
   }
   if (normalized === "run_cap_deferred") {

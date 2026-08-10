@@ -69,7 +69,7 @@ import { PROVIDER_PRESSURE_REASONS } from "./recovery-reason-codes.ts";
  * `upstream_pressure` and `rate_limited` are the two source-pressure reasons a
  * connector emits on a `DETAIL_GAP` (see
  * `packages/polyfill-connectors/src/connector-runtime-protocol.ts`).
- * This is an alias for PROVIDER_PRESSURE_REASONS from recovery-reason-codes.ts.
+ * This aliases the recovery vocabulary so scheduling and presentation cannot drift.
  */
 export const SOURCE_PRESSURE_GAP_REASONS: ReadonlySet<string> = PROVIDER_PRESSURE_REASONS;
 

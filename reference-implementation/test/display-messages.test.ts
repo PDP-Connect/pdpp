@@ -14,7 +14,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DISPLAY_MESSAGES, displayMessageFor, RUNTIME_GENERIC_REASON_CODES } from "../runtime/display-messages.ts";
+import { DISPLAY_MESSAGES, displayMessageFor } from "../runtime/display-messages.ts";
+import { RUNTIME_GENERIC_REASON_CODES } from "../runtime/recovery-reason-codes.ts";
 
 // ─── Module-shape sanity ───────────────────────────────────────────────────
 
