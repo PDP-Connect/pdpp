@@ -1687,6 +1687,6 @@ if (isMainModule(import.meta.url)) {
  * path, not assumed). The generic, connector-agnostic primitive this
  * system would need to close that gap — a manifest-declared per-stream
  * repair cadence the SCHEDULER (not this connector) interprets — is
- * specified in docs/inbox/design-note-periodic-full-refresh-repair.md, not
+ * specified in docs/reference/periodic-full-refresh-repair.md, not
  * implemented here.
  */
