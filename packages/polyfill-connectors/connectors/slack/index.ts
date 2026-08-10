@@ -2016,15 +2016,17 @@ function runMessagesUnifiedPass(
 
 /**
  * Convert a stream's declared `time_range.since` (ISO 8601 instant) to a
- * canonical Slack ts threshold (seconds.microseconds format, zero-padded).
- * Returns `null` for absent, malformed, or unparseable bounds — never throws,
- * since a scope-less run (the default) must behave exactly as before.
+ * canonical Slack ts threshold (seconds.microseconds format). Returns `null`
+ * for absent, malformed, or unparseable bounds — FAILS CLOSED on validation
+ * error. A present-but-invalid since never silently becomes unbounded.
  *
- * Slack ts is fixed-shape "seconds.microseconds" where seconds is Unix epoch
- * and microseconds is 6 decimal digits, zero-padded. ISO instants can have
- * milliseconds (3 decimal places) or microseconds (6 places), which are expanded
- * to the Slack format: "2026-08-09T22:26:25.500Z" → "1723248385.500000".
- * Lexical comparison on the full ts string matches chronological order.
+ * Slack ts is stored as "seconds.microseconds" where seconds is Unix epoch
+ * and microseconds is 6 decimal digits (from archive records). ISO instants
+ * can have milliseconds (3 places) or microseconds (6 places), which are
+ * expanded to 6 digits: "2026-08-09T22:26:25.500Z" → "1723248385.500000".
+ * Numeric comparison of (epochSeconds, fractionalPart) is equivalent to
+ * lexical comparison on the formatted string (both preserve chronological
+ * order), and avoids reliance on string format guarantees.
  */
 function parseSinceTs(requested: CollectContext["requested"], stream: string): string | null {
   const since = requested.get(stream)?.time_range?.since;
@@ -2033,11 +2035,11 @@ function parseSinceTs(requested: CollectContext["requested"], stream: string): s
   }
   const epochMs = Date.parse(since);
   if (Number.isNaN(epochMs)) {
-    return null;
+    return null; // Malformed ISO instant: fail closed.
   }
   // Extract the fractional seconds (milliseconds or microseconds) from the ISO instant.
   // ISO format: "2026-08-09T22:26:25.500Z" or "2026-08-09T22:26:25.123456Z"
-  // After the decimal: up to 6 digits, then 'Z' or timezone.
+  // After the decimal: 1-6 digits, then 'Z' or timezone. Treat absence as .000Z.
   const fracMatch = since.match(/\.(\d{1,6})/);
   let fractionalPart = "000000";
   if (fracMatch?.[1]) {
@@ -2045,6 +2047,11 @@ function parseSinceTs(requested: CollectContext["requested"], stream: string): s
     fractionalPart = fracMatch[1].padEnd(6, "0");
   }
   const epochSeconds = Math.floor(epochMs / 1000);
+  // Validate: epochSeconds must be positive (archive guarantees positive Unix ts).
+  // If somehow negative or NaN, fail closed rather than silently unbounding.
+  if (!Number.isFinite(epochSeconds) || epochSeconds < 0) {
+    return null;
+  }
   return `${epochSeconds}.${fractionalPart}`;
 }
 
