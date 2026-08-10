@@ -30,13 +30,25 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import type { CollectContext, EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
-import { collect } from "./index.ts";
+import { __resetHttpGovernorForTests, __setZeroDelayHttpGovernorForTests, collect } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 const TOKEN = "test-access-token";
+
+// `collect()` fans out across groups/group_messages/direct_messages/
+// direct_chat_messages every run, and this file drives it twice — at
+// GroupMe's real production pacing interval that is minutes of wall-clock
+// for zero behavioral value (the assertions are about STATE/fingerprint
+// projection, not timing). Disable pacing for this file only.
+before(() => {
+  __setZeroDelayHttpGovernorForTests();
+});
+after(() => {
+  __resetHttpGovernorForTests();
+});
 
 const GROUP = {
   id: "group-1",

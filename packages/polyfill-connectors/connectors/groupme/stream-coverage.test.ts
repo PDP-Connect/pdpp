@@ -43,14 +43,31 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import type { EmittedMessage, RecordData } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { collectDirectChatMessages, collectDirectChats, collectGroupMessages, collectGroups } from "./index.ts";
+import {
+  __resetHttpGovernorForTests,
+  __setZeroDelayHttpGovernorForTests,
+  collectDirectChatMessages,
+  collectDirectChats,
+  collectGroupMessages,
+  collectGroups,
+} from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
 const TOKEN = "test-access-token";
+
+// These tests drive real multi-page pagination (including the 200-page cap
+// tests) against GroupMe's real module-level httpGovernor, which paces at
+// production speed by default. Disable pacing for this file only.
+before(() => {
+  __setZeroDelayHttpGovernorForTests();
+});
+after(() => {
+  __resetHttpGovernorForTests();
+});
 
 /** Mock `globalThis.fetch` to answer every call with the given GroupMe API body. */
 function stubFetch(body: unknown, status = 200): () => void {
@@ -280,7 +297,11 @@ test("collectGroupMessages: clean pass across multiple groups sums considered fr
     const { emit, emitRecord, emitted } = makeHarness();
     const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
 
-    assert.deepEqual(outcome, { considered: 3, failed: false });
+    assert.deepEqual(outcome, {
+      considered: 3,
+      failed: false,
+      nextFrontiers: { "group-1": 1_700_000_100, "group-2": 1_700_000_100 },
+    });
     assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 3);
   } finally {
     restore();
@@ -474,7 +495,11 @@ test("collectGroupMessages: genuine zero groups reports failed: false, considere
     const { emit, emitRecord, emitted } = makeHarness();
     const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
 
-    assert.deepEqual(outcome, { considered: 0, failed: false }, "no groups means no messages — a proven-empty walk");
+    assert.deepEqual(
+      outcome,
+      { considered: 0, failed: false, nextFrontiers: {} },
+      "no groups means no messages — a proven-empty walk"
+    );
     assert.equal(emitted.length, 0);
   } finally {
     restore();
