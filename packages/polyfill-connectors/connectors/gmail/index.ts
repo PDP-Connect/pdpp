@@ -1128,11 +1128,12 @@ function intersectUidRanges(rangeStr: string, searchUids: readonly number[]): st
 /**
  * Thrown when a message's internalDate is missing or unparseable during exact
  * boundary filtering. This prevents the run from emitting records and committing
- * STATE, preserving retryability and preventing false complete claims.
+ * STATE, ensuring no false complete claims are made.
  *
  * The message lacks proof of its position relative to the declared scope, so
- * the entire enumeration must fail and be retried rather than silently
- * excluding it or returning a false partial.
+ * the entire enumeration must fail rather than silently excluding it or
+ * returning a false partial. The runtime's unhandledRejection handler will
+ * classify this error and decide retry policy based on its deterministic nature.
  */
 class MissingOrInvalidInternalDateError extends Error {
   constructor(uid: number | string, detail: string) {
