@@ -68,6 +68,7 @@ import { createHash } from "node:crypto";
 import { createConnectorHttpGovernor } from "../../src/connector-http-governor.ts";
 import {
   buildDetailCoverageMessage,
+  buildFullScanCoverageMessage,
   type CollectContext,
   nowIso,
   type RecordData,
@@ -696,6 +697,10 @@ async function collectLibraries(
   (state.libraries as Record<string, unknown>).fingerprints = libraryCursor.toState();
 
   await emit({ type: "STATE", stream: "libraries", cursor: state.libraries });
+  // Declare coverage: `views.length` is the enumerated boundary size, measured at
+  // the Jellyfin Views API. Every enumerated library is either emitted or suppressed
+  // as unchanged (unchanged via fingerprint), so covered === considered.
+  await emit(buildFullScanCoverageMessage("libraries", views.length));
   await progress(`Fetched ${views.length} libraries`, { stream: "libraries", count: views.length });
 }
 

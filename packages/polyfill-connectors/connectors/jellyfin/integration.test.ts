@@ -356,6 +356,115 @@ test("e2e: items coverage declares the server-reported TotalRecordCount as the d
   }
 });
 
+test("e2e: libraries coverage declares enumerated count as full-scan denominator", async () => {
+  const server = new FakeJellyfinServer();
+  const baseUrl = await server.start();
+
+  try {
+    const { ctx, messages, records } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-secret-key-12345" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await collect(ctx);
+
+    const coverage = messages.find(
+      (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        message.type === "DETAIL_COVERAGE" && message.stream === "libraries"
+    );
+    assert.ok(coverage, "expected libraries DETAIL_COVERAGE");
+    assert.equal(coverage.state_stream, "libraries");
+    // The denominator is the count of enumerated libraries from Views API.
+    // The fake server returns 1 library, so considered and covered are both 1.
+    assert.equal(coverage.considered, 1);
+    assert.equal(coverage.covered, 1);
+    assert.deepEqual(coverage.required_keys, []);
+    assert.deepEqual(coverage.hydrated_keys, []);
+    // Verify at least one library record was emitted
+    assert.ok(records.filter((r) => r.stream === "libraries").length > 0, "Should emit at least 1 library");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("e2e: libraries coverage with zero enumerated libraries", async () => {
+  // Server that returns empty Views array
+  const emptyLibraryServer = new (class {
+    private server: any;
+    private port = 0;
+
+    start(): Promise<string> {
+      return new Promise((resolve, reject) => {
+        this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
+          const path = req.url || "";
+
+          if (path === "/System/Info") {
+            res.writeHead(200);
+            res.end(JSON.stringify({ Id: "test", ServerName: "Test", Version: "10.11.11" }));
+            return;
+          }
+
+          if (path === "/Users") {
+            res.writeHead(200);
+            res.end(JSON.stringify([{ Id: "user-123", Name: "Test" }]));
+            return;
+          }
+
+          // Empty Views
+          if (path === "/Users/user-123/Views") {
+            res.writeHead(200);
+            res.end(JSON.stringify({ Items: [] }));
+            return;
+          }
+
+          res.writeHead(404);
+          res.end();
+        });
+
+        this.server.listen(0, "127.0.0.1", () => {
+          this.port = (this.server.address() as any).port;
+          resolve(`http://127.0.0.1:${this.port}`);
+        });
+
+        this.server.on("error", reject);
+      });
+    }
+
+    stop(): Promise<void> {
+      return new Promise((resolve, reject) => {
+        if (this.server) {
+          this.server.close((err: any) => (err ? reject(err) : resolve()));
+        } else {
+          resolve();
+        }
+      });
+    }
+  })();
+
+  const baseUrl = await emptyLibraryServer.start();
+
+  try {
+    const { ctx, messages, records } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await collect(ctx);
+
+    const coverage = messages.find(
+      (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        message.type === "DETAIL_COVERAGE" && message.stream === "libraries"
+    );
+    assert.ok(coverage, "expected libraries DETAIL_COVERAGE for empty enumeration");
+    assert.equal(coverage.considered, 0, "Zero libraries = considered 0");
+    assert.equal(coverage.covered, 0, "Zero libraries = covered 0");
+    // Verify no library records were emitted
+    assert.equal(records.filter((r) => r.stream === "libraries").length, 0, "Should emit no libraries");
+  } finally {
+    await emptyLibraryServer.stop();
+  }
+});
+
 test("e2e: SSRF protection via origin constraint", async () => {
   const server = new FakeJellyfinServer();
   const baseUrl = await server.start();

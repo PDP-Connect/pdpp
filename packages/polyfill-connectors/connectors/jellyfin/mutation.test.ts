@@ -297,3 +297,84 @@ test("mutation: max-pages guard is testable with injected config", async () => {
     await emptyPagingServer.stop();
   }
 });
+
+test("mutation: libraries coverage failure — fetch error does not emit coverage", async () => {
+  // Server that fails on Views (libraries fetch)
+  const failingServer = new (class {
+    private server: any;
+    private port = 0;
+
+    start(): Promise<string> {
+      return new Promise((resolve, reject) => {
+        this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
+          const path = req.url || "";
+
+          if (path === "/System/Info") {
+            res.writeHead(200);
+            res.end(JSON.stringify({ Id: "test", ServerName: "Test", Version: "10.11.11" }));
+            return;
+          }
+
+          if (path === "/Users") {
+            res.writeHead(200);
+            res.end(JSON.stringify([{ Id: "user-123", Name: "Test" }]));
+            return;
+          }
+
+          // Fail on Views (libraries)
+          if (path.includes("/Views")) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: "Internal server error" }));
+            return;
+          }
+
+          res.writeHead(404);
+          res.end();
+        });
+
+        this.server.listen(0, "127.0.0.1", () => {
+          this.port = (this.server.address() as any).port;
+          resolve(`http://127.0.0.1:${this.port}`);
+        });
+
+        this.server.on("error", reject);
+      });
+    }
+
+    stop(): Promise<void> {
+      return new Promise((resolve, reject) => {
+        if (this.server) {
+          this.server.close((err: any) => (err ? reject(err) : resolve()));
+        } else {
+          resolve();
+        }
+      });
+    }
+  })();
+
+  const baseUrl = await failingServer.start();
+
+  try {
+    let threwError = false;
+
+    const { ctx, messages } = makeContext({
+      credentials: { base_url: baseUrl, secret: "test-key" },
+      streams: [{ name: "libraries" }],
+    });
+
+    await collect(ctx).catch(() => {
+      threwError = true;
+    });
+
+    // Must throw — failed fetch should not complete
+    assert.ok(threwError, "Libraries fetch failure must throw");
+    // Must NOT emit coverage on error
+    const coverage = messages.find(
+      (msg): msg is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+        msg.type === "DETAIL_COVERAGE" && msg.stream === "libraries"
+    );
+    assert.ok(!coverage, "Failed enumeration must not emit coverage");
+  } finally {
+    await failingServer.stop();
+  }
+});
