@@ -131,7 +131,7 @@
         "label": "Messages from your GroupMe groups",
         "detail": "Message ID, sender, text, creation timestamp, attachments (images/files/emojis), and like count. Attachment images/files are hydrated to blob storage if runtime support available; otherwise stored as URLs."
       },
-      "semantics": "immutable_log",
+      "semantics": "mutable_state",
       "schema": {
         "type": "object",
         "properties": {

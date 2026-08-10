@@ -17,33 +17,45 @@
  * - Attachments: URLs hydrated to blob storage if runtime available (origin-validated,
  *   redirect-safe). Undeliverable attachments logged but don't fail record emit.
  *
- * Message pagination uses before_id (newest-first). Fingerprint-cursor dedup
- * ensures no duplicate record emission across runs. Absence of a message on
- * subsequent runs does not indicate deletion (API provides no deletion
- * signal); messages not re-fetched are retained in state.
+ * Fingerprint-cursor dedup ensures no duplicate record emission across runs.
+ * Absence of a message on subsequent runs does not indicate deletion (API
+ * provides no deletion signal); messages not re-fetched are retained in
+ * state.
  *
- * group_messages additionally persists a per-group incremental ANCHOR
- * (`state.group_messages.anchors`, keyed by group id → the id of the newest
- * message seen last run) — GroupMe's official docs guarantee GET
- * /groups/:id/messages is created_at-descending, so once a clean, verified-
- * descending run re-observes a group's prior anchor message, everything
- * after it on that page and every subsequent page was already covered by
- * that prior run, and the walk stops there instead of re-paging the group's
- * entire history. This is an exact provider-issued boundary (the same
- * message id `before_id` pagination is built around), not a locally-computed
- * time window — no arbitrary overlap constant is needed, and the anchor
- * message itself is always re-emitted so a mutable field on it (likes) can
- * still update after it falls behind the anchor. An absent/deleted anchor,
- * or any page that fails the descending-order check, falls through to a
- * full walk to the natural end — the anchor optimization is opportunistic,
- * never a source of missed coverage. `START.collection_mode ===
- * "full_refresh"` (surfaced as `CollectContext.collectionMode`) is an
- * explicit owner/operator bypass: every group's anchor is ignored and walked
- * to its natural end for that one run, then the anchor map is rebuilt from
- * what that full walk observed. direct_chat_messages has NO documented
+ * group_messages persists a per-group durable CURSOR
+ * (`state.group_messages.cursors`, keyed by group id → the id of the newest
+ * message seen last run) and resumes with GroupMe's documented FORWARD
+ * continuation primitive, `after_id`: "ascending order... easy to pick off
+ * the last result for continued pagination" (dev.groupme.com/docs/v3) — the
+ * API's own intended mechanism for exactly this "give me what's new since
+ * X" case. The walk pages strictly forward, advancing the cursor to each
+ * page's last message id, until a page shorter than the page size proves
+ * the natural end. There is NO page-count ceiling anywhere in this walk (an
+ * arbitrary cap would itself be a correctness bug — see `NonProgressError`'s
+ * doc comment); the only non-natural exit is a typed failure when a page's
+ * own cursor fails to advance, repeats one already used this walk, or
+ * violates the endpoint's documented ordering, which correctly withholds
+ * STATE for the boundary that walk never proved. A cold start (no persisted
+ * cursor for a group) or an explicit `START.collection_mode ===
+ * "full_refresh"` (surfaced as `CollectContext.collectionMode`) walks
+ * BACKWARD via `before_id` to the natural end instead — same no-ceiling,
+ * same typed-failure-on-non-progress discipline — and rebuilds the forward
+ * cursor from what that full walk observed, so the next ordinary run
+ * resumes forward-incrementally again. See `GroupMessageCursors`'s doc
+ * comment for why this replaced two earlier, rejected designs (a
+ * timestamp-plus-overlap window, then a backward-anchor-search). Old-message
+ * mutable-field repair (e.g. a like added to a message from months ago) is
+ * NOT automatic under ordinary incremental resume — see the design note at
+ * the bottom of this file for the honest accounting of that gap and what a
+ * generic fix would require. direct_chat_messages has NO documented
  * ordering guarantee (GroupMe publishes no contract for GET
  * /chats/:id/messages), so it deliberately walks every chat to its natural
- * end every run — see collectDirectChatMessagesForChat's doc comment.
+ * end every run — an honest full scan, not a pretend incremental walk — but
+ * like every other pagination walk in this connector (group messages,
+ * direct chats list, groups list) it has NO page-count ceiling either; its
+ * only non-natural exit is the same typed `NonProgressError` on a
+ * non-advancing/repeated cursor. See collectDirectChatMessagesForChat's doc
+ * comment.
  */
 
 import { createHash } from "node:crypto";
@@ -51,7 +63,6 @@ import { createConnectorHttpGovernor } from "../../src/connector-http-governor.t
 import {
   buildFullScanCoverageMessage,
   type CollectContext,
-  type EmittedMessage,
   type RecordData,
   runConnector,
 } from "../../src/connector-runtime.ts";
@@ -157,6 +168,7 @@ interface GroupMeDirectChat {
 }
 
 interface ProgressExtra {
+  after_id?: string;
   before_id?: string;
   cursor_present?: boolean;
   item_count?: number;
@@ -169,7 +181,6 @@ interface ProgressExtra {
 
 const API_BASE = "https://api.groupme.com/v3";
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_STREAM = 200;
 
 // Blob attachment fetch constraints
 const APPROVED_BLOB_HOSTS = ["i.groupme.com"];
@@ -460,6 +471,27 @@ export async function normalizeAttachments(
   return result;
 }
 
+/**
+ * Thrown for HTTP 304 — documented explicitly for `GET /groups/:id/messages`
+ * with `before_id`: "If no messages are found (e.g. when filtering with
+ * `before_id`) we return code 304" (dev.groupme.com/docs/v3). GroupMe's docs
+ * are SILENT on what `after_id`/`since_id` do when they reference a
+ * deleted/invalid/nonexistent message id — no documented distinct error
+ * code, status, or body shape exists for that case. Treating 304 as "empty
+ * page" is the conservative reading: it's the one case the docs actually
+ * describe, and applying the same interpretation to `after_id` costs
+ * nothing if that endpoint never actually returns 304 (the branch simply
+ * never fires). This is caught only at message-pagination call sites (see
+ * `fetchMessagesPage`), never treated as a generic success by `makeRequest`
+ * itself — a 304 on any other endpoint (e.g. `/groups`) still throws as an
+ * ordinary unexpected-status error.
+ */
+class EmptyPageResponse extends Error {
+  constructor() {
+    super("groupme_messages_empty_page_304");
+  }
+}
+
 async function makeRequest<T>(token: string, path: string, queryParams?: Record<string, string | number>): Promise<T> {
   const url = new URL(`${API_BASE}${path}`);
   if (queryParams) {
@@ -487,6 +519,9 @@ async function makeRequest<T>(token: string, path: string, queryParams?: Record<
   if (raw.status === 401 || raw.status === 403) {
     throw new Error("groupme_auth_failed");
   }
+  if (raw.status === 304) {
+    throw new EmptyPageResponse();
+  }
   if (raw.status < 200 || raw.status >= 300) {
     throw new Error(`groupme_http_${raw.status}: ${raw.body.slice(0, 200)}`);
   }
@@ -495,38 +530,66 @@ async function makeRequest<T>(token: string, path: string, queryParams?: Record<
   return json.response;
 }
 
+/**
+ * Fetch one page of `GET /groups/:id/messages`, normalizing GroupMe's
+ * documented 304-on-empty response (see `EmptyPageResponse`) into an
+ * ordinary empty-messages shape so every walk's natural-end check
+ * (`messages.length === 0`) handles it uniformly regardless of which
+ * pagination parameter produced the empty result.
+ */
+async function fetchMessagesPage(
+  token: string,
+  groupId: string,
+  params: Record<string, string | number>
+): Promise<GroupMessagesResponse> {
+  try {
+    return await makeRequest<GroupMessagesResponse>(token, `/groups/${groupId}/messages`, params);
+  } catch (error) {
+    if (error instanceof EmptyPageResponse) {
+      return { count: 0, messages: [] };
+    }
+    throw error;
+  }
+}
+
 interface PaginatedListResult<T> {
   items: T[];
-  /** True when the walk hit `MAX_PAGES_PER_STREAM` before a page came back
-   *  shorter than `PAGE_SIZE` — the natural end signal. GroupMe's `/groups`
-   *  and `/chats` are genuinely paginated (`page`, `per_page`, empty array
-   *  once past the last page); a single unpaged page-1 fetch silently misses
-   *  every group/chat beyond it for an account with more than `PAGE_SIZE`. */
-  truncated: boolean;
 }
 
 /**
  * Fully paginate a GroupMe list endpoint (`/groups`, `/chats`) using its
- * documented `page`/`per_page` query params, stopping at the first page
- * shorter than `PAGE_SIZE` (the natural end) or `maxPages` pages (honest
- * truncation — see `PaginatedListResult.truncated`). `maxPages` defaults to
- * the production `MAX_PAGES_PER_STREAM` cap; tests override it to exercise
- * the truncation branch without paying for hundreds of real paced requests.
+ * documented `page`/`per_page` query params, to the natural end: a page
+ * shorter than `PAGE_SIZE` (including empty). No page-count ceiling — an
+ * arbitrary cap silently prevents an owner with more groups/chats than the
+ * cap from ever completing, which is itself a correctness bug, not a safe
+ * truncation. The only non-natural exit is `NonProgressError`, thrown when
+ * a full-size page contributes ZERO ids this walk hasn't already seen (a
+ * provider bug re-serving the same content for a different `page` number,
+ * or a list that has stopped growing while still returning full pages) —
+ * caught by `runCollectionPass`'s existing catch, converted to an ordinary
+ * `failed: true`.
  */
-async function fetchPaginatedList<T>(
+async function fetchPaginatedList<T extends { id: string }>(
   token: string,
   path: string,
   stream: string,
-  progressWithSignals: ProgressFn,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  progressWithSignals: ProgressFn
 ): Promise<PaginatedListResult<T>> {
   const items: T[] = [];
+  const seenIds = new Set<string>();
   let page = 1;
 
-  while (page <= maxPages) {
+  for (;;) {
     await progressWithSignals(`Fetching ${path}`, { stream, phase: "fetch", page, total_seen: items.length });
     const pageItems = await makeRequest<T[]>(token, path, { page, per_page: PAGE_SIZE });
-    items.push(...pageItems);
+    const newItems = pageItems.filter((item) => !seenIds.has(item.id));
+    if (pageItems.length >= PAGE_SIZE && newItems.length === 0) {
+      throw new NonProgressError(path, "forward", String(page));
+    }
+    for (const item of newItems) {
+      seenIds.add(item.id);
+      items.push(item);
+    }
     await progressWithSignals(`Fetched ${path} page`, {
       stream,
       phase: "page",
@@ -536,12 +599,10 @@ async function fetchPaginatedList<T>(
     });
 
     if (pageItems.length < PAGE_SIZE) {
-      return { items, truncated: false };
+      return { items };
     }
     page += 1;
   }
-
-  return { items, truncated: true };
 }
 
 function toGroupRecord(g: GroupMeGroup): RecordData {
@@ -680,18 +741,67 @@ interface GroupMessagesResponse {
  */
 interface PerConversationWalkResult {
   /** The `id` of the newest message this walk fetched (page 1's first
-   *  message), or `undefined` if the group/chat returned no messages at all.
-   *  This becomes next run's anchor — an opaque, provider-issued boundary
+   *  message for a backward walk, or the last id reached for a forward
+   *  walk), or `undefined` if the group/chat returned no messages at all.
+   *  This becomes next run's cursor — an opaque, provider-issued boundary
    *  marker, never a locally-computed time window. Undefined for walks that
-   *  don't track an anchor (direct chat messages, which have no documented
+   *  don't track a cursor (direct chat messages, which have no documented
    *  ordering to license one). */
   newestMessageId: string | undefined;
   totalSeen: number;
-  /** True when the walk hit `MAX_PAGES_PER_STREAM` before reaching a page
-   *  shorter than `PAGE_SIZE` — the natural end signal. A capped walk did
-   *  not prove it saw every message, so its caller must not report this as
-   *  a clean, fully-considered pass. */
-  truncated: boolean;
+}
+
+/**
+ * Thrown when ANY GroupMe pagination walk in this connector — group
+ * messages (forward `after_id` or backward `before_id`), direct chat
+ * messages (backward `before_id`), or the `/groups`/`/chats` list endpoints
+ * (`page`/`per_page`) — cannot prove it made progress: a page's own
+ * trailing cursor repeats one already used this walk, or a full-size list
+ * page contributed zero ids not already seen. This is the ONLY page-loop
+ * exit besides the natural short-page/empty-page boundary — there is
+ * deliberately NO page-count ceiling anywhere in GroupMe's pagination (an
+ * arbitrary cap is itself a correctness bug: it silently prevents an owner
+ * with more history/groups/chats than the cap from ever completing, and —
+ * the defect this design replaces — a truncated walk with no persisted
+ * progress would replay the same window forever). A real non-progress
+ * condition (a provider bug, a cursor that echoes back unchanged, a page
+ * whose cursor repeats one already seen) is a genuine anomaly that must
+ * fail the pass loudly rather than loop forever or silently under-report —
+ * caught by `runCollectionPass`'s existing catch, converted to `failed:
+ * true` exactly like any other fetch error, so STATE and the coverage claim
+ * are withheld for the boundary this walk never proved.
+ */
+class NonProgressError extends Error {
+  constructor(subject: string, direction: "forward" | "backward", cursor: string) {
+    super(`groupme: ${subject} ${direction} walk made no progress at cursor ${cursor} — refusing to loop`);
+    this.name = "NonProgressError";
+  }
+}
+
+/**
+ * Thrown ONLY when the very FIRST fetch of a resumed forward walk (using a
+ * persisted `after_id` cursor) fails with an HTTP error response. GroupMe's
+ * docs are silent on what happens when `after_id` references a
+ * deleted/invalid/nonexistent message (see `EmptyPageResponse`'s doc
+ * comment) — an HTTP error on the resume attempt is the most plausible
+ * signal that the persisted cursor itself is no longer valid, since a mid-
+ * walk error (any fetch after the first) is treated as an ordinary
+ * transient failure instead (see `collectGroupMessagesForwardFromCursor`).
+ * Caught by `collectOneGroupMessages`, which falls back to a fresh backward
+ * walk to the natural end for JUST this group — bounded (one group, one
+ * fallback attempt, no retry loop) and honest (the group's cursor is reset
+ * to a real value only once that backward walk itself completes cleanly;
+ * the group's own emitted records are unaffected since a genuine resend of
+ * unchanged content still no-ops through the fingerprint cursor).
+ */
+class InvalidResumeCursorError extends Error {
+  constructor(groupId: string, cursor: string, cause: unknown) {
+    super(
+      `groupme: group ${groupId}'s persisted cursor ${cursor} was rejected by the provider — falling back to a full backward walk for this group`,
+      { cause }
+    );
+    this.name = "InvalidResumeCursorError";
+  }
 }
 
 /**
@@ -737,38 +847,51 @@ function isDescendingByCreatedAt(messages: readonly GroupMeMessage[]): boolean {
 }
 
 /**
- * Per-group durable anchor for `group_messages`' incremental walk. Keyed by
- * GroupMe group id, value is the `id` of the newest message observed in that
- * group's last clean run — an opaque, provider-issued boundary marker, never
- * a locally-computed time window. Lives alongside `fingerprints` in
- * `state.group_messages`, written only when `collectGroupMessages`' overall
- * pass is clean (see `CollectionOutcome`) — the same all-or-nothing gate that
- * already protects the fingerprint map.
+ * Per-group durable resumable cursor for `group_messages`' incremental walk.
+ * Keyed by GroupMe group id, value is the `id` of the newest message
+ * observed in that group's last clean run — an opaque, provider-issued
+ * boundary marker, never a locally-computed time window. Lives alongside
+ * `fingerprints` in `state.group_messages`, written only when
+ * `collectGroupMessages`' overall pass is clean (see `CollectionOutcome`) —
+ * the same all-or-nothing gate that already protects the fingerprint map.
  *
- * Replaces an earlier timestamp-plus-fixed-overlap design: a clock-based
- * window is an ungrounded heuristic (there is no principled overlap size
- * that provably covers every same-second tie or slow-to-propagate edit) and
- * cannot itself detect whether the previously-seen boundary row was mutated
- * (a `like_count` change does not move `created_at`). Anchoring on the exact
- * message id GroupMe's own `before_id` pagination is built around, and
- * re-emitting that anchor message on every resumed walk, captures precisely
- * "every message the provider ordered ahead of the prior head" with no
- * arbitrary window — the fingerprint cursor already handles "did the
- * re-observed anchor's content change".
+ * Resumed with GroupMe's documented FORWARD pagination primitive,
+ * `after_id`: "messages that immediately follow a given message... in
+ * ascending order (which makes it easy to pick off the last result for
+ * continued pagination)" (dev.groupme.com/docs/v3). This is the API's own
+ * intended continuation cursor for exactly this use case — advance the
+ * cursor to each page's last message id and keep paging forward until a
+ * page shorter than the page size proves the natural end. This replaces two
+ * earlier, rejected designs: a locally-computed timestamp-plus-overlap
+ * window (an ungrounded heuristic — no overlap size is provably sufficient,
+ * and a time window cannot force re-observation of a row whose mutable
+ * field changed without moving `created_at`), and a backward `before_id`
+ * re-scan searching for this same id as an "anchor" (wastes work
+ * proportional to everything posted since last run, and — the reason it was
+ * rejected outright — a page-count ceiling on that backward search is
+ * itself a correctness bug: a sufficiently large, still-growing group could
+ * never converge within a fixed page cap).
+ *
+ * A cursor is a PURE RESUME POINT, not a search target: this walk never
+ * re-derives "was this row already covered" by comparing ids against a
+ * target — it trusts `after_id` to already start exactly one message past
+ * where the prior run stopped, and it just keeps going until the API says
+ * there's nothing left.
  */
-export interface GroupMessageAnchors {
+export interface GroupMessageCursors {
   [groupId: string]: string;
 }
 
-/** Decode `state.group_messages.anchors` tolerantly: any missing/malformed
- *  shape yields an empty map (full backfill), matching
- *  `decodePriorFingerprints`'s tolerance policy in fingerprint-cursor.ts. */
-export function decodeGroupMessageAnchors(priorState: unknown): GroupMessageAnchors {
-  const out: GroupMessageAnchors = {};
+/** Decode `state.group_messages.cursors` tolerantly: any missing/malformed
+ *  shape yields an empty map (cold start — walk backward to the natural
+ *  end instead), matching `decodePriorFingerprints`'s tolerance policy in
+ *  fingerprint-cursor.ts. */
+export function decodeGroupMessageCursors(priorState: unknown): GroupMessageCursors {
+  const out: GroupMessageCursors = {};
   if (!priorState || typeof priorState !== "object" || Array.isArray(priorState)) {
     return out;
   }
-  const raw = (priorState as Record<string, unknown>).anchors;
+  const raw = (priorState as Record<string, unknown>).cursors;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return out;
   }
@@ -780,44 +903,8 @@ export function decodeGroupMessageAnchors(priorState: unknown): GroupMessageAnch
   return out;
 }
 
-/**
- * Whether this page proves every message after it (this page's remaining
- * tail, and every subsequent page, since `before_id` only walks further back
- * in time) is already covered — by either of two INDEPENDENT reasons, each
- * sufficient on its own:
- *
- *  1. A caller-declared `since` bound excluded at least one row on this page
- *     (an owner-narrowed collection window — unrelated to the connector's
- *     own bookkeeping).
- *  2. The connector's own persisted anchor (the newest message id from the
- *     prior clean run) is re-observed on this page.
- *
- * BOTH reasons require the page to be independently verified
- * `created_at`-descending first — this is GroupMe's documented ordering
- * contract for this endpoint, and neither stop is licensed on a page that
- * fails the check (see `isDescendingByCreatedAt`'s doc comment). An absent
- * anchor, or an anchor never found on any page this run, simply never
- * satisfies reason 2 — the walk then falls through to the ordinary
- * page-length/page-cap end conditions, i.e. a full walk to the natural end.
- */
-function pageProvesRestOutOfScope(
-  messages: readonly GroupMeMessage[],
-  inScope: readonly GroupMeMessage[],
-  sinceEpochSeconds: number | null,
-  priorAnchorId: string | undefined
-): boolean {
-  if (!isDescendingByCreatedAt(messages)) {
-    return false;
-  }
-  const sinceExcludedARow = sinceEpochSeconds !== null && inScope.length < messages.length;
-  const anchorReobserved = priorAnchorId !== undefined && messages.some((m) => m.id === priorAnchorId);
-  return sinceExcludedARow || anchorReobserved;
-}
-
-/** Emit every in-scope group message through the fingerprint cursor. Pulled
- *  out of `collectGroupMessagesForGroup`'s page loop purely to keep that
- *  function's branch count under the complexity ceiling — no behavior
- *  change from inlining it. */
+/** Emit every in-scope group message through the fingerprint cursor. Shared
+ *  by both the forward (`after_id`) and backward (`before_id`) walks. */
 async function emitInScopeGroupMessages(
   inScope: readonly GroupMeMessage[],
   groupId: string,
@@ -835,22 +922,152 @@ async function emitInScopeGroupMessages(
 }
 
 /**
- * Walks one group's message pages newest-first via `before_id`, stopping
- * once the previously-proven anchor message is re-observed (or falling
- * through to the natural end if the anchor is absent, deleted, bypassed for
- * a `full_refresh` run, or a page ever fails the documented-ordering check).
- *
- * The anchor row itself is always emitted on the page it's found on — this
- * is what lets a mutable field on that exact message (likes, in particular)
- * update on a resumed walk instead of going stale forever the moment the
- * message first fell behind the anchor. `applySinceBoundToPage` still layers
- * a caller-declared `since` on top (independent concern, e.g. an owner
- * narrowing collection to a date range) — the anchor and any declared
- * `since` are two independent stop conditions; the walk stops at whichever
- * fires first, since either one alone proves everything after it is out of
- * scope for this run (see `pageProvesRestOutOfScope`).
+ * Whether a page is genuinely ascending by `created_at` (non-decreasing,
+ * ties allowed) — the ordering contract GroupMe's docs state for an
+ * `after_id`-paginated response. Checked per page, not assumed, mirroring
+ * `isDescendingByCreatedAt`'s existing verify-don't-trust discipline for the
+ * backward endpoint's documented order.
  */
-async function collectGroupMessagesForGroup(
+function isAscendingByCreatedAt(messages: readonly GroupMeMessage[]): boolean {
+  for (let i = 1; i < messages.length; i += 1) {
+    const prev = messages[i - 1];
+    const curr = messages[i];
+    if (prev && curr && curr.created_at < prev.created_at) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Forward-resumes one group's message walk from a durable `after_id` cursor
+ * using GroupMe's documented forward-continuation pagination — see
+ * `GroupMessageCursors`'s doc comment for why this replaces a backward
+ * anchor search. Pages strictly forward (oldest-of-the-new-messages first)
+ * until a page shorter than `PAGE_SIZE` proves the natural end: no
+ * page-count ceiling exists anywhere in this loop — the ONLY other exit is
+ * `NonProgressError`, thrown if a page's own trailing cursor fails to
+ * strictly advance past every cursor value already used this walk (a
+ * provider bug, a stuck `after_id`, or a duplicate/repeated page). That
+ * failure propagates to `runCollectionPass`'s existing catch and becomes an
+ * ordinary `failed: true` outcome — STATE and the coverage claim are
+ * withheld exactly as they are for any other fetch/parse failure.
+ */
+async function collectGroupMessagesForwardFromCursor(
+  token: string,
+  group: GroupMeGroup,
+  startAfterId: string,
+  cursor: ReturnType<typeof openFingerprintCursor>,
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  progressWithSignals: ProgressFn,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>
+): Promise<PerConversationWalkResult> {
+  let afterId = startAfterId;
+  let totalSeen = 0;
+  let newestMessageId: string | undefined;
+  let isFirstFetch = true;
+  const usedCursors = new Set<string>([startAfterId]);
+
+  for (;;) {
+    await progressWithSignals("Fetching group messages", {
+      stream: "group_messages",
+      phase: "fetch",
+      after_id: afterId,
+      total_seen: totalSeen,
+    });
+
+    let resp: GroupMessagesResponse;
+    try {
+      resp = await fetchMessagesPage(token, group.id, {
+        limit: PAGE_SIZE,
+        after_id: afterId,
+      });
+    } catch (error) {
+      // Only the FIRST fetch of a resumed walk gets the invalid-cursor
+      // fallback treatment — see InvalidResumeCursorError's doc comment. A
+      // mid-walk failure (any fetch after the first) is an ordinary
+      // transient error and propagates normally.
+      if (isFirstFetch && error instanceof Error && error.message.startsWith("groupme_http_")) {
+        // biome-ignore lint/style/useErrorCause: InvalidResumeCursorError's 3rd constructor arg forwards to super(message, { cause })
+        throw new InvalidResumeCursorError(group.id, afterId, error);
+      }
+      throw error;
+    }
+    isFirstFetch = false;
+
+    const messages = resp.messages || [];
+    if (!messages.length) {
+      return { totalSeen, newestMessageId };
+    }
+    if (!isAscendingByCreatedAt(messages)) {
+      // The provider violated its own documented ordering contract for this
+      // response — nothing about this page's cursor can be trusted to
+      // safely resume from. Fail loudly rather than silently accept a page
+      // that might have skipped or reordered messages.
+      throw new NonProgressError(group.id, "forward", afterId);
+    }
+
+    totalSeen += messages.length;
+    await progressWithSignals("Fetched group messages page", {
+      stream: "group_messages",
+      phase: "page",
+      item_count: messages.length,
+      total_seen: totalSeen,
+    });
+
+    await emitInScopeGroupMessages(messages, group.id, cursor, uploader, emitAttachmentRecord, emitRecord);
+    newestMessageId = messages.at(-1)?.id ?? newestMessageId;
+
+    if (messages.length < PAGE_SIZE) {
+      return { totalSeen, newestMessageId };
+    }
+
+    const nextAfterId = messages.at(-1)?.id;
+    if (!nextAfterId || usedCursors.has(nextAfterId)) {
+      throw new NonProgressError(group.id, "forward", afterId);
+    }
+    usedCursors.add(nextAfterId);
+    afterId = nextAfterId;
+  }
+}
+
+/**
+ * Backward-walks one group's ENTIRE message history via `before_id`, to the
+ * natural end — used for a cold start (no persisted cursor) or an explicit
+ * `full_refresh` run. No page-count ceiling: the only exits are the natural
+ * short/empty-page boundary or `NonProgressError` on a page that fails the
+ * documented-descending check or whose trailing cursor repeats one already
+ * used this walk. `applySinceBoundToPage` still layers an independent,
+ * caller-declared `since` bound on top (an owner-narrowed collection
+ * window — unrelated to this walk's own cursor bookkeeping); a page that
+ * has since-excluded at least one row, verified genuinely descending, ends
+ * the walk early since everything after it is out of the declared scope.
+ */
+/**
+ * Whether a backward group-messages page ends the walk at its natural end:
+ * every message was out of the declared `since` scope, a `since`-scoped
+ * page excluded at least one row, or the page came back shorter than
+ * `PAGE_SIZE`. Extracted purely to keep
+ * `collectGroupMessagesBackwardToNaturalEnd`'s cognitive complexity within
+ * the lint ceiling — no behavior change from inlining it.
+ */
+function backwardPageReachedNaturalEnd(
+  messages: readonly GroupMeMessage[],
+  inScope: readonly GroupMeMessage[],
+  pageFullyOutOfScope: boolean,
+  sinceEpochSeconds: number | null
+): boolean {
+  if (pageFullyOutOfScope) {
+    return true;
+  }
+  if (sinceEpochSeconds !== null && inScope.length < messages.length) {
+    return true;
+  }
+  return messages.length < PAGE_SIZE;
+}
+
+async function collectGroupMessagesBackwardToNaturalEnd(
   token: string,
   group: GroupMeGroup,
   cursor: ReturnType<typeof openFingerprintCursor>,
@@ -858,45 +1075,50 @@ async function collectGroupMessagesForGroup(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number,
-  sinceEpochSeconds: number | null,
-  priorAnchorId: string | undefined
+  sinceEpochSeconds: number | null
 ): Promise<PerConversationWalkResult> {
   let beforeId: string | undefined;
-  let pageIndex = 0;
   let totalSeen = 0;
   let newestMessageId: string | undefined;
+  const usedCursors = new Set<string>();
 
-  while (pageIndex < maxPages) {
-    const pageExtra: ProgressExtra = {
+  for (;;) {
+    await progressWithSignals("Fetching group messages", {
       stream: "group_messages",
       phase: "fetch",
       ...(beforeId ? { before_id: beforeId } : {}),
       total_seen: totalSeen,
-    };
-    await progressWithSignals("Fetching group messages", pageExtra);
+    });
 
-    const resp = await makeRequest<GroupMessagesResponse>(token, `/groups/${group.id}/messages`, {
+    const resp = await fetchMessagesPage(token, group.id, {
       limit: PAGE_SIZE,
       ...(beforeId ? { before_id: beforeId } : {}),
     });
 
     const messages = resp.messages || [];
     if (!messages.length) {
-      return { totalSeen, truncated: false, newestMessageId };
+      return { totalSeen, newestMessageId };
     }
 
-    // The anchor for NEXT run is the newest message this run ever saw,
-    // regardless of `since` scoping or where the anchor stop fires — the
-    // first page's first message is always the true newest, since the walk
-    // pages strictly backward from there.
     if (newestMessageId === undefined) {
       newestMessageId = messages[0]?.id;
     }
 
-    // `considered` (totalSeen) counts only messages inside the declared
-    // scope — a page spanning the boundary must not credit its out-of-scope
-    // tail as part of what was "considered" for this run's coverage claim.
+    // GroupMe's docs guarantee GET /groups/:id/messages with `before_id` is
+    // created_at-descending. A page that violates this is not safe to
+    // continue from: the trailing `before_id` (`messages.at(-1)`) is only
+    // guaranteed to be "the oldest on this page" if the page is genuinely
+    // ordered — on a non-descending page that id could sit anywhere in
+    // time, and paginating from it could silently skip or re-walk
+    // messages. Fail loudly (caught by runCollectionPass, becomes an
+    // ordinary `failed: true`) rather than trust an unverified cursor.
+    // Checked BEFORE emitting so a page this connector cannot trust never
+    // contributes to considered/emitted counts under a false "in scope"
+    // read of its own now-unreliable ordering.
+    if (!isDescendingByCreatedAt(messages)) {
+      throw new NonProgressError(group.id, "backward", beforeId ?? "(start)");
+    }
+
     const { inScope, pageFullyOutOfScope } = applySinceBoundToPage(messages, sinceEpochSeconds);
     totalSeen += inScope.length;
     await progressWithSignals("Fetched group messages page", {
@@ -908,37 +1130,17 @@ async function collectGroupMessagesForGroup(
 
     await emitInScopeGroupMessages(inScope, group.id, cursor, uploader, emitAttachmentRecord, emitRecord);
 
-    // Every message on this page was before `since`: this page (and every
-    // page after it, since before_id only walks further back in time) is
-    // entirely outside the declared boundary. This is an honest, fully-
-    // considered end of the DECLARED scope, not a truncation — `truncated`
-    // stays false so the caller still commits STATE and a coverage claim.
-    // Ordering-agnostic: safe even if this page turns out not to be sorted.
-    if (pageFullyOutOfScope) {
-      return { totalSeen, truncated: false, newestMessageId };
+    if (backwardPageReachedNaturalEnd(messages, inScope, pageFullyOutOfScope, sinceEpochSeconds)) {
+      return { totalSeen, newestMessageId };
     }
 
-    // Two independent stop conditions, both licensed only on a page
-    // independently verified `created_at`-descending — see
-    // `pageProvesRestOutOfScope`'s doc comment. The anchor row itself was
-    // already emitted above (it is `inScope` unless a `since` bound also
-    // excludes it), so a mutated mutable field on it (likes) still gets
-    // re-observed and re-emitted by the fingerprint cursor on this very page.
-    if (pageProvesRestOutOfScope(messages, inScope, sinceEpochSeconds, priorAnchorId)) {
-      return { totalSeen, truncated: false, newestMessageId };
+    const nextBeforeId = messages.at(-1)?.id;
+    if (!nextBeforeId || usedCursors.has(nextBeforeId)) {
+      throw new NonProgressError(group.id, "backward", beforeId ?? "(start)");
     }
-
-    if (messages.length < PAGE_SIZE) {
-      return { totalSeen, truncated: false, newestMessageId };
-    }
-
-    beforeId = messages.at(-1)?.id;
-    pageIndex += 1;
+    usedCursors.add(nextBeforeId);
+    beforeId = nextBeforeId;
   }
-
-  // Loop exited via the page cap, not the natural `messages.length < PAGE_SIZE`
-  // end signal — this group's message history was not fully walked.
-  return { totalSeen, truncated: true, newestMessageId };
 }
 
 /**
@@ -969,35 +1171,28 @@ export interface CollectionOutcome {
  * failed outcome means (skip STATE + coverage), this wrapper only owns
  * catching the error and reporting it the same way every stream already did.
  */
+/**
+ * Shared try/catch/outcome wrapper for a stream's top-level collection pass.
+ * `body` runs the real fetch-and-emit work and returns the raw enumerated
+ * "considered" count on a clean pass. Every GroupMe stream needs the exact
+ * same shape here: auth failures propagate untouched (the whole run is dead,
+ * not just this stream), any other error — including `NonProgressError` from
+ * a walk that couldn't prove it made progress — is logged via
+ * `progressWithSignals` and converted to `{ considered: 0, failed: true }`
+ * rather than left to throw. There is no page-cap-truncation outcome
+ * anymore: every walk in this connector either reaches its provider-defined
+ * natural end or throws (see `NonProgressError`'s doc comment for why an
+ * arbitrary page ceiling was removed entirely rather than kept as a
+ * "truncated but not failed" outcome).
+ */
 async function runCollectionPass(
   stream: string,
   errorLabel: string,
   progressWithSignals: ProgressFn,
-  emit: (msg: EmittedMessage) => Promise<void>,
-  body: () => Promise<{ considered: number; truncated: boolean }>,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  body: () => Promise<{ considered: number }>
 ): Promise<CollectionOutcome> {
   try {
-    const { considered, truncated } = await body();
-    if (truncated) {
-      // A page-cap-truncated walk did not prove it saw every message in this
-      // stream — the enumerated `considered` count is a real but partial
-      // lower bound, not the boundary. Emitting it as `considered` would
-      // make `buildFullScanCoverageMessage` claim `covered === considered`
-      // for a walk that stopped short of the natural end, so this pass
-      // reports `failed: true` to withhold both the STATE checkpoint and
-      // the coverage claim, same as any other incomplete pass — plus a
-      // bounded diagnostic (count only, no message/group/chat identifiers)
-      // so the truncation itself is visible instead of silently absorbed.
-      await emit({
-        type: "SKIP_RESULT",
-        stream,
-        reason: "page_cap_truncated",
-        message: `${errorLabel}: hit the ${String(maxPages)}-page cap before reaching the end of at least one conversation's history`,
-        diagnostics: { considered, page_cap: maxPages },
-      });
-      return { considered: 0, failed: true };
-    }
+    const { considered } = await body();
     return { considered, failed: false };
   } catch (error) {
     if (error instanceof Error && error.message === "groupme_auth_failed") {
@@ -1018,70 +1213,45 @@ export async function collectGroups(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   progressWithSignals: ProgressFn,
-  emit: (msg: EmittedMessage) => Promise<void>,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe groups", { stream: "groups", phase: "start" });
-  return await runCollectionPass(
-    "groups",
-    "groups",
-    progressWithSignals,
-    emit,
-    async () => {
-      const { items: groups, truncated } = await fetchPaginatedList<GroupMeGroup>(
-        token,
-        "/groups",
-        "groups",
-        progressWithSignals,
-        maxPages
-      );
+  return await runCollectionPass("groups", "groups", progressWithSignals, async () => {
+    const { items: groups } = await fetchPaginatedList<GroupMeGroup>(token, "/groups", "groups", progressWithSignals);
 
-      for (const group of groups) {
-        const record = toGroupRecord(group);
-        if (cursor.shouldEmit(record)) {
-          await emitRecord("groups", record);
-        }
+    for (const group of groups) {
+      const record = toGroupRecord(group);
+      if (cursor.shouldEmit(record)) {
+        await emitRecord("groups", record);
       }
-      return { considered: groups.length, truncated };
-    },
-    maxPages
-  );
+    }
+    return { considered: groups.length };
+  });
 }
 
 export async function collectDirectChats(
   token: string,
   cursor: ReturnType<typeof openFingerprintCursor>,
   progressWithSignals: ProgressFn,
-  emit: (msg: EmittedMessage) => Promise<void>,
-  emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM
+  emitRecord: (stream: string, data: RecordData) => Promise<void>
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct chats", { stream: "direct_messages", phase: "start" });
-  return await runCollectionPass(
-    "direct_messages",
-    "direct chats",
-    progressWithSignals,
-    emit,
-    async () => {
-      const { items: chats, truncated } = await fetchPaginatedList<GroupMeDirectChat>(
-        token,
-        "/chats",
-        "direct_messages",
-        progressWithSignals,
-        maxPages
-      );
+  return await runCollectionPass("direct_messages", "direct chats", progressWithSignals, async () => {
+    const { items: chats } = await fetchPaginatedList<GroupMeDirectChat>(
+      token,
+      "/chats",
+      "direct_messages",
+      progressWithSignals
+    );
 
-      for (const chat of chats) {
-        const record = toDirectChatRecord(chat);
-        if (cursor.shouldEmit(record)) {
-          await emitRecord("direct_messages", record);
-        }
+    for (const chat of chats) {
+      const record = toDirectChatRecord(chat);
+      if (cursor.shouldEmit(record)) {
+        await emitRecord("direct_messages", record);
       }
-      return { considered: chats.length, truncated };
-    },
-    maxPages
-  );
+    }
+    return { considered: chats.length };
+  });
 }
 
 interface DirectMessagesResponse {
@@ -1090,25 +1260,33 @@ interface DirectMessagesResponse {
 }
 
 /**
- * Walks one chat's message pages. Returns the raw item count enumerated
- * across pages (the "considered" contribution for this chat) — never
- * aliased to the emitted count, since a page a caller filtered/suppressed
- * was still genuinely observed. Propagates fetch/parse failures to the
- * caller rather than swallowing them, so a mid-chat failure cannot be
- * mistaken for "this chat has no more messages."
+ * Walks one chat's message pages to the natural end. Returns the raw item
+ * count enumerated across pages (the "considered" contribution for this
+ * chat) — never aliased to the emitted count, since a page a caller
+ * filtered/suppressed was still genuinely observed. Propagates fetch/parse
+ * failures to the caller rather than swallowing them, so a mid-chat failure
+ * cannot be mistaken for "this chat has no more messages."
  *
- * Deliberately does NOT early-stop on a `since` boundary the way
- * `collectGroupMessagesForGroup` does. GroupMe's official docs make an
- * explicit ordering + pagination-adjacency contract for the GROUP messages
- * endpoint (`GET /groups/:id/messages`), but document no equivalent
- * guarantee for this DIRECT-message endpoint (`GET /chats/:id/messages`).
- * Absent that authority, out-of-scope rows are filtered from
+ * Deliberately does NOT early-stop on a `since` boundary, and deliberately
+ * does NOT attempt an incremental resumed walk, the way `group_messages`
+ * now does with `after_id`. GroupMe's official docs make an explicit
+ * ordering + pagination-adjacency contract for the GROUP messages endpoint
+ * (`GET /groups/:id/messages`), but document no equivalent guarantee for
+ * this DIRECT-message endpoint (`GET /chats/:id/messages`) — no
+ * `before_id`/`after_id` ordering claim exists to build a resumable cursor
+ * on. Absent that authority, out-of-scope rows are filtered from
  * counting/emission (so `considered`/`covered` stay honest for a declared
  * scope) but the walk always continues to the natural end — an empty or
- * short-of-PAGE_SIZE page — exactly as an unscoped run would. This trades
- * away the performance win a validated ordering would allow, in exchange for
- * never risking a silently-dropped in-scope message on an endpoint this
- * connector cannot verify is sorted.
+ * short-of-PAGE_SIZE page. This is an honest full-scan-every-run, not a
+ * pretend incremental walk: claiming incrementality here would require an
+ * ordering guarantee this connector cannot verify.
+ *
+ * No page-count ceiling: matching `group_messages`' discipline, the only
+ * non-natural exit is `NonProgressError`, thrown when a page's own trailing
+ * cursor fails to advance or repeats one already used this walk — a real
+ * anomaly that must fail the pass loudly (caught by `runCollectionPass`,
+ * converted to `failed: true`) rather than loop forever or silently
+ * under-report a truncated scan as complete.
  */
 async function collectDirectChatMessagesForChat(
   token: string,
@@ -1118,14 +1296,13 @@ async function collectDirectChatMessagesForChat(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM,
   sinceEpochSeconds: number | null = null
 ): Promise<PerConversationWalkResult> {
   let beforeId: string | undefined;
-  let pageIndex = 0;
   let totalSeen = 0;
+  const usedCursors = new Set<string>();
 
-  while (pageIndex < maxPages) {
+  for (;;) {
     const pageExtra: ProgressExtra = {
       stream: "direct_chat_messages",
       phase: "fetch",
@@ -1141,14 +1318,14 @@ async function collectDirectChatMessagesForChat(
 
     const messages = resp.direct_messages || [];
     if (!messages.length) {
-      return { totalSeen, truncated: false, newestMessageId: undefined };
+      return { totalSeen, newestMessageId: undefined };
     }
 
-    // In-scope-only accounting, same as collectGroupMessagesForGroup: a page
-    // spanning the boundary must not credit its out-of-scope tail as part of
-    // what was "considered". No early-stop on `pageFullyOutOfScope` here —
-    // see the function doc comment: this endpoint's ordering is undocumented,
-    // so the walk always continues to the natural end.
+    // In-scope-only accounting, same as the group_messages backward walk: a
+    // page spanning the boundary must not credit its out-of-scope tail as
+    // part of what was "considered". No early-stop on `pageFullyOutOfScope`
+    // here — see the function doc comment: this endpoint's ordering is
+    // undocumented, so the walk always continues to the natural end.
     const { inScope } = applySinceBoundToPage(messages, sinceEpochSeconds);
     totalSeen += inScope.length;
     await progressWithSignals("Fetched direct messages page", {
@@ -1166,16 +1343,16 @@ async function collectDirectChatMessagesForChat(
     }
 
     if (messages.length < PAGE_SIZE) {
-      return { totalSeen, truncated: false, newestMessageId: undefined };
+      return { totalSeen, newestMessageId: undefined };
     }
 
-    beforeId = messages.at(-1)?.id;
-    pageIndex += 1;
+    const nextBeforeId = messages.at(-1)?.id;
+    if (!nextBeforeId || usedCursors.has(nextBeforeId)) {
+      throw new NonProgressError(chat.id, "backward", beforeId ?? "(start)");
+    }
+    usedCursors.add(nextBeforeId);
+    beforeId = nextBeforeId;
   }
-
-  // Loop exited via the page cap, not the natural `messages.length < PAGE_SIZE`
-  // end signal — this chat's message history was not fully walked.
-  return { totalSeen, truncated: true, newestMessageId: undefined };
 }
 
 export async function collectDirectChatMessages(
@@ -1184,60 +1361,100 @@ export async function collectDirectChatMessages(
   uploader: BlobUploader | undefined,
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
-  emit: (msg: EmittedMessage) => Promise<void>,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM,
   sinceEpochSeconds: number | null = null
 ): Promise<CollectionOutcome> {
   await progressWithSignals("Fetching GroupMe direct messages", {
     stream: "direct_chat_messages",
     phase: "start",
   });
-  return await runCollectionPass(
-    "direct_chat_messages",
-    "direct messages",
-    progressWithSignals,
-    emit,
-    async () => {
-      let considered = 0;
-      let truncated = false;
-      const { items: chats, truncated: chatsListTruncated } = await fetchPaginatedList<GroupMeDirectChat>(
+  return await runCollectionPass("direct_chat_messages", "direct messages", progressWithSignals, async () => {
+    let considered = 0;
+    const { items: chats } = await fetchPaginatedList<GroupMeDirectChat>(
+      token,
+      "/chats",
+      "direct_chat_messages",
+      progressWithSignals
+    );
+    for (const chat of chats) {
+      const chatResult = await collectDirectChatMessagesForChat(
         token,
-        "/chats",
-        "direct_chat_messages",
+        chat,
+        cursor,
+        uploader,
+        emitAttachmentRecord,
         progressWithSignals,
-        maxPages
+        emitRecord,
+        sinceEpochSeconds
       );
-      truncated = truncated || chatsListTruncated;
-      for (const chat of chats) {
-        const chatResult = await collectDirectChatMessagesForChat(
-          token,
-          chat,
-          cursor,
-          uploader,
-          emitAttachmentRecord,
-          progressWithSignals,
-          emitRecord,
-          maxPages,
-          sinceEpochSeconds
-        );
-        considered += chatResult.totalSeen;
-        truncated = truncated || chatResult.truncated;
-      }
-      return { considered, truncated };
-    },
-    maxPages
-  );
+      considered += chatResult.totalSeen;
+    }
+    return { considered };
+  });
 }
 
 /**
  * Result of `collectGroupMessages`: the ordinary `CollectionOutcome` plus the
- * next-run per-group anchor map. `nextAnchors` is only meaningful when
+ * next-run per-group cursor map. `nextCursors` is only meaningful when
  * `failed` is false — `collect()` must not persist it otherwise, same rule as
  * the fingerprint cursor's STATE emit (see `CollectionOutcome`'s doc comment).
  */
 export interface GroupMessagesCollectionOutcome extends CollectionOutcome {
-  nextAnchors: GroupMessageAnchors;
+  nextCursors: GroupMessageCursors;
+}
+
+/**
+ * `body`'s per-group loop: choose forward-resume (a prior cursor exists and
+ * this isn't a full_refresh run) or backward-to-natural-end (cold start, or
+ * an explicit full_refresh bypass), run it, and fold the result into the
+ * accumulators. Extracted as its own function purely to keep
+ * `collectGroupMessages`'s cognitive complexity within the lint ceiling.
+ */
+async function collectOneGroupMessages(
+  token: string,
+  group: GroupMeGroup,
+  priorCursor: string | undefined,
+  bypassCursor: boolean,
+  cursor: ReturnType<typeof openFingerprintCursor>,
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  progressWithSignals: ProgressFn,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>,
+  sinceEpochSeconds: number | null
+): Promise<PerConversationWalkResult> {
+  if (priorCursor !== undefined && !bypassCursor) {
+    try {
+      return await collectGroupMessagesForwardFromCursor(
+        token,
+        group,
+        priorCursor,
+        cursor,
+        uploader,
+        emitAttachmentRecord,
+        progressWithSignals,
+        emitRecord
+      );
+    } catch (error) {
+      if (!(error instanceof InvalidResumeCursorError)) {
+        throw error;
+      }
+      await progressWithSignals(error.message, { stream: "group_messages", phase: "cursor_reset" });
+      // Falls through to the same backward-to-natural-end walk a cold start
+      // uses — bounded to exactly one fallback attempt for this group, no
+      // retry loop. If this ALSO fails, it propagates normally and the
+      // whole pass fails, same as any other walk error.
+    }
+  }
+  return await collectGroupMessagesBackwardToNaturalEnd(
+    token,
+    group,
+    cursor,
+    uploader,
+    emitAttachmentRecord,
+    progressWithSignals,
+    emitRecord,
+    sinceEpochSeconds
+  );
 }
 
 export async function collectGroupMessages(
@@ -1246,76 +1463,55 @@ export async function collectGroupMessages(
   uploader: BlobUploader | undefined,
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
-  emit: (msg: EmittedMessage) => Promise<void>,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM,
   sinceEpochSeconds: number | null = null,
-  priorAnchors: GroupMessageAnchors = {},
+  priorCursors: GroupMessageCursors = {},
   collectionMode: "full_refresh" | "incremental" = "incremental"
 ): Promise<GroupMessagesCollectionOutcome> {
   await progressWithSignals("Fetching GroupMe group messages", { stream: "group_messages", phase: "start" });
-  // Seeded from the prior anchors so a group absent from THIS run's listing
-  // (deleted, or the account left it) still carries its last-known anchor
+  // Seeded from the prior cursors so a group absent from THIS run's listing
+  // (deleted, or the account left it) still carries its last-known cursor
   // forward — mirrors the fingerprint cursor's carry-forward-by-default
   // policy, and is safe because collect() only persists this map when the
   // overall pass is clean (a group truly gone would simply never be walked
-  // again; its stale anchor is inert, not harmful).
-  const nextAnchors: GroupMessageAnchors = { ...priorAnchors };
+  // again; its stale cursor is inert, not harmful).
+  const nextCursors: GroupMessageCursors = { ...priorCursors };
   // full_refresh is an explicit owner/operator bypass (START.collection_mode
-  // — see CollectContext.collectionMode's doc comment): every group walks to
-  // its natural end this run regardless of any persisted anchor, the repair
-  // path for a mutable field that changed further back than the anchor-based
-  // incremental walk would otherwise revisit. The anchor MAP is still
-  // rebuilt from what this full walk observes, so the next ordinary run
-  // resumes incrementally again rather than repeating the full walk forever.
-  const bypassAnchors = collectionMode === "full_refresh";
-  const outcome = await runCollectionPass(
-    "group_messages",
-    "group messages",
-    progressWithSignals,
-    emit,
-    async () => {
-      let considered = 0;
-      let truncated = false;
-      const { items: groups, truncated: groupsListTruncated } = await fetchPaginatedList<GroupMeGroup>(
+  // — see CollectContext.collectionMode's doc comment): every group walks
+  // BACKWARD to its natural end this run regardless of any persisted
+  // cursor. The cursor MAP is still rebuilt from what this full walk
+  // observes, so the next ordinary run resumes forward-incrementally again.
+  const bypassCursor = collectionMode === "full_refresh";
+  const outcome = await runCollectionPass("group_messages", "group messages", progressWithSignals, async () => {
+    let considered = 0;
+    const { items: groups } = await fetchPaginatedList<GroupMeGroup>(
+      token,
+      "/groups",
+      "group_messages",
+      progressWithSignals
+    );
+    for (const group of groups) {
+      const priorCursor = priorCursors[group.id];
+      const groupResult = await collectOneGroupMessages(
         token,
-        "/groups",
-        "group_messages",
+        group,
+        priorCursor,
+        bypassCursor,
+        cursor,
+        uploader,
+        emitAttachmentRecord,
         progressWithSignals,
-        maxPages
+        emitRecord,
+        sinceEpochSeconds
       );
-      truncated = truncated || groupsListTruncated;
-      for (const group of groups) {
-        const priorAnchor = bypassAnchors ? undefined : priorAnchors[group.id];
-        const groupResult = await collectGroupMessagesForGroup(
-          token,
-          group,
-          cursor,
-          uploader,
-          emitAttachmentRecord,
-          progressWithSignals,
-          emitRecord,
-          maxPages,
-          sinceEpochSeconds,
-          priorAnchor
-        );
-        considered += groupResult.totalSeen;
-        truncated = truncated || groupResult.truncated;
-        // Only advance this group's anchor past what a CLEAN walk for this
-        // specific group actually proved it saw — a page-cap-truncated group
-        // walk did not reach the natural end, so its partial newestMessageId
-        // is not a proven boundary (the overall pass will report `failed:
-        // true` and withhold this map either way, but skipping the advance
-        // here keeps `nextAnchors` honest even if that gate is ever relaxed).
-        if (!groupResult.truncated && groupResult.newestMessageId !== undefined) {
-          nextAnchors[group.id] = groupResult.newestMessageId;
-        }
+      considered += groupResult.totalSeen;
+      if (groupResult.newestMessageId !== undefined) {
+        nextCursors[group.id] = groupResult.newestMessageId;
       }
-      return { considered, truncated };
-    },
-    maxPages
-  );
-  return { ...outcome, nextAnchors: outcome.failed ? {} : nextAnchors };
+    }
+    return { considered };
+  });
+  return { ...outcome, nextCursors: outcome.failed ? {} : nextCursors };
 }
 
 /**
@@ -1385,7 +1581,7 @@ export async function collect({
 
   let groupsOutcome: CollectionOutcome | undefined;
   if (requested.has("groups")) {
-    groupsOutcome = await collectGroups(token, groupCursor, progressWithSignals, emit, emitRecord);
+    groupsOutcome = await collectGroups(token, groupCursor, progressWithSignals, emitRecord);
   }
   let groupMessagesOutcome: GroupMessagesCollectionOutcome | undefined;
   if (requested.has("group_messages")) {
@@ -1395,17 +1591,15 @@ export async function collect({
       uploader,
       emitAttachmentRecord,
       progressWithSignals,
-      emit,
       emitRecord,
-      MAX_PAGES_PER_STREAM,
       parseSinceEpochSeconds(requested, "group_messages"),
-      decodeGroupMessageAnchors(state.group_messages),
+      decodeGroupMessageCursors(state.group_messages),
       effectiveCollectionMode
     );
   }
   let directChatsOutcome: CollectionOutcome | undefined;
   if (requested.has("direct_messages")) {
-    directChatsOutcome = await collectDirectChats(token, directChatCursor, progressWithSignals, emit, emitRecord);
+    directChatsOutcome = await collectDirectChats(token, directChatCursor, progressWithSignals, emitRecord);
   }
   let directChatMessagesOutcome: CollectionOutcome | undefined;
   if (requested.has("direct_chat_messages")) {
@@ -1415,9 +1609,7 @@ export async function collect({
       uploader,
       emitAttachmentRecord,
       progressWithSignals,
-      emit,
       emitRecord,
-      MAX_PAGES_PER_STREAM,
       parseSinceEpochSeconds(requested, "direct_chat_messages")
     );
   }
@@ -1444,7 +1636,7 @@ export async function collect({
     await emit({
       type: "STATE",
       stream: "group_messages",
-      cursor: { fingerprints: groupMessageCursor.toState(), anchors: groupMessagesOutcome.nextAnchors },
+      cursor: { fingerprints: groupMessageCursor.toState(), cursors: groupMessagesOutcome.nextCursors },
     });
     await emit(buildFullScanCoverageMessage("group_messages", groupMessagesOutcome.considered));
   }
@@ -1482,3 +1674,19 @@ if (isMainModule(import.meta.url)) {
     collect,
   });
 }
+
+/**
+ * DESIGN NOTE (scope closed vs. not): this fix closes exact FORWARD
+ * incrementality for group_messages (no more repeated full-history
+ * rescans). It does NOT close automatic repair of an old message's mutable
+ * field (favorited_by/like_count) once that message has fallen behind the
+ * resume cursor — hence `mutable_state` in the manifest, not
+ * `immutable_log`. That repair currently requires an explicit
+ * `collection_mode: "full_refresh"`; no periodic/automatic trigger for it
+ * exists anywhere in this system today (verified against RI's START-build
+ * path, not assumed). The generic, connector-agnostic primitive this
+ * system would need to close that gap — a manifest-declared per-stream
+ * repair cadence the SCHEDULER (not this connector) interprets — is
+ * specified in docs/inbox/design-note-periodic-full-refresh-repair.md, not
+ * implemented here.
+ */

@@ -5,41 +5,26 @@
  * Coverage proof for all four cursor-backed GroupMe streams: `groups`,
  * `group_messages`, `direct_messages`, `direct_chat_messages`.
  *
- * Before this change none of the four streams ever called
- * `buildFullScanCoverageMessage` (or any DETAIL_COVERAGE builder) —
- * grepping the connector for "Coverage"/"considered"/"covered" returned zero
- * matches — so a run could collect real data yet never prove it walked the
- * boundary, and every stream read `unknown` regardless of record count.
- * Worse, every collector (`collectGroups`, `collectGroupMessages`,
- * `collectDirectChats`, `collectDirectChatMessages`) swallowed every
- * non-auth fetch/parse failure and returned normally, so the top-level
- * `collect()` unconditionally emitted that stream's own STATE checkpoint
- * even after a failed pass — a failure could commit a checkpoint as if it
- * had succeeded.
+ * Every collector returns a `CollectionOutcome { considered, failed }` via
+ * the shared `runCollectionPass` wrapper in index.ts: `considered` is the
+ * raw enumerated item count, measured independently of `emitRecord` — a
+ * record the fingerprint cursor suppressed as unchanged, or one the schema
+ * validator rejected, was still genuinely observed. `failed` is true
+ * whenever the walk was cut short by a non-auth fetch/parse error OR by
+ * `NonProgressError` (a pagination walk that could not prove it advanced —
+ * see index.ts's `NonProgressError` doc comment). `collect()` only emits a
+ * stream's own STATE checkpoint and DETAIL_COVERAGE proof when that
+ * stream's outcome has `failed: false`.
  *
- * All four streams are re-listed/re-walked in full every run (no
- * incremental "since" cursor — see the file header comment in index.ts),
- * gated only by a per-record fingerprint for re-emit suppression, so they
- * match `buildFullScanCoverageMessage`'s precondition exactly (same shape
- * as chatgpt's `shared_conversations`, which is also manifest-labeled
- * `checkpoint_window` but is a full re-scan internally — `groups` itself is
- * manifest-labeled `full_inventory`, the unambiguous case).
- *
- * Every collector now returns a `CollectionOutcome { considered, failed }`
- * via the shared `runCollectionPass` wrapper in index.ts: `considered` is
- * the raw enumerated item count (summed across groups/chats and their
- * pages), measured independently of `emitRecord` — a record the fingerprint
- * cursor suppressed as unchanged, or one the schema validator rejected, was
- * still genuinely observed. `failed` is true whenever the walk was cut short
- * by a non-auth fetch/parse error. `collect()` only emits a stream's own
- * STATE checkpoint and DETAIL_COVERAGE proof when that stream's outcome has
- * `failed: false`.
- *
- * Test structure mirrors across all four streams: for each, a clean-pass
- * discriminator, a genuine-zero proof, a fingerprint-suppression
- * counterweight, an http-error counterweight, a malformed-body
- * counterweight (including mid-walk for the two-level group/chat + pages
- * streams), a retained-drop counterweight, and an auth-propagation check.
+ * NO PAGE-COUNT CEILING exists anywhere in this connector's pagination
+ * (groups/chats lists, group messages forward/backward, direct chat
+ * messages) — an arbitrary cap was rejected in review as itself a
+ * correctness bug (silently prevents an owner with more history/groups/
+ * chats than the cap from ever completing). Every walk in this file either
+ * runs to its provider-defined natural end (a page shorter than PAGE_SIZE,
+ * or empty) or fails via `NonProgressError` — proven here with tests that
+ * page well past the OLD 200-page-equivalent cap size to confirm the walk
+ * keeps going to the true end instead of truncating.
  */
 
 import assert from "node:assert/strict";
@@ -58,10 +43,8 @@ import {
 import { validateRecord } from "./schemas.ts";
 
 const TOKEN = "test-access-token";
+const PAGE_SIZE = 100;
 
-// These tests drive real multi-page pagination (including the 200-page cap
-// tests) against GroupMe's real module-level httpGovernor, which paces at
-// production speed by default. Disable pacing for this file only.
 before(() => {
   __setZeroDelayHttpGovernorForTests();
 });
@@ -181,8 +164,8 @@ test("collectGroups: clean pass reports failed: false and considered === listed 
   const restore = stubFetch({ response: [group(), group({ id: "group-2" })] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.deepEqual(outcome, { considered: 2, failed: false });
     assert.equal(emitted.filter((r) => r.stream === "groups").length, 2);
@@ -195,8 +178,8 @@ test("collectGroups: genuine zero groups reports failed: false, considered: 0", 
   const restore = stubFetch({ response: [] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.deepEqual(outcome, { considered: 0, failed: false }, "a measured empty boundary is itself the proof");
     assert.equal(emitted.length, 0);
@@ -210,13 +193,13 @@ test("collectGroups: fingerprint-suppressed (unchanged) group still counts as co
   const restore = stubFetch({ response: [g] });
   try {
     const priorCursor = openFingerprintCursor(new Map());
-    const { emit: seedEmitMessage, emitRecord: seedEmit } = makeHarness();
-    await collectGroups(TOKEN, priorCursor, noopProgress, seedEmitMessage, seedEmit);
+    const { emitRecord: seedEmit } = makeHarness();
+    await collectGroups(TOKEN, priorCursor, noopProgress, seedEmit);
     const priorState = priorCursor.toState();
 
     const cursor = openFingerprintCursor({ fingerprints: priorState });
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(emitted.length, 0, "unchanged group is suppressed, not re-emitted");
     assert.equal(outcome.considered, 1, "considered counts the listed group even though it was suppressed");
@@ -230,8 +213,8 @@ test("collectGroups: http error reports failed: true and does not throw (non-aut
   const restore = stubFetch({ error: "server error" }, 500);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true, "an http failure must not report a clean pass");
     assert.equal(outcome.considered, 0);
@@ -245,8 +228,8 @@ test("collectGroups: malformed (unparseable) body reports failed: true, not a pr
   const restore = stubFetchMalformedBody();
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true, "an unparseable 200 body is a failed enumeration, not a genuine zero");
     assert.equal(emitted.length, 0);
@@ -259,8 +242,8 @@ test("collectGroups: a rejected/dropped record still counts as considered, not j
   const restore = stubFetch({ response: [group({ id: "group-1" }), group({ id: 999 })] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(emitted.filter((r) => r.stream === "groups").length, 1, "only the valid record emits");
     assert.equal(outcome.considered, 2, "considered counts both listed groups, not just the emitted one");
@@ -274,9 +257,9 @@ test("collectGroups: auth failure (401) propagates instead of being swallowed as
   const restore = stubFetch({ error: "unauthorized" }, 401);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
+    const { emitRecord } = makeHarness();
     await assert.rejects(
-      () => collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord),
+      () => collectGroups(TOKEN, cursor, noopProgress, emitRecord),
       (err: unknown) => err instanceof Error && err.message === "groupme_auth_failed"
     );
   } finally {
@@ -284,9 +267,97 @@ test("collectGroups: auth failure (401) propagates instead of being swallowed as
   }
 });
 
-// ─── collectGroupMessages: considered/failed contract ──────────────────────
+// ─── /groups and /chats list pagination: no ceiling, natural end only ──────
+//
+// The old design capped BOTH list endpoints at MAX_PAGES_PER_STREAM=200
+// pages via fetchPaginatedList's shared maxPages parameter. A test
+// exercising only 2-4 pages does not discriminate a mutant that
+// reintroduces that cap — it passes under either behavior. These tests
+// page strictly past 200 full-size pages via a counter-driven stub before
+// the natural short page, so a reintroduced cap would stop the walk short
+// and the assertions below would fail.
 
-test("collectGroupMessages: clean pass across multiple groups sums considered from every group's pages", async () => {
+const LIST_OLD_CAP = 200;
+
+test("collectGroups: pages past 200 full pages with no truncation (mutation-killing)", async () => {
+  const totalPages = LIST_OLD_CAP + 1; // 201 full pages, then one short page
+  const restore = stubFetchSequence(
+    Array.from({ length: totalPages + 1 }, (_pageValue, pageNumber) => {
+      const isLastPage = pageNumber === totalPages;
+      const pageLength = isLastPage ? 1 : PAGE_SIZE;
+      const response = Array.from({ length: pageLength }, (_itemValue, itemIndex) =>
+        group({ id: `group-p${String(pageNumber)}-${String(itemIndex)}` })
+      );
+      return { body: { response } };
+    })
+  );
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
+
+    const expectedConsidered = totalPages * PAGE_SIZE + 1;
+    assert.equal(outcome.failed, false, "no cap-truncation past 200 pages");
+    assert.equal(
+      outcome.considered,
+      expectedConsidered,
+      "considered reflects every group through the true natural end, not a 200-page-truncated subset"
+    );
+    assert.equal(emitted.filter((r) => r.stream === "groups").length, expectedConsidered);
+  } finally {
+    restore();
+  }
+});
+
+test("collectDirectChats: pages past 200 full pages with no truncation (mutation-killing)", async () => {
+  const totalPages = LIST_OLD_CAP + 1;
+  const restore = stubFetchSequence(
+    Array.from({ length: totalPages + 1 }, (_pageValue, pageNumber) => {
+      const isLastPage = pageNumber === totalPages;
+      const pageLength = isLastPage ? 1 : PAGE_SIZE;
+      const response = Array.from({ length: pageLength }, (_itemValue, itemIndex) =>
+        directChat({ id: `chat-p${String(pageNumber)}-${String(itemIndex)}` })
+      );
+      return { body: { response } };
+    })
+  );
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emitRecord);
+
+    const expectedConsidered = totalPages * PAGE_SIZE + 1;
+    assert.equal(outcome.failed, false, "no cap-truncation past 200 pages");
+    assert.equal(outcome.considered, expectedConsidered);
+    assert.equal(emitted.filter((r) => r.stream === "direct_messages").length, expectedConsidered);
+  } finally {
+    restore();
+  }
+});
+
+// ─── /groups, /chats: repeated/non-progressing page fails, doesn't loop ────
+
+test("collectGroups: a full-size page contributing zero new ids fails as NonProgressError, does not loop forever", async () => {
+  const fullPage = Array.from({ length: PAGE_SIZE }, (_, i) => group({ id: `group-${String(i)}` }));
+  // Every page (regardless of `page` query param) returns the IDENTICAL
+  // full page — a provider bug re-serving page 1's content forever. Without
+  // non-progress detection this loops indefinitely; with it, the walk fails
+  // after the second page proves zero new ids.
+  const restore = stubFetch({ response: fullPage });
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, true, "a repeated-content page must fail, not loop or falsely report success");
+  } finally {
+    restore();
+  }
+});
+
+// ─── collectGroupMessages: considered/failed contract (backward/cold walk) ─
+
+test("collectGroupMessages: cold start (no prior cursor) walks backward, clean pass across multiple groups sums considered", async () => {
   const restore = stubFetchSequence([
     { body: { response: [group({ id: "group-1" }), group({ id: "group-2" })] } }, // /groups
     { body: { response: { count: 2, messages: [groupMessage({ id: "m1" }), groupMessage({ id: "m2" })] } } }, // group-1 page
@@ -294,13 +365,13 @@ test("collectGroupMessages: clean pass across multiple groups sums considered fr
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.deepEqual(outcome, {
       considered: 3,
       failed: false,
-      nextAnchors: { "group-1": "m1", "group-2": "m3" },
+      nextCursors: { "group-1": "m1", "group-2": "m3" },
     });
     assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 3);
   } finally {
@@ -308,13 +379,7 @@ test("collectGroupMessages: clean pass across multiple groups sums considered fr
   }
 });
 
-test("collectGroupMessages: a declared since bound stops the documented-descending walk cleanly, without fetching further pages", async () => {
-  // Page is genuinely created_at-descending (m1=300 > m2=50 > m3=0), the
-  // ordering GroupMe's official docs guarantee for this endpoint — licensing
-  // the fast-path early stop. A second page is queued so a bug that ignores
-  // `since` (fetches to the natural PAGE_SIZE end / page cap) would consume
-  // it and inflate `considered` — the assertion on fetchCount below is what
-  // catches that.
+test("collectGroupMessages: a declared since bound stops the documented-descending backward walk cleanly, without fetching further pages", async () => {
   let fetchCount = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = ((): Promise<Response> => {
@@ -340,17 +405,14 @@ test("collectGroupMessages: a declared since bound stops the documented-descendi
   }) as typeof globalThis.fetch;
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    // since = 1_700_000_100 excludes m2 (1_700_000_050) and m3 (1_700_000_000), includes m1 (1_700_000_300).
+    const { emitRecord, emitted } = makeHarness();
     const outcome = await collectGroupMessages(
       TOKEN,
       cursor,
       undefined,
       undefined,
       noopProgress,
-      emit,
       emitRecord,
-      undefined,
       1_700_000_100
     );
 
@@ -365,25 +427,17 @@ test("collectGroupMessages: a declared since bound stops the documented-descendi
       1,
       "considered counts only the in-scope message — the out-of-scope m2/m3 on the same page must not inflate it"
     );
-    assert.equal(
-      fetchCount,
-      2,
-      "the groups list plus exactly one message page — the since bound stops before a 2nd page"
-    );
+    assert.equal(fetchCount, 2, "the groups list plus exactly one message page");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("collectGroupMessages: a non-monotonic page falls back to the conservative path — every message is checked, not just up to the first out-of-scope row", async () => {
-  // Deliberately violates the documented descending order: m-late (in scope,
-  // created_at=200) sits AFTER m-old (out of scope, created_at=0) despite
-  // being newer. isDescendingByCreatedAt must catch this and refuse the
-  // fast-path early stop — proving the connector VALIDATES the ordering
-  // contract per page rather than trusting it blindly. This page is also
-  // short (< PAGE_SIZE), so the walk ends here via the ordinary natural-end
-  // condition either way; the assertions below are on considered/emitted
-  // correctness, not on which page count it stopped at.
+test("collectGroupMessages: a non-descending backward page fails as NonProgressError rather than trusting an unverified before_id", async () => {
+  // Violates documented descending order: m-late (created_at=200) sits
+  // AFTER m-old (created_at=0) despite being newer. The backward walk must
+  // refuse to trust this page's trailing before_id and fail, not silently
+  // continue or half-accept it.
   const restore = stubFetchSequence([
     { body: { response: [group({ id: "group-1" })] } }, // /groups
     {
@@ -392,8 +446,8 @@ test("collectGroupMessages: a non-monotonic page falls back to the conservative 
           count: 3,
           messages: [
             groupMessage({ id: "m-new", created_at: 1_700_000_300 }),
-            groupMessage({ id: "m-old", created_at: 1_700_000_000 }), // out of scope, mid-page
-            groupMessage({ id: "m-late", created_at: 1_700_000_200 }), // in scope, AFTER m-old — breaks descending order
+            groupMessage({ id: "m-old", created_at: 1_700_000_000 }),
+            groupMessage({ id: "m-late", created_at: 1_700_000_200 }),
           ],
         },
       },
@@ -401,90 +455,12 @@ test("collectGroupMessages: a non-monotonic page falls back to the conservative 
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    // since = 1_700_000_100 excludes m-old, includes m-new and m-late.
-    const outcome = await collectGroupMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord,
-      undefined,
-      1_700_000_100
-    );
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
-    assert.deepEqual(
-      new Set(emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id)),
-      new Set(["m-new", "m-late"]),
-      "both in-scope rows emit, including the out-of-order straggler after the out-of-scope row"
-    );
-    assert.equal(outcome.considered, 2, "considered counts only the 2 in-scope rows — m-old is excluded");
-    assert.equal(outcome.failed, false);
+    assert.equal(outcome.failed, true, "a non-descending page must fail the walk, not be silently trusted");
   } finally {
     restore();
-  }
-});
-
-test("collectGroupMessages: a verified-descending page with an out-of-scope row stops the walk without needing a second fully-out-of-scope page", async () => {
-  // Page IS genuinely descending (unlike the non-monotonic test above), and
-  // is a FULL PAGE_SIZE page so the natural-end (`length < PAGE_SIZE`) path
-  // cannot be what stops the walk — only the documented-ordering fast path
-  // can. Page 2 is queued in-scope; if fetched, it would prove the fast path
-  // did NOT fire.
-  const descendingPage = [
-    groupMessage({ id: "m-new", created_at: 1_700_000_300 }),
-    ...Array.from({ length: 98 }, (_, i) => groupMessage({ id: `m-mid-${String(i)}`, created_at: 1_700_000_250 - i })),
-    groupMessage({ id: "m-old", created_at: 1_699_999_000 }), // out of scope, last (oldest) on the page
-  ];
-  let fetchCount = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = ((): Promise<Response> => {
-    fetchCount += 1;
-    if (fetchCount === 1) {
-      return Promise.resolve(new Response(JSON.stringify({ response: [group({ id: "group-1" })] }), { status: 200 }));
-    }
-    if (fetchCount === 2) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ response: { count: 100, messages: descendingPage } }), { status: 200 })
-      );
-    }
-    // Only reached if the fast path failed to stop after page 1.
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          response: { count: 1, messages: [groupMessage({ id: "m-unreachable", created_at: 1_700_000_290 })] },
-        }),
-        { status: 200 }
-      )
-    );
-  }) as typeof globalThis.fetch;
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroupMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord,
-      undefined,
-      1_700_000_100
-    );
-
-    assert.equal(
-      emitted.filter((r) => r.stream === "group_messages" && (r.data as { id: string }).id === "m-unreachable").length,
-      0,
-      "the fast path must stop after page 1 — page 2 must never be fetched or emitted"
-    );
-    assert.equal(fetchCount, 2, "exactly the group list plus one message page");
-    assert.equal(outcome.considered, 99, "considered counts the 99 in-scope rows on the verified-descending page");
-    assert.equal(outcome.failed, false);
-  } finally {
-    globalThis.fetch = originalFetch;
   }
 });
 
@@ -492,12 +468,12 @@ test("collectGroupMessages: genuine zero groups reports failed: false, considere
   const restore = stubFetch({ response: [] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.deepEqual(
       outcome,
-      { considered: 0, failed: false, nextAnchors: {} },
+      { considered: 0, failed: false, nextCursors: {} },
       "no groups means no messages — a proven-empty walk"
     );
     assert.equal(emitted.length, 0);
@@ -520,8 +496,8 @@ test("collectGroupMessages: a rejected/dropped record still counts as considered
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 1, "only the valid record emits");
     assert.equal(outcome.considered, 2, "considered counts both listed messages, not just the emitted one");
@@ -538,8 +514,8 @@ test("collectGroupMessages: http error partway through a group's pages reports f
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true, "a mid-walk http failure must not report a clean pass");
     assert.equal(emitted.length, 0);
@@ -552,8 +528,8 @@ test("collectGroupMessages: malformed body on the group-list fetch reports faile
   const restore = stubFetchMalformedBody();
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true);
     assert.equal(emitted.length, 0);
@@ -566,13 +542,66 @@ test("collectGroupMessages: auth failure (403) propagates instead of being swall
   const restore = stubFetch({ error: "forbidden" }, 403);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
+    const { emitRecord } = makeHarness();
     await assert.rejects(
-      () => collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord),
+      () => collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord),
       (err: unknown) => err instanceof Error && err.message === "groupme_auth_failed"
     );
   } finally {
     restore();
+  }
+});
+
+// ─── collectGroupMessages: backward walk pages past the OLD cap size ───────
+//
+// The old design capped this walk at MAX_PAGES_PER_STREAM=200 pages. A test
+// exercising only a handful of pages does not discriminate a mutant that
+// reintroduces that cap. This pages strictly past 200 full-size pages via a
+// counter-driven stub before the natural short page.
+
+test("collectGroupMessages: a group's backward walk pages past 200 full pages with no truncation (mutation-killing)", async () => {
+  const totalPages = 201; // 201 full pages, then one short page = 202 fetches
+  let messageFetchCount = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname === "/v3/groups") {
+      return Promise.resolve(new Response(JSON.stringify({ response: [group({ id: "group-1" })] }), { status: 200 }));
+    }
+    const pageNumber = messageFetchCount;
+    messageFetchCount += 1;
+    const isLastPage = pageNumber === totalPages;
+    const pageLength = isLastPage ? 1 : PAGE_SIZE;
+    const messages = Array.from({ length: pageLength }, (_itemValue, itemIndex) =>
+      groupMessage({
+        id: `m-p${String(pageNumber)}-${String(itemIndex)}`,
+        created_at: 1_700_000_000 - pageNumber * PAGE_SIZE - itemIndex,
+      })
+    );
+    return Promise.resolve(
+      new Response(JSON.stringify({ response: { count: messages.length, messages } }), { status: 200 })
+    );
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, false, "no cap-truncation past 200 pages");
+    assert.equal(
+      messageFetchCount,
+      totalPages + 1,
+      "all 202 pages were fetched — a reintroduced 200-page cap would stop at page 200"
+    );
+    const expectedConsidered = totalPages * PAGE_SIZE + 1;
+    assert.equal(
+      outcome.considered,
+      expectedConsidered,
+      "considered reflects every message through the true natural end"
+    );
+    assert.equal(emitted.filter((r) => r.stream === "group_messages").length, expectedConsidered);
+  } finally {
+    globalThis.fetch = original;
   }
 });
 
@@ -582,8 +611,8 @@ test("collectDirectChats: clean pass reports failed: false and considered === li
   const restore = stubFetch({ response: [directChat(), directChat({ id: "chat-2" })] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.deepEqual(outcome, { considered: 2, failed: false });
     assert.equal(emitted.filter((r) => r.stream === "direct_messages").length, 2);
@@ -596,8 +625,8 @@ test("collectDirectChats: genuine zero chats reports failed: false, considered: 
   const restore = stubFetch({ response: [] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.deepEqual(outcome, { considered: 0, failed: false }, "a measured empty boundary is itself the proof");
     assert.equal(emitted.length, 0);
@@ -611,17 +640,13 @@ test("collectDirectChats: fingerprint-suppressed (unchanged) chat still counts a
   const restore = stubFetch({ response: [chat] });
   try {
     const priorCursor = openFingerprintCursor(new Map());
-    const { emit: seedEmitMessage, emitRecord: seedEmit } = makeHarness();
-    // Seed: run once so the fingerprint is recorded.
-    await collectDirectChats(TOKEN, priorCursor, noopProgress, seedEmitMessage, seedEmit);
+    const { emitRecord: seedEmit } = makeHarness();
+    await collectDirectChats(TOKEN, priorCursor, noopProgress, seedEmit);
     const priorState = priorCursor.toState();
 
-    // `toState()` returns the flat fingerprints map; the real STATE wire
-    // shape wraps it `{ fingerprints: {...} }` (see the collect() STATE
-    // emits in index.ts) — `openFingerprintCursor` only decodes that wrapper.
     const cursor = openFingerprintCursor({ fingerprints: priorState });
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(emitted.length, 0, "unchanged chat is suppressed, not re-emitted");
     assert.equal(outcome.considered, 1, "considered counts the listed chat even though it was suppressed");
@@ -635,8 +660,8 @@ test("collectDirectChats: http error reports failed: true and does not throw (no
   const restore = stubFetch({ error: "server error" }, 500);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true, "an http failure must not report a clean pass");
     assert.equal(outcome.considered, 0);
@@ -650,8 +675,8 @@ test("collectDirectChats: malformed (unparseable) body reports failed: true, not
   const restore = stubFetchMalformedBody();
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true, "an unparseable 200 body is a failed enumeration, not a genuine zero");
     assert.equal(emitted.length, 0);
@@ -664,9 +689,9 @@ test("collectDirectChats: auth failure (401) propagates instead of being swallow
   const restore = stubFetch({ error: "unauthorized" }, 401);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
+    const { emitRecord } = makeHarness();
     await assert.rejects(
-      () => collectDirectChats(TOKEN, cursor, noopProgress, emit, emitRecord),
+      () => collectDirectChats(TOKEN, cursor, noopProgress, emitRecord),
       (err: unknown) => err instanceof Error && err.message === "groupme_auth_failed"
     );
   } finally {
@@ -684,16 +709,8 @@ test("collectDirectChatMessages: clean pass across multiple chats sums considere
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChatMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord
-    );
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.deepEqual(outcome, { considered: 3, failed: false });
     assert.equal(emitted.filter((r) => r.stream === "direct_chat_messages").length, 3);
@@ -719,16 +736,14 @@ test("collectDirectChatMessages: a declared since bound filters out-of-scope row
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
+    const { emitRecord, emitted } = makeHarness();
     const outcome = await collectDirectChatMessages(
       TOKEN,
       cursor,
       undefined,
       undefined,
       noopProgress,
-      emit,
       emitRecord,
-      undefined,
       1_700_000_100
     );
 
@@ -749,14 +764,7 @@ test("collectDirectChatMessages: a declared since bound filters out-of-scope row
 });
 
 test("collectDirectChatMessages: an entirely out-of-scope page does NOT stop the walk — this endpoint has no documented ordering authority to license an early stop", async () => {
-  // Unlike collectGroupMessagesForGroup (GroupMe's official docs guarantee
-  // GET /groups/:id/messages is created_at-descending with before_id
-  // returning the immediately-preceding page), GET /chats/:id/messages
-  // carries no equivalent documented guarantee. Page 1 is a FULL PAGE_SIZE
-  // page, entirely out of scope — a bug that reintroduces the
-  // pageFullyOutOfScope early-stop from the prior revision would return here
-  // without ever fetching page 2, silently dropping d-late.
-  const fullOldPage = Array.from({ length: 100 }, (_, i) =>
+  const fullOldPage = Array.from({ length: PAGE_SIZE }, (_, i) =>
     directMessage({ id: `d-old-${String(i)}`, created_at: 1_699_000_000 - i })
   );
   const restore = stubFetchSequence([
@@ -770,16 +778,14 @@ test("collectDirectChatMessages: an entirely out-of-scope page does NOT stop the
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
+    const { emitRecord, emitted } = makeHarness();
     const outcome = await collectDirectChatMessages(
       TOKEN,
       cursor,
       undefined,
       undefined,
       noopProgress,
-      emit,
       emitRecord,
-      undefined,
       1_700_000_100
     );
 
@@ -803,16 +809,8 @@ test("collectDirectChatMessages: genuine zero chats reports failed: false, consi
   const restore = stubFetch({ response: [] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChatMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord
-    );
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.deepEqual(outcome, { considered: 0, failed: false }, "no chats means no messages — a proven-empty walk");
     assert.equal(emitted.length, 0);
@@ -822,10 +820,6 @@ test("collectDirectChatMessages: genuine zero chats reports failed: false, consi
 });
 
 test("collectDirectChatMessages: a rejected/dropped record still counts as considered, not just emitted", async () => {
-  // The second raw message has a non-string `id` (a live-API shape drift),
-  // which fails DirectChatMessageSchema's `id: z.string()` and is recorded as
-  // `skipped` by the validating test harness rather than `emitted`. Proves
-  // `considered` tracks the raw listed count, not the validator-accepted count.
   const restore = stubFetchSequence([
     { body: { response: [directChat({ id: "chat-1" })] } },
     {
@@ -839,16 +833,8 @@ test("collectDirectChatMessages: a rejected/dropped record still counts as consi
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChatMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord
-    );
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.equal(emitted.filter((r) => r.stream === "direct_chat_messages").length, 1, "only the valid record emits");
     assert.equal(outcome.considered, 2, "considered counts both listed messages, not just the emitted one");
@@ -865,16 +851,8 @@ test("collectDirectChatMessages: http error partway through a chat's pages repor
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChatMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord
-    );
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true, "a mid-walk http failure must not report a clean pass");
     assert.equal(emitted.length, 0);
@@ -887,16 +865,8 @@ test("collectDirectChatMessages: malformed body on the chat-list fetch reports f
   const restore = stubFetchMalformedBody();
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChatMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord
-    );
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, true);
     assert.equal(emitted.length, 0);
@@ -909,9 +879,9 @@ test("collectDirectChatMessages: auth failure (403) propagates instead of being 
   const restore = stubFetch({ error: "forbidden" }, 403);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
+    const { emitRecord } = makeHarness();
     await assert.rejects(
-      () => collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord),
+      () => collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord),
       (err: unknown) => err instanceof Error && err.message === "groupme_auth_failed"
     );
   } finally {
@@ -919,22 +889,92 @@ test("collectDirectChatMessages: auth failure (403) propagates instead of being 
   }
 });
 
+// ─── collectDirectChatMessages: pages past the OLD cap, and repeated-page failure ──
+//
+// The old design capped this walk at MAX_PAGES_PER_STREAM=200 pages. A test
+// exercising only a handful of pages does not discriminate a mutant that
+// reintroduces that cap (it would pass under either behavior). This test
+// pages strictly past 200 full-size pages via a counter-driven stub before
+// the natural short page, so a reintroduced 200-page cap would stop the
+// walk short and the fetch-count/considered assertions below would fail.
+
+const OLD_CAP = 200;
+
+test("collectDirectChatMessages: a chat's walk pages past 200 full pages with no truncation (mutation-killing)", async () => {
+  const totalPages = OLD_CAP + 1; // 201 full pages, then one short page = 202 fetches
+  let messageFetchCount = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname === "/v3/chats") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ response: [directChat({ id: "chat-1" })] }), { status: 200 })
+      );
+    }
+    const pageNumber = messageFetchCount;
+    messageFetchCount += 1;
+    const isLastPage = pageNumber === totalPages;
+    const pageLength = isLastPage ? 1 : PAGE_SIZE;
+    const direct_messages = Array.from({ length: pageLength }, (_itemValue, itemIndex) =>
+      directMessage({ id: `d-p${String(pageNumber)}-${String(itemIndex)}` })
+    );
+    return Promise.resolve(
+      new Response(JSON.stringify({ response: { count: direct_messages.length, direct_messages } }), { status: 200 })
+    );
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord, emitted } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, false, "no cap-truncation past 200 pages");
+    assert.equal(
+      messageFetchCount,
+      totalPages + 1,
+      "all 202 pages were fetched — a reintroduced 200-page cap would stop at page 200"
+    );
+    const expectedConsidered = totalPages * PAGE_SIZE + 1;
+    assert.equal(
+      outcome.considered,
+      expectedConsidered,
+      "considered reflects every message through the true natural end"
+    );
+    assert.equal(emitted.filter((r) => r.stream === "direct_chat_messages").length, expectedConsidered);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("collectDirectChatMessages: a repeated (non-advancing) trailing cursor fails as NonProgressError rather than looping forever", async () => {
+  // Every full-size page after the first returns the SAME messages, so the
+  // trailing id never advances — a provider bug or a mis-implemented
+  // pagination response. Without repeated-cursor detection this loops
+  // forever; with it, the walk fails once the same id is seen twice.
+  const stuckPage = Array.from({ length: PAGE_SIZE }, (_, i) => directMessage({ id: `d-${String(i)}` }));
+  const restore = stubFetchSequence([
+    { body: { response: [directChat({ id: "chat-1" })] } },
+    { body: { response: { count: PAGE_SIZE, direct_messages: stuckPage } } },
+    { body: { response: { count: PAGE_SIZE, direct_messages: stuckPage } } },
+  ]);
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emitRecord } = makeHarness();
+    const outcome = await collectDirectChatMessages(TOKEN, cursor, undefined, undefined, noopProgress, emitRecord);
+
+    assert.equal(outcome.failed, true, "a repeated trailing cursor must fail the walk, not loop forever");
+  } finally {
+    restore();
+  }
+});
+
 // ─── collect()-level gating: shared across all four streams ────────────────
 
-/**
- * Mirrors how `collect()` in index.ts consumes `CollectionOutcome` for
- * every stream: this reproduces that gating logic directly against the
- * exported `collectGroups`. `collect()` itself is also exported and driven
- * end-to-end (real two-run STATE-projection round-trip, not this hand-built
- * shortcut) in carry-forward-projection.test.ts — see that file for the
- * discriminating regression proof this predicate ultimately backs.
- */
 test("collect()-level gating: failed outcome must suppress both STATE and DETAIL_COVERAGE for that stream", async () => {
   const restore = stubFetch({ error: "server error" }, 500);
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     const messages: unknown[] = [];
     if (!outcome.failed) {
@@ -952,145 +992,13 @@ test("collect()-level gating: clean outcome allows STATE + DETAIL_COVERAGE with 
   const restore = stubFetch({ response: [group(), group({ id: "group-2" })] });
   try {
     const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
+    const { emitRecord } = makeHarness();
+    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emitRecord);
 
     assert.equal(outcome.failed, false);
     assert.equal(outcome.considered, 2);
     // buildFullScanCoverageMessage(stream, considered) sets covered === considered
     // for a full-scan stream with no detail-hydration phase.
-  } finally {
-    restore();
-  }
-});
-
-// ─── /groups and /chats full pagination (P3) ───────────────────────────────
-//
-// GroupMe's /groups and /chats are genuinely paginated (documented `page`/
-// `per_page` params, empty array past the last page). A single unpaged
-// page-1 fetch would silently miss every group/chat beyond PAGE_SIZE for an
-// account with more — and group_messages/direct_chat_messages, which iterate
-// the fetched list, would never even attempt the missing parents.
-//
-// collectGroupMessages/collectDirectChatMessages call the identical shared
-// fetchPaginatedList helper (index.ts) for their own parent-list fetch, so
-// proving it here covers all four collectors without re-running a redundant,
-// 100-real-group version of this proof through the far more expensive
-// per-group message-fetch path.
-
-test("collectGroups: pages past PAGE_SIZE-sized page 1 to collect every group", async () => {
-  const page1 = Array.from({ length: 100 }, (_, i) => group({ id: `group-${String(i)}` }));
-  const page2 = [group({ id: "group-100" }), group({ id: "group-101" })];
-  const restore = stubFetchSequence([{ body: { response: page1 } }, { body: { response: page2 } }]);
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord);
-
-    assert.deepEqual(outcome, { considered: 102, failed: false }, "both pages contribute to considered");
-    assert.equal(
-      emitted.filter((r) => r.stream === "groups").length,
-      102,
-      "groups from page 2 are not silently missed"
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("collectDirectChats: pages past PAGE_SIZE-sized page 1 to collect every chat", async () => {
-  const page1 = Array.from({ length: 100 }, (_, i) => directChat({ id: `chat-${String(i)}` }));
-  const page2 = [directChat({ id: "chat-100" })];
-  const restore = stubFetchSequence([{ body: { response: page1 } }, { body: { response: page2 } }]);
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectDirectChats(TOKEN, cursor, noopProgress, emit, emitRecord);
-
-    assert.deepEqual(outcome, { considered: 101, failed: false });
-    assert.equal(
-      emitted.filter((r) => r.stream === "direct_messages").length,
-      101,
-      "chat from page 2 is not silently missed"
-    );
-  } finally {
-    restore();
-  }
-});
-
-// ─── Page-cap truncation is honest, not silent (P2) ────────────────────────
-//
-// A page-cap-truncated walk did not prove it saw every message/group/chat —
-// reporting `considered` as if it were the true boundary would make
-// buildFullScanCoverageMessage's covered===considered claim false. Every
-// collect* function accepts an optional `maxPages` (default
-// MAX_PAGES_PER_STREAM=200) so these tests can force the cap-exit branch in
-// milliseconds instead of paying for hundreds of real 10s-paced requests.
-
-test("collectGroups: hitting the list page cap reports failed: true and a bounded SKIP_RESULT diagnostic", async () => {
-  const fullPage = Array.from({ length: 100 }, (_, i) => group({ id: `group-${String(i)}` }));
-  // Two full pages in a row with maxPages=2: the loop never sees a
-  // shorter-than-PAGE_SIZE page, so it exits via the cap, not the natural end.
-  const restore = stubFetchSequence([{ body: { response: fullPage } }, { body: { response: fullPage } }]);
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted, protocolMessages } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord, 2);
-
-    assert.equal(outcome.failed, true, "a cap-truncated walk must not report a clean pass");
-    assert.equal(outcome.considered, 0, "the partial count is withheld, not laundered as the true boundary");
-
-    const skip = protocolMessages.find((m) => m.type === "SKIP_RESULT" && m.stream === "groups");
-    assert.ok(skip && skip.type === "SKIP_RESULT", "a bounded diagnostic is emitted for the truncation");
-    assert.equal(skip.reason, "page_cap_truncated");
-    assert.deepEqual(
-      skip.diagnostics,
-      { considered: 200, page_cap: 2 },
-      "diagnostic carries counts only, no identifiers"
-    );
-    // Groups from both pages still emit — records are not dropped, only the
-    // stream-level completeness claim is withheld.
-    assert.equal(emitted.filter((r) => r.stream === "groups").length, 200);
-  } finally {
-    restore();
-  }
-});
-
-test("collectGroupMessages: hitting a single group's message-page cap withholds that stream's coverage claim", async () => {
-  const fullPage = Array.from({ length: 100 }, (_, i) => groupMessage({ id: `m-${String(i)}` }));
-  const restore = stubFetchSequence([
-    { body: { response: [group({ id: "group-1" })] } }, // /groups
-    { body: { response: { count: 100, messages: fullPage } } }, // page 1 (full)
-    { body: { response: { count: 100, messages: fullPage } } }, // page 2 (full — hits maxPages=2)
-  ]);
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, protocolMessages } = makeHarness();
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord, 2);
-
-    assert.equal(outcome.failed, true, "a group's page-cap truncation fails the whole stream's pass");
-    const skip = protocolMessages.find((m) => m.type === "SKIP_RESULT" && m.stream === "group_messages");
-    assert.ok(skip, "a bounded diagnostic is emitted for the truncated group's walk");
-  } finally {
-    restore();
-  }
-});
-
-test("collect()-level gating: a truncated outcome must suppress both STATE and DETAIL_COVERAGE, same as any failure", async () => {
-  const fullPage = Array.from({ length: 100 }, (_, i) => group({ id: `group-${String(i)}` }));
-  const restore = stubFetchSequence([{ body: { response: fullPage } }, { body: { response: fullPage } }]);
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
-    const outcome = await collectGroups(TOKEN, cursor, noopProgress, emit, emitRecord, 2);
-
-    const stateMessages: unknown[] = [];
-    if (!outcome.failed) {
-      stateMessages.push({ type: "STATE", stream: "groups", cursor: { fingerprints: cursor.toState() } });
-    }
-
-    assert.equal(outcome.failed, true);
-    assert.equal(stateMessages.length, 0, "truncation withholds STATE exactly like any other failed pass");
   } finally {
     restore();
   }
