@@ -409,6 +409,22 @@ export class LocalDeviceOutbox {
     return candidate ? rowToItem(candidate) : null;
   }
 
+  nextRetryTime(input: { sourceInstanceId?: string } = {}): string | null {
+    const now = this.#now();
+    const query = input.sourceInstanceId
+      ? `SELECT MIN(next_attempt_at) as next_time FROM local_device_outbox
+         WHERE source_instance_id = ? AND status = 'ready' AND next_attempt_at > ?`
+      : `SELECT MIN(next_attempt_at) as next_time FROM local_device_outbox
+         WHERE status = 'ready' AND next_attempt_at > ?`;
+    const row = input.sourceInstanceId
+      ? this.#db.prepare(query).get(input.sourceInstanceId, now)
+      : this.#db.prepare(query).get(now);
+    if (!isRecord(row) || typeof row.next_time !== "string" || !row.next_time) {
+      return null;
+    }
+    return row.next_time;
+  }
+
   acknowledge(input: LocalDeviceOutboxLeaseInput): void {
     const now = this.#now();
     const result = this.#db

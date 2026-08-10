@@ -2222,13 +2222,32 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
   const startedAt = Date.now();
   for (let i = 0; i < input.policy.maxDrainIterations; i += 1) {
     throwIfAborted(input.abortSignal);
-    if (Date.now() - startedAt >= input.policy.maxDrainDurationMs) {
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= input.policy.maxDrainDurationMs) {
       result.durationBudgetExceeded = true;
       return result;
     }
     const claimed = claimReadyOutboxItems(input);
     if (claimed.length === 0) {
-      return result;
+      const nextRetry = input.outbox.nextRetryTime(
+        input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {}
+      );
+      if (!nextRetry) {
+        return result;
+      }
+      const nextRetryMs = new Date(nextRetry).getTime();
+      const nowMs = Date.now();
+      if (nextRetryMs <= nowMs) {
+        continue;
+      }
+      const waitMs = nextRetryMs - nowMs;
+      const remainingBudgetMs = input.policy.maxDrainDurationMs - elapsedMs;
+      if (waitMs >= remainingBudgetMs) {
+        result.durationBudgetExceeded = true;
+        return result;
+      }
+      await waitMs_(waitMs, input.abortSignal);
+      continue;
     }
     result.iterations += 1;
     for (const item of claimed) {
@@ -2236,6 +2255,31 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
     }
   }
   return result;
+}
+
+function waitMs_(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    let finished = false;
+    const onAbort = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      reject(signal!.reason instanceof Error ? signal!.reason : new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort);
+  });
 }
 
 function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem[] {
