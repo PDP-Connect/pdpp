@@ -327,6 +327,24 @@ function createOwnership(connectorInstanceId: string): ConnectorInstanceWriteOwn
 /**
  * Serializes one authoritative-plus-derived writer scope per connector instance.
  * Re-entry requires the exact still-live module-issued ownership capability.
+ *
+ * Acquisition order is key-then-admission, not admission-then-key: the
+ * per-instance keyed gate (`acquireKey`) is a free, in-process Map lookup,
+ * while the global admission gate (`acquireAdmission`) bounds genuinely
+ * concurrent ACTIVE work (and, under Postgres coordination, the lock-pool's
+ * connection capacity — see `activeLimit()`). Acquiring admission first
+ * meant a caller merely queued behind a hot connector instance's key still
+ * consumed one of the (default 4) global admission slots while doing zero
+ * useful work, so `activeLimit()`-many same-key waiters could saturate
+ * admission for every OTHER connector instance's writers too — observed in
+ * production as UAT :3012's GroupMe blob-upload 503s (run_1786339135735_1):
+ * sustained record-ingest/reconcile traffic on one hot connector instance
+ * starved that SAME instance's own blob writes at the global admission gate,
+ * not the per-key FIFO. Acquiring the key first means a caller only takes an
+ * admission slot once it actually holds the resource it needs, matching
+ * `withConnectorInstanceControlPlaneWrite`'s existing key-only design (see
+ * its docstring: "allowing enrollment to proceed when unrelated bulk ingest
+ * has saturated the bounded data-plane admission gate").
  */
 export async function withConnectorInstanceWrite<T>(
   connectorInstanceId: string,
@@ -343,9 +361,9 @@ export async function withConnectorInstanceWrite<T>(
     throw new Error("connector_instance_id is required for write coordination");
   }
 
-  await acquireAdmission();
   // biome-ignore lint/suspicious/noShadow: The local name follows the external payload vocabulary at this boundary.
   let releaseKey: (() => void) | null = null;
+  let admitted = false;
   let postgresLock: Awaited<ReturnType<typeof acquirePostgresAdvisoryLock>> | null = null;
   let nextOwnership: ConnectorInstanceWriteOwnership | null = null;
   try {
@@ -353,6 +371,8 @@ export async function withConnectorInstanceWrite<T>(
       await writePhaseHookForTest("before_key_acquire", { connectorInstanceId });
     }
     releaseKey = await acquireKey(connectorInstanceId);
+    await acquireAdmission();
+    admitted = true;
     if (postgresCoordinationEnabled()) {
       postgresLock = await acquirePostgresAdvisoryLock(connectorInstanceId);
     }
@@ -368,8 +388,10 @@ export async function withConnectorInstanceWrite<T>(
     if (postgresLock) {
       await releasePostgresAdvisoryLock(postgresLock);
     }
+    if (admitted) {
+      releaseAdmission();
+    }
     releaseKey?.();
-    releaseAdmission();
   }
 }
 
