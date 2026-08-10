@@ -215,6 +215,7 @@ import { buildRecordVersionStatsEnvelope } from "./record-version-stats.ts";
 import {
   aggregateRecordsAcrossBindings,
   assertConnectorInstanceWritable,
+  classifyIngestFailure,
   deleteAllRecords,
   deleteConnectionRecordRowsPostgres,
   deleteConnectionRecordRowsSqlite,
@@ -6063,6 +6064,7 @@ function buildRsApp(opts: ServerOpts = {}) {
       ),
     buildMutationContext,
     buildStateContext,
+    classifyIngestFailure,
     deleteAllRecords,
     deleteRecord,
     emitMutationEvent,

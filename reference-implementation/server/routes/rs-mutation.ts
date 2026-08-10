@@ -74,10 +74,12 @@ import {
 } from "../../operations/rs-records-delete-stream/index.ts";
 import {
   executeRecordsIngest,
+  type IngestLineFailure,
   type RecordsIngestDependencies,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
   type RecordsIngestOutput,
+  RecordsIngestSystemicFailureError,
 } from "../../operations/rs-records-ingest/index.ts";
 import { canonicalConnectorKey } from "../connector-key.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -220,21 +222,66 @@ async function maybeRecordAcquisitionProvenance(
   });
 }
 
-function batchOutcomeError(outcome: unknown): string | null {
+// The single-record capability throws raw, unclassified errors (unlike
+// ingestRecords's per-record catch in records.ts, which already attaches a
+// structured ClassifiedIngestFailure to a rejected outcome). Classify via
+// the injected capability (this route adapter never imports records.ts
+// directly — same pattern every other host capability on `ctx` already
+// follows) and decorate the SAME error with `.retryable` before rethrowing,
+// so the operation layer (which never imports records.ts either — see the
+// boundary test) can read a typed signal off the error it catches instead
+// of guessing from `.message`.
+async function ingestRecordClassified(
+  ctx: MountRsMutationContext,
+  namespace: ConnectorNamespaceLike,
+  record: Record<string, unknown>,
+  runId: string | null
+): Promise<unknown> {
+  try {
+    return await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, {
+      requireConnectionAdmission: Boolean(namespace.connectorInstanceId),
+      runId,
+    });
+  } catch (err) {
+    const classified = ctx.classifyIngestFailure(err);
+    if (err instanceof Error) {
+      (err as Error & { retryable?: boolean }).retryable = classified.retryable;
+    }
+    throw err;
+  }
+}
+
+// records.ts's ingestRecordsWithinCoordinator already attaches a structured
+// ClassifiedIngestFailure ({ code, message, retryable }) to a rejected
+// outcome's `.error` — never a bare string. Preserved here (not
+// re-stringified) so a systemic/retryable failure stays distinguishable from
+// a permanent one all the way to the operation layer. A malformed/legacy
+// outcome shape (no structured error, or a bare string from a host that
+// hasn't been migrated) defaults to retryable — the same "unknown classifies
+// as systemic" rule classifyIngestFailure itself uses.
+function batchOutcomeError(outcome: unknown): IngestLineFailure | null {
   if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) {
-    return "ingest batch returned a malformed record outcome";
+    return { message: "ingest batch returned a malformed record outcome", retryable: true };
   }
   const result = outcome as { accepted?: unknown; error?: unknown };
-  if (typeof result.error === "string") {
-    return result.error;
+  if (result.error && typeof result.error === "object") {
+    const structured = result.error as { message?: unknown; retryable?: unknown };
+    if (typeof structured.message === "string") {
+      return { message: structured.message, retryable: structured.retryable !== false };
+    }
   }
-  return result.accepted === true ? null : "ingest batch returned a rejected record without an error";
+  if (typeof result.error === "string") {
+    return { message: result.error, retryable: true };
+  }
+  return result.accepted === true
+    ? null
+    : { message: "ingest batch returned a rejected record without an error", retryable: true };
 }
 
 function mapBatchIngestOutcomes(
   records: readonly Record<string, unknown>[],
   outcomes: readonly unknown[]
-): readonly (string | null)[] {
+): readonly (IngestLineFailure | null)[] {
   if (outcomes.length !== records.length) {
     throw new Error(`ingestRecords returned ${outcomes.length} results for ${records.length} records`);
   }
@@ -346,6 +393,13 @@ export interface MountRsMutationContext {
       requestedStreams?: string[] | null;
     }
   ) => StateContext;
+  // Capability: classify a thrown ingest-write error as PERMANENT (a
+  // per-record data defect, `retryable: false`) or SYSTEMIC (storage/
+  // coordination failure, or unknown, `retryable: true`) by its own typed
+  // `.code` field only — see records.ts's `classifyIngestFailure`. Used to
+  // decorate an error thrown by the single-record `ingestRecord` capability
+  // before it reaches the operation layer (which never imports records.ts).
+  readonly classifyIngestFailure: (err: unknown) => { code: string; message: string; retryable: boolean };
   readonly deleteAllRecords: (target: StorageTargetLike, streamName: string) => Promise<unknown>;
   readonly deleteRecord: (target: StorageTargetLike, streamName: string, recordId: string) => Promise<unknown>;
   readonly emitMutationEvent: (
@@ -1071,10 +1125,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
               ...draftAdmission(cin),
               connectorInstanceId: cin,
             }));
-          const result = await ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record, {
-            requireConnectionAdmission: Boolean(namespace.connectorInstanceId),
-            runId,
-          });
+          const result = await ingestRecordClassified(ctx, namespace, record, runId);
           if (ctx.getLatestAcquisitionBatchForConnection && namespace.connectorInstanceId) {
             acquisitionBatchPromise ??= Promise.resolve(
               ctx.getLatestAcquisitionBatchForConnection(namespace.connectorInstanceId)
@@ -1096,7 +1147,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
                 cid: string,
                 cin: string | null,
                 records: readonly Record<string, unknown>[]
-              ): Promise<readonly (string | null)[]> => {
+              ): Promise<readonly (IngestLineFailure | null)[]> => {
                 const namespace =
                   storageNamespace ??
                   (await ctx.resolveOwnerConnectorNamespace(req, cid, {
@@ -1110,7 +1161,16 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
                 const afterRecord = async (record: unknown, outcome: unknown): Promise<void> => {
                   const outcomeError = batchOutcomeError(outcome);
                   if (outcomeError) {
-                    throw new Error(outcomeError);
+                    // Defensive-only: ingestRecordsWithinCoordinator (records.ts)
+                    // never calls afterRecord unless outcome.accepted was already
+                    // true, so this should be unreachable in practice. Preserved
+                    // as a fail-closed guard against a future host miswiring
+                    // afterRecord ahead of the accepted check. The re-thrown bare
+                    // Error has no recognized `.code`, so the catch site this
+                    // feeds (ingestRecordsWithinCoordinator's afterRecord catch)
+                    // classifies it retryable/systemic by the same unknown-code
+                    // default every other unclassified error gets.
+                    throw new Error(outcomeError.message);
                   }
                   if (!(getLatestAcquisitionBatch && connectorInstanceIdForBatch)) {
                     return;
@@ -1155,7 +1215,11 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           dependencies
         );
       } catch (opErr) {
-        if (opErr instanceof RecordsIngestInvalidRequestError || opErr instanceof RecordsIngestNotFoundError) {
+        if (
+          opErr instanceof RecordsIngestInvalidRequestError ||
+          opErr instanceof RecordsIngestNotFoundError ||
+          opErr instanceof RecordsIngestSystemicFailureError
+        ) {
           const mapped = new Error((opErr as Error).message) as Error & {
             code?: string;
           };

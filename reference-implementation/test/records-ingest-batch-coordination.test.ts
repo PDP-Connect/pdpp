@@ -134,7 +134,11 @@ test("common ingest reuses coordinator ownership for messages and timeline_point
       failureOutcomes.map((outcome) => ({ accepted: outcome.accepted, error: outcome.error ?? null })),
       [
         { accepted: true, error: null },
-        { accepted: false, error: "injected batch fault" },
+        // A bare, unclassified injected Error has no recognized `.code`, so
+        // classifyIngestFailure defaults it to systemic/retryable (see
+        // server/records.ts) — the structured shape every rejected batch
+        // outcome now carries, not a bare string.
+        { accepted: false, error: { code: "ingest_storage_error", message: "injected batch fault", retryable: true } },
         { accepted: true, error: null },
       ]
     );

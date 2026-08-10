@@ -88,7 +88,11 @@
 //   5. Fail-closed — a run_id with no matching run_history row at all
 //      (spoofed, mistyped, or foreign) is refused, not admitted.
 //   6. HTTP wire-through — the runtime's `?run_id=` query param on the real
-//      POST /v1/ingest/:stream route reaches the storage-layer fence.
+//      POST /v1/ingest/:stream route reaches the storage-layer fence, AND
+//      (per the ingest-rejection-contract revision) the fence's run_terminal
+//      error classifies as SYSTEMIC/retryable — the route now rejects the
+//      whole HTTP call (non-2xx) instead of returning a 200 envelope that
+//      reads as an ordinary per-record rejection.
 //   7. Postgres parity for cases 2, 3, and 5, gated on PDPP_TEST_POSTGRES_URL
 //      (skips when unset, matching this repo's existing Postgres-parity
 //      test convention — see test/postgres-records-ingest-noop.test.ts).
@@ -101,7 +105,7 @@ import test, { type TestContext } from "node:test";
 import { __setConnectorInstanceWritePhaseHookForTest } from "../server/connector-instance-write-coordinator.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from "../server/postgres-storage.ts";
-import { ingestRecord } from "../server/records.ts";
+import { classifyIngestFailure, ingestRecord } from "../server/records.ts";
 import { writeSqliteRunHistoryForSpineEvent } from "../server/stores/run-history-writer.ts";
 
 const STREAM = "items";
@@ -383,6 +387,8 @@ test("HTTP wire-through: POST /v1/ingest/:stream's ?run_id= query param reaches 
   };
   const ctx = {
     buildMutationContext: () => ({ traceId: "trace-http-wire-through" }),
+    // REAL classifier — same one server/index.ts wires in production.
+    classifyIngestFailure,
     emitMutationEvent: async () => undefined,
     emitMutationRequested: async () => undefined,
     handleError: (_res: unknown, err: unknown) => {
@@ -415,20 +421,35 @@ test("HTTP wire-through: POST /v1/ingest/:stream's ?run_id= query param reaches 
   const handler = routes["/v1/ingest/:stream"].at(-1);
   assert.ok(handler, "ingest route handler must be registered");
 
-  await handler(
-    {
-      body: '{"id":"r1"}',
-      headers: {},
-      params: { stream: STREAM },
-      query: { connector_id: connectorId, connector_instance_id: connectorInstanceId, run_id: runId },
+  // The run-terminal fence (records.ts's assertSqliteRunStillAdmitted, code
+  // "run_terminal") is a genuine SYSTEMIC/retryable failure under the
+  // rs.records.ingest envelope contract: it never proved this record's own
+  // data invalid, it proved the RUN was fenced. classifyIngestFailure has no
+  // "run_terminal" entry in its permanent allowlist, so it defaults
+  // retryable — the operation throws RecordsIngestSystemicFailureError
+  // instead of returning a 200 envelope, and this test's `ctx.rejectMutation`
+  // mock re-rejects the handler's own promise (matching the real route's
+  // `return await ctx.rejectMutation(...)` early-return-on-catch shape).
+  await assert.rejects(
+    async () =>
+      await handler(
+        {
+          body: '{"id":"r1"}',
+          headers: {},
+          params: { stream: STREAM },
+          query: { connector_id: connectorId, connector_instance_id: connectorInstanceId, run_id: runId },
+        },
+        res
+      ),
+    (err: unknown) => {
+      const typed = err as { code?: string; message?: string };
+      assert.equal(typed.code, "ingest_batch_storage_error");
+      assert.match(typed.message ?? "", RUN_TERMINAL_ERROR_RE);
+      return true;
     },
-    res
+    "a fenced write for a cancelled run must surface as a non-2xx systemic failure, not a 200 partial-rejection envelope"
   );
-
-  const envelope = jsonBody as { records_accepted: number; records_rejected: number; errors: readonly string[] };
-  assert.equal(envelope.records_accepted, 0, "the HTTP route surfaces the fenced write as rejected, not accepted");
-  assert.equal(envelope.records_rejected, 1);
-  assert.match(envelope.errors[0] ?? "", RUN_TERMINAL_ERROR_RE);
+  assert.equal(jsonBody, undefined, "res.json must never be called — the route rejects before building a 200 envelope");
   assert.equal(
     readCommittedRecordSqlite(connectorInstanceId, "r1"),
     undefined,

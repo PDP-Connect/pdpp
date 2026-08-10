@@ -48,7 +48,7 @@ import {
 } from "./done-validators.ts";
 import {
   buildHttpFailure,
-  buildIngestBatchRejectedFailure,
+  buildIngestEnvelopeContractViolationFailure,
   buildIngestHttpFailure,
   buildInvalidIngestResponseFailure,
 } from "./ingest-failures.ts";
@@ -3223,21 +3223,30 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
       }
       throw err;
     }
-    // A 2xx response with a structurally valid envelope is not proof of
-    // durable acceptance: `records_accepted === 0` for a non-empty batch
-    // means the RS rejected every record. Per-record isolation (a connector
-    // emitting some malformed records among valid ones) legitimately
-    // produces PARTIAL rejection and stays a counted, continued success —
-    // but a WHOLE-batch rejection is far more likely a transient storage
-    // failure (lock contention, disk pressure, coordinator saturation) than
-    // every single record in one BATCH_SIZE group happening to be
-    // individually invalid. Treat it as terminal-but-retryable: never emit
-    // `run.batch_ingested{status:"succeeded"}` and never clear the buffer,
-    // so no cursor can commit past data that was never durably written, and
-    // a retried run resubmits the exact same records (idempotent per the
-    // manifest's primary_key/upsert semantics).
-    if (batch.length > 0 && result.records_accepted === 0 && result.records_rejected === batch.length) {
-      throw buildIngestBatchRejectedFailure({
+    // Defensive protocol-violation net, NOT the primary retry classifier.
+    // The RS contract (rs.records.ingest) now guarantees that any SYSTEMIC
+    // per-record failure — a storage/coordination error that never proved a
+    // record's own data invalid — makes the whole HTTP response non-2xx
+    // (RecordsIngestSystemicFailureError, mapped to 503), which the `!resp.ok`
+    // branch above already turns into a thrown, retryable failure via
+    // buildIngestHttpFailure. A PERMANENT per-record rejection (malformed
+    // JSON, a genuine schema/identity defect) legitimately stays inside a
+    // 2xx envelope with records_rejected > 0 — that is the intentional
+    // per-record isolation contract, whether it covers one record or every
+    // record in the batch, and must NOT be treated as retryable just because
+    // the count happens to equal the batch size (that conflated N legitimate
+    // permanent failures with a systemic one — the defect a prior revision of
+    // this check introduced). What SHOULD be structurally unreachable against
+    // a conforming RS is records_accepted === 0 on a 2xx WHOSE envelope also
+    // reports zero errors, or a 2xx whose records_accepted/records_rejected
+    // don't sum to the batch size — either shape means the RS is not honoring
+    // its own contract (an old/non-reference RS, or a bug), not that the
+    // records were validly rejected. Only that impossible shape trips this
+    // net; a normal permanent-rejection envelope (errors.length matching
+    // records_rejected) never does, no matter how many records it rejects.
+    const reportedTotal = result.records_accepted + result.records_rejected;
+    if (batch.length > 0 && result.records_accepted === 0 && reportedTotal !== batch.length) {
+      throw buildIngestEnvelopeContractViolationFailure({
         batchSize: batch.length,
         recordsAccepted: result.records_accepted,
         recordsRejected: result.records_rejected,

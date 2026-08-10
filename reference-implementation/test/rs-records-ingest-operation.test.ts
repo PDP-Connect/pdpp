@@ -10,24 +10,39 @@
  *   - not_found when the manifest does not declare the stream.
  *   - sequential per-line ingest (preserves durable write order; no
  *     parallelism).
- *   - one-line failures are isolated: increment records_rejected, append the
- *     error message, do NOT roll back earlier accepted records, do NOT halt.
+ *   - a PERMANENT (non-retryable) per-record failure is isolated: increment
+ *     records_rejected, append the error message, do NOT roll back earlier
+ *     accepted records, do NOT halt, and the request stays a 200-equivalent
+ *     envelope (executeRecordsIngest resolves, never throws).
+ *   - a SYSTEMIC (retryable) per-record failure — anywhere in the batch,
+ *     even mixed with accepted/permanently-rejected records — makes
+ *     executeRecordsIngest THROW RecordsIngestSystemicFailureError instead
+ *     of returning an envelope, so the host route can answer non-2xx.
  *   - the response envelope shape `{ stream, records_accepted,
  *     records_rejected, errors }`.
+ *   - classification never inspects `.message` text — only a thrown error's
+ *     own `.retryable` boolean (single-record path) or a batch outcome's own
+ *     `.retryable` field (batch-capability path).
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RecordsIngestDependencies, RecordsIngestInput } from "../operations/rs-records-ingest/index.ts";
+import type {
+  IngestLineFailure,
+  RecordsIngestDependencies,
+  RecordsIngestInput,
+} from "../operations/rs-records-ingest/index.ts";
 import {
   executeRecordsIngest,
   parseLines,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
+  RecordsIngestSystemicFailureError,
 } from "../operations/rs-records-ingest/index.ts";
 
-const REGEXP_1 = /store down/;
-const DERIVED_INDEX_ERROR_REGEXP = /derived index failed/;
+const STORE_DOWN_RE = /store down/;
+const DERIVED_INDEX_ERROR_RE = /derived index failed/;
+const SYSTEMIC_SUMMARY_RE = /systemic\/retryable record failure/;
 
 function defaultDeps(overrides: Partial<RecordsIngestDependencies> = {}): RecordsIngestDependencies {
   return {
@@ -44,6 +59,20 @@ function defaultInput(overrides: Partial<RecordsIngestInput> = {}): RecordsInges
     streamName: "messages",
     ...overrides,
   };
+}
+
+// A thrown error the single-record `ingestRecord` dependency uses to signal
+// a PERMANENT per-record data defect — mirrors how a real host decorates a
+// classified error (server/index.ts's ingestRecord wrapper sets `.retryable`
+// off `classifyIngestFailure`'s result) without depending on records.ts.
+function permanentThrow(message: string): Error {
+  return Object.assign(new Error(message), { retryable: false });
+}
+
+// A thrown error with no `.retryable` field at all — the "host never
+// classified this" case, which must default to systemic/retryable.
+function unclassifiedThrow(message: string): Error {
+  return new Error(message);
 }
 
 test("parseLines splits NDJSON, filters empty lines, returns empty for null/undefined", () => {
@@ -96,7 +125,7 @@ test("rs.records.ingest invokes ingestRecord sequentially in line order", async 
   assert.deepEqual(seen, ["r1", "r2", "r3"]);
 });
 
-test("rs.records.ingest uses the bounded batch capability for distinct stream shapes", async () => {
+test("rs.records.ingest uses the bounded batch capability for distinct stream shapes (permanent per-record failure)", async () => {
   const results = await Promise.all(
     ["messages", "timeline_points"].map(async (streamName) => {
       let batchCalls = 0;
@@ -110,10 +139,10 @@ test("rs.records.ingest uses the bounded batch capability for distinct stream sh
           ingestRecord: () => {
             throw new Error("ordered fallback should not run when batch capability is present");
           },
-          ingestRecords: (_connectorId, _connectorInstanceId, records) => {
+          ingestRecords: (_connectorId, _connectorInstanceId, records): (IngestLineFailure | null)[] => {
             batchCalls += 1;
             received = [...records];
-            return [null, "derived index failed"];
+            return [null, { message: "derived index failed", retryable: false }];
           },
         })
       );
@@ -130,7 +159,7 @@ test("rs.records.ingest uses the bounded batch capability for distinct stream sh
     assert.equal(out.envelope.records_accepted, 1);
     assert.equal(out.envelope.records_rejected, 2);
     assert.equal(out.envelope.errors.length, 2);
-    assert.match(out.envelope.errors[1] ?? "", DERIVED_INDEX_ERROR_REGEXP);
+    assert.match(out.envelope.errors[1] ?? "", DERIVED_INDEX_ERROR_RE);
   }
 });
 
@@ -150,14 +179,14 @@ test("rs.records.ingest forwards { ...record, stream } to the dependency", async
   assert.deepEqual(captured.record, { id: "r1", stream: "messages", x: 1 });
 });
 
-test("rs.records.ingest counts accepted vs rejected and collects error messages", async () => {
+test("rs.records.ingest counts accepted vs rejected and collects error messages (permanent failure)", async () => {
   const out = await executeRecordsIngest(
     defaultInput({ body: '{"id":"r1"}\nNOT_JSON\n{"id":"r3"}' }),
     defaultDeps({
       // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
       ingestRecord: async (_cid, _cin, record) => {
         if (record.id === "r3") {
-          throw new Error("store down");
+          throw permanentThrow("store down");
         }
       },
     })
@@ -168,7 +197,7 @@ test("rs.records.ingest counts accepted vs rejected and collects error messages"
   // biome-ignore lint/style/useDestructuring: Indexed access expresses the protocol field position under test.
   const secondError = out.envelope.errors[1];
   assert.ok(secondError);
-  assert.match(secondError, REGEXP_1);
+  assert.match(secondError, STORE_DOWN_RE);
 });
 
 test("rs.records.ingest envelope echoes the stream name", async () => {
@@ -187,7 +216,7 @@ test("rs.records.ingest empty body yields zero counts and no errors", async () =
   assert.equal(out.submittedRecordCount, 0);
 });
 
-test("rs.records.ingest does not halt on a failing line; subsequent lines still ingest", async () => {
+test("rs.records.ingest does not halt on a failing line; subsequent lines still ingest (permanent failure)", async () => {
   let lateCalled = false;
   const out = await executeRecordsIngest(
     defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
@@ -195,7 +224,7 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
       // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
       ingestRecord: async (_cid, _cin, record) => {
         if (record.id === "r1") {
-          throw new Error("first failed");
+          throw permanentThrow("first failed");
         }
         lateCalled = true;
       },
@@ -204,4 +233,154 @@ test("rs.records.ingest does not halt on a failing line; subsequent lines still 
   assert.equal(lateCalled, true, "second line must still be attempted after first fails");
   assert.equal(out.envelope.records_accepted, 1);
   assert.equal(out.envelope.records_rejected, 1);
+});
+
+// ── Systemic/retryable classification (RecordsIngestSystemicFailureError) ──
+
+test("rs.records.ingest treats an UNCLASSIFIED thrown error as systemic by default (no .retryable field)", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({ body: '{"id":"r1"}' }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw unclassifiedThrow("connection reset");
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      assert.equal(err.code, "ingest_batch_storage_error");
+      assert.equal(err.retryableFailureCount, 1);
+      return true;
+    }
+  );
+});
+
+test("rs.records.ingest: ALL records failing permanently (retryable: false) still resolves the 200-shaped envelope, never throws", async () => {
+  const out = await executeRecordsIngest(
+    defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}\n{"id":"r3"}' }),
+    defaultDeps({
+      ingestRecord: () => {
+        throw permanentThrow("invalid record identity");
+      },
+    })
+  );
+  assert.equal(out.envelope.records_accepted, 0);
+  assert.equal(out.envelope.records_rejected, 3);
+  assert.equal(out.envelope.errors.length, 3);
+});
+
+test("rs.records.ingest: a SINGLE systemic failure mixed with accepted AND permanently-rejected records still throws (partial-systemic case)", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}\n{"id":"r3"}' }),
+        defaultDeps({
+          // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
+          ingestRecord: async (_cid, _cin, record) => {
+            if (record.id === "r1") {
+              return; // accepted
+            }
+            if (record.id === "r2") {
+              throw permanentThrow("malformed primary key"); // permanent, isolated
+            }
+            throw unclassifiedThrow("lock contention"); // systemic — must dominate the outcome
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      // Exactly one of the three lines was systemic; the accepted record and
+      // the permanently-rejected record do not count toward this total —
+      // this asserts the throw is driven by the retryable failure alone, not
+      // by "any rejection at all."
+      assert.equal(err.retryableFailureCount, 1);
+      assert.match(err.message, SYSTEMIC_SUMMARY_RE);
+      return true;
+    }
+  );
+});
+
+test("rs.records.ingest: the batch-capability path also classifies systemic vs permanent from the outcome's own .retryable field", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw new Error("ordered fallback should not run when batch capability is present");
+          },
+          ingestRecords: (): (IngestLineFailure | null)[] => [
+            { message: "malformed primary key", retryable: false },
+            { message: "coordinator write timeout", retryable: true },
+          ],
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      assert.equal(err.retryableFailureCount, 1);
+      return true;
+    }
+  );
+});
+
+test("rs.records.ingest: the batch-capability path resolving ALL permanent failures never throws", async () => {
+  const out = await executeRecordsIngest(
+    defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
+    defaultDeps({
+      ingestRecord: () => {
+        throw new Error("ordered fallback should not run when batch capability is present");
+      },
+      ingestRecords: (): (IngestLineFailure | null)[] => [
+        { message: "malformed primary key", retryable: false },
+        { message: "invalid schema shape", retryable: false },
+      ],
+    })
+  );
+  assert.equal(out.envelope.records_accepted, 0);
+  assert.equal(out.envelope.records_rejected, 2);
+});
+
+test("rs.records.ingest: the batch capability itself throwing (no per-record outcomes at all) is unclassifiable and defaults every line to systemic", async () => {
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
+        defaultDeps({
+          ingestRecord: () => {
+            throw new Error("ordered fallback should not run when batch capability is present");
+          },
+          ingestRecords: () => {
+            throw new Error("connection to resource server storage lost mid-batch");
+          },
+        })
+      ),
+    (err) => {
+      assert.ok(err instanceof RecordsIngestSystemicFailureError);
+      assert.equal(err.retryableFailureCount, 2);
+      return true;
+    }
+  );
+});
+
+test("rs.records.ingest does not halt on a failing line; subsequent lines still ingest (systemic failure, still isolated per-line before the throw)", async () => {
+  let lateCalled = false;
+  await assert.rejects(
+    () =>
+      executeRecordsIngest(
+        defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
+        defaultDeps({
+          // biome-ignore lint/suspicious/useAwait: Async callback preserves the dependency contract and rejection timing.
+          ingestRecord: async (_cid, _cin, record) => {
+            if (record.id === "r1") {
+              throw unclassifiedThrow("first failed systemically");
+            }
+            lateCalled = true;
+          },
+        })
+      ),
+    (err) => err instanceof RecordsIngestSystemicFailureError
+  );
+  assert.equal(lateCalled, true, "second line must still be attempted before the operation throws for the first");
 });

@@ -264,9 +264,14 @@ interface RecordIngestOutcome {
 }
 type DeviceRecordPlanEntry = { inputIndex: number; record: RecordEnvelope } & Record<string, unknown>;
 
-type RecordIngestBatchOutcome = RecordIngestOutcome & {
-  /** Present when the durable write or its derived-index phase failed. */
-  error?: string;
+export type RecordIngestBatchOutcome = RecordIngestOutcome & {
+  /**
+   * Present when the durable write or its derived-index phase failed.
+   * Structured (not a bare string) so a caller can distinguish a permanent
+   * per-record data defect from a systemic/retryable storage failure without
+   * ever matching on `.message` text — see `classifyIngestFailure`.
+   */
+  error?: ClassifiedIngestFailure;
 };
 type RecordIngestAfterRecord = (record: RecordEnvelope, outcome: RecordIngestBatchOutcome) => void | Promise<void>;
 interface DeferredRecordIndex {
@@ -839,6 +844,46 @@ export class RecordIndexAdmissionError extends Error {
     this.name = "RecordIndexAdmissionError";
     this.code = "record_index_busy";
   }
+}
+
+/**
+ * Bounded allowlist of `.code` values this module KNOWS represent a
+ * permanent, per-record data defect — the same input will fail identically
+ * on every retry (a malformed primary key, a schema-invalid field shape).
+ * Deliberately NOT a denylist and NOT message-string matching: an error code
+ * this module has never seen (a raw SQLite/Postgres driver error, a future
+ * typed error class, a bare `Error`/`TypeError` with no `.code`) falls to the
+ * SYSTEMIC default in `classifyIngestFailure` below. That default direction
+ * is load-bearing: misclassifying an unknown failure as "permanent" is
+ * exactly the silent-data-loss shape this classifier exists to close (a real
+ * storage/coordination failure would be reported as an ordinary rejected
+ * record and never retried). Misclassifying a genuine permanent failure as
+ * "systemic" only costs a harmless retry that fails again identically — safe
+ * by construction, not a correctness bug.
+ */
+const PERMANENT_INGEST_FAILURE_CODES: ReadonlySet<string> = new Set(["invalid_record_identity"]);
+
+export interface ClassifiedIngestFailure {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+/**
+ * Classify a thrown ingest-write error as PERMANENT (per-record data defect,
+ * `retryable: false`) or SYSTEMIC (storage/coordination failure, or unknown,
+ * `retryable: true`) by its own typed `.code` field ONLY — never by matching
+ * `.message` text, which drifts silently as messages are edited. See
+ * `PERMANENT_INGEST_FAILURE_CODES` for why "unknown" defaults to systemic.
+ */
+export function classifyIngestFailure(err: unknown): ClassifiedIngestFailure {
+  const message = err instanceof Error ? err.message : String(err);
+  const codeField = (err as { code?: unknown } | null)?.code;
+  const code = typeof codeField === "string" ? codeField : null;
+  if (code && PERMANENT_INGEST_FAILURE_CODES.has(code)) {
+    return { code, message, retryable: false };
+  }
+  return { code: code || "ingest_storage_error", message, retryable: true };
 }
 
 // A write already admitted into the per-connector-instance write coordinator
@@ -1729,7 +1774,7 @@ async function ingestRecordsWithinCoordinator(
       outcome = {
         accepted: false,
         changed: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: classifyIngestFailure(err),
       };
     }
     if (afterRecord && outcome.accepted) {
@@ -1742,7 +1787,7 @@ async function ingestRecordsWithinCoordinator(
         outcome = {
           accepted: false,
           changed: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: classifyIngestFailure(err),
         };
       }
     }
@@ -1761,7 +1806,7 @@ async function ingestRecordsWithinCoordinator(
         outcome ?? {
           accepted: false,
           changed: false,
-          error: "ingest batch did not produce a result",
+          error: { code: "ingest_storage_error", message: "ingest batch did not produce a result", retryable: true },
         }
     ),
   };

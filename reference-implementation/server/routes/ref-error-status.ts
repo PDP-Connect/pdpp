@@ -115,6 +115,13 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   grant_invalid: 403,
   grant_revoked: 403,
   grant_stream_not_allowed: 403,
+  // A whole-or-partial /v1/ingest batch had at least one systemic/retryable
+  // record failure (storage or coordination, never proved the record's own
+  // data invalid — see RecordsIngestSystemicFailureError). 503 signals "not
+  // your fault, safe to retry the identical batch" to a client that treats
+  // any 2xx as success, matching connector_instance_busy's existing 503 use
+  // for the same "retry, don't treat as done" contract.
+  ingest_batch_storage_error: 503,
   insufficient_scope: 403,
   interaction_id_mismatch: 409,
   invalid_argument: 400,
