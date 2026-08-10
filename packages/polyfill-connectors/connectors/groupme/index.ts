@@ -492,6 +492,28 @@ class EmptyPageResponse extends Error {
   }
 }
 
+/**
+ * Thrown for any non-2xx, non-304, non-401/403 HTTP response from GroupMe.
+ * Carries `status` as a STRUCTURED field — never parsed back out of the
+ * message string — specifically so callers that need to distinguish status
+ * classes (e.g. the invalid-resume-cursor fallback in
+ * `collectGroupMessagesForwardFromCursor`, which must NOT trigger on a
+ * transient 429/5xx) can do so reliably instead of pattern-matching
+ * `error.message`, which is fragile and was the root cause of a P1: a prior
+ * revision matched on `error.message.startsWith("groupme_http_")`, which is
+ * true for EVERY status alike (400, 404, 429, 500, 502, 503), silently
+ * misclassifying a transient server error as an invalid cursor and
+ * triggering an expensive, unsignaled full backward rescan.
+ */
+class GroupMeHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, body: string) {
+    super(`groupme_http_${status}: ${body.slice(0, 200)}`);
+    this.name = "GroupMeHttpError";
+    this.status = status;
+  }
+}
+
 async function makeRequest<T>(token: string, path: string, queryParams?: Record<string, string | number>): Promise<T> {
   const url = new URL(`${API_BASE}${path}`);
   if (queryParams) {
@@ -523,7 +545,7 @@ async function makeRequest<T>(token: string, path: string, queryParams?: Record<
     throw new EmptyPageResponse();
   }
   if (raw.status < 200 || raw.status >= 300) {
-    throw new Error(`groupme_http_${raw.status}: ${raw.body.slice(0, 200)}`);
+    throw new GroupMeHttpError(raw.status, raw.body);
   }
 
   const json = JSON.parse(raw.body) as { response: T };
@@ -988,7 +1010,21 @@ async function collectGroupMessagesForwardFromCursor(
       // fallback treatment — see InvalidResumeCursorError's doc comment. A
       // mid-walk failure (any fetch after the first) is an ordinary
       // transient error and propagates normally.
-      if (isFirstFetch && error instanceof Error && error.message.startsWith("groupme_http_")) {
+      //
+      // The fallback trigger is INTENTIONALLY narrow: only a structured
+      // GroupMeHttpError with status 400 or 404 — the closest thing
+      // GroupMe's docs gesture at for "this identifier doesn't resolve"
+      // (see EmptyPageResponse's doc comment on the docs' silence for
+      // after_id specifically). This must NEVER match 401/403 (a separate,
+      // unstructured "groupme_auth_failed" Error — auth failures propagate
+      // untouched, the whole run is dead, not just this cursor), and must
+      // NEVER match 429/5xx (a transient provider condition, not evidence
+      // the cursor itself is invalid) — matching those would silently
+      // convert a temporary blip into an expensive, unsignaled full
+      // backward rescan with no retry and no operator-visible failure. A
+      // prior revision matched on `error.message.startsWith("groupme_http_")`,
+      // which is true for every status alike; this is the fix for that P1.
+      if (isFirstFetch && error instanceof GroupMeHttpError && (error.status === 400 || error.status === 404)) {
         // biome-ignore lint/style/useErrorCause: InvalidResumeCursorError's 3rd constructor arg forwards to super(message, { cause })
         throw new InvalidResumeCursorError(group.id, afterId, error);
       }
@@ -1033,18 +1069,6 @@ async function collectGroupMessagesForwardFromCursor(
 }
 
 /**
- * Backward-walks one group's ENTIRE message history via `before_id`, to the
- * natural end — used for a cold start (no persisted cursor) or an explicit
- * `full_refresh` run. No page-count ceiling: the only exits are the natural
- * short/empty-page boundary or `NonProgressError` on a page that fails the
- * documented-descending check or whose trailing cursor repeats one already
- * used this walk. `applySinceBoundToPage` still layers an independent,
- * caller-declared `since` bound on top (an owner-narrowed collection
- * window — unrelated to this walk's own cursor bookkeeping); a page that
- * has since-excluded at least one row, verified genuinely descending, ends
- * the walk early since everything after it is out of the declared scope.
- */
-/**
  * Whether a backward group-messages page ends the walk at its natural end:
  * every message was out of the declared `since` scope, a `since`-scoped
  * page excluded at least one row, or the page came back shorter than
@@ -1067,6 +1091,18 @@ function backwardPageReachedNaturalEnd(
   return messages.length < PAGE_SIZE;
 }
 
+/**
+ * Backward-walks one group's ENTIRE message history via `before_id`, to the
+ * natural end — used for a cold start (no persisted cursor) or an explicit
+ * `full_refresh` run. No page-count ceiling: the only exits are the natural
+ * short/empty-page boundary or `NonProgressError` on a page that fails the
+ * documented-descending check or whose trailing cursor repeats one already
+ * used this walk. `applySinceBoundToPage` still layers an independent,
+ * caller-declared `since` bound on top (an owner-narrowed collection
+ * window — unrelated to this walk's own cursor bookkeeping); a page that
+ * has since-excluded at least one row, verified genuinely descending, ends
+ * the walk early since everything after it is out of the declared scope.
+ */
 async function collectGroupMessagesBackwardToNaturalEnd(
   token: string,
   group: GroupMeGroup,
@@ -1159,18 +1195,6 @@ export interface CollectionOutcome {
   failed: boolean;
 }
 
-/**
- * Shared try/catch/outcome wrapper for a stream's top-level collection pass.
- * `body` runs the real fetch-and-emit work and returns the raw enumerated
- * "considered" count on a clean pass. Every GroupMe stream (groups,
- * group_messages, direct_messages, direct_chat_messages) needs the exact
- * same shape here: auth failures propagate untouched (the whole run is
- * dead, not just this stream), any other error is logged via
- * `progressWithSignals` and converted to `{ considered: 0, failed: true }`
- * rather than left to throw — the caller's `collect()` decides what a
- * failed outcome means (skip STATE + coverage), this wrapper only owns
- * catching the error and reporting it the same way every stream already did.
- */
 /**
  * Shared try/catch/outcome wrapper for a stream's top-level collection pass.
  * `body` runs the real fetch-and-emit work and returns the raw enumerated
@@ -1515,19 +1539,6 @@ export async function collectGroupMessages(
 }
 
 /**
- * `collect()` writes each stream's fingerprint cursor under that stream's OWN
- * top-level `state.<stream>` key — `state.groups`, `state.group_messages`,
- * `state.direct_messages`, `state.direct_chat_messages`, `state.attachments`
- * — mirroring exactly what it reads back on the next run. This is the only
- * shape that survives the runtime's per-stream last-wins STATE projection
- * (`bufferedState[message.stream] = message.cursor` in collector-runner.ts):
- * a single unified emit under `stream: "groups"` would collide with
- * `groups`'s own per-stream STATE emit and get overwritten by it on every
- * run where `groups` succeeds, silently discarding the other four streams'
- * cursors. There is no prior persisted state to migrate — GroupMe has never
- * shipped a build that read these keys.
- */
-/**
  * Parse a stream's declared `time_range.since` into epoch seconds for the
  * newest-first `before_id` walk to compare against `created_at` directly
  * (avoids a per-message ISO-string reparse). Returns `null` for an absent,
@@ -1543,6 +1554,19 @@ function parseSinceEpochSeconds(requested: CollectContext["requested"], stream: 
   return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
 }
 
+/**
+ * `collect()` writes each stream's fingerprint cursor under that stream's OWN
+ * top-level `state.<stream>` key — `state.groups`, `state.group_messages`,
+ * `state.direct_messages`, `state.direct_chat_messages`, `state.attachments`
+ * — mirroring exactly what it reads back on the next run. This is the only
+ * shape that survives the runtime's per-stream last-wins STATE projection
+ * (`bufferedState[message.stream] = message.cursor` in collector-runner.ts):
+ * a single unified emit under `stream: "groups"` would collide with
+ * `groups`'s own per-stream STATE emit and get overwritten by it on every
+ * run where `groups` succeeds, silently discarding the other four streams'
+ * cursors. There is no prior persisted state to migrate — GroupMe has never
+ * shipped a build that read these keys.
+ */
 export async function collect({
   state,
   requested,
