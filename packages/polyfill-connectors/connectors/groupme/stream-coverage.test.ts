@@ -287,11 +287,13 @@ test("collectGroupMessages: clean pass across multiple groups sums considered fr
   }
 });
 
-test("collectGroupMessages: a declared since bound stops the newest-first walk cleanly, without fetching further pages", async () => {
-  // Page is newest-first: m1 is in-bounds, m2/m3 are before `since`. A
-  // second page is queued so a bug that ignores `since` (fetches to the
-  // natural PAGE_SIZE end / page cap) would consume it and inflate
-  // `considered` — the assertion on fetchCount below is what catches that.
+test("collectGroupMessages: a declared since bound stops the documented-descending walk cleanly, without fetching further pages", async () => {
+  // Page is genuinely created_at-descending (m1=300 > m2=50 > m3=0), the
+  // ordering GroupMe's official docs guarantee for this endpoint — licensing
+  // the fast-path early stop. A second page is queued so a bug that ignores
+  // `since` (fetches to the natural PAGE_SIZE end / page cap) would consume
+  // it and inflate `considered` — the assertion on fetchCount below is what
+  // catches that.
   let fetchCount = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = ((): Promise<Response> => {
@@ -352,13 +354,15 @@ test("collectGroupMessages: a declared since bound stops the newest-first walk c
   }
 });
 
-test("collectGroupMessages: a mixed page (in-scope and out-of-scope rows) counts/covers only the in-scope rows, and a single out-of-order straggler does not end the walk early", async () => {
-  // Deliberately NOT sorted newest-first: m-late (in scope) sits AFTER
-  // m-old (out of scope) in the page, simulating a provider response this
-  // connector cannot assume is monotonic. If the walk stopped at the first
-  // out-of-scope row, m-late would be silently dropped and never fetched —
-  // this proves the fix scans the whole page instead of stopping there.
-  // Page 2 is entirely before `since`, which is the real, safe stop signal.
+test("collectGroupMessages: a non-monotonic page falls back to the conservative path — every message is checked, not just up to the first out-of-scope row", async () => {
+  // Deliberately violates the documented descending order: m-late (in scope,
+  // created_at=200) sits AFTER m-old (out of scope, created_at=0) despite
+  // being newer. isDescendingByCreatedAt must catch this and refuse the
+  // fast-path early stop — proving the connector VALIDATES the ordering
+  // contract per page rather than trusting it blindly. This page is also
+  // short (< PAGE_SIZE), so the walk ends here via the ordinary natural-end
+  // condition either way; the assertions below are on considered/emitted
+  // correctness, not on which page count it stopped at.
   const restore = stubFetchSequence([
     { body: { response: [group({ id: "group-1" })] } }, // /groups
     {
@@ -368,24 +372,16 @@ test("collectGroupMessages: a mixed page (in-scope and out-of-scope rows) counts
           messages: [
             groupMessage({ id: "m-new", created_at: 1_700_000_300 }),
             groupMessage({ id: "m-old", created_at: 1_700_000_000 }), // out of scope, mid-page
-            groupMessage({ id: "m-late", created_at: 1_700_000_200 }), // in scope, AFTER m-old
+            groupMessage({ id: "m-late", created_at: 1_700_000_200 }), // in scope, AFTER m-old — breaks descending order
           ],
         },
       },
-    }, // page 1: mixed, in-scope tail present -> must not stop here
-    {
-      body: {
-        response: {
-          count: 1,
-          messages: [groupMessage({ id: "m-ancient", created_at: 1_699_999_000 })],
-        },
-      },
-    }, // page 2: entirely out of scope -> the real stop signal
+    },
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
     const { emit, emitRecord, emitted } = makeHarness();
-    // since = 1_700_000_100 excludes m-old and m-ancient, includes m-new and m-late.
+    // since = 1_700_000_100 excludes m-old, includes m-new and m-late.
     const outcome = await collectGroupMessages(
       TOKEN,
       cursor,
@@ -403,14 +399,71 @@ test("collectGroupMessages: a mixed page (in-scope and out-of-scope rows) counts
       new Set(["m-new", "m-late"]),
       "both in-scope rows emit, including the out-of-order straggler after the out-of-scope row"
     );
-    assert.equal(
-      outcome.considered,
-      2,
-      "considered counts only the 2 in-scope rows across both pages — m-old and m-ancient are excluded"
-    );
-    assert.equal(outcome.failed, false, "a page fully out of scope is a clean, honest end of the declared boundary");
+    assert.equal(outcome.considered, 2, "considered counts only the 2 in-scope rows — m-old is excluded");
+    assert.equal(outcome.failed, false);
   } finally {
     restore();
+  }
+});
+
+test("collectGroupMessages: a verified-descending page with an out-of-scope row stops the walk without needing a second fully-out-of-scope page", async () => {
+  // Page IS genuinely descending (unlike the non-monotonic test above), and
+  // is a FULL PAGE_SIZE page so the natural-end (`length < PAGE_SIZE`) path
+  // cannot be what stops the walk — only the documented-ordering fast path
+  // can. Page 2 is queued in-scope; if fetched, it would prove the fast path
+  // did NOT fire.
+  const descendingPage = [
+    groupMessage({ id: "m-new", created_at: 1_700_000_300 }),
+    ...Array.from({ length: 98 }, (_, i) => groupMessage({ id: `m-mid-${String(i)}`, created_at: 1_700_000_250 - i })),
+    groupMessage({ id: "m-old", created_at: 1_699_999_000 }), // out of scope, last (oldest) on the page
+  ];
+  let fetchCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((): Promise<Response> => {
+    fetchCount += 1;
+    if (fetchCount === 1) {
+      return Promise.resolve(new Response(JSON.stringify({ response: [group({ id: "group-1" })] }), { status: 200 }));
+    }
+    if (fetchCount === 2) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ response: { count: 100, messages: descendingPage } }), { status: 200 })
+      );
+    }
+    // Only reached if the fast path failed to stop after page 1.
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          response: { count: 1, messages: [groupMessage({ id: "m-unreachable", created_at: 1_700_000_290 })] },
+        }),
+        { status: 200 }
+      )
+    );
+  }) as typeof globalThis.fetch;
+  try {
+    const cursor = openFingerprintCursor(new Map());
+    const { emit, emitRecord, emitted } = makeHarness();
+    const outcome = await collectGroupMessages(
+      TOKEN,
+      cursor,
+      undefined,
+      undefined,
+      noopProgress,
+      emit,
+      emitRecord,
+      undefined,
+      1_700_000_100
+    );
+
+    assert.equal(
+      emitted.filter((r) => r.stream === "group_messages" && (r.data as { id: string }).id === "m-unreachable").length,
+      0,
+      "the fast path must stop after page 1 — page 2 must never be fetched or emitted"
+    );
+    assert.equal(fetchCount, 2, "exactly the group list plus one message page");
+    assert.equal(outcome.considered, 99, "considered counts the 99 in-scope rows on the verified-descending page");
+    assert.equal(outcome.failed, false);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 
@@ -624,31 +677,21 @@ test("collectDirectChatMessages: clean pass across multiple chats sums considere
   }
 });
 
-test("collectDirectChatMessages: a declared since bound stops the newest-first walk cleanly, without fetching further pages", async () => {
-  let fetchCount = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = ((): Promise<Response> => {
-    fetchCount += 1;
-    if (fetchCount === 1) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ response: [directChat({ id: "chat-1" })] }), { status: 200 })
-      );
-    }
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          response: {
-            count: 2,
-            direct_messages: [
-              directMessage({ id: "d1", created_at: 1_700_000_300 }),
-              directMessage({ id: "d2", created_at: 1_700_000_000 }),
-            ],
-          },
-        }),
-        { status: 200 }
-      )
-    );
-  }) as typeof globalThis.fetch;
+test("collectDirectChatMessages: a declared since bound filters out-of-scope rows from considered/emitted, without an early stop", async () => {
+  const restore = stubFetchSequence([
+    { body: { response: [directChat({ id: "chat-1" })] } }, // /chats
+    {
+      body: {
+        response: {
+          count: 2,
+          direct_messages: [
+            directMessage({ id: "d1", created_at: 1_700_000_300 }),
+            directMessage({ id: "d2", created_at: 1_700_000_000 }),
+          ],
+        },
+      },
+    },
+  ]);
   try {
     const cursor = openFingerprintCursor(new Map());
     const { emit, emitRecord, emitted } = makeHarness();
@@ -669,48 +712,36 @@ test("collectDirectChatMessages: a declared since bound stops the newest-first w
       ["d1"],
       "only the in-window message emits"
     );
-    assert.equal(outcome.failed, false, "an honest since-bound stop is a clean pass, not a failure");
+    assert.equal(outcome.failed, false, "excluding an out-of-scope row is a clean pass, not a failure");
     assert.equal(
       outcome.considered,
       1,
       "considered counts only the in-scope message — the out-of-scope d2 on the same page must not inflate it"
     );
-    assert.equal(
-      fetchCount,
-      2,
-      "the chats list plus exactly one message page — the since bound stops before a 2nd page"
-    );
   } finally {
-    globalThis.fetch = originalFetch;
+    restore();
   }
 });
 
-test("collectDirectChatMessages: a mixed page (in-scope and out-of-scope rows) counts/covers only the in-scope rows, and a single out-of-order straggler does not end the walk early", async () => {
-  // Same non-monotonic-page proof as collectGroupMessages: d-late sits
-  // AFTER d-old in the page despite being newer, so a walk that stopped at
-  // the first out-of-scope row would silently drop it.
+test("collectDirectChatMessages: an entirely out-of-scope page does NOT stop the walk — this endpoint has no documented ordering authority to license an early stop", async () => {
+  // Unlike collectGroupMessagesForGroup (GroupMe's official docs guarantee
+  // GET /groups/:id/messages is created_at-descending with before_id
+  // returning the immediately-preceding page), GET /chats/:id/messages
+  // carries no equivalent documented guarantee. Page 1 is a FULL PAGE_SIZE
+  // page, entirely out of scope — a bug that reintroduces the
+  // pageFullyOutOfScope early-stop from the prior revision would return here
+  // without ever fetching page 2, silently dropping d-late.
+  const fullOldPage = Array.from({ length: 100 }, (_, i) =>
+    directMessage({ id: `d-old-${String(i)}`, created_at: 1_699_000_000 - i })
+  );
   const restore = stubFetchSequence([
     { body: { response: [directChat({ id: "chat-1" })] } }, // /chats
+    { body: { response: { count: 100, direct_messages: fullOldPage } } }, // page 1: entirely out of scope, full page
     {
       body: {
-        response: {
-          count: 3,
-          direct_messages: [
-            directMessage({ id: "d-new", created_at: 1_700_000_300 }),
-            directMessage({ id: "d-old", created_at: 1_700_000_000 }), // out of scope, mid-page
-            directMessage({ id: "d-late", created_at: 1_700_000_200 }), // in scope, AFTER d-old
-          ],
-        },
+        response: { count: 1, direct_messages: [directMessage({ id: "d-late", created_at: 1_700_000_300 })] },
       },
-    }, // page 1: mixed, in-scope tail present -> must not stop here
-    {
-      body: {
-        response: {
-          count: 1,
-          direct_messages: [directMessage({ id: "d-ancient", created_at: 1_699_999_000 })],
-        },
-      },
-    }, // page 2: entirely out of scope -> the real stop signal
+    }, // page 2: in scope — only reachable if the walk did NOT stop after page 1
   ]);
   try {
     const cursor = openFingerprintCursor(new Map());
@@ -728,16 +759,16 @@ test("collectDirectChatMessages: a mixed page (in-scope and out-of-scope rows) c
     );
 
     assert.deepEqual(
-      new Set(emitted.filter((r) => r.stream === "direct_chat_messages").map((r) => (r.data as { id: string }).id)),
-      new Set(["d-new", "d-late"]),
-      "both in-scope rows emit, including the out-of-order straggler after the out-of-scope row"
+      emitted.filter((r) => r.stream === "direct_chat_messages").map((r) => (r.data as { id: string }).id),
+      ["d-late"],
+      "page 2's in-scope message must be reached and emitted — the walk did not stop after the fully-out-of-scope page 1"
     );
     assert.equal(
       outcome.considered,
-      2,
-      "considered counts only the 2 in-scope rows across both pages — d-old and d-ancient are excluded"
+      1,
+      "considered counts only d-late — the 100 out-of-scope rows on page 1 are excluded, not silently kept either"
     );
-    assert.equal(outcome.failed, false, "a page fully out of scope is a clean, honest end of the declared boundary");
+    assert.equal(outcome.failed, false);
   } finally {
     restore();
   }

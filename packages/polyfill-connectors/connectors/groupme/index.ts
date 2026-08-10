@@ -641,16 +641,10 @@ interface PerConversationWalkResult {
  * only messages at-or-after `since`; a message before it is neither counted
  * (does not inflate `considered` with an out-of-scope row) nor emitted.
  *
- * Does NOT assume the page is sorted newest-first — GroupMe's docs describe
- * `before_id` pagination but make no ordering guarantee this connector can
- * verify from the response alone, so every message is checked individually
- * rather than stopping at the first in-page out-of-scope row. Returns
- * whether EVERY message on this page was out of scope (`pageFullyOutOfScope`)
- * — the caller only stops fetching further pages on that signal, which is
- * robust to a single non-monotonic straggler: one out-of-order early/late
- * message on an otherwise in-scope page keeps the walk going, and only a
- * page that is entirely out of scope is treated as having crossed the
- * boundary.
+ * `pageFullyOutOfScope` is true when EVERY message on this page is out of
+ * scope — the conservative, ordering-agnostic stop signal every caller can
+ * use safely: an entirely-out-of-scope page cannot contain a hidden in-scope
+ * row regardless of intra-page order.
  */
 function applySinceBoundToPage(
   messages: GroupMeMessage[],
@@ -661,6 +655,27 @@ function applySinceBoundToPage(
   }
   const inScope = messages.filter((msg) => msg.created_at >= sinceEpochSeconds);
   return { inScope, pageFullyOutOfScope: inScope.length === 0 };
+}
+
+/**
+ * Whether a page is genuinely `created_at`-descending (non-increasing,
+ * duplicates/ties allowed) — GroupMe's official `GET /groups/:id/messages`
+ * documents this ordering and that `before_id` returns the page immediately
+ * preceding it, so a page that actually satisfies this check licenses
+ * stopping at the first out-of-scope row without walking the rest of the
+ * page or the pages after it. Checked per page (not assumed) so a live
+ * response that violates the documented contract is caught rather than
+ * silently trusted.
+ */
+function isDescendingByCreatedAt(messages: GroupMeMessage[]): boolean {
+  for (let i = 1; i < messages.length; i += 1) {
+    const prev = messages[i - 1];
+    const curr = messages[i];
+    if (prev && curr && curr.created_at > prev.created_at) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function collectGroupMessagesForGroup(
@@ -721,7 +736,22 @@ async function collectGroupMessagesForGroup(
     // entirely outside the declared boundary. This is an honest, fully-
     // considered end of the DECLARED scope, not a truncation — `truncated`
     // stays false so the caller still commits STATE and a coverage claim.
+    // Ordering-agnostic: safe even if this page turns out not to be sorted.
     if (pageFullyOutOfScope) {
+      return { totalSeen, truncated: false };
+    }
+
+    // Fast path licensed by GroupMe's documented contract for THIS endpoint
+    // (GET /groups/:id/messages): created_at-descending, before_id returns
+    // the immediately-preceding page. A page that is genuinely descending
+    // AND contains at least one out-of-scope row means every message after
+    // that row — on this page and every subsequent page — is also out of
+    // scope, so the walk can stop here instead of fetching a page already
+    // known to be entirely out of scope. Verified per page, not assumed: a
+    // page that fails the descending check falls through to the ordinary
+    // page-length/page-cap end conditions below, the same conservative path
+    // used for the undocumented direct-message endpoint.
+    if (sinceEpochSeconds !== null && inScope.length < messages.length && isDescendingByCreatedAt(messages)) {
       return { totalSeen, truncated: false };
     }
 
@@ -893,6 +923,19 @@ interface DirectMessagesResponse {
  * was still genuinely observed. Propagates fetch/parse failures to the
  * caller rather than swallowing them, so a mid-chat failure cannot be
  * mistaken for "this chat has no more messages."
+ *
+ * Deliberately does NOT early-stop on a `since` boundary the way
+ * `collectGroupMessagesForGroup` does. GroupMe's official docs make an
+ * explicit ordering + pagination-adjacency contract for the GROUP messages
+ * endpoint (`GET /groups/:id/messages`), but document no equivalent
+ * guarantee for this DIRECT-message endpoint (`GET /chats/:id/messages`).
+ * Absent that authority, out-of-scope rows are filtered from
+ * counting/emission (so `considered`/`covered` stay honest for a declared
+ * scope) but the walk always continues to the natural end — an empty or
+ * short-of-PAGE_SIZE page — exactly as an unscoped run would. This trades
+ * away the performance win a validated ordering would allow, in exchange for
+ * never risking a silently-dropped in-scope message on an endpoint this
+ * connector cannot verify is sorted.
  */
 async function collectDirectChatMessagesForChat(
   token: string,
@@ -928,10 +971,12 @@ async function collectDirectChatMessagesForChat(
       return { totalSeen, truncated: false };
     }
 
-    // Same in-scope-only accounting as collectGroupMessagesForGroup: a page
+    // In-scope-only accounting, same as collectGroupMessagesForGroup: a page
     // spanning the boundary must not credit its out-of-scope tail as part of
-    // what was "considered".
-    const { inScope, pageFullyOutOfScope } = applySinceBoundToPage(messages, sinceEpochSeconds);
+    // what was "considered". No early-stop on `pageFullyOutOfScope` here —
+    // see the function doc comment: this endpoint's ordering is undocumented,
+    // so the walk always continues to the natural end.
+    const { inScope } = applySinceBoundToPage(messages, sinceEpochSeconds);
     totalSeen += inScope.length;
     await progressWithSignals("Fetched direct messages page", {
       stream: "direct_chat_messages",
@@ -945,12 +990,6 @@ async function collectDirectChatMessagesForChat(
       if (cursor.shouldEmit(record)) {
         await emitRecord("direct_chat_messages", record);
       }
-    }
-
-    // Same non-monotonic-safe stop condition as collectGroupMessagesForGroup:
-    // only a page that is entirely out of scope ends the walk cleanly.
-    if (pageFullyOutOfScope) {
-      return { totalSeen, truncated: false };
     }
 
     if (messages.length < PAGE_SIZE) {
