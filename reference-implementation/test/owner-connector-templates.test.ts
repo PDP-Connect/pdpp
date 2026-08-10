@@ -436,7 +436,7 @@ test("client grant bearer cannot list owner connector templates", async () => {
   });
 });
 
-test("UAT-exposed unproven owner-actionable connector has deterministic exposure and usable action", async () => {
+test("UAT-exposed experimental static-secret connector is visible without claiming production support", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -444,8 +444,8 @@ test("UAT-exposed unproven owner-actionable connector has deterministic exposure
   Object.assign(process.env, declaredSettings);
   try {
     await withServer(async ({ asUrl, rsUrl }) => {
-      // POSITIVE ORACLE: Load real steam (unproven static_secret, owner_actionable by browser-session path)
-      // Prove: with flag=ON, an owner-actionable unproven connector IS exposed with usable action
+      // Real proof-gated form: UAT can exercise it, while production support
+      // remains false until a live run promotes the manifest.
       const steamManifest = loadManifest("steam");
       await registerConnector(asUrl, steamManifest);
 
@@ -465,23 +465,12 @@ test("UAT-exposed unproven owner-actionable connector has deterministic exposure
       const setup = asRecord(steamRec.setup_plan);
       const listing = asRecord(steamRec.public_listing);
 
-      // Check steam's actionability (if it passes owner_actionable, flag=ON makes it exposed)
-      if (setup.owner_actionable === true) {
-        // POSITIVE: flag=ON + owner_actionable + unproven => MUST be exposed
-        assert.equal(steamRec.uat_expose_unlisted_connectors, true, "steam: MUST be UAT-exposed with flag=ON and owner_actionable");
-        assert.equal(listing.listed, false, "steam: public_listing.listed must stay false");
-        assert.equal(listing.status, "unproven", "steam: public_listing.status must stay unproven");
-
-        // Verify action is usable (either REST or owner_mediated browser)
-        const actions = Array.isArray(steamRec.supported_actions) ? steamRec.supported_actions : [];
-        const initiateAction = actions.find((a: unknown) => asRecord(a).family === "initiate_connection");
-        assert.ok(initiateAction, "steam: must have initiate_connection action when exposed");
-        const initiateRecord = asRecord(initiateAction);
-        assert.ok(
-          ["supported", "owner_mediated"].includes(String(initiateRecord.status)),
-          `steam: action must be supported or owner_mediated, got ${initiateRecord.status}`
-        );
-      }
+      assert.equal(steamRec.uat_expose_unlisted_connectors, true);
+      assert.equal(setup.catalog_disposition, "static_secret_experimental");
+      assert.equal(setup.owner_actionable, false, "UAT exposure must not promote production support");
+      assert.equal(listing.listed, false);
+      assert.equal(listing.status, "unproven");
+      assert.equal(actionByFamily(steamRec, "initiate_connection").status, "unsupported");
     });
   } finally {
     for (const [key, value] of priorSettings) {
@@ -494,7 +483,7 @@ test("UAT-exposed unproven owner-actionable connector has deterministic exposure
   }
 });
 
-test("with flag=ON, exposure fact tracks owner_actionable (no allowlist)", async () => {
+test("with flag=ON, exposure follows production or experimental actionability without an allowlist", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -519,15 +508,18 @@ test("with flag=ON, exposure fact tracks owner_actionable (no allowlist)", async
 
       assert.ok(steam, "steam must be registered");
 
-      // CRITICAL: exposure fact MUST equal owner_actionable (proves no allowlist)
+      // Production actionability and explicitly experimental actionability are
+      // separate facts. Either real setup path can be exercised in UAT.
       const steamRec = asRecord(steam);
       const uatExposed = steamRec.uat_expose_unlisted_connectors === true;
-      const isOwnerActionable = asRecord(steamRec.setup_plan).owner_actionable === true;
+      const setup = asRecord(steamRec.setup_plan);
+      const isUatActionable =
+        setup.owner_actionable === true || setup.catalog_disposition === "static_secret_experimental";
 
       assert.equal(
         uatExposed,
-        isOwnerActionable,
-        "steam: uat_expose_unlisted_connectors MUST equal owner_actionable (no allowlist, only generic gate)"
+        isUatActionable,
+        "steam: UAT exposure must follow a real production or experimental setup path"
       );
     });
   } finally {
@@ -567,8 +559,8 @@ test("UAT-exposed unproven connectors from real manifests prove no allowlist", a
       const { data } = asRecord(body);
       const templates = Array.isArray(data) ? data : [];
 
-      // For each real unproven connector: UAT exposure fact is tightly coupled to owner_actionable
-      // (this proves any connector that passes isOwnerActionablePlan is exposed, no allowlist)
+      // For each real unproven connector, exposure is derived from its setup
+      // plan rather than a connector-name allowlist.
       for (const connectorId of testConnectors) {
         const template = templates.find((t) => {
           const key = asRecord(t).connector_key;
@@ -577,14 +569,15 @@ test("UAT-exposed unproven connectors from real manifests prove no allowlist", a
         assert.ok(template, `${connectorId}: must be registered`);
 
         const setup = asRecord(template).setup_plan;
-        const isOwnerActionable = asRecord(setup).owner_actionable === true;
+        const isUatActionable =
+          asRecord(setup).owner_actionable === true ||
+          asRecord(setup).catalog_disposition === "static_secret_experimental";
         const uatExposed = asRecord(template).uat_expose_unlisted_connectors === true;
 
-        // Constraint: exposure IFF owner_actionable (proves no allowlist: not just steam/imessage/etc.)
         assert.equal(
           uatExposed,
-          isOwnerActionable,
-          `${connectorId}: uat_expose_unlisted_connectors must equal owner_actionable (no allowlist)`
+          isUatActionable,
+          `${connectorId}: UAT exposure must follow a real production or experimental setup path`
         );
       }
     });
@@ -620,10 +613,7 @@ test("without PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT, unproven connectors have uat_
     // Verify unproven connectors appear but with uat_expose_unlisted_connectors=false
     for (const connectorKey of connectorKeys) {
       const template = templates.find((t) => asRecord(t).connector_key === connectorKey);
-      assert.ok(
-        template,
-        `${connectorKey}: should appear in server response (manifest is registered)`
-      );
+      assert.ok(template, `${connectorKey}: should appear in server response (manifest is registered)`);
 
       // public_listing is honest
       const listing = asRecord(asRecord(template).public_listing);

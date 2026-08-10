@@ -186,6 +186,8 @@ export interface ReconcileSummary {
 
 export interface ReconcileOptions {
   enabled?: boolean;
+  /** Register shipped unlisted manifests for an explicit UAT deployment. */
+  includeUnlisted?: boolean;
   log?: (line: string) => void;
   manifestsDir?: string;
   /**
@@ -379,6 +381,7 @@ async function applyShippedManifest(
 }
 
 interface EntryContext {
+  includeUnlisted: boolean;
   log: ReconcileLog;
   manifestsDir: string;
   referenceFixtureFingerprints: Map<string, ManifestFingerprint>;
@@ -562,6 +565,19 @@ function isPubliclyListedShippedManifest(manifest: PolyfillManifest): boolean {
   return (publicListingRaw as { listed?: unknown }).listed === true;
 }
 
+function isUnprovenShippedManifest(manifest: PolyfillManifest): boolean {
+  const capabilities = (manifest as { capabilities?: unknown }).capabilities;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    return false;
+  }
+  const listing = (capabilities as { public_listing?: unknown }).public_listing;
+  if (!listing || typeof listing !== "object" || Array.isArray(listing)) {
+    return false;
+  }
+  const record = listing as { listed?: unknown; status?: unknown };
+  return record.listed === false && record.status === "unproven";
+}
+
 type ManifestEntryBranch =
   | { kind: "invalid"; delta: EntryDelta }
   | { kind: "valid"; shipped: PolyfillManifest; connectorId: string };
@@ -594,16 +610,20 @@ async function reconcileMissingManifestEntry(
   shipped: PolyfillManifest,
   connectorId: string,
   entryName: string,
-  log: ReconcileLog
+  ctx: Pick<EntryContext, "includeUnlisted" | "log">
 ): Promise<EntryDelta> {
-  if (!isPubliclyListedShippedManifest(shipped)) {
+  const isListed = isPubliclyListedShippedManifest(shipped);
+  const isUatCandidate = ctx.includeUnlisted && isUnprovenShippedManifest(shipped);
+  if (!(isListed || isUatCandidate)) {
     return { skipped: 1 };
   }
-  const registration = await applyShippedManifest(shipped, connectorId, entryName, log);
+  const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
   if (!registration.ok) {
     return { errors: 1 };
   }
-  log(`[manifest-reconcile] registered listed first-party manifest ${connectorId} from ${entryName}`);
+  ctx.log(
+    `[manifest-reconcile] registered ${isListed ? "listed" : "UAT"} first-party manifest ${connectorId} from ${entryName}`
+  );
   return { registered: 1 };
 }
 
@@ -695,7 +715,7 @@ async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<Ent
     // enablement — schedules still require an explicit operator action,
     // and the scheduler eligibility filter (refresh_policy.background_safe)
     // continues to gate background runs independently.
-    return reconcileMissingManifestEntry(loadedEntry.shipped, connectorId, entryName, ctx.log);
+    return reconcileMissingManifestEntry(loadedEntry.shipped, connectorId, entryName, ctx);
   }
   if (manifestsEqual(normalizeForComparison(loadedEntry.shipped), persisted)) {
     return reconcileUnchangedManifestEntry();
@@ -722,6 +742,7 @@ async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<Ent
 export async function reconcilePolyfillManifests(opts: ReconcileOptions = {}): Promise<ReconcileSummary> {
   const {
     enabled = true,
+    includeUnlisted = false,
     manifestsDir = defaultPolyfillManifestsDir(),
     referenceFixturesDir = defaultReferenceFixturesDir(),
     log = () => {
@@ -750,7 +771,7 @@ export async function reconcilePolyfillManifests(opts: ReconcileOptions = {}): P
   }
 
   const referenceFixtureFingerprints = await loadReferenceFixtureFingerprints(referenceFixturesDir);
-  const ctx: EntryContext = { log, manifestsDir, referenceFixtureFingerprints };
+  const ctx: EntryContext = { includeUnlisted, log, manifestsDir, referenceFixtureFingerprints };
   const summary: ReconcileSummary = { ...EMPTY_SUMMARY };
 
   for (const entry of entries) {

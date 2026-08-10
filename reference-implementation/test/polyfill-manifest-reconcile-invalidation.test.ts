@@ -684,9 +684,7 @@ test(
   "reconciliation does NOT invalidate an unrelated connector's records when a different connector declares record_identity.generation",
   withTmpDb(async ({ dir }) => {
     const otherConnectorId = "some-other-connector";
-    await registerConnector(
-      generationManifestV1({ connector_id: otherConnectorId, connector_key: otherConnectorId })
-    );
+    await registerConnector(generationManifestV1({ connector_id: otherConnectorId, connector_key: otherConnectorId }));
     await seedGenerationInstance("cin_other", "other@example.com", otherConnectorId);
     await ingestRecordForInstance(
       { connector_id: otherConnectorId, connector_instance_id: "cin_other" },
@@ -906,6 +904,50 @@ test(
     const registeredLine = lines.find((line) => line.includes("registered listed first-party manifest"));
     assert.ok(registeredLine, "reconciliation emits a register log line");
     assert.match(registeredLine, REGEXP_3);
+  })
+);
+
+test(
+  "explicit UAT reconciliation registers an unlisted shipped manifest without changing the default",
+  withTmpDb(async ({ dir }) => {
+    const manifestsDir = writeManifestsDir(dir, "polyfill", {
+      "seed-flip.json": shippedPolyfillManifest({
+        capabilities: { public_listing: { listed: false, status: "unproven" } },
+      }),
+    });
+    const referenceFixturesDir = writeManifestsDir(dir, "reference", {});
+
+    const summary = await reconcilePolyfillManifests({
+      enabled: true,
+      includeUnlisted: true,
+      manifestsDir,
+      referenceFixturesDir,
+    });
+
+    assert.equal(summary.registered, 1);
+    assert.equal(summary.skipped, 0);
+    assert.ok(await getConnectorManifest(CONNECTOR_ID));
+  })
+);
+
+test(
+  "UAT reconciliation does not register a hidden manifest that is not an unproven candidate",
+  withTmpDb(async ({ dir }) => {
+    const manifestsDir = writeManifestsDir(dir, "polyfill", {
+      "seed-flip.json": shippedPolyfillManifest({
+        capabilities: { public_listing: { listed: false, status: "internal" } },
+      }),
+    });
+    const summary = await reconcilePolyfillManifests({
+      enabled: true,
+      includeUnlisted: true,
+      manifestsDir,
+      referenceFixturesDir: writeManifestsDir(dir, "reference", {}),
+    });
+
+    assert.equal(summary.registered, 0);
+    assert.equal(summary.skipped, 1);
+    assert.equal(await getConnectorManifest(CONNECTOR_ID), null);
   })
 );
 

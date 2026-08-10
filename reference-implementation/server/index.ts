@@ -6963,6 +6963,7 @@ export async function startServer(opts: ServerOpts = {}) {
         : !!opts.reconcilePolyfillManifests;
     const summary = await reconcilePolyfillManifests({
       enabled: reconcileEnabled,
+      includeUnlisted: process.env.PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT === "1",
       log: (msg) => logger.info(msg),
     });
     if (summary.scanned > 0) {

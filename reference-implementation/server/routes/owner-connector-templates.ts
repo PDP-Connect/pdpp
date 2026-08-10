@@ -202,6 +202,10 @@ function isOwnerActionablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>
   return isSupportedOwnerActionPlan(plan) || isOwnerSessionBrowserActionPlan(plan);
 }
 
+function isUatExposablePlan(plan: ReturnType<typeof buildConnectionSetupPlan>): boolean {
+  return [isOwnerActionablePlan(plan), plan.catalogDisposition === "static_secret_experimental"].includes(true);
+}
+
 function buildTemplateSupportedActions(args: {
   manifest: ConnectorManifestLike;
   plan: ReturnType<typeof buildConnectionSetupPlan>;
@@ -295,7 +299,7 @@ function projectTemplate(
   const listing = manifest.capabilities?.public_listing;
   const isUnproven = listing?.listed === false && typeof listing?.status === "string" && listing.status === "unproven";
   const uatExposeUnlistedConnectors =
-    ctx.uatExposeUnlistedConnectors === true && isUnproven && isOwnerActionablePlan(plan);
+    ctx.uatExposeUnlistedConnectors === true && isUnproven && isUatExposablePlan(plan);
   return {
     connection_count: connections.length,
     connections,
