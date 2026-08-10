@@ -98,15 +98,21 @@ test("timed semantic admission removes its waiter without stealing a later FIFO 
   }
 });
 
-test("with no PDPP_SEMANTIC_WORK_LIMIT set, admission is not pinned to 1 on a multi-core host", async () => {
+test("PDPP_SEMANTIC_WORK_LIMIT=2 admits two concurrent jobs (proves the admission mechanism, not a specific default)", async () => {
   // Regression for the stale hardcoded DEFAULT_SEMANTIC_WORK_LIMIT=1: this
-  // proves the *unset* env var path now derives its default from the CPU
-  // count (server/cpu-quota.ts) instead of always admitting exactly one job
-  // at a time. This suite's own CI/dev host reliably reports >1 CPU via
-  // os.availableParallelism(); a regression back to a hardcoded 1 would fail
-  // this test by never reaching `active: 2`.
+  // proves the semaphore itself admits >1 concurrently when configured to.
+  // Deliberately does NOT assert on the *unconfigured* default reached via
+  // effectiveCpuCount()/effectiveMemoryBudgetBytes() — those read the REAL
+  // host/cgroup state (server/cpu-quota.ts's REAL_PROBE), which this test
+  // process cannot control and which correctly (by design) floors to 1
+  // whenever the cgroup quota is ambiguous, e.g. this exact sandbox: a
+  // cgroup IS mounted (nested under a scope this env's fixed
+  // /sys/fs/cgroup/cpu.max read does not resolve) but the quota file isn't
+  // at the path this module checks, so the safe "unknown" floor applies.
+  // See test/cpu-quota.test.ts and test/embedding-concurrency.test.ts for
+  // injectable-probe coverage of the actual derivation logic.
   const previousLimit = process.env.PDPP_SEMANTIC_WORK_LIMIT;
-  delete process.env.PDPP_SEMANTIC_WORK_LIMIT;
+  process.env.PDPP_SEMANTIC_WORK_LIMIT = "2";
   const firstEntered = deferred();
   const secondEntered = deferred();
   const releaseBoth = deferred();

@@ -191,15 +191,18 @@ test("local transformer executor bounds parent admission before writing and reco
   await executor.close();
 });
 
-test("with no workLimit option and no PDPP_LOCAL_TRANSFORMER_WORK_LIMIT set, the child env is not pinned to 1 on a multi-core host", async () => {
+test("PDPP_LOCAL_TRANSFORMER_WORK_LIMIT=2 forwards that value to the child env (proves the override path, not a specific default)", async () => {
   // Regression for the stale hardcoded DEFAULT_WORK_LIMIT=1: proves the
-  // *default* path (neither the constructor option nor the env var
-  // supplied) now forwards a CPU-derived limit to the child, not a
-  // hardcoded 1. This test's own host reliably reports >1 CPU via
-  // os.availableParallelism(), so a regression back to a hardcoded default
-  // would fail this assertion.
+  // executor forwards a >1 workLimit to the child when configured to.
+  // Deliberately does NOT assert on the *unconfigured* default reached via
+  // embedding-concurrency.ts's resolveEmbeddingConcurrency() (which reads
+  // the REAL host/cgroup state) — see the identical note in
+  // test/semantic-work-admission.test.ts for why that default correctly
+  // (by design) floors to 1 in this exact sandbox. Injectable-probe
+  // coverage of the derivation itself lives in test/cpu-quota.test.ts and
+  // test/embedding-concurrency.test.ts.
   const previous = process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT;
-  delete process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT;
+  process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT = "2";
   const children: FakeChild[] = [];
   let capturedEnv: NodeJS.ProcessEnv | undefined;
   try {
@@ -208,11 +211,7 @@ test("with no workLimit option and no PDPP_LOCAL_TRANSFORMER_WORK_LIMIT set, the
     });
     const first = executor.embed("first", "backend-a", {});
     assert.ok(capturedEnv, "spawnChild must have been called");
-    const forwarded = Number(capturedEnv?.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT);
-    assert.ok(
-      Number.isInteger(forwarded) && forwarded > 1,
-      `expected a CPU-derived work limit > 1, got ${capturedEnv?.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT}`
-    );
+    assert.equal(capturedEnv?.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT, "2");
     // biome-ignore lint/style/useDestructuring: localized test assertion preserves its explicit contract.
     const child = children[0];
     assert.ok(child);

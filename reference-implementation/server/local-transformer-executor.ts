@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { effectiveCpuCount } from "./cpu-quota.ts";
+import { resolveEmbeddingConcurrency } from "./embedding-concurrency.ts";
 
 export class LocalTransformerExecutorError extends Error {
   code: string;
@@ -116,17 +116,17 @@ const MAX_QUEUE_LIMIT = 256;
 const PROC_RSS_PATTERN = /^VmRSS:\s+(\d+)\s+kB$/m;
 
 /**
- * CPU-derived default work limit, capped at MAX_WORK_LIMIT. Mirrors
- * server/search-semantic.ts's defaultSemanticWorkLimit() — this executor's
- * own workLimit is the layer that actually bounds concurrent child-process
- * embed calls; sizing only the semantic-work semaphore above it (limit up
- * to 8) while leaving this default at a hardcoded 1 would still serialize
- * every call here regardless of the semaphore's admission count. See
- * cpu-quota.ts for why this reads the cgroup quota instead of
- * os.availableParallelism() directly.
+ * Default work limit, capped at MAX_WORK_LIMIT. Derived from the SAME
+ * `resolveEmbeddingConcurrency()` call (embedding-concurrency.ts) that
+ * `search-semantic.ts`'s `defaultSemanticWorkLimit()` uses — this
+ * executor's own workLimit is the layer that actually bounds concurrent
+ * child-process embed calls; sizing only the semantic-work semaphore above
+ * it while leaving this default independently derived (or hardcoded) risks
+ * the two disagreeing. See embedding-concurrency.ts for why this is a
+ * joint CPU+memory+ONNX-thread derivation, not CPU count alone.
  */
 function defaultWorkLimit(): number {
-  return Math.min(effectiveCpuCount(), MAX_WORK_LIMIT);
+  return Math.min(resolveEmbeddingConcurrency().workLimit, MAX_WORK_LIMIT);
 }
 
 function positiveEnv(name: string, fallback: number, maximum: number) {

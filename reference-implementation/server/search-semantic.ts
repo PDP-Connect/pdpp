@@ -65,8 +65,8 @@ import {
   resolveFanInBindings,
 } from "./connection-identity.ts";
 import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
-import { effectiveCpuCount } from "./cpu-quota.ts";
 import { getDb } from "./db.ts";
+import { intraOpNumThreadsForWorkLimit, resolveEmbeddingConcurrency } from "./embedding-concurrency.ts";
 import { LocalTransformerExecutor } from "./local-transformer-executor.ts";
 import { assertGrantedManifestReadAuthority, assertOwnerSearchFilterAuthority } from "./manifest-read-authority.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
@@ -553,18 +553,28 @@ let activeSemanticWork = 0;
 const semanticWorkWaiters: SemanticWorkWaiter[] = [];
 
 /**
- * Highest allowed step at or below the effective CPU count. The benchmark
- * harness (scripts/benchmark-local-transformer.ts) measured concurrency
- * [1, 2, 4, 8] on a 24-core host and found 8 reproducibly ~2-3x faster than
- * 1 (median 520ms vs 1496ms for 100 embeds, repeated run: 363ms vs 553ms;
- * output bitwise-identical to the concurrency-1 baseline at every step —
- * see /tmp/embedding-transformer-benchmark-0809.json). That result does not
- * transfer to a CPU-constrained deployment: os.availableParallelism()
- * ignores cgroup quotas (verified: reports 24 inside `docker run --cpus=1`
- * on this host), so sizing off it directly would set limit=8 inside the
- * shipped Fly.io reference config's single shared vCPU
- * (deploy/flyio/fly.toml). effectiveCpuCount() reads the actual cgroup
- * quota first, so a 1-vCPU container still gets limit=1.
+ * Admission limit derived from `resolveEmbeddingConcurrency()`
+ * (embedding-concurrency.ts) — the SAME joint CPU+memory+ONNX-thread
+ * derivation the transformer executor's own `workLimit` default uses (see
+ * `local-transformer-executor.ts`'s `defaultWorkLimit`), so the two layers
+ * cannot disagree. Snapped to the explicit `[1, 2, 4, 8]` step set to match
+ * the concurrency levels this project's own benchmark grid actually
+ * measured (scripts/benchmark-local-transformer.ts), never an interpolated
+ * value nobody tested.
+ *
+ * The naive version of this function — CPU count alone, no memory or
+ * ONNX-thread awareness — was replaced after a controlled benchmark
+ * isolating those variables showed it was actively counterproductive: on
+ * this box, `workLimit=8` with ONNX Runtime's default (unset)
+ * `intraOpNumThreads` was CONSISTENTLY THE WORST measured configuration
+ * (630-836ms median for 100 embeds across 3 runs), because ONNX Runtime
+ * already spins up one native thread per core for a single session by
+ * default (confirmed against https://onnxruntime.ai/docs/performance/tune-performance/threading.html
+ * and the installed onnxruntime-common@1.24.3 SessionOptions type) — eight
+ * concurrent JS-level calls meant eight sessions all fighting over the same
+ * physical cores. `resolveEmbeddingConcurrency` fixes this by deriving
+ * `workLimit` and `intraOpNumThreads` together so their product never
+ * exceeds the CPU budget.
  */
 export function semanticWorkLimitStepForCpuCount(cpuCount: number): number {
   let selected: number = SEMANTIC_WORK_LIMIT_STEPS[0];
@@ -577,13 +587,52 @@ export function semanticWorkLimitStepForCpuCount(cpuCount: number): number {
 }
 
 function defaultSemanticWorkLimit(): number {
-  return semanticWorkLimitStepForCpuCount(effectiveCpuCount());
+  return semanticWorkLimitStepForCpuCount(resolveEmbeddingConcurrency().workLimit);
 }
 
 function configuredSemanticWorkLimit() {
   const fallback = defaultSemanticWorkLimit();
   const requested = parsePositiveInteger(process.env.PDPP_SEMANTIC_WORK_LIMIT, fallback, "PDPP_SEMANTIC_WORK_LIMIT");
   return (SEMANTIC_WORK_LIMIT_STEPS as readonly number[]).includes(requested) ? requested : fallback;
+}
+
+let loggedEmbeddingConcurrencyMismatch = false;
+
+/**
+ * Warns once (not per-embed) when an operator has explicitly set BOTH
+ * PDPP_SEMANTIC_WORK_LIMIT and PDPP_LOCAL_TRANSFORMER_WORK_LIMIT to
+ * different values. This is not unsafe by itself (the semaphore is always
+ * the outer admission gate, so a higher executor workLimit than semaphore
+ * limit just goes unused) — it is a signal the operator's two overrides
+ * disagree about intended concurrency, which is worth surfacing since
+ * `intraOpNumThreads` is sized to the semaphore's limit, not the
+ * executor's: if the executor's explicit workLimit is actually LOWER than
+ * the semaphore's, embed calls will queue there instead of running with
+ * the thread count this function chose for them, which is safe but not
+ * the operator's evident intent.
+ */
+function warnOnEmbeddingConcurrencyMismatch(semanticWorkLimit: number): void {
+  if (loggedEmbeddingConcurrencyMismatch) {
+    return;
+  }
+  const explicitSemantic = process.env.PDPP_SEMANTIC_WORK_LIMIT;
+  const explicitExecutor = process.env.PDPP_LOCAL_TRANSFORMER_WORK_LIMIT;
+  if (explicitSemantic === undefined || explicitExecutor === undefined) {
+    return;
+  }
+  const executorWorkLimit = parsePositiveInteger(
+    explicitExecutor,
+    semanticWorkLimit,
+    "PDPP_LOCAL_TRANSFORMER_WORK_LIMIT"
+  );
+  if (executorWorkLimit === semanticWorkLimit) {
+    return;
+  }
+  loggedEmbeddingConcurrencyMismatch = true;
+  console.warn(
+    `[search-semantic] PDPP_SEMANTIC_WORK_LIMIT=${explicitSemantic} and PDPP_LOCAL_TRANSFORMER_WORK_LIMIT=${explicitExecutor} disagree; ` +
+      `embedding threads are sized to the semantic-work limit (${semanticWorkLimit}), so a lower executor workLimit will queue jobs instead of running them concurrently, and a higher one leaves unused admission capacity.`
+  );
 }
 
 function configuredSemanticWorkQueueLimit() {
@@ -854,6 +903,14 @@ export function makeLocalTransformerBackend(
 ): SemanticEmbeddingBackend {
   let lastLoadError: unknown = null;
   const executor = new LocalTransformerExecutor(executorOptions);
+  // Threads are sized to the ACTUAL effective semantic-work admission
+  // limit (configuredSemanticWorkLimit(), which honors an explicit
+  // PDPP_SEMANTIC_WORK_LIMIT override), not just this module's own
+  // unconfigured default — an operator who raises the semaphore without
+  // touching PDPP_LOCAL_TRANSFORMER_WORK_LIMIT still gets threads divided
+  // across the concurrency that will actually run.
+  const intraOpNumThreads = intraOpNumThreadsForWorkLimit(configuredSemanticWorkLimit());
+  warnOnEmbeddingConcurrencyMismatch(configuredSemanticWorkLimit());
   const initialCacheStats = modelCacheStats(config);
   const initialCachePresent = modelCachePresent(config);
   let preparation: SemanticEmbeddingWarmStatus = {
@@ -897,7 +954,7 @@ export function makeLocalTransformerBackend(
         await executor.embed(
           String(text || ""),
           `${config.profileId}:${config.modelId}:${config.dtype}:${config.dimensions}:${config.distanceMetric}`,
-          config
+          { ...config, intraOpNumThreads }
         ),
         config.dimensions
       );
