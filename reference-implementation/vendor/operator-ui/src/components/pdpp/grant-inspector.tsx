@@ -28,7 +28,7 @@ function DateLike({ value }: { value: string | null | undefined }) {
 
 // ─── Grant Inspector ─────────────────────────────────────────────────────────
 
-// Props contract — provenance of each field (see spec §6 Grant):
+// Props contract — provenance of each field (see spec §7 Grant):
 //
 // ALL fields are protocol facts — the grant is an immutable consent artifact.
 // No client-claimed content appears here; that was resolved at consent time.
