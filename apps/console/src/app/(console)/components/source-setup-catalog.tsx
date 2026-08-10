@@ -229,26 +229,27 @@ function ExistingSourceLinks({
   );
 }
 
-/**
- * The one-line `sourceMethodLine` for an entry with no setup path states a
- * fact ("No proven setup path is available in this dashboard.") and stops
- * there. On its own that is the dead end the owner complained about: it never
- * says WHY the path is missing or who could change it.
- *
- * `sourceSetupGuidance` carries exactly that missing half — named deployment
- * blockers, a runbook path, or the connector key and reported setup state an
- * operator needs — so an unavailable card renders it inline beneath the fact.
- * Available entries are unaffected: their next-step button already says where
- * to act, and repeating the guidance there would just be noise.
- */
-function SourceUnavailableGuidance({ entry }: { entry: ConnectorCatalogEntry }) {
-  if (sourceSetupAvailability(entry) !== "not_available_here") {
+
+function SourceExternalDocs({ entry }: { entry: ConnectorCatalogEntry }) {
+  if (entry.externalDocs.length === 0) {
     return null;
   }
   return (
-    <p className="pdpp-caption mt-2 text-muted-foreground" data-testid="source-unavailable-guidance">
-      {sourceSetupGuidance(entry)}
-    </p>
+    <div className="flex flex-wrap gap-x-3 gap-y-1">
+      <span className="pdpp-caption text-muted-foreground">Provider documentation:</span>
+      {entry.externalDocs.map((doc) => (
+        <a
+          className="pdpp-caption text-foreground underline underline-offset-4"
+          href={doc.url}
+          key={`${entry.connectorKey}:${doc.url}`}
+          rel="noreferrer"
+          target="_blank"
+          title="Opens in a new tab"
+        >
+          {doc.label} (opens in a new tab)
+        </a>
+      ))}
+    </div>
   );
 }
 
@@ -256,18 +257,23 @@ function SourceSetupDetails({ entry }: { entry: ConnectorCatalogEntry }) {
   const guidance = sourceSetupGuidance(entry);
   const hasRichImportDetail = entry.disposition === "manual_upload_connect" && entry.acquisitionPaths.length > 0;
 
-  if (!hasRichImportDetail) {
+  if (!hasRichImportDetail && entry.externalDocs.length === 0) {
     return null;
   }
 
   return (
     <details className="group mt-2" data-testid="source-setup-details">
       <summary className="pdpp-caption cursor-pointer list-none text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
-        Show import options
+        {hasRichImportDetail ? "Show import options" : "Provider documentation"}
       </summary>
       <div className="mt-2 grid gap-2">
-        <p className="pdpp-caption text-muted-foreground">{guidance}</p>
-        <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
+        {hasRichImportDetail ? (
+          <>
+            <p className="pdpp-caption text-muted-foreground">{guidance}</p>
+            <SourceAcquisitionPaths paths={entry.acquisitionPaths} />
+          </>
+        ) : null}
+        <SourceExternalDocs entry={entry} />
       </div>
     </details>
   );
@@ -302,7 +308,6 @@ function SourceSetupCard({
           </span>
         </div>
         <p className="pdpp-caption mt-1 text-muted-foreground">{sourceMethodLine(entry, existingSources.length)}</p>
-        <SourceUnavailableGuidance entry={entry} />
         <SourceSetupContext entry={entry} />
         <ExistingSourceLinks connectorKey={entry.connectorKey} sources={existingSources} />
         <SourceSetupDetails entry={entry} />
@@ -333,56 +338,6 @@ function SourceSetupCard({
   );
 }
 
-function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEntry[] }) {
-  if (entries.length === 0) {
-    return null;
-  }
-  return (
-    <details className="rounded-sm border border-border/80 bg-muted/20 p-3" data-testid="server-setup-summary">
-      <summary className="pdpp-caption cursor-pointer text-muted-foreground">
-        {entries.length} source{entries.length === 1 ? "" : "s"} waiting on server settings
-      </summary>
-      <div className="mt-3 grid gap-3">
-        <p className="pdpp-caption text-muted-foreground">
-          Each source below lists the exact settings it is waiting on. Set them as environment variables where this
-          instance runs (e.g. in <code className="pdpp-caption">.env.local</code> at the deployment root), then restart
-          the server — the source becomes available here automatically once its settings are present.
-        </p>
-        <ul className="grid gap-2">
-          {entries.map((entry) => (
-            <li className="grid gap-2" key={entry.connectorKey}>
-              <div className="min-w-0">
-                <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
-                <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
-                <SourceSetupContext entry={entry} />
-              </div>
-              <p className="pdpp-caption text-muted-foreground" data-testid="server-setup-prerequisites">
-                {sourceSetupGuidance(entry)}
-              </p>
-              {entry.externalDocs.length > 0 ? (
-                <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  <span className="pdpp-caption text-muted-foreground">Provider documentation:</span>
-                  {entry.externalDocs.map((doc) => (
-                    <a
-                      className="pdpp-caption text-foreground underline underline-offset-4"
-                      href={doc.url}
-                      key={`${entry.connectorKey}:${doc.url}`}
-                      rel="noreferrer"
-                      target="_blank"
-                      title="Opens in a new tab"
-                    >
-                      {doc.label} (opens in a new tab)
-                    </a>
-                  ))}
-                </div>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </div>
-    </details>
-  );
-}
 
 function ExperimentalSetupSummary({
   entries,
@@ -407,33 +362,6 @@ function ExperimentalSetupSummary({
   );
 }
 
-function UnavailableSourceSummary({ entries }: { entries: readonly ConnectorCatalogEntry[] }) {
-  if (entries.length === 0) {
-    return null;
-  }
-  return (
-    <ul className="mt-3 grid gap-2" data-testid="unavailable-source-summary">
-      {entries.map((entry) => {
-        const status = sourceSetupStatus(entry);
-        return (
-          <li className="flex flex-wrap items-center justify-between gap-2" key={entry.connectorKey}>
-            <div className="min-w-0">
-              <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
-              <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
-              {/* `sourceMethodLine` states the fact ("no proven setup path"); on
-                  its own that is the dead end the owner complained about. The
-                  guidance line carries the missing half — named blockers, a
-                  runbook path, or the connector key and reported setup state an
-                  operator can act on. */}
-              <SourceUnavailableGuidance entry={entry} />
-            </div>
-            <span className={`pdpp-eyebrow rounded border px-1.5 py-0.5 ${status.tone}`}>{status.label}</span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
 
 function SourceSetupCardList({
   entries,
@@ -478,13 +406,11 @@ export function SourceSetupCatalog({
 }) {
   const filtered = filterSourceCatalog(catalog, query);
   const available = filtered.filter((entry) => sourceSetupAvailability(entry) === "available_now");
-  const serverSetup = filtered.filter((entry) => sourceSetupAvailability(entry) === "requires_server_setup");
   const experimental = filtered.filter((entry) => sourceSetupAvailability(entry) === "experimental_opt_in");
-  const unavailable = filtered.filter((entry) => sourceSetupAvailability(entry) === "not_available_here");
-  const hasQuery = query.trim().length > 0;
+  const actionable = [...available, ...experimental];
   return (
     <Section
-      description="Start with sources this dashboard can add now. Other connector entries are separated so they do not look like available setup paths."
+      description="Add sources this dashboard can set up now."
       title="Add data"
     >
       <form action={action} className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
@@ -496,7 +422,7 @@ export function SourceSetupCatalog({
           Search
         </IcButton>
       </form>
-      {filtered.length > 0 ? (
+      {actionable.length > 0 ? (
         <div className="grid gap-5">
           {available.length > 0 ? (
             <SourceSetupCardList entries={available} existingSourcesByConnector={existingSourcesByConnector} />
@@ -506,18 +432,7 @@ export function SourceSetupCatalog({
             </p>
           )}
 
-          <ServerSetupSummary entries={serverSetup} />
-
           <ExperimentalSetupSummary entries={experimental} existingSourcesByConnector={existingSourcesByConnector} />
-
-          {unavailable.length > 0 ? (
-            <details className="rounded-md border border-border/80 bg-muted/20 p-3" open={hasQuery}>
-              <summary className="pdpp-caption cursor-pointer text-muted-foreground">
-                Sources not available from this page ({unavailable.length})
-              </summary>
-              <UnavailableSourceSummary entries={unavailable} />
-            </details>
-          ) : null}
         </div>
       ) : (
         <p className="pdpp-caption rounded-md border border-border/80 border-dashed p-4 text-muted-foreground">

@@ -108,14 +108,6 @@ const SOURCE_CARD_RE = /data-testid=\{`source-setup-\$\{entry\.connectorKey\}`\}
 const SOURCE_ACQUISITION_PATHS_RE = /data-testid="source-acquisition-paths"/;
 const SOURCE_ACQUISITION_PATH_RE = /data-testid="source-acquisition-path"/;
 const OTHER_COVERAGE_PATHS_RE = /Other ways to add data/;
-const UNAVAILABLE_GROUP_RE = /Sources not available from this page/;
-const SERVER_SETUP_GROUP_RE = /waiting on server settings/;
-const SERVER_SETUP_SUMMARY_RE = /data-testid="server-setup-summary"/;
-// The owner's reported dead end: told he was blocked, offered no path. Pin
-// that the summary always says WHERE to act (env vars + .env.local), never
-// just that this dashboard can't do it.
-const SERVER_SETUP_HAS_PATH_RE = /environment variables[\s\S]{0,200}\.env\.local/;
-const SERVER_SETUP_NOT_A_DEAD_END_RE = /does not edit provider applications here/;
 const IMPORT_OPTIONS_DISCLOSURE_RE = /Show import options/;
 const GENERIC_WHY_THIS_RE = /Why this, and what to expect/;
 const SOURCE_PROVIDER_SPECIFIC_COPY_RE =
@@ -163,15 +155,6 @@ test("Sources owns the add-source catalog route", async () => {
   assert.match(catalog, SOURCE_ACQUISITION_PATH_RE);
   assert.match(catalog, OTHER_COVERAGE_PATHS_RE);
   assert.match(catalog, IMPORT_OPTIONS_DISCLOSURE_RE);
-  assert.match(catalog, UNAVAILABLE_GROUP_RE);
-  assert.match(catalog, SERVER_SETUP_GROUP_RE);
-  assert.match(catalog, SERVER_SETUP_SUMMARY_RE);
-  assert.match(catalog, SERVER_SETUP_HAS_PATH_RE, "the server-setup summary must say where to configure the settings");
-  assert.doesNotMatch(
-    catalog,
-    SERVER_SETUP_NOT_A_DEAD_END_RE,
-    "the server-setup summary must not tell the owner this dashboard cannot help without also giving a path"
-  );
   assert.doesNotMatch(catalog, GENERIC_WHY_THIS_RE);
 });
 

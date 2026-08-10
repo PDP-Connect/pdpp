@@ -57,7 +57,6 @@ const CATALOG_SOURCE_DETAILS_LINK =
 const STATUS_EXPLORE_LINK = /href=\{sourceRecordsHref\(status\)\}[\s\S]*Open in Explore/;
 const STATUS_SOURCE_DETAILS_LINK = /href=\{sourceDetailHref\(status\)\}[\s\S]*Source details/;
 const CONNECTOR_LEVEL_STATUS_RECORDS_LINK = /href=\{`\/sources\/\$\{encodeURIComponent\(status\.connector_id\)\}`\}/;
-const SERVER_SETUP_SUMMARY = /data-testid="server-setup-summary"/;
 const OWNER_SAFE_STORAGE_COPY = /stored for this source and is not exposed to connected apps or clients/;
 const VALIDATES_BEFORE_COMMIT_COPY = /validates before committing/i;
 const COVERAGE_RECEIPT_COPY = /coverage receipt|coverage provenance/i;
@@ -115,8 +114,6 @@ test("source card keeps the support fact distinct from the recommended next acti
   assert.match(src, IMPORT_OPTIONS_DISCLOSURE);
   // The existing-vs-new source choice belongs on the import page, not in the picker.
   assert.doesNotMatch(src, EXISTING_SOURCE_REUSE);
-  // Server prerequisites are summarized outside the primary add-now rows.
-  assert.match(src, SERVER_SETUP_SUMMARY);
 });
 
 test("source catalog exposes exact existing-account links without turning the picker into a reuse flow", async () => {
