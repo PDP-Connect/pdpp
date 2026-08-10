@@ -86,21 +86,20 @@ follows in a later session.
    Skim the JSON examples and detailed schemas. Use field tables as reference
    when a term is unclear. You do not need to memorize every member.
 
-### Foundations (only if RFC 9396 is unfamiliar)
+### Context (optional, about 5 minutes)
 
-- [RFC 9396: OAuth 2.0 Rich Authorization Requests](https://www.rfc-editor.org/rfc/rfc9396.html),
-  Abstract and Section 2.1. PDPP carries the selection request in
-  `authorization_details`.
+- UK Open Banking,
+  [Account Access Consent elements](https://openbankinguk.github.io/read-write-api-site3/v4.0.1/profiles/account-and-transaction-api-profile.html#consent-elements):
+  permissions, consent expiration, and the transaction date range. Compare
+  these with PDPP's grant lifetime and data time range.
 
-Questions we will explore:
+Questions for discussion:
 
-- Does the record model give implementations a usable shared shape without
-  prescribing collection or storage?
-- Which distinctions must remain visible in consent, especially between
-  enforceable constraints, policy declarations, and client claims?
-- What must be resolved and pinned when a selection request becomes a grant
-  so that a resource server can enforce it later?
-- For a `provider_native` source, what should declare streams, schemas, and
-  consent-display metadata? The draft does not yet decide whether the
-  connector manifest should be reused, adapted, or replaced by a
-  provider-published declaration.
+- What belongs in the common RECORD envelope, and what should each stream
+  schema define?
+- For a `provider_native` source, where do stream definitions, schemas, and
+  consent metadata come from?
+- Which terms can the protocol enforce, and how should consent distinguish
+  policy declarations from client claims?
+- Does the grant pin enough information to remain enforceable if a manifest
+  or view changes?
