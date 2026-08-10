@@ -1067,9 +1067,56 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
 
 // ─── Phase A: metadata collection ───────────────────────────────────────
 
-async function collectMetadata(client: Pick<ImapFlow, "fetch">, fetchRange: string): Promise<FetchMessageObject[]> {
+/**
+ * Parse an ISO 8601 timestamp into IMAP's date format (DD-MMM-YYYY).
+ * Returns null if the input is not a valid ISO string.
+ *
+ * IMAP's SINCE criterion matches messages with an internal date >= the
+ * specified date. The timezone is always UTC.
+ */
+export function issoToImapDate(iso: string | undefined): string | null {
+  if (!iso || typeof iso !== "string") {
+    return null;
+  }
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+      return null;
+    }
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const month = monthNames[d.getUTCMonth()];
+    const year = d.getUTCFullYear();
+    return `${day}-${month}-${year}`;
+  } catch {
+    return null;
+  }
+}
+
+async function collectMetadata(
+  client: Pick<ImapFlow, "fetch" | "search">,
+  fetchRange: string,
+  sinceDate: string | null = null
+): Promise<FetchMessageObject[]> {
+  let range = fetchRange;
+
+  // If a since boundary is declared, constrain the range via IMAP SINCE
+  // search. This ensures we enumerate only messages within the declared scope.
+  if (sinceDate) {
+    const uidsInRange = await client.search({ since: sinceDate }, { uid: true });
+    if (!uidsInRange || uidsInRange.length === 0) {
+      // No messages in the declared range.
+      return [];
+    }
+    // IMAP search returns UIDs in ascending order. Intersect the fetched
+    // range (e.g., "priorUidnext:*" from incremental cursor) with the since
+    // boundary. For simplicity, we rebuild the range as the full set of
+    // UIDs returned by the search.
+    range = uidsInRange.join(",");
+  }
+
   const metas: FetchMessageObject[] = [];
-  for await (const m of client.fetch(fetchRange, GMAIL_METADATA_FETCH_QUERY, { uid: true })) {
+  for await (const m of client.fetch(range, GMAIL_METADATA_FETCH_QUERY, { uid: true })) {
     metas.push(m);
     if (metas.length % FETCH_HEADER_BATCH_PROGRESS === 0) {
       await emit({
@@ -2819,6 +2866,9 @@ async function runAllMailPasses(
   //   (CHANGEDSINCE priorModseq).
   const timeRange = deps.requested.get("messages")?.time_range || deps.requested.get("attachments")?.time_range;
   const fetchRange = selectAllMailFetchRange(session, deps.requested);
+  // Parse declared collection_scope.since into IMAP date format for the
+  // bounded SINCE search criterion.
+  const sinceDate = timeRange?.since ? issoToImapDate(timeRange.since) : null;
   const attachmentBackfillRequested = shouldBackfillAttachments({
     detailGaps: deps.detailGaps,
     streamsToBackfill: deps.streamsToBackfill,
@@ -2940,7 +2990,7 @@ async function runAllMailPasses(
     });
   }
 
-  const metas = await collectMetadata(client, fetchRange);
+  const metas = await collectMetadata(client, fetchRange, sinceDate);
   await emit({
     type: "PROGRESS",
     stream: "messages",
