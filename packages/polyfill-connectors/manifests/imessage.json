@@ -213,5 +213,10 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "attachment_tables_missing": "Your Messages database is missing attachment data we need",
+    "chat_handle_join_table_missing": "Your Messages database is missing chat-participant data we need",
+    "message_date_unusable": "We skipped a message with a date we couldn't read"
+  }
 }

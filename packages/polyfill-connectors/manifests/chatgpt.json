@@ -574,5 +574,14 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "empty_detail": "We opened this conversation but found no messages to import",
+    "http_error": "We hit a network problem talking to the service",
+    "missing_mapping": "We opened this conversation but it had no message data to read",
+    "not_available": "This data isn't available through the current connection",
+    "pagination_cap_truncated": "There were more ChatGPT results than we could safely page through in one run, so we stopped early",
+    "parse_error": "ChatGPT sent back a response we couldn't read",
+    "shape_check_failed": "The data didn't look like we expected"
+  }
 }

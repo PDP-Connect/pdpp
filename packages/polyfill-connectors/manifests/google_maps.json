@@ -251,5 +251,10 @@
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "invalid_json": "We couldn't read one of your Google Maps Timeline export files",
+    "timeline_points_not_found": "We couldn't find any location points to import",
+    "timeline_segments_not_found": "We couldn't find any timeline segments to import"
+  }
 }

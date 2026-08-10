@@ -54,6 +54,7 @@ import {
 } from "./parsers.ts";
 import type {
   DownloadFail,
+  DownloadFailReason,
   DownloadResult,
   HydratedStatement,
   ParsedStatementTxn,
@@ -408,7 +409,9 @@ async function ensureOnDocumentsPage(page: Page): Promise<void> {
 
 interface HydrateCallbacks {
   onProgress?: ((p: { index: number; total: number; title: string | null }) => void) | undefined;
-  onSkip?: ((p: { statement: StatementRow; reason: string; diag: Record<string, unknown> | null }) => void) | undefined;
+  onSkip?:
+    | ((p: { statement: StatementRow; reason: DownloadFailReason; diag: Record<string, unknown> | null }) => void)
+    | undefined;
 }
 
 /** Persist a single downloaded PDF and append to the hydrated list. */
@@ -494,7 +497,7 @@ export async function hydrateStatementPdfs({
   page: Page;
   statements: StatementRow[];
   onProgress?: (p: { index: number; total: number; title: string | null }) => void;
-  onSkip?: (p: { statement: StatementRow; reason: string; diag: Record<string, unknown> | null }) => void;
+  onSkip?: (p: { statement: StatementRow; reason: DownloadFailReason; diag: Record<string, unknown> | null }) => void;
 }): Promise<HydratedStatement[]> {
   const hydrated: HydratedStatement[] = [];
   if (!statements.length) {

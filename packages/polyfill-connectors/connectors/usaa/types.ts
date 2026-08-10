@@ -333,10 +333,27 @@ export interface DownloadOk {
   suggestedFilename: string;
 }
 
+/**
+ * The finite set of internal failure reasons `downloadStatementFromRow` can
+ * return. `index.ts` maps each one to its own explicit, literal
+ * `pdf_download_*` SKIP_RESULT reason code (never string-templated) so the
+ * connector-completeness scan can see every code statically.
+ */
+export type DownloadFailReason =
+  | "direct_link_failed"
+  | "download_click_failed"
+  | "download_empty"
+  | "download_timeout"
+  | "no_download_menuitem"
+  | "no_options_affordance"
+  | "options_click_failed"
+  | "persist_failed"
+  | "row_missing";
+
 export interface DownloadFail {
   diag?: Record<string, unknown> | null;
   ok: false;
-  reason: string;
+  reason: DownloadFailReason;
 }
 
 export type DownloadResult = DownloadOk | DownloadFail;

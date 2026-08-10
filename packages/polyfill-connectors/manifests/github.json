@@ -851,5 +851,10 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "pr_detail_fetch_failed": "We saved these pull requests but couldn't load every detail",
+    "pr_search_cap_truncated": "There were more results than the service will return, so the oldest couldn't be collected",
+    "starred_entry_missing_repo": "We skipped a starred entry whose repository was unavailable"
+  }
 }

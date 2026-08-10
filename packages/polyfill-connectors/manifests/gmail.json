@@ -639,5 +639,8 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "schema_validation_failed": "Some data didn't match the expected format and was skipped"
+  }
 }

@@ -297,5 +297,12 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "empty_export": "That WhatsApp export did not contain any messages to import",
+    "import_exceeds_bounded_read_policy": "That export was too large to safely read in one run",
+    "media_exceeds_bounded_read_policy": "Some media files in that WhatsApp export were too large to safely import",
+    "no_exports_found": "We couldn't find any exports yet",
+    "unsupported_export": "We could not read that WhatsApp export format yet"
+  }
 }

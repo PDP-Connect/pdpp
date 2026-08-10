@@ -437,5 +437,8 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "scheduled_window"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "page_cap_truncated": "There were more GroupMe messages than we could safely page through in one run, so we stopped early"
+  }
 }

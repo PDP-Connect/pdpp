@@ -340,5 +340,11 @@
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "directory_read_failed": "We couldn't read a folder in your Google Takeout export",
+    "history_not_found": "We couldn't find any history to import",
+    "photos_not_found": "We couldn't find your Google Photos export",
+    "records_not_found": "We didn't find any records to import"
+  }
 }

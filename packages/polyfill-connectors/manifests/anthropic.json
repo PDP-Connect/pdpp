@@ -219,5 +219,8 @@
       "coverage_strategy": "full_inventory",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "claude_api_wiring_pending": "Claude API support isn't wired up yet"
+  }
 }

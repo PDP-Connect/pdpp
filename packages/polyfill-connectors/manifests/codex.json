@@ -906,5 +906,8 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "shape_check_failed": "The data didn't look like we expected"
+  }
 }

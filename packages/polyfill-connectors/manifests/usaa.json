@@ -609,5 +609,28 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "credit_card_export_unverified": "We couldn't confirm the credit card export",
+    "csv_no_data_rows": "The transactions file had no rows to import",
+    "csv_no_usable_transactions": "We couldn't find any usable transactions in that file",
+    "export_affordance_missing": "We couldn't find the export controls on this page — the site may have changed",
+    "export_error": "The export couldn't be downloaded",
+    "export_no_download": "The export didn't produce a downloadable file",
+    "hydrate_crashed": "Something went wrong while loading the page",
+    "pdf_download_click_failed": "We couldn't click the download option for a statement PDF",
+    "pdf_download_direct_link_failed": "We couldn't download a statement PDF from its direct link",
+    "pdf_download_empty": "A statement PDF download didn't produce any file",
+    "pdf_download_no_download_menuitem": "We couldn't find the download option for a statement",
+    "pdf_download_no_options_affordance": "We couldn't find any way to download a statement",
+    "pdf_download_options_click_failed": "We couldn't open the options menu for a statement",
+    "pdf_download_persist_failed": "We downloaded a statement PDF but couldn't save it",
+    "pdf_download_row_missing": "A statement row disappeared before we could download it",
+    "pdf_download_timeout": "A statement PDF download took too long and was skipped",
+    "pdf_parse_failed": "We couldn't read one of the statement PDFs",
+    "pdf_template_unknown": "We don't recognize the format of this statement yet",
+    "scrape_failed": "We couldn't read the page contents",
+    "selectors_pending": "Support for this part of the connector isn't complete yet",
+    "session_dead_reauth_failed": "Your sign-in expired and we couldn't refresh it"
+  }
 }

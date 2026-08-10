@@ -21,6 +21,7 @@
     "./runner": "./src/runner/index.ts",
     "./collectors": "./src/collector-registry.ts",
     "./manifests": "./src/manifest-registry.ts",
+    "./reason-display-messages": "./src/reason-display-messages.ts",
     "./connectors/claude_code": "./connectors/claude_code/index.ts",
     "./connectors/codex": "./connectors/codex/index.ts",
     "./connectors/imessage": "./connectors/imessage/index.ts"
@@ -41,6 +42,7 @@
   "private": true,
   "description": "Polyfill connectors for non-PDPP platforms (YNAB, Gmail, Amazon, ChatGPT, USAA).",
   "devDependencies": {
+    "@babel/parser": "7.29.2",
     "@biomejs/biome": "2.5.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/ws": "^8.18.1",

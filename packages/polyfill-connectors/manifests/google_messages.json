@@ -153,7 +153,11 @@
     }
   ],
   "reason_display_messages": {
+    "gmcli_chat_scan_limit_reached": "You have more conversations than we could scan in this run; the most recently active ones were kept",
+    "gmcli_not_installed": "The Google Messages helper tool isn't installed on this device",
+    "gmcli_not_paired": "Your Android device isn't paired with the Google Messages helper tool",
     "gmcli_per_chat_limit_reached": "Some conversations had more messages than we could fetch in this run",
-    "gmcli_chat_scan_limit_reached": "You have more conversations than we could scan in this run; the most recently active ones were kept"
+    "gmcli_query_failed": "We couldn't read your Google Messages data from the helper tool",
+    "gmcli_schema_drift": "The Google Messages helper tool returned data in a format we didn't expect"
   }
 }

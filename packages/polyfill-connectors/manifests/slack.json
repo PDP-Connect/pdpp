@@ -1504,5 +1504,9 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "optional_stream_failed": "We couldn't collect one part of your Slack data, so we skipped it",
+    "source_partition_missing": "Some previously seen Slack channels are missing from this export, so message coverage is incomplete"
+  }
 }

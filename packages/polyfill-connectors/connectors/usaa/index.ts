@@ -89,6 +89,7 @@ import type {
   DiagnosticInfo,
   DocRow,
   DownloadDiagnostics,
+  DownloadFailReason,
   DriveExportOptions,
   HydrationResult,
   HydrationResultSuccess,
@@ -101,6 +102,24 @@ import type {
   TransactionsPriorState,
   TransactionsStreamCursor,
 } from "./types.ts";
+
+// Explicit, literal-per-branch mapping from the statement-PDF download
+// driver's internal DownloadFailReason to the SKIP_RESULT reason code this
+// connector emits. Every value here is a plain string literal (never a
+// template composed from the helper's own reason) so the connector
+// reason-code completeness scan can see every emitted code statically — see
+// packages/polyfill-connectors/src/reason-display-messages.ts.
+const PDF_DOWNLOAD_SKIP_REASON: Record<DownloadFailReason, string> = {
+  direct_link_failed: "pdf_download_direct_link_failed",
+  download_click_failed: "pdf_download_click_failed",
+  download_empty: "pdf_download_empty",
+  download_timeout: "pdf_download_timeout",
+  no_download_menuitem: "pdf_download_no_download_menuitem",
+  no_options_affordance: "pdf_download_no_options_affordance",
+  options_click_failed: "pdf_download_options_click_failed",
+  persist_failed: "pdf_download_persist_failed",
+  row_missing: "pdf_download_row_missing",
+};
 
 const validateRecord = validateRecordRaw as ValidateRecord;
 
@@ -2219,7 +2238,7 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
           .emit({
             type: "SKIP_RESULT",
             stream: "statements",
-            reason: `pdf_download_${reason}`,
+            reason: PDF_DOWNLOAD_SKIP_REASON[reason],
             message: `Statement PDF download skipped at row ${statement.rowIndex + 1}: ${reason}`,
             diagnostics: diag,
           })

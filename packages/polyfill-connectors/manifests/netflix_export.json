@@ -148,5 +148,13 @@
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "ambiguous_date_order": "We couldn't tell whether the dates in that file are day-first or month-first",
+    "archive_security_violation": "We couldn't safely read that export archive",
+    "csv_parse_error": "We couldn't read the viewing history file",
+    "import_exceeds_bounded_read_policy": "That export was too large to safely read in one run",
+    "records_not_found": "We didn't find any records to import",
+    "unrecognized_csv_schema": "That file didn't match a Netflix viewing history format we recognize"
+  }
 }

@@ -143,5 +143,8 @@
       "coverage_strategy": "checkpoint_window",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "instagram_graphql_wiring_pending": "Instagram support isn't wired up yet"
+  }
 }

@@ -159,5 +159,8 @@
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "archive_not_found": "We couldn't find an export archive to read"
+  }
 }

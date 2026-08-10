@@ -563,5 +563,13 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "ambiguous_multi_account_overview": "We couldn't tell which account view to use",
+    "qfx_download_failed": "We couldn't download the transactions file",
+    "qfx_parse_failed": "We couldn't read the transactions file",
+    "row_exception": "Something went wrong reading one of the rows",
+    "selectors_pending": "Support for this part of the connector isn't complete yet",
+    "statements_scrape_failed": "We couldn't read your statements page"
+  }
 }

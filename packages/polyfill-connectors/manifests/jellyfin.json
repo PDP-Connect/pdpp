@@ -242,5 +242,11 @@
         }
       ]
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "jellyfin_auth_failed": "Your Jellyfin API key or token was rejected",
+    "jellyfin_error": "We hit a problem talking to your Jellyfin server",
+    "jellyfin_http_error": "We hit a network problem talking to your Jellyfin server",
+    "jellyfin_missing_credentials": "Jellyfin needs a server URL and API key to connect"
+  }
 }

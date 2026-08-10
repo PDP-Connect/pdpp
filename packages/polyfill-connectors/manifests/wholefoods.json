@@ -137,5 +137,8 @@
       "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
-  ]
+  ],
+  "reason_display_messages": {
+    "wholefoods_filter_pending": "Whole Foods filter support isn't wired up yet"
+  }
 }
