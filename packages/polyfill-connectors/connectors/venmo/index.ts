@@ -65,6 +65,7 @@ import type { CollectContext } from "../../src/connector-runtime.ts";
 import { runConnector } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { redactTransportDetail } from "../../src/http-retry.ts";
+import { isMainModule } from "../../src/is-main-module.ts";
 import { venmoPacingProfile } from "../../src/provider-profile.ts";
 import { API_BASE, profileRecord, transactionRecord, userRecord } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
@@ -475,42 +476,44 @@ async function collectFriends(
   await emit({ type: "STATE", stream: "friends", cursor: { fingerprints: cursor.toState() } });
 }
 
-runConnector({
-  name: "venmo",
-  validateRecord,
-  retryablePattern: /ECONN|ETIMEDOUT|fetch failed|venmo_rate_limited/i,
-  auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
-  async collect(ctx: CollectContext) {
-    const { emit, emitRecord, requested } = ctx;
-    const progress = ctx.progress as VenmoProgress;
+if (isMainModule(import.meta.url)) {
+  runConnector({
+    name: "venmo",
+    validateRecord,
+    retryablePattern: /ECONN|ETIMEDOUT|fetch failed|venmo_rate_limited/i,
+    auth: { kind: "env", required: ["VENMO_USERNAME", "VENMO_PASSWORD"] },
+    async collect(ctx: CollectContext) {
+      const { emit, emitRecord, requested } = ctx;
+      const progress = ctx.progress as VenmoProgress;
 
-    const { account, accessToken, ownerId } = await resolveVenmoSession(ctx);
+      const { account, accessToken, ownerId } = await resolveVenmoSession(ctx);
 
-    if (requested.has("profile")) {
-      await progress("Fetching Venmo profile", { stream: "profile", phase: "fetch" });
-      const profileUser = account?.user ?? (await fetchProfile(accessToken))?.user;
-      if (profileUser) {
-        const cursor = openFingerprintCursor(ctx.state.profile, { excludeFromFingerprint: [] });
-        const record = profileRecord(profileUser);
-        if (cursor.shouldEmit(record)) {
-          await emitRecord("profile", record);
+      if (requested.has("profile")) {
+        await progress("Fetching Venmo profile", { stream: "profile", phase: "fetch" });
+        const profileUser = account?.user ?? (await fetchProfile(accessToken))?.user;
+        if (profileUser) {
+          const cursor = openFingerprintCursor(ctx.state.profile, { excludeFromFingerprint: [] });
+          const record = profileRecord(profileUser);
+          if (cursor.shouldEmit(record)) {
+            await emitRecord("profile", record);
+          }
+          cursor.pruneStale();
+          await emit({ type: "STATE", stream: "profile", cursor: { fingerprints: cursor.toState() } });
         }
-        cursor.pruneStale();
-        await emit({ type: "STATE", stream: "profile", cursor: { fingerprints: cursor.toState() } });
       }
-    }
 
-    if (requested.has("friends")) {
-      await collectFriends(ctx, accessToken, ownerId, progress);
-    }
+      if (requested.has("friends")) {
+        await collectFriends(ctx, accessToken, ownerId, progress);
+      }
 
-    if (requested.has("transactions")) {
-      const { latestSeenAt } = await collectTransactions(ctx, accessToken, ownerId);
-      await emit({
-        type: "STATE",
-        stream: "transactions",
-        cursor: { last_seen_date_created: latestSeenAt },
-      });
-    }
-  },
-});
+      if (requested.has("transactions")) {
+        const { latestSeenAt } = await collectTransactions(ctx, accessToken, ownerId);
+        await emit({
+          type: "STATE",
+          stream: "transactions",
+          cursor: { last_seen_date_created: latestSeenAt },
+        });
+      }
+    },
+  });
+}
