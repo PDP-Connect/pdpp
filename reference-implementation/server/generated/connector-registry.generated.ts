@@ -14,7 +14,7 @@
 // docs/inbox/findings-deployment-env-vars.md (Cluster B).
 
 /** Every first-party manifest's canonical connector_key. */
-export const FIRST_PARTY_CONNECTOR_KEYS: readonly string[] = Object.freeze(["amazon", "anthropic", "apple_contacts", "apple-health", "apple-photos", "chase", "chatgpt", "claude-code", "codex", "doordash", "github", "gmail", "google-calendar", "google-contacts", "google-maps", "google-maps-data-portability", "google-messages", "google-takeout", "groupme", "heb", "ical", "imessage", "jellyfin", "linkedin", "loom", "meta", "netflix-export", "notion", "oura", "pocket", "reddit", "shopify", "slack", "spotify", "steam", "strava", "twitter-archive", "uber", "usaa", "whatsapp", "wholefoods", "ynab"]);
+export const FIRST_PARTY_CONNECTOR_KEYS: readonly string[] = Object.freeze(["amazon", "anthropic", "apple_contacts", "apple-health", "apple-photos", "chase", "chatgpt", "claude-code", "codex", "doordash", "github", "gmail", "google-calendar", "google-contacts", "google-maps", "google-maps-data-portability", "google-messages", "google-takeout", "groupme", "heb", "ical", "imessage", "jellyfin", "linkedin", "loom", "meta", "netflix-export", "notion", "oura", "pocket", "reddit", "shopify", "slack", "spotify", "steam", "strava", "twitter-archive", "uber", "usaa", "venmo", "whatsapp", "wholefoods", "ynab"]);
 
 /** Native (storage_binding.connector_id) reference-fixture connector keys. */
 export const NATIVE_CONNECTOR_KEYS: readonly string[] = Object.freeze(["northstar_hr_native"]);
