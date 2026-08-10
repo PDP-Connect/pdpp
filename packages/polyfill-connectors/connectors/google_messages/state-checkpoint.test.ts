@@ -323,9 +323,10 @@ test("crash before commit: a mid-run failure leaves the prior checkpoint intact,
 
   // Simulate a crash mid-fetch: the chats list call succeeds, but the
   // per-conversation messages list call returns malformed output, so
-  // fetchAndParseGmcliMessages returns a `skip` outcome. collect() returns
-  // before ever reaching the emit-loop / STATE-emit path (see index.ts:
-  // `if (outcome.skip) { ...; return; }`), so this run must emit no STATE
+  // fetchAndParseGmcliMessages returns an outcome with `reason` set.
+  // collect() returns before ever reaching the emit-loop / STATE-emit path
+  // (see index.ts: `if (outcome.reason) { ...; return; }`), so this run
+  // must emit no STATE
   // message and the previously-committed cursor must be exactly what a
   // subsequent run reads back — a real subprocess crash (not exit 0) would
   // additionally invalidate the run at the collector-runner.ts layer (a

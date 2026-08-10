@@ -490,8 +490,20 @@ interface GmcliFetchOutcome {
   readonly chatsTruncated?: { atLeastTotalCount: number; scannedCount: number };
   readonly coverageReason: string;
   readonly coverageStatus: CoverageRecord["status"];
+  /**
+   * Flat `reason`/`message` fields (not a nested `skip: { reason, message
+   * }` object) so the emission call site in `collect()` can write a
+   * literal `reason:` property whose value is `outcome.reason` — a plain
+   * one-hop `x.reason` MemberExpression the reason-code completeness
+   * scanner already resolves via its existing same-file-call-result bound
+   * — instead of `outcome.skip.reason`/`...outcome.skip`, both of which
+   * need resolution depth beyond that deliberately bounded one hop (see
+   * `reason-emission-scan.ts`'s doc comment on why this scanner does not
+   * chase nested member chains or spreads).
+   */
+  readonly message?: string;
   readonly parsed?: ParsedGmcliMessage[];
-  readonly skip?: { reason: string; message: string };
+  readonly reason?: string;
   readonly truncated?: readonly string[];
 }
 
@@ -501,20 +513,23 @@ function classifyGmcliFetchError(err: unknown): GmcliFetchOutcome {
     return {
       coverageStatus: "missing",
       coverageReason: "gmcli binary not found on PATH/GMCLI_BIN.",
-      skip: { reason: "gmcli_not_installed", message },
+      reason: "gmcli_not_installed",
+      message,
     };
   }
   if (err instanceof GmcliError && err.kind === "not_paired") {
     return {
       coverageStatus: "excluded",
       coverageReason: "gmcli is installed but the Android device is not paired.",
-      skip: { reason: "gmcli_not_paired", message },
+      reason: "gmcli_not_paired",
+      message,
     };
   }
   return {
     coverageStatus: "unsupported",
     coverageReason: `gmcli query failed: ${message}`,
-    skip: { reason: "gmcli_query_failed", message },
+    reason: "gmcli_query_failed",
+    message,
   };
 }
 
@@ -565,7 +580,7 @@ async function fetchChatMessages(
  * chat's messages (`gmcli messages list --conv <id> ...`), bounded by
  * GMCLI_MAX_CHATS/GMCLI_MESSAGES_PER_CHAT_LIMIT. Collapses every failure
  * mode (binary missing, not paired, query failure, schema drift) into one
- * discriminated outcome. `collect()` only has to branch on `outcome.skip`
+ * discriminated outcome. `collect()` only has to branch on `outcome.reason`
  * vs `outcome.parsed` — the fine-grained SKIP_RESULT reason and coverage
  * status/reason live here.
  *
@@ -619,7 +634,8 @@ export async function fetchAndParseGmcliMessages(invoke: GmcliInvoker = runGmcli
     return {
       coverageStatus: "unsupported",
       coverageReason: `gmcli chats output did not match the expected shape: ${message}`,
-      skip: { reason: "gmcli_schema_drift", message },
+      reason: "gmcli_schema_drift",
+      message,
     };
   }
 
@@ -649,7 +665,8 @@ export async function fetchAndParseGmcliMessages(invoke: GmcliInvoker = runGmcli
       return {
         coverageStatus: "unsupported",
         coverageReason: `gmcli messages query failed for a conversation: ${message}`,
-        skip: { reason: "gmcli_query_failed", message },
+        reason: "gmcli_query_failed",
+        message,
       };
     }
     parsed.push(...outcome.messages);
@@ -696,19 +713,23 @@ export async function collect({ state, requested, emit, emitRecord, progress }: 
     await emitRecord("coverage_diagnostics", buildCoverageRecord(outcome.coverageStatus, outcome.coverageReason));
   }
 
-  if (outcome.skip) {
-    // Explicit reason/message properties, not `...outcome.skip` — a spread
-    // here is opaque to the bounded, AST-based reason-emission scanner (see
-    // packages/polyfill-connectors/src/reason-emission-scan.ts on the
-    // reason-messages-current-0809 lane): it cannot trace a spread's
-    // properties back through this connector's own control flow to the
-    // literal reason-code strings in classifyGmcliFetchError/
-    // fetchAndParseGmcliMessages, so every reason code emitted this way
-    // would silently evade completeness checking. Destructuring here
-    // (behaviorally identical to the spread — same two fields, same
-    // values) keeps `reason` a literal-shaped property the scanner can
-    // resolve without generalized spread-dataflow support.
-    await emit({ type: "SKIP_RESULT", stream: "messages", reason: outcome.skip.reason, message: outcome.skip.message });
+  if (outcome.reason) {
+    // outcome.reason/outcome.message are flat fields on GmcliFetchOutcome
+    // (not a nested `skip: { reason, message }` object, and not spread from
+    // one) specifically so this is a literal `reason:` property whose
+    // value is a plain one-hop `x.reason` MemberExpression — the shape the
+    // bounded, AST-based reason-emission scanner already resolves (see
+    // packages/polyfill-connectors/src/reason-emission-scan.ts). A spread
+    // (`...outcome.skip`) or a nested member chain (`outcome.skip.reason`)
+    // both need resolution depth beyond that scanner's deliberately bounded
+    // one hop, so every reason code emitted through either shape would
+    // silently evade completeness checking.
+    await emit({
+      type: "SKIP_RESULT",
+      stream: "messages",
+      reason: outcome.reason,
+      message: outcome.message ?? outcome.reason,
+    });
     return;
   }
 

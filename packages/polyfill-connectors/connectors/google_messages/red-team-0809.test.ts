@@ -61,16 +61,19 @@
  *     stream: "messages", ...outcome.skip })` silently evaded the bounded,
  *     AST-based reason-completeness scanner: a SpreadElement in a
  *     SKIP_RESULT construction is opaque to that scanner's dataflow
- *     resolution, so every reason code this connector emits via `skip`
- *     (gmcli_not_installed, gmcli_not_paired, gmcli_query_failed,
- *     gmcli_schema_drift) would have gone unchecked for manifest display-
- *     copy completeness. Fixed by destructuring `outcome.skip.reason` /
- *     `outcome.skip.message` into explicit properties at the emit call
- *     site — behaviorally identical (same two fields, same values), but
- *     resolvable by the scanner's already-supported same-file property-
- *     access resolution path instead of requiring generalized spread
- *     dataflow, which the scanner deliberately does not implement (it
- *     fails closed on a SpreadElement instead).
+ *     resolution, so every reason code this connector emits (gmcli_not_
+ *     installed, gmcli_not_paired, gmcli_query_failed, gmcli_schema_drift)
+ *     would have gone unchecked for manifest display-copy completeness. An
+ *     initial fix destructured `outcome.skip.reason`/`outcome.skip.message`
+ *     into explicit emit-site properties — still opaque to the scanner,
+ *     since a nested `x.y.reason` member chain needs resolution depth
+ *     beyond its deliberately bounded one-hop scope, same as a spread.
+ *     Closed at the source instead: `GmcliFetchOutcome` carries `reason`/
+ *     `message` as flat top-level fields (no `skip` nesting at all), so the
+ *     emit-site `reason: outcome.reason` is a plain one-hop `x.reason`
+ *     MemberExpression the scanner's existing same-file-call-result
+ *     resolution already handles — no generalized spread or member-chain
+ *     dataflow was added to the scanner itself.
  */
 
 import assert from "node:assert/strict";
@@ -523,37 +526,51 @@ test("finding 4 — collect() never spreads outcome.skip into the emitted SKIP_R
   // A SpreadElement inside `emit({ type: "SKIP_RESULT", ... })` is exactly
   // the shape the reason-emission scanner cannot resolve — it fails closed
   // on it rather than guessing. This pins the source-level fix: no
-  // `...outcome.skip`-shaped spread anywhere in a SKIP_RESULT construction.
+  // `...outcome.skip`-shaped spread anywhere in a SKIP_RESULT construction,
+  // AND no nested member chain (`outcome.skip.reason`) either — the
+  // reason-emission-scan.ts completeness scanner's one-hop resolution
+  // bound cannot follow either shape without deepening past what it's
+  // deliberately scoped to (see reason-messages-current-0809's
+  // /tmp/reason-messages-redteam-0810.md finding 2 and its follow-up: the
+  // fix moved from "destructure the nested object one level" to
+  // "GmcliFetchOutcome carries flat reason/message fields directly, no
+  // nesting at all" once the scanner's one-hop bound turned out not to
+  // reach even the destructured nested form).
   assert.doesNotMatch(
     INDEX_SOURCE,
     /type:\s*["']SKIP_RESULT["'][^}]*\.\.\.\w+(\.\w+)*/su,
-    "a SKIP_RESULT emission must never spread a connector-owned object — destructure reason/message as explicit properties instead"
+    "a SKIP_RESULT emission must never spread a connector-owned object — write reason/message as explicit properties instead"
+  );
+  assert.doesNotMatch(
+    INDEX_SOURCE,
+    /reason:\s*outcome\.skip\.reason/u,
+    "GmcliFetchOutcome must carry reason/message as flat top-level fields, not nested under skip — a nested member chain is also opaque to the completeness scanner's one-hop bound"
   );
   assert.match(
     INDEX_SOURCE,
-    /reason:\s*outcome\.skip\.reason,\s*message:\s*outcome\.skip\.message/u,
-    "expected the explicit reason/message destructure this fix introduced"
+    /reason:\s*outcome\.reason,\s*message:\s*outcome\.message/u,
+    "expected the flat reason/message emission this fix introduced"
   );
 });
 
-test("finding 4 — behavioral: distinct skip-reason code paths still surface their correct, distinct reason/message after the spread was flattened", async () => {
-  // Two different code sites that both populate GmcliFetchOutcome.skip —
-  // classifyGmcliFetchError's not_installed branch, and
-  // fetchAndParseGmcliMessages's own schema-drift branch — proving the
-  // flattened `reason: outcome.skip.reason, message: outcome.skip.message`
-  // destructure at the emit call site carries each one through unchanged,
-  // not just whichever single path integration.test.ts happens to exercise
-  // via subprocess.
+test("finding 4 — behavioral: distinct reason code paths still surface their correct, distinct reason/message after skip was flattened to top-level fields", async () => {
+  // Two different code sites that both populate GmcliFetchOutcome's flat
+  // reason/message fields — classifyGmcliFetchError's not_installed
+  // branch, and fetchAndParseGmcliMessages's own schema-drift branch —
+  // proving the flattened `reason: outcome.reason, message: outcome.message`
+  // emission at the call site carries each one through unchanged, not just
+  // whichever single path integration.test.ts happens to exercise via
+  // subprocess.
   const notInstalledInvoker: GmcliInvoker = () =>
     Promise.reject(new GmcliError("gmcli binary not found: gmcli", "not_installed"));
   const notInstalledOutcome = await fetchAndParseGmcliMessages(notInstalledInvoker);
-  assert.equal(notInstalledOutcome.skip?.reason, "gmcli_not_installed");
-  assert.match(notInstalledOutcome.skip?.message ?? "", /gmcli binary not found/);
+  assert.equal(notInstalledOutcome.reason, "gmcli_not_installed");
+  assert.match(notInstalledOutcome.message ?? "", /gmcli binary not found/);
 
   const schemaDriftInvoker: GmcliInvoker = () => Promise.resolve({ exitCode: 0, stderr: "", stdout: "not json" });
   const schemaDriftOutcome = await fetchAndParseGmcliMessages(schemaDriftInvoker);
-  assert.equal(schemaDriftOutcome.skip?.reason, "gmcli_schema_drift");
-  assert.ok(schemaDriftOutcome.skip?.message, "gmcli_schema_drift must carry a non-empty message");
+  assert.equal(schemaDriftOutcome.reason, "gmcli_schema_drift");
+  assert.ok(schemaDriftOutcome.message, "gmcli_schema_drift must carry a non-empty message");
 });
 
 test("finding 2 — the chat-scan-limit reason has vetted display copy declared in this connector's own manifest, not in RI", async () => {
