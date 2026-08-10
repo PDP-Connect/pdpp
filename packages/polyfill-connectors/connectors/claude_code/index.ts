@@ -950,7 +950,7 @@ async function scanProjectDir(projectDir: string, args: ScanProjectDirsArgs): Pr
   } catch {
     return;
   }
-  if (args.buildOnly) {
+  if (args.requested.has("memory_notes") && (args.buildOnly || args.skipJsonl)) {
     await emitProjectMemoryNotes({
       projectDir,
       projectPath,
