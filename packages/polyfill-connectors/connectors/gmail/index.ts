@@ -1072,9 +1072,11 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
  * Returns null if the input is not a valid ISO string.
  *
  * IMAP's SINCE criterion matches messages with an internal date >= the
- * specified date. The timezone is always UTC.
+ * specified date, and IMAP dates are day-granular (no time component).
+ * Post-filtering by exact ISO boundary is required to honor the stream's
+ * declared time_range.since, which may have time-of-day precision.
  */
-export function issoToImapDate(iso: string | undefined): string | null {
+export function isoToImapDate(iso: string | undefined): string | null {
   if (!iso || typeof iso !== "string") {
     return null;
   }
@@ -1093,30 +1095,83 @@ export function issoToImapDate(iso: string | undefined): string | null {
   }
 }
 
-async function collectMetadata(
+/**
+ * Intersect two UID ranges (either "1:*" format or comma-separated list)
+ * and return the overlap as a comma-separated list.
+ *
+ * - `rangeStr` is the original range (e.g., "200:*" from incremental cursor)
+ * - `searchUids` are UIDs returned by IMAP search (sorted ascending)
+ *
+ * Returns only the UIDs that fall within both ranges.
+ */
+function intersectUidRanges(rangeStr: string, searchUids: readonly number[]): string {
+  if (searchUids.length === 0) {
+    return ""; // Empty result
+  }
+
+  // Parse the range string to determine included UIDs
+  const parts = rangeStr.split(":");
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    const start = Number(parts[0]);
+    const end = parts[1] === "*" ? Infinity : Number(parts[1]);
+    if (!Number.isNaN(start) && !Number.isNaN(end)) {
+      // Range format: keep only UIDs in [start, end]
+      return searchUids.filter((uid) => uid >= start && uid <= end).join(",");
+    }
+  }
+
+  // Fallback: assume a comma-separated list, intersect with search result
+  const rangeUids = new Set(rangeStr.split(",").map((s) => Number(s.trim())).filter((n) => !Number.isNaN(n)));
+  return searchUids.filter((uid) => rangeUids.has(uid)).join(",");
+}
+
+/**
+ * Check if a message's received_at timestamp is >= the declared ISO boundary.
+ * IMAP SINCE is day-granular; this enforces exact boundary at the time-of-day level.
+ */
+function isAtOrAfterBoundary(receivedAtIso: string, boundaryIso: string): boolean {
+  return receivedAtIso >= boundaryIso;
+}
+
+export async function collectMetadata(
   client: Pick<ImapFlow, "fetch" | "search">,
   fetchRange: string,
-  sinceDate: string | null = null
+  sinceDate: string | null = null,
+  sinceIso: string | null = null
 ): Promise<FetchMessageObject[]> {
   let range = fetchRange;
 
-  // If a since boundary is declared, constrain the range via IMAP SINCE
-  // search. This ensures we enumerate only messages within the declared scope.
+  // If a since boundary is declared (IMAP date format), constrain via search.
+  // Intersect the search result with the existing fetchRange to preserve
+  // cursor/resume semantics and avoid re-fetching already-seen UIDs.
   if (sinceDate) {
-    const uidsInRange = await client.search({ since: sinceDate }, { uid: true });
-    if (!uidsInRange || uidsInRange.length === 0) {
-      // No messages in the declared range.
+    const uidsAfterSince = await client.search({ since: sinceDate }, { uid: true });
+    if (!uidsAfterSince || uidsAfterSince.length === 0) {
+      // No messages after the declared date.
       return [];
     }
-    // IMAP search returns UIDs in ascending order. Intersect the fetched
-    // range (e.g., "priorUidnext:*" from incremental cursor) with the since
-    // boundary. For simplicity, we rebuild the range as the full set of
-    // UIDs returned by the search.
-    range = uidsInRange.join(",");
+    // Intersect search result with the existing range (e.g., "200:*" from
+    // incremental cursor). This preserves the cursor and prevents duplicate work.
+    range = intersectUidRanges(fetchRange, uidsAfterSince);
+    if (!range) {
+      // No overlap between incremental range and SINCE search.
+      return [];
+    }
   }
 
   const metas: FetchMessageObject[] = [];
   for await (const m of client.fetch(range, GMAIL_METADATA_FETCH_QUERY, { uid: true })) {
+    // IMAP SINCE is day-granular; post-filter on exact ISO boundary to honor
+    // the stream's declared time_range.since at the second precision.
+    if (sinceIso && m.internalDate) {
+      const receivedAtIso = new Date(m.internalDate).toISOString();
+      if (!isAtOrAfterBoundary(receivedAtIso, sinceIso)) {
+        // Skip messages before the exact boundary; they were included by IMAP
+        // SINCE (day-granular) but fall outside the declared scope (second-precise).
+        continue;
+      }
+    }
+
     metas.push(m);
     if (metas.length % FETCH_HEADER_BATCH_PROGRESS === 0) {
       await emit({
@@ -2866,9 +2921,11 @@ async function runAllMailPasses(
   //   (CHANGEDSINCE priorModseq).
   const timeRange = deps.requested.get("messages")?.time_range || deps.requested.get("attachments")?.time_range;
   const fetchRange = selectAllMailFetchRange(session, deps.requested);
-  // Parse declared collection_scope.since into IMAP date format for the
-  // bounded SINCE search criterion.
-  const sinceDate = timeRange?.since ? issoToImapDate(timeRange.since) : null;
+  // Parse declared collection_scope.since into IMAP date format (day-granular)
+  // for the bounded SINCE search criterion, and keep the exact ISO for
+  // post-filtering to honor time-of-day precision.
+  const sinceDate = timeRange?.since ? isoToImapDate(timeRange.since) : null;
+  const sinceIso = timeRange?.since ?? null;
   const attachmentBackfillRequested = shouldBackfillAttachments({
     detailGaps: deps.detailGaps,
     streamsToBackfill: deps.streamsToBackfill,
@@ -2990,7 +3047,7 @@ async function runAllMailPasses(
     });
   }
 
-  const metas = await collectMetadata(client, fetchRange, sinceDate);
+  const metas = await collectMetadata(client, fetchRange, sinceDate, sinceIso);
   await emit({
     type: "PROGRESS",
     stream: "messages",

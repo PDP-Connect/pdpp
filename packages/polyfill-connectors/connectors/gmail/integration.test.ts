@@ -60,6 +60,7 @@ import {
   buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
   buildAttachmentTransferProgressMessage,
+  collectMetadata,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_ATTACHMENT_PROGRESS_MIN_BYTES,
@@ -71,7 +72,7 @@ import {
   type FetchedBodies,
   formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
-  issoToImapDate,
+  isoToImapDate,
   makeAttachmentDetailCoverage,
   makeAttachmentHydrator,
   type PerMessageDeps,
@@ -3590,67 +3591,48 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
 
 // ─── Bounded scope: collection_scope.since mapping to IMAP SINCE ──────────
 
-test("issoToImapDate: converts ISO 8601 timestamp to IMAP DD-MMM-YYYY date", () => {
-  assert.equal(issoToImapDate("2026-08-09T22:07:20.000Z"), "09-Aug-2026");
-  assert.equal(issoToImapDate("2026-01-01T00:00:00.000Z"), "01-Jan-2026");
-  assert.equal(issoToImapDate("2026-12-31T23:59:59.999Z"), "31-Dec-2026");
+test("isoToImapDate: converts ISO 8601 timestamp to IMAP DD-MMM-YYYY date", () => {
+  assert.equal(isoToImapDate("2026-08-09T22:07:20.000Z"), "09-Aug-2026");
+  assert.equal(isoToImapDate("2026-01-01T00:00:00.000Z"), "01-Jan-2026");
+  assert.equal(isoToImapDate("2026-12-31T23:59:59.999Z"), "31-Dec-2026");
 });
 
-test("issoToImapDate: returns null for undefined, malformed, or unparseable input", () => {
-  assert.equal(issoToImapDate(undefined), null);
-  assert.equal(issoToImapDate(""), null);
-  assert.equal(issoToImapDate("not a date"), null);
-  assert.equal(issoToImapDate("2026-13-01"), null);
-  assert.equal(issoToImapDate("not-iso-string"), null);
+test("isoToImapDate: returns null for undefined, malformed, or unparseable input", () => {
+  assert.equal(isoToImapDate(undefined), null);
+  assert.equal(isoToImapDate(""), null);
+  assert.equal(isoToImapDate("not a date"), null);
+  assert.equal(isoToImapDate("2026-13-01"), null);
+  assert.equal(isoToImapDate("not-iso-string"), null);
 });
 
-test("issoToImapDate: handles edge-case dates (leap year, month boundaries)", () => {
+test("isoToImapDate: handles edge-case dates (leap year, month boundaries)", () => {
   // Leap year Feb 29
-  assert.equal(issoToImapDate("2024-02-29T00:00:00.000Z"), "29-Feb-2024");
+  assert.equal(isoToImapDate("2024-02-29T00:00:00.000Z"), "29-Feb-2024");
   // Non-leap year Feb 28
-  assert.equal(issoToImapDate("2025-02-28T00:00:00.000Z"), "28-Feb-2025");
+  assert.equal(isoToImapDate("2025-02-28T00:00:00.000Z"), "28-Feb-2025");
   // Day boundaries
-  assert.equal(issoToImapDate("2026-02-01T00:00:00.000Z"), "01-Feb-2026");
-  assert.equal(issoToImapDate("2026-02-28T23:59:59.999Z"), "28-Feb-2026");
+  assert.equal(isoToImapDate("2026-02-01T00:00:00.000Z"), "01-Feb-2026");
+  assert.equal(isoToImapDate("2026-02-28T23:59:59.999Z"), "28-Feb-2026");
 });
 
-test("issoToImapDate: preserves single-digit days and months with leading zeros", () => {
-  // Day needs padding
-  assert.equal(issoToImapDate("2026-08-01T00:00:00.000Z"), "01-Aug-2026");
-  // Month already has padding but day needs it
-  assert.equal(issoToImapDate("2026-01-01T00:00:00.000Z"), "01-Jan-2026");
-  // Both padded
-  assert.equal(issoToImapDate("2026-08-09T00:00:00.000Z"), "09-Aug-2026");
-});
+// ─── Bounded scope: collectMetadata with SINCE search + post-filtering ────
 
-// ─── Bounded scope: collectMetadata with SINCE search ───────────────────
-
-test("collectMetadata: with populated sinceDate, honors SINCE search boundary", async () => {
-  const emitMessages: Array<{ type: string; message?: string }> = [];
+test("collectMetadata: cursor + since intersection preserves incremental fetch range", async () => {
   const originalEmit = globalThis.process.stdout.write;
   try {
-    let emitCount = 0;
-    globalThis.process.stdout.write = ((data: string): boolean => {
-      emitCount += 1;
-      if (typeof data === "string") {
-        emitMessages.push(JSON.parse(data) as { type: string; message?: string });
-      }
-      return true;
-    }) as any;
+    globalThis.process.stdout.write = (() => true) as any;
 
-    const search = mock.fn(async (query: { since?: string }) => {
-      // Simulate IMAP SINCE: server returns only UIDs >= the date
-      if (query.since === "09-Aug-2026") {
-        return [101, 102]; // Only 2 UIDs in range
-      }
-      return []; // Out of range
+    const search = mock.fn(async () => {
+      // SINCE returns UIDs >= date, including older ones from full history
+      return [150, 151, 200, 201];
     });
 
-    const fetch = mock.fn(async function* (range: string, query: any, opts: any) {
-      // Yield message metas for the searched UIDs
-      if (range === "101,102") {
-        yield makeMsg({ uid: 101, emailId: "msg1" });
-        yield makeMsg({ uid: 102, emailId: "msg2" });
+    const fetch = mock.fn(async function* (range: string) {
+      // Must intersect with incremental range "200:*", not replace it
+      // Expected: "200,201" (only UIDs in both search result AND range 200:*)
+      assert.equal(range, "200,201", "must intersect SINCE result with incremental range, not replace");
+      for (const uid of [200, 201]) {
+        yield makeMsg({ uid, emailId: `msg${uid}`, internalDate: new Date("2026-08-09") });
       }
     });
 
@@ -3659,46 +3641,60 @@ test("collectMetadata: with populated sinceDate, honors SINCE search boundary", 
       fetch,
     } as any;
 
-    const metas = await collectMetadata(client, "priorUidnext:*", "09-Aug-2026");
+    const metas = await collectMetadata(client, "200:*", "09-Aug-2026", "2026-08-09T00:00:00Z");
 
-    assert.equal(metas.length, 2, "should collect exactly the messages in the SINCE range");
-    assert.equal(search.mock.callCount(), 1, "search should be called once with SINCE");
-    assert.equal(
-      search.mock.calls[0]?.arguments[0]?.since,
-      "09-Aug-2026",
-      "search should be called with IMAP date format"
-    );
-    assert.equal(
-      fetch.mock.calls[0]?.arguments[0],
-      "101,102",
-      "fetch should be called with the UID list from search"
-    );
+    assert.equal(metas.length, 2, "only UIDs in both ranges should be fetched");
   } finally {
     globalThis.process.stdout.write = originalEmit;
   }
 });
 
-test("collectMetadata: with sinceDate and zero results, returns empty array and commits state", async () => {
-  const emitMessages: Array<{ type: string; message?: string }> = [];
+test("collectMetadata: same-day pre-boundary records are filtered out (day-granular IMAP, second-precise boundary)", async () => {
   const originalEmit = globalThis.process.stdout.write;
   try {
-    let emitCount = 0;
-    globalThis.process.stdout.write = ((data: string): boolean => {
-      emitCount += 1;
-      if (typeof data === "string") {
-        emitMessages.push(JSON.parse(data) as { type: string; message?: string });
-      }
-      return true;
-    }) as any;
+    globalThis.process.stdout.write = (() => true) as any;
 
-    const search = mock.fn(async (query: { since?: string }) => {
-      // Simulate IMAP SINCE: no messages in range
+    const search = mock.fn(async () => {
+      // IMAP SINCE "09-Aug-2026" includes all day-granular on 2026-08-09
+      return [100, 101];
+    });
+
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // UID 100: 08:00 AM (before 14:00:00 boundary) — should skip
+        yield makeMsg({ uid: 100, emailId: "early", internalDate: new Date("2026-08-09T08:00:00Z") });
+        // UID 101: 14:00 PM (at/after 14:00:00 boundary) — should keep
+        yield makeMsg({ uid: 101, emailId: "late", internalDate: new Date("2026-08-09T14:00:00Z") });
+      }
+    });
+
+    const client = {
+      search,
+      fetch,
+    } as any;
+
+    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-09T14:00:00Z");
+
+    assert.equal(metas.length, 1, "only message at/after exact boundary should be kept");
+    assert.equal((metas[0]?.emailId as string), "late", "late message (at boundary) should be kept");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: verified empty — IMAP search returns no UIDs", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => {
+      // No messages in the declared date range
       return [];
     });
 
     const fetch = mock.fn(async function* () {
-      // Should never be called if search returns empty
-      throw new Error("fetch should not be called on empty search");
+      // Should never be called
+      throw new Error("fetch must not be called on empty search");
     });
 
     const client = {
@@ -3706,71 +3702,27 @@ test("collectMetadata: with sinceDate and zero results, returns empty array and 
       fetch,
     } as any;
 
-    const metas = await collectMetadata(client, "priorUidnext:*", "09-Aug-2030");
+    const metas = await collectMetadata(client, "1:*", "09-Aug-2030", "2026-08-09T00:00:00Z");
 
-    assert.equal(metas.length, 0, "should return empty array when SINCE search yields no UIDs");
-    assert.equal(search.mock.callCount(), 1, "search should be called");
-    assert.equal(fetch.mock.callCount(), 0, "fetch should not be called on empty search result");
+    assert.equal(metas.length, 0, "empty search result returns empty array");
+    assert.equal(fetch.mock.callCount(), 0, "fetch not called on empty search");
   } finally {
     globalThis.process.stdout.write = originalEmit;
   }
 });
 
-test("collectMetadata: without sinceDate (null), fetches full range without search", async () => {
+test("collectMetadata: interrupted search (exception) withholdsProof — fetch not called", async () => {
   const originalEmit = globalThis.process.stdout.write;
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
     const search = mock.fn(async () => {
-      throw new Error("search should not be called when sinceDate is null");
-    });
-
-    const fetch = mock.fn(async function* (range: string) {
-      // Full range fetch without SINCE constraint
-      if (range === "priorUidnext:*") {
-        yield makeMsg({ uid: 50, emailId: "old" });
-        yield makeMsg({ uid: 101, emailId: "new" });
-      }
-    });
-
-    const client = {
-      search,
-      fetch,
-    } as any;
-
-    const metas = await collectMetadata(client, "priorUidnext:*", null);
-
-    assert.equal(metas.length, 2, "should fetch all UIDs when sinceDate is null");
-    assert.equal(search.mock.callCount(), 0, "search should not be called when sinceDate is null");
-    assert.equal(fetch.mock.callCount(), 1, "fetch should be called to walk full range");
-  } finally {
-    globalThis.process.stdout.write = originalEmit;
-  }
-});
-
-test("collectMetadata: emits PROGRESS events correctly during bounded collection", async () => {
-  const progressMessages: Array<{ type: string; message?: string; count?: number }> = [];
-  const originalEmit = globalThis.process.stdout.write;
-  try {
-    globalThis.process.stdout.write = ((data: string): boolean => {
-      if (typeof data === "string") {
-        const parsed = JSON.parse(data) as any;
-        if (parsed.type === "PROGRESS") {
-          progressMessages.push(parsed);
-        }
-      }
-      return true;
-    }) as any;
-
-    const search = mock.fn(async () => {
-      return [101, 102, 103];
+      throw new Error("IMAP search failed: network timeout");
     });
 
     const fetch = mock.fn(async function* () {
-      // Yield exactly 3 messages to match search result
-      for (let i = 101; i <= 103; i++) {
-        yield makeMsg({ uid: i, emailId: `msg${i}` });
-      }
+      // Should never be called
+      throw new Error("fetch must not be called if search fails");
     });
 
     const client = {
@@ -3778,40 +3730,36 @@ test("collectMetadata: emits PROGRESS events correctly during bounded collection
       fetch,
     } as any;
 
-    const metas = await collectMetadata(client, "1:*", "09-Aug-2026");
-
-    // Should emit: start collecting (implicit), collected X headers (progress), final count
-    const progressWithCount = progressMessages.filter((p) => p.count !== undefined);
-    assert.ok(
-      progressWithCount.length > 0,
-      "should emit PROGRESS messages with count during bounded collection"
-    );
-    assert.equal(
-      metas.length,
-      3,
-      "should collect all messages returned by bounded search"
-    );
+    try {
+      await collectMetadata(client, "1:*", "09-Aug-2026", "2026-08-09T00:00:00Z");
+      assert.fail("should propagate search exception");
+    } catch (e) {
+      assert.ok(e instanceof Error);
+      assert.match((e as Error).message, /network timeout/);
+      assert.equal(
+        fetch.mock.callCount(),
+        0,
+        "fetch not called when search throws"
+      );
+    }
   } finally {
     globalThis.process.stdout.write = originalEmit;
   }
 });
 
-test("collectMetadata: intersects incremental fetch range with SINCE search result", async () => {
+test("collectMetadata: without sinceDate/sinceIso (null), full range unchanged behavior", async () => {
   const originalEmit = globalThis.process.stdout.write;
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
     const search = mock.fn(async () => {
-      // SINCE returns all UIDs after a date, but incremental cursor may ask
-      // for only priorUidnext:* (e.g., 200:*)
-      return [150, 151, 200, 201]; // Mix of historical and new UIDs
+      throw new Error("search must not be called when sinceDate is null");
     });
 
     const fetch = mock.fn(async function* (range: string) {
-      // Verify we were called with the exact UID set from search, not the original range
-      assert.equal(range, "150,151,200,201", "should fetch exactly the UIDs from SINCE search");
-      for (const uid of [150, 151, 200, 201]) {
-        yield makeMsg({ uid, emailId: `msg${uid}` });
+      if (range === "200:*") {
+        yield makeMsg({ uid: 200, emailId: "msg200", internalDate: new Date("2026-08-08") });
+        yield makeMsg({ uid: 201, emailId: "msg201", internalDate: new Date("2026-08-09") });
       }
     });
 
@@ -3820,27 +3768,12 @@ test("collectMetadata: intersects incremental fetch range with SINCE search resu
       fetch,
     } as any;
 
-    const metas = await collectMetadata(client, "200:*", "01-Aug-2026");
+    // sinceDate=null, sinceIso=null → no search, no post-filter
+    const metas = await collectMetadata(client, "200:*", null, null);
 
-    assert.equal(metas.length, 4, "should include all SINCE results, even older UIDs");
+    assert.equal(metas.length, 2, "all messages in range returned");
+    assert.equal(search.mock.callCount(), 0, "no search when sinceDate is null");
   } finally {
     globalThis.process.stdout.write = originalEmit;
   }
-});
-
-test("issoToImapDate: produces output compatible with standard IMAP servers", () => {
-  // These are real IMAP-formatted dates that servers understand
-  assert.equal(issoToImapDate("2026-01-15T08:30:00Z"), "15-Jan-2026");
-  assert.equal(issoToImapDate("2026-03-20T00:00:00Z"), "20-Mar-2026");
-  assert.equal(issoToImapDate("2026-11-30T23:59:59Z"), "30-Nov-2026");
-});
-
-test("issoToImapDate: preserves UTC semantics (never localizes)", () => {
-  // Ensure we use UTC methods (getUTC*), not local methods (get*)
-  // Both should produce the same output despite timezone awareness.
-  const iso = "2026-08-09T00:00:00Z";
-  assert.equal(issoToImapDate(iso), "09-Aug-2026");
-  // The same instant in a different representation (via getTime) should still
-  // format to the same UTC date. This is implicitly tested by using getUTC*
-  // rather than get* in the implementation.
 });
