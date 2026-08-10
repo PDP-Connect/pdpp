@@ -462,13 +462,9 @@ test("requested-connector reachability: Google Calendar/Contacts show honest non
         entry.disposition === "provider_auth_deployment_blocked" || entry.disposition === "provider_auth_proof_gated",
         `${key}: expected a provider-auth gated disposition, got '${entry.disposition}'`
       );
-      // No CTA yet — a real shared Google owner-account adapter now exists
-      // and is route-tested (reference-implementation/test/google-owner-account-provider-auth.test.ts,
-      // google-provider-auth-composite-dispatch.test.ts), but google-calendar/
-      // google-contacts are deliberately NOT in
-      // PROVIDER_AUTH_LIFECYCLE_PROVEN_CONNECTOR_KEYS yet — promotion to a
-      // live CTA is a separate commit once proven against a real account, per
-      // repo convention (STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS's precedent).
+      // The shared manifest-driven OAuth adapter is proven, but an owner CTA
+      // remains unavailable until this deployment supplies the Google app
+      // configuration declared by the connector manifest.
       assert.equal(
         sourceSetupAction(entry),
         null,
