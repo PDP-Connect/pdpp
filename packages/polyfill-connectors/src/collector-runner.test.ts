@@ -4578,7 +4578,7 @@ test("runCollectorConnector recovers acknowledged local gaps only after a succes
 
 function createTestClient(): Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState" | "ackLocalCollectorGap"> {
   return {
-    ingestBatch: async () => ({ ok: true }),
+    ingestBatch: async (_request: IngestBatchRequest) => ({ ok: true }),
     putSourceInstanceState: async (request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> => ({
       device_id: "test-device",
       object: "device_source_instance_state" as const,
