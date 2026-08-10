@@ -63,13 +63,20 @@
  * explicit `coverage_diagnostics` reason plus a dedicated SKIP_RESULT
  * diagnostic when any conversation hits that cap, rather than silently
  * returning a partial history as if it were complete. Similarly, the
- * number of conversations scanned per run is capped (GMCLI_MAX_CHATS);
- * when the chat list itself is truncated, the chats kept are the
+ * number of conversations scanned per run is capped (GMCLI_MAX_CHATS).
+ * `chats list` is always called with an explicit `--limit` sized to
+ * `GMCLI_MAX_CHATS + 1` — never left unset, since gmcli's own `chats list`
+ * defaults `--limit` to 50 server-side (verified from gmkit's Go source),
+ * which would otherwise silently cap enumeration to 50 UPSTREAM of this
+ * connector's own bounding, defeating GMCLI_MAX_CHATS entirely for any
+ * archive over 50 conversations. When that probe fetch confirms truncation
+ * (more than GMCLI_MAX_CHATS chats returned), the chats kept are the
  * GMCLI_MAX_CHATS most-recently-active ones (sorted by
  * `last_message_time_ms` descending, ties broken by `conversation_id` for
- * determinism — see sortChatsByRecency), not an arbitrary API-order prefix,
- * and a `messages` SKIP_RESULT documents which chats were dropped from
- * this run's scan.
+ * a documented total order — see sortChatsByRecency), and a `messages`
+ * SKIP_RESULT documents that a lower bound of chats exist beyond what was
+ * scanned this run (an honest "at least N", never a precise total the
+ * connector cannot actually see past its own bounded probe).
  *
  * HONEST LIMITATIONS (also surfaced in the manifest):
  *   - The paired Android phone must stay online and reachable for gmcli to
@@ -410,18 +417,23 @@ function resolveMaxChats(): number {
 
 /**
  * Deterministic recency ordering for `chats list` output, applied BEFORE the
- * `GMCLI_MAX_CHATS` slice. `gmcli --json --full chats list` documents no
- * ordering guarantee (verified: gmkit's Go source does not sort this query),
- * so slicing its raw response order to the first N chats would drop an
- * arbitrary, source-order-dependent subset — a long-idle conversation could
- * survive the cut while an actively-growing one gets dropped, purely because
- * of gmcli's internal enumeration order. Sorting by `last_message_time_ms`
- * descending means a truncated run always keeps the chats with the most
- * RECENT activity, which is the only correct priority for a bounded, honest
- * partial scan. Ties (including two chats that both have a null/missing
- * timestamp) break on `conversation_id` ascending — not source order — so
- * the same archive always produces the same kept/dropped split across runs,
- * independent of any run-to-run jitter in gmcli's own response order. A
+ * `GMCLI_MAX_CHATS` slice. gmcli's own `chats list` already returns
+ * conversations in `last_message_ts DESC, updated_at DESC` order server-side
+ * (verified from gmkit's Go source: `internal/store/conversations.go`'s
+ * `ListConversations` — the query is genuinely `ORDER BY c.last_message_ts
+ * DESC, c.updated_at DESC LIMIT ?`), so this connector is NOT correcting an
+ * unordered or arbitrarily-ordered response. What this sort adds on top:
+ * (1) a documented, connector-owned contract this code does not have to
+ * trust gmcli's exact secondary-sort tie-breaking behavior to satisfy — the
+ * `updated_at DESC` secondary key is not guaranteed to be a total order
+ * (two conversations can share both `last_message_ts` and `updated_at`),
+ * whereas this connector's own `conversation_id` tie-break IS a documented
+ * total order; and (2) resilience to gmcli response order in the face of a
+ * schema/behavior change in a beta, single-maintainer CLI this connector
+ * does not control — re-deriving the same guarantee locally rather than
+ * assuming an external, unversioned contract holds forever. Re-sorting an
+ * already-recency-sorted list is a cheap no-op in the common case; it only
+ * changes anything at a tie gmcli's own ordering left ambiguous. A
  * missing/invalid `last_message_time_ms` sorts as the OLDEST possible value
  * (last), never treated as "most recent" — an absent signal must never win
  * priority over a chat with a real, verified recent-activity timestamp.
@@ -464,11 +476,18 @@ function buildCoverageRecord(status: CoverageRecord["status"], reason: string): 
 // ─── Fetch + classify (extracted so `collect()` stays a thin dispatcher) ──
 
 interface GmcliFetchOutcome {
-  /** True when the chat list itself was cut to GMCLI_MAX_CHATS — distinct
-   *  from `truncated` (per-chat message-limit truncation). `collect()`
-   *  turns this into its own `messages` SKIP_RESULT so a run that silently
-   *  dropped whole conversations cannot read as complete coverage. */
-  readonly chatsTruncated?: { droppedCount: number; scannedCount: number; totalCount: number };
+  /** Present when the chat list itself was cut to GMCLI_MAX_CHATS — distinct
+   *  from `truncated` (per-chat message-limit truncation). `collect()` turns
+   *  this into its own `messages` SKIP_RESULT so a run that silently
+   *  dropped whole conversations cannot read as complete coverage.
+   *
+   *  `atLeastTotalCount` is a LOWER BOUND, not the true total: the
+   *  `chats list --limit` probe (see fetchAndParseGmcliMessages's doc
+   *  comment) only fetches `maxChats + 1` rows, so once truncation is
+   *  detected the real archive could hold far more conversations than that
+   *  — this connector has no way to learn the exact true count without an
+   *  unbounded fetch, which would defeat the whole purpose of the cap. */
+  readonly chatsTruncated?: { atLeastTotalCount: number; scannedCount: number };
   readonly coverageReason: string;
   readonly coverageStatus: CoverageRecord["status"];
   readonly parsed?: ParsedGmcliMessage[];
@@ -549,11 +568,45 @@ async function fetchChatMessages(
  * discriminated outcome. `collect()` only has to branch on `outcome.skip`
  * vs `outcome.parsed` — the fine-grained SKIP_RESULT reason and coverage
  * status/reason live here.
+ *
+ * `chats list` is called with an explicit `--limit`, sized to `maxChats + 1`
+ * — NOT left unset. gmcli's own `chats list` defaults `--limit` to 50
+ * server-side when the flag is absent (verified from gmkit's Go source:
+ * `internal/cmd/chats.go`'s `chatsListCmd`, `IntVar(&limit, "limit", 50,
+ * ...)`, clamped again in `internal/store/conversations.go`'s
+ * `ListConversations` if `<= 0`). An unset `--limit` would silently cap the
+ * chat enumeration at 50 UPSTREAM of this connector's own
+ * `GMCLI_MAX_CHATS` bookkeeping — for any archive with more than 50
+ * conversations and the default `GMCLI_MAX_CHATS` (200), the fetch would
+ * never see chats 51+ at all, so `orderedChats.length > maxChats` could
+ * never be true and the `gmcli_chat_scan_limit_reached` truncation signal
+ * below would never fire, even though real conversations were silently
+ * dropped from the scan.
+ *
+ * The probe is `maxChats + 1`, not `maxChats`, because fetching exactly
+ * `maxChats` rows is indistinguishable between "the archive has exactly
+ * `maxChats` conversations" (no truncation) and "the archive has more, but
+ * gmcli's own `--limit` cut the response at exactly `maxChats`" (silent
+ * truncation) — the same "exact cap vs. truncation" ambiguity this
+ * connector already refuses to accept for the per-chat message limit (see
+ * `fetchChatMessages`'s `possiblyTruncated: messages.length >= limit`).
+ * Fetching one extra row resolves the ambiguity: exactly `maxChats + 1`
+ * rows back means "at least one more exists beyond the cap" (truncated);
+ * `maxChats` or fewer means "this is the true, complete count" (not
+ * truncated). The 1 extra row is used only for this detection — it is
+ * never scanned for messages; the connector still retains only the
+ * `maxChats` most recently active chats (see sortChatsByRecency below).
+ * gmcli's `--limit` has no documented upper clamp beyond the `<= 0` case
+ * (verified from the same store source), so `maxChats + 1` is honored as a
+ * literal SQL `LIMIT`, not silently re-capped to 50 by passing it explicitly.
  */
 export async function fetchAndParseGmcliMessages(invoke: GmcliInvoker = runGmcli): Promise<GmcliFetchOutcome> {
+  const maxChats = resolveMaxChats();
+  const chatsListProbeLimit = maxChats + 1;
+
   let chatsResult: GmcliResult;
   try {
-    chatsResult = await invoke(["--json", "--full", "chats", "list"]);
+    chatsResult = await invoke(["--json", "--full", "chats", "list", "--limit", String(chatsListProbeLimit)]);
   } catch (err) {
     return classifyGmcliFetchError(err);
   }
@@ -570,13 +623,19 @@ export async function fetchAndParseGmcliMessages(invoke: GmcliInvoker = runGmcli
     };
   }
 
-  const maxChats = resolveMaxChats();
   const perChatLimit = resolveMessagesPerChatLimit();
   // Sort by recency BEFORE slicing: a truncated run must keep the most
   // recently active chats, not an arbitrary gmcli-response-order prefix
   // (see sortChatsByRecency's doc comment).
   const orderedChats = sortChatsByRecency(chats);
   const boundedChats = orderedChats.slice(0, maxChats);
+  // `orderedChats.length` is bounded above by `chatsListProbeLimit`
+  // (`maxChats + 1`) — it is the true total ONLY when the archive has
+  // `maxChats` or fewer conversations. When the fetch itself returned the
+  // full `maxChats + 1` probe, the real total may be far larger; this
+  // connector deliberately does NOT claim to know the real total in that
+  // case (see the `chatsTruncated` result below), only that at least one
+  // conversation beyond `maxChats` exists.
   const chatsTruncated = orderedChats.length > maxChats;
 
   const parsed: ParsedGmcliMessage[] = [];
@@ -603,17 +662,19 @@ export async function fetchAndParseGmcliMessages(invoke: GmcliInvoker = runGmcli
     truncatedChatIds.length > 0
       ? ` ${String(truncatedChatIds.length)} conversation(s) hit the per-chat limit (${String(perChatLimit)}) and may have older messages not fetched this run.`
       : "";
+  // `orderedChats.length` here is exactly `chatsListProbeLimit`
+  // (`maxChats + 1`) whenever truncated — it is a LOWER BOUND on the real
+  // total, not the true count (see GmcliFetchOutcome's chatsTruncated doc).
   const chatsBoundNote = chatsTruncated
-    ? ` Only the ${String(maxChats)} most recently active of ${String(orderedChats.length)} conversations were scanned this run.`
+    ? ` Only the ${String(maxChats)} most recently active of at least ${String(orderedChats.length)} conversations were scanned this run.`
     : "";
 
   return {
     ...(chatsTruncated
       ? {
           chatsTruncated: {
-            droppedCount: orderedChats.length - maxChats,
+            atLeastTotalCount: orderedChats.length,
             scannedCount: boundedChats.length,
-            totalCount: orderedChats.length,
           },
         }
       : {}),
@@ -636,7 +697,18 @@ export async function collect({ state, requested, emit, emitRecord, progress }: 
   }
 
   if (outcome.skip) {
-    await emit({ type: "SKIP_RESULT", stream: "messages", ...outcome.skip });
+    // Explicit reason/message properties, not `...outcome.skip` — a spread
+    // here is opaque to the bounded, AST-based reason-emission scanner (see
+    // packages/polyfill-connectors/src/reason-emission-scan.ts on the
+    // reason-messages-current-0809 lane): it cannot trace a spread's
+    // properties back through this connector's own control flow to the
+    // literal reason-code strings in classifyGmcliFetchError/
+    // fetchAndParseGmcliMessages, so every reason code emitted this way
+    // would silently evade completeness checking. Destructuring here
+    // (behaviorally identical to the spread — same two fields, same
+    // values) keeps `reason` a literal-shaped property the scanner can
+    // resolve without generalized spread-dataflow support.
+    await emit({ type: "SKIP_RESULT", stream: "messages", reason: outcome.skip.reason, message: outcome.skip.message });
     return;
   }
 
@@ -660,12 +732,15 @@ export async function collect({ state, requested, emit, emitRecord, progress }: 
   // manifest (`reason_display_messages`), never RI-side connector-specific
   // copy. This does NOT claim historical convergence — it only says which
   // chats were left unscanned this run and how to recover them.
+  // `atLeastTotalCount` is a lower bound (see GmcliFetchOutcome's doc
+  // comment) — the message is phrased "at least N", never a precise count,
+  // since the chats-list probe itself is bounded and cannot see past it.
   if (outcome.chatsTruncated) {
     await emit({
       type: "SKIP_RESULT",
       stream: "messages",
       reason: "gmcli_chat_scan_limit_reached",
-      message: `${String(outcome.chatsTruncated.droppedCount)} of ${String(outcome.chatsTruncated.totalCount)} conversation(s) were not scanned this run (kept the ${String(outcome.chatsTruncated.scannedCount)} most recently active). Increase GMCLI_MAX_CHATS and re-run to scan more.`,
+      message: `Only the ${String(outcome.chatsTruncated.scannedCount)} most recently active conversations were scanned this run; at least ${String(outcome.chatsTruncated.atLeastTotalCount)} conversation(s) exist in total. Increase GMCLI_MAX_CHATS and re-run to scan more.`,
     });
   }
   if (!requested.has("messages")) {

@@ -40,17 +40,34 @@ test("never invokes `messages search` — only `chats list` and `messages list`"
   }
 });
 
-test("chats list is invoked with global flags before the subcommand: --json --full chats list", async () => {
-  const seenInvocations: string[][] = [];
-  const invoker: GmcliInvoker = (args) => {
-    seenInvocations.push([...args]);
-    if (args[0] === "--json") {
-      return Promise.resolve(ok(buildEmptyChatsJsonFixture()));
+test("chats list is invoked with global flags before the subcommand, plus an explicit --limit sized to GMCLI_MAX_CHATS + 1", async () => {
+  const priorMaxChats = process.env.GMCLI_MAX_CHATS;
+  process.env.GMCLI_MAX_CHATS = "50";
+  try {
+    const seenInvocations: string[][] = [];
+    const invoker: GmcliInvoker = (args) => {
+      seenInvocations.push([...args]);
+      if (args[0] === "--json") {
+        return Promise.resolve(ok(buildEmptyChatsJsonFixture()));
+      }
+      return Promise.resolve(ok(buildMessagesJsonFixture()));
+    };
+    await fetchAndParseGmcliMessages(invoker);
+    // Explicit --limit, sized to GMCLI_MAX_CHATS + 1 — NEVER left unset.
+    // gmcli's own `chats list` defaults --limit to 50 server-side when the
+    // flag is absent (verified from gmkit's Go source), which would
+    // silently cap chat enumeration upstream of this connector's own
+    // GMCLI_MAX_CHATS bookkeeping. The +1 (not exactly GMCLI_MAX_CHATS) is
+    // what makes "exactly at the cap" distinguishable from "truncated" —
+    // see fetchAndParseGmcliMessages's doc comment.
+    assert.deepEqual(seenInvocations[0], ["--json", "--full", "chats", "list", "--limit", "51"]);
+  } finally {
+    if (priorMaxChats === undefined) {
+      delete process.env.GMCLI_MAX_CHATS;
+    } else {
+      process.env.GMCLI_MAX_CHATS = priorMaxChats;
     }
-    return Promise.resolve(ok(buildMessagesJsonFixture()));
-  };
-  await fetchAndParseGmcliMessages(invoker);
-  assert.deepEqual(seenInvocations[0], ["--json", "--full", "chats", "list"]);
+  }
 });
 
 test("messages list is invoked with --conv <chat-id> and per-chat bounding/order flags", async () => {

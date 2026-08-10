@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Closes two red-team findings against the STATE-watermark change in
- * state-checkpoint.test.ts:
+ * Closes red-team findings against the STATE-watermark change in
+ * state-checkpoint.test.ts, across two review passes:
  *
  * (1) The per-chat fetch used `--order asc` (oldest-first). With a flat
  *     `--limit` and no pagination cursor, a conversation that ever hit its
@@ -17,30 +17,74 @@
  *     the newest N in a limit-hitting conversation is still never fetched
  *     by this connector on its own.
  *
- * (2) `GMCLI_MAX_CHATS` sliced `chats list`'s raw response order, which
- *     gmkit's source documents no ordering guarantee for — an arbitrary,
- *     source-order-dependent subset could be kept while an actively
- *     growing conversation got silently dropped from the scan entirely.
- *     Fixed by sorting chats by `last_message_time_ms` descending (ties
- *     broken by `conversation_id`) BEFORE the GMCLI_MAX_CHATS slice, and by
- *     emitting a new `messages` SKIP_RESULT (`gmcli_chat_scan_limit_reached`)
- *     whenever that slice actually drops chats, so a run that silently
- *     scanned only a subset of conversations cannot read as complete
- *     coverage. The reason code is generic and connector-authored, with its
- *     display copy declared in this connector's own manifest
- *     (`reason_display_messages`) — never in RI.
+ * (2) `GMCLI_MAX_CHATS` sliced `chats list`'s raw response order. Sorting
+ *     chats by `last_message_time_ms` descending (ties broken by
+ *     `conversation_id`) BEFORE the `GMCLI_MAX_CHATS` slice, plus a new
+ *     `messages` SKIP_RESULT (`gmcli_chat_scan_limit_reached`) whenever
+ *     that slice actually drops chats, so a run that silently scanned only
+ *     a subset of conversations cannot read as complete coverage. NOTE:
+ *     an earlier version of this fix's rationale wrongly claimed gmcli's
+ *     `chats list` has "no ordering guarantee" — verified against gmkit's
+ *     real Go source, it DOES sort server-side (`ORDER BY last_message_ts
+ *     DESC, updated_at DESC`). This connector's own sort is a determinism/
+ *     tie-break improvement on top of an already-recency-sorted response,
+ *     not a correction of an unordered one (see sortChatsByRecency's doc
+ *     comment in index.ts).
+ *
+ * (3) An independent second-pass red-team review (see
+ *     /tmp/google-messages-tail-redteam-0810.md) found that (2)'s fix was
+ *     itself silently defeated: `fetchAndParseGmcliMessages` never passed
+ *     `--limit` to `gmcli chats list` at all. Verified against gmkit's real
+ *     Go source (`internal/cmd/chats.go`'s `chatsListCmd`,
+ *     `IntVar(&limit, "limit", 50, ...)`, and `internal/store/
+ *     conversations.go`'s `ListConversations`, `if limit <= 0 { limit = 50
+ *     }`): an unset `--limit` silently caps the response at 50 chats
+ *     UPSTREAM of this connector's own `GMCLI_MAX_CHATS` (default 200)
+ *     bookkeeping. `orderedChats.length > maxChats` could never be true
+ *     when the fetch itself never returned more than 50 rows, so
+ *     `gmcli_chat_scan_limit_reached` — the entire deliverable of fix
+ *     (2) — never fired for any real archive with more than 50
+ *     conversations, and the SKIP_RESULT's own "increase GMCLI_MAX_CHATS"
+ *     recovery instruction had zero effect. Fixed by passing an explicit
+ *     `--limit` of `maxChats + 1` to `chats list` — the `+1`, not exactly
+ *     `maxChats`, is what makes "the archive has exactly maxChats
+ *     conversations" distinguishable from "the archive has more, but the
+ *     probe fetch itself got capped at maxChats" (see
+ *     fetchAndParseGmcliMessages's doc comment in index.ts for the full
+ *     rationale, which mirrors the same "exact cap vs. truncation is
+ *     unknowable without one extra row" logic this connector already
+ *     applies to the per-chat message limit).
+ *
+ * (4) A reason-ownership coordination pass (packages/polyfill-connectors/
+ *     src/reason-emission-scan.ts, on the reason-messages-current-0809
+ *     lane) proved that `collect()`'s `await emit({ type: "SKIP_RESULT",
+ *     stream: "messages", ...outcome.skip })` silently evaded the bounded,
+ *     AST-based reason-completeness scanner: a SpreadElement in a
+ *     SKIP_RESULT construction is opaque to that scanner's dataflow
+ *     resolution, so every reason code this connector emits via `skip`
+ *     (gmcli_not_installed, gmcli_not_paired, gmcli_query_failed,
+ *     gmcli_schema_drift) would have gone unchecked for manifest display-
+ *     copy completeness. Fixed by destructuring `outcome.skip.reason` /
+ *     `outcome.skip.message` into explicit properties at the emit call
+ *     site — behaviorally identical (same two fields, same values), but
+ *     resolvable by the scanner's already-supported same-file property-
+ *     access resolution path instead of requiring generalized spread
+ *     dataflow, which the scanner deliberately does not implement (it
+ *     fails closed on a SpreadElement instead).
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
-import { sortChatsByRecency } from "./index.ts";
+import { fetchAndParseGmcliMessages, GmcliError, type GmcliInvoker, sortChatsByRecency } from "./index.ts";
 
 const PACKAGE_ROOT = join(import.meta.dirname, "..", "..");
 const ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "google_messages", "index.ts");
 const FAKE_GMCLI = join(PACKAGE_ROOT, "connectors", "google_messages", "fixtures", "fake-gmcli.mjs");
+const INDEX_SOURCE = readFileSync(ENTRYPOINT, "utf8");
 
 function records(messages: readonly EmittedMessage[], stream: string): Record<string, unknown>[] {
   return messages
@@ -296,7 +340,14 @@ test("finding 2 — over cap, gap: chat count exceeding GMCLI_MAX_CHATS keeps th
     chatScanSkip,
     "a chat-list truncation must surface its own SKIP_RESULT, distinct from the per-chat message limit"
   );
-  assert.match(chatScanSkip?.message ?? "", /1 of 3/);
+  // The chats-list probe fetches GMCLI_MAX_CHATS + 1 (here 3), which
+  // happens to equal the true archive size in this fixture, so the
+  // "at least" lower bound is exact here — but the message is phrased as a
+  // lower bound ("at least N"), never a precise total, because the probe
+  // itself is bounded and a larger real archive would not be fully seen
+  // (see GmcliFetchOutcome's chatsTruncated doc comment).
+  assert.match(chatScanSkip?.message ?? "", /Only the 2 most recently active conversations were scanned/);
+  assert.match(chatScanSkip?.message ?? "", /at least 3 conversation\(s\) exist/);
 
   // This must never be framed as historical convergence.
   assert.doesNotMatch(
@@ -304,6 +355,205 @@ test("finding 2 — over cap, gap: chat count exceeding GMCLI_MAX_CHATS keeps th
     /eventually|will (be )?(caught up|converge)|all history/i,
     "the chat-scan-limit message must not claim eventual convergence — it only reports what was scanned this run"
   );
+});
+
+// ─── Finding 3: chats-list --limit must be explicit, sized past gmcli's own hidden 50-default ─
+
+test("finding 3 — chats list always carries an explicit --limit argv, never relies on gmcli's own default", async () => {
+  const seenInvocations: string[][] = [];
+  const invoker: GmcliInvoker = (args) => {
+    seenInvocations.push([...args]);
+    if (args[0] === "--json") {
+      return Promise.resolve({ exitCode: 0, stderr: "", stdout: "[]" });
+    }
+    return Promise.resolve({ exitCode: 0, stderr: "", stdout: "[]" });
+  };
+  const priorMaxChats = process.env.GMCLI_MAX_CHATS;
+  process.env.GMCLI_MAX_CHATS = "200";
+  try {
+    await fetchAndParseGmcliMessages(invoker);
+  } finally {
+    if (priorMaxChats === undefined) {
+      delete process.env.GMCLI_MAX_CHATS;
+    } else {
+      process.env.GMCLI_MAX_CHATS = priorMaxChats;
+    }
+  }
+  const chatsListInvocation = seenInvocations.find((a) => a[2] === "chats" && a[3] === "list");
+  assert.ok(chatsListInvocation, "expected a chats list invocation");
+  const limitIdx = chatsListInvocation?.indexOf("--limit") ?? -1;
+  assert.ok(
+    limitIdx >= 0,
+    "chats list MUST always pass an explicit --limit — gmcli's own default (50, verified from gmkit source) would silently cap the response upstream of GMCLI_MAX_CHATS if omitted"
+  );
+  assert.equal(
+    chatsListInvocation?.[limitIdx + 1],
+    "201",
+    "the probe limit must be GMCLI_MAX_CHATS + 1 (here 200 + 1), not exactly GMCLI_MAX_CHATS, so exact-cap and over-cap are distinguishable"
+  );
+});
+
+test("finding 3 — behavioral: an archive with more chats than gmcli's own hidden 50-default is fully scanned when GMCLI_MAX_CHATS is set above 50", async () => {
+  // This is the exact scenario the independent red-team report identified:
+  // a real archive with more than 50 conversations, and a GMCLI_MAX_CHATS
+  // set well above 50 (60 here — deliberately > gmcli's own hidden
+  // default so the old defect, if reintroduced, would silently truncate
+  // at 50 and never reach this test's chats). Before the fix, the
+  // connector's own `chats list` invocation carried no --limit, so gmcli
+  // itself would return only its default 50 rows — 5 real conversations
+  // would vanish with zero signal, and `orderedChats.length > maxChats`
+  // (50 > 60) would be false, suppressing the truncation SKIP_RESULT that
+  // should never have needed to fire here at all (55 <= 60, genuinely no
+  // truncation).
+  const chatCount = 55;
+  const maxChats = 60;
+  const chats = Array.from({ length: chatCount }, (_, i) =>
+    chat({ conversation_id: `chat_${String(i).padStart(3, "0")}`, last_message_time_ms: 1_000_000 + i * 1000 })
+  );
+  const messages = chats.map((c) =>
+    msg({ message_id: `msg_${c.conversation_id}`, conversation_id: c.conversation_id, timestamp_ms: 1000 })
+  );
+  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) });
+  const emitted = records(run.messages, "messages");
+  const emittedChatIds = new Set(emitted.map((r) => r.chat_id));
+
+  assert.equal(
+    emittedChatIds.size,
+    chatCount,
+    `all ${String(chatCount)} conversations must be scanned — none may be silently dropped by gmcli's own hidden default limit`
+  );
+  for (const c of chats) {
+    assert.ok(emittedChatIds.has(c.conversation_id), `${c.conversation_id} must have been scanned`);
+  }
+
+  assert.ok(
+    !skips(run.messages).some((s) => s.reason === "gmcli_chat_scan_limit_reached"),
+    "55 <= 60 is genuinely not truncated — no chat-scan SKIP_RESULT should fire"
+  );
+});
+
+test("finding 3 — behavioral: an archive genuinely exceeding GMCLI_MAX_CHATS past the 50-row hidden default is still correctly detected as truncated", async () => {
+  // Complements the test above: here the archive (70 chats) exceeds
+  // GMCLI_MAX_CHATS (60) AND exceeds gmcli's own hidden 50-default. The
+  // fixed probe (--limit 61) must still see enough of the archive (61 of
+  // 70 rows) to correctly detect truncation and keep the 60 most recently
+  // active — not silently cap at 50 and miss the truncation signal
+  // entirely (the pre-fix defect), and not silently cap at 50 and
+  // incorrectly retain only 50 recently-active chats instead of 60.
+  const chatCount = 70;
+  const maxChats = 60;
+  const chats = Array.from({ length: chatCount }, (_, i) =>
+    chat({ conversation_id: `chat_${String(i).padStart(3, "0")}`, last_message_time_ms: 1_000_000 + i * 1000 })
+  );
+  const messages = chats.map((c) =>
+    msg({ message_id: `msg_${c.conversation_id}`, conversation_id: c.conversation_id, timestamp_ms: 1000 })
+  );
+  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) });
+  const emitted = records(run.messages, "messages");
+  const emittedChatIds = new Set(emitted.map((r) => r.chat_id));
+
+  assert.equal(
+    emittedChatIds.size,
+    maxChats,
+    `exactly the ${String(maxChats)}-chat cap should be scanned, not gmcli's hidden 50`
+  );
+  // The 60 kept must be the 60 MOST RECENT (indices 10..69 — last_message_time_ms
+  // ascends with index), not an arbitrary or gmcli-default-order subset.
+  for (let i = 0; i < 10; i += 1) {
+    assert.ok(
+      !emittedChatIds.has(`chat_${String(i).padStart(3, "0")}`),
+      `chat_${String(i).padStart(3, "0")} is among the 10 oldest and must be dropped, not kept in place of a more recent chat`
+    );
+  }
+  for (let i = 10; i < chatCount; i += 1) {
+    assert.ok(
+      emittedChatIds.has(`chat_${String(i).padStart(3, "0")}`),
+      `chat_${String(i).padStart(3, "0")} is among the 60 most recently active and must be kept`
+    );
+  }
+
+  const chatScanSkip = skips(run.messages).find((s) => s.reason === "gmcli_chat_scan_limit_reached");
+  assert.ok(
+    chatScanSkip,
+    "70 > 60 must be detected as truncated, even though gmcli's own hidden default (50) is also exceeded"
+  );
+  assert.match(chatScanSkip?.message ?? "", /Only the 60 most recently active conversations were scanned/);
+  // The probe fetches maxChats + 1 = 61 rows; the archive has 70. The
+  // connector can only honestly claim "at least 61 exist", NOT the true 70
+  // — it has no visibility past its own bounded probe.
+  assert.match(chatScanSkip?.message ?? "", /at least 61 conversation\(s\) exist/);
+});
+
+// ─── Finding 3: exact-boundary determinism ─────────────────────────────────
+
+test("finding 3 — exact boundary: archive size exactly GMCLI_MAX_CHATS + 1 is correctly detected as truncated by exactly one chat", async () => {
+  const maxChats = 5;
+  const chatCount = maxChats + 1;
+  const chats = Array.from({ length: chatCount }, (_, i) =>
+    chat({ conversation_id: `chat_${String(i).padStart(2, "0")}`, last_message_time_ms: 1_000_000 + i * 1000 })
+  );
+  const messages = chats.map((c) =>
+    msg({ message_id: `msg_${c.conversation_id}`, conversation_id: c.conversation_id, timestamp_ms: 1000 })
+  );
+  const run = await runGoogleMessagesCustom(chats, messages, {}, { GMCLI_MAX_CHATS: String(maxChats) });
+  const emitted = records(run.messages, "messages");
+  const emittedChatIds = new Set(emitted.map((r) => r.chat_id));
+
+  assert.equal(
+    emittedChatIds.size,
+    maxChats,
+    "exactly maxChats chats are scanned when the archive has one more than the cap"
+  );
+  assert.ok(
+    !emittedChatIds.has("chat_00"),
+    "the single oldest chat (index 0, the one beyond the cap) must be the one dropped"
+  );
+
+  const chatScanSkip = skips(run.messages).find((s) => s.reason === "gmcli_chat_scan_limit_reached");
+  assert.ok(
+    chatScanSkip,
+    "one chat over the cap must still be detected — the +1 probe margin exists precisely for this boundary"
+  );
+  assert.match(chatScanSkip?.message ?? "", new RegExp(`at least ${String(chatCount)} conversation\\(s\\) exist`));
+});
+
+// ─── Finding 4: SKIP_RESULT emission must never spread a connector-owned shape ─
+
+test("finding 4 — collect() never spreads outcome.skip into the emitted SKIP_RESULT (opaque to the reason-emission scanner)", () => {
+  // A SpreadElement inside `emit({ type: "SKIP_RESULT", ... })` is exactly
+  // the shape the reason-emission scanner cannot resolve — it fails closed
+  // on it rather than guessing. This pins the source-level fix: no
+  // `...outcome.skip`-shaped spread anywhere in a SKIP_RESULT construction.
+  assert.doesNotMatch(
+    INDEX_SOURCE,
+    /type:\s*["']SKIP_RESULT["'][^}]*\.\.\.\w+(\.\w+)*/su,
+    "a SKIP_RESULT emission must never spread a connector-owned object — destructure reason/message as explicit properties instead"
+  );
+  assert.match(
+    INDEX_SOURCE,
+    /reason:\s*outcome\.skip\.reason,\s*message:\s*outcome\.skip\.message/u,
+    "expected the explicit reason/message destructure this fix introduced"
+  );
+});
+
+test("finding 4 — behavioral: distinct skip-reason code paths still surface their correct, distinct reason/message after the spread was flattened", async () => {
+  // Two different code sites that both populate GmcliFetchOutcome.skip —
+  // classifyGmcliFetchError's not_installed branch, and
+  // fetchAndParseGmcliMessages's own schema-drift branch — proving the
+  // flattened `reason: outcome.skip.reason, message: outcome.skip.message`
+  // destructure at the emit call site carries each one through unchanged,
+  // not just whichever single path integration.test.ts happens to exercise
+  // via subprocess.
+  const notInstalledInvoker: GmcliInvoker = () =>
+    Promise.reject(new GmcliError("gmcli binary not found: gmcli", "not_installed"));
+  const notInstalledOutcome = await fetchAndParseGmcliMessages(notInstalledInvoker);
+  assert.equal(notInstalledOutcome.skip?.reason, "gmcli_not_installed");
+  assert.match(notInstalledOutcome.skip?.message ?? "", /gmcli binary not found/);
+
+  const schemaDriftInvoker: GmcliInvoker = () => Promise.resolve({ exitCode: 0, stderr: "", stdout: "not json" });
+  const schemaDriftOutcome = await fetchAndParseGmcliMessages(schemaDriftInvoker);
+  assert.equal(schemaDriftOutcome.skip?.reason, "gmcli_schema_drift");
+  assert.ok(schemaDriftOutcome.skip?.message, "gmcli_schema_drift must carry a non-empty message");
 });
 
 test("finding 2 — the chat-scan-limit reason has vetted display copy declared in this connector's own manifest, not in RI", async () => {

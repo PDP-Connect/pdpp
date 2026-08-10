@@ -295,7 +295,7 @@ test("truncation: per-chat limit hit still commits a STATE watermark for the fet
   const cursor = stateFor(run1.messages, "messages") as { fingerprints?: Record<string, string> } | undefined;
   assert.ok(
     cursor,
-    "a bounded-but-honest fetch still commits STATE for the window it did fetch — gmcli's oldest-first order means that window is stable across runs, so withholding STATE here would only force useless re-emission of the same bounded prefix forever"
+    "a bounded-but-honest fetch still commits STATE for the window it did fetch — this fixture's message set is unchanged between run1/run2, so the fetched window is stable across runs regardless of --order direction, and withholding STATE here would only force useless re-emission of the same bounded window forever"
   );
   assert.equal(Object.keys(cursor?.fingerprints ?? {}).length, limit);
 

@@ -19,17 +19,25 @@
  *   malformed_messages -> chats list ok; messages list returns output missing required fields
  *   not_json        -> chats list exits 0 with non-JSON stdout
  *   full_page       -> chats list returns 1 chat; messages list returns exactly --limit rows (truncation-proxy test)
- *   custom          -> chats list reads its JSON array verbatim from
+ *   custom          -> chats list reads its full candidate pool from
  *                      FAKE_GMCLI_CHATS_JSON (same shape as CHATS_HEALTHY
- *                      below). messages list reads its full candidate pool
- *                      from FAKE_GMCLI_MESSAGES_JSON, then — like the real
- *                      gmcli — filters to the requested --conv chat_id,
- *                      applies --order (asc/desc by timestamp_ms), and caps
- *                      to --limit. This lets tests drive exact per-run,
- *                      per-chat message sets (new/late/same-timestamp rows,
- *                      archive replacement, growing-conversation truncation)
- *                      through one real, order/limit-respecting fake instead
- *                      of a static mode per case.
+ *                      below), then — like the real gmcli (gmkit's
+ *                      `ListConversations`: `ORDER BY last_message_ts DESC,
+ *                      updated_at DESC LIMIT ?`) — sorts by
+ *                      last_message_time_ms descending and caps to --limit.
+ *                      messages list reads its full candidate pool from
+ *                      FAKE_GMCLI_MESSAGES_JSON, then — like the real gmcli
+ *                      — filters to the requested --conv chat_id, applies
+ *                      --order (asc/desc by timestamp_ms), and caps to
+ *                      --limit. This lets tests drive exact per-run,
+ *                      per-chat/per-archive sets (new/late/same-timestamp
+ *                      rows, archive replacement, growing-conversation
+ *                      truncation, >maxChats archives) through one real,
+ *                      order/limit-respecting fake instead of a static mode
+ *                      per case — critically, this means a `custom`-mode
+ *                      test that supplies more chats than a probed --limit
+ *                      genuinely gets a truncated response, the same way
+ *                      the real binary would.
  */
 
 const mode = process.env.FAKE_GMCLI_MODE || "healthy";
@@ -80,6 +88,19 @@ function limitFromArgs() {
   return Number.isFinite(n) && n > 0 ? n : 500;
 }
 
+// Real gmcli's `chats list --limit` defaults to 50 when absent (gmkit's
+// `chatsListCmd`: `IntVar(&limit, "limit", 50, ...)`), NOT the 500 default
+// `limitFromArgs` uses for `messages list`. This connector always passes
+// `--limit` explicitly on `chats list` now (see index.ts's
+// fetchAndParseGmcliMessages), so this fallback should never actually be
+// exercised in practice — it exists so this fixture cannot silently drift
+// from gmcli's real default if a future call site omits the flag.
+function chatsListLimitFromArgs() {
+  const idx = args.indexOf("--limit");
+  const n = idx >= 0 ? Number(args[idx + 1]) : 50;
+  return Number.isFinite(n) && n > 0 ? n : 50;
+}
+
 function convFromArgs() {
   const idx = args.indexOf("--conv");
   return idx >= 0 ? args[idx + 1] : null;
@@ -105,6 +126,38 @@ function compareMessageIdAscending(a, b) {
     return 1;
   }
   return 0;
+}
+
+function compareConversationIdAscending(a, b) {
+  if (a.conversation_id < b.conversation_id) {
+    return -1;
+  }
+  if (a.conversation_id > b.conversation_id) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * Mirrors real gmcli's `chats list --limit <N>`: sort the full candidate
+ * pool by last_message_time_ms descending (gmkit's own server-side
+ * ORDER BY), then cap to --limit. If FAKE_GMCLI_CHATS_JSON is absent this
+ * falls back to CHATS_HEALTHY unbounded (no --limit means "healthy" mode's
+ * single fixed chat, which is always <= any real --limit this fixture is
+ * driven with).
+ */
+function customChatsForThisInvocation() {
+  const pool = JSON.parse(process.env.FAKE_GMCLI_CHATS_JSON ?? CHATS_HEALTHY);
+  const limit = chatsListLimitFromArgs();
+  const sorted = [...pool].sort((a, b) => {
+    const aTime = a.last_message_time_ms ?? Number.NEGATIVE_INFINITY;
+    const bTime = b.last_message_time_ms ?? Number.NEGATIVE_INFINITY;
+    if (aTime !== bTime) {
+      return bTime - aTime;
+    }
+    return compareConversationIdAscending(a, b);
+  });
+  return JSON.stringify(sorted.slice(0, limit));
 }
 
 function customMessagesForThisInvocation() {
@@ -158,7 +211,7 @@ if (isChatsList) {
   } else if (mode === "not_json") {
     process.stdout.write("this is not json output from gmcli");
   } else if (mode === "custom") {
-    process.stdout.write(process.env.FAKE_GMCLI_CHATS_JSON ?? CHATS_HEALTHY);
+    process.stdout.write(customChatsForThisInvocation());
   } else {
     process.stdout.write(CHATS_HEALTHY);
   }
