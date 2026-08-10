@@ -4626,16 +4626,43 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
   client.ingestBatch = (request: IngestBatchRequest) => {
     sendAttempts += 1;
     if (sendAttempts === 1) {
-      throw new LocalDeviceHttpError(500, "");
+      return Promise.reject(new LocalDeviceHttpError(500, ""));
     }
     return originalIngest(request);
   };
 
   const srcId = "test-src-autowait";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-autowait",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-1" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-1",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
   outbox.enqueue({
-    id: "test:autowait-item",
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-autowait"],
+      sourceInstanceId: srcId,
+    }),
     kind: "record_batch" as const,
-    payload: { records: [] },
+    payload: {
+      batchId: "batch-autowait",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
     sourceInstanceId: srcId,
   });
 
@@ -4677,9 +4704,7 @@ test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", 
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   const client = createTestClient();
-  client.ingestBatch = () => {
-    throw new LocalDeviceHttpError(500, "");
-  };
+  client.ingestBatch = () => Promise.reject(new LocalDeviceHttpError(500, ""));
 
   const srcId = "test-src-abort";
   outbox.enqueue({
@@ -4742,19 +4767,147 @@ test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", 
   outbox.close();
 });
 
+test("abort signal listener cleanup (regression: listener must be removed on abort)", async () => {
+  const controller = new AbortController();
+  let listenerCount = 0;
+  let removeCount = 0;
+
+  const originalAddEventListener = controller.signal.addEventListener;
+  const originalRemoveEventListener = controller.signal.removeEventListener;
+
+  controller.signal.addEventListener = function (
+    type: string,
+    listener: EventListener,
+    options?: boolean | AddEventListenerOptions
+  ) {
+    if (type === "abort") {
+      listenerCount += 1;
+    }
+    return originalAddEventListener.call(this, type, listener, options);
+  };
+
+  controller.signal.removeEventListener = function (type: string, listener: EventListener) {
+    if (type === "abort") {
+      removeCount += 1;
+    }
+    return originalRemoveEventListener.call(this, type, listener);
+  };
+
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  const client = createTestClient();
+  client.ingestBatch = () => Promise.reject(new LocalDeviceHttpError(500, ""));
+
+  const srcId = "test-src-abort-cleanup";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-abort",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-abort" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-abort",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
+  outbox.enqueue({
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-abort"],
+      sourceInstanceId: srcId,
+    }),
+    kind: "record_batch" as const,
+    payload: {
+      batchId: "batch-abort",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  const drainPromise = drainCollectorOutbox({
+    abortSignal: controller.signal,
+    client,
+    connectorId: "test_connector",
+    holderId: "test-holder",
+    outbox,
+    policy: {
+      drainBatchSize: 4,
+      leaseMs: 60_000,
+      maxAttempts: 3,
+      maxDrainDurationMs: 15_000,
+      maxDrainIterations: 100,
+      maxEnqueuedBatchesPerRun: 10_000,
+      maxQueueDepth: 10_000,
+      retryBackoffMs: 5000,
+    },
+    sourceInstanceId: srcId,
+  });
+
+  setTimeout(() => controller.abort(new Error("abort for cleanup test")), 100);
+
+  let caughtError: Error | null = null;
+  try {
+    await drainPromise;
+  } catch (error) {
+    if (error instanceof Error) {
+      caughtError = error;
+    }
+  }
+
+  assert.ok(caughtError, "drain should throw on abort");
+  assert.equal(listenerCount, 1, "exactly one abort listener should be added");
+  assert.equal(removeCount, 1, "exactly one abort listener should be removed (cleanup on abort)");
+
+  outbox.close();
+});
+
 test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration limit", async () => {
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   const client = createTestClient();
-  client.ingestBatch = () => {
-    throw new LocalDeviceHttpError(500, "");
-  };
+  client.ingestBatch = () => Promise.reject(new LocalDeviceHttpError(500, ""));
 
   const srcId = "test-src-budget";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-budget",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-budget" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-budget",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
   outbox.enqueue({
-    id: "test:budget-item",
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-budget"],
+      sourceInstanceId: srcId,
+    }),
     kind: "record_batch" as const,
-    payload: { records: [] },
+    payload: {
+      batchId: "batch-budget",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
     sourceInstanceId: srcId,
   });
 
@@ -4871,23 +5024,58 @@ test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor",
   client.ingestBatch = (request: IngestBatchRequest) => {
     sendAttempts += 1;
     if (sendAttempts === 1) {
-      throw new LocalDeviceHttpError(500, "");
+      return Promise.reject(new LocalDeviceHttpError(500, ""));
     }
     return originalIngest(request);
   };
 
   const srcId = "test-src-blocked";
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId: "batch-blocked",
+    batchSeq: 1,
+    connectorId: "test_connector",
+    deviceId: "test-device",
+    messages: [
+      {
+        data: { id: "m-block" },
+        emitted_at: "2026-08-09T12:00:00.000Z",
+        key: "m-block",
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: srcId,
+  });
   outbox.enqueue({
-    id: "test:blocked-record",
+    id: buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["batch-blocked"],
+      sourceInstanceId: srcId,
+    }),
     kind: "record_batch" as const,
-    payload: { records: [] },
+    payload: {
+      batchId: "batch-blocked",
+      batchSeq: 1,
+      connectorId: "test_connector",
+      deviceId: "test-device",
+      records,
+      sourceInstanceId: srcId,
+    },
     sourceInstanceId: srcId,
   });
 
   outbox.enqueue({
-    id: "test:blocked-checkpoint",
+    id: buildLocalDeviceOutboxId({
+      kind: "checkpoint",
+      parts: ["after-record"],
+      sourceInstanceId: srcId,
+    }),
     kind: "checkpoint" as const,
-    payload: { state: "after-record" },
+    payload: {
+      connectorId: "test_connector",
+      sourceInstanceId: srcId,
+      state: { after: "record" },
+    },
     sourceInstanceId: srcId,
   });
 

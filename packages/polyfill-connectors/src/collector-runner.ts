@@ -2264,21 +2264,32 @@ function waitMs_(ms: number, signal?: AbortSignal): Promise<void> {
       return;
     }
     let finished = false;
-    const onAbort = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      reject(signal!.reason instanceof Error ? signal!.reason : new DOMException("Aborted", "AbortError"));
-    };
-    const timer = setTimeout(() => {
-      if (finished) return;
-      finished = true;
+    let timer: NodeJS.Timeout | undefined;
+    const cleanup = () => {
       if (signal) {
         signal.removeEventListener("abort", onAbort);
       }
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    };
+    const onAbort = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
+      reject(signal?.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError"));
+    };
+    timer = setTimeout(() => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
       resolve();
     }, ms);
-    signal?.addEventListener("abort", onAbort);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
