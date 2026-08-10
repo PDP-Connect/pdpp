@@ -162,3 +162,48 @@ export function buildInvalidIngestResponseFailure({
   });
   return err;
 }
+
+interface IngestBatchRejectedFailureInput {
+  batchSize: number;
+  recordsAccepted: number;
+  recordsRejected: number;
+  status: number;
+  stream: string;
+}
+
+/**
+ * The RS answered with HTTP 2xx and a structurally valid envelope, but
+ * rejected every record in the batch (`records_accepted === 0` for a
+ * non-empty batch). A 2xx status only promises "the request was read"; it is
+ * not proof of durable acceptance, and the per-record isolation contract
+ * (`rs.records.ingest`) never guarantees a whole batch is legitimately
+ * malformed just because BATCH_SIZE happened to group it together. Treating
+ * this as terminal-but-retryable (never as `run.batch_ingested` success)
+ * closes the silent-drop path where a transient whole-batch storage failure
+ * (lock contention, disk pressure, coordinator saturation) reads on the wire
+ * exactly like N legitimate per-record validation failures.
+ */
+export function buildIngestBatchRejectedFailure({
+  batchSize,
+  recordsAccepted,
+  recordsRejected,
+  status,
+  stream,
+}: IngestBatchRejectedFailureInput): ErrorWithFailureReason {
+  const err = new Error(
+    `Ingest for ${stream} rejected the entire batch (${recordsRejected}/${batchSize} records rejected, ` +
+      `${recordsAccepted} accepted) after HTTP ${status}; treating as a non-successful, retryable batch failure`
+  ) as ErrorWithFailureReason;
+  err.failure_reason = "ingest_batch_rejected";
+  err.pdpp_error_code = "ingest_batch_rejected";
+  err.response_status = status;
+  err.ingest_failure = buildIngestFailureDetails({
+    batchSize,
+    bodyText: null,
+    contentType: null,
+    phase: "batch_rejected",
+    status,
+    stream,
+  });
+  return err;
+}

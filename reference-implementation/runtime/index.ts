@@ -46,7 +46,12 @@ import {
   validateDoneRecordsEmitted,
   validateDoneStatus,
 } from "./done-validators.ts";
-import { buildHttpFailure, buildIngestHttpFailure, buildInvalidIngestResponseFailure } from "./ingest-failures.ts";
+import {
+  buildHttpFailure,
+  buildIngestBatchRejectedFailure,
+  buildIngestHttpFailure,
+  buildInvalidIngestResponseFailure,
+} from "./ingest-failures.ts";
 import { isClosedPipeWriteError } from "./pipe-errors.ts";
 import {
   validateProgressAttachmentHydrationFailureOutcome,
@@ -3217,6 +3222,28 @@ export async function runConnector(opts: RuntimeRunConnectorOptions): Promise<Ru
         return;
       }
       throw err;
+    }
+    // A 2xx response with a structurally valid envelope is not proof of
+    // durable acceptance: `records_accepted === 0` for a non-empty batch
+    // means the RS rejected every record. Per-record isolation (a connector
+    // emitting some malformed records among valid ones) legitimately
+    // produces PARTIAL rejection and stays a counted, continued success —
+    // but a WHOLE-batch rejection is far more likely a transient storage
+    // failure (lock contention, disk pressure, coordinator saturation) than
+    // every single record in one BATCH_SIZE group happening to be
+    // individually invalid. Treat it as terminal-but-retryable: never emit
+    // `run.batch_ingested{status:"succeeded"}` and never clear the buffer,
+    // so no cursor can commit past data that was never durably written, and
+    // a retried run resubmits the exact same records (idempotent per the
+    // manifest's primary_key/upsert semantics).
+    if (batch.length > 0 && result.records_accepted === 0 && result.records_rejected === batch.length) {
+      throw buildIngestBatchRejectedFailure({
+        batchSize: batch.length,
+        recordsAccepted: result.records_accepted,
+        recordsRejected: result.records_rejected,
+        status: resp.status,
+        stream,
+      });
     }
     totalFlushed += batch.length;
     await emitSpineEventTracked({
