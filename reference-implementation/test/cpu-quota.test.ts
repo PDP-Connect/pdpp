@@ -133,7 +133,7 @@ test("cgroup v2: root is unlimited but the nested process cgroup is MEMORY-quota
   assert.deepEqual(cgroupMemoryQuota(p), { state: "known", value: 536_870_912 });
 });
 
-test("cgroup v2: nearest (deepest) ancestor's quota wins over a looser one further up", () => {
+test("cgroup v2: tightest ancestor wins when nearest also happens to be tightest (monotonically tightening chain)", () => {
   const p = probe({
     cgroupMounted: true,
     cgroupText: v2CgroupText("/a/b/c"),
@@ -145,6 +145,66 @@ test("cgroup v2: nearest (deepest) ancestor's quota wins over a looser one furth
     mountinfoText: v2Mountinfo("/sys/fs/cgroup"),
   });
   assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 1 });
+});
+
+test("cgroup v2 CPU: tighter PARENT wins over a looser CHILD (the confirmed defect this fix closes)", () => {
+  // Reproduces the red-team's live-kernel-verified counterexample: a
+  // systemd slice with a tight quota running a scope whose own file
+  // declares a looser value. The kernel enforces the tighter ancestor
+  // regardless of which level's file is nearest -- reading only the
+  // nearest file (the pre-fix behavior) returned the looser child value
+  // here (4 cores) instead of the true effective quota (0.1 cores).
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/parent", "cpu.max")]: "10000 100000\n",
+      [path.join("/sys/fs/cgroup/parent/child", "cpu.max")]: "400000 100000\n",
+    },
+    mountinfoText: v2Mountinfo("/sys/fs/cgroup"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 0.1 });
+});
+
+test("cgroup v2 memory: tighter PARENT wins over a looser CHILD", () => {
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/parent", "memory.max")]: "134217728\n", // 128MiB
+      [path.join("/sys/fs/cgroup/parent/child", "memory.max")]: "8589934592\n", // 8GiB
+    },
+    mountinfoText: v2Mountinfo("/sys/fs/cgroup"),
+  });
+  assert.deepEqual(cgroupMemoryQuota(p), { state: "known", value: 134_217_728 });
+});
+
+test("cgroup v2 CPU: unlimited child does not mask a tighter parent", () => {
+  // "unlimited" at one level asserts "no additional constraint HERE," not
+  // "ignore the rest of the chain" -- the tighter parent still binds.
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/parent", "cpu.max")]: "50000 100000\n",
+      [path.join("/sys/fs/cgroup/parent/child", "cpu.max")]: "max 100000\n",
+    },
+    mountinfoText: v2Mountinfo("/sys/fs/cgroup"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 0.5 });
+});
+
+test("cgroup v2 CPU: tighter child wins over a looser parent (the direction the pre-fix code already handled)", () => {
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/parent", "cpu.max")]: "800000 100000\n",
+      [path.join("/sys/fs/cgroup/parent/child", "cpu.max")]: "50000 100000\n",
+    },
+    mountinfoText: v2Mountinfo("/sys/fs/cgroup"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 0.5 });
 });
 
 test("cgroup v2 at the mount root itself (no nesting) still resolves correctly", () => {
@@ -259,6 +319,29 @@ test("a mountinfo line missing the '-' separator is skipped, not fatal", () => {
   assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 0.5 });
 });
 
+test("a cgroup2 mount whose root field is not '/' (a bind-mounted subtree) is rejected, never silently joined", () => {
+  // proc(5) field 4 ("root") names the subtree of the underlying
+  // filesystem a mount exposes, distinct from field 5 ("mount point"). An
+  // ordinary top-level cgroup2 mount has root "/" (every fixture in this
+  // file uses that); a bind-mounted SUBTREE (root != "/") means
+  // /proc/self/cgroup's hierarchy-root-relative path is not directly
+  // joinable against the mount point without double-counting the
+  // bind-mounted prefix -- this mount must be treated as unusable, not
+  // silently trusted.
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/scope"),
+    files: {
+      // Present at the path a naive join WOULD produce, proving this is
+      // rejected by the root-field check itself, not by the file merely
+      // being absent.
+      [path.join("/sys/fs/cgroup", "cpu.max")]: "50000 100000\n",
+    },
+    mountinfoText: "36 28 0:30 /some/bind-mounted/subtree /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n",
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "unknown" });
+});
+
 // ─── cgroup v1 ──────────────────────────────────────────────────────────────
 
 test("cgroup v1 quota is read from the process's actual leaf, walking up when needed", () => {
@@ -319,6 +402,70 @@ test("cgroup v1 quota+period must come from the SAME ancestor level, not mixed a
     mountinfoText: v1Mountinfo("/sys/fs/cgroup/cpu", "/sys/fs/cgroup/memory"),
   });
   assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 3 });
+});
+
+test("cgroup v1 CPU: tighter PARENT wins over a looser CHILD, aggregated across the whole paired-file chain", () => {
+  // v1 analog of the v2 CPU counterexample above. The pair-reader must
+  // aggregate the QUOTA/PERIOD RATIO computed per ancestor (not raw quota
+  // values from different levels, and not just the nearest pair) and take
+  // the minimum ratio.
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v1CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/cpu/parent", "cpu.cfs_period_us")]: "100000\n",
+      [path.join("/sys/fs/cgroup/cpu/parent", "cpu.cfs_quota_us")]: "10000\n", // 0.1 core
+      [path.join("/sys/fs/cgroup/cpu/parent/child", "cpu.cfs_period_us")]: "100000\n",
+      [path.join("/sys/fs/cgroup/cpu/parent/child", "cpu.cfs_quota_us")]: "400000\n", // 4.0 cores
+    },
+    mountinfoText: v1Mountinfo("/sys/fs/cgroup/cpu", "/sys/fs/cgroup/memory"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 0.1 });
+});
+
+test("cgroup v1 CPU: unlimited (-1) child does not mask a tighter parent", () => {
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v1CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/cpu/parent", "cpu.cfs_period_us")]: "100000\n",
+      [path.join("/sys/fs/cgroup/cpu/parent", "cpu.cfs_quota_us")]: "50000\n",
+      [path.join("/sys/fs/cgroup/cpu/parent/child", "cpu.cfs_period_us")]: "100000\n",
+      [path.join("/sys/fs/cgroup/cpu/parent/child", "cpu.cfs_quota_us")]: "-1\n",
+    },
+    mountinfoText: v1Mountinfo("/sys/fs/cgroup/cpu", "/sys/fs/cgroup/memory"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 0.5 });
+});
+
+test("cgroup v1 memory: tighter PARENT wins over a looser CHILD", () => {
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v1CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/memory/parent", "memory.limit_in_bytes")]: "134217728\n", // 128MiB
+      [path.join("/sys/fs/cgroup/memory/parent/child", "memory.limit_in_bytes")]: "8589934592\n", // 8GiB
+    },
+    mountinfoText: v1Mountinfo("/sys/fs/cgroup/cpu", "/sys/fs/cgroup/memory"),
+  });
+  assert.deepEqual(cgroupMemoryQuota(p), { state: "known", value: 134_217_728 });
+});
+
+test("a malformed reading at ANY ancestor level makes the whole aggregate UNKNOWN, not silently skipped", () => {
+  // A garbage value at one level of the chain means this module cannot
+  // prove what the true effective quota is -- ignoring that level and
+  // trusting only the readable ones would be exactly the "guess instead of
+  // fail closed" mistake this module exists to avoid.
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/parent/child"),
+    files: {
+      [path.join("/sys/fs/cgroup/parent", "cpu.max")]: "not-a-number 100000\n",
+      [path.join("/sys/fs/cgroup/parent/child", "cpu.max")]: "50000 100000\n",
+    },
+    mountinfoText: v2Mountinfo("/sys/fs/cgroup"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "unknown" });
 });
 
 test("cgroup v1 memory sentinel is the kernel's actual LONG_MAX page-aligned value, not an approximate power of two", () => {

@@ -49,13 +49,35 @@
  *   3. Join mount-point + relative-path to get this process's actual leaf
  *      cgroup directory (not the mount root).
  *   4. Walk from that leaf UP toward (and including) the mount point,
- *      returning the quota from the NEAREST ancestor that has the quota
- *      file. This is cgroup v2's own delegation invariant: a controller
- *      only has a quota file at levels where it was actually enabled via
- *      `cgroup.subtree_control`, and a descendant's own limit can only be
- *      tighter than or equal to any ancestor's (never looser) — so the
- *      nearest available reading is always the authoritative one for this
- *      process.
+ *      reading the quota from EVERY ancestor that has the quota file, and
+ *      returning the TIGHTEST (minimum) numeric value found among them.
+ *
+ * That fourth step is NOT "nearest ancestor wins" — an earlier version of
+ * this module made that mistake, and it is a real, confirmed-against-the-
+ * kernel-source correctness defect, not a simplification: `cgroup.
+ * subtree_control` delegation controls WHICH levels have a quota file at
+ * all, but nothing in the kernel interface prevents a nearer ancestor's own
+ * file from stating a numerically LOOSER value than a farther one (a
+ * systemd slice tightened after its child scope was already configured, a
+ * Kubernetes namespace-level ResourceQuota layered above a looser per-pod
+ * limit, or simply an administrator retightening a parent without touching
+ * every already-running child). What the kernel actually enforces is the
+ * MINIMUM across the whole ancestor chain (`docs.kernel.org/scheduler/
+ * sched-bwc.html`; `Documentation/admin-guide/cgroup-v2.rst`: "Resources
+ * are distributed top-down and a cgroup can further distribute a resource
+ * only if the resource has been distributed to it from the parent") —
+ * reading only the nearest file can silently report a looser number than
+ * what the kernel will actually grant. Live-reproduced on this host via a
+ * real (unprivileged) nested systemd cgroup: a child scope's own `cpu.max`
+ * declared 4.0 cores while its parent slice declared 0.1 cores, and a
+ * 3-second busy loop inside the child completed ~67 iterations —
+ * consistent with the parent's 0.1-core enforcement, not the child's
+ * declared 4.0. `"unlimited"` (`"max"` / v1's `-1` sentinel) at any single
+ * level does NOT participate in the minimum — it means "this level imposes
+ * no additional constraint," not "0" or "ignore the whole chain"; if every
+ * ancestor that has the file reads `"unlimited"`, the aggregate result is
+ * `"unlimited"`. A level with no file at all (controller not delegated
+ * there) is simply skipped, exactly as before.
  *
  * Every step fails closed to `"unknown"` (never silently falls through to
  * "no quota") on: a malformed/unparseable mountinfo or cgroup line, a
@@ -67,6 +89,34 @@
  * for how callers must treat it (the safe floor, not the host's full
  * capacity). Only a platform with no cgroup filesystem mounted at all (bare
  * metal, most non-Linux dev machines) is treated as genuinely unconstrained.
+ *
+ * MOUNTINFO "ROOT" FIELD: field 4 (`man 5 proc`) is the subtree of the
+ * underlying filesystem a mount exposes, distinct from field 5 ("mount
+ * point"). `parseMountinfoLine` reads it explicitly and REJECTS any mount
+ * whose root isn't `/` (an ordinary top-level cgroup2/cgroup mount always
+ * has root `/`; every environment this module has actually been checked
+ * against does). A bind-mounted cgroup SUBTREE (root != `/`) means
+ * `/proc/self/cgroup`'s hierarchy-root-relative path is not directly
+ * joinable against the mount point without double-counting the
+ * bind-mounted prefix, so that mount is treated as if it doesn't exist —
+ * the process's cgroup membership then has no matching mount, which
+ * resolves to `"unknown"` through the same path an absent mount already
+ * takes. This was previously an unverified, merely-traced residual (relying
+ * on every read in the ancestor walk incidentally throwing rather than an
+ * explicit check); it is now a deliberate, tested check, not an accident of
+ * the surrounding code's failure mode.
+ *
+ * KNOWN, UNDOCUMENTED-UNTIL-NOW RESIDUAL (could not be reproduced without
+ * elevated privilege in this sandbox — verify live before relying on this
+ * module in a target deployment that uses cgroup namespaces): cgroup
+ * NAMESPACES (`man 7 cgroup_namespaces`) change what path
+ * `/proc/self/cgroup` reports (relative to the namespace's own root, not
+ * the true hierarchy root) independently of mountinfo's root field, which
+ * can itself show `/` after a namespace-aware remount. That combination
+ * could in principle resolve to a directory that EXISTS on disk but belongs
+ * to an unrelated cgroup — a wrong-but-plausible `"known"` answer rather
+ * than a safe `"unknown"` fallback. Not reproducible in this sandbox
+ * (unprivileged `unshare -C` refused: uid_map write not permitted).
  */
 
 import { readFileSync } from "node:fs";
@@ -138,9 +188,8 @@ interface MountEntry {
 
 function parseMountinfoLine(line: string): MountEntry | null {
   const fields = line.trim().split(WHITESPACE_PATTERN);
-  // Fields 1-5 are mount-ID, parent-ID, major:minor, root, mount-point —
-  // mount-point (index 4) is what this module needs. Anything shorter is
-  // unparseable.
+  // Fields 1-5 are mount-ID, parent-ID, major:minor, root, mount-point.
+  // Anything shorter is unparseable.
   if (fields.length < 5) {
     return null;
   }
@@ -150,11 +199,25 @@ function parseMountinfoLine(line: string): MountEntry | null {
   if (separatorIndex === -1 || fields.length < separatorIndex + 4) {
     return null;
   }
-  // biome-ignore lint/style/useDestructuring: mount-point is a fixed index into a variable-length split; fsType/superOptions are computed offsets from the "-" separator, neither of which destructuring syntax can express.
-  const mountPointRaw = fields[4];
+  const [, , , rootRaw, mountPointRaw] = fields;
   const fsType = fields[separatorIndex + 1];
   const superOptions = fields[separatorIndex + 3];
-  if (!(mountPointRaw && fsType && superOptions)) {
+  if (!(rootRaw && mountPointRaw && fsType && superOptions)) {
+    return null;
+  }
+  // Field 4 ("root", man 5 proc): the subtree of the underlying filesystem
+  // this mount exposes, distinct from field 5 ("mount point"). An ordinary
+  // top-level cgroup2/cgroup mount has root "/" -- every environment this
+  // module has actually been checked against. A bind-mounted cgroup
+  // SUBTREE (root != "/") means /proc/self/cgroup's hierarchy-root-relative
+  // path is NOT directly joinable against this mount point (joining them
+  // would double-count the bind-mounted prefix and resolve to a path this
+  // module cannot prove corresponds to the process's real cgroup) -- reject
+  // this mount outright rather than trust an unverified join. This
+  // propagates to the same "no matching mount found for this process's
+  // cgroup membership" -> {state: "unknown"} path that already exists for
+  // a genuinely absent mount, not a new failure mode.
+  if (unescapeProcOctal(rootRaw) !== "/") {
     return null;
   }
   return {
@@ -308,28 +371,66 @@ function ancestorCgroupDirs(mountPoint: string, relativeCgroupPath: string): str
 }
 
 /**
+ * Reduces the per-ancestor `QuotaResult`s collected by the two aggregation
+ * functions below into the single effective quota: the MINIMUM numeric
+ * value among every `"known"` reading (the kernel enforces the tightest
+ * limit anywhere in the ancestor chain, regardless of which level's own
+ * file happens to be nearest — see the module doc comment). `"unlimited"`
+ * at a given level does not participate in the minimum (it asserts "no
+ * additional constraint here," not "0" or "ignore this chain") — the
+ * aggregate is `"unlimited"` only if EVERY level that had the file read
+ * `"unlimited"`. A level whose file could not be parsed at all
+ * (`"unknown"`) makes the WHOLE aggregate `"unknown"`: a malformed reading
+ * anywhere in the chain means this module cannot prove what the true
+ * effective quota is, and guessing by ignoring that level would be exactly
+ * the "trust what's easy to read" mistake this module exists to avoid. An
+ * empty `results` array (no ancestor had the file at all) returns `null`,
+ * matching the pre-aggregation "file absent everywhere" signal callers
+ * already turn into `{state: "unknown"}`.
+ */
+function aggregateTightestQuota(results: readonly QuotaResult[]): QuotaResult | null {
+  if (results.length === 0) {
+    return null;
+  }
+  let tightest: number | null = null;
+  for (const result of results) {
+    if (result.state === "unknown") {
+      return { state: "unknown" };
+    }
+    if (result.state === "known" && (tightest === null || result.value < tightest)) {
+      tightest = result.value;
+    }
+  }
+  return tightest === null ? { state: "unlimited" } : { state: "known", value: tightest };
+}
+
+/**
  * Reads a single named file (e.g. `cpu.max`, `memory.max`, cgroup v1's
- * `memory.limit_in_bytes`) from the nearest ancestor (walking leaf-to-root)
- * that has it, returning `null` if none of the candidate directories has
- * the file at all (distinct from the file existing but being malformed,
- * which the caller's own parse function turns into `{state: "unknown"}`
+ * `memory.limit_in_bytes`) from EVERY ancestor (walking leaf-to-root) that
+ * has it, parses each with `parse`, and reduces via `aggregateTightestQuota`.
+ * Returns `null` if none of the candidate directories has the file at all
+ * (distinct from the file existing but being malformed at every level that
+ * has it, which `aggregateTightestQuota` turns into `{state: "unknown"}`
  * rather than `null`).
  */
-function readNearestSingleFile(
+function aggregateTightestSingleFile(
   probe: CpuQuotaProbe,
   mountPoint: string,
   relativeCgroupPath: string,
-  fileName: string
-): string | null {
+  fileName: string,
+  parse: (raw: string) => QuotaResult
+): QuotaResult | null {
+  const results: QuotaResult[] = [];
   for (const dir of ancestorCgroupDirs(mountPoint, relativeCgroupPath)) {
     try {
-      return probe.readFile(path.join(dir, fileName));
+      results.push(parse(probe.readFile(path.join(dir, fileName))));
     } catch {
       // This ancestor doesn't have the file (controller not delegated
-      // there, or genuinely absent) — try the next one up.
+      // there, or genuinely absent) — it simply contributes nothing to the
+      // aggregate; continue checking the rest of the chain.
     }
   }
-  return null;
+  return aggregateTightestQuota(results);
 }
 
 function parseCgroupV2Max(raw: string): QuotaResult {
@@ -348,15 +449,27 @@ function parseCgroupV2Max(raw: string): QuotaResult {
   return { state: "known", value: quota / period };
 }
 
+function parseCgroupV2MemoryMax(raw: string): QuotaResult {
+  const trimmed = raw.trim();
+  if (trimmed === "max") {
+    return { state: "unlimited" };
+  }
+  const bytes = Number(trimmed);
+  return Number.isFinite(bytes) && bytes > 0 ? { state: "known", value: bytes } : { state: "unknown" };
+}
+
 /**
  * Resolves this process's actual v2 cgroup directory (mount point joined
  * with its own relative path from `/proc/self/cgroup`, NOT the mount root)
- * and walks it toward the root for `cpu.max`. Returns `null` (not
+ * and aggregates `cpu.max` across every ancestor up to (and including) the
+ * mount point — see `aggregateTightestQuota` for why this is a minimum
+ * across the chain, not just the nearest reading. Returns `null` (not
  * `"unknown"`) when v2 isn't mounted or this process has no v2 membership
  * at all, so the caller can fall through to the v1 reader; returns
  * `{state: "unknown"}` for every failure mode once v2 membership IS
  * established but something about resolving it is unsafe (malformed
- * mountinfo/cgroup file, no ancestor has the file at all).
+ * mountinfo/cgroup file, no ancestor has the file at all, or a malformed
+ * reading anywhere in the chain).
  */
 function cgroupV2CpuQuota(probe: CpuQuotaProbe): QuotaResult | null {
   const resolved = resolveV2CgroupDir(probe);
@@ -366,8 +479,14 @@ function cgroupV2CpuQuota(probe: CpuQuotaProbe): QuotaResult | null {
   if (resolved === "unknown") {
     return { state: "unknown" };
   }
-  const raw = readNearestSingleFile(probe, resolved.mountPoint, resolved.relativeCgroupPath, "cpu.max");
-  return raw === null ? { state: "unknown" } : parseCgroupV2Max(raw);
+  const aggregated = aggregateTightestSingleFile(
+    probe,
+    resolved.mountPoint,
+    resolved.relativeCgroupPath,
+    "cpu.max",
+    parseCgroupV2Max
+  );
+  return aggregated ?? { state: "unknown" };
 }
 
 function cgroupV2MemoryQuota(probe: CpuQuotaProbe): QuotaResult | null {
@@ -378,16 +497,14 @@ function cgroupV2MemoryQuota(probe: CpuQuotaProbe): QuotaResult | null {
   if (resolved === "unknown") {
     return { state: "unknown" };
   }
-  const raw = readNearestSingleFile(probe, resolved.mountPoint, resolved.relativeCgroupPath, "memory.max");
-  if (raw === null) {
-    return { state: "unknown" };
-  }
-  const trimmed = raw.trim();
-  if (trimmed === "max") {
-    return { state: "unlimited" };
-  }
-  const bytes = Number(trimmed);
-  return Number.isFinite(bytes) && bytes > 0 ? { state: "known", value: bytes } : { state: "unknown" };
+  const aggregated = aggregateTightestSingleFile(
+    probe,
+    resolved.mountPoint,
+    resolved.relativeCgroupPath,
+    "memory.max",
+    parseCgroupV2MemoryMax
+  );
+  return aggregated ?? { state: "unknown" };
 }
 
 interface ResolvedCgroupDir {
@@ -475,40 +592,36 @@ function resolveV1ControllerDir(
   return { mountPoint, relativeCgroupPath };
 }
 
-function readNearestV1Pair(
+/**
+ * Same-ancestor-pairing analog of `aggregateTightestSingleFile` for v1's
+ * two-file quota (`cpu.cfs_quota_us` + `cpu.cfs_period_us`, which must come
+ * from the SAME directory — reading quota from one level and period from
+ * another would silently pair unrelated numbers). Collects one
+ * `QuotaResult` per ancestor that has BOTH files, then reduces via
+ * `aggregateTightestQuota` exactly like the single-file case.
+ */
+function aggregateTightestV1Pair(
   probe: CpuQuotaProbe,
   mountPoint: string,
   relativeCgroupPath: string,
-  fileNames: readonly [string, string]
-): [string, string] | null {
+  fileNames: readonly [string, string],
+  parse: (quotaRaw: string, periodRaw: string) => QuotaResult
+): QuotaResult | null {
+  const results: QuotaResult[] = [];
   for (const dir of ancestorCgroupDirs(mountPoint, relativeCgroupPath)) {
     try {
-      const first = probe.readFile(path.join(dir, fileNames[0]));
-      const second = probe.readFile(path.join(dir, fileNames[1]));
-      return [first, second];
+      const quotaRaw = probe.readFile(path.join(dir, fileNames[0]));
+      const periodRaw = probe.readFile(path.join(dir, fileNames[1]));
+      results.push(parse(quotaRaw, periodRaw));
     } catch {
-      // Try the next ancestor up; both files must exist at the SAME level.
+      // Try the next ancestor up; both files must exist at the SAME level,
+      // and a level missing either one simply contributes nothing.
     }
   }
-  return null;
+  return aggregateTightestQuota(results);
 }
 
-function cgroupV1CpuQuota(probe: CpuQuotaProbe): QuotaResult | null {
-  const resolved = resolveV1ControllerDir(probe, "cpu");
-  if (resolved === null) {
-    return null;
-  }
-  if (resolved === "unknown") {
-    return { state: "unknown" };
-  }
-  const pair = readNearestV1Pair(probe, resolved.mountPoint, resolved.relativeCgroupPath, [
-    "cpu.cfs_quota_us",
-    "cpu.cfs_period_us",
-  ]);
-  if (pair === null) {
-    return { state: "unknown" };
-  }
-  const [quotaRaw, periodRaw] = pair;
+function parseCgroupV1CpuPair(quotaRaw: string, periodRaw: string): QuotaResult {
   const quota = Number(quotaRaw.trim());
   const period = Number(periodRaw.trim());
   if (!Number.isFinite(period) || period <= 0) {
@@ -524,6 +637,24 @@ function cgroupV1CpuQuota(probe: CpuQuotaProbe): QuotaResult | null {
   return { state: "known", value: quota / period };
 }
 
+function cgroupV1CpuQuota(probe: CpuQuotaProbe): QuotaResult | null {
+  const resolved = resolveV1ControllerDir(probe, "cpu");
+  if (resolved === null) {
+    return null;
+  }
+  if (resolved === "unknown") {
+    return { state: "unknown" };
+  }
+  const aggregated = aggregateTightestV1Pair(
+    probe,
+    resolved.mountPoint,
+    resolved.relativeCgroupPath,
+    ["cpu.cfs_quota_us", "cpu.cfs_period_us"],
+    parseCgroupV1CpuPair
+  );
+  return aggregated ?? { state: "unknown" };
+}
+
 // cgroup v1's unset-limit sentinel is the kernel's LONG_MAX rounded DOWN to
 // the page boundary (LONG_MAX & PAGE_MASK on a 4KiB-page 64-bit system,
 // i.e. 9223372036854775807n & ~4095n = 9223372036854771712n) — not a round
@@ -536,6 +667,14 @@ function cgroupV1CpuQuota(probe: CpuQuotaProbe): QuotaResult | null {
 // treated as "no real limit configured," not a literal ~8-exabyte quota.
 const V1_MEMORY_UNSET_SENTINEL_BYTES = Number(9_223_372_036_854_771_712n);
 
+function parseCgroupV1MemoryLimit(raw: string): QuotaResult {
+  const bytes = Number(raw.trim());
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return { state: "unknown" };
+  }
+  return bytes >= V1_MEMORY_UNSET_SENTINEL_BYTES * 0.99 ? { state: "unlimited" } : { state: "known", value: bytes };
+}
+
 function cgroupV1MemoryQuota(probe: CpuQuotaProbe): QuotaResult | null {
   const resolved = resolveV1ControllerDir(probe, "memory");
   if (resolved === null) {
@@ -544,15 +683,14 @@ function cgroupV1MemoryQuota(probe: CpuQuotaProbe): QuotaResult | null {
   if (resolved === "unknown") {
     return { state: "unknown" };
   }
-  const raw = readNearestSingleFile(probe, resolved.mountPoint, resolved.relativeCgroupPath, "memory.limit_in_bytes");
-  if (raw === null) {
-    return { state: "unknown" };
-  }
-  const bytes = Number(raw.trim());
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return { state: "unknown" };
-  }
-  return bytes >= V1_MEMORY_UNSET_SENTINEL_BYTES * 0.99 ? { state: "unlimited" } : { state: "known", value: bytes };
+  const aggregated = aggregateTightestSingleFile(
+    probe,
+    resolved.mountPoint,
+    resolved.relativeCgroupPath,
+    "memory.limit_in_bytes",
+    parseCgroupV1MemoryLimit
+  );
+  return aggregated ?? { state: "unknown" };
 }
 
 /**
