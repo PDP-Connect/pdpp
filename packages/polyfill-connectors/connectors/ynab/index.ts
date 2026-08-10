@@ -1102,7 +1102,17 @@ async function collectTransactions(ctx: BudgetCtx): Promise<void> {
  */
 export interface ScheduledTransactionsBudgetFact {
   budgetId: string;
-  count: number;
+  /** Rows this call's response held — the enumerated boundary size. */
+  considered: number;
+  /**
+   * Rows this run objectively accounted for (validated + emitted) — NEVER
+   * aliased to `considered`. A row present in the response is "considered"
+   * but not automatically "covered": `validateRecord` (the same shape-check
+   * the runtime's emitRecord applies) can reject a malformed row, in which
+   * case it never emits and must not be claimed as covered — else the proof
+   * would overclaim coverage of a row that was in fact dropped.
+   */
+  covered: number;
   enumeratedFresh: boolean;
 }
 
@@ -1139,8 +1149,21 @@ export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<Sche
     count: res.data.scheduled_transactions.length,
     total: res.data.scheduled_transactions.length,
   });
+  // `covered` must equal what this run objectively accounted for — never
+  // aliased to the raw response length. A row present in
+  // `res.data.scheduled_transactions` is "considered" but not automatically
+  // "covered": `validateRecord` (the same shape-check the runtime's
+  // emitRecord applies) can reject a malformed row, in which case it never
+  // emits and must not be claimed as covered either. `id` is a required
+  // string on `YnabScheduledTransaction`, so unlike the runtime's generic
+  // emitRecord gate, no separate null-id check is needed here.
+  let covered = 0;
   for (const s of res.data.scheduled_transactions) {
-    await trackAndEmit("scheduled_transactions", scheduledTransactionRecord(s, budgetId));
+    const record = scheduledTransactionRecord(s, budgetId);
+    if (validateRecord("scheduled_transactions", record).ok) {
+      covered += 1;
+    }
+    await trackAndEmit("scheduled_transactions", record);
   }
   const scheduled = (newState.scheduled_transactions as Record<string, { server_knowledge: number }> | undefined) ?? {};
   scheduled[budgetId] = { server_knowledge: res.data.server_knowledge };
@@ -1152,7 +1175,8 @@ export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<Sche
   });
   return {
     budgetId,
-    count: res.data.scheduled_transactions.length,
+    considered: res.data.scheduled_transactions.length,
+    covered,
     enumeratedFresh: knowledge === undefined,
   };
 }
@@ -1171,6 +1195,12 @@ export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<Sche
  * future forced-recheck. Steady-state incremental runs correctly stay
  * unproven here — they never measured the boundary, so `unknown` is the
  * honest verdict, not a synthesized `complete`.
+ *
+ * `considered` and `covered` are summed independently, never aliased to one
+ * another: a per-budget row that failed `validateRecord` raises that
+ * budget's `considered` (the API said it existed) without raising `covered`
+ * (it was never emitted), so a run with any rejected row honestly reads
+ * `partial` rather than a false `complete`.
  */
 export function aggregateScheduledTransactionsCoverage(
   facts: readonly ScheduledTransactionsBudgetFact[]
@@ -1178,8 +1208,10 @@ export function aggregateScheduledTransactionsCoverage(
   if (facts.length === 0 || !facts.every((f) => f.enumeratedFresh)) {
     return null;
   }
-  const total = facts.reduce((sum, f) => sum + f.count, 0);
-  return { considered: total, covered: total };
+  return {
+    considered: facts.reduce((sum, f) => sum + f.considered, 0),
+    covered: facts.reduce((sum, f) => sum + f.covered, 0),
+  };
 }
 
 async function fetchMonthsIfNeeded(ctx: BudgetCtx, shouldFetch: boolean): Promise<YnabMonth[] | null> {
