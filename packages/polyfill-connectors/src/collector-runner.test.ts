@@ -1734,7 +1734,12 @@ test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      // maxDrainDurationMs is set well below retryBackoffMs so the drain's
+      // auto-wait loop (which sleeps in real wall-clock time for a
+      // backoff-delayed retry) exits on its duration budget instead of
+      // actually sleeping ~60s. The backlog stays open either way — only
+      // the loop's real sleep is what's being avoided here.
+      outboxPolicy: { maxDrainDurationMs: 20, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId,
     });
@@ -1776,7 +1781,9 @@ test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      // Same rationale as pass 1: keep the drain's auto-wait loop from
+      // sleeping in real wall-clock time for the still-open backoff.
+      outboxPolicy: { maxDrainDurationMs: 20, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId,
     });
