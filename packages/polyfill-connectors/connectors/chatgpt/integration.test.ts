@@ -5698,6 +5698,122 @@ test("runCustomGptsStream: considered counts enumerated items, and covered exclu
   assert.equal(shapeCheckSkip.stream, "custom_gpts");
 });
 
+/**
+ * `cuts` is the third observed tenant shape for `/gizmos/mine`'s array
+ * container (alongside `items`/`gizmos`), first seen live in UAT run
+ * run_1786336482583 — a 200 body whose only top-level keys were `cuts`,
+ * `workspace_filtered`, `locale`. These tests discriminate the four ways
+ * that shape can arrive: populated (records + coverage), validly empty
+ * (proves zero), malformed (fails closed, same as any other wrong shape),
+ * and paginated (cursor honesty carries over unchanged).
+ */
+test("runCustomGptsStream: a populated cuts body emits records and proves coverage", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      {
+        status: 200,
+        json: {
+          cuts: [
+            { id: "g-1", display_name: "Planner", sharing: "private" },
+            { id: "g-2", display_name: "Writer", sharing: "public" },
+          ],
+        },
+      },
+    ],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  const gpts = emitted.filter((r) => r.stream === "custom_gpts");
+  assert.equal(gpts.length, 2, "cuts is read as the item array, same as items/gizmos");
+  assert.equal(gpts[0]?.data.id, "g-1");
+  assert.equal(gpts[1]?.data.id, "g-2");
+  const coverage = customGptsCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 2);
+  assert.equal(coverage.covered, 2);
+  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length, 1);
+});
+
+test("runCustomGptsStream: an empty cuts:[] body proves zero coverage, not silence", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { cuts: [], workspace_filtered: false, locale: "en-US" } }],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.length, 0, "an account with no gizmos in cuts emits no records");
+  const coverage = customGptsCoverage(messages);
+  assert.ok(coverage, "a genuinely empty cuts array must positively prove zero coverage");
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length, 1);
+});
+
+test("runCustomGptsStream: cuts present but not an array is still a parse_error, not proven-empty", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { cuts: "not-an-array", workspace_filtered: true, locale: "en-US" } }],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.length, 0);
+  assert.equal(customGptsCoverage(messages), undefined, "a non-array cuts value must not prove an empty boundary");
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.stream, "custom_gpts");
+  assert.equal(skip.reason, "parse_error");
+});
+
+test("runCustomGptsStream: a body with none of items/gizmos/cuts (the real run_1786336482583 shape) still fails closed", async () => {
+  // Regression pin for the exact live shape: {cuts, workspace_filtered,
+  // locale} at the envelope level IS now accepted (cuts is a listKey), so
+  // this covers the case where even cuts itself goes missing — proving the
+  // fail-closed contract survives adding a third accepted key.
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 200, json: { workspace_filtered: true, locale: "en-US" } }],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  assert.equal(emitted.length, 0);
+  assert.equal(customGptsCoverage(messages), undefined);
+  assert.equal(messages.filter((m) => m.type === "STATE").length, 0);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "parse_error");
+  const diag = skip.diagnostics as { present_keys?: string[]; expected_keys?: string[] } | undefined;
+  assert.deepEqual(diag?.present_keys, ["workspace_filtered", "locale"]);
+  assert.deepEqual(diag?.expected_keys, ["items", "gizmos", "cuts"]);
+});
+
+test("runCustomGptsStream: cuts paginates via cursor exactly like items/gizmos", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [
+      { status: 200, json: { cursor: "next-page", cuts: [{ id: "g-1", display_name: "Planner" }] } },
+      { status: 200, json: { cuts: [{ id: "g-2", display_name: "Writer" }] } },
+    ],
+    requested: ["custom_gpts"],
+  });
+
+  await runCustomGptsStream(deps);
+
+  const gpts = emitted.filter((r) => r.stream === "custom_gpts");
+  assert.equal(gpts.length, 2, "the cursor on a cuts-shaped page is followed the same as items/gizmos");
+  assert.equal(gpts[0]?.data.id, "g-1");
+  assert.equal(gpts[1]?.data.id, "g-2");
+  const coverage = customGptsCoverage(messages);
+  assert.ok(coverage);
+  assert.equal(coverage.considered, 2);
+  assert.equal(coverage.covered, 2);
+  assert.equal(messages.filter((m) => m.type === "STATE" && m.stream === "custom_gpts").length, 1);
+});
+
 test("runCustomGptsStream: 403 → SKIP_RESULT('not_available'), no STATE", async () => {
   const { deps, emitted, messages } = makeHarness({
     fetchQueue: [{ status: 403, json: null }],

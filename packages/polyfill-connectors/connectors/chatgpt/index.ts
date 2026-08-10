@@ -2299,7 +2299,13 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
       endpointLabel: "gizmos/mine",
       page: pages,
       notAvailableOn404: true,
-      listKeys: ["items", "gizmos"],
+      // `cuts` is a third observed tenant shape for this same array-of-gizmos
+      // container (alongside `items`/`gizmos`) — see UAT run
+      // run_1786336482583, where a 200 body's only top-level keys were
+      // `cuts`, `workspace_filtered`, `locale`. `workspace_filtered`/`locale`
+      // are envelope metadata with no analog in the `items`/`gizmos` shapes;
+      // they carry no per-gizmo data and are intentionally not read.
+      listKeys: ["items", "gizmos", "cuts"],
     });
     if (!page.ok) {
       deps.emit(page.skip);
