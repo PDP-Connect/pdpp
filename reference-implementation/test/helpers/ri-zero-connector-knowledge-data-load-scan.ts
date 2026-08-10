@@ -118,15 +118,25 @@ const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = ne
  * site starts failing the gate again, fail-closed by construction).
  */
 const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
-  // cpu-quota.ts's cgroupMounted(): reads /proc/self/cgroup, a Linux kernel
-  // process-introspection path exposing THIS process's own cgroup
-  // membership, to size embedding concurrency to the host's real CPU/memory
-  // quota. Extensionless absolute OS paths are conservatively treated as
-  // possible renamed data files by this scanner's own isDataResourceExtension
+  // cpu-quota.ts reads /proc/self/cgroup and /proc/self/mountinfo -- Linux
+  // kernel process-introspection paths exposing THIS process's own cgroup
+  // membership and mount table, to correctly resolve nested cgroup CPU/
+  // memory quota (a process's cgroup is almost never the mount root; the
+  // module walks /proc/self/cgroup's own path up through the real mount
+  // hierarchy from /proc/self/mountinfo) for sizing embedding concurrency.
+  // Extensionless absolute OS paths are conservatively treated as possible
+  // renamed data files by this scanner's own isDataResourceExtension
   // heuristic (ext === "" counts as data-shaped) -- this is that heuristic's
   // documented /proc/${pid}/status false-positive class (see this file's own
   // checkReadFileCall comment), not a connector/provider identity read.
-  "reference-implementation/server/cpu-quota.ts:58",
+  // cgroupMounted()'s own presence probe:
+  "reference-implementation/server/cpu-quota.ts:93",
+  // resolveV2CgroupDir()'s mountinfo + cgroup reads:
+  "reference-implementation/server/cpu-quota.ts:411",
+  "reference-implementation/server/cpu-quota.ts:416",
+  // resolveV1ControllerDir()'s mountinfo + cgroup reads:
+  "reference-implementation/server/cpu-quota.ts:453",
+  "reference-implementation/server/cpu-quota.ts:458",
   // readJson<T>(path): path is the CLI's own token-cache directory, operator/OS-derived, never connector-identity data.
   "reference-implementation/cli/lib/cache.ts:125",
   // readJsonInput(pathOrDash): explicit CLI `--file`/stdin argument, generic JSON-in-JSON-out CLI utility.
