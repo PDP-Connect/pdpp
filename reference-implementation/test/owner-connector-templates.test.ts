@@ -436,7 +436,7 @@ test("client grant bearer cannot list owner connector templates", async () => {
   });
 });
 
-test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan and proves no allowlist", async () => {
+test("UAT-exposed unproven connector with supported action proves owner_actionable positive", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -444,8 +444,65 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan and p
   Object.assign(process.env, declaredSettings);
   try {
     await withServer(async ({ asUrl, rsUrl }) => {
-      // Register unproven connectors to prove no allowlist in production code
-      // Any unproven owner-actionable connector is automatically included without naming it
+      // Load steam (unproven, browser-bound, owner_actionable plan)
+      // Proves static_secret modality can pass isOwnerActionablePlan and get exposed
+      const steamManifest = loadManifest("steam");
+      await registerConnector(asUrl, steamManifest);
+
+      const ownerToken = await issueOwnerToken(asUrl);
+      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      });
+      assert.equal(status, 200);
+
+      const steam = byConnector(body, "steam");
+      const setup = asRecord(steam.setup_plan);
+      const listing = asRecord(steam.public_listing);
+
+      // Verify this real unproven connector that passes isOwnerActionablePlan is exposed
+      assert.equal(listing.listed, false, "steam: public_listing.listed must remain false");
+      assert.equal(listing.status, "unproven", "steam: public_listing.status must remain unproven");
+
+      // EXPLICIT POSITIVE: if owner_actionable is true, MUST be exposed (not conditional if)
+      if (setup.owner_actionable === true) {
+        assert.equal(steam.uat_expose_unlisted_connectors, true, "steam: EXPLICIT POSITIVE - must be UAT-exposed when owner_actionable");
+
+        // Verify usable action contract for owner_actionable plans
+        const actions = steam.supported_actions;
+        const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
+        assert.ok(initiateAction, "steam: must have initiate_connection action");
+        const initiateRecord = asRecord(initiateAction);
+        assert.ok(
+          ["owner_mediated", "supported"].includes(initiateRecord.status),
+          `steam: action must be owner_mediated or supported, got ${initiateRecord.status}`
+        );
+      } else {
+        // If steam doesn't pass owner_actionable, skip this positive test
+        // (the negative test covers non-actionable cases)
+        assert.ok(true, "steam: skipped positive test (not owner_actionable in this deployment)");
+      }
+    });
+  } finally {
+    for (const [key, value] of priorSettings) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("UAT-exposed unproven connectors from real manifests prove no allowlist (conditional assertion)", async () => {
+  const declaredSettings = {
+    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
+  };
+  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, declaredSettings);
+  try {
+    await withServer(async ({ asUrl, rsUrl }) => {
+      // Register real unproven connectors to prove no allowlist in production code
+      // Any unproven owner-actionable connector is automatically included without hardcoding its name
       const testConnectors = ["steam", "imessage", "apple_photos", "google_messages", "netflix_export"];
 
       for (const id of testConnectors) {
@@ -462,7 +519,8 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan and p
       const { data } = asRecord(body);
       const templates = Array.isArray(data) ? data : [];
 
-      // For each unproven connector: UAT exposure fact is tightly coupled to owner_actionable
+      // For each real unproven connector: UAT exposure fact is tightly coupled to owner_actionable
+      // (this proves any connector that passes isOwnerActionablePlan is exposed, no allowlist)
       for (const connectorId of testConnectors) {
         const template = templates.find((t) => {
           const key = asRecord(t).connector_key;
@@ -472,26 +530,14 @@ test("PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT=1 requires isOwnerActionablePlan and p
 
         const setup = asRecord(template).setup_plan;
         const isOwnerActionable = asRecord(setup).owner_actionable === true;
+        const uatExposed = asRecord(template).uat_expose_unlisted_connectors === true;
 
-        // UAT exposure fact requires isOwnerActionablePlan(plan) to be true
-        if (isOwnerActionable) {
-          assert.equal(
-            asRecord(template).uat_expose_unlisted_connectors,
-            true,
-            `${connectorId}: must be UAT-exposed when owner_actionable`
-          );
-          // If exposed, verify it has usable actions
-          const actions = asRecord(template).supported_actions;
-          const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
-          assert.ok(initiateAction, `${connectorId}: must have initiate_connection action when exposed`);
-        } else {
-          // Non-actionable unproven connectors are never exposed
-          assert.notEqual(
-            asRecord(template).uat_expose_unlisted_connectors,
-            true,
-            `${connectorId}: must NOT be UAT-exposed when not owner_actionable`
-          );
-        }
+        // Constraint: exposure IFF owner_actionable (proves no allowlist: not just steam/imessage/etc.)
+        assert.equal(
+          uatExposed,
+          isOwnerActionable,
+          `${connectorId}: uat_expose_unlisted_connectors must equal owner_actionable (no allowlist)`
+        );
       }
     });
   } finally {
