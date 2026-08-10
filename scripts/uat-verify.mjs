@@ -37,6 +37,9 @@ console.log(JSON.stringify(db.prepare(${JSON.stringify(query)}).all()));
 }
 
 function ownerPassword() {
+  if (process.env.PDPP_OWNER_PASSWORD) {
+    return process.env.PDPP_OWNER_PASSWORD;
+  }
   return execFileSync("docker", ["exec", CONTAINER, "cat", "/var/lib/pdpp/owner-password"], {
     encoding: "utf8",
   }).trim();
