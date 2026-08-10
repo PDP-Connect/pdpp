@@ -1395,6 +1395,14 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
             messagesExamined += cursor.message_count ?? 0;
             functionCallsExamined += cursor.function_call_count ?? 0;
           }
+        } else if (result === "skipped") {
+          // File was skipped but may have been examined in prior runs
+          // Track counts from the carried-forward cursor (if any) to show data exists even when suppressed
+          const cursor = args.newFileCursors[entry.path];
+          if (cursor) {
+            messagesExamined += cursor.message_count ?? 0;
+            functionCallsExamined += cursor.function_call_count ?? 0;
+          }
         }
       } catch {
         // Any error during parsing (without code or other) makes scan incomplete
@@ -1586,12 +1594,30 @@ function buildResourceFilters(requested: Map<string, StreamScope>): Map<string, 
   return resFilters;
 }
 
+// Check if path is a readable directory; returns true/false/error code for distinction
 async function isReadableDirectory(path: string): Promise<boolean> {
   try {
     const st = await stat(path);
     return st.isDirectory();
   } catch {
     return false;
+  }
+}
+
+// Check if path exists as a directory and is readable; return error code if not
+async function checkDirectoryReadable(path: string): Promise<"ok" | "not_found" | "unreadable"> {
+  try {
+    const st = await stat(path);
+    if (st.isDirectory()) {
+      return "ok";
+    }
+    return "unreadable"; // exists but is not a directory
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err?.code === "ENOENT") {
+      return "not_found";
+    }
+    return "unreadable"; // EACCES, EIO, etc.
   }
 }
 
@@ -1605,17 +1631,27 @@ async function isReadableFile(path: string): Promise<boolean> {
 }
 
 async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<string, StreamScope>): Promise<void> {
-  const missing: string[] = [];
+  // Distinguish ENOENT (legitimately absent) from EACCES/EIO (actual I/O failures).
+  // ENOENT allows coverage_diagnostics to emit verified_empty evidence.
+  // EACCES/EIO is an actual error that should be reported.
+  const unreadable: string[] = [];
   const needsRollouts = requested.has("messages") || requested.has("function_calls");
 
-  if (needsRollouts && !(await isReadableDirectory(dirs.baseDir))) {
-    missing.push(`CODEX_SESSIONS_DIR=${dirs.baseDir}`);
+  if (needsRollouts) {
+    const status = await checkDirectoryReadable(dirs.baseDir);
+    if (status === "unreadable") {
+      unreadable.push(`CODEX_SESSIONS_DIR=${dirs.baseDir}`);
+    }
   }
   if (requested.has("sessions")) {
     const hasRollouts = await isReadableDirectory(dirs.baseDir);
     const hasThreadsDb = await isReadableFile(dirs.stateDbPath);
-    if (!(hasRollouts || hasThreadsDb)) {
-      missing.push(`CODEX_SESSIONS_DIR=${dirs.baseDir} or CODEX_STATE_DB=${dirs.stateDbPath}`);
+    if (!hasRollouts && !hasThreadsDb) {
+      // Both missing — check if unreadable (not just absent)
+      const rolloutStatus = await checkDirectoryReadable(dirs.baseDir);
+      if (rolloutStatus === "unreadable") {
+        unreadable.push(`CODEX_SESSIONS_DIR=${dirs.baseDir}`);
+      }
     }
   }
   // rules/prompts/skills are optional, user-authored directories that Codex
@@ -1624,10 +1660,9 @@ async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<strin
   // emitRulesStream/emitPromptsStream/emitSkillsStream already no-op safely
   // on a missing directory. Requiring them here was fatal-on-every-fresh-
   // install: any host without a manually-created empty rules/prompts dir
-  // failed its very first run. Only sources with no graceful empty-result
-  // path (sessions) stay a hard precondition.
-  if (missing.length > 0) {
-    throw new Error(`requested Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`);
+  // failed its very first run. Only actual I/O failures (not ENOENT) are errors.
+  if (unreadable.length > 0) {
+    throw new Error(`requested Codex local source path(s) are unreadable: ${unreadable.join(", ")}`);
   }
 }
 

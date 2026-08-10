@@ -132,19 +132,19 @@ test("codex coverage truth: derived coverage records included in STATE snapshot"
 });
 
 test("codex coverage truth: file read error makes coverage incomplete", async () => {
-  // Use a temp directory with an unreadable rollout file to trigger read error
+  // Use a temp directory with an unreadable day directory to trigger enumeration error
   const { mkdirSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const tempRoot = join(tmpdir(), `codex-read-error-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   try {
-    const sessionDir = join(tempRoot, "sessions", "2026", "08", "09");
-    mkdirSync(sessionDir, { recursive: true });
-    const rolloutPath = join(sessionDir, "rollout-test.jsonl");
-    writeFileSync(rolloutPath, '{"type":"session_meta"}\n');
+    // Create sessions/2026/08/09 with a rollout file
+    const dayDir = join(tempRoot, "sessions", "2026", "08", "09");
+    mkdirSync(dayDir, { recursive: true });
+    writeFileSync(join(dayDir, "rollout-test.jsonl"), '{"type":"session_meta"}\n');
 
-    // Make the rollout file unreadable to trigger EACCES during iteration
-    chmodSync(rolloutPath, 0o000);
+    // Make the 09 directory unreadable to trigger EACCES when listing files in it
+    chmodSync(dayDir, 0o000);
 
     const result = await runConnectorProtocolSubprocess({
       allowFailedDone: true,
@@ -168,13 +168,13 @@ test("codex coverage truth: file read error makes coverage incomplete", async ()
     assert(messagesRecord, "must have coverage record for messages");
     assert(functionCallsRecord, "must have coverage record for function_calls");
 
-    // File read error = incomplete status
-    assert.equal(messagesRecord.data.status, "incomplete", "file read error must show incomplete");
-    assert.equal(functionCallsRecord.data.status, "incomplete", "file read error must show incomplete");
+    // Directory enumeration error = incomplete status
+    assert.equal(messagesRecord.data.status, "incomplete", "file enumeration error must show incomplete");
+    assert.equal(functionCallsRecord.data.status, "incomplete", "file enumeration error must show incomplete");
   } finally {
     // Restore permissions before cleanup
     try {
-      chmodSync(join(tempRoot, "sessions", "2026", "08", "09", "rollout-test.jsonl"), 0o644);
+      chmodSync(join(tempRoot, "sessions", "2026", "08", "09"), 0o755);
     } catch {
       // May already be deleted
     }
