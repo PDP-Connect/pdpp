@@ -64,6 +64,8 @@
     {
       "name": "user",
       "description": "The authenticated user's stable profile and identity fields. Sampled metrics (followers, following, public_repos, public_gists) are in the user_stats stream.",
+      "compaction_class": "point_in_time_real_field",
+      "compaction_class_note": "follower/repo/gist counts are point-in-time samples carried on this record; retained history is never compactable.",
       "display": {
         "label": "Your GitHub profile",
         "detail": "Username, display name, bio, email if public, company, location, blog, twitter_username, avatar, created_at and updated_at. Follower/following/repo counts are in user_stats."

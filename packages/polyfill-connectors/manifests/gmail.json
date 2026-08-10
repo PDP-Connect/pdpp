@@ -287,6 +287,9 @@
     {
       "name": "threads",
       "description": "Email threads, keyed by Gmail's X-GM-THRID. Derived from messages.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your conversations",
         "detail": "One row per email thread: participants, message counts, first/last dates, labels, unread/flagged counts."
@@ -363,6 +366,9 @@
     {
       "name": "labels",
       "description": "Gmail system + user labels.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your labels",
         "detail": "Standard Gmail labels (INBOX, Sent, Starred, etc.) and user-created labels."

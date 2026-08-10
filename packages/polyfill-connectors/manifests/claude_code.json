@@ -49,6 +49,8 @@
     {
       "name": "sessions",
       "description": "Claude Code sessions. One session = one CLI invocation in a specific project directory.",
+      "compaction_class": "recurring_snapshot",
+      "compaction_class_note": "aggregated per-session record; message_count/last_event_at widen on growth; never compactable, never re-alarms as growth accumulates.",
       "display": {
         "label": "Your Claude Code sessions",
         "detail": "Session start time, duration, project directory, git branch, Claude Code version, total message count."
@@ -128,6 +130,9 @@
     {
       "name": "messages",
       "description": "Messages within Claude Code sessions: user prompts and assistant responses. Includes both top-level session transcripts and nested subagent (sidechain) transcripts.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code messages",
         "detail": "Role (user/assistant), text content, timestamp, parent message (for threading), session reference, subagent id when the message came from a sidechain run."
@@ -215,6 +220,9 @@
     {
       "name": "attachments",
       "description": "Non-message events: hook outputs, tool uses, file snapshots, plus tool-results blob files written to disk.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Claude Code events",
         "detail": "System events attached to sessions: tool calls, hook outputs, file-history snapshots, permission-mode changes, and persisted tool-result files."
@@ -292,6 +300,9 @@
     {
       "name": "skills",
       "description": "User-authored Claude Code skills installed under ~/.claude/skills/<skill>/SKILL.md. Each record captures frontmatter metadata and the full body (capped at 20k chars).",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code skills",
         "detail": "Skill name, description, full SKILL.md body, frontmatter, and on-disk path."
@@ -352,6 +363,9 @@
     {
       "name": "memory_notes",
       "description": "Project-scoped Claude Code memory notes under ~/.claude/projects/<project>/memory/*.md. Each record captures frontmatter metadata and the note body (capped at 20k chars).",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Claude Code memory notes",
         "detail": "Project path, note path, name, description, body, frontmatter, and on-disk path."
@@ -421,6 +435,9 @@
     {
       "name": "slash_commands",
       "description": "User-authored Claude Code slash commands under ~/.claude/commands/*.md. Each record captures frontmatter, the command body (capped at 20k chars), and the file's absolute path.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your custom slash commands",
         "detail": "Command name, description, full command body, frontmatter, and on-disk path."
@@ -477,6 +494,9 @@
     {
       "name": "file_history",
       "description": "Metadata-only inventory for Claude Code file-history stores. Does not emit file-history payload content.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -536,6 +556,9 @@
     {
       "name": "cache_inventory",
       "description": "Metadata-only inventory for Claude Code cache stores; raw cache payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -750,6 +773,9 @@
     {
       "name": "backup_inventory",
       "description": "Metadata-only inventory for Claude Code backup stores; raw backup payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -809,6 +835,9 @@
     {
       "name": "config_inventory",
       "description": "Metadata-only inventory for non-secret Claude Code configuration; raw config payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",

@@ -66,6 +66,9 @@
     {
       "name": "orders",
       "description": "Amazon retail orders scraped from Your Orders.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Your Amazon orders",
         "detail": "Order IDs, dates, totals, delivery status, shipping summaries, payment method summary, recipient name. Per-item breakdowns live in the order_items stream."

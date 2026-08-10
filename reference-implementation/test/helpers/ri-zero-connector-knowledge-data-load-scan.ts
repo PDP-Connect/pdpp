@@ -43,7 +43,19 @@
  *      EVERYTHING ELSE — including a call whose path argument could not be
  *      statically resolved at all — is a violation. There is no default-pass
  *      branch for "couldn't figure it out."
- *   4. Rule (6): `eval(...)` and `node:child_process`'s shell-string exec
+ *   4. `SANCTIONED_POLICY_RESOURCES` CONTENT check (ri-zero-knowledge-
+ *      terminal-revise-0810): a sanctioned RI-owned JSON registry's PATH
+ *      being allowlisted proves nothing about its CONTENT. This module also
+ *      parses each such file's actual JSON and walks it for any string
+ *      (object key, object value, or array element, at any depth) equal to
+ *      a manifest-derived connector key or validation kind — moving a
+ *      connector-identity fact out of `.ts` source and into a sibling
+ *      RI-owned JSON file is exactly as much self-attested connector
+ *      knowledge as the literal it replaced, reached via a different seam.
+ *      A real manifest-root file (rule 3 above) is NOT subject to this
+ *      check — a manifest's connector_id/connector_key/kind fields are its
+ *      entire declared purpose.
+ *   5. Rule (6): `eval(...)` and `node:child_process`'s shell-string exec
  *      family (`exec`/`execSync`, bound via a real `node:child_process`
  *      import — not the argv-array `execFile`/`execFileSync`/`spawn`/
  *      `spawnSync` forms, and not an unrelated same-named local like this
@@ -71,7 +83,18 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, extname, join, relative } from "node:path";
 
-import { parse } from "@babel/parser";
+import {
+  calleeName,
+  collectConstsAndFunctions,
+  enclosingFunctionNameOf,
+  isIdentifier,
+  lineOf,
+  type Node,
+  nodeArrayField,
+  nodeField,
+  parseSource,
+  walk,
+} from "./ri-zero-connector-knowledge-ast-shared.ts";
 
 export interface DataLoadViolation {
   file: string;
@@ -98,10 +121,12 @@ const SANCTIONED_POLICY_RESOURCES: ReadonlyMap<string, ReadonlySet<string>> = ne
     "reference-implementation/server/version-disposition.ts",
     new Set(["reference-implementation/server/version-disposition-policy.json"]),
   ],
-  [
-    "reference-implementation/scripts/compact-record-history.ts",
-    new Set(["reference-implementation/scripts/compact-record-history-local-device-policy.json"]),
-  ],
+  // compact-record-history.ts no longer reads a sibling RI-owned JSON
+  // registry (ri-zero-knowledge-terminal-revise-0810): its per-connector
+  // fingerprint-exclusion policy is now read generically from each
+  // connector's own manifest (`compaction_fingerprint`), a real manifest
+  // read already governed by the manifest-provenance check above, not this
+  // allowlist.
 ]);
 
 /**
@@ -194,6 +219,79 @@ function isUnderSanctionedManifestRoot(resolvedRelPath: string): boolean {
 }
 
 /**
+ * Recursively walk a parsed JSON value for any string that equals a
+ * manifest-derived connector key or validation kind, appearing anywhere —
+ * an object key, an object value, or an array element, at any depth. This
+ * closes the sibling-JSON evasion one level deeper than the load-SITE check
+ * `classifyResolved` already does: proving a `.json` file's PATH is
+ * sanctioned (a manifest root, or an explicitly reviewed
+ * `SANCTIONED_POLICY_RESOURCES` entry) says nothing about its CONTENT — an
+ * RI-owned policy registry sitting at a sanctioned path could still contain
+ * `{ "connector": "codex", ... }` self-attested connector-identity data, the
+ * exact fact rules (1)/(6) forbid in `.ts` source, reached by moving it into
+ * the sibling JSON instead. `ri-zero-knowledge-terminal-revise-0810`:
+ * connector facts belong to connector-owned manifests or an operator-
+ * authorized runtime input, never RI-committed JSON, regardless of which
+ * load-site syntax or which sanctioned path reaches it.
+ */
+function findConnectorLiteralsInJsonValue(
+  value: unknown,
+  connectorKeys: ReadonlySet<string>,
+  validationKinds: ReadonlySet<string>,
+  found: Set<string>
+): void {
+  if (typeof value === "string") {
+    if (connectorKeys.has(value)) {
+      found.add(`hardcoded-connector-identity-literal:${value}`);
+    } else if (validationKinds.has(value)) {
+      found.add(`hardcoded-validation-kind-literal:${value}`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const element of value) {
+      findConnectorLiteralsInJsonValue(element, connectorKeys, validationKinds, found);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, propertyValue] of Object.entries(value as Record<string, unknown>)) {
+      if (connectorKeys.has(key)) {
+        found.add(`hardcoded-connector-identity-literal:${key}`);
+      } else if (validationKinds.has(key)) {
+        found.add(`hardcoded-validation-kind-literal:${key}`);
+      }
+      findConnectorLiteralsInJsonValue(propertyValue, connectorKeys, validationKinds, found);
+    }
+  }
+}
+
+/**
+ * Every distinct `rule:value` connector/kind literal found anywhere in the
+ * JSON file at `resolvedRelPath`, or an empty set if the file does not exist
+ * or does not parse as JSON (a parse failure here is not this function's
+ * concern — `classifyResolved`'s own path-based checks, or the manifest-
+ * provenance check, already govern whether an unparseable/absent file at a
+ * sanctioned path is itself a violation).
+ */
+function connectorLiteralsInJsonFile(
+  repoRoot: string,
+  resolvedRelPath: string,
+  connectorKeys: ReadonlySet<string>,
+  validationKinds: ReadonlySet<string>
+): Set<string> {
+  const found = new Set<string>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(join(repoRoot, resolvedRelPath), "utf8"));
+  } catch {
+    return found;
+  }
+  findConnectorLiteralsInJsonValue(parsed, connectorKeys, validationKinds, found);
+  return found;
+}
+
+/**
  * Manifest-root trust requires real content provenance, not path prefix
  * alone (a `.json` file dropped next to real manifests with no manifest
  * shape must still be rejected). A manifest is proven legitimate if it
@@ -212,101 +310,6 @@ function manifestRootFileHasManifestProvenance(repoRoot: string, resolvedRelPath
   const key = parsed.connector_key;
   const id = parsed.connector_id;
   return (typeof key === "string" && key.length > 0) || (typeof id === "string" && id.length > 0);
-}
-
-// --- Babel AST node shapes used below (loosely typed: @babel/parser's AST
-// is a plain discriminated-union object tree; we only need a handful of
-// fields per node type, so a minimal structural type is enough here and
-// keeps this module decoupled from @babel/types version churn). ---
-
-interface Node {
-  end?: number | null;
-  loc?: { start: { line: number } } | null;
-  start?: number | null;
-  type: string;
-  [key: string]: unknown;
-}
-
-/**
- * Read a Babel AST array-valued field (`arguments`, `declarations`,
- * `params`, `quasis`, `attributes`/`assertions`, `body`) as `Node[]`,
- * defaulting to `[]` when absent. Centralizes the `(x.field as Node[]) ??
- * []` cast so the fallback stays genuinely meaningful to the type checker
- * (the field really is `unknown` on the loosely-typed `Node` interface,
- * unlike a per-site `as Node[]` cast, which erases that and makes the `??`
- * look like dead code).
- */
-function nodeArrayField(node: Node, field: string): Node[] {
-  const value = node[field];
-  return Array.isArray(value) ? (value as Node[]) : [];
-}
-
-/** Read a Babel AST node-valued field, or undefined if absent — same
- * cast-centralizing rationale as `nodeArrayField`. */
-function nodeField(node: Node, field: string): Node | undefined {
-  const value = node[field];
-  return value && typeof value === "object" ? (value as Node) : undefined;
-}
-
-function children(node: Node): Node[] {
-  const out: Node[] = [];
-  for (const key of Object.keys(node)) {
-    if (key === "loc" || key === "start" || key === "end" || key === "type") {
-      continue;
-    }
-    const value = (node as Record<string, unknown>)[key];
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (item && typeof item === "object" && typeof (item as Node).type === "string") {
-          out.push(item as Node);
-        }
-      }
-    } else if (value && typeof value === "object" && typeof (value as Node).type === "string") {
-      out.push(value as Node);
-    }
-  }
-  return out;
-}
-
-function walk(node: Node, visit: (n: Node, parent: Node | null, ancestors: Node[]) => void): void {
-  const stack: Array<{ node: Node; ancestors: Node[] }> = [{ ancestors: [], node }];
-  while (stack.length > 0) {
-    const { node: current, ancestors } = stack.pop() as { node: Node; ancestors: Node[] };
-    visit(current, ancestors.at(-1) ?? null, ancestors);
-    const nextAncestors = [...ancestors, current];
-    for (const child of children(current)) {
-      stack.push({ ancestors: nextAncestors, node: child });
-    }
-  }
-}
-
-/**
- * Nearest enclosing TOP-LEVEL named `function foo(...) {}` declaration
- * (matching `localFunctions`' collection scope), or null if `node` is not
- * lexically inside one (module-level code, or inside an arrow function/
- * nested function declaration — deliberately not resolved through those,
- * since `localFunctions` only tracks top-level declarations). Walking from
- * the END of `ancestors` finds the nearest (innermost) enclosing function
- * first, so a function nested inside another top-level function correctly
- * resolves to its OWN immediate parent, not the outermost one — though in
- * practice `localFunctions` only recognizes the outer one as call-site-
- * indirectable, so a doubly-nested reference simply won't resolve, which is
- * the fail-closed behavior this scanner wants.
- */
-function enclosingFunctionNameOf(ancestors: Node[]): string | null {
-  for (let i = ancestors.length - 1; i >= 0; i -= 1) {
-    const ancestor = ancestors[i] as Node;
-    const id = ancestor.id as Node | undefined;
-    if (ancestor.type === "FunctionDeclaration" && id?.type === "Identifier") {
-      return id.name as string;
-    }
-  }
-  return null;
-}
-
-function lineOf(node: Node): number {
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `loc` is declared `?: {...} | null` on the loosely-typed Node interface (real Babel AST nodes can genuinely have a null/absent loc, e.g. synthetic nodes); `tsc --strict` on this file raises no error here, confirming the guard is live, not redundant.
-  return node.loc?.start.line ?? 0;
 }
 
 // --- Resolved-path representation: either a fully static relative path
@@ -356,21 +359,6 @@ interface FileAnalysis {
    * resolve identifiers like `__dirname`/`REFERENCE_MANIFESTS_DIR`. */
   moduleConsts: Map<string, Node>;
   relPath: string;
-}
-
-function isIdentifier(node: Node, name?: string): boolean {
-  return node.type === "Identifier" && (name === undefined || node.name === name);
-}
-
-function calleeName(callee: Node): string | null {
-  if (callee.type === "Identifier") {
-    return callee.name as string;
-  }
-  // biome-ignore lint/suspicious/noUnnecessaryConditions: false positive -- `callee.property` is `unknown` on the loosely-typed Node interface's index signature; the `as Node` cast changes the STATIC type only, not runtime nullability (a real Babel AST node can have this field absent). `tsc --strict` raises no error on this file.
-  if (callee.type === "MemberExpression" && (callee.property as Node)?.type === "Identifier") {
-    return (callee.property as Node).name as string;
-  }
-  return null;
 }
 
 // A resolved fragment is either "already a full repo-root-relative path"
@@ -687,76 +675,6 @@ function resolvePathArgument(expr: Node, analysis: FileAnalysis, enclosingFuncti
 }
 
 /**
- * Collect every `const NAME = <init>` declarator anywhere in the file
- * (module-level or nested inside a function body — e.g. a local `const
- * moduleSpecifier = "./x.ts"` right above a dynamic `import()`), plus every
- * top-level function declaration (for parameter indirection).
- *
- * This is deliberately NOT real lexical scoping — it is a flat, whole-file
- * name table. Two DIFFERENT bindings that happen to share a name (e.g. the
- * same local variable name reused in two unrelated functions) are ambiguous
- * under a flat table; rather than guess which one a given reference means,
- * a name bound to more than one syntactically-distinct initializer anywhere
- * in the file is deliberately dropped from the table entirely, so any
- * reference to it resolves to "unresolvable" — fail-closed, matching this
- * module's stated residual, rather than silently picking the wrong binding.
- * `let`/`var` declarators are excluded outright: they can be reassigned
- * after declaration, so trusting their initializer would be unsound even
- * with no naming collision at all.
- */
-function collectModuleConstsAndFunctions(program: Node): {
-  moduleConsts: Map<string, Node>;
-  localFunctions: Map<string, { params: string[]; exported: boolean }>;
-} {
-  const moduleConsts = new Map<string, Node>();
-  const ambiguousNames = new Set<string>();
-  const localFunctions = new Map<string, { params: string[]; exported: boolean }>();
-
-  function paramNames(params: Node[]): string[] {
-    return params.filter((p) => p.type === "Identifier").map((p) => p.name as string);
-  }
-
-  walk(program, (node) => {
-    if (node.type === "VariableDeclaration" && node.kind === "const") {
-      for (const decl of nodeArrayField(node, "declarations")) {
-        const declId = decl.id as Node | undefined;
-        if (declId?.type !== "Identifier" || !decl.init) {
-          continue;
-        }
-        const name = declId.name as string;
-        if (ambiguousNames.has(name)) {
-          continue;
-        }
-        const existing = moduleConsts.get(name);
-        if (existing && existing !== decl.init) {
-          moduleConsts.delete(name);
-          ambiguousNames.add(name);
-          continue;
-        }
-        moduleConsts.set(name, decl.init as Node);
-      }
-    }
-  });
-
-  for (const stmt of nodeArrayField(program, "body")) {
-    let target = stmt;
-    let exported = false;
-    if (stmt.type === "ExportNamedDeclaration" && stmt.declaration) {
-      target = stmt.declaration as Node;
-      exported = true;
-    }
-    const targetId = target.id as Node | undefined;
-    if (target.type === "FunctionDeclaration" && targetId?.type === "Identifier") {
-      localFunctions.set(targetId.name as string, {
-        exported,
-        params: paramNames(nodeArrayField(target, "params")),
-      });
-    }
-  }
-  return { localFunctions, moduleConsts };
-}
-
-/**
  * Local names bound to `node:child_process`'s shell-string exec family
  * (`exec`, `execSync` — NOT `execFile`/`execFileSync`/`spawn`/`spawnSync`,
  * which take an argv array and cannot run an arbitrary shell command like
@@ -848,22 +766,24 @@ function isProhibitedEvasionMechanismCall(
  * Scan one production file's AST for JSON/YAML-consuming data-load call
  * sites, independent of which JS syntax shape reaches the file.
  */
-export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: string): DataLoadViolation[] {
+export function scanFileDataLoads(
+  absPath: string,
+  relPath: string,
+  repoRoot: string,
+  connectorKeys: ReadonlySet<string> = new Set(),
+  validationKinds: ReadonlySet<string> = new Set()
+): DataLoadViolation[] {
   const raw = readFileSync(absPath, "utf8");
-  let ast: Node;
+  let program: Node;
   try {
-    // The `typescript` and `jsx` Babel parser plugins are mutually exclusive
-    // for `.ts` (non-`.tsx`) sources — enabling both misparses a type-cast or
-    // generic like `<T>` as a JSX element. Select the plugin set by extension
-    // so `.tsx`/`.jsx` files (in scope since the P2/extension-scope fix) parse
-    // correctly instead of silently falling into the catch-and-report-nothing
-    // branch below on every real .tsx/.jsx production file.
-    const isJsxExtension = absPath.endsWith(".tsx") || absPath.endsWith(".jsx");
-    ast = parse(raw, {
-      errorRecovery: true,
-      plugins: isJsxExtension ? ["typescript", "jsx", "importAttributes"] : ["typescript", "importAttributes"],
-      sourceType: "module",
-    }) as unknown as Node;
+    // `parseSource` selects the `.tsx`/`.jsx`-vs-plain-`.ts` plugin set by
+    // extension (the `typescript` and `jsx` Babel parser plugins are
+    // mutually exclusive for `.ts` sources — enabling both misparses a
+    // type-cast or generic like `<T>` as a JSX element), so `.tsx`/`.jsx`
+    // files (in scope since the P2/extension-scope fix) parse correctly
+    // instead of silently falling into the catch-and-report-nothing branch
+    // below on every real .tsx/.jsx production file.
+    program = parseSource(raw, absPath);
   } catch {
     // A file that fails to parse is scanned by the literal-regex rules
     // elsewhere; this scanner reports nothing rather than crashing the
@@ -871,8 +791,7 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
     return [];
   }
 
-  const program = ast.program as Node;
-  const { moduleConsts, localFunctions } = collectModuleConstsAndFunctions(program);
+  const { moduleConsts, localFunctions } = collectConstsAndFunctions(program);
   const allCalls: Node[] = [];
   walk(program, (n) => {
     if (n.type === "CallExpression") {
@@ -942,6 +861,24 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
     violations.push({ file: relPath, line, rule, snippet: lineText });
   }
 
+  /** `SANCTIONED_POLICY_RESOURCES` branch of {@link classifyResolved}: a
+   * path-sanctioned RI-owned registry must ALSO carry no connector-literal
+   * CONTENT (ri-zero-knowledge-terminal-revise-0810) — path allowlisting
+   * alone is not trust. Returns true iff `target` matched this allowlist
+   * (handled either way, clean or flagged); false means the caller must
+   * fall through to the unsanctioned-path report. Split out purely to keep
+   * `classifyResolved` itself under the cognitive-complexity budget. */
+  function classifySanctionedPolicyResource(target: string, node: Node): boolean {
+    if (!SANCTIONED_POLICY_RESOURCES.get(relPath)?.has(target)) {
+      return false;
+    }
+    const literalsFound = connectorLiteralsInJsonFile(repoRoot, target, connectorKeys, validationKinds);
+    if (literalsFound.size > 0) {
+      report(node, "hardcoded-connector-literal-in-ri-owned-json");
+    }
+    return true;
+  }
+
   function classifyResolved(resolved: ResolvedPath, node: Node): void {
     if (resolved.kind === "unresolvable") {
       report(node, "unresolvable-data-resource-load");
@@ -966,13 +903,18 @@ export function scanFileDataLoads(absPath: string, relPath: string, repoRoot: st
       return;
     }
     if (isUnderSanctionedManifestRoot(target)) {
+      // A manifest-root file's own connector_id/connector_key/kind fields
+      // are its ENTIRE declared purpose (that is what manifest provenance
+      // MEANS) -- the content-literal check below applies to
+      // SANCTIONED_POLICY_RESOURCES (RI-owned registries, which must carry
+      // NO connector facts at all), not to a real manifest.
       if (manifestRootFileHasManifestProvenance(repoRoot, target)) {
         return;
       }
       report(node, "manifest-root-file-lacks-manifest-provenance");
       return;
     }
-    if (SANCTIONED_POLICY_RESOURCES.get(relPath)?.has(target)) {
+    if (classifySanctionedPolicyResource(target, node)) {
       return;
     }
     report(node, "unsanctioned-policy-resource-path");

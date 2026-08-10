@@ -403,7 +403,7 @@ export function scanFile(
       snippet: v.snippet,
     }))
   );
-  violations.push(...scanFileDataLoads(absPath, relPath, repoRoot));
+  violations.push(...scanFileDataLoads(absPath, relPath, repoRoot, connectorKeys, validationKinds));
 
   // Multiple literals on one line (e.g. a multi-entry array literal) each
   // independently match the same rule; collapse to one report per

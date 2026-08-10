@@ -1398,7 +1398,311 @@ test("AST authority: importing a connector manifest JSON and reading .connector_
   );
 });
 
+// --- Terminal invariant (ri-zero-knowledge-terminal-revise-0810): every
+// literal-bearing AST position, not an enumerated list of consumption
+// shapes -------------------------------------------------------------------
+
+test("terminal invariant: an object-literal VALUE equal to a connector key is caught, with no comparison or membership call anywhere in the file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-object-value-dispatch.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export const DEFAULT_CONNECTOR_FOR_TEST_FIXTURE: Record<string, string> = {",
+        '  canonicalId: "gmail",',
+        "};",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-object-value-dispatch.ts", new Set(["gmail", "slack"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `an object-literal VALUE equal to a connector key must be caught even with zero comparison/membership shapes in the file, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: an object-literal KEY equal to a validation kind is caught when the object is used as a bracket-lookup dispatch table", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-object-key-dispatch.ts");
+    writeFileSync(
+      badFile,
+      [
+        "const PARSERS: Record<string, (buf: Buffer) => string> = {",
+        "  whatsapp_chat_export: (buf) => buf.toString(),",
+        "};",
+        "export function parse(kind: string, buf: Buffer): string | null {",
+        "  const fn = PARSERS[kind];",
+        "  return fn ? fn(buf) : null;",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(
+      badFile,
+      "synthetic-object-key-dispatch.ts",
+      new Set(),
+      repoRoot,
+      new Set(["whatsapp_chat_export"])
+    );
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-validation-kind-literal"),
+      `an object-literal KEY equal to a validation kind, on a table proven bracket-accessed, must be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: an object-literal KEY dispatch table wrapped in Object.freeze(...) is still caught (this codebase's own idiom)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-frozen-key-dispatch.ts");
+    writeFileSync(
+      badFile,
+      [
+        "const PROFILES: Readonly<Record<string, number>> = Object.freeze({",
+        "  gmail: 8,",
+        "});",
+        "export function resolve(connectorId: string): number {",
+        "  return PROFILES[connectorId] ?? 12;",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-frozen-key-dispatch.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `an Object.freeze(...)-wrapped dispatch table's key must still be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: an array-literal element equal to a connector key is caught even when the array is never queried", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-unused-array-literal.ts");
+    writeFileSync(badFile, ['export const KNOWN_CONNECTORS = ["gmail", "slack"];', ""].join("\n"));
+    const violations = scanFile(badFile, "synthetic-unused-array-literal.ts", new Set(["gmail", "slack"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `an array literal containing a connector key must be caught even if never checked against anything, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: a let-bound variable initialized to a connector-key literal is caught, independent of any later use", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-let-declaration.ts");
+    writeFileSync(
+      badFile,
+      ["export function pick(): string {", '  let canonicalKey = "gmail";', "  return canonicalKey;", "}", ""].join(
+        "\n"
+      )
+    );
+    const violations = scanFile(badFile, "synthetic-let-declaration.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `a let declaration initialized to a connector-key literal must itself be the violation site, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: a const declaration initialized to a connector-key literal is caught even if never read", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-unused-const.ts");
+    writeFileSync(badFile, ['const UNUSED_CANONICAL_KEY = "gmail";', "export {};", ""].join("\n"));
+    const violations = scanFile(badFile, "synthetic-unused-const.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `an unread const initialized to a connector-key literal must be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: a destructured property KEY equal to a connector key is caught (destructuring-source-literal bypass)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-destructuring-key.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function extractGmailHandler(registry: Record<string, () => void>): (() => void) | undefined {",
+        "  const { gmail: handler } = registry;",
+        "  return handler;",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-destructuring-key.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `a destructured property key equal to a connector key must be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: bounded string-concatenation folding resolves a split connector-key literal (const + const)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-concat-folding.ts");
+    writeFileSync(
+      badFile,
+      [
+        'const PART_ONE = "gm";',
+        'const PART_TWO = "ail";',
+        "export function isGmail(connectorId: string): boolean {",
+        "  return connectorId === PART_ONE + PART_TWO;",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-concat-folding.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `"gm" + "ail" must fold to "gmail" and be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant: bounded string-concatenation folding resolves inline literal concatenation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-concat-inline.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function isGmail(connectorId: string): boolean {",
+        '  return connectorId === "gm" + "ail";',
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-concat-inline.ts", new Set(["gmail"]), repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "hardcoded-connector-identity-literal"),
+      `inline "gm" + "ail" must fold to "gmail" and be caught, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 // --- Counterweights: legitimate code the AST authority must NOT flag -------
+
+test('terminal invariant counterweight: an object-literal key that is a generic vocabulary collision ("meta") is not flagged, even on a bracket-accessed dispatch table', () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-meta-envelope-key.ts");
+    writeFileSync(
+      badFile,
+      [
+        "interface Acc { meta: { warnings: string[] } | null }",
+        "export function buildEnvelope(acc: Acc) {",
+        "  const { meta } = acc;",
+        "  return { data: [], meta };",
+        "}",
+        "export function lookup(table: Record<string, unknown>, key: string) {",
+        "  return table[key];",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-meta-envelope-key.ts", new Set(["meta"]), repoRoot);
+    assert.deepEqual(
+      violations,
+      [],
+      `"meta" used as a generic JSON-envelope field/destructuring key must not be flagged (reviewed vocabulary collision), got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant counterweight: an object-literal key equal to a connector key is NOT flagged when the object is never used as a lookup table (record, not dispatch)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-record-not-dispatch.ts");
+    writeFileSync(
+      badFile,
+      [
+        "// `gmail` here is an ordinary object property NAME on a one-off record,",
+        "// never looked up by a runtime key -- not a connector-identity dispatch table.",
+        "export const EXAMPLE_PAYLOAD_SHAPE = { gmail: { threads: 3 } };",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-record-not-dispatch.ts", new Set(["gmail"]), repoRoot);
+    assert.deepEqual(
+      violations,
+      [],
+      `an object key equal to a connector key must not be flagged unless the object is proven used as a dispatch table, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant counterweight: a computed object-property key is not flagged (runtime expression, not a literal position)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-computed-key.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function build(dynamicKey: string, value: unknown): Record<string, unknown> {",
+        "  return { [dynamicKey]: value };",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-computed-key.ts", new Set(["gmail"]), repoRoot);
+    assert.deepEqual(
+      violations,
+      [],
+      `a computed property key is a runtime expression, not a literal position, and must not be flagged, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("terminal invariant counterweight: string concatenation with a non-literal operand is unresolvable and not flagged (disclosed residual)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-terminal-"));
+  try {
+    const badFile = join(dir, "synthetic-concat-with-runtime-value.ts");
+    writeFileSync(
+      badFile,
+      ["export function suffix(runtimeSuffix: string): string {", '  return "gm" + runtimeSuffix;', "}", ""].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-concat-with-runtime-value.ts", new Set(["gmail"]), repoRoot);
+    assert.deepEqual(
+      violations,
+      [],
+      `"gm" concatenated with an unresolvable runtime value must not fold to "gmail" or falsely flag "gm" alone, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
 
 test("AST authority counterweight: an unrelated switch discriminator (not a manifest-derived kind) is not flagged, even with a variable alias", () => {
   const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-ast-authority-"));

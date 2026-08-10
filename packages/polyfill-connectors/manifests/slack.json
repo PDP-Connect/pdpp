@@ -104,6 +104,9 @@
     {
       "name": "workspace",
       "description": "Authenticated Slack workspace: team identity, authenticated user/bot identity, enterprise affiliation, primary URL.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Slack workspace",
         "detail": "Workspace name, domain, team ID, the authenticated user (whose session this is), and enterprise parent (if any)."
@@ -176,6 +179,8 @@
     {
       "name": "channels",
       "description": "Public/private channels, DMs, and group DMs visible to the authenticated user. Structural and identity fields only; member count is in the channel_stats stream.",
+      "compaction_class": "point_in_time_real_field",
+      "compaction_class_note": "num_members is a point-in-time sample carried on this record; retained history is never compactable.",
       "display": {
         "label": "Your Slack channels",
         "detail": "Channel name, type flags (is_im/is_mpim/is_private/is_shared/is_archived), creator, topic and purpose (with last-set time), created-at. Member counts are in channel_stats."
@@ -378,6 +383,9 @@
     {
       "name": "channel_memberships",
       "description": "Channel ↔ user edges where slackdump could enumerate members.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["fetched_at"]
+      },
       "display": {
         "label": "Channel memberships",
         "detail": "For each channel we could see the membership of, one row per user. Includes DMs (channel member is the DM counterpart)."
@@ -429,6 +437,9 @@
     {
       "name": "users",
       "description": "Users (human + bot) visible to the authenticated principal.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "People and bots in your Slack workspace",
         "detail": "Username, real name, display name, email (when visible), timezone, bot flag, admin/owner flags, deletion status."
@@ -922,6 +933,9 @@
     {
       "name": "files",
       "description": "File attachments referenced in messages. Metadata only by default.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Files shared in Slack",
         "detail": "Filename, mimetype, size, upload time, uploader, public/private flags, title."

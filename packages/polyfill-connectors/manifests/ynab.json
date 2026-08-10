@@ -64,6 +64,9 @@
     {
       "name": "budgets",
       "description": "YNAB budgets (plans) the user owns or collaborates on. Includes currency/date locale.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["last_month", "last_modified_on"]
+      },
       "display": {
         "label": "Your budgets",
         "detail": "Budget names, currency locale (ISO code, symbol, separators), date format, and first/last month. No transaction data."
@@ -172,6 +175,8 @@
     {
       "name": "accounts",
       "description": "Accounts within each budget (checking, savings, credit cards, loans, etc.).",
+      "compaction_class": "point_in_time_real_field",
+      "compaction_class_note": "balance/cleared_balance/uncleared_balance are point-in-time samples carried on this record; retained history is never compactable.",
       "display": {
         "label": "Your accounts",
         "detail": "Account names, types, on-budget status, balances, last reconciliation, direct-import status, and loan-specific details (interest rates, minimum payments, escrow). No individual transactions."
@@ -595,6 +600,9 @@
     {
       "name": "payee_locations",
       "description": "GPS coordinates where YNAB mobile has logged a payee interaction.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Payee GPS locations",
         "detail": "Latitude/longitude coordinates linked to payees, typically added via the YNAB mobile app. Useful for matching transactions to merchant locations."

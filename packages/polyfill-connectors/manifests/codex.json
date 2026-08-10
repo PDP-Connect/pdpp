@@ -55,6 +55,8 @@
     {
       "name": "sessions",
       "description": "Codex CLI sessions. Canonical metadata comes from ~/.codex/state_5.sqlite#threads (title, archived, tokens_used, first_user_message, sandbox_policy, approval_mode), enriched with message/tool-call counts from the on-disk rollout JSONL.",
+      "compaction_class": "recurring_snapshot",
+      "compaction_class_note": "whole record is an evolving observation (message_count, last_event_at widen on growth); never compactable, never re-alarms as growth accumulates.",
       "display": {
         "label": "Your Codex CLI sessions",
         "detail": "Title, working directory, git commit/branch, model provider, CLI version, approval mode, sandbox policy, token usage, and counts."
@@ -167,6 +169,9 @@
     {
       "name": "messages",
       "description": "Messages within Codex sessions: user prompts, assistant responses, and reasoning placeholders.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex messages",
         "detail": "Role (user/assistant), text content, timestamp, session reference. Reasoning traces are referenced but content is encrypted and not stored."
@@ -236,6 +241,9 @@
     {
       "name": "function_calls",
       "description": "Tool invocations and their outputs (shell commands, file ops) recorded in Codex sessions.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Codex tool calls",
         "detail": "Tool name, arguments, call_id, and output preview. Includes shell commands Codex ran and their results."
@@ -307,6 +315,9 @@
     {
       "name": "rules",
       "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules — the de-facto log of approval decisions. One record per rule line. The stream is named `rules` to match the real local directory; `approval_rules` was backlog shorthand, not an on-disk source name.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex approval rules",
         "detail": "Each rule line (e.g. prefix_rule / decision=allow) from your .rules files, with ruleset and position."
@@ -360,6 +371,9 @@
     {
       "name": "prompts",
       "description": "User-authored prompt templates from ~/.codex/prompts/*.md. Frontmatter (name, description) is parsed; body is the prompt content.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex prompts",
         "detail": "Name, description, body, and source path for each prompt template."
@@ -413,6 +427,9 @@
     {
       "name": "skills",
       "description": "User-authored skills from ~/.codex/skills/<name>/SKILL.md. Frontmatter (name, description) is parsed; body is the skill content.",
+      "compaction_fingerprint": {
+        "exclude_keys": []
+      },
       "display": {
         "label": "Your Codex skills",
         "detail": "Name, description, body, and source path for each skill."
@@ -467,6 +484,9 @@
     {
       "name": "history",
       "description": "Metadata-only inventory for Codex history.jsonl. Prompt-history payloads are not collected in this tranche.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -526,6 +546,9 @@
     {
       "name": "session_index",
       "description": "Metadata-only inventory for Codex session_index.jsonl.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -620,6 +643,9 @@
     {
       "name": "logs",
       "description": "Deferred Codex logs inventory; log payloads require deterministic redaction before collection.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -679,6 +705,9 @@
     {
       "name": "shell_snapshots",
       "description": "Metadata-only inventory for Codex shell snapshots; shell content is not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -738,6 +767,9 @@
     {
       "name": "config_inventory",
       "description": "Metadata-only inventory for non-secret Codex configuration; raw config payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -797,6 +829,9 @@
     {
       "name": "cache_inventory",
       "description": "Metadata-only inventory for Codex cache stores; raw cache payloads are not collected.",
+      "compaction_fingerprint": {
+        "exclude_keys": ["mtime_epoch", "size_bytes"]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
