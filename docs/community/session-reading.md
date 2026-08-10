@@ -1,6 +1,6 @@
 # PDP-Connect session reading
 
-Reading may change as each session's agenda takes shape.
+> Working draft: this list may change as the Session 1 agenda takes shape.
 
 ## Session 1: Architecture overview
 
@@ -59,25 +59,6 @@ Questions we will explore:
   platforms, open protocols, and personal data stores. This paper provides
   context, not normative guidance.
 
-## Session 2: Record model and selection request
+## Later sessions
 
-We will examine how PDPP represents records and how a client asks for a
-specific slice of personal data.
-
-### Required
-
-1. [PDPP Core, Section 4: Record Model](https://pdpp.dev/docs/spec-core#record-model)
-2. [PDPP Core, Section 5: Selection Request](https://pdpp.dev/docs/spec-core#selection-request)
-
-### Foundation (skim if unfamiliar)
-
-- [RFC 9396: OAuth 2.0 Rich Authorization Requests](https://www.rfc-editor.org/rfc/rfc9396.html),
-  Sections 2.1 and 3.1. Section 5 uses the `authorization_details` envelope
-  defined by this RFC.
-
-Questions we will explore:
-
-- Does the record model cover the kinds of personal data that implementations
-  need to serve?
-- Can a person and a requesting application understand exactly what a
-  selection request permits?
+We will add reading as the agenda for each session takes shape.
