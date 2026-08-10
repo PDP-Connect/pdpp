@@ -20,7 +20,15 @@ import {
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-import { type AckLocalCollectorGapRequest, type AckLocalCollectorGapResponse, type IngestBatchRequest, type LocalDeviceClient, LocalDeviceHttpError, type PutSourceInstanceStateRequest, type SourceInstanceStateResponse } from "./local-device-client.ts";
+import {
+  type AckLocalCollectorGapRequest,
+  type AckLocalCollectorGapResponse,
+  type IngestBatchRequest,
+  type LocalDeviceClient,
+  LocalDeviceHttpError,
+  type PutSourceInstanceStateRequest,
+  type SourceInstanceStateResponse,
+} from "./local-device-client.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
@@ -4576,7 +4584,10 @@ test("runCollectorConnector recovers acknowledged local gaps only after a succes
   }
 });
 
-function createTestClient(): Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState" | "ackLocalCollectorGap"> {
+function createTestClient(): Pick<
+  LocalDeviceClient,
+  "ingestBatch" | "putSourceInstanceState" | "ackLocalCollectorGap"
+> {
   return {
     ingestBatch: async (_request: IngestBatchRequest) => ({ ok: true }),
     putSourceInstanceState: async (request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> => ({
@@ -4612,7 +4623,7 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
   let sendAttempts = 0;
   const client = createTestClient();
   const originalIngest = client.ingestBatch;
-  client.ingestBatch = async (request: IngestBatchRequest) => {
+  client.ingestBatch = (request: IngestBatchRequest) => {
     sendAttempts += 1;
     if (sendAttempts === 1) {
       throw new LocalDeviceHttpError(500, "");
@@ -4626,17 +4637,6 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
     kind: "record_batch" as const,
     payload: { records: [] },
     sourceInstanceId: srcId,
-  });
-
-  const [claimedItem] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedItem, "item should be claimable");
-
-  outbox.failRetryable({
-    error: "local device request failed: 500",
-    holder: "test",
-    id: claimedItem.id,
-    leaseEpoch: claimedItem.lease_epoch,
-    retryBackoffMs: 1500,
   });
 
   const holderId = "test-holder";
@@ -4654,7 +4654,7 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
-      retryBackoffMs: 30_000,
+      retryBackoffMs: 1500,
     },
     sourceInstanceId: srcId,
   });
@@ -4677,7 +4677,7 @@ test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", 
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   const client = createTestClient();
-  client.ingestBatch = async () => {
+  client.ingestBatch = () => {
     throw new LocalDeviceHttpError(500, "");
   };
 
@@ -4746,7 +4746,7 @@ test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration
   const queuePath = await tempQueuePath();
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   const client = createTestClient();
-  client.ingestBatch = async () => {
+  client.ingestBatch = () => {
     throw new LocalDeviceHttpError(500, "");
   };
 
@@ -4756,17 +4756,6 @@ test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration
     kind: "record_batch" as const,
     payload: { records: [] },
     sourceInstanceId: srcId,
-  });
-
-  const [claimedItem] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedItem);
-
-  outbox.failRetryable({
-    error: "local device request failed: 500",
-    holder: "test",
-    id: claimedItem.id,
-    leaseEpoch: claimedItem.lease_epoch,
-    retryBackoffMs: 5000,
   });
 
   const holderId = "test-holder";
@@ -4783,7 +4772,7 @@ test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
-      retryBackoffMs: 30_000,
+      retryBackoffMs: 5000,
     },
     sourceInstanceId: srcId,
   });
@@ -4879,7 +4868,7 @@ test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor",
   let sendAttempts = 0;
   const client = createTestClient();
   const originalIngest = client.ingestBatch;
-  client.ingestBatch = async (request: IngestBatchRequest) => {
+  client.ingestBatch = (request: IngestBatchRequest) => {
     sendAttempts += 1;
     if (sendAttempts === 1) {
       throw new LocalDeviceHttpError(500, "");
@@ -4902,17 +4891,6 @@ test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor",
     sourceInstanceId: srcId,
   });
 
-  const [claimedRecord] = outbox.claimReady({ holder: "test", leaseMs: 60_000, sourceInstanceId: srcId });
-  assert.ok(claimedRecord);
-
-  outbox.failRetryable({
-    error: "local device request failed: 500",
-    holder: "test",
-    id: claimedRecord.id,
-    leaseEpoch: claimedRecord.lease_epoch,
-    retryBackoffMs: 1000,
-  });
-
   const holderId = "test-holder";
   const startMs = Date.now();
   const result = await drainCollectorOutbox({
@@ -4928,7 +4906,7 @@ test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor",
       maxDrainIterations: 100,
       maxEnqueuedBatchesPerRun: 10_000,
       maxQueueDepth: 10_000,
-      retryBackoffMs: 30_000,
+      retryBackoffMs: 1000,
     },
     sourceInstanceId: srcId,
   });
