@@ -3371,6 +3371,23 @@ function localCoverageParentStream(stream: ManifestStream | undefined): string |
  * NO recorded boundary rather than as an empty one, so it can never be mistaken
  * for a measured full pass.
  */
+/**
+ * The boundary a connection currently declares, for the coverage axis.
+ *
+ * The reader resolves it from the reserved `$collection_scope` state row and
+ * passes it in directly (one projection per connection, so this stays O(1)).
+ * The `state` lookup is the fallback for callers that still hand over a whole
+ * multi-stream projection; it cannot serve the reader's own payload, which is
+ * the `coverage_diagnostics` snapshot and structurally cannot hold a boundary.
+ */
+function resolveDeclaredCoverageScope(declared: string | null | undefined, state: unknown): string {
+  if (typeof declared === "string" && declared.trim()) {
+    return declared.trim();
+  }
+  const projection = state && typeof state === "object" && !Array.isArray(state) ? state : null;
+  return readStoredCollectionScope(projection as Record<string, unknown> | null).fingerprint;
+}
+
 function readRowCollectionScope(row: LocalCoverageDiagnosticRow): string | null {
   for (const candidate of [row.collection_scope, row.collectionScope]) {
     if (typeof candidate === "string" && candidate.trim()) {
@@ -3464,14 +3481,20 @@ export function deriveLocalCoverageAxis(input: {
   readonly manifestGeneration?: number | null;
   readonly stateManifestGeneration?: number | null;
   readonly nowIso?: string;
+  /**
+   * Fingerprint of the boundary this connection CURRENTLY declares, resolved by
+   * the coverage reader from the reserved `$collection_scope` state row.
+   *
+   * It arrives as its own field because it cannot live in `state`: that is the
+   * `coverage_diagnostics` payload, validated against an exact `fetched_at`/
+   * `stores` key set. Reading the boundary out of `state` therefore always
+   * resolved `unscoped`, which made the staleness comparison trivially agree and
+   * let a whole-corpus pass prove a narrowed horizon it never enforced. Callers
+   * that hold no boundary omit it and keep the honest `unscoped` default.
+   */
+  readonly declaredCollectionScope?: string | null;
 }): LocalCoverageDiagnosticAxis {
-  // Read the connection's declared boundary off the SAME state projection this
-  // axis is derived from -- no extra query, so this stays O(1) per connection.
-  const declaredScope = readStoredCollectionScope(
-    input.state && typeof input.state === "object" && !Array.isArray(input.state)
-      ? (input.state as Record<string, unknown>)
-      : null
-  ).fingerprint;
+  const declaredScope = resolveDeclaredCoverageScope(input.declaredCollectionScope, input.state);
   const { rows } = input;
   // The MEASURED boundary is derived from the coverage rows themselves -- the
   // same rows this axis is already reading, written in the same ingest batch as

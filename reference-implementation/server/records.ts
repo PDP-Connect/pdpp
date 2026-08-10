@@ -120,6 +120,7 @@ import {
   ConnectorInstanceResolutionError,
   makeDefaultAccountConnectorInstanceId,
 } from "./stores/connector-instance-store.ts";
+import { COLLECTION_SCOPE_STATE_KEY, readStoredCollectionScope } from "./local-collection-scope.ts";
 import { getDefaultConnectorStateStore } from "./stores/connector-state-store.ts";
 import { advanceSqliteDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
 import { markSearchIndexDirtySqlite, recordSearchIndexDirtyFailure } from "./stores/search-index-dirty-store.ts";
@@ -4374,6 +4375,34 @@ function getSnapshotAtVersion(
  */
 const LOCAL_COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 
+/**
+ * The connection's DECLARED boundary lives in its own reserved
+ * `connector_state` row, not inside the coverage snapshot — that snapshot is
+ * validated against an exact key set (`fetched_at`/`stores`), so the boundary
+ * structurally cannot travel inside it. Both coverage readers therefore project
+ * this row alongside the snapshot and surface the fingerprint as its own field.
+ *
+ * Without it the coverage axis read the declared boundary off the snapshot
+ * payload, always resolved `unscoped`, and the staleness comparison that
+ * declassifies evidence measured elsewhere trivially agreed — letting a
+ * whole-corpus pass prove a narrowed horizon it never enforced.
+ */
+function declaredCollectionScopeFingerprint(stateJson: unknown): string {
+  const parsed = typeof stateJson === "string" ? safeJsonParse(stateJson) : stateJson;
+  // Re-wrap under the reserved key so the canonical reader stays the single
+  // authority on what a stored boundary means (it recomputes the fingerprint
+  // from the bounds rather than trusting the stored string).
+  return readStoredCollectionScope({ [COLLECTION_SCOPE_STATE_KEY]: parsed ?? null }).fingerprint;
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 const SAFE_COVERAGE_STATUSES = new Set([
   "collected",
   "inventory_only",
@@ -4492,6 +4521,17 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget: Recor
     grantId: null,
   });
   const state = stateProjection.state[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null;
+  // Read the declared boundary in its OWN projection rather than widening the
+  // one above: that projection's `updated_at` is the MAX over the rows it
+  // matched and stamps the coverage evidence timestamp, so letting an unrelated
+  // scope edit into it would silently freshen coverage proof it never touched.
+  const scopeProjection = await getSyncState(storageTarget, {
+    allowedStreams: new Set([COLLECTION_SCOPE_STATE_KEY]),
+    grantId: null,
+  });
+  const declaredCollectionScope = declaredCollectionScopeFingerprint(
+    scopeProjection.state[COLLECTION_SCOPE_STATE_KEY] ?? null
+  );
   const generation = isPostgresStorageBackend()
     ? ((
         await postgresQuery(
@@ -4516,6 +4556,7 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget: Recor
   const stateGeneration = generation?.state_generation ?? null;
   return {
     ...parseCoverageDiagnosticsStateSnapshot(connectorId, state),
+    declaredCollectionScope,
     manifestGeneration: currentGeneration === null ? null : Number(currentGeneration),
     state,
     stateManifestGeneration: stateGeneration === null ? null : Number(stateGeneration),
@@ -4533,6 +4574,7 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
   const result = new Map<
     string,
     ReturnType<typeof parseCoverageDiagnosticsStateSnapshot> & {
+      declaredCollectionScope: string;
       manifestGeneration: number | null;
       state: unknown;
       stateManifestGeneration: number | null;
@@ -4546,19 +4588,28 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
     connector_id: string;
     connector_instance_id: string;
     current_generation: number | string | null;
+    scope_state_json: unknown;
     state_generation: number | string | null;
     state_json: unknown;
     updated_at: string | null;
   }
   const rows: Row[] = [];
+  // The declared boundary joins as its OWN row alongside the coverage snapshot.
+  // A separate join (rather than widening the coverage one) keeps `updated_at`
+  // the coverage row's own timestamp, so a scope edit can never freshen the
+  // coverage evidence it did not touch.
   const projection = `SELECT ci.connector_id, ci.connector_instance_id,
                               ci.manifest_generation AS current_generation,
                               cs.manifest_generation AS state_generation,
-                              cs.state_json, cs.updated_at
+                              cs.state_json, cs.updated_at,
+                              scope.state_json AS scope_state_json
                          FROM connector_instances ci
                          LEFT JOIN connector_state cs
                            ON cs.connector_instance_id = ci.connector_instance_id
-                          AND cs.stream = '${LOCAL_COVERAGE_DIAGNOSTICS_STREAM}'`;
+                          AND cs.stream = '${LOCAL_COVERAGE_DIAGNOSTICS_STREAM}'
+                         LEFT JOIN connector_state scope
+                           ON scope.connector_instance_id = ci.connector_instance_id
+                          AND scope.stream = '${COLLECTION_SCOPE_STATE_KEY}'`;
   if (isPostgresStorageBackend()) {
     const query = await postgresQuery<Row>(`${projection} WHERE ci.connector_instance_id = ANY($1::text[])`, [ids]);
     rows.push(...query.rows);
@@ -4587,6 +4638,7 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
     const parsedState = typeof state === "string" ? JSON.parse(state) : state;
     result.set(row.connector_instance_id, {
       ...parseCoverageDiagnosticsStateSnapshot(row.connector_id, parsedState),
+      declaredCollectionScope: declaredCollectionScopeFingerprint(row.scope_state_json ?? null),
       manifestGeneration: row.current_generation === null ? null : Number(row.current_generation),
       state: parsedState,
       stateManifestGeneration: row.state_generation === null ? null : Number(row.state_generation),
