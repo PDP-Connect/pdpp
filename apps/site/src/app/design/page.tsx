@@ -4199,16 +4199,16 @@ const CITATION_SPECIMENS: { label: string; axes: string; data: { citations: Spec
   },
   {
     axes: "single, with href",
-    data: { citations: [{ href: "/spec-core#grant", label: "Grant", section: "6" }] },
+    data: { citations: [{ href: "/spec-core#grant", label: "Grant", section: "7" }] },
     label: "Citation with link",
   },
   {
     axes: "multiple citations, mixed href",
     data: {
       citations: [
-        { href: "/spec-core#selection-request", label: "Selection Request", section: "5" },
-        { label: "Grant", section: "6" },
-        { href: "/spec-core#manifest-format", label: "Manifest Format", section: "7" },
+        { href: "/spec-core#selection-request", label: "Selection Request", section: "6" },
+        { label: "Grant", section: "7" },
+        { href: "/spec-core#manifest-format", label: "Manifest Format", section: "5" },
       ],
     },
     label: "Citation group",
@@ -4229,8 +4229,8 @@ const CITATION_SPECIMENS: { label: string; axes: string; data: { citations: Spec
     axes: "realistic grouping for consent card context",
     data: {
       citations: [
-        { label: "Selection Request", section: "5" },
-        { label: "Grant", section: "6" },
+        { label: "Selection Request", section: "6" },
+        { label: "Grant", section: "7" },
         { label: "Purpose Codes", section: "A" },
       ],
     },

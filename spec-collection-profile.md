@@ -27,7 +27,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ## 1. Connector Manifest Extensions
 
-The core manifest (Section 7 of the core spec) defines the consent surface. The Collection Profile adds execution-specific fields.
+The core manifest (Section 5 of the core spec) defines the consent surface. The Collection Profile adds execution-specific fields.
 
 ```json
 {

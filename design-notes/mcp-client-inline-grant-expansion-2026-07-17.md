@@ -4,7 +4,7 @@ Status: captured — deferred; not authorized for implementation
 Owner: RI owner
 Created: 2026-07-17
 Updated: 2026-07-17
-Related: `openspec/specs/reference-agent-access-workflow/spec.md`, `spec-core.md` §5–§6, `docs/agent-skills/pdpp-data-access/references/grant-design.md`
+Related: `openspec/specs/reference-agent-access-workflow/spec.md`, `spec-core.md` §6–§7, `docs/agent-skills/pdpp-data-access/references/grant-design.md`
 
 ## Question
 

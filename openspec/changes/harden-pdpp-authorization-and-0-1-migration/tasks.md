@@ -66,7 +66,7 @@
 ## 6. Minimum Credential-Security-Profile Floor
 
 - [ ] 6.1 Add a `minimum_credential_security_profile`-equivalent manifest field to the
-      Section 7 Manifest fields table, scoped at the manifest/source level (not
+      Section 5 Manifest fields table, scoped at the manifest/source level (not
       per-stream), documenting that absence means no floor and bearer presentation
       remains acceptable.
 - [ ] 6.2 Add a new normative subsection under Section 10, Security and Privacy
@@ -120,14 +120,14 @@
       handling; rejection after legacy acceptance is disabled; no sender-constrained-
       profile claim).
 - [ ] 7.8 Cross-reference the new Migration Profile from `spec-core.md`'s version-
-      layering table (Section 6) and out-of-scope table (Section 11), without
+      layering table (Section 7) and out-of-scope table (Section 11), without
       introducing v0.2 version labels or `urn:pdpp:...:0.2` identifiers in `spec-core.md`
       itself.
 
 ## 8. Canonicalization Pins
 
 - [ ] 8.1 Add a JSON Schema dialect declaration (`$schema`: draft 2020-12) requirement
-      to `spec-core.md` Section 7 (Manifest Format), amending the `streams[].schema`
+      to `spec-core.md` Section 5 (Manifest Format), amending the `streams[].schema`
       field description to name the pinned dialect.
 - [ ] 8.2 Add a canonical timestamp/duration profile subsection to `spec-core.md`
       Section 4 (Record Model) near the existing Timestamps subsection, pinning the

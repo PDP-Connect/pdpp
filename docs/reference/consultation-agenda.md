@@ -64,7 +64,7 @@ typically default broad (a scope grants wide access), while Open Banking
 requires explicit, minimal selection (permissions must be listed). For
 personal-data portability, the more defensible default is contested.
 
-**Current v0.1 position** ([spec-core §5](https://www.pdpp.dev/docs/spec-core#selection-request)).
+**Current v0.1 position** ([spec-core §6](https://www.pdpp.dev/docs/spec-core#selection-request)).
 Today the draft leans permissive on absence. Omitting `fields` (and `view`)
 authorizes all fields in the stream; omitting `time_range` imposes no temporal
 constraint; `necessity` defaults to `required`; and `"name": "*"` requests all
@@ -100,7 +100,7 @@ machinery to stand alone without any cooperation from the source. Optimizing
 the design for one path can quietly raise the cost of the others, and the
 protocol's reach depends on serving all three honestly.
 
-**Current v0.1 position** ([spec-core §5](https://www.pdpp.dev/docs/spec-core#source-kinds)).
+**Current v0.1 position** ([spec-core §6](https://www.pdpp.dev/docs/spec-core#source-kinds)).
 The source binding is a discriminated `source: { kind, id }` object. `kind`
 is `"connector"` — a manifest-declared collection source bridging a platform
 that does not speak PDPP — or `"provider_native"` — the provider's own
@@ -133,12 +133,12 @@ question is the concrete missing piece behind the provider-native path in
 item 2: without it, provider-native remains a named kind without a defined
 consent surface.
 
-**Current v0.1 position** ([spec-core §5](https://www.pdpp.dev/docs/spec-core#selection-request)).
+**Current v0.1 position** ([spec-core §6](https://www.pdpp.dev/docs/spec-core#selection-request)).
 For provider-native sources, the streams, schemas, and selection capabilities
 are currently reference-implementation convention rather than a specified
 declaration. The consent surface is required to present the provider source's
 declared streams under the same rendering obligations as the manifest
-(Section 7), but the form and discovery of that declaration are not pinned.
+(Section 5), but the form and discovery of that declaration are not pinned.
 
 **What input helps.** Prior art from ecosystems where a first party publishes
 its own capability declaration (for example, well-known discovery documents or
@@ -160,7 +160,7 @@ depending on non-portable behavior. Standardizing it would make multi-source
 agent access interoperable; declining to standardize it keeps the grant a
 clean single-source consent artifact.
 
-**Current v0.1 position** ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant)).
+**Current v0.1 position** ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant)).
 A grant is a single-source consent artifact: exactly one `source` per
 authorization detail, and the resource server enforces one grant's constraints
 against a token. There is no Core primitive that bundles multiple sources into
@@ -248,7 +248,7 @@ relationship to legal obligations that may override deletion. Improvising those
 across the authorization server, resource server, and client boundaries would
 be a mistake.
 
-**Current v0.1 position** ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant),
+**Current v0.1 position** ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant),
 [§10](https://www.pdpp.dev/docs/spec-core#security)).
 The draft is explicit that revocation is not deletion. Revocation stops future
 access only; records already delivered are governed by the grant's `retention`
@@ -275,7 +275,7 @@ process would make trust signals portable and comparable across
 implementations; leaving them unspecified keeps trust a local, deployment-by-
 deployment matter and risks inconsistent or misleading consent surfaces.
 
-**Current v0.1 position** ([spec-core §5](https://www.pdpp.dev/docs/spec-core#client-display),
+**Current v0.1 position** ([spec-core §6](https://www.pdpp.dev/docs/spec-core#client-display),
 [§10](https://www.pdpp.dev/docs/spec-core#security),
 [§11](https://www.pdpp.dev/docs/spec-core)).
 Trust registry and connector certification are out of scope for v0.1. The
@@ -348,27 +348,27 @@ condensed form.
   requirement for the `ai_training` purpose stand, be generalized to other
   purposes, or be removed? It is the one exception to `purpose_code` and
   `retention` being declarations enforced by contract rather than by the
-  protocol ([spec-core §5](https://www.pdpp.dev/docs/spec-core#ai-training-consent)).
+  protocol ([spec-core §6](https://www.pdpp.dev/docs/spec-core#ai-training-consent)).
   *Input helps:* whether other purposes warrant the same protocol-level
   treatment, and the cost of the exception to implementers.
 
 - **Child grants and delegation.** Should a future version support issuing a
   narrowed child grant to another party, such as an accountant? Grants are
   client-bound today, and the specification states no transfer or delegation
-  boundary ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant)).
+  boundary ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant)).
   *Input helps:* concrete delegation use cases and their revocation
   expectations.
 
 - **Canonical view vocabulary.** Should view names such as `basic` and `full`
   carry consistent meaning across connectors, or remain connector-defined? v0.1
   leaves views connector-suggested, monotonically additive, with no default
-  ([spec-core §7](https://www.pdpp.dev/docs/spec-core)). *Input helps:* which
+  ([spec-core §5](https://www.pdpp.dev/docs/spec-core)). *Input helps:* which
   view names recur across real connectors.
 
 - **`single_use` post-consumption.** After a `single_use` grant is consumed,
   should the specification require deletion, require retention as a consent
   record, or leave it to local policy?
-  ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant)). *Input helps:*
+  ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant)). *Input helps:*
   audit and privacy expectations for consumed one-time grants.
 
 ### Freshness, liveness, and lifecycle signals
@@ -423,7 +423,7 @@ condensed form.
 
 - **Event-driven collection.** Should webhook-triggered collection be specified
   as a companion profile? `access_mode` reserves room for an `event_driven`
-  value ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant)).
+  value ([spec-core §7](https://www.pdpp.dev/docs/spec-core#grant)).
 
 - **Source lifecycle actions.** If source-side actions such as delete-after-
   export are added later, should they form a separately authorized action class

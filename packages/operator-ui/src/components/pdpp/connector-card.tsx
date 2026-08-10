@@ -7,7 +7,7 @@ import React from "react";
 
 // ─── Connector Card ──────────────────────────────────────────────────────────
 
-// Props contract — all fields from connector manifest (§7):
+// Props contract — all fields from connector manifest (§5):
 //
 // FROM manifest (server-trusted):
 //   connectorId, displayName, version, streams[], profiles[]

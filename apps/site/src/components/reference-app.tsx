@@ -1418,7 +1418,7 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
         <Section
           config={SECTION_CONTENT[0]}
           detail={
-            <DetailPanel label="See one realization path" spec="§7 Manifest, Collection Profile">
+            <DetailPanel label="See one realization path" spec="§5 Manifest, Collection Profile">
               <p className="pdpp-caption mb-3 text-muted-foreground">
                 The reference uses a user-side connector runtime. It is one realization path for PDPP; the protocol
                 itself is defined by consent, grants, and enforcement.
@@ -1608,7 +1608,7 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
         <Section
           config={SECTION_CONTENT[2]}
           detail={
-            <DetailPanel label="See the HTTP request" spec="§5 Selection Request">
+            <DetailPanel label="See the HTTP request" spec="§6 Selection Request">
               <pre
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
@@ -1731,7 +1731,7 @@ Content-Type: application/json
         <FeaturedSection
           config={SECTION_CONTENT[3]}
           detail={
-            <DetailPanel label="See the trust model" spec="§5 Semantic classes">
+            <DetailPanel label="See the trust model" spec="§6 Semantic classes">
               <p className="font-medium text-foreground">
                 Every cell in the consent card maps to exactly one semantic class. The spec defines three classes plus{" "}
                 <span className="font-mono">client_display</span> as a separate identity category, and a conformant AS
@@ -1739,7 +1739,7 @@ Content-Type: application/json
               </p>
 
               {/* Trust model mapping — what in the UI comes from where, tagged by
-                  the spec's refined semantic class (spec-core.md §5). */}
+                  the spec's refined semantic class (spec-core.md §6). */}
               <div className="mt-1 flex flex-col gap-0">
                 {[
                   {
@@ -1857,7 +1857,7 @@ Content-Type: application/json
         <Section
           config={SECTION_CONTENT[4]}
           detail={
-            <DetailPanel label="See the grant JSON" spec="§6 Grant">
+            <DetailPanel label="See the grant JSON" spec="§7 Grant">
               <p>
                 The grant is an immutable consent artifact. Once issued, it cannot be modified. Changes require
                 revoke-and-reissue.
@@ -2152,7 +2152,7 @@ Authorization: Bearer <client_token>
         <Section
           config={SECTION_CONTENT[7]}
           detail={
-            <DetailPanel label="See the revocation flow" spec="§6.5 Revocation">
+            <DetailPanel label="See the revocation flow" spec="§7.5 Revocation">
               <pre
                 className="overflow-x-auto rounded-md p-3 font-mono text-xs"
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
@@ -2318,14 +2318,14 @@ Authorization: Bearer <owner_token>
                   ref: "Enforce",
                   spec: "§8 Resource Server",
                 },
-                { desc: "RFC 9396 authorization_details envelope", ref: "Request", spec: "§5 Selection Request" },
-                { desc: "Client display, client claims, attribution", ref: "Consent", spec: "§5.1, §5.2" },
-                { desc: "Immutable consent artifact with three time axes", ref: "Grant", spec: "§6 Grant" },
+                { desc: "RFC 9396 authorization_details envelope", ref: "Request", spec: "§6 Selection Request" },
+                { desc: "Client display, client claims, attribution", ref: "Consent", spec: "§6.1, §6.2" },
+                { desc: "Immutable consent artifact with three time axes", ref: "Grant", spec: "§7 Grant" },
                 { desc: "Projection-aware deltas via changes_since", ref: "Sync", spec: "§4.1 Incremental" },
-                { desc: "60s propagation window, retention governs past data", ref: "Revoke", spec: "§6.5 Revocation" },
+                { desc: "60s propagation window, retention governs past data", ref: "Revoke", spec: "§7.5 Revocation" },
                 { desc: "Self-export via owner token, no grant required", ref: "Export", spec: "§8.3 Owner Tokens" },
                 { desc: "Flat relational streams with primary keys", ref: "Inventory", spec: "§4 Record Model" },
-                { desc: "Connector manifest declares the consent surface", ref: "Ingest", spec: "§7 Manifest" },
+                { desc: "Connector manifest declares the consent surface", ref: "Ingest", spec: "§5 Manifest" },
               ].map(({ ref, spec, desc }) => (
                 <div
                   className="flex items-baseline gap-3 py-1.5"

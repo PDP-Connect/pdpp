@@ -214,7 +214,7 @@ _Previously deferred (carried forward): concerns that affect implementation but 
 
 **Finding (independent review):** Personal data is often graphs + binaries (conversations→messages→attachments, albums→photos). No stream dependency model, no blob/file transport.
 
-**Resolution:** The gap is closed. spec-core Section 7 defines `relationships` (the declared foreign-key graph), Section 8 defines `expand[]` / `expand_limit` for declaration-driven relation expansion, and Section 4 defines `blob_ref` (binary data) and `resource_ref` (cross-stream pointers). Implemented in the reference (record expansion helpers, read-route expand handling, blob read operation). The shipped design uses manifest-declared `relationships` rather than this entry's proposed `depends_on`, and binary transport is a stored reference with authorized fetch rather than a BLOB message type. Remaining open sliver: expansion depth is fixed at 1; multi-hop expansion is not defined.
+**Resolution:** The gap is closed. spec-core Section 5 defines `relationships` (the declared foreign-key graph), Section 8 defines `expand[]` / `expand_limit` for declaration-driven relation expansion, and Section 4 defines `blob_ref` (binary data) and `resource_ref` (cross-stream pointers). Implemented in the reference (record expansion helpers, read-route expand handling, blob read operation). The shipped design uses manifest-declared `relationships` rather than this entry's proposed `depends_on`, and binary transport is a stored reference with authorized fetch rather than a BLOB message type. Remaining open sliver: expansion depth is fixed at 1; multi-hop expansion is not defined.
 
 ### Browser capability protocol
 

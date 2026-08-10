@@ -19,7 +19,7 @@ Companion to the Personal Data Portability Protocol (PDPP) core spec. This is an
 
 This profile defines an optional aggregation capability exposed at `GET /v1/streams/{stream}/aggregate`: the per-stream aggregation declaration, the request surface, the response envelope, grant-enforcement obligations, and error semantics. It defines single-stream, manifest-declared aggregation only: counts, sums, extrema, distinct counts, and bounded grouping over declared scalar and calendar fields.
 
-Core's exclusion of aggregation from the v0.1 base query surface is **unchanged**. This profile is additive and optional: a resource server that does not declare aggregation support on a stream is fully Core-conformant and MAY return `404` / `not_found` for the endpoint. A grant issued under Core authorizes exactly what Core Sections 6 and 8 define; this profile does not widen that authorization. It does **not** define cross-stream aggregation, aggregation over undeclared/non-scalar fields, or an arbitrary metric algebra; those are out of scope and, if requested, MUST be rejected (§5).
+Core's exclusion of aggregation from the v0.1 base query surface is **unchanged**. This profile is additive and optional: a resource server that does not declare aggregation support on a stream is fully Core-conformant and MAY return `404` / `not_found` for the endpoint. A grant issued under Core authorizes exactly what Core Sections 7 and 8 define; this profile does not widen that authorization. It does **not** define cross-stream aggregation, aggregation over undeclared/non-scalar fields, or an arbitrary metric algebra; those are out of scope and, if requested, MUST be rejected (§5).
 
 ## 2. Capability advertisement
 

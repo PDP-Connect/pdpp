@@ -4,7 +4,7 @@
 
 For separated AS/RS deployments, the RS-facing introspection/context-resolution response defined in spec-core.md Section 8 (`### Token introspection`) SHALL be authenticated at the caller level and SHALL return a complete authorization context sufficient to run the grant-enforcement algorithm in Section 8 (`### Grant enforcement`), not the six extension fields (`active`, `pdpp_token_kind`, `subject_id`, `grant_id`, `client_id`, `exp`) currently listed as the complete PDPP extension-fields table. That table omits every constraint the RS's own enforcement steps 3-4 (stream membership, `time_range`, `fields`, `resources`) already require it to have, and omits issuer, audience, and proof/binding context entirely.
 
-The normalized, approved selection (the streams/fields/time_range/resources projection the grant actually authorizes) SHALL be carried in the response's `authorization_details` member, using the same RFC 9396 `authorization_details` carrier already normative for the client's authorization request (spec-core.md Section 5), rather than as a second, PDPP-proprietary shadow copy of the same data. RFC 9396 Section 9.2 registers `authorization_details` as a top-level RFC 7662 introspection-response member and Section 14.3 profiles its IANA registration; this specification adopts that standard carrier rather than treating it as PDPP-specific transport.
+The normalized, approved selection (the streams/fields/time_range/resources projection the grant actually authorizes) SHALL be carried in the response's `authorization_details` member, using the same RFC 9396 `authorization_details` carrier already normative for the client's authorization request (spec-core.md Section 6), rather than as a second, PDPP-proprietary shadow copy of the same data. RFC 9396 Section 9.2 registers `authorization_details` as a top-level RFC 7662 introspection-response member and Section 14.3 profiles its IANA registration; this specification adopts that standard carrier rather than treating it as PDPP-specific transport.
 
 A separate, small `pdpp` supplementary member on the same introspection response SHALL carry only facts `authorization_details` cannot express:
 
@@ -163,7 +163,7 @@ This rule identifies security-critical recovery policy that v0.1 and the current
 
 ### Requirement: A source declaration SHALL be able to declare a minimum credential-security profile
 
-A source declaration (the manifest described in Section 7, Manifest Format) SHALL be able to declare a minimum credential-security profile: a floor stating the weakest class of access-token presentation the source's protected resource will accept. This is new normative surface. Nothing in the current v0.1 manifest fields table (Section 7, Manifest fields) carries any such floor, and Section 10's existing bearer-vs-sender-constrained discussion ("Sender-constrained tokens (informative)") is SHOULD-level and does not let a source require anything.
+A source declaration (the manifest described in Section 5, Manifest Format) SHALL be able to declare a minimum credential-security profile: a floor stating the weakest class of access-token presentation the source's protected resource will accept. This is new normative surface. Nothing in the current v0.1 manifest fields table (Section 5, Manifest fields) carries any such floor, and Section 10's existing bearer-vs-sender-constrained discussion ("Sender-constrained tokens (informative)") is SHOULD-level and does not let a source require anything.
 
 The floor SHALL be a manifest-level field, not a per-stream field: credential-security posture is a property of the resource server guarding the source's data, not of an individual stream within it. A manifest that declares no minimum credential-security profile SHALL be treated as declaring no floor (the v0.1 baseline: bearer-token presentation, RFC 6750, remains acceptable).
 
@@ -425,7 +425,7 @@ The backward-compatibility conformance test named as a required negative test (a
 
 ### Requirement: PDPP SHALL pin one JSON Schema dialect for common and security-critical schemas
 
-All PDPP schemas that a conformant implementation validates against — including but not limited to `streams[].schema` (spec-core.md §7 Manifest Format) and any schema a future change later defines for common authorization objects — SHALL declare conformance to a single, named JSON Schema dialect: **JSON Schema draft 2020-12** (`https://json-schema.org/draft/2020-12/schema`). An implementation SHALL NOT validate a declared schema against a different dialect, and a schema document SHALL NOT omit a `$schema` declaration where the dialect would otherwise be ambiguous.
+All PDPP schemas that a conformant implementation validates against — including but not limited to `streams[].schema` (spec-core.md §5 Manifest Format) and any schema a future change later defines for common authorization objects — SHALL declare conformance to a single, named JSON Schema dialect: **JSON Schema draft 2020-12** (`https://json-schema.org/draft/2020-12/schema`). An implementation SHALL NOT validate a declared schema against a different dialect, and a schema document SHALL NOT omit a `$schema` declaration where the dialect would otherwise be ambiguous.
 
 This requirement resolves an unresolved dialect question and closes the gap where `streams[].schema` names "JSON Schema" with no dialect pinned.
 
