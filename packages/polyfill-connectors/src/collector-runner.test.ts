@@ -20,7 +20,7 @@ import {
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-import { type IngestBatchRequest, type LocalDeviceClient, LocalDeviceHttpError } from "./local-device-client.ts";
+import { type AckLocalCollectorGapRequest, type AckLocalCollectorGapResponse, type IngestBatchRequest, type LocalDeviceClient, LocalDeviceHttpError, type PutSourceInstanceStateRequest, type SourceInstanceStateResponse } from "./local-device-client.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
@@ -4607,7 +4607,7 @@ test("drainCollectorOutbox auto-waits for backoff-delayed items and retries with
   client.ingestBatch = async (request: IngestBatchRequest) => {
     sendAttempts += 1;
     if (sendAttempts === 1) {
-      throw new LocalDeviceHttpError(500, "transient server error", {});
+      throw new LocalDeviceHttpError(500, "");
     }
     return originalIngest(request);
   };
@@ -4670,7 +4670,7 @@ test("drainCollectorOutbox exits cleanly when abort fires during backoff wait", 
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   const client = createTestClient();
   client.ingestBatch = async () => {
-    throw new LocalDeviceHttpError(500, "transient server error", {});
+    throw new LocalDeviceHttpError(500, "");
   };
 
   const srcId = "test-src-abort";
@@ -4739,7 +4739,7 @@ test("drainCollectorOutbox exits with budget exceeded when wait exceeds duration
   const outbox = new LocalDeviceOutbox({ path: queuePath });
   const client = createTestClient();
   client.ingestBatch = async () => {
-    throw new LocalDeviceHttpError(500, "transient server error", {});
+    throw new LocalDeviceHttpError(500, "");
   };
 
   const srcId = "test-src-budget";
@@ -4874,7 +4874,7 @@ test("drainCollectorOutbox waits for checkpoint blocked by delayed predecessor",
   client.ingestBatch = async (request: IngestBatchRequest) => {
     sendAttempts += 1;
     if (sendAttempts === 1) {
-      throw new LocalDeviceHttpError(500, "transient server error", {});
+      throw new LocalDeviceHttpError(500, "");
     }
     return originalIngest(request);
   };
