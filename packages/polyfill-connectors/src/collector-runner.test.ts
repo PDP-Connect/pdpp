@@ -1598,7 +1598,7 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      outboxPolicy: { maxDrainDurationMs: 100, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId: "src-1",
     });
@@ -1647,7 +1647,7 @@ test("runCollectorConnector fails backlog-skip pass when terminal heartbeat is r
           },
           deviceId: "device-1",
           deviceToken: "device-token",
-          outboxPolicy: { retryBackoffMs: 60_000 },
+          outboxPolicy: { maxDrainDurationMs: 100, retryBackoffMs: 60_000 },
           queuePath,
           sourceInstanceId: "src-1",
         }),
@@ -2496,7 +2496,7 @@ test("runCollectorConnector defers checkpoint until every streamed record batch 
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 60_000 },
+      outboxPolicy: { maxDrainDurationMs: 100, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId: "src-1",
     });
@@ -3507,7 +3507,7 @@ test("runCollectorConnector skips spawn and reports blocked when queue depth cro
       deviceToken: "device-token",
       // Long retry backoff so the seeded batches stay retrying rather
       // than collapsing to ready during a possible second drain pass.
-      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000 },
+      outboxPolicy: { maxDrainDurationMs: 100, maxQueueDepth, retryBackoffMs: 60_000 },
       queuePath,
       sourceInstanceId: "src-1",
     });
