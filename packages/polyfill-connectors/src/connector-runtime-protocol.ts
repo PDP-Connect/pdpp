@@ -39,6 +39,19 @@ export interface StreamScope {
 }
 
 export interface StartMessage {
+  /**
+   * RI's own full-refresh-vs-incremental intent for this run, already sent on
+   * the wire today (`reference-implementation/runtime/index.ts` START build)
+   * but never previously parsed on the connector-runtime side. `"full_refresh"`
+   * is an explicit owner/operator signal that a connector's own incremental
+   * bookkeeping (checkpoints, anchors, frontiers) should be bypassed for this
+   * run and the source walked to its natural end — the connector-local repair
+   * path for state that only a full re-walk can recover (e.g. a mutable field
+   * that changed further back than any per-record change-detection window
+   * would otherwise re-visit). Absent is treated as `"incremental"` for
+   * backward compatibility with connectors/tests that predate this field.
+   */
+  collection_mode?: "full_refresh" | "incremental";
   detail_gaps?: readonly DetailGapStartEntry[];
   /**
    * SLVP-ideal §4.3 recovery-only launch mode. When true, the connector drains

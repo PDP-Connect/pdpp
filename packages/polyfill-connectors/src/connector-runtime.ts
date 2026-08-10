@@ -129,6 +129,23 @@ interface EmitRecordOptions {
 interface BaseCollectContext {
   assist: (req: AssistanceRequest) => Promise<string>;
   capture: CaptureSession | null;
+  /**
+   * Threaded from the START message's `collection_mode` field (already sent
+   * on the wire by RI; this is the connector-runtime-side surfacing of it).
+   * `"full_refresh"` is an explicit owner/operator bypass: a connector with
+   * its own incremental bookkeeping (checkpoints, anchors, frontiers) MUST
+   * ignore that bookkeeping for this run and walk each stream to its natural
+   * end, providing a repair path for state a narrower incremental walk would
+   * never revisit (e.g. a mutable field that changed further back than any
+   * per-record change-detection window). Optional, matching `recoveryOnly`'s
+   * precedent, so hand-built `CollectContext` literals elsewhere in the
+   * codebase (tests, other connectors) that predate this field keep
+   * compiling unchanged. A connector reading this MUST treat `undefined` the
+   * same as `"incremental"` — the runtime's real construction site always
+   * sets it explicitly (see `run()` below), so `undefined` only ever reaches
+   * a connector via a test harness that hasn't been updated yet.
+   */
+  collectionMode?: "full_refresh" | "incremental";
   completeAssistance: (
     assistanceRequestId: string,
     status: AssistanceCompletionStatus,
@@ -1051,6 +1068,10 @@ export function runConnector(config: RunConnectorConfig): void {
       // §4.3: forward recovery_only from the START message so connectors can
       // suppress the forward walk while draining non-pressure detail gaps.
       recoveryOnly: startMsg.recovery_only === true,
+      // Defaults to "incremental" when absent — see BaseCollectContext's doc
+      // comment: an ordinary run (no collection_mode on the wire) must behave
+      // exactly as before this field existed.
+      collectionMode: startMsg.collection_mode === "full_refresh" ? "full_refresh" : "incremental",
     };
 
     if (browser) {

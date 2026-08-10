@@ -22,13 +22,25 @@
  * subsequent runs does not indicate deletion (API provides no deletion
  * signal); messages not re-fetched are retained in state.
  *
- * group_messages additionally persists a per-group incremental frontier
- * (`state.group_messages.frontiers`, keyed by group id) — GroupMe's official
- * docs guarantee GET /groups/:id/messages is created_at-descending, so once a
- * clean run proves it walked back through a group's prior high-water mark
- * (minus a fixed overlap, to tolerate ties/edits/out-of-order pages), the
- * next run's walk for that group stops there instead of re-paging the
- * group's entire history. direct_chat_messages has NO such documented
+ * group_messages additionally persists a per-group incremental ANCHOR
+ * (`state.group_messages.anchors`, keyed by group id → the id of the newest
+ * message seen last run) — GroupMe's official docs guarantee GET
+ * /groups/:id/messages is created_at-descending, so once a clean, verified-
+ * descending run re-observes a group's prior anchor message, everything
+ * after it on that page and every subsequent page was already covered by
+ * that prior run, and the walk stops there instead of re-paging the group's
+ * entire history. This is an exact provider-issued boundary (the same
+ * message id `before_id` pagination is built around), not a locally-computed
+ * time window — no arbitrary overlap constant is needed, and the anchor
+ * message itself is always re-emitted so a mutable field on it (likes) can
+ * still update after it falls behind the anchor. An absent/deleted anchor,
+ * or any page that fails the descending-order check, falls through to a
+ * full walk to the natural end — the anchor optimization is opportunistic,
+ * never a source of missed coverage. `START.collection_mode ===
+ * "full_refresh"` (surfaced as `CollectContext.collectionMode`) is an
+ * explicit owner/operator bypass: every group's anchor is ignored and walked
+ * to its natural end for that one run, then the anchor map is rebuilt from
+ * what that full walk observed. direct_chat_messages has NO documented
  * ordering guarantee (GroupMe publishes no contract for GET
  * /chats/:id/messages), so it deliberately walks every chat to its natural
  * end every run — see collectDirectChatMessagesForChat's doc comment.
@@ -62,8 +74,8 @@ let httpGovernor = createConnectorHttpGovernor({
 /**
  * Test-only escape hatch: swap the module-level governor for one with pacing
  * disabled (`pacingInitialIntervalMs: 0`, zero-delay `sleep`), so unit tests
- * that exercise real multi-page/multi-group walks (the incremental frontier
- * walks many pages by construction) don't pay GroupMe's real ~10s+
+ * that exercise real multi-page/multi-group walks (the incremental-anchor
+ * tests walk many pages by construction) don't pay GroupMe's real ~10s+
  * production pacing interval per request. Production `collect()` never calls
  * this — only test files import it. Restores the real, paced governor via
  * `resetHttpGovernorForTests()` so tests remain isolated from each other.
@@ -158,20 +170,6 @@ interface ProgressExtra {
 const API_BASE = "https://api.groupme.com/v3";
 const PAGE_SIZE = 100;
 const MAX_PAGES_PER_STREAM = 200;
-
-/**
- * Overlap subtracted from a group's persisted frontier before resuming its
- * newest-first walk next run — same idiom as usaa's INCREMENTAL_OVERLAP_MS /
- * heb's CHECKPOINT_OVERLAP_DAYS: re-walk a window already proven covered so a
- * message with the same or an earlier `created_at` than the last-seen one
- * (a same-second tie, an edited-then-touched row, a page delivered slightly
- * out of order) is re-observed rather than skipped. GroupMe's API is
- * second-resolution (`created_at` is Unix seconds), so the overlap is sized
- * in seconds, not milliseconds. 10 minutes comfortably covers realistic
- * clock/ordering slop for a chat API without reintroducing a meaningful
- * fraction of a busy group's full history.
- */
-const GROUP_MESSAGES_FRONTIER_OVERLAP_SECONDS = 600;
 
 // Blob attachment fetch constraints
 const APPROVED_BLOB_HOSTS = ["i.groupme.com"];
@@ -681,12 +679,13 @@ interface GroupMessagesResponse {
  * mistaken for "this group has no more messages."
  */
 interface PerConversationWalkResult {
-  /** Max `created_at` (Unix seconds) observed across every message this walk
-   *  fetched, in-scope or not — a frontier must advance past a message this
-   *  run actually saw even if `since` filtered it out of `inScope`, or a
-   *  message sitting exactly at the boundary would be re-fetched forever.
-   *  Undefined for walks that don't track a frontier (direct chat messages). */
-  maxCreatedAt?: number;
+  /** The `id` of the newest message this walk fetched (page 1's first
+   *  message), or `undefined` if the group/chat returned no messages at all.
+   *  This becomes next run's anchor — an opaque, provider-issued boundary
+   *  marker, never a locally-computed time window. Undefined for walks that
+   *  don't track an anchor (direct chat messages, which have no documented
+   *  ordering to license one). */
+  newestMessageId: string | undefined;
   totalSeen: number;
   /** True when the walk hit `MAX_PAGES_PER_STREAM` before reaching a page
    *  shorter than `PAGE_SIZE` — the natural end signal. A capped walk did
@@ -726,7 +725,7 @@ function applySinceBoundToPage(
  * response that violates the documented contract is caught rather than
  * silently trusted.
  */
-function isDescendingByCreatedAt(messages: GroupMeMessage[]): boolean {
+function isDescendingByCreatedAt(messages: readonly GroupMeMessage[]): boolean {
   for (let i = 1; i < messages.length; i += 1) {
     const prev = messages[i - 1];
     const curr = messages[i];
@@ -737,30 +736,44 @@ function isDescendingByCreatedAt(messages: GroupMeMessage[]): boolean {
   return true;
 }
 
-/** Per-group durable high-water mark for `group_messages`' incremental walk.
- *  Keyed by GroupMe group id, value is the max `created_at` (Unix seconds)
- *  observed across every clean run that has included that group. Lives
- *  alongside `fingerprints` in `state.group_messages`, written only when
- *  `collectGroupMessages`' overall pass is clean (see `CollectionOutcome`) —
- *  the same all-or-nothing gate that already protects the fingerprint map. */
-export interface GroupMessageFrontiers {
-  [groupId: string]: number;
+/**
+ * Per-group durable anchor for `group_messages`' incremental walk. Keyed by
+ * GroupMe group id, value is the `id` of the newest message observed in that
+ * group's last clean run — an opaque, provider-issued boundary marker, never
+ * a locally-computed time window. Lives alongside `fingerprints` in
+ * `state.group_messages`, written only when `collectGroupMessages`' overall
+ * pass is clean (see `CollectionOutcome`) — the same all-or-nothing gate that
+ * already protects the fingerprint map.
+ *
+ * Replaces an earlier timestamp-plus-fixed-overlap design: a clock-based
+ * window is an ungrounded heuristic (there is no principled overlap size
+ * that provably covers every same-second tie or slow-to-propagate edit) and
+ * cannot itself detect whether the previously-seen boundary row was mutated
+ * (a `like_count` change does not move `created_at`). Anchoring on the exact
+ * message id GroupMe's own `before_id` pagination is built around, and
+ * re-emitting that anchor message on every resumed walk, captures precisely
+ * "every message the provider ordered ahead of the prior head" with no
+ * arbitrary window — the fingerprint cursor already handles "did the
+ * re-observed anchor's content change".
+ */
+export interface GroupMessageAnchors {
+  [groupId: string]: string;
 }
 
-/** Decode `state.group_messages.frontiers` tolerantly: any missing/malformed
+/** Decode `state.group_messages.anchors` tolerantly: any missing/malformed
  *  shape yields an empty map (full backfill), matching
  *  `decodePriorFingerprints`'s tolerance policy in fingerprint-cursor.ts. */
-export function decodeGroupMessageFrontiers(priorState: unknown): GroupMessageFrontiers {
-  const out: GroupMessageFrontiers = {};
+export function decodeGroupMessageAnchors(priorState: unknown): GroupMessageAnchors {
+  const out: GroupMessageAnchors = {};
   if (!priorState || typeof priorState !== "object" || Array.isArray(priorState)) {
     return out;
   }
-  const raw = (priorState as Record<string, unknown>).frontiers;
+  const raw = (priorState as Record<string, unknown>).anchors;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return out;
   }
   for (const [groupId, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    if (typeof value === "string" && value.length > 0) {
       out[groupId] = value;
     }
   }
@@ -768,46 +781,75 @@ export function decodeGroupMessageFrontiers(priorState: unknown): GroupMessageFr
 }
 
 /**
- * Resolve the effective `since` bound this run should apply to one group's
- * walk: the OLDER (more permissive) of the connector's own persisted
- * frontier (minus overlap) and any caller-declared `since` on the stream
- * scope. Older-wins is the honesty rule — a bound only narrows the walk when
- * BOTH sources agree data before it is already covered; either source alone
- * proving a narrower boundary is not enough, since the other bound may be
- * covering ground the first one does not know about (a fresh caller-declared
- * scope on a group with a stale/no persisted frontier, or a persisted
- * frontier on a run where the caller declared no scope at all).
+ * Whether this page proves every message after it (this page's remaining
+ * tail, and every subsequent page, since `before_id` only walks further back
+ * in time) is already covered — by either of two INDEPENDENT reasons, each
+ * sufficient on its own:
+ *
+ *  1. A caller-declared `since` bound excluded at least one row on this page
+ *     (an owner-narrowed collection window — unrelated to the connector's
+ *     own bookkeeping).
+ *  2. The connector's own persisted anchor (the newest message id from the
+ *     prior clean run) is re-observed on this page.
+ *
+ * BOTH reasons require the page to be independently verified
+ * `created_at`-descending first — this is GroupMe's documented ordering
+ * contract for this endpoint, and neither stop is licensed on a page that
+ * fails the check (see `isDescendingByCreatedAt`'s doc comment). An absent
+ * anchor, or an anchor never found on any page this run, simply never
+ * satisfies reason 2 — the walk then falls through to the ordinary
+ * page-length/page-cap end conditions, i.e. a full walk to the natural end.
  */
-export function resolveGroupMessagesSinceBound(
-  priorFrontierEpochSeconds: number | undefined,
-  declaredSinceEpochSeconds: number | null
-): number | null {
-  const frontierBound =
-    priorFrontierEpochSeconds === undefined
-      ? null
-      : Math.max(0, priorFrontierEpochSeconds - GROUP_MESSAGES_FRONTIER_OVERLAP_SECONDS);
-  if (frontierBound === null) {
-    return declaredSinceEpochSeconds;
+function pageProvesRestOutOfScope(
+  messages: readonly GroupMeMessage[],
+  inScope: readonly GroupMeMessage[],
+  sinceEpochSeconds: number | null,
+  priorAnchorId: string | undefined
+): boolean {
+  if (!isDescendingByCreatedAt(messages)) {
+    return false;
   }
-  if (declaredSinceEpochSeconds === null) {
-    return frontierBound;
-  }
-  return Math.min(frontierBound, declaredSinceEpochSeconds);
+  const sinceExcludedARow = sinceEpochSeconds !== null && inScope.length < messages.length;
+  const anchorReobserved = priorAnchorId !== undefined && messages.some((m) => m.id === priorAnchorId);
+  return sinceExcludedARow || anchorReobserved;
 }
 
-/** Max `created_at` across a batch of messages, clamped at `current` — used
- *  to advance one group's frontier from the messages actually observed
- *  during a clean walk. Mirrors reddit's `maxCreatedEpoch`. */
-export function maxMessageCreatedAt(messages: readonly GroupMeMessage[], current: number): number {
-  let max = current;
-  for (const msg of messages) {
-    if (Number.isFinite(msg.created_at) && msg.created_at > max) {
-      max = msg.created_at;
+/** Emit every in-scope group message through the fingerprint cursor. Pulled
+ *  out of `collectGroupMessagesForGroup`'s page loop purely to keep that
+ *  function's branch count under the complexity ceiling — no behavior
+ *  change from inlining it. */
+async function emitInScopeGroupMessages(
+  inScope: readonly GroupMeMessage[],
+  groupId: string,
+  cursor: ReturnType<typeof openFingerprintCursor>,
+  uploader: BlobUploader | undefined,
+  emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
+  emitRecord: (stream: string, data: RecordData) => Promise<void>
+): Promise<void> {
+  for (const msg of inScope) {
+    const record = await toGroupMessageRecord(msg, groupId, uploader, emitAttachmentRecord);
+    if (cursor.shouldEmit(record)) {
+      await emitRecord("group_messages", record);
     }
   }
-  return max;
 }
 
+/**
+ * Walks one group's message pages newest-first via `before_id`, stopping
+ * once the previously-proven anchor message is re-observed (or falling
+ * through to the natural end if the anchor is absent, deleted, bypassed for
+ * a `full_refresh` run, or a page ever fails the documented-ordering check).
+ *
+ * The anchor row itself is always emitted on the page it's found on — this
+ * is what lets a mutable field on that exact message (likes, in particular)
+ * update on a resumed walk instead of going stale forever the moment the
+ * message first fell behind the anchor. `applySinceBoundToPage` still layers
+ * a caller-declared `since` on top (independent concern, e.g. an owner
+ * narrowing collection to a date range) — the anchor and any declared
+ * `since` are two independent stop conditions; the walk stops at whichever
+ * fires first, since either one alone proves everything after it is out of
+ * scope for this run (see `pageProvesRestOutOfScope`).
+ */
 async function collectGroupMessagesForGroup(
   token: string,
   group: GroupMeGroup,
@@ -816,13 +858,14 @@ async function collectGroupMessagesForGroup(
   emitAttachmentRecord: ((data: RecordData) => Promise<void>) | undefined,
   progressWithSignals: ProgressFn,
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
-  maxPages: number = MAX_PAGES_PER_STREAM,
-  sinceEpochSeconds: number | null = null
+  maxPages: number,
+  sinceEpochSeconds: number | null,
+  priorAnchorId: string | undefined
 ): Promise<PerConversationWalkResult> {
   let beforeId: string | undefined;
   let pageIndex = 0;
   let totalSeen = 0;
-  let maxCreatedAt = 0;
+  let newestMessageId: string | undefined;
 
   while (pageIndex < maxPages) {
     const pageExtra: ProgressExtra = {
@@ -840,14 +883,16 @@ async function collectGroupMessagesForGroup(
 
     const messages = resp.messages || [];
     if (!messages.length) {
-      return { totalSeen, truncated: false, maxCreatedAt };
+      return { totalSeen, truncated: false, newestMessageId };
     }
 
-    // Frontier evidence is independent of `since` scoping: the newest-first
-    // walk observes its highest `created_at` values before any out-of-scope
-    // tail, so every message fetched — in-scope or not — is valid proof of
-    // "this run saw up through here" for the NEXT run's resume boundary.
-    maxCreatedAt = maxMessageCreatedAt(messages, maxCreatedAt);
+    // The anchor for NEXT run is the newest message this run ever saw,
+    // regardless of `since` scoping or where the anchor stop fires — the
+    // first page's first message is always the true newest, since the walk
+    // pages strictly backward from there.
+    if (newestMessageId === undefined) {
+      newestMessageId = messages[0]?.id;
+    }
 
     // `considered` (totalSeen) counts only messages inside the declared
     // scope — a page spanning the boundary must not credit its out-of-scope
@@ -861,12 +906,7 @@ async function collectGroupMessagesForGroup(
       total_seen: totalSeen,
     });
 
-    for (const msg of inScope) {
-      const record = await toGroupMessageRecord(msg, group.id, uploader, emitAttachmentRecord);
-      if (cursor.shouldEmit(record)) {
-        await emitRecord("group_messages", record);
-      }
-    }
+    await emitInScopeGroupMessages(inScope, group.id, cursor, uploader, emitAttachmentRecord, emitRecord);
 
     // Every message on this page was before `since`: this page (and every
     // page after it, since before_id only walks further back in time) is
@@ -875,25 +915,21 @@ async function collectGroupMessagesForGroup(
     // stays false so the caller still commits STATE and a coverage claim.
     // Ordering-agnostic: safe even if this page turns out not to be sorted.
     if (pageFullyOutOfScope) {
-      return { totalSeen, truncated: false, maxCreatedAt };
+      return { totalSeen, truncated: false, newestMessageId };
     }
 
-    // Fast path licensed by GroupMe's documented contract for THIS endpoint
-    // (GET /groups/:id/messages): created_at-descending, before_id returns
-    // the immediately-preceding page. A page that is genuinely descending
-    // AND contains at least one out-of-scope row means every message after
-    // that row — on this page and every subsequent page — is also out of
-    // scope, so the walk can stop here instead of fetching a page already
-    // known to be entirely out of scope. Verified per page, not assumed: a
-    // page that fails the descending check falls through to the ordinary
-    // page-length/page-cap end conditions below, the same conservative path
-    // used for the undocumented direct-message endpoint.
-    if (sinceEpochSeconds !== null && inScope.length < messages.length && isDescendingByCreatedAt(messages)) {
-      return { totalSeen, truncated: false, maxCreatedAt };
+    // Two independent stop conditions, both licensed only on a page
+    // independently verified `created_at`-descending — see
+    // `pageProvesRestOutOfScope`'s doc comment. The anchor row itself was
+    // already emitted above (it is `inScope` unless a `since` bound also
+    // excludes it), so a mutated mutable field on it (likes) still gets
+    // re-observed and re-emitted by the fingerprint cursor on this very page.
+    if (pageProvesRestOutOfScope(messages, inScope, sinceEpochSeconds, priorAnchorId)) {
+      return { totalSeen, truncated: false, newestMessageId };
     }
 
     if (messages.length < PAGE_SIZE) {
-      return { totalSeen, truncated: false, maxCreatedAt };
+      return { totalSeen, truncated: false, newestMessageId };
     }
 
     beforeId = messages.at(-1)?.id;
@@ -902,7 +938,7 @@ async function collectGroupMessagesForGroup(
 
   // Loop exited via the page cap, not the natural `messages.length < PAGE_SIZE`
   // end signal — this group's message history was not fully walked.
-  return { totalSeen, truncated: true, maxCreatedAt };
+  return { totalSeen, truncated: true, newestMessageId };
 }
 
 /**
@@ -1105,7 +1141,7 @@ async function collectDirectChatMessagesForChat(
 
     const messages = resp.direct_messages || [];
     if (!messages.length) {
-      return { totalSeen, truncated: false };
+      return { totalSeen, truncated: false, newestMessageId: undefined };
     }
 
     // In-scope-only accounting, same as collectGroupMessagesForGroup: a page
@@ -1130,7 +1166,7 @@ async function collectDirectChatMessagesForChat(
     }
 
     if (messages.length < PAGE_SIZE) {
-      return { totalSeen, truncated: false };
+      return { totalSeen, truncated: false, newestMessageId: undefined };
     }
 
     beforeId = messages.at(-1)?.id;
@@ -1139,7 +1175,7 @@ async function collectDirectChatMessagesForChat(
 
   // Loop exited via the page cap, not the natural `messages.length < PAGE_SIZE`
   // end signal — this chat's message history was not fully walked.
-  return { totalSeen, truncated: true };
+  return { totalSeen, truncated: true, newestMessageId: undefined };
 }
 
 export async function collectDirectChatMessages(
@@ -1196,12 +1232,12 @@ export async function collectDirectChatMessages(
 
 /**
  * Result of `collectGroupMessages`: the ordinary `CollectionOutcome` plus the
- * next-run per-group frontier map. `nextFrontiers` is only meaningful when
+ * next-run per-group anchor map. `nextAnchors` is only meaningful when
  * `failed` is false — `collect()` must not persist it otherwise, same rule as
  * the fingerprint cursor's STATE emit (see `CollectionOutcome`'s doc comment).
  */
 export interface GroupMessagesCollectionOutcome extends CollectionOutcome {
-  nextFrontiers: GroupMessageFrontiers;
+  nextAnchors: GroupMessageAnchors;
 }
 
 export async function collectGroupMessages(
@@ -1214,16 +1250,25 @@ export async function collectGroupMessages(
   emitRecord: (stream: string, data: RecordData) => Promise<void>,
   maxPages: number = MAX_PAGES_PER_STREAM,
   sinceEpochSeconds: number | null = null,
-  priorFrontiers: GroupMessageFrontiers = {}
+  priorAnchors: GroupMessageAnchors = {},
+  collectionMode: "full_refresh" | "incremental" = "incremental"
 ): Promise<GroupMessagesCollectionOutcome> {
   await progressWithSignals("Fetching GroupMe group messages", { stream: "group_messages", phase: "start" });
-  // Seeded from the prior frontiers so a group absent from THIS run's listing
-  // (deleted, or the account left it) still carries its last-known frontier
+  // Seeded from the prior anchors so a group absent from THIS run's listing
+  // (deleted, or the account left it) still carries its last-known anchor
   // forward — mirrors the fingerprint cursor's carry-forward-by-default
   // policy, and is safe because collect() only persists this map when the
   // overall pass is clean (a group truly gone would simply never be walked
-  // again; its stale frontier is inert, not harmful).
-  const nextFrontiers: GroupMessageFrontiers = { ...priorFrontiers };
+  // again; its stale anchor is inert, not harmful).
+  const nextAnchors: GroupMessageAnchors = { ...priorAnchors };
+  // full_refresh is an explicit owner/operator bypass (START.collection_mode
+  // — see CollectContext.collectionMode's doc comment): every group walks to
+  // its natural end this run regardless of any persisted anchor, the repair
+  // path for a mutable field that changed further back than the anchor-based
+  // incremental walk would otherwise revisit. The anchor MAP is still
+  // rebuilt from what this full walk observes, so the next ordinary run
+  // resumes incrementally again rather than repeating the full walk forever.
+  const bypassAnchors = collectionMode === "full_refresh";
   const outcome = await runCollectionPass(
     "group_messages",
     "group messages",
@@ -1241,8 +1286,7 @@ export async function collectGroupMessages(
       );
       truncated = truncated || groupsListTruncated;
       for (const group of groups) {
-        const priorFrontier = priorFrontiers[group.id];
-        const effectiveSince = resolveGroupMessagesSinceBound(priorFrontier, sinceEpochSeconds);
+        const priorAnchor = bypassAnchors ? undefined : priorAnchors[group.id];
         const groupResult = await collectGroupMessagesForGroup(
           token,
           group,
@@ -1252,25 +1296,26 @@ export async function collectGroupMessages(
           progressWithSignals,
           emitRecord,
           maxPages,
-          effectiveSince
+          sinceEpochSeconds,
+          priorAnchor
         );
         considered += groupResult.totalSeen;
         truncated = truncated || groupResult.truncated;
-        // Only advance this group's frontier past what a CLEAN walk for this
+        // Only advance this group's anchor past what a CLEAN walk for this
         // specific group actually proved it saw — a page-cap-truncated group
-        // walk did not reach the natural end, so its partial maxCreatedAt is
-        // not a proven boundary (the overall pass will report `failed: true`
-        // and withhold this map either way, but skipping the advance here
-        // keeps `nextFrontiers` honest even if that gate is ever relaxed).
-        if (!groupResult.truncated && groupResult.maxCreatedAt !== undefined) {
-          nextFrontiers[group.id] = Math.max(priorFrontier ?? 0, groupResult.maxCreatedAt);
+        // walk did not reach the natural end, so its partial newestMessageId
+        // is not a proven boundary (the overall pass will report `failed:
+        // true` and withhold this map either way, but skipping the advance
+        // here keeps `nextAnchors` honest even if that gate is ever relaxed).
+        if (!groupResult.truncated && groupResult.newestMessageId !== undefined) {
+          nextAnchors[group.id] = groupResult.newestMessageId;
         }
       }
       return { considered, truncated };
     },
     maxPages
   );
-  return { ...outcome, nextFrontiers: outcome.failed ? {} : nextFrontiers };
+  return { ...outcome, nextAnchors: outcome.failed ? {} : nextAnchors };
 }
 
 /**
@@ -1309,12 +1354,17 @@ export async function collect({
   emit,
   emitRecord,
   progress,
+  collectionMode,
 }: CollectContext): Promise<void> {
   const progressWithSignals = progress as ProgressFn;
   const token = credentials.GROUPME_ACCESS_TOKEN;
   if (!token) {
     throw new Error("groupme_auth_failed");
   }
+  // Absent collectionMode (a test harness or caller that predates the field)
+  // must behave exactly as an ordinary incremental run — see
+  // BaseCollectContext.collectionMode's doc comment.
+  const effectiveCollectionMode = collectionMode === "full_refresh" ? "full_refresh" : "incremental";
 
   const uploader = makeUploader();
 
@@ -1349,7 +1399,8 @@ export async function collect({
       emitRecord,
       MAX_PAGES_PER_STREAM,
       parseSinceEpochSeconds(requested, "group_messages"),
-      decodeGroupMessageFrontiers(state.group_messages)
+      decodeGroupMessageAnchors(state.group_messages),
+      effectiveCollectionMode
     );
   }
   let directChatsOutcome: CollectionOutcome | undefined;
@@ -1393,7 +1444,7 @@ export async function collect({
     await emit({
       type: "STATE",
       stream: "group_messages",
-      cursor: { fingerprints: groupMessageCursor.toState(), frontiers: groupMessagesOutcome.nextFrontiers },
+      cursor: { fingerprints: groupMessageCursor.toState(), anchors: groupMessagesOutcome.nextAnchors },
     });
     await emit(buildFullScanCoverageMessage("group_messages", groupMessagesOutcome.considered));
   }

@@ -300,7 +300,7 @@ test("collectGroupMessages: clean pass across multiple groups sums considered fr
     assert.deepEqual(outcome, {
       considered: 3,
       failed: false,
-      nextFrontiers: { "group-1": 1_700_000_100, "group-2": 1_700_000_100 },
+      nextAnchors: { "group-1": "m1", "group-2": "m3" },
     });
     assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 3);
   } finally {
@@ -497,7 +497,7 @@ test("collectGroupMessages: genuine zero groups reports failed: false, considere
 
     assert.deepEqual(
       outcome,
-      { considered: 0, failed: false, nextFrontiers: {} },
+      { considered: 0, failed: false, nextAnchors: {} },
       "no groups means no messages — a proven-empty walk"
     );
     assert.equal(emitted.length, 0);

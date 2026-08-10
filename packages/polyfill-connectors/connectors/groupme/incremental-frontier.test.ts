@@ -2,21 +2,32 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Discriminating tests for group_messages' per-group incremental frontier.
+ * Discriminating tests for group_messages' per-group incremental ANCHOR.
  *
  * Before this change, `collect()` never persisted any per-group boundary:
  * every run re-walked every group's ENTIRE message history from `before_id`
  * undefined (newest) back to the natural end, gated only by the fingerprint
  * cursor's re-emit suppression — a UAT run against a large account could run
  * 80+ minutes and flush 40k+ records on every single run, forever, even
- * though nothing new was posted. `sinceEpochSeconds` existed but was driven
- * ONLY by a caller-declared `requested.time_range.since` (external scope),
- * never by anything the connector itself remembered.
+ * though nothing new was posted.
+ *
+ * A first revision of this fix used a locally-computed timestamp-plus-fixed-
+ * overlap window. That was rejected in review: an arbitrary overlap constant
+ * cannot be proven to cover every same-second tie or slow-to-propagate edit,
+ * and a time window cannot by itself force re-observation of a specific
+ * mutated row (e.g. a `like_count` change, which does not move `created_at`).
+ * This revision anchors on the exact `id` of the newest message observed
+ * last run — the same identifier GroupMe's own `before_id` pagination is
+ * built around — and stops paging only once that id is re-observed on a
+ * page independently verified to be `created_at`-descending (GroupMe's
+ * documented ordering contract for this endpoint). The anchor row is always
+ * re-emitted, so the fingerprint cursor can detect and re-emit a mutation on
+ * it. An absent/deleted anchor, or any page that fails the descending check,
+ * falls through to a full walk to the natural end.
  *
  * These tests exercise the real exported `collectGroupMessages` /
- * `collectGroupMessagesForGroup` / `collect()` and the pure frontier helpers
- * (`resolveGroupMessagesSinceBound`, `decodeGroupMessageFrontiers`,
- * `maxMessageCreatedAt`) — not hand-rolled reimplementations — so a
+ * `collectGroupMessagesForGroup` / `collect()` and the pure anchor helper
+ * (`decodeGroupMessageAnchors`) — not hand-rolled reimplementations — so a
  * regression in the real fast-path wiring fails these tests.
  */
 
@@ -30,9 +41,7 @@ import {
   __setZeroDelayHttpGovernorForTests,
   collect,
   collectGroupMessages,
-  decodeGroupMessageFrontiers,
-  maxMessageCreatedAt,
-  resolveGroupMessagesSinceBound,
+  decodeGroupMessageAnchors,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 
@@ -121,184 +130,343 @@ function stubFetchByPath(routes: Record<string, unknown | { status: number; body
   };
 }
 
+/** Route `globalThis.fetch` by call order for the two-endpoint (list + per-group
+ *  messages) shape most of these tests need, with a distinct handler for the
+ *  message-page fetches so tests can drive multi-page sequences precisely. */
+function stubGroupWalk(opts: { groupsListBody?: unknown; messagePages: Array<{ body: unknown; status?: number }> }): {
+  fetchCount: () => number;
+  restore: () => void;
+} {
+  const original = globalThis.fetch;
+  let messageFetchCount = 0;
+  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname === "/v3/groups") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ response: opts.groupsListBody ?? [group()] }), { status: 200 })
+      );
+    }
+    const page = opts.messagePages[Math.min(messageFetchCount, opts.messagePages.length - 1)];
+    messageFetchCount += 1;
+    return Promise.resolve(new Response(JSON.stringify(page?.body), { status: page?.status ?? 200 }));
+  }) as typeof globalThis.fetch;
+  return {
+    fetchCount: () => messageFetchCount,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+}
+
 // ─── Pure helper unit tests ─────────────────────────────────────────────────
 
-test("resolveGroupMessagesSinceBound: no prior frontier, no declared since -> null (full backfill)", () => {
-  assert.equal(resolveGroupMessagesSinceBound(undefined, null), null);
+test("decodeGroupMessageAnchors: absent/malformed state decodes to empty map (full backfill)", () => {
+  assert.deepEqual(decodeGroupMessageAnchors(undefined), {});
+  assert.deepEqual(decodeGroupMessageAnchors(null), {});
+  assert.deepEqual(decodeGroupMessageAnchors("not an object"), {});
+  assert.deepEqual(decodeGroupMessageAnchors([1, 2, 3]), {});
+  assert.deepEqual(decodeGroupMessageAnchors({ fingerprints: {} }), {}, "missing anchors field");
+  assert.deepEqual(decodeGroupMessageAnchors({ anchors: "nope" }), {}, "anchors not an object");
 });
 
-test("resolveGroupMessagesSinceBound: prior frontier only -> frontier minus overlap", () => {
-  const bound = resolveGroupMessagesSinceBound(1_700_010_000, null);
-  assert.equal(bound, 1_700_010_000 - 600);
-});
-
-test("resolveGroupMessagesSinceBound: declared since only -> declared since, unmodified", () => {
-  const bound = resolveGroupMessagesSinceBound(undefined, 1_700_005_000);
-  assert.equal(bound, 1_700_005_000);
-});
-
-test("resolveGroupMessagesSinceBound: both present -> the OLDER (more permissive) bound wins", () => {
-  // frontier-derived bound is newer (tighter) than the declared since.
-  const olderDeclaredWins = resolveGroupMessagesSinceBound(1_700_010_000, 1_600_000_000);
-  assert.equal(olderDeclaredWins, 1_600_000_000, "declared since is older, so it must win over the tighter frontier");
-
-  // declared since is newer (tighter) than the frontier-derived bound.
-  const olderFrontierWins = resolveGroupMessagesSinceBound(1_500_000_000, 1_700_000_000);
-  assert.equal(
-    olderFrontierWins,
-    1_500_000_000 - 600,
-    "frontier-derived bound is older, so it must win over the tighter declared since"
-  );
-});
-
-test("resolveGroupMessagesSinceBound: overlap never pushes the bound negative", () => {
-  const bound = resolveGroupMessagesSinceBound(100, null);
-  assert.equal(bound, 0, "clamped at 0, not a negative epoch");
-});
-
-test("decodeGroupMessageFrontiers: absent/malformed state decodes to empty map (full backfill)", () => {
-  assert.deepEqual(decodeGroupMessageFrontiers(undefined), {});
-  assert.deepEqual(decodeGroupMessageFrontiers(null), {});
-  assert.deepEqual(decodeGroupMessageFrontiers("not an object"), {});
-  assert.deepEqual(decodeGroupMessageFrontiers([1, 2, 3]), {});
-  assert.deepEqual(decodeGroupMessageFrontiers({ fingerprints: {} }), {}, "missing frontiers field");
-  assert.deepEqual(decodeGroupMessageFrontiers({ frontiers: "nope" }), {}, "frontiers not an object");
-});
-
-test("decodeGroupMessageFrontiers: decodes valid per-group entries, drops invalid ones", () => {
-  const decoded = decodeGroupMessageFrontiers({
-    frontiers: {
-      "group-1": 1_700_000_000,
-      "group-2": "not a number",
-      "group-3": -5,
-      "group-4": 0,
-      "group-5": 1_700_000_500,
+test("decodeGroupMessageAnchors: decodes valid per-group entries, drops invalid ones", () => {
+  const decoded = decodeGroupMessageAnchors({
+    anchors: {
+      "group-1": "m-100",
+      "group-2": 12_345, // wrong type — GroupMe message ids are strings
+      "group-3": "",
+      "group-4": "m-500",
     },
   });
-  assert.deepEqual(decoded, { "group-1": 1_700_000_000, "group-5": 1_700_000_500 });
+  assert.deepEqual(decoded, { "group-1": "m-100", "group-4": "m-500" });
 });
 
-test("maxMessageCreatedAt: tracks the max across a batch, clamped at current", () => {
-  const messages = [
-    groupMessage({ created_at: 1_700_000_100 }),
-    groupMessage({ created_at: 1_700_000_300 }),
-    groupMessage({ created_at: 1_700_000_050 }),
-  ] as never;
-  assert.equal(maxMessageCreatedAt(messages, 0), 1_700_000_300);
-  assert.equal(maxMessageCreatedAt(messages, 1_700_000_999), 1_700_000_999, "does not regress below current");
-});
+// ─── Cold run (no anchor at all) ────────────────────────────────────────────
 
-// ─── collectGroupMessages: frontier advance + resume (fail-before/pass-after) ──
-
-test("FAIL-BEFORE / PASS-AFTER: repeated run with an unchanged group re-walks full history without a frontier, stops early with one", async () => {
-  // This is the exact production symptom: a group with 250 messages, paged
-  // 100 at a time, walked fully on every run because there was no
-  // persisted per-group boundary. Without passing priorFrontiers (the
-  // pre-fix call shape), every run fetches all 3 pages.
+test("cold run: a fresh account with no prior anchor walks and reports the ENTIRE history, not a truncated window", () => {
   const page1 = Array.from({ length: 100 }, (_, i) =>
-    groupMessage({ id: `m-${String(249 - i)}`, created_at: 1_700_000_000 + (249 - i) })
+    groupMessage({ id: `m-${String(149 - i)}`, created_at: 1_700_000_200 - i })
   );
-  const page2 = Array.from({ length: 100 }, (_, i) =>
-    groupMessage({ id: `m-${String(149 - i)}`, created_at: 1_700_000_000 + (149 - i) })
+  const page2 = Array.from({ length: 50 }, (_, i) =>
+    groupMessage({ id: `m-${String(49 - i)}`, created_at: 1_700_000_100 - i })
   );
-  const page3 = Array.from({ length: 50 }, (_, i) =>
-    groupMessage({ id: `m-${String(49 - i)}`, created_at: 1_700_000_000 + (49 - i) })
-  );
-  const pagesByFetchOrder = [page1, page2, page3];
+  const walk = stubGroupWalk({
+    messagePages: [
+      { body: { response: { count: 100, messages: page1 } } },
+      { body: { response: { count: 50, messages: page2 } } },
+    ],
+  });
+  return (async () => {
+    try {
+      const cursor = openFingerprintCursor(new Map());
+      const { emit, emitRecord, emitted } = makeHarness();
+      const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
 
-  let fetchCount = 0;
-  const original = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
-    const url = new URL(typeof input === "string" ? input : input.toString());
-    if (url.pathname === "/v3/groups") {
-      return Promise.resolve(new Response(JSON.stringify({ response: [group()] }), { status: 200 }));
+      assert.equal(outcome.failed, false);
+      assert.equal(walk.fetchCount(), 2, "both pages fetched — page 2's shorter length ends the walk naturally");
+      assert.equal(outcome.considered, 150, "cold run sees the entire history, not a truncated window");
+      assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 150);
+      assert.equal(outcome.nextAnchors["group-1"], "m-149", "anchor seeds from the newest message's id");
+    } finally {
+      walk.restore();
     }
-    const body = pagesByFetchOrder[Math.min(fetchCount, pagesByFetchOrder.length - 1)];
-    fetchCount += 1;
-    return Promise.resolve(
-      new Response(JSON.stringify({ response: { count: body?.length, messages: body } }), { status: 200 })
-    );
-  }) as typeof globalThis.fetch;
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
-    // No priorFrontiers passed (default {}) — this is the pre-fix behavior:
-    // full walk every time regardless of what a previous run already saw.
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
-
-    assert.equal(outcome.failed, false);
-    assert.equal(
-      outcome.considered,
-      250,
-      "with no persisted frontier, the walk considers the FULL 250-message history"
-    );
-    assert.equal(fetchCount, 3, "all 3 pages fetched — this is the repeated-full-scan symptom");
-  } finally {
-    globalThis.fetch = original;
-  }
+  })();
 });
 
-test("PASS-AFTER: with a persisted frontier from a prior clean run, a repeat run with no new messages stops after page 1", async () => {
-  // Page 1 spans created_at 1_700_010_000 (newest) down to 1_700_009_901
-  // (oldest, 100 messages at 1s intervals). The prior frontier is set so the
-  // frontier-minus-overlap bound (1_700_010_550 - 600 = 1_700_009_950) falls
-  // STRICTLY INSIDE that range — some rows on the page are in-scope, some are
-  // genuinely out-of-scope relative to the resumed walk, licensing the
-  // documented-ordering fast-path stop. A frontier whose overlap-adjusted
-  // bound falls BELOW every row on the page (as an earlier draft of this test
-  // did) makes the entire page in-scope, which correctly does NOT license an
-  // early stop — that failure mode is what this comment is guarding against.
+// ─── >PAGE_SIZE new messages since the anchor ───────────────────────────────
+
+test(">PAGE_SIZE new messages since the anchor: walk pages past a full page-1 to find the anchor on page 2", () => {
+  // 150 new messages have arrived since the anchor (m-0), so page 1 (100
+  // messages, all newer than the anchor) is entirely new and does NOT
+  // contain the anchor; the walk must fetch page 2 to find it.
   const page1 = Array.from({ length: 100 }, (_, i) =>
-    groupMessage({ id: `m-${String(99 - i)}`, created_at: 1_700_010_000 - i })
+    groupMessage({ id: `m-${String(150 - i)}`, created_at: 1_700_000_300 - i })
   );
-  let fetchCount = 0;
-  const original = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
-    const url = new URL(typeof input === "string" ? input : input.toString());
-    if (url.pathname === "/v3/groups") {
-      return Promise.resolve(new Response(JSON.stringify({ response: [group()] }), { status: 200 }));
-    }
-    fetchCount += 1;
-    // Only page 1 is stubbed — if the fast path fails to stop, the test
-    // itself throws on an unstubbed page-2 fetch attempt.
-    return Promise.resolve(
-      new Response(JSON.stringify({ response: { count: page1.length, messages: page1 } }), { status: 200 })
-    );
-  }) as typeof globalThis.fetch;
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord } = makeHarness();
-    const priorFrontiers = { "group-1": 1_700_010_550 };
-    const outcome = await collectGroupMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord,
-      undefined,
-      null,
-      priorFrontiers
-    );
+  const page2 = [
+    groupMessage({ id: "m-50", created_at: 1_700_000_200 }),
+    groupMessage({ id: "m-0", created_at: 1_700_000_150 }), // the anchor
+    groupMessage({ id: "m-old-1", created_at: 1_700_000_100 }),
+  ];
+  const walk = stubGroupWalk({
+    messagePages: [
+      { body: { response: { count: 100, messages: page1 } } },
+      { body: { response: { count: 3, messages: page2 } } },
+    ],
+  });
+  return (async () => {
+    try {
+      const cursor = openFingerprintCursor(new Map());
+      const { emit, emitRecord, emitted } = makeHarness();
+      const outcome = await collectGroupMessages(
+        TOKEN,
+        cursor,
+        undefined,
+        undefined,
+        noopProgress,
+        emit,
+        emitRecord,
+        undefined,
+        null,
+        { "group-1": "m-0" }
+      );
 
-    assert.equal(outcome.failed, false);
-    assert.equal(fetchCount, 1, "the frontier-derived since bound stops the walk after page 1 — no repeated full scan");
-    // The prior frontier (1_700_010_550) is already newer than the newest
-    // message this run actually observed (1_700_010_000, m-0) — the prior
-    // frontier must never REGRESS from a run that happened to see an older
-    // high-water mark than what was already durably recorded.
-    assert.equal(
-      outcome.nextFrontiers["group-1"],
-      1_700_010_550,
-      "frontier never regresses below the already-persisted high-water mark"
-    );
-  } finally {
-    globalThis.fetch = original;
-  }
+      assert.equal(outcome.failed, false);
+      assert.equal(walk.fetchCount(), 2, "both pages fetched — page 1 alone doesn't contain the anchor");
+      const emittedIds = emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id);
+      assert.ok(emittedIds.includes("m-0"), "the anchor message itself is re-emitted");
+      // The stop happens AFTER the whole page containing the anchor is
+      // processed (fetching stops before a further page, but nothing on the
+      // already-fetched page is excluded) — m-old-1, strictly older than the
+      // anchor but on the same page, is genuinely re-observed this run too.
+      // This is harmless: the fingerprint cursor no-ops it if unchanged, and
+      // excluding it would require re-introducing exactly the kind of
+      // locally-computed boundary logic (a second, narrower in-page cutoff)
+      // this design deliberately avoids.
+      assert.ok(emittedIds.includes("m-old-1"), "the anchor's whole page is processed, not cut off mid-page");
+      assert.equal(emittedIds.length, 103, "100 new messages on page 1 plus all 3 messages on the anchor's page");
+      assert.equal(outcome.nextAnchors["group-1"], "m-150", "anchor advances to the newest message this run");
+    } finally {
+      walk.restore();
+    }
+  })();
 });
 
-test("interrupted run: a page-cap-truncated walk does not advance the frontier or persist STATE", async () => {
+// ─── Missing/deleted anchor fallback ────────────────────────────────────────
+
+test("missing/deleted anchor: never observed on any page, walk falls through to the natural end (full walk, not a truncation)", () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => groupMessage({ id: `m-${String(199 - i)}` }));
+  const page2 = Array.from({ length: 50 }, (_, i) => groupMessage({ id: `m-${String(99 - i)}` }));
+  const walk = stubGroupWalk({
+    messagePages: [
+      { body: { response: { count: 100, messages: page1 } } },
+      { body: { response: { count: 50, messages: page2 } } },
+    ],
+  });
+  return (async () => {
+    try {
+      const cursor = openFingerprintCursor(new Map());
+      const { emit, emitRecord, emitted } = makeHarness();
+      // "m-deleted" never appears in any fetched page — simulates the
+      // anchor message having been deleted from the group since last run.
+      const outcome = await collectGroupMessages(
+        TOKEN,
+        cursor,
+        undefined,
+        undefined,
+        noopProgress,
+        emit,
+        emitRecord,
+        undefined,
+        null,
+        { "group-1": "m-deleted" }
+      );
+
+      assert.equal(outcome.failed, false, "an unresolvable anchor falls through to a clean natural-end walk");
+      assert.equal(walk.fetchCount(), 2, "both pages fetched — the anchor never licenses an early stop");
+      assert.equal(outcome.considered, 150, "the full history is walked and considered, none of it dropped");
+      assert.equal(emitted.filter((r) => r.stream === "group_messages").length, 150);
+      assert.equal(outcome.nextAnchors["group-1"], "m-199", "a fresh anchor is established from this full walk");
+    } finally {
+      walk.restore();
+    }
+  })();
+});
+
+// ─── Same-time IDs (ties) ───────────────────────────────────────────────────
+
+test("same-time IDs: two messages share created_at; the anchor stop is keyed on id, not timestamp, so it identifies the exact row", () => {
+  const tie1 = groupMessage({ id: "m-tie-1", created_at: 1_700_000_150, text: "first" });
+  const tie2 = groupMessage({ id: "m-tie-2", created_at: 1_700_000_150, text: "second" });
+  const newer = groupMessage({ id: "m-newer", created_at: 1_700_000_200 });
+  const walk = stubGroupWalk({
+    messagePages: [{ body: { response: { count: 3, messages: [newer, tie1, tie2] } } }],
+  });
+  return (async () => {
+    try {
+      const cursor = openFingerprintCursor(new Map());
+      const { emit, emitRecord, emitted } = makeHarness();
+      // Anchor is tie2 specifically (not tie1, despite the identical
+      // timestamp) — an id-keyed stop must not confuse the two.
+      const outcome = await collectGroupMessages(
+        TOKEN,
+        cursor,
+        undefined,
+        undefined,
+        noopProgress,
+        emit,
+        emitRecord,
+        undefined,
+        null,
+        { "group-1": "m-tie-2" }
+      );
+
+      assert.equal(outcome.failed, false);
+      assert.equal(walk.fetchCount(), 1, "the anchor is found on page 1 alone");
+      const emittedIds = emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id);
+      assert.deepEqual(
+        new Set(emittedIds),
+        new Set(["m-newer", "m-tie-1", "m-tie-2"]),
+        "everything up to and including the exact anchor id emits, the timestamp tie does not cause a skip or an extra stop"
+      );
+      assert.equal(outcome.nextAnchors["group-1"], "m-newer");
+    } finally {
+      walk.restore();
+    }
+  })();
+});
+
+// ─── Prior anchor changed (edited) ──────────────────────────────────────────
+
+test("prior anchor changed: the re-observed anchor row's mutated content (likes) re-emits via the fingerprint cursor", () => {
+  const originalAnchor = groupMessage({ id: "m-anchor", created_at: 1_700_000_150, favorited_by: [] });
+  const seedWalk = stubGroupWalk({
+    messagePages: [{ body: { response: { count: 1, messages: [originalAnchor] } } }],
+  });
+  const seedCursor = openFingerprintCursor(new Map());
+  return (async () => {
+    try {
+      const { emit: seedEmit, emitRecord: seedEmitRecord } = makeHarness();
+      await collectGroupMessages(TOKEN, seedCursor, undefined, undefined, noopProgress, seedEmit, seedEmitRecord);
+    } finally {
+      seedWalk.restore();
+    }
+    const priorFingerprints = seedCursor.toState();
+
+    // Next run: the anchor message gained a like (favorited_by grew) — its
+    // content changed even though its id and created_at did not.
+    const mutatedAnchor = groupMessage({
+      id: "m-anchor",
+      created_at: 1_700_000_150,
+      favorited_by: ["user-9"],
+    });
+    const walk = stubGroupWalk({
+      messagePages: [{ body: { response: { count: 1, messages: [mutatedAnchor] } } }],
+    });
+    try {
+      const cursor = openFingerprintCursor({ fingerprints: priorFingerprints });
+      const { emit, emitRecord, emitted } = makeHarness();
+      const outcome = await collectGroupMessages(
+        TOKEN,
+        cursor,
+        undefined,
+        undefined,
+        noopProgress,
+        emit,
+        emitRecord,
+        undefined,
+        null,
+        { "group-1": "m-anchor" }
+      );
+
+      assert.equal(outcome.failed, false);
+      const emittedIds = emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id);
+      assert.deepEqual(
+        emittedIds,
+        ["m-anchor"],
+        "the mutated anchor row re-emits despite sitting exactly at the anchor"
+      );
+    } finally {
+      walk.restore();
+    }
+  })();
+});
+
+// ─── Out-of-order fallback ──────────────────────────────────────────────────
+
+test("out-of-order fallback: a page violating documented descending order never licenses the anchor stop, even if the anchor id is present", () => {
+  // m-late (newer, created_at=200) sits AFTER the anchor (created_at=150)
+  // despite being newer — violates documented descending order. Even though
+  // the anchor id IS present on this page, isDescendingByCreatedAt must
+  // catch the violation and refuse the fast-path stop, falling through to
+  // the ordinary natural-end conditions (this page is short, so the walk
+  // ends here anyway — the assertion is that ALL rows on the page emit, not
+  // just those "before" the anchor in array order).
+  const restore = stubFetchByPath({
+    "/v3/groups": [group()],
+    "/v3/groups/group-1/messages": {
+      count: 3,
+      messages: [
+        groupMessage({ id: "m-new", created_at: 1_700_000_300 }),
+        groupMessage({ id: "m-anchor", created_at: 1_700_000_150 }),
+        groupMessage({ id: "m-late", created_at: 1_700_000_200 }), // out-of-order straggler AFTER the anchor
+      ],
+    },
+  });
+  return (async () => {
+    try {
+      const cursor = openFingerprintCursor(new Map());
+      const { emit, emitRecord, emitted } = makeHarness();
+      const outcome = await collectGroupMessages(
+        TOKEN,
+        cursor,
+        undefined,
+        undefined,
+        noopProgress,
+        emit,
+        emitRecord,
+        undefined,
+        null,
+        { "group-1": "m-anchor" }
+      );
+
+      assert.equal(outcome.failed, false);
+      const emittedIds = new Set(
+        emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id)
+      );
+      assert.deepEqual(
+        emittedIds,
+        new Set(["m-new", "m-anchor", "m-late"]),
+        "every row on the non-descending page emits — the anchor's mere presence does not license a fast stop here"
+      );
+    } finally {
+      restore();
+    }
+  })();
+});
+
+// ─── Interrupted run: no advance ────────────────────────────────────────────
+
+test("interrupted run: a page-cap-truncated walk does not advance the anchor or persist STATE", async () => {
   const fullPage = Array.from({ length: 100 }, (_, i) => groupMessage({ id: `m-${String(i)}` }));
   const restore = stubFetchByPath({
     "/v3/groups": [group()],
@@ -307,7 +475,7 @@ test("interrupted run: a page-cap-truncated walk does not advance the frontier o
   try {
     const cursor = openFingerprintCursor(new Map());
     const { emit, emitRecord } = makeHarness();
-    const priorFrontiers = { "group-1": 1_650_000_000 };
+    const priorAnchors = { "group-1": "m-nonexistent" };
     // maxPages=1 forces the walk to hit the page cap on a full page — an
     // "interrupted"/incomplete walk, same shape as a crash mid-pagination.
     const outcome = await collectGroupMessages(
@@ -320,27 +488,28 @@ test("interrupted run: a page-cap-truncated walk does not advance the frontier o
       emitRecord,
       1,
       null,
-      priorFrontiers
+      priorAnchors
     );
 
     assert.equal(outcome.failed, true, "a page-cap-truncated walk must not report a clean pass");
     assert.deepEqual(
-      outcome.nextFrontiers,
+      outcome.nextAnchors,
       {},
-      "a failed/truncated pass must withhold the frontier map entirely, not a partial or stale one"
+      "a failed/truncated pass must withhold the anchor map entirely, not a partial or stale one"
     );
   } finally {
     restore();
   }
 });
 
-test("interrupted run via collect(): STATE (including frontiers) is withheld end-to-end on a failed pass, prior frontier survives untouched", async () => {
+test("interrupted run via collect(): STATE (including anchors) is withheld end-to-end on a failed pass, prior anchor survives untouched", async () => {
   const STREAMS: StreamScope[] = [{ name: "group_messages" }];
   function makeCtx(state: Record<string, unknown>): { ctx: CollectContext; messages: EmittedMessage[] } {
     const harness = makeRecordingEmit(validateRecord);
     const ctx: CollectContext = {
       assist: () => Promise.resolve("asst_test"),
       capture: null,
+      collectionMode: "incremental",
       completeAssistance: () => Promise.resolve(),
       credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
       detailGaps: [],
@@ -362,7 +531,7 @@ test("interrupted run via collect(): STATE (including frontiers) is withheld end
     return { ctx, messages: harness.protocolMessages };
   }
 
-  // Run 1: clean, seeds a real frontier.
+  // Run 1: clean, seeds a real anchor.
   const seedRestore = stubFetchByPath({
     "/v3/groups": [group()],
     "/v3/groups/group-1/messages": { count: 1, messages: [groupMessage()] },
@@ -375,8 +544,8 @@ test("interrupted run via collect(): STATE (including frontiers) is withheld end
   }
   const run1State = run1.messages.find((m) => m.type === "STATE" && m.stream === "group_messages");
   assert.ok(run1State && run1State.type === "STATE", "run 1 persists a group_messages STATE checkpoint");
-  const run1Cursor = (run1State as { cursor: { frontiers?: Record<string, number> } }).cursor;
-  assert.equal(run1Cursor.frontiers?.["group-1"], 1_700_000_100, "run 1 seeds group-1's frontier");
+  const run1Cursor = (run1State as { cursor: { anchors?: Record<string, string> } }).cursor;
+  assert.equal(run1Cursor.anchors?.["group-1"], "gmsg-1", "run 1 seeds group-1's anchor");
 
   // Run 2: interrupted by an HTTP failure mid-walk.
   const failRestore = stubFetchByPath({
@@ -390,249 +559,112 @@ test("interrupted run via collect(): STATE (including frontiers) is withheld end
     failRestore();
   }
   const run2State = run2.messages.find((m) => m.type === "STATE" && m.stream === "group_messages");
-  assert.ok(!run2State, "an interrupted run must not emit a replacement STATE — the prior frontier is left untouched");
+  assert.ok(!run2State, "an interrupted run must not emit a replacement STATE — the prior anchor is left untouched");
 });
 
-// ─── Ties, edits, out-of-order — via applySinceBoundToPage / isDescendingByCreatedAt through the real walk ──
+// ─── Explicit full_refresh bypass ───────────────────────────────────────────
 
-test("same-timestamp tie at the boundary: overlap re-observes it, fingerprint cursor no-ops it (no duplicate emit)", async () => {
-  // Two messages share created_at=1_700_000_150 (a tie). The prior frontier
-  // is exactly 1_700_000_150 — without overlap, a naive `>` bound would skip
-  // both; this proves the overlap keeps them in the re-walked window and the
-  // fingerprint cursor (seeded with their prior fingerprints) suppresses the
-  // unchanged one from re-emitting while still advancing totalSeen/considered
-  // honestly.
-  const tie1 = groupMessage({ id: "m-tie-1", created_at: 1_700_000_150, text: "first" });
-  const tie2 = groupMessage({ id: "m-tie-2", created_at: 1_700_000_150, text: "second" });
-  const newer = groupMessage({ id: "m-newer", created_at: 1_700_000_200, text: "newer" });
-
-  const restore = stubFetchByPath({
-    "/v3/groups": [group()],
-    "/v3/groups/group-1/messages": { count: 3, messages: [newer, tie1, tie2] },
+test("explicit full_refresh bypass: an established tight anchor is ignored, the group walks to its natural end", () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => groupMessage({ id: `m-${String(149 - i)}` }));
+  const page2 = Array.from({ length: 50 }, (_, i) => groupMessage({ id: `m-${String(49 - i)}` }));
+  const walk = stubGroupWalk({
+    messagePages: [
+      { body: { response: { count: 100, messages: page1 } } },
+      { body: { response: { count: 50, messages: page2 } } },
+    ],
   });
-  try {
-    // Seed the fingerprint cursor with tie1/tie2's prior state so a re-walk
-    // over the overlap window does not re-emit them as if they were new.
-    const seedCursor = openFingerprintCursor(new Map());
-    const { emit: seedEmit, emitRecord: seedEmitRecord } = makeHarness();
-    await collectGroupMessages(TOKEN, seedCursor, undefined, undefined, noopProgress, seedEmit, seedEmitRecord);
-    const priorFingerprints = seedCursor.toState();
+  return (async () => {
+    try {
+      const cursor = openFingerprintCursor(new Map());
+      const { emit, emitRecord, emitted } = makeHarness();
+      // The anchor is m-149 (the very newest message) — under ordinary
+      // incremental mode this would stop the walk after page 1's first row.
+      // With collectionMode: "full_refresh", it must be ignored entirely.
+      const outcome = await collectGroupMessages(
+        TOKEN,
+        cursor,
+        undefined,
+        undefined,
+        noopProgress,
+        emit,
+        emitRecord,
+        undefined,
+        null,
+        { "group-1": "m-149" },
+        "full_refresh"
+      );
 
-    const cursor = openFingerprintCursor({ fingerprints: priorFingerprints });
-    const { emit, emitRecord, emitted } = makeHarness();
-    // Prior frontier = 1_700_000_150 (the tie's timestamp) — overlap pulls
-    // the effective bound below it so the tie is re-walked, not skipped.
-    const outcome = await collectGroupMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord,
-      undefined,
-      null,
-      { "group-1": 1_700_000_150 }
-    );
-
-    assert.equal(outcome.failed, false);
-    assert.equal(
-      emitted.filter((r) => r.stream === "group_messages").length,
-      0,
-      "all 3 messages are unchanged from the seed run — none re-emit"
-    );
-    assert.equal(outcome.considered, 3, "the tie boundary is inside the re-walked overlap window, not skipped");
-  } finally {
-    restore();
-  }
-});
-
-test("edited known row within the overlap window: fingerprint mismatch re-emits it even though the frontier already passed it", async () => {
-  const originalMessage = groupMessage({ id: "m-edit", created_at: 1_700_000_150, text: "original" });
-  const seedRestore = stubFetchByPath({
-    "/v3/groups": [group()],
-    "/v3/groups/group-1/messages": { count: 1, messages: [originalMessage] },
-  });
-  const seedCursor = openFingerprintCursor(new Map());
-  try {
-    const { emit: seedEmit, emitRecord: seedEmitRecord } = makeHarness();
-    await collectGroupMessages(TOKEN, seedCursor, undefined, undefined, noopProgress, seedEmit, seedEmitRecord);
-  } finally {
-    seedRestore();
-  }
-  const priorFingerprints = seedCursor.toState();
-
-  // Next run: the message was edited (text changed), and the frontier
-  // (150) is newer than the message's created_at, so only the
-  // GROUP_MESSAGES_FRONTIER_OVERLAP_SECONDS window re-walks it.
-  const edited = groupMessage({ id: "m-edit", created_at: 1_700_000_150, text: "EDITED" });
-  const restore = stubFetchByPath({
-    "/v3/groups": [group()],
-    "/v3/groups/group-1/messages": { count: 1, messages: [edited] },
-  });
-  try {
-    const cursor = openFingerprintCursor({ fingerprints: priorFingerprints });
-    const { emit, emitRecord, emitted } = makeHarness();
-    const outcome = await collectGroupMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord,
-      undefined,
-      null,
-      { "group-1": 1_700_000_150 }
-    );
-
-    assert.equal(outcome.failed, false);
-    const emittedIds = emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id);
-    assert.deepEqual(
-      emittedIds,
-      ["m-edit"],
-      "the edited row inside the overlap window re-emits, proving edits survive"
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("out-of-order page inside the resumed walk falls back to the conservative full check, no message is silently skipped", async () => {
-  // m-late (in scope under the frontier-derived bound) sits AFTER m-old
-  // (out of scope) despite being newer — violates documented descending
-  // order. isDescendingByCreatedAt must catch this and refuse the fast-path
-  // early stop, exactly as it already does for a caller-declared since.
-  const restore = stubFetchByPath({
-    "/v3/groups": [group()],
-    "/v3/groups/group-1/messages": {
-      count: 3,
-      messages: [
-        groupMessage({ id: "m-new", created_at: 1_700_000_300 }),
-        groupMessage({ id: "m-old", created_at: 1_700_000_000 }),
-        groupMessage({ id: "m-late", created_at: 1_700_000_200 }),
-      ],
-    },
-  });
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    // frontier-derived bound excludes m-old (0) but includes m-new (300) and
-    // m-late (200): frontier=1_700_000_100+overlap keeps bound at 1_700_000_100
-    // once overlap(600) exceeds 100 it clamps to 0 — pick a frontier where
-    // bound stays above m-old's timestamp: frontier=1_700_000_700 -> bound
-    // = 1_700_000_100.
-    const outcome = await collectGroupMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord,
-      undefined,
-      null,
-      { "group-1": 1_700_000_700 }
-    );
-
-    assert.deepEqual(
-      new Set(emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id)),
-      new Set(["m-new", "m-late"]),
-      "both in-scope rows emit, including the out-of-order straggler after the out-of-scope row"
-    );
-    assert.equal(outcome.considered, 2);
-    assert.equal(outcome.failed, false);
-  } finally {
-    restore();
-  }
-});
-
-// ─── Full-refresh counterweight ─────────────────────────────────────────────
-
-test("full-refresh counterweight: a fresh account with no prior frontier still walks and reports the ENTIRE history, not just a window", async () => {
-  // page1 is a full PAGE_SIZE page (doesn't itself signal the natural end);
-  // page2 is deliberately SHORTER than PAGE_SIZE so the walk terminates via
-  // the ordinary `messages.length < PAGE_SIZE` natural-end condition instead
-  // of running until the (unrelated) page cap — a full-size page2 would have
-  // made this stub never terminate, since nothing else in this scenario
-  // signals "no more history" for an unbounded backfill walk.
-  const page1 = Array.from({ length: 100 }, (_, i) =>
-    groupMessage({ id: `m-${String(149 - i)}`, created_at: 1_700_000_200 - i })
-  );
-  const page2 = Array.from({ length: 50 }, (_, i) =>
-    groupMessage({ id: `m-${String(49 - i)}`, created_at: 1_700_000_100 - i })
-  );
-  let fetchCount = 0;
-  const original = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL): Promise<Response> => {
-    const url = new URL(typeof input === "string" ? input : input.toString());
-    if (url.pathname === "/v3/groups") {
-      return Promise.resolve(new Response(JSON.stringify({ response: [group()] }), { status: 200 }));
+      assert.equal(outcome.failed, false);
+      assert.equal(
+        walk.fetchCount(),
+        2,
+        "full_refresh bypasses the anchor — both pages are fetched despite a tight anchor"
+      );
+      assert.equal(outcome.considered, 150, "the entire history is walked and considered under full_refresh");
+      assert.equal(
+        emitted.filter((r) => r.stream === "group_messages").length,
+        150,
+        "every message emits under full_refresh, providing the explicit repair path for stale mutable fields"
+      );
+      assert.equal(
+        outcome.nextAnchors["group-1"],
+        "m-149",
+        "the anchor map is rebuilt from this full walk for the next ordinary run"
+      );
+    } finally {
+      walk.restore();
     }
-    fetchCount += 1;
-    const body = fetchCount === 1 ? page1 : page2;
-    return Promise.resolve(
-      new Response(JSON.stringify({ response: { count: body.length, messages: body } }), { status: 200 })
-    );
-  }) as typeof globalThis.fetch;
-  try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    // No prior frontiers (backfill case) — must walk the FULL 150-message
-    // history in one run, proving the frontier machinery does not
-    // accidentally clip an initial full backfill.
-    const outcome = await collectGroupMessages(TOKEN, cursor, undefined, undefined, noopProgress, emit, emitRecord);
-
-    assert.equal(outcome.failed, false);
-    assert.equal(fetchCount, 2, "both pages fetched — page 2's shorter length is what ends the walk");
-    assert.equal(outcome.considered, 150, "initial backfill sees the entire history, not a truncated window");
-    assert.equal(
-      emitted.filter((r) => r.stream === "group_messages").length,
-      150,
-      "every message from the initial backfill emits"
-    );
-    assert.equal(
-      outcome.nextFrontiers["group-1"],
-      1_700_000_200,
-      "frontier seeds from the newest message's created_at"
-    );
-  } finally {
-    globalThis.fetch = original;
-  }
+  })();
 });
 
-test("full-refresh counterweight: a NEW group added after the frontier was seeded for other groups still gets a full walk", async () => {
-  const restore = stubFetchByPath({
-    "/v3/groups": [group({ id: "group-1" }), group({ id: "group-new" })],
-    "/v3/groups/group-1/messages": { count: 1, messages: [groupMessage({ id: "m-old", created_at: 1_700_000_050 })] },
-    "/v3/groups/group-new/messages": {
-      count: 1,
-      messages: [groupMessage({ id: "m-fresh", created_at: 1_700_000_900 })],
-    },
+test("explicit full_refresh bypass via collect(): CollectContext.collectionMode reaches the connector and forces a full walk", async () => {
+  const STREAMS: StreamScope[] = [{ name: "group_messages" }];
+  const harness = makeRecordingEmit(validateRecord);
+  const page1 = Array.from({ length: 100 }, (_, i) => groupMessage({ id: `m-${String(149 - i)}` }));
+  const page2 = Array.from({ length: 50 }, (_, i) => groupMessage({ id: `m-${String(49 - i)}` }));
+  const walk = stubGroupWalk({
+    messagePages: [
+      { body: { response: { count: 100, messages: page1 } } },
+      { body: { response: { count: 50, messages: page2 } } },
+    ],
   });
   try {
-    const cursor = openFingerprintCursor(new Map());
-    const { emit, emitRecord, emitted } = makeHarness();
-    // group-1 has an established (tight) frontier; group-new has none.
-    const outcome = await collectGroupMessages(
-      TOKEN,
-      cursor,
-      undefined,
-      undefined,
-      noopProgress,
-      emit,
-      emitRecord,
-      undefined,
-      null,
-      { "group-1": 1_700_000_600 }
-    );
+    const ctx: CollectContext = {
+      assist: () => Promise.resolve("asst_test"),
+      capture: null,
+      collectionMode: "full_refresh",
+      completeAssistance: () => Promise.resolve(),
+      credentials: { GROUPME_ACCESS_TOKEN: TOKEN },
+      detailGaps: [],
+      emit: harness.emit,
+      emitRecord: harness.emitRecord,
+      emittedAt: "2026-08-10T00:00:00.000Z",
+      progress: () => Promise.resolve(),
+      requestDetailGapPage: () => Promise.resolve([]),
+      requested: new Map(STREAMS.map((s) => [s.name, s])),
+      scope: { streams: STREAMS },
+      sendInteraction: () =>
+        Promise.resolve({
+          request_id: "int_test",
+          status: "cancelled" as const,
+          type: "INTERACTION_RESPONSE" as const,
+        }),
+      // A tight, pre-existing anchor that would otherwise stop the walk on page 1.
+      state: { group_messages: { anchors: { "group-1": "m-149" } } },
+    };
+    await collect(ctx);
 
-    assert.equal(outcome.failed, false);
-    const ids = emitted.filter((r) => r.stream === "group_messages").map((r) => (r.data as { id: string }).id);
-    assert.ok(ids.includes("m-fresh"), "the new group's message is not skipped despite another group's tight frontier");
-    assert.equal(outcome.nextFrontiers["group-new"], 1_700_000_900, "the new group gets its own seeded frontier");
-    assert.equal(outcome.nextFrontiers["group-1"], 1_700_000_600, "group-1's frontier carries forward unchanged");
+    assert.equal(
+      walk.fetchCount(),
+      2,
+      "collection_mode full_refresh, surfaced via CollectContext, bypasses the anchor end-to-end"
+    );
+    assert.equal(
+      harness.emitted.filter((r) => r.stream === "group_messages").length,
+      150,
+      "the full history emits, not just what's newer than the pre-existing anchor"
+    );
   } finally {
-    restore();
+    walk.restore();
   }
 });
