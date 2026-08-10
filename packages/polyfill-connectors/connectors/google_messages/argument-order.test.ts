@@ -75,7 +75,11 @@ test("messages list is invoked with --conv <chat-id> and per-chat bounding/order
   assert.ok(messagesInvocation?.includes("--limit"));
   const orderIdx = messagesInvocation?.indexOf("--order") ?? -1;
   assert.ok(orderIdx >= 0, "expected --order flag");
-  assert.equal(messagesInvocation?.[orderIdx + 1], "asc");
+  assert.equal(
+    messagesInvocation?.[orderIdx + 1],
+    "desc",
+    "must fetch newest-first so a growing conversation's new activity stays observable across runs (see fetchChatMessages's doc comment)"
+  );
 });
 
 test("one messages list invocation per chat, in the order chats were listed", async () => {

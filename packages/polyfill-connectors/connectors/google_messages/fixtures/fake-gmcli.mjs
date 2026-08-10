@@ -19,12 +19,17 @@
  *   malformed_messages -> chats list ok; messages list returns output missing required fields
  *   not_json        -> chats list exits 0 with non-JSON stdout
  *   full_page       -> chats list returns 1 chat; messages list returns exactly --limit rows (truncation-proxy test)
- *   custom          -> chats/messages list read their JSON arrays verbatim from
- *                      FAKE_GMCLI_CHATS_JSON / FAKE_GMCLI_MESSAGES_JSON (each a
- *                      JSON-encoded array in the same shape as CHATS_HEALTHY /
- *                      MESSAGES_HEALTHY below). Lets STATE/checkpoint tests drive
- *                      exact per-run message sets (new/late/same-timestamp rows,
- *                      archive replacement) without adding a static mode per case.
+ *   custom          -> chats list reads its JSON array verbatim from
+ *                      FAKE_GMCLI_CHATS_JSON (same shape as CHATS_HEALTHY
+ *                      below). messages list reads its full candidate pool
+ *                      from FAKE_GMCLI_MESSAGES_JSON, then — like the real
+ *                      gmcli — filters to the requested --conv chat_id,
+ *                      applies --order (asc/desc by timestamp_ms), and caps
+ *                      to --limit. This lets tests drive exact per-run,
+ *                      per-chat message sets (new/late/same-timestamp rows,
+ *                      archive replacement, growing-conversation truncation)
+ *                      through one real, order/limit-respecting fake instead
+ *                      of a static mode per case.
  */
 
 const mode = process.env.FAKE_GMCLI_MODE || "healthy";
@@ -75,6 +80,49 @@ function limitFromArgs() {
   return Number.isFinite(n) && n > 0 ? n : 500;
 }
 
+function convFromArgs() {
+  const idx = args.indexOf("--conv");
+  return idx >= 0 ? args[idx + 1] : null;
+}
+
+function orderFromArgs() {
+  const idx = args.indexOf("--order");
+  return idx >= 0 ? args[idx + 1] : "asc";
+}
+
+/**
+ * Mirrors real gmcli's `messages list --conv <id> --limit <N> --order
+ * <asc|desc>`: filter the full candidate pool to this conversation, sort by
+ * timestamp_ms in the requested direction, then cap to --limit. Ties are
+ * broken by message_id for determinism (the pool is a test fixture, not a
+ * live archive, so no gmcli-internal tie-break needs to be matched).
+ */
+function compareMessageIdAscending(a, b) {
+  if (a.message_id < b.message_id) {
+    return -1;
+  }
+  if (a.message_id > b.message_id) {
+    return 1;
+  }
+  return 0;
+}
+
+function customMessagesForThisInvocation() {
+  const pool = JSON.parse(process.env.FAKE_GMCLI_MESSAGES_JSON ?? MESSAGES_HEALTHY);
+  const conv = convFromArgs();
+  const order = orderFromArgs();
+  const limit = limitFromArgs();
+  const filtered = conv ? pool.filter((m) => m.conversation_id === conv) : pool;
+  const sign = order === "desc" ? -1 : 1;
+  const sorted = [...filtered].sort((a, b) => {
+    if (a.timestamp_ms !== b.timestamp_ms) {
+      return sign * (a.timestamp_ms - b.timestamp_ms);
+    }
+    return compareMessageIdAscending(a, b);
+  });
+  return JSON.stringify(sorted.slice(0, limit));
+}
+
 function fullPageMessages() {
   const limit = limitFromArgs();
   return JSON.stringify(
@@ -123,7 +171,7 @@ if (isMessagesList) {
   } else if (mode === "full_page") {
     process.stdout.write(fullPageMessages());
   } else if (mode === "custom") {
-    process.stdout.write(process.env.FAKE_GMCLI_MESSAGES_JSON ?? MESSAGES_HEALTHY);
+    process.stdout.write(customMessagesForThisInvocation());
   } else {
     process.stdout.write(MESSAGES_HEALTHY);
   }
