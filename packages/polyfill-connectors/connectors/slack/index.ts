@@ -384,15 +384,30 @@ function redactSlackdumpOutput(output: string, env: NodeJS.ProcessEnv): string {
   return redacted.replace(/xox[a-z]-[^\s"'`]+/giu, "[REDACTED]");
 }
 
-// Default timeout accommodates long-lived workspaces (10+ years) where a
-// first-run archive of DMs + history can run 6-20h depending on file count
-// and Slack rate-limit bursts. The cost of a too-high default is only "late
-// failure signal" — slackdump will normally finish or error out well before
-// this. Override via `SLACKDUMP_TIMEOUT_MS` env var.
+// `SLACKDUMP_TIMEOUT_MS` is a STALL budget, not a total-runtime cap: it bounds
+// how long slackdump may go without any observable progress, and every observed
+// advance rearms it. A first archive of a long-lived workspace legitimately runs
+// for many hours (10+ years of DMs and history, paced by Slack rate limits), so
+// a total-runtime cap kills healthy syncs — which is exactly what happened in
+// UAT, where a 90-minute cap terminated runs that were steadily downloading
+// (13k-17k records emitted, 80k+ messages banked in the archive) and left every
+// stream uncommitted. Mirrors the gmail attachment stall guard: bound silence,
+// never bound useful work.
+//
+// Progress is observed from the archive itself (`readSlackdumpProgressSnapshot`
+// over the same `sqlitePath` the progress reporter uses), so detection needs no
+// cooperation from the child's stdout. Absent a `sqlitePath` there is nothing to
+// observe, so the budget degrades to a plain total-runtime deadline — the prior
+// behavior, and the only safe reading when progress is unobservable.
+//
+// `SLACKDUMP_MAX_RUNTIME_MS` remains available as a separate absolute ceiling
+// for operators who want one; it is unset (unbounded) by default so a
+// progressing dump is never killed for merely taking a long time.
 export function runSlackdump(
   args: string[],
   {
     env,
+    maxRuntimeMs = Number(process.env.SLACKDUMP_MAX_RUNTIME_MS) || Number.POSITIVE_INFINITY,
     progress,
     progressIntervalMs = Number(process.env.SLACKDUMP_PROGRESS_INTERVAL_MS) || 60_000,
     progressLabel = args[0] ?? "run",
@@ -400,6 +415,7 @@ export function runSlackdump(
     timeoutMs = Number(process.env.SLACKDUMP_TIMEOUT_MS) || 24 * 60 * 60 * 1000,
   }: {
     env: NodeJS.ProcessEnv;
+    maxRuntimeMs?: number;
     progress?: CollectContext["progress"];
     progressIntervalMs?: number;
     progressLabel?: string;
@@ -421,36 +437,86 @@ export function runSlackdump(
     child.stderr?.on("data", (d: Buffer) => {
       stderr += d.toString();
     });
+    // Stall detection polls the archive on its own cadence, independent of the
+    // `progress` callback: a slow or absent reporter must never decide whether
+    // the run is still alive. The poll must be quick enough to rearm the budget
+    // several times over before it expires, so a short budget tightens the poll
+    // — but it never runs SLOWER than the configured reporting interval, or
+    // reports would be throttled by a mechanism that exists to watch for
+    // silence.
+    const stallPollMs = Number.isFinite(timeoutMs)
+      ? Math.max(1, Math.min(progressIntervalMs, timeoutMs / 4))
+      : progressIntervalMs;
+    let lastAdvanceAt = Date.now();
+    // Snapshot dedicated to stall detection. Kept separate from
+    // `lastProgressSnapshot` so that suppressing a *report* (no `progress`
+    // callback, or a report that throws) can never suppress a stall rearm.
+    let lastStallSnapshot = lastProgressSnapshot;
+
+    const observeProgress = (): void => {
+      if (!sqlitePath) {
+        return;
+      }
+      const snapshot = readSlackdumpProgressSnapshot(sqlitePath);
+      if (slackdumpProgressChanged(lastStallSnapshot, snapshot)) {
+        lastStallSnapshot = snapshot;
+        lastAdvanceAt = Date.now();
+      }
+      if (!(progress && slackdumpProgressChanged(lastProgressSnapshot, snapshot))) {
+        return;
+      }
+      lastProgressSnapshot = snapshot;
+      if (!snapshot) {
+        return;
+      }
+      progress(formatSlackdumpProgress(progressLabel, snapshot), {
+        ...(snapshot.messages === null ? {} : { count: snapshot.messages }),
+        stream: "messages",
+      }).catch(() => undefined);
+    };
+
     const progressTimer =
-      progress && sqlitePath && Number.isFinite(progressIntervalMs) && progressIntervalMs > 0
-        ? setInterval(() => {
-            const snapshot = readSlackdumpProgressSnapshot(sqlitePath);
-            if (!slackdumpProgressChanged(lastProgressSnapshot, snapshot)) {
-              return;
-            }
-            lastProgressSnapshot = snapshot;
-            if (!snapshot) {
-              return;
-            }
-            progress(formatSlackdumpProgress(progressLabel, snapshot), {
-              ...(snapshot.messages === null ? {} : { count: snapshot.messages }),
-              stream: "messages",
-            }).catch(() => undefined);
-          }, progressIntervalMs)
-        : null;
+      sqlitePath && Number.isFinite(stallPollMs) && stallPollMs > 0 ? setInterval(observeProgress, stallPollMs) : null;
     progressTimer?.unref?.();
-    const t = setTimeout(() => {
+
+    const startedAt = Date.now();
+    // Without an observable archive there is no progress signal, so the budget
+    // can only be a total-runtime deadline (prior behavior).
+    const stallDetectable = progressTimer !== null;
+    const deadlineTimer = setInterval(
+      () => {
+        const now = Date.now();
+        if (now - startedAt >= maxRuntimeMs) {
+          finishTimedOut("slackdump_max_runtime");
+          return;
+        }
+        const idleSince = stallDetectable ? lastAdvanceAt : startedAt;
+        if (now - idleSince >= timeoutMs) {
+          finishTimedOut("slackdump_timeout");
+        }
+      },
+      Math.max(1, Math.min(stallPollMs, Number.isFinite(timeoutMs) ? timeoutMs : stallPollMs))
+    );
+    deadlineTimer.unref?.();
+
+    const clearTimers = (): void => {
+      clearInterval(deadlineTimer);
       if (progressTimer) {
         clearInterval(progressTimer);
       }
+    };
+
+    function finishTimedOut(reason: string): void {
+      clearTimers();
       child.kill();
-      reject(new Error("slackdump_timeout"));
-    }, timeoutMs);
+      // Keep "timeout" in the message so SLACK_RETRYABLE_FAILURE_RE classifies
+      // both shapes retryable — a stalled or over-long dump resumes against the
+      // durable archive rather than restarting from zero.
+      reject(new Error(reason));
+    }
+
     child.on("exit", (code) => {
-      clearTimeout(t);
-      if (progressTimer) {
-        clearInterval(progressTimer);
-      }
+      clearTimers();
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
@@ -459,10 +525,7 @@ export function runSlackdump(
       }
     });
     child.on("error", (e) => {
-      clearTimeout(t);
-      if (progressTimer) {
-        clearInterval(progressTimer);
-      }
+      clearTimers();
       if (isErrnoException(e) && e.code === "ENOENT") {
         reject(new Error(formatSlackdumpMissingError(bin)));
         return;
@@ -520,7 +583,12 @@ interface SlackOpts {
   SKIP_FILES: boolean;
 }
 
-export const SLACK_RETRYABLE_FAILURE_RE = /ECONN|ETIMEDOUT|timeout|slackdump_exit_6|slack_rate_limited/i;
+// `slackdump_max_runtime` is listed explicitly because it is the one timeout
+// shape whose name contains no "timeout" substring. It is retryable for the
+// same reason a stall is: the archive is durable, so the next attempt resumes
+// against banked work instead of restarting a multi-hour dump from zero.
+export const SLACK_RETRYABLE_FAILURE_RE =
+  /ECONN|ETIMEDOUT|timeout|slackdump_max_runtime|slackdump_exit_6|slack_rate_limited/i;
 
 const SLACKDUMP_CLIENT_TOKEN_PREFIX = "xoxc-";
 const SLACKDUMP_D_COOKIE_PREFIX = "xoxd-";

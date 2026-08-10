@@ -66,6 +66,29 @@ every run. Every run reports per-phase timing and an archive size snapshot via
 `PROGRESS` (`slackdump-subprocess`, `archive-open`, `read-and-emit`, and
 `sqlite=…B uploads=…B`) so this bound is measurable and regressions are visible.
 
+**`SLACKDUMP_TIMEOUT_MS` bounds silence, not work.** It is a *stall* budget: it
+caps how long slackdump may go without observable progress, and every observed
+advance rearms it. Progress is read from the archive itself (row/chunk counts
+plus file growth), so detection needs no cooperation from the child process and
+does not depend on a `PROGRESS` consumer being attached. A first sync of a
+multi-year workspace legitimately runs for hours at Slack's rate limits, so a
+total-runtime cap kills healthy syncs: with a 90-minute cap, real UAT runs were
+terminated mid-download after emitting 13k–17k records and banking 80k+ messages
+in the archive, leaving every stream uncommitted. Default 24h of *silence*.
+
+Two escape hatches, deliberately distinct so a stall is never confused with a
+long-but-healthy run:
+
+- `SLACKDUMP_MAX_RUNTIME_MS` — an absolute ceiling, unset (unbounded) by
+  default. Fires as `slackdump_max_runtime`.
+- `SLACKDUMP_PROGRESS_INTERVAL_MS` — how often progress is sampled and
+  reported (default 60s).
+
+Both timeout shapes classify as retryable: the archive is durable, so the next
+attempt resumes against banked work instead of restarting the dump from zero.
+When no archive path is observable there is no progress signal, so the budget
+degrades to a plain total-runtime deadline.
+
 **Scoped-archive reconciliation (channel healing) is finite by construction,
 not by a wall-clock cap.** If an unscoped run finds a previously-observed
 channel missing from the main archive, it heals the gap by refreshing/repairing

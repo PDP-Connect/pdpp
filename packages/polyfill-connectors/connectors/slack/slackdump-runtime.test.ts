@@ -1083,3 +1083,205 @@ test("slack archive resolves next to PDPP_DB_PATH, not HOME (survives container 
     await rm(discardedHome, { recursive: true, force: true });
   }
 });
+
+// ─── Stall budget vs total-runtime cap ────────────────────────────────
+//
+// The UAT terminal failure this pins: `SLACKDUMP_TIMEOUT_MS` was enforced as a
+// TOTAL wall-clock cap. With the deployment's 90-minute value, a first sync of
+// a multi-year workspace was killed mid-download while steadily making
+// progress — 13k-17k records emitted and 80k+ messages banked in the archive,
+// yet every stream left uncommitted and zero successful runs. The budget must
+// bound SILENCE, not useful work.
+
+/**
+ * Write a fake slackdump that appends real rows to the archive on a cadence,
+ * then sleeps. `advances` controls how many progress steps it makes before
+ * going quiet, which is what separates a healthy long run from a true stall.
+ */
+async function writeProgressingSlackdump(
+  path: string,
+  { advances, stepMs, thenIdleMs }: { advances: number; stepMs: number; thenIdleMs: number }
+): Promise<void> {
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
+import { DatabaseSync } from "node:sqlite";
+const archive = process.env.FAKE_ARCHIVE_PATH;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+for (let i = 0; i < ${advances}; i++) {
+  await sleep(${stepMs});
+  const db = new DatabaseSync(archive);
+  try {
+    db.prepare(
+      "INSERT INTO MESSAGE (CHANNEL_ID, TS, THREAD_TS, IS_PARENT, TXT, NUM_FILES, DATA, CHUNK_ID) VALUES (?,?,?,?,?,?,?,?)"
+    ).run("C0PROGRESS", "17140330" + String(i).padStart(2, "0") + ".000000", null, null, "chunk " + i, null, null, i + 1);
+  } finally {
+    db.close();
+  }
+}
+await sleep(${thenIdleMs});
+process.exit(0);
+`,
+    "utf8"
+  );
+  await chmod(path, 0o755);
+}
+
+async function withFakeSlackdump<T>(fn: (paths: { archive: string; bin: string }) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-stall-"));
+  const prior = process.env.SLACKDUMP_BIN;
+  try {
+    const archive = join(dir, "slackdump.sqlite");
+    const db = new DatabaseSync(archive);
+    try {
+      createSlackArchiveSchema(db);
+    } finally {
+      db.close();
+    }
+    const bin = join(dir, "fake-slackdump.mjs");
+    process.env.SLACKDUMP_BIN = bin;
+    return await fn({ archive, bin });
+  } finally {
+    if (prior === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = prior;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// THE regression. Total runtime (~1.8s) far exceeds the 600ms budget, but the
+// child never goes quiet for more than ~200ms. Under the old total-runtime cap
+// this rejected with slackdump_timeout; under a stall budget it must succeed.
+test("runSlackdump: a steadily-progressing dump outlives its budget (stall, not total runtime)", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 9, stepMs: 200, thenIdleMs: 0 });
+
+    await runSlackdump(["archive"], {
+      env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+      progressIntervalMs: 50,
+      sqlitePath: archive,
+      timeoutMs: 600,
+    });
+  });
+});
+
+// The other half of the contract: real silence must still be terminal, or the
+// budget would be worthless. Same budget, but the child stops advancing.
+test("runSlackdump: a genuinely stalled dump still times out", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 1, stepMs: 50, thenIdleMs: 30_000 });
+
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        progressIntervalMs: 50,
+        sqlitePath: archive,
+        timeoutMs: 700,
+      }),
+      /slackdump_timeout/
+    );
+  });
+});
+
+// Progress must rearm the budget even when nothing is reporting it: stall
+// detection reads the archive directly and must not depend on a `progress`
+// callback being supplied.
+test("runSlackdump: progress rearms the budget with no progress callback attached", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 8, stepMs: 200, thenIdleMs: 0 });
+
+    await runSlackdump(["archive"], {
+      env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+      progressIntervalMs: 50,
+      sqlitePath: archive,
+      timeoutMs: 600,
+    });
+  });
+});
+
+// With no observable archive there is no progress signal, so the budget can
+// only mean total runtime. Pins that degradation explicitly.
+test("runSlackdump: without an observable archive the budget stays a total-runtime deadline", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 20, stepMs: 100, thenIdleMs: 0 });
+
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        timeoutMs: 500,
+      }),
+      /slackdump_timeout/
+    );
+  });
+});
+
+// An absolute ceiling stays available for operators who want one, and is
+// reported as a distinct reason so it is never confused with a stall.
+test("runSlackdump: SLACKDUMP_MAX_RUNTIME_MS caps even a progressing dump, with a distinct reason", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 30, stepMs: 100, thenIdleMs: 0 });
+
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        maxRuntimeMs: 900,
+        progressIntervalMs: 50,
+        sqlitePath: archive,
+        timeoutMs: 60_000,
+      }),
+      /slackdump_max_runtime/
+    );
+  });
+});
+
+// Both timeout shapes must classify retryable: the durable archive means a
+// retry resumes rather than restarting the multi-hour dump from zero.
+test("both slackdump timeout shapes are retryable failures", () => {
+  assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("slackdump failed: slackdump_timeout"), true);
+  assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("slackdump failed: slackdump_max_runtime"), true);
+});
+
+// A child that exits without ever making progress must settle on its OWN exit
+// event, promptly — never wait out the (now 24h-default) silence budget. This
+// is what keeps a genuinely broken invocation fast to fail even though the
+// budget bounds silence rather than runtime.
+test("runSlackdump: a child that exits with no progress settles immediately, not after the budget", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeProgressingSlackdump(bin, { advances: 0, stepMs: 0, thenIdleMs: 0 });
+
+    const startedAt = Date.now();
+    await runSlackdump(["archive"], {
+      env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+      progressIntervalMs: 50,
+      sqlitePath: archive,
+      // A budget far larger than the test could ever wait for: the only way
+      // this returns is the child's own exit path.
+      timeoutMs: 10 * 60 * 1000,
+    });
+
+    assert.ok(Date.now() - startedAt < 10_000, "expected exit-driven settle, not a budget wait");
+  });
+});
+
+// Same contract on the failure side, and the reason must stay the exit code —
+// a no-progress failure is not reported as a stall.
+test("runSlackdump: a failing child reports its exit code, never a stall, and settles promptly", async () => {
+  await withFakeSlackdump(async ({ archive, bin }) => {
+    await writeFile(bin, "#!/usr/bin/env node\nprocess.exit(4);\n", "utf8");
+    await chmod(bin, 0o755);
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      runSlackdump(["archive"], {
+        env: { ...process.env, FAKE_ARCHIVE_PATH: archive },
+        progressIntervalMs: 50,
+        sqlitePath: archive,
+        timeoutMs: 10 * 60 * 1000,
+      }),
+      /slackdump_exit_4/
+    );
+    assert.ok(Date.now() - startedAt < 10_000, "expected exit-driven settle, not a budget wait");
+  });
+});
