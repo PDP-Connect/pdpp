@@ -6,6 +6,7 @@ import { DocsBody, DocsDescription, DocsPage } from "fumadocs-ui/layouts/docs/pa
 import { createRelativeLink } from "fumadocs-ui/mdx";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import type { ComponentPropsWithoutRef } from "react";
 import { LLMCopyButton, ViewOptions } from "@/components/ai/page-actions.tsx";
 import { getMDXComponents } from "@/components/mdx.tsx";
 import { repoBlobUrl } from "@/components/pdpp-concept/site-facts.ts";
@@ -29,6 +30,14 @@ interface DocsPageProps {
 // the goal. index.mdx itself is kept as source (still reachable by fumadocs'
 // internals and any direct link) but is no longer the page a visitor lands on.
 const ROOT_SLUG_TARGET = ["spec-core"];
+
+function ResponsiveSpecTable({ children, ...props }: ComponentPropsWithoutRef<"table">) {
+  return (
+    <div className="pdpp-docs-table-scroll">
+      <table {...props}>{children}</table>
+    </div>
+  );
+}
 
 export default async function Page({ params }: DocsPageProps) {
   const resolved = await params;
@@ -84,6 +93,7 @@ export default async function Page({ params }: DocsPageProps) {
         <MDX
           components={getMDXComponents({
             a: createRelativeLink(source, page),
+            table: ResponsiveSpecTable,
           })}
         />
       </DocsBody>
