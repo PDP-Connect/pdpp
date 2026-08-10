@@ -1911,14 +1911,18 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // no-cursor first run has no predicate and keeps the full aggregation.
   //
   // collection_scope.since is a declared boundary (ISO 8601 instant, converted
-  // to Slack ts format). Unlike cursor predicates (which are monotonically
-  // advancing commitments), a since boundary is a declarative claim "only
-  // collect from this point onward." If supplied, it is composed with cursor
-  // predicates via AND: a row must pass both to be included. Slack's ts format
-  // is fixed-shape "seconds.microseconds" (zero-padded); lexical comparison on
-  // the full ts string matches chronological order and preserves sub-second
-  // precision (e.g., a boundary of "2026-08-09T22:26:25.500Z" excludes earlier
-  // microseconds in the same second).
+  // to Slack ts format via parseIsoInstantToSlackTs). Unlike cursor predicates
+  // (which are monotonically advancing commitments), a since boundary is a
+  // declarative claim "only collect from this point onward." If supplied, it is
+  // composed with cursor predicates via AND: a row must pass both to be included.
+  //
+  // Slack's ts format is stored as "seconds.microseconds" (6-digit fractional
+  // seconds). For comparison: lexical comparison on "NNN.MMMMMM" matches
+  // chronological order because seconds are left-aligned and microseconds are
+  // zero-padded. Numeric comparison of (epochSeconds, fractionalPart string)
+  // is equivalent and avoids reliance on archive format assumptions.
+  // A boundary of ISO "2026-08-09T22:26:25.500Z" becomes "1691595985.500000"
+  // and excludes earlier microseconds in the same second via >= lexical compare.
   const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let dedupWhere = "";
   if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
@@ -1931,8 +1935,8 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
     params.push(thresholds.legacyLastTs);
   }
   // Compose since boundary (if supplied) with cursor predicates via AND.
-  // sinceTs is already in canonical "seconds.microseconds" format; lexical
-  // comparison matches chronological order and preserves sub-second precision.
+  // sinceTs is the production output of parseIsoInstantToSlackTs, which
+  // guarantees "seconds.microseconds" format with 6-digit fractional seconds.
   if (thresholds.sinceTs !== null) {
     const sincePredicate = "m.TS >= ?";
     params.push(thresholds.sinceTs);
@@ -2015,44 +2019,68 @@ function runMessagesUnifiedPass(
 }
 
 /**
- * Convert a stream's declared `time_range.since` (ISO 8601 instant) to a
- * canonical Slack ts threshold (seconds.microseconds format). Returns `null`
- * for absent, malformed, or unparseable bounds — FAILS CLOSED on validation
- * error. A present-but-invalid since never silently becomes unbounded.
+ * Parses an ISO 8601 instant to Slack ts format ("seconds.microseconds").
+ * Exported for testing.
  *
  * Slack ts is stored as "seconds.microseconds" where seconds is Unix epoch
- * and microseconds is 6 decimal digits (from archive records). ISO instants
- * can have milliseconds (3 places) or microseconds (6 places), which are
- * expanded to 6 digits: "2026-08-09T22:26:25.500Z" → "1723248385.500000".
- * Numeric comparison of (epochSeconds, fractionalPart) is equivalent to
- * lexical comparison on the formatted string (both preserve chronological
- * order), and avoids reliance on string format guarantees.
+ * and microseconds are 6 decimal digits (from archive records). ISO instants
+ * can have milliseconds (3 places), microseconds (6 places), or no fraction —
+ * all are normalized to 6 digits: "2026-08-09T22:26:25.500Z" → epoch.500000,
+ * or "2026-08-09T22:26:25Z" → epoch.000000.
+ *
+ * Throws Error if the instant is malformed (invalid date syntax, non-finite
+ * epoch, or negative timestamp). Absent input (empty/null) is NOT an error;
+ * return null to signal no bound, allowing the caller to distinguish between
+ * "no since declared" (null → unbounded collection) and "since declared but
+ * broken" (throws → configuration error).
+ *
+ * Comparison: Slack ts comparison is lexical on the formatted string. Numeric
+ * comparison of (epochSeconds, fractionalPart as a string) is equivalent, since
+ * both preserve chronological order for timestamps in the same second. We use
+ * numeric logic to avoid assuming the archive format is fixed-width (though we
+ * produce fixed-width output consistently).
+ */
+export function parseIsoInstantToSlackTs(instant: string): string {
+  const epochMs = Date.parse(instant);
+  if (Number.isNaN(epochMs)) {
+    throw new Error(`Invalid ISO 8601 instant: ${instant}`);
+  }
+  const epochSeconds = Math.floor(epochMs / 1000);
+  if (!Number.isFinite(epochSeconds)) {
+    throw new Error(`Invalid epoch seconds (non-finite): ${epochSeconds}`);
+  }
+  if (epochSeconds < 0) {
+    throw new Error(`Timestamp is before Unix epoch (negative): ${epochSeconds}`);
+  }
+  // Extract fractional seconds (milliseconds or microseconds) from the ISO instant.
+  // ISO format examples:
+  //   "2026-08-09T22:26:25.500Z" (3 decimal places, milliseconds)
+  //   "2026-08-09T22:26:25.123456Z" (6 decimal places, microseconds)
+  //   "2026-08-09T22:26:25Z" (no decimal, no fraction)
+  // Regex captures up to 6 fractional digits; pad with trailing zeros to 6.
+  const fracMatch = instant.match(/\.(\d{1,6})/);
+  const fractionalPart = fracMatch?.[1] ? fracMatch[1].padEnd(6, "0") : "000000";
+  return `${epochSeconds}.${fractionalPart}`;
+}
+
+/**
+ * Converts an ISO 8601 instant from collection_scope.since to Slack ts format.
+ * Returns null if since is absent (no bound declared); throws a typed error if
+ * since is present but malformed (configuration error).
+ *
+ * This enforces the distinction: absent → unbounded collection (null), present
+ * invalid → fail closed (throw), preventing silent scope widening.
+ *
+ * Used by mergeScopedMessageArchivePasses to enforce the declared collection
+ * scope boundary when reading from persistent archive.
  */
 function parseSinceTs(requested: CollectContext["requested"], stream: string): string | null {
   const since = requested.get(stream)?.time_range?.since;
   if (typeof since !== "string" || !since.trim()) {
-    return null;
+    return null; // Absent bound: unbounded collection.
   }
-  const epochMs = Date.parse(since);
-  if (Number.isNaN(epochMs)) {
-    return null; // Malformed ISO instant: fail closed.
-  }
-  // Extract the fractional seconds (milliseconds or microseconds) from the ISO instant.
-  // ISO format: "2026-08-09T22:26:25.500Z" or "2026-08-09T22:26:25.123456Z"
-  // After the decimal: 1-6 digits, then 'Z' or timezone. Treat absence as .000Z.
-  const fracMatch = since.match(/\.(\d{1,6})/);
-  let fractionalPart = "000000";
-  if (fracMatch?.[1]) {
-    // Pad with trailing zeros to 6 digits (microseconds).
-    fractionalPart = fracMatch[1].padEnd(6, "0");
-  }
-  const epochSeconds = Math.floor(epochMs / 1000);
-  // Validate: epochSeconds must be positive (archive guarantees positive Unix ts).
-  // If somehow negative or NaN, fail closed rather than silently unbounding.
-  if (!Number.isFinite(epochSeconds) || epochSeconds < 0) {
-    return null;
-  }
-  return `${epochSeconds}.${fractionalPart}`;
+  // Present since: throw on any validation error (not silent null).
+  return parseIsoInstantToSlackTs(since);
 }
 
 function messageProgressLabel(channelCursorCount: number, priorTs: string | null): string {

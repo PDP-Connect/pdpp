@@ -45,6 +45,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   buildMessageRowsQuery,
   emitMessagesPass,
+  parseIsoInstantToSlackTs,
   type MessagesPassDeps,
   runChannelsStream,
   type StreamDeps,
@@ -445,43 +446,56 @@ test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (same
   );
 });
 
-test("parseSinceTs: direct tests (ISO instant → Slack ts format)", () => {
-  // Import is not available in test scope, so manually verify the conversion
-  // logic: ISO 8601 with milliseconds or microseconds → canonical Slack ts
-  // ("seconds.microseconds", zero-padded to 6 fractional digits).
-  // Test cases: just verify the expected conversion format, not the function
-  // itself (since it's not exported). The SQL execution test proves behavior.
+test("parseIsoInstantToSlackTs: direct tests (exact production function)", () => {
+  // Calls the exact production function, not a copy of its logic.
+  // Tests: milliseconds, microseconds, no fraction, timezone offset, and errors.
 
-  // ISO "2026-08-09T22:26:25.500Z" (3 decimal places, milliseconds)
-  // → epoch = 1723248385 seconds, fractional = "500000" (padded)
-  // → "1723248385.500000"
-  const iso500ms = "2026-08-09T22:26:25.500Z";
-  const epochMs500 = Date.parse(iso500ms);
-  const epoch500 = Math.floor(epochMs500 / 1000);
-  const frac500Match = iso500ms.match(/\.(\d{1,6})/);
-  const frac500 = frac500Match ? frac500Match[1].padEnd(6, "0") : "000000";
-  const expected500 = `${epoch500}.${frac500}`;
-  assert.match(expected500, /^\d+\.\d{6}$/);
+  // ISO with milliseconds (3 decimal places) → pad to 6 digits
+  const iso500ms = "2024-08-09T22:26:25.500Z";
+  const result500 = parseIsoInstantToSlackTs(iso500ms);
+  assert.match(result500, /^\d+\.500000$/, "milliseconds padded to 6 digits");
 
-  // ISO with full microseconds "2026-08-09T22:26:25.123456Z" (6 decimal places)
-  // → epoch = 1723248385 seconds, fractional = "123456" (no padding needed)
-  // → "1723248385.123456"
-  const iso6digits = "2026-08-09T22:26:25.123456Z";
-  const epochMs6 = Date.parse(iso6digits);
-  const epoch6 = Math.floor(epochMs6 / 1000);
-  const frac6Match = iso6digits.match(/\.(\d{1,6})/);
-  const frac6 = frac6Match ? frac6Match[1].padEnd(6, "0") : "000000";
-  const expected6 = `${epoch6}.${frac6}`;
-  assert.match(expected6, /^\d+\.\d{6}$/);
+  // ISO with microseconds (6 decimal places) → no padding needed
+  const iso6digits = "2024-08-09T22:26:25.123456Z";
+  const result6 = parseIsoInstantToSlackTs(iso6digits);
+  assert.match(result6, /^\d+\.123456$/, "microseconds unchanged");
 
-  // Malformed (no fractional part) → defaults to .000000
-  const isoNoFrac = "2026-08-09T22:26:25Z";
-  const epochMsNoFrac = Date.parse(isoNoFrac);
-  const epochNoFrac = Math.floor(epochMsNoFrac / 1000);
-  const fracNoFracMatch = isoNoFrac.match(/\.(\d{1,6})/);
-  const fracNoFrac = fracNoFracMatch ? fracNoFracMatch[1].padEnd(6, "0") : "000000";
-  const expectedNoFrac = `${epochNoFrac}.${fracNoFrac}`;
-  assert.equal(fracNoFrac, "000000");
+  // ISO without fractional seconds → defaults to .000000
+  const isoNoFrac = "2024-08-09T22:26:25Z";
+  const resultNoFrac = parseIsoInstantToSlackTs(isoNoFrac);
+  assert.match(resultNoFrac, /^\d+\.000000$/, "no fraction defaults to .000000");
+
+  // ISO with timezone offset (not Z) → same parsing
+  const isoWithTz = "2024-08-09T22:26:25.250-05:00";
+  const resultTz = parseIsoInstantToSlackTs(isoWithTz);
+  assert.match(resultTz, /^\d+\.250000$/, "timezone offset handled");
+
+  // Malformed: invalid date string → throws
+  assert.throws(
+    () => parseIsoInstantToSlackTs("not-a-date"),
+    Error,
+    "rejects invalid ISO instant"
+  );
+
+  // Malformed: empty string → throws (Date.parse returns NaN)
+  assert.throws(
+    () => parseIsoInstantToSlackTs(""),
+    Error,
+    "rejects empty string"
+  );
+
+  // Pre-epoch (negative epoch seconds) → throws
+  const preEpoch = "1969-12-31T23:59:59Z"; // Before Unix epoch
+  assert.throws(
+    () => parseIsoInstantToSlackTs(preEpoch),
+    Error,
+    "rejects pre-epoch timestamps"
+  );
+
+  // Verify output format is always "seconds.6digits"
+  const epoch = "2024-01-01T00:00:00.123Z";
+  const result = parseIsoInstantToSlackTs(epoch);
+  assert.match(result, /^\d+\.\d{6}$/, "output format is seconds.6-digit-fraction");
 });
 
 test("emitMessagesPass: non-monotonic row order with SQL-filtered since boundary", async () => {

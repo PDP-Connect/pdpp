@@ -15,6 +15,7 @@ import { buildMessageRowsQuery } from "./index.ts";
 interface Thresholds {
   channelLastTs: Record<string, string>;
   legacyLastTs: string | null;
+  sinceTs: string | null;
 }
 
 interface Seed {
@@ -118,15 +119,15 @@ const FIXTURE: Seed[] = [
 ];
 
 const SHAPES: Array<{ name: string; thresholds: Thresholds }> = [
-  { name: "no cursor (first run, full coverage)", thresholds: { channelLastTs: {}, legacyLastTs: null } },
-  { name: "legacy-only cursor", thresholds: { channelLastTs: {}, legacyLastTs: "180.000000" } },
+  { name: "no cursor (first run, full coverage)", thresholds: { channelLastTs: {}, legacyLastTs: null, sinceTs: null } },
+  { name: "legacy-only cursor", thresholds: { channelLastTs: {}, legacyLastTs: "180.000000", sinceTs: null } },
   {
     name: "per-channel cursors",
-    thresholds: { channelLastTs: { C1: "100.000001", C2: "250.000001" }, legacyLastTs: null },
+    thresholds: { channelLastTs: { C1: "100.000001", C2: "250.000001" }, legacyLastTs: null, sinceTs: null },
   },
   {
     name: "per-channel + legacy fallback",
-    thresholds: { channelLastTs: { C1: "100.000001" }, legacyLastTs: "180.000000" },
+    thresholds: { channelLastTs: { C1: "100.000001" }, legacyLastTs: "180.000000", sinceTs: null },
   },
 ];
 
@@ -142,7 +143,7 @@ for (const shape of SHAPES) {
 
 test("no cursor emits every unique (channel, ts) with the latest chunk's DATA", () => {
   const db = makeArchive(FIXTURE);
-  const rows = runRows(db, buildMessageRowsQuery({ channelLastTs: {}, legacyLastTs: null }));
+  const rows = runRows(db, buildMessageRowsQuery({ channelLastTs: {}, legacyLastTs: null, sinceTs: null }));
   assert.deepEqual(rows, [
     "C1|100.000001|c1-100-v2-latest",
     "C1|200.000001|c1-200-v2-latest",
@@ -158,7 +159,7 @@ test("per-channel cursor emits only rows strictly newer than the channel's curso
   // C1 cursor at 100 → emit 200, 300 (not 100). C2 cursor at 250 → emit nothing.
   const rows = runRows(
     db,
-    buildMessageRowsQuery({ channelLastTs: { C1: "100.000001", C2: "250.000001" }, legacyLastTs: null })
+    buildMessageRowsQuery({ channelLastTs: { C1: "100.000001", C2: "250.000001" }, legacyLastTs: null, sinceTs: null })
   );
   assert.deepEqual(rows, ["C1|200.000001|c1-200-v2-latest", "C1|300.000001|c1-300-only"]);
   db.close();
@@ -171,7 +172,7 @@ test("a newer higher-CHUNK_ID row for a past-cursor TS wins the dedup", () => {
     ...FIXTURE,
     { channelId: "C1", ts: "300.000001", chunkId: 12, data: "c1-300-resumed-latest" },
   ]);
-  const rows = runRows(db, buildMessageRowsQuery({ channelLastTs: { C1: "100.000001" }, legacyLastTs: null }));
+  const rows = runRows(db, buildMessageRowsQuery({ channelLastTs: { C1: "100.000001" }, legacyLastTs: null, sinceTs: null }));
   assert.ok(rows.includes("C1|300.000001|c1-300-resumed-latest"), "latest chunk for 300 must win");
   assert.ok(!rows.includes("C1|300.000001|c1-300-only"), "stale chunk for 300 must not be emitted");
   db.close();
@@ -179,7 +180,7 @@ test("a newer higher-CHUNK_ID row for a past-cursor TS wins the dedup", () => {
 
 test("legacy-only cursor filters across all channels", () => {
   const db = makeArchive(FIXTURE);
-  const rows = runRows(db, buildMessageRowsQuery({ channelLastTs: {}, legacyLastTs: "180.000000" }));
+  const rows = runRows(db, buildMessageRowsQuery({ channelLastTs: {}, legacyLastTs: "180.000000", sinceTs: null }));
   // Only TS > 180: C1 200, C1 300, C2 250 (not C1 100, not C2 150).
   assert.deepEqual(rows, [
     "C1|200.000001|c1-200-v2-latest",
