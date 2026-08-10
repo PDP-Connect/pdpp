@@ -1113,15 +1113,20 @@ function intersectUidRanges(rangeStr: string, searchUids: readonly number[]): st
   const parts = rangeStr.split(":");
   if (parts.length === 2 && parts[0] && parts[1]) {
     const start = Number(parts[0]);
-    const end = parts[1] === "*" ? Infinity : Number(parts[1]);
-    if (!Number.isNaN(start) && !Number.isNaN(end)) {
+    const end = parts[1] === "*" ? Number.POSITIVE_INFINITY : Number(parts[1]);
+    if (!(Number.isNaN(start) || Number.isNaN(end))) {
       // Range format: keep only UIDs in [start, end]
       return searchUids.filter((uid) => uid >= start && uid <= end).join(",");
     }
   }
 
   // Fallback: assume a comma-separated list, intersect with search result
-  const rangeUids = new Set(rangeStr.split(",").map((s) => Number(s.trim())).filter((n) => !Number.isNaN(n)));
+  const rangeUids = new Set(
+    rangeStr
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n))
+  );
   return searchUids.filter((uid) => rangeUids.has(uid)).join(",");
 }
 
@@ -1136,8 +1141,8 @@ function intersectUidRanges(rangeStr: string, searchUids: readonly number[]): st
  * classify this error and decide retry policy based on its deterministic nature.
  */
 class MissingOrInvalidInternalDateError extends Error {
-  constructor(uid: number | string, detail: string) {
-    super(`UID ${uid}: cannot verify internalDate for exact boundary filtering: ${detail}`);
+  constructor(uid: number | string, detail: string, options?: ErrorOptions) {
+    super(`UID ${uid}: cannot verify internalDate for exact boundary filtering: ${detail}`, options);
     this.name = "MissingOrInvalidInternalDateError";
   }
 }
@@ -1151,7 +1156,11 @@ class MissingOrInvalidInternalDateError extends Error {
  * Lexical comparison of ISO strings fails when offsets differ; epoch comparison
  * is timezone-safe and handles arbitrary precision correctly.
  */
-function isAtOrAfterBoundary(messageTimestamp: Date | string | undefined, boundaryIso: string, uid: number | string): boolean {
+function isAtOrAfterBoundary(
+  messageTimestamp: Date | string | undefined,
+  boundaryIso: string,
+  uid: number | string
+): boolean {
   // Reject missing internalDate when exact boundary is declared.
   // IMAP does not guarantee internalDate presence; without it, we cannot
   // prove the message is in scope. Throw to prevent silent exclusion and
@@ -1177,7 +1186,10 @@ function isAtOrAfterBoundary(messageTimestamp: Date | string | undefined, bounda
     if (e instanceof MissingOrInvalidInternalDateError) {
       throw e;
     }
-    throw new MissingOrInvalidInternalDateError(uid, `exception: ${e instanceof Error ? e.message : String(e)}`);
+    // biome-ignore lint/style/useErrorCause: cause IS passed via the options param, which this custom constructor forwards to super() — the linter doesn't see through the indirection.
+    throw new MissingOrInvalidInternalDateError(uid, `exception: ${e instanceof Error ? e.message : String(e)}`, {
+      cause: e,
+    });
   }
 }
 
@@ -1308,7 +1320,7 @@ function decodeFetchedBodies(
  * caller can still emit the envelope record.
  */
 async function fetchBodies(
-  client: ImapFlow,
+  client: Pick<ImapFlow, "fetchOne">,
   msg: FetchMessageObject,
   selection: ReturnType<typeof selectBodyParts>,
   wantBodies: boolean,
@@ -2719,7 +2731,7 @@ interface ImapDownloadResponse {
 }
 
 export async function fetchAttachmentPart(
-  client: ImapFlow,
+  client: Pick<ImapFlow, "download">,
   msg: FetchMessageObject,
   attachment: AttachmentRecord
 ): Promise<AttachmentDownload> {
@@ -2775,7 +2787,7 @@ export function validateAttachmentHydrationPreflight(args: {
 // ─── Delta pass (flag/label changes since priorModseq) ──────────────────
 
 async function runDeltaPass(
-  client: ImapFlow,
+  client: Pick<ImapFlow, "fetch">,
   session: AllMailSession,
   requested: Map<string, StreamRequest>,
   emitRecord: EmitRecordFn,
@@ -2832,7 +2844,11 @@ async function runDeltaPass(
 
 // ─── Threads pass ───────────────────────────────────────────────────────
 
-async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor: FingerprintCursor): Promise<void> {
+async function runThreadsPass(
+  client: Pick<ImapFlow, "fetch">,
+  emitRecord: EmitRecordFn,
+  cursor: FingerprintCursor
+): Promise<void> {
   await emit({
     type: "PROGRESS",
     stream: "threads",
@@ -2944,13 +2960,19 @@ interface AllMailDeps {
   streamsToBackfill?: readonly string[] | undefined;
 }
 
+// `mailbox` + `close` on top of the attachment-backfill client's
+// `search`/`fetchOne`/`fetch`, plus `download` for attachment part fetches.
+// `getMailboxLock` is deliberately excluded: `main()` acquires the lock
+// before calling into this function, so this function never needs it.
+type GmailAllMailClient = GmailAttachmentBackfillClient & Pick<ImapFlow, "close" | "download" | "mailbox">;
+
 /**
  * Drive Pass 1 (new messages or full resync), Pass 2 (flag/label deltas),
  * threads aggregation, and the final STATE emit — all inside the mailbox
  * lock. The list-mailbox lookup happens in `main()` before entering here.
  */
-async function runAllMailPasses(
-  client: ImapFlow,
+export async function runAllMailPasses(
+  client: GmailAllMailClient,
   allMail: ListResponse,
   state: Record<string, unknown>,
   deps: AllMailDeps

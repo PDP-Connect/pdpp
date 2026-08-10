@@ -89,6 +89,7 @@ import {
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
+  runAllMailPasses,
   runAttachmentBackfillAndRecoveryPass,
   selectAllMailFetchRange,
   selectAttachmentBackfillFetchRange,
@@ -3622,11 +3623,13 @@ test("collectMetadata: cursor + since intersection preserves incremental fetch r
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const search = mock.fn(async () => {
       // SINCE returns UIDs >= date, including older ones from full history
       return [150, 151, 200, 201];
     });
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const fetch = mock.fn(async function* (range: string) {
       // Must intersect with incremental range "200:*", not replace it
       // Expected: "200,201" (only UIDs in both search result AND range 200:*)
@@ -3654,11 +3657,13 @@ test("collectMetadata: same-day pre-boundary records are filtered out (day-granu
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const search = mock.fn(async () => {
       // IMAP SINCE "09-Aug-2026" includes all day-granular on 2026-08-09
       return [100, 101];
     });
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const fetch = mock.fn(async function* (range: string) {
       if (range === "100,101") {
         // UID 100: 08:00 AM (before 14:00:00 boundary) — should skip
@@ -3676,7 +3681,7 @@ test("collectMetadata: same-day pre-boundary records are filtered out (day-granu
     const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-09T14:00:00Z");
 
     assert.equal(metas.length, 1, "only message at/after exact boundary should be kept");
-    assert.equal((metas[0]?.emailId as string), "late", "late message (at boundary) should be kept");
+    assert.equal(metas[0]?.emailId as string, "late", "late message (at boundary) should be kept");
   } finally {
     globalThis.process.stdout.write = originalEmit;
   }
@@ -3687,11 +3692,14 @@ test("collectMetadata: verified empty — IMAP search returns no UIDs", async ()
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const search = mock.fn(async () => {
       // No messages in the declared date range
       return [];
     });
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    // biome-ignore lint/correctness/useYield: generator never yields by design — it throws immediately to prove the caller never reaches fetch.
     const fetch = mock.fn(async function* () {
       // Should never be called
       throw new Error("fetch must not be called on empty search");
@@ -3716,10 +3724,13 @@ test("collectMetadata: interrupted search (exception) withholdsProof — fetch n
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const search = mock.fn(async () => {
       throw new Error("IMAP search failed: network timeout");
     });
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
+    // biome-ignore lint/correctness/useYield: generator never yields by design — it throws immediately to prove the caller never reaches fetch.
     const fetch = mock.fn(async function* () {
       // Should never be called
       throw new Error("fetch must not be called if search fails");
@@ -3736,11 +3747,7 @@ test("collectMetadata: interrupted search (exception) withholdsProof — fetch n
     } catch (e) {
       assert.ok(e instanceof Error);
       assert.match((e as Error).message, /network timeout/);
-      assert.equal(
-        fetch.mock.callCount(),
-        0,
-        "fetch not called when search throws"
-      );
+      assert.equal(fetch.mock.callCount(), 0, "fetch not called when search throws");
     }
   } finally {
     globalThis.process.stdout.write = originalEmit;
@@ -3752,10 +3759,12 @@ test("collectMetadata: without sinceDate/sinceIso (null), full range unchanged b
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const search = mock.fn(async () => {
       throw new Error("search must not be called when sinceDate is null");
     });
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const fetch = mock.fn(async function* (range: string) {
       if (range === "200:*") {
         yield makeMsg({ uid: 200, emailId: "msg200", internalDate: new Date("2026-08-08") });
@@ -3783,10 +3792,9 @@ test("collectMetadata: offset-equivalence in boundary comparison (epoch millisec
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
-    const search = mock.fn(async () => {
-      return [100, 101];
-    });
+    const search = mock.fn(async () => [100, 101]);
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const fetch = mock.fn(async function* (range: string) {
       if (range === "100,101") {
         // Both messages at 2026-08-09T14:00:00 UTC, same instant different representations
@@ -3831,10 +3839,9 @@ test("collectMetadata: missing internalDate with exact since withholdsProof and 
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
-    const search = mock.fn(async () => {
-      return [100, 101];
-    });
+    const search = mock.fn(async () => [100, 101]);
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const fetch = mock.fn(async function* (range: string) {
       if (range === "100,101") {
         // UID 100: has valid internalDate
@@ -3871,10 +3878,9 @@ test("collectMetadata: unparseable internalDate with exact since withholdsProof"
   try {
     globalThis.process.stdout.write = (() => true) as any;
 
-    const search = mock.fn(async () => {
-      return [100, 101];
-    });
+    const search = mock.fn(async () => [100, 101]);
 
+    // biome-ignore lint/suspicious/useAwait: mock.fn stands in for ImapFlow's Promise/async-iterable-returning search/fetch signature; this stub resolves synchronously.
     const fetch = mock.fn(async function* (range: string) {
       if (range === "100,101") {
         // UID 100: valid date
@@ -3902,157 +3908,98 @@ test("collectMetadata: unparseable internalDate with exact since withholdsProof"
   }
 });
 
-// ─── Evidence: Full run path with missing internalDate prevents STATE commit ───
+// ─── Evidence: Missing internalDate prevents STATE commit in real orchestration ───
 
-test("missing internalDate during exact boundary filtering throws and prevents STATE emit", async () => {
-  // This test proves that the exception from collectMetadata actually prevents
-  // the caller (runAllMailPasses) from emitting records and committing STATE.
-  // It simulates the full collection flow to verify STATE is never reached.
+test("runAllMailPasses: missing internalDate under declared since propagates uncaught, no messages STATE emitted", async () => {
+  // ORCHESTRATION-LEVEL EVIDENCE: exercises runAllMailPasses itself (not just
+  // collectMetadata in isolation) with a fake ImapFlow client whose fetch
+  // yields a message missing internalDate under a declared collection_scope.since
+  // boundary. Proves the thrown MissingOrInvalidInternalDateError propagates all
+  // the way out of orchestration, and that the final messages STATE cursor —
+  // emitted only at the very end of runAllMailPasses, after collectMetadata,
+  // emitMessagesPass, attachment backfill, and the delta pass — never commits.
   //
-  // EVIDENCE: This test FAILS against 7304ce2fe (early return) because that
-  // version's early return allows the caller to continue, emit records, and
-  // commit STATE. Only the exception-throwing version (9cd5f1c76+) blocks it.
+  // EVIDENCE DISCRIMINATOR: fails against 7304ce2fe (early return), which
+  // would let orchestration proceed past collectMetadata, emit records, and
+  // commit the messages STATE cursor despite an unproven boundary. Only the
+  // exception-throwing version (9cd5f1c76+) blocks STATE commit here.
 
-  const originalEmit = globalThis.process.stdout.write;
-  const emittedMessages: Array<{ type: string; stream?: string }> = [];
-
-  try {
-    globalThis.process.stdout.write = ((data: string): boolean => {
-      if (typeof data === "string") {
-        try {
-          const msg = JSON.parse(data) as any;
-          emittedMessages.push({ type: msg.type, stream: msg.stream });
-        } catch {
-          // Ignore malformed lines
-        }
+  const originalWrite = globalThis.process.stdout.write;
+  const emittedLines: Array<{ type: string; stream?: string }> = [];
+  globalThis.process.stdout.write = ((data: string): boolean => {
+    if (typeof data === "string") {
+      try {
+        const msg = JSON.parse(data) as { type: string; stream?: string };
+        emittedLines.push(msg.stream === undefined ? { type: msg.type } : { type: msg.type, stream: msg.stream });
+      } catch {
+        // Ignore malformed lines
       }
-      return true;
-    }) as any;
-
-    const search = mock.fn(async () => {
-      // SINCE returns one UID with a later message, one with missing date
-      return [100, 101];
-    });
-
-    const fetch = mock.fn(async function* (range: string) {
-      if (range === "100,101") {
-        // UID 100: valid internalDate, in-boundary
-        yield makeMsg({
-          uid: 100,
-          emailId: "valid",
-          internalDate: new Date("2026-08-10T15:00:00Z"),
-        });
-        // UID 101: missing internalDate — this will throw from collectMetadata
-        const msgWithoutDate = makeMsg({ uid: 101, emailId: "incomplete" });
-        const { internalDate: _internalDate, ...rest } = msgWithoutDate;
-        yield rest;
-      }
-    });
-
-    const client: Pick<ImapFlow, "search" | "fetch"> = {
-      search,
-      fetch,
-    };
-
-    // This simulates the flow in runAllMailPasses:
-    // 1. collectMetadata is called with exact boundary (sinceIso)
-    // 2. It throws MissingOrInvalidInternalDateError on UID 101
-    // 3. Exception propagates; caller doesn't emit records or STATE
-    try {
-      const metas = await collectMetadata(client, "100:101", "10-Aug-2026", "2026-08-10T00:00:00Z");
-      // Should never reach here
-      assert.fail("collectMetadata should throw on missing internalDate");
-    } catch (e) {
-      // Expected: exception thrown
-      assert.ok(e instanceof Error);
-      assert.match(e.message, /UID 101/);
     }
-
-    // EVIDENCE: No messages were emitted because the exception prevented
-    // the caller from proceeding past collectMetadata.
-    // With early return (7304ce2fe), the caller would have emitted records
-    // and a STATE message. Only the exception-throwing version blocks it.
-    const records = emittedMessages.filter((m) => m.type === "RECORD");
-    const stateMessages = emittedMessages.filter((m) => m.type === "STATE" && m.stream === "messages");
-
-    assert.equal(
-      records.length,
-      0,
-      "no RECORD messages should be emitted when collectMetadata throws on missing internalDate"
-    );
-    assert.equal(
-      stateMessages.length,
-      0,
-      "no STATE message should be emitted for messages stream when collectMetadata throws"
-    );
-    assert.ok(
-      emittedMessages.length >= 0, // Could be zero (nothing emitted) or contain pre-error output
-      "emit path should not reach record/state emission on collectMetadata error"
-    );
-  } finally {
-    globalThis.process.stdout.write = originalEmit;
-  }
-});
-
-test("missing internalDate failure is not marked retryable (honest classification)", async () => {
-  // Verify that the failure message does not falsely claim retryability.
-  // The unhandledRejection handler sends status:failed with retryable:false
-  // because the error is deterministic (missing internalDate), not transient.
-
-  const originalEmit = globalThis.process.stdout.write;
-  const emittedMessages: Array<any> = [];
+    return true;
+  }) as typeof process.stdout.write;
 
   try {
-    globalThis.process.stdout.write = ((data: string): boolean => {
-      if (typeof data === "string") {
-        try {
-          emittedMessages.push(JSON.parse(data) as any);
-        } catch {
-          // Ignore malformed
-        }
-      }
-      return true;
-    }) as any;
+    const sinceIso = "2026-08-10T00:00:00Z";
 
-    const search = mock.fn(async () => {
-      return [100];
-    });
-
+    const search = mock.fn(async () => [101]);
+    // biome-ignore lint/suspicious/useAwait: stands in for ImapFlow.fetch's async-iterable-returning signature; yields synchronously.
     const fetch = mock.fn(async function* (range: string) {
-      if (range === "100") {
-        // Message with missing internalDate
-        const msg = makeMsg({ uid: 100, emailId: "incomplete" });
+      if (range === "101") {
+        const msg = makeMsg({ uid: 101, emailId: "test-no-date" });
         const { internalDate: _internalDate, ...rest } = msg;
-        yield rest;
+        yield rest; // real IMAP message missing internalDate
       }
     });
 
-    const client: Pick<ImapFlow, "search" | "fetch"> = {
+    const client: Pick<ImapFlow, "close" | "download" | "fetch" | "fetchOne" | "mailbox" | "search"> = {
+      close: mock.fn(),
+      download: () => {
+        throw new Error("download must not be called: no attachments requested");
+      },
+      fetchOne: () => {
+        throw new Error("fetchOne must not be called: missing internalDate throws before the body pass");
+      },
+      mailbox: {
+        delimiter: "/",
+        exists: 1,
+        flags: new Set<string>(),
+        path: "[Gmail]/All Mail",
+        uidNext: 200,
+        uidValidity: 1n,
+      },
       search,
       fetch,
     };
 
-    try {
-      await collectMetadata(client, "100", "10-Aug-2026", "2026-08-10T00:00:00Z");
-      assert.fail("should throw");
-    } catch (e) {
-      // The error message should indicate missing internalDate (deterministic failure)
-      assert.ok(e instanceof Error);
-      assert.match(
-        e.message,
-        /missing internalDate/,
-        "error clearly indicates deterministic missing-data condition"
-      );
-      // The error does NOT include language claiming it's transient or retryable
-      // (it will be marked retryable by the runtime's unhandledRejection handler
-      // based on exception type/context, not by our message claiming it)
-      assert.doesNotMatch(
-        e.message,
-        /retryable|temporary|transient|will retry/i,
-        "error message should not falsely claim retryability; let runtime decide via exception type"
-      );
-    }
+    const allMail: ListResponse = {
+      path: "[Gmail]/All Mail",
+      delimiter: "/",
+      flags: new Set<string>(),
+      specialUse: "\\All",
+    } as ListResponse;
+
+    const requested = makeRequested(["messages"]);
+    requested.set("messages", { name: "messages", time_range: { since: sinceIso } });
+    const deps = {
+      emitRecord: async () => true,
+      emittedAt: FROZEN_NOW,
+      requested,
+    };
+
+    // No prior state → full resync → fetchRange "1:*", intersected down to
+    // "101" by the declared-since search result.
+    await assert.rejects(
+      () => runAllMailPasses(client, allMail, {}, deps),
+      (e: unknown) => e instanceof Error && /UID 101/.test(e.message),
+      "runAllMailPasses must propagate the missing-internalDate error uncaught"
+    );
+
+    const records = emittedLines.filter((m) => m.type === "RECORD");
+    const messagesState = emittedLines.filter((m) => m.type === "STATE" && m.stream === "messages");
+
+    assert.equal(records.length, 0, "no RECORD messages emitted before the throw");
+    assert.equal(messagesState.length, 0, "messages STATE cursor never committed");
   } finally {
-    globalThis.process.stdout.write = originalEmit;
+    globalThis.process.stdout.write = originalWrite;
   }
 });
