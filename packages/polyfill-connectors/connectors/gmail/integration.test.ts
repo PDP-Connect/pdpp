@@ -3777,3 +3777,122 @@ test("collectMetadata: without sinceDate/sinceIso (null), full range unchanged b
     globalThis.process.stdout.write = originalEmit;
   }
 });
+
+test("collectMetadata: offset-equivalence in boundary comparison (epoch milliseconds, not lexical)", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => {
+      return [100, 101];
+    });
+
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // Both messages at 2026-08-09T14:00:00 UTC, same instant different representations
+        yield makeMsg({
+          uid: 100,
+          emailId: "utc",
+          // 14:00:00 UTC
+          internalDate: new Date("2026-08-09T14:00:00Z"),
+        });
+        yield makeMsg({
+          uid: 101,
+          emailId: "offset",
+          // Same instant as UID 100: 14:00:00 UTC = 10:00:00 EDT (-04:00)
+          internalDate: new Date("2026-08-09T10:00:00-04:00"),
+        });
+      }
+    });
+
+    const client = {
+      search,
+      fetch,
+    } as any;
+
+    // Boundary: 2026-08-09T14:00:00Z (UTC)
+    // UID 100: 2026-08-09T14:00:00Z (exact match)
+    // UID 101: 2026-08-09T10:00:00-04:00 (same instant via offset)
+    // Both should be included; epoch comparison (not lexical) proves equivalence
+    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-09T14:00:00Z");
+
+    assert.equal(metas.length, 2, "both messages at same instant (different offsets) should be included");
+    assert.deepEqual(
+      metas.map((m) => m.emailId),
+      ["utc", "offset"]
+    );
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: missing internalDate with exact since withholdsProof and stops enumeration", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => {
+      return [100, 101];
+    });
+
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // UID 100: has valid internalDate
+        yield makeMsg({ uid: 100, emailId: "valid", internalDate: new Date("2026-08-10") });
+        // UID 101: missing internalDate (IMAP does not guarantee it)
+        const msgWithoutDate = makeMsg({ uid: 101, emailId: "missing" });
+        const { internalDate: _internalDate, ...rest } = msgWithoutDate;
+        yield rest;
+      }
+    });
+
+    const client = {
+      search,
+      fetch,
+    } as any;
+
+    // exact sinceIso requires all messages to prove they're in scope
+    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
+
+    assert.equal(
+      metas.length,
+      1,
+      "stops at message with missing internalDate; does not include it or later messages"
+    );
+    assert.equal((metas[0]?.emailId as string), "valid", "only the valid message should be returned");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("collectMetadata: unparseable internalDate with exact since withholdsProof", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => {
+      return [100, 101];
+    });
+
+    const fetch = mock.fn(async function* (range: string) {
+      if (range === "100,101") {
+        // UID 100: valid date
+        yield makeMsg({ uid: 100, emailId: "valid", internalDate: new Date("2026-08-10") });
+        // UID 101: unparseable date string
+        yield makeMsg({ uid: 101, emailId: "invalid", internalDate: "not-a-date" });
+      }
+    });
+
+    const client = {
+      search,
+      fetch,
+    } as any;
+
+    const metas = await collectMetadata(client, "100:101", "09-Aug-2026", "2026-08-10T00:00:00Z");
+
+    assert.equal(metas.length, 1, "stops at unparseable internalDate");
+    assert.equal((metas[0]?.emailId as string), "valid");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});

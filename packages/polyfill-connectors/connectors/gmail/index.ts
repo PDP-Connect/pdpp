@@ -1126,11 +1126,35 @@ function intersectUidRanges(rangeStr: string, searchUids: readonly number[]): st
 }
 
 /**
- * Check if a message's received_at timestamp is >= the declared ISO boundary.
- * IMAP SINCE is day-granular; this enforces exact boundary at the time-of-day level.
+ * Compare message timestamp against declared boundary using epoch milliseconds.
+ * Returns true if message is at or after the boundary, false if before.
+ * Returns null if either timestamp is invalid/missing, signaling the need to
+ * withhold coverage rather than silently include/exclude.
+ *
+ * Lexical comparison of ISO strings fails when offsets differ; epoch comparison
+ * is timezone-safe and handles arbitrary precision correctly.
  */
-function isAtOrAfterBoundary(receivedAtIso: string, boundaryIso: string): boolean {
-  return receivedAtIso >= boundaryIso;
+function isAtOrAfterBoundary(messageTimestamp: Date | string | undefined, boundaryIso: string): boolean | null {
+  // Reject missing/invalid internalDate when exact boundary is declared.
+  // IMAP does not guarantee internalDate presence; without it, we cannot
+  // prove the message is in scope, so withhold coverage rather than guess.
+  if (!messageTimestamp) {
+    return null;
+  }
+
+  try {
+    const msgTime = new Date(messageTimestamp).getTime();
+    const boundaryTime = new Date(boundaryIso).getTime();
+
+    // Reject unparseable timestamps; can't compare without valid epoch values.
+    if (Number.isNaN(msgTime) || Number.isNaN(boundaryTime)) {
+      return null;
+    }
+
+    return msgTime >= boundaryTime;
+  } catch {
+    return null;
+  }
 }
 
 export async function collectMetadata(
@@ -1162,12 +1186,21 @@ export async function collectMetadata(
   const metas: FetchMessageObject[] = [];
   for await (const m of client.fetch(range, GMAIL_METADATA_FETCH_QUERY, { uid: true })) {
     // IMAP SINCE is day-granular; post-filter on exact ISO boundary to honor
-    // the stream's declared time_range.since at the second precision.
-    if (sinceIso && m.internalDate) {
-      const receivedAtIso = new Date(m.internalDate).toISOString();
-      if (!isAtOrAfterBoundary(receivedAtIso, sinceIso)) {
-        // Skip messages before the exact boundary; they were included by IMAP
-        // SINCE (day-granular) but fall outside the declared scope (second-precise).
+    // the stream's declared time_range.since at the second precision. When an
+    // exact boundary is declared, every message MUST have a valid internalDate
+    // to prove it's in scope. Missing or unparseable internalDate withholds
+    // coverage and prevents false complete claims.
+    if (sinceIso) {
+      const boundaryCheck = isAtOrAfterBoundary(m.internalDate, sinceIso);
+      if (boundaryCheck === null) {
+        // internalDate missing, invalid, or unparseable. Cannot prove this
+        // message is in scope. Withhold it and return early to signal
+        // incomplete coverage (no partial claims).
+        return metas;
+      }
+      if (!boundaryCheck) {
+        // Message before the exact boundary. Skip it; IMAP SINCE (day-granular)
+        // included it but exact scope (second-precise) excludes it.
         continue;
       }
     }
