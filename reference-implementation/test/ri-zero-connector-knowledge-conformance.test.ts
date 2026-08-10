@@ -2029,6 +2029,84 @@ test("parse closure: a malformed production file emits a typed parse-failure vio
   }
 });
 
+// ─── ri-parse-all-0810: close the remaining zero-knowledge parse fail-open ──
+//
+// The identity scanner (rules 1/6/7/4b) was fixed above to fail closed on a
+// parse error. Rule (5)'s data-load scanner (`scanFileDataLoads`) had its
+// own, independent `catch { return []; }` — the exact same fail-open shape,
+// on a DIFFERENT scanner entirely: a malformed or unsupported-syntax
+// production file containing a hidden `readFileSync`/`require`/dynamic
+// `import()` sibling-JSON data load would silently pass rule (5) even though
+// rule (1)/(6)/(7)/(4b) now correctly flag the same file as unparseable.
+// Both scanners now report the identical typed `unparseable-production-file`
+// violation through the one shared `parseFailureViolation` contract in
+// `ri-zero-connector-knowledge-ast-shared.ts`, so there is no second,
+// independently-drifting parse-error shape. These tests prove: (a) the
+// data-load scanner alone no longer returns clean on a malformed file that
+// hides a real connector-identity-carrying data load, and (b) the composer
+// (`scanFile`, which runs both AST scanners over the same file) reports the
+// resulting duplicate parse failure as exactly ONE actionable violation, not
+// two — a human fixing the file should see one entry, not one per scanner.
+
+test("parse closure (rule 5): a malformed production file hiding a connector data load cannot return clean from the data-load scanner alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-parse-closure-dataload-"));
+  try {
+    const badFile = join(dir, "synthetic-malformed-data-load.ts");
+    // Genuinely unparseable (unclosed brace, no valid recovery) AND, if it
+    // had parsed, would carry a real rule-5 violation: a readFileSync call
+    // reaching an unsanctioned sibling JSON path. Proves the scanner cannot
+    // parse far enough to see the call at all -- if this returned `[]`, a
+    // production file could hide arbitrary connector-identity data loads
+    // behind any syntax the parser rejects.
+    writeFileSync(
+      badFile,
+      [
+        "export function loadHiddenPolicy() {",
+        '  const raw = readFileSync("../connectors/gmail/policy.json", "utf8");',
+        "  if (raw === {{{",
+        "",
+      ].join("\n")
+    );
+    const violations = scanFileDataLoads(badFile, "synthetic-malformed-data-load.ts", repoRoot);
+    assert.ok(
+      violations.some((v) => v.rule === "unparseable-production-file" && v.file === "synthetic-malformed-data-load.ts"),
+      `scanFileDataLoads must fail closed on a parse error instead of returning [] -- a malformed file cannot be proven free of a hidden connector data load, got: ${JSON.stringify(violations)}`
+    );
+    assert.notDeepEqual(
+      violations,
+      [],
+      "a malformed file containing a hidden connector-identity data load must never resolve to a clean (empty) rule-5 scan"
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
+test("parse closure: a malformed production file reports exactly ONE actionable parse-failure violation, not one per AST scanner", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ri-zero-knowledge-parse-closure-dedup-"));
+  try {
+    const badFile = join(dir, "synthetic-malformed-dedup.ts");
+    writeFileSync(
+      badFile,
+      [
+        "export function loadHiddenPolicy(kind: string) {",
+        '  const raw = readFileSync("../connectors/gmail/policy.json", "utf8");',
+        '  return kind === "gmail" && raw === {{{',
+        "",
+      ].join("\n")
+    );
+    const violations = scanFile(badFile, "synthetic-malformed-dedup.ts", new Set(["gmail"]), repoRoot);
+    const parseFailures = violations.filter((v) => v.rule === "unparseable-production-file");
+    assert.equal(
+      parseFailures.length,
+      1,
+      `both the identity scanner (rules 1/6/7/4b) and the data-load scanner (rule 5) independently fail closed on the same parse error for this file; scanFile must collapse them to one actionable violation, not double-report the same unparseable file once per scanner, got: ${JSON.stringify(violations)}`
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("RI production code still contains zero connector/provider-specific executable knowledge after the universal per-node rewrite (regression, not just the synthetic attacks above)", () => {
   const violations = scanRepository({ repoRoot });
   assert.deepEqual(violations, [], formatViolationInventory(violations));

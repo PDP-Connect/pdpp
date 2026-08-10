@@ -49,6 +49,7 @@ import {
   type Node,
   nodeArrayField,
   nodeField,
+  parseFailureViolation,
   parseSource,
   walk,
 } from "./ri-zero-connector-knowledge-ast-shared.ts";
@@ -675,11 +676,9 @@ export function scanFileIdentity(
     // A file this scanner cannot parse is a file it cannot prove carries
     // zero connector knowledge — reporting nothing here would silently
     // certify unsupported or malformed production source as clean. Fail
-    // closed: a parse failure is itself a violation, not a skip.
-    const loc = error instanceof Error && "loc" in error ? (error as { loc?: { line?: number } }).loc : undefined;
-    const line = loc?.line ?? 0;
-    const reason = error instanceof Error ? error.message : String(error);
-    return [{ file: relPath, line, rule: "unparseable-production-file", snippet: reason }];
+    // closed via the shared typed contract (see that function's doc
+    // comment): a parse failure is itself a violation, not a skip.
+    return [parseFailureViolation(relPath, error)];
   }
 
   const { moduleConsts, localFunctions } = collectConstsAndFunctions(program);

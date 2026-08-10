@@ -92,6 +92,7 @@ import {
   type Node,
   nodeArrayField,
   nodeField,
+  parseFailureViolation,
   parseSource,
   walk,
 } from "./ri-zero-connector-knowledge-ast-shared.ts";
@@ -804,11 +805,17 @@ export function scanFileDataLoads(
     // instead of silently falling into the catch-and-report-nothing branch
     // below on every real .tsx/.jsx production file.
     program = parseSource(raw, absPath);
-  } catch {
-    // A file that fails to parse is scanned by the literal-regex rules
-    // elsewhere; this scanner reports nothing rather than crashing the
-    // whole guard on one malformed file.
-    return [];
+  } catch (error) {
+    // A file this scanner cannot parse is a file it cannot prove makes no
+    // sibling-JSON/YAML data load carrying connector knowledge (rule 5) —
+    // reporting nothing here would silently certify unsupported or
+    // malformed production source as clean, the same fail-open gap already
+    // closed on the identity scanner's side. Fail closed via the shared
+    // typed contract (see that function's doc comment): a parse failure is
+    // itself a violation, not a skip. `scanFile` collapses this against the
+    // identity scanner's own parse-failure report for the same file into
+    // one actionable violation.
+    return [parseFailureViolation(relPath, error)];
   }
 
   const { moduleConsts, localFunctions } = collectConstsAndFunctions(program);

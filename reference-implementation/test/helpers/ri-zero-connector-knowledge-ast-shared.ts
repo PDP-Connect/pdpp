@@ -165,6 +165,39 @@ export function parseSource(raw: string, absPath: string): Node {
 }
 
 /**
+ * The one shared typed contract every `parseSource` consumer in this
+ * conformance subsystem must report through when `parseSource` throws.
+ * A file neither AST scanner (`ri-zero-connector-knowledge-identity-scan.ts`,
+ * rules 1/6/7/4b; `ri-zero-connector-knowledge-data-load-scan.ts`, rule 5)
+ * can parse is a file neither can prove carries zero connector knowledge —
+ * silently returning `[]` from either scanner's catch block would certify an
+ * unparseable production file as clean by omission. Both scanners' catch
+ * blocks call this single function so the violation shape (rule name, line
+ * extraction from the Babel error's `.loc`, reason text) can never drift
+ * into two inconsistent parse-error contracts as the scanners evolve
+ * independently. `scanFile` (the composer that runs both scanners over the
+ * same file) is responsible for collapsing the resulting duplicate report —
+ * one parse failure, reported once per scanner, is still only one actionable
+ * violation for a human to act on — not this function, which only knows
+ * about its own single call site.
+ */
+export const PARSE_FAILURE_RULE = "unparseable-production-file";
+
+export interface ParseFailureViolation {
+  file: string;
+  line: number;
+  rule: typeof PARSE_FAILURE_RULE;
+  snippet: string;
+}
+
+export function parseFailureViolation(relPath: string, error: unknown): ParseFailureViolation {
+  const loc = error instanceof Error && "loc" in error ? (error as { loc?: { line?: number } }).loc : undefined;
+  const line = loc?.line ?? 0;
+  const reason = error instanceof Error ? error.message : String(error);
+  return { file: relPath, line, rule: PARSE_FAILURE_RULE, snippet: reason };
+}
+
+/**
  * Collect every `const NAME = <init>` declarator anywhere in the file
  * (module-level or nested inside a function body — e.g. a local `const
  * moduleSpecifier = "./x.ts"` right above a dynamic `import()`), plus every
