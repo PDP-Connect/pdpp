@@ -720,14 +720,17 @@ function cgroupV1CpuQuota(probe: CpuQuotaProbe): QuotaResult | null {
 // cgroup v1's unset-limit sentinel is the kernel's LONG_MAX rounded DOWN to
 // the page boundary (LONG_MAX & PAGE_MASK on a 4KiB-page 64-bit system,
 // i.e. 9223372036854775807n & ~4095n = 9223372036854771712n) — not a round
-// power-of-two like 2^63-1 or 2^64-page_size. Expressed as a BigInt literal
+// power-of-two like 2^63-1 or 2^64-page_size. Expressed as a BigInt (via the
+// constructor, not an `n`-suffixed literal — this file is reachable from
+// apps/console's single tsc program, which type-checks it under console's
+// own ES2017 target where BigInt literal syntax is unavailable, TS2737)
 // so the source documents the EXACT kernel value without a lossy Number
 // literal (9223372036854771712 is not exactly representable as a JS
 // Number); converted to Number only where it's actually used, in a
 // tolerance-based comparison that doesn't depend on bit-exactness. Any
 // reading within 1% of this value (allowing for other common page sizes) is
 // treated as "no real limit configured," not a literal ~8-exabyte quota.
-const V1_MEMORY_UNSET_SENTINEL_BYTES = Number(9_223_372_036_854_771_712n);
+const V1_MEMORY_UNSET_SENTINEL_BYTES = Number(BigInt("9223372036854771712"));
 
 function parseCgroupV1MemoryLimit(raw: string): QuotaResult {
   const bytes = Number(raw.trim());
