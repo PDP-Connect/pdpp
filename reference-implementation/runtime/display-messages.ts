@@ -65,35 +65,9 @@
  *   - Empty strings are forbidden.
  */
 
-import {
-  CONNECTOR_DEFECT_REASONS,
-  INFORMATIONAL_RECOVERY_REASONS,
-  OWNER_REQUIRED_REASONS,
-  PROVIDER_PRESSURE_REASONS,
-} from "./recovery-decision.ts";
+import { RUNTIME_GENERIC_REASON_CODES } from "./recovery-reason-codes.ts";
 
-/**
- * RI-owned generic reason vocabulary: exactly the codes
- * `runtime/recovery-decision.ts`'s `classifyRecoveryReason` already
- * recognizes as normalized, connector-neutral recovery classes (imported
- * from its exported sets, plus the three literal `RecoveryClass` members —
- * `run_cap_deferred` / `retry_exhausted` / `temporary_unavailable` — that
- * classifier checks by literal equality rather than set membership). No
- * other file may claim membership in this set; the connector package's
- * `reason-display-messages.test.ts` asserts no connector manifest declares
- * one of these codes in its own `reason_display_messages`.
- */
-export const RUNTIME_GENERIC_REASON_CODES: ReadonlySet<string> = new Set([
-  ...PROVIDER_PRESSURE_REASONS,
-  ...OWNER_REQUIRED_REASONS,
-  ...CONNECTOR_DEFECT_REASONS,
-  ...INFORMATIONAL_RECOVERY_REASONS,
-  "run_cap_deferred",
-  "retry_exhausted",
-  "temporary_unavailable",
-]);
-
-/** Vetted end-user copy for the RI-owned generic recovery vocabulary above. */
+/** Vetted end-user copy for the RI-owned generic recovery vocabulary. */
 const RUNTIME_GENERIC_DISPLAY_MESSAGES: Record<string, string> = {
   auth_failure: "Your sign-in expired and needs to be renewed before we can continue",
   gone: "That item is no longer available at the source",
@@ -111,15 +85,19 @@ const RUNTIME_GENERIC_DISPLAY_MESSAGES: Record<string, string> = {
   user_disabled: "This was turned off in your collection settings",
 };
 
-const missingGenericCopy = [...RUNTIME_GENERIC_REASON_CODES].filter(
+// Verify that all generic reason codes have vetted display copy.
+const missingCopy = [...RUNTIME_GENERIC_REASON_CODES].filter(
   (code) => !(code in RUNTIME_GENERIC_DISPLAY_MESSAGES)
 );
-if (missingGenericCopy.length > 0) {
+if (missingCopy.length > 0) {
   throw new Error(
-    `RUNTIME_GENERIC_DISPLAY_MESSAGES is missing vetted copy for: ${missingGenericCopy.join(", ")} — ` +
-      "every code in RUNTIME_GENERIC_REASON_CODES must have an entry."
+    `RUNTIME_GENERIC_DISPLAY_MESSAGES is missing vetted copy for: ${missingCopy.join(", ")} — ` +
+      "every code in recovery-reason-codes.ts's RUNTIME_GENERIC_REASON_CODES must have an entry."
   );
 }
+
+// Re-export from the authoritative source
+export { RUNTIME_GENERIC_REASON_CODES } from "./recovery-reason-codes.ts";
 
 /**
  * RI's generic-only registry. Does NOT include connector-specific copy —
