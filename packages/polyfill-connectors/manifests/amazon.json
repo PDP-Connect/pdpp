@@ -191,7 +191,6 @@
     },
     {
       "name": "order_items",
-      "required": true,
       "description": "Line items within Amazon orders.",
       "display": {
         "label": "Your order line items",
