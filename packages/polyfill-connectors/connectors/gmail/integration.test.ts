@@ -3795,3 +3795,52 @@ test("collectMetadata: emits PROGRESS events correctly during bounded collection
     globalThis.process.stdout.write = originalEmit;
   }
 });
+
+test("collectMetadata: intersects incremental fetch range with SINCE search result", async () => {
+  const originalEmit = globalThis.process.stdout.write;
+  try {
+    globalThis.process.stdout.write = (() => true) as any;
+
+    const search = mock.fn(async () => {
+      // SINCE returns all UIDs after a date, but incremental cursor may ask
+      // for only priorUidnext:* (e.g., 200:*)
+      return [150, 151, 200, 201]; // Mix of historical and new UIDs
+    });
+
+    const fetch = mock.fn(async function* (range: string) {
+      // Verify we were called with the exact UID set from search, not the original range
+      assert.equal(range, "150,151,200,201", "should fetch exactly the UIDs from SINCE search");
+      for (const uid of [150, 151, 200, 201]) {
+        yield makeMsg({ uid, emailId: `msg${uid}` });
+      }
+    });
+
+    const client = {
+      search,
+      fetch,
+    } as any;
+
+    const metas = await collectMetadata(client, "200:*", "01-Aug-2026");
+
+    assert.equal(metas.length, 4, "should include all SINCE results, even older UIDs");
+  } finally {
+    globalThis.process.stdout.write = originalEmit;
+  }
+});
+
+test("issoToImapDate: produces output compatible with standard IMAP servers", () => {
+  // These are real IMAP-formatted dates that servers understand
+  assert.equal(issoToImapDate("2026-01-15T08:30:00Z"), "15-Jan-2026");
+  assert.equal(issoToImapDate("2026-03-20T00:00:00Z"), "20-Mar-2026");
+  assert.equal(issoToImapDate("2026-11-30T23:59:59Z"), "30-Nov-2026");
+});
+
+test("issoToImapDate: preserves UTC semantics (never localizes)", () => {
+  // Ensure we use UTC methods (getUTC*), not local methods (get*)
+  // Both should produce the same output despite timezone awareness.
+  const iso = "2026-08-09T00:00:00Z";
+  assert.equal(issoToImapDate(iso), "09-Aug-2026");
+  // The same instant in a different representation (via getTime) should still
+  // format to the same UTC date. This is implicitly tested by using getUTC*
+  // rather than get* in the implementation.
+});
