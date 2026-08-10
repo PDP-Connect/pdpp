@@ -1171,7 +1171,12 @@ interface ScanRolloutsArgs {
 }
 
 interface ScanRolloutsResult {
+  functionCallsConsidered: number;
+  functionCallsEmitted: number;
+  messagesConsidered: number;
+  messagesEmitted: number;
   parsedFiles: number;
+  scanOutcome: "complete" | "unreadable" | "parse_error";
 }
 
 /** Carry a file's prior cursor forward verbatim into the next STATE, and keep
@@ -1320,34 +1325,97 @@ async function processRolloutEntry(
 }
 
 async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult> {
-  const baseExists = (await listIfExists(args.baseDir)) !== null;
+  let baseErr: NodeJS.ErrnoException | null = null;
+  const baseExists = await (async () => {
+    try {
+      return (await listIfExists(args.baseDir)) !== null;
+    } catch (e) {
+      baseErr = e as NodeJS.ErrnoException;
+      return false;
+    }
+  })();
+
   if (!baseExists) {
     emit({
       type: "PROGRESS",
       message: "Codex phase=index pass=index sessions_dir_readable=false",
     });
     await waitForEmitDrain();
-    return { parsedFiles: 0 };
+    const scanOutcome =
+      baseErr && (baseErr as NodeJS.ErrnoException & { code?: string }).code === "ENOENT" ? "complete" : "unreadable";
+    return {
+      parsedFiles: 0,
+      messagesEmitted: 0,
+      messagesConsidered: 0,
+      functionCallsEmitted: 0,
+      functionCallsConsidered: 0,
+      scanOutcome,
+    };
   }
+
+  // Wrap emitRecord to count messages/function_calls
+  const originalEmit = args.emitRecord;
+  let messagesEmitted = 0;
+  let functionCallsEmitted = 0;
+  args.emitRecord = (stream: string, data: RecordData) => {
+    if (stream === "messages") {
+      messagesEmitted += 1;
+    }
+    if (stream === "function_calls") {
+      functionCallsEmitted += 1;
+    }
+    originalEmit(stream, data);
+  };
+
   let totalRollouts = 0;
   let parsedRollouts = 0;
-  for await (const entry of walkRollouts(args.baseDir, args.scope)) {
-    // Root membership is decided from the path alone, so an out-of-root rollout
-    // is never opened, read, or parsed.
-    if (!isPathWithinSourceRoots(entry.path, args.scope)) {
-      continue;
+  let scanOutcome: "complete" | "unreadable" | "parse_error" = "complete";
+  try {
+    for await (const entry of walkRollouts(args.baseDir, args.scope)) {
+      if (!isPathWithinSourceRoots(entry.path, args.scope)) {
+        continue;
+      }
+      totalRollouts += 1;
+      try {
+        if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
+          parsedRollouts += 1;
+        }
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        if (err.code && err.code !== "ENOENT") {
+          scanOutcome = "parse_error";
+        }
+      }
     }
-    totalRollouts += 1;
-    if ((await processRolloutEntry(entry, args, totalRollouts)) === "parsed") {
-      parsedRollouts += 1;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code && err.code !== "ENOENT") {
+      scanOutcome = "parse_error";
     }
   }
+
   emit({
     type: "PROGRESS",
     message: `Codex phase=index pass=index total_items=${totalRollouts} parsed_items=${parsedRollouts}`,
   });
   await waitForEmitDrain();
-  return { parsedFiles: parsedRollouts };
+
+  // Calculate considered counts from parsed cursors
+  let messagesConsidered = 0;
+  let functionCallsConsidered = 0;
+  for (const cursor of Object.values(args.newFileCursors)) {
+    messagesConsidered += cursor.message_count;
+    functionCallsConsidered += cursor.function_call_count;
+  }
+
+  return {
+    parsedFiles: parsedRollouts,
+    messagesEmitted,
+    messagesConsidered,
+    functionCallsEmitted,
+    functionCallsConsidered,
+    scanOutcome,
+  };
 }
 
 // ─── Session emission ───────────────────────────────────────────────────
@@ -1914,8 +1982,16 @@ async function main(): Promise<void> {
     state: startMsg.state || {},
   });
 
+  let rolloutScan: ScanRolloutsResult = {
+    parsedFiles: 0,
+    messagesEmitted: 0,
+    messagesConsidered: 0,
+    functionCallsEmitted: 0,
+    functionCallsConsidered: 0,
+    scanOutcome: "complete",
+  };
   if (needRollouts) {
-    const rolloutScan = await scanRollouts({
+    rolloutScan = await scanRollouts({
       activeQuietMs: resolveActiveRolloutQuietMs(),
       baseDir: dirs.baseDir,
       fileCursors,
@@ -1958,10 +2034,73 @@ async function main(): Promise<void> {
   await waitForEmitDrain();
 
   if (requested.has("coverage_diagnostics")) {
+    // Build and emit derived coverage records for messages and function_calls
+    const derivedRecords: RecordData[] = [];
+
+    if (requested.has("messages")) {
+      const status =
+        rolloutScan.scanOutcome === "complete"
+          ? rolloutScan.messagesEmitted > 0
+            ? "collected"
+            : "verified_empty"
+          : "incomplete";
+      derivedRecords.push({
+        id: "coverage:derived_messages",
+        store: "derived_messages",
+        stream: "messages",
+        status,
+        reason:
+          status === "incomplete"
+            ? `rollout enumeration failed: ${rolloutScan.scanOutcome}`
+            : status === "collected"
+              ? `${rolloutScan.messagesEmitted} message records emitted`
+              : rolloutScan.messagesConsidered === 0
+                ? "enumeration complete, zero messages in scope"
+                : `enumeration complete, ${rolloutScan.messagesConsidered} considered but none emitted (filtered or deferred)`,
+        ...(enumerationScopeFingerprint(enumerationScope)
+          ? { collection_scope: enumerationScopeFingerprint(enumerationScope) }
+          : {}),
+      });
+    }
+
+    if (requested.has("function_calls")) {
+      const status =
+        rolloutScan.scanOutcome === "complete"
+          ? rolloutScan.functionCallsEmitted > 0
+            ? "collected"
+            : "verified_empty"
+          : "incomplete";
+      derivedRecords.push({
+        id: "coverage:derived_function_calls",
+        store: "derived_function_calls",
+        stream: "function_calls",
+        status,
+        reason:
+          status === "incomplete"
+            ? `rollout enumeration failed: ${rolloutScan.scanOutcome}`
+            : status === "collected"
+              ? `${rolloutScan.functionCallsEmitted} function_call records emitted`
+              : rolloutScan.functionCallsConsidered === 0
+                ? "enumeration complete, zero function_calls in scope"
+                : `enumeration complete, ${rolloutScan.functionCallsConsidered} considered but none emitted (filtered or deferred)`,
+        ...(enumerationScopeFingerprint(enumerationScope)
+          ? { collection_scope: enumerationScopeFingerprint(enumerationScope) }
+          : {}),
+      });
+    }
+
+    // Emit derived records
+    for (const record of derivedRecords) {
+      emitRecord("coverage_diagnostics", record);
+      await waitForEmitDrain();
+    }
+
+    // Emit STATE with snapshot including both static and derived records
+    const allCoverageRecords = [...inventory.coverage, ...derivedRecords];
     emit({
       type: "STATE",
       stream: "coverage_diagnostics",
-      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(inventory.coverage) },
+      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(allCoverageRecords as never) },
     });
     await waitForEmitDrain();
   }

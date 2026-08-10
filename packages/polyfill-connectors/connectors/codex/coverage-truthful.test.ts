@@ -165,3 +165,57 @@ test("codex coverage truth: status differentiates complete vs incomplete scans",
   assert.equal(messagesRecord.data.status, "collected", "populated rollouts must show collected");
   assert.equal(functionCallsRecord.data.status, "collected", "populated rollouts must show collected");
 });
+
+test("codex coverage truth: unreadable sessions dir shows incomplete status", async () => {
+  // Create a home with an unreadable sessions directory (EACCES)
+  const { execSync } = await import("node:child_process");
+  const unreadableHome = join(import.meta.dirname, "../../fixtures/codex/unreadable-home");
+  const sessionDir = join(unreadableHome, "sessions");
+
+  // Setup: create the dir, make it unreadable
+  execSync(`mkdir -p "${sessionDir}"`);
+  execSync(`chmod 000 "${sessionDir}"`);
+
+  try {
+    const result = await runConnectorProtocolSubprocess({
+      allowFailedDone: true,
+      cwd: join(import.meta.dirname, "../.."),
+      entrypoint: "connectors/codex/index.ts",
+      env: { CODEX_HOME: unreadableHome },
+      start: {
+        scope: {
+          streams: [{ name: "messages" }, { name: "function_calls" }, { name: "coverage_diagnostics" }],
+        },
+        type: "START",
+      },
+    });
+
+    const recs = records(result.messages);
+    const coverageRecs = recs.filter((r) => r.stream === "coverage_diagnostics");
+
+    const messagesRecord = coverageRecs.find((r) => r.data.store === "derived_messages");
+    const functionCallsRecord = coverageRecs.find((r) => r.data.store === "derived_function_calls");
+
+    assert(messagesRecord, "must have coverage record for messages");
+    assert(functionCallsRecord, "must have coverage record for function_calls");
+
+    // EACCES (permission denied) = incomplete scan, not verified_empty
+    assert.equal(
+      messagesRecord.data.status,
+      "incomplete",
+      "messages with unreadable sessions (EACCES) must show incomplete"
+    );
+    assert.equal(
+      functionCallsRecord.data.status,
+      "incomplete",
+      "function_calls with unreadable sessions (EACCES) must show incomplete"
+    );
+  } finally {
+    // Cleanup: restore permissions
+    try {
+      execSync(`chmod 755 "${sessionDir}"`);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+});
