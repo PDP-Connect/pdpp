@@ -1126,6 +1126,10 @@ test("runCollectorConnector skips state PUT when the queue still has retrying it
       deviceToken: "device-token",
       queuePath,
       sourceInstanceId: "src-1",
+      outboxPolicy: {
+        maxDrainDurationMs: 2000,
+        retryBackoffMs: 100,
+      },
     });
 
     // Ingest never succeeded → state must NOT have been advanced.
