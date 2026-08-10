@@ -156,9 +156,15 @@ test("semantic backfill holds one instance fence through later-stream meta compl
       sameInstanceFinished = true;
     });
     await new Promise((resolve) => setImmediate(resolve));
+    // withConnectorInstanceWrite acquires the per-instance key BEFORE the
+    // global admission slot (see its docstring), so a caller queued behind
+    // this instance's held key never reaches acquireAdmission and holds no
+    // admission slot. Only the backfill's in-flight `first` stream write
+    // (the key holder) counts toward activeWriters here; sameInstanceIngest
+    // is parked purely on the free, in-process keyed gate.
     assert.deepEqual(connectorInstanceWriteCoordinatorStatsForTests(), {
       activeOwnerships: 1,
-      activeWriters: 2,
+      activeWriters: 1,
       keyedEntries: 1,
       queuedWriters: 0,
     });
