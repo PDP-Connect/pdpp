@@ -83,6 +83,9 @@ import { validateItemsResponse, validateRecord, validateSystemInfo, validateView
 let MAX_JSON_BYTES = 50 * 1024 * 1024; // 50MB per response (streaming byte cap, injectable for testing)
 let MAX_PAGES_PER_STREAM = 1000; // Guard against infinite pagination (injectable for testing)
 
+// Leading YYYY-MM-DD of any date/datetime string; used to normalize PremiereDate.
+const LEADING_DATE_RE = /^(\d{4}-\d{2}-\d{2})/;
+
 // ─── HTTP Governor ────────────────────────────────────────────────────────
 
 const httpGovernor = createConnectorHttpGovernor({
@@ -409,6 +412,28 @@ function libraryRecord(view: Record<string, unknown>, fetchedAt: string): Record
 }
 
 /**
+ * Normalize Jellyfin's `PremiereDate` to the `items.release_date` schema's
+ * bare `YYYY-MM-DD` shape. Jellyfin serializes PremiereDate as a full
+ * .NET DateTime round-trip string (e.g. "1994-09-23T00:00:00.0000000Z"),
+ * never a bare date — the schema's own regex source (schemas.ts) expects
+ * only the date portion, so the leading `YYYY-MM-DD` is extracted here
+ * rather than relaxing the schema to accept a shape release_date was never
+ * meant to carry.
+ *
+ * Absence is preserved honestly: missing/null/non-string/unparseable input
+ * becomes null rather than a fabricated date, and a value that merely
+ * doesn't parse does not discard the rest of the record — only this field
+ * degrades to null.
+ */
+function normalizeReleaseDate(premiereDate: unknown): string | null {
+  if (typeof premiereDate !== "string") {
+    return null;
+  }
+  const match = premiereDate.match(LEADING_DATE_RE);
+  return match?.[1] ?? null;
+}
+
+/**
  * Build an items record from a Jellyfin Item with UserData and library_id.
  */
 function itemRecord(item: Record<string, unknown>, libraryId: string): RecordData {
@@ -448,7 +473,7 @@ function itemRecord(item: Record<string, unknown>, libraryId: string): RecordDat
     last_played_date: lastPlayedDate,
     image_url: imageUrl,
     genres: (item.Genres as string[]) ?? [],
-    release_date: (item.PremiereDate ?? null) as string | null,
+    release_date: normalizeReleaseDate(item.PremiereDate),
     provider_ids: providerIds,
     production_year: (item.ProductionYear ?? null) as number | null,
   };
@@ -881,4 +906,4 @@ export const __setMaxPagesPerStream = (n: number) => {
 export const __setMaxJsonBytes = (n: number) => {
   MAX_JSON_BYTES = n;
 };
-export { buildMediaBrowserAuthHeader, deriveStableDeviceId };
+export { buildMediaBrowserAuthHeader, deriveStableDeviceId, normalizeReleaseDate };
