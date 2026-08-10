@@ -130,13 +130,13 @@ const SANCTIONED_GENERIC_DATA_READ_CALL_SITES: ReadonlySet<string> = new Set([
   // documented /proc/${pid}/status false-positive class (see this file's own
   // checkReadFileCall comment), not a connector/provider identity read.
   // cgroupMounted()'s own presence probe:
-  "reference-implementation/server/cpu-quota.ts:143",
+  "reference-implementation/server/cpu-quota.ts:150",
   // resolveV2CgroupDir()'s mountinfo + cgroup reads:
-  "reference-implementation/server/cpu-quota.ts:528",
-  "reference-implementation/server/cpu-quota.ts:533",
+  "reference-implementation/server/cpu-quota.ts:580",
+  "reference-implementation/server/cpu-quota.ts:585",
   // resolveV1ControllerDir()'s mountinfo + cgroup reads:
-  "reference-implementation/server/cpu-quota.ts:570",
-  "reference-implementation/server/cpu-quota.ts:575",
+  "reference-implementation/server/cpu-quota.ts:626",
+  "reference-implementation/server/cpu-quota.ts:631",
   // readJson<T>(path): path is the CLI's own token-cache directory, operator/OS-derived, never connector-identity data.
   "reference-implementation/cli/lib/cache.ts:125",
   // readJsonInput(pathOrDash): explicit CLI `--file`/stdin argument, generic JSON-in-JSON-out CLI utility.

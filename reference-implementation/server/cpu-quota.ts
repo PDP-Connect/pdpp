@@ -82,7 +82,14 @@
  * Every step fails closed to `"unknown"` (never silently falls through to
  * "no quota") on: a malformed/unparseable mountinfo or cgroup line, a
  * relative path containing `..` (path traversal — refused outright, never
- * resolved), an ambiguous or missing v1/v2 hierarchy mapping, or no
+ * resolved), MORE THAN ONE DISTINCT mount point surviving for a given
+ * hierarchy/controller (`resolveSingleMountPoint`: mountinfo's own line
+ * order is not proof that either the first or the last entry corresponds
+ * to this process — `parseCgroupMounts` records every distinct mount point
+ * seen, and picking one without evidence would be exactly the same class
+ * of unproven guess as the mount-root-only and nearest-ancestor-wins
+ * mistakes this module has already had to close; identical duplicate mount
+ * strings are deduplicated first and are not treated as ambiguous), or no
  * matching mount found at all while `/proc/self/cgroup` claims one exists.
  * `"unknown"` is a THIRD state distinct from "no quota" (`"unlimited"`) and
  * "quota N" (`"known"`) — see `effectiveCpuCount`/`effectiveMemoryBudgetBytes`
@@ -227,16 +234,52 @@ function parseMountinfoLine(line: string): MountEntry | null {
   };
 }
 
+/**
+ * Every DISTINCT mount point seen for a given hierarchy/controller, not
+ * just the first or last. A process's mount namespace has exactly one
+ * legitimate cgroup2 mount and one legitimate per-controller v1 mount under
+ * ordinary conditions; more than one DISTINCT mount point for the same
+ * hierarchy is an ambiguous mapping this module cannot soundly resolve
+ * (mountinfo's own line order is not proof the first — or last — entry is
+ * the one that actually applies to this process; nothing in `proc(5)`
+ * documents an ordering guarantee this module could rely on). Duplicate
+ * IDENTICAL mount-point strings collapse to one entry (the same real mount
+ * legitimately appearing on more than one mountinfo line, e.g. via a bind
+ * mount of the exact same path, is not an ambiguity).
+ */
 interface CgroupMounts {
-  /** cgroup v1 mount point keyed by controller name (e.g. "cpu", "memory"). */
-  readonly v1ByController: ReadonlyMap<string, string>;
-  /** cgroup v2 unified mount point, if mounted. */
-  readonly v2: string | null;
+  /** cgroup v1 distinct mount points keyed by controller name (e.g. "cpu", "memory"). */
+  readonly v1ByController: ReadonlyMap<string, ReadonlySet<string>>;
+  /** cgroup v2 distinct unified mount points seen (empty if not mounted). */
+  readonly v2: ReadonlySet<string>;
+}
+
+/**
+ * Records `entry`'s mount point under every v1 controller name its own
+ * super-options list names (super-options mix real controller names with
+ * non-controller mount flags like `rw`/`relatime`; only names this module
+ * ever looks up are recorded — an unrecognized token is silently not a
+ * controller this module cares about, not a parse failure). Split out of
+ * `parseCgroupMounts` purely to keep that function's own cognitive
+ * complexity under budget; no behavior change from inlining it.
+ */
+function recordV1ControllerMounts(v1ByController: Map<string, Set<string>>, entry: MountEntry): void {
+  for (const option of entry.superOptions.split(",")) {
+    if (option !== "cpu" && option !== "memory") {
+      continue;
+    }
+    let mountPoints = v1ByController.get(option);
+    if (!mountPoints) {
+      mountPoints = new Set<string>();
+      v1ByController.set(option, mountPoints);
+    }
+    mountPoints.add(entry.mountPoint);
+  }
 }
 
 function parseCgroupMounts(mountinfoText: string): CgroupMounts {
-  const v1ByController = new Map<string, string>();
-  let v2: string | null = null;
+  const v1ByController = new Map<string, Set<string>>();
+  const v2 = new Set<string>();
   for (const line of mountinfoText.split("\n")) {
     if (!line.trim()) {
       continue;
@@ -246,27 +289,33 @@ function parseCgroupMounts(mountinfoText: string): CgroupMounts {
       continue;
     }
     if (entry.fsType === "cgroup2") {
-      // A process's mount namespace has at most one cgroup2 mount visible
-      // to it under normal (non-bind-mount-tricks) conditions; if more than
-      // one somehow appears, the first one found is used consistently with
-      // how the kernel resolves lookups top-down through mountinfo's own
-      // mount-order.
-      v2 ??= entry.mountPoint;
+      v2.add(entry.mountPoint);
       continue;
     }
     if (entry.fsType === "cgroup") {
-      for (const option of entry.superOptions.split(",")) {
-        // v1 super-options mix real controller names with non-controller
-        // mount flags (rw, relatime, ...); only record names this module
-        // ever looks up (cpu, memory) — an unrecognized token is silently
-        // not a controller this module cares about, not a parse failure.
-        if (option === "cpu" || option === "memory") {
-          v1ByController.set(option, entry.mountPoint);
-        }
-      }
+      recordV1ControllerMounts(v1ByController, entry);
     }
   }
   return { v1ByController, v2 };
+}
+
+/**
+ * Resolves a set of candidate mount points to exactly one, or signals why
+ * it couldn't: `null` means genuinely no mount was found (the caller's
+ * existing "v2/v1 doesn't apply here" path), `"ambiguous"` means more than
+ * one DISTINCT mount point survived — a shape this module refuses to guess
+ * at rather than silently pick one, since mountinfo's line order carries no
+ * documented meaning this module could soundly rely on.
+ */
+function resolveSingleMountPoint(mountPoints: ReadonlySet<string> | undefined): string | null | "ambiguous" {
+  if (!mountPoints || mountPoints.size === 0) {
+    return null;
+  }
+  if (mountPoints.size > 1) {
+    return "ambiguous";
+  }
+  const [only] = mountPoints;
+  return only ?? null;
 }
 
 // ─── /proc/self/cgroup parsing ─────────────────────────────────────────────
@@ -518,8 +567,11 @@ interface ResolvedCgroupDir {
  * caller falls through to v1, not a failure.
  * `"unknown"`: v2 clearly DOES apply (mounted, and/or this process has a
  * v2 line) but something about resolving exactly where is unsafe —
- * unreadable/malformed `/proc` files, or a relative path that failed the
- * traversal check. Never silently treated as "no quota."
+ * unreadable/malformed `/proc` files, a relative path that failed the
+ * traversal check, or MORE THAN ONE DISTINCT cgroup2 mount point visible in
+ * this mount namespace (ambiguous: mountinfo's line order is not proof
+ * either one corresponds to this process, so neither is silently picked).
+ * Never silently treated as "no quota."
  */
 function resolveV2CgroupDir(probe: CpuQuotaProbe): ResolvedCgroupDir | "unknown" | null {
   let mountinfoText: string;
@@ -542,13 +594,17 @@ function resolveV2CgroupDir(probe: CpuQuotaProbe): ResolvedCgroupDir | "unknown"
     return null;
   }
   const mounts = parseCgroupMounts(mountinfoText);
-  if (mounts.v2 === null) {
+  const mountPoint = resolveSingleMountPoint(mounts.v2);
+  if (mountPoint === null) {
     // This process has v2 membership but no v2 mount is visible in this
     // mount namespace — an inconsistent/unreadable environment shape, not
     // "no v2 quota."
     return "unknown";
   }
-  return { mountPoint: mounts.v2, relativeCgroupPath: membership.v2 };
+  if (mountPoint === "ambiguous") {
+    return "unknown";
+  }
+  return { mountPoint, relativeCgroupPath: membership.v2 };
 }
 
 // ─── cgroup v1 ──────────────────────────────────────────────────────────────
@@ -585,8 +641,14 @@ function resolveV1ControllerDir(
     return null;
   }
   const mounts = parseCgroupMounts(mountinfoText);
-  const mountPoint = mounts.v1ByController.get(controller);
-  if (mountPoint === undefined) {
+  const mountPoint = resolveSingleMountPoint(mounts.v1ByController.get(controller));
+  if (mountPoint === null || mountPoint === "ambiguous") {
+    // Both "no mount visible for this controller" and "more than one
+    // distinct mount visible" are unsafe once this process's own v1
+    // membership for this controller is already established — the only
+    // difference from the v2 case is that v1 membership was already proven
+    // non-null before this point, so there is no "genuinely doesn't apply"
+    // branch left to take here.
     return "unknown";
   }
   return { mountPoint, relativeCgroupPath };

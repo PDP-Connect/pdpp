@@ -295,6 +295,82 @@ test("v2 membership established but no v2 mount visible in mountinfo is unknown,
   assert.deepEqual(cgroupCpuQuota(p), { state: "unknown" });
 });
 
+test("two DISTINCT cgroup2 mount points in mountinfo is an ambiguous mapping: unknown, never silently the first (or last) one", () => {
+  // mountinfo's own line order carries no documented guarantee that the
+  // first (or last) entry corresponds to this process's real cgroup2 mount
+  // -- a prior version of this module picked the first one seen, which is
+  // an unproven guess dressed up as a resolution. The quota file IS present
+  // at the path a naive "pick one" strategy would resolve to, proving this
+  // is rejected by the ambiguity check itself, not by the file being
+  // absent.
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/scope"),
+    files: {
+      [path.join("/sys/fs/cgroup", "cpu.max")]: "50000 100000\n",
+      [path.join("/mnt/other-cgroup2", "cpu.max")]: "800000 100000\n",
+    },
+    mountinfoText: [
+      "100 1 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw",
+      "101 1 0:2 / /mnt/other-cgroup2 rw - cgroup2 cgroup2 rw",
+      "",
+    ].join("\n"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "unknown" });
+});
+
+test("two mountinfo lines naming the exact SAME cgroup2 mount point are deduplicated, not ambiguous", () => {
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v2CgroupText("/scope"),
+    files: {
+      [path.join("/sys/fs/cgroup", "cpu.max")]: "50000 100000\n",
+    },
+    mountinfoText: [
+      "100 1 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw",
+      "101 1 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw",
+      "",
+    ].join("\n"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "known", value: 0.5 });
+});
+
+test("two DISTINCT cgroup v1 CPU-controller mount points is an ambiguous mapping: unknown", () => {
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v1CgroupText("/scope"),
+    files: {
+      [path.join("/sys/fs/cgroup/cpu/scope", "cpu.cfs_period_us")]: "100000\n",
+      [path.join("/sys/fs/cgroup/cpu/scope", "cpu.cfs_quota_us")]: "50000\n",
+      [path.join("/mnt/other-cpu/scope", "cpu.cfs_period_us")]: "100000\n",
+      [path.join("/mnt/other-cpu/scope", "cpu.cfs_quota_us")]: "800000\n",
+    },
+    mountinfoText: [
+      "40 28 0:31 / /sys/fs/cgroup/cpu rw - cgroup cgroup rw,cpu,cpuacct",
+      "42 28 0:33 / /mnt/other-cpu rw - cgroup cgroup rw,cpu,cpuacct",
+      "41 28 0:32 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory",
+      "",
+    ].join("\n"),
+  });
+  assert.deepEqual(cgroupCpuQuota(p), { state: "unknown" });
+});
+
+test("two mountinfo lines naming the exact SAME cgroup v1 controller mount point are deduplicated, not ambiguous", () => {
+  const p = probe({
+    cgroupMounted: true,
+    cgroupText: v1CgroupText("/scope"),
+    files: {
+      [path.join("/sys/fs/cgroup/memory/scope", "memory.limit_in_bytes")]: "268435456\n",
+    },
+    mountinfoText: [
+      "41 28 0:32 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory",
+      "43 28 0:32 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory",
+      "",
+    ].join("\n"),
+  });
+  assert.deepEqual(cgroupMemoryQuota(p), { state: "known", value: 268_435_456 });
+});
+
 test("an unparseable mountinfo line (too few fields) is skipped, not fatal, if another line resolves the mount", () => {
   const p = probe({
     cgroupMounted: true,
