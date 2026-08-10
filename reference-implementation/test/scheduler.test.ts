@@ -362,6 +362,40 @@ function fakeAdmitRunConnection(): (input: {
     });
 }
 
+// Registers the connector-instance row a scheduler fixture's admission must
+// resolve to. Production's admitRunConnection wiring (server/index.ts) always
+// resolves an existing, owner-authorized row and returns its true id; the
+// RS ingest route independently re-resolves connector_instance_id per
+// request the same way (resolveOwnerConnectorNamespace). Without a real row
+// here, ingest falls through to a different (deterministic default-account)
+// id than the one admission/run.started used, and the run-admission fence
+// (assertSqliteRunStillAdmitted) then finds no matching running row. Every
+// scheduler fixture in this file that admits a run must call this first so
+// admission and ingest agree on the same identity. See "requires an existing
+// connector-instance row" at the first call site below for the original
+// discovery of this requirement.
+async function registerSchedulerFixtureConnectorInstance(options: {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName: string | undefined;
+  ownerSubjectId: string;
+  sourceBindingKey: string;
+  timestamp?: string;
+}): Promise<void> {
+  const timestamp = options.timestamp ?? "2026-04-29T00:00:00.000Z";
+  await createSqliteConnectorInstanceStore().upsert({
+    connectorId: options.connectorId,
+    connectorInstanceId: options.connectorInstanceId,
+    createdAt: timestamp,
+    displayName: options.displayName ?? options.connectorId,
+    ownerSubjectId: options.ownerSubjectId,
+    sourceBinding: { kind: "test_scheduler_fixture" },
+    sourceBindingKey: options.sourceBindingKey,
+    sourceKind: "account",
+    updatedAt: timestamp,
+  });
+}
+
 test("server-owned scheduler starts persisted enabled schedules after startup", async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, "manifests/spotify.json"), "utf8"));
   const tmpDir = mkdtempSync(join(tmpdir(), "pdpp-server-scheduler-enabled-"));
@@ -390,16 +424,12 @@ test("server-owned scheduler starts persisted enabled schedules after startup", 
     // URL-shaped connector_id — the connector-instance row must be keyed the
     // same way so buildConnectors' admission lookup finds it.
     const serverOwnedCanonicalKey = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: serverOwnedCanonicalKey,
       connectorInstanceId: serverOwnedCanonicalKey,
-      createdAt: "2026-04-29T00:00:00.000Z",
-      displayName: spotifyManifest.display_name || spotifyManifest.connector_id,
+      displayName: spotifyManifest.display_name,
       ownerSubjectId: "owner_local",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_server_owned_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
     });
     await server.controller.upsertSchedule(spotifyManifest.connector_id, {
       enabled: true,
@@ -619,16 +649,12 @@ test("autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_
     // but forwards the legacy (non-canonical) connector_instance_id verbatim,
     // so the store row must be keyed by the legacy id while pointing at the
     // canonical connector.
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: canonicalKey,
       connectorInstanceId: legacyConnectorId,
-      createdAt: "2026-04-29T00:00:00.000Z",
-      displayName: spotifyManifest.display_name || canonicalKey,
+      displayName: spotifyManifest.display_name,
       ownerSubjectId: "owner_local",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_legacy_canonical_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
     });
 
     // Seed the schedule row directly — NOT via controller.upsertSchedule, which
@@ -710,26 +736,12 @@ test("scheduler history records checkpoint summaries from runConnector results",
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_user");
-    // fakeAdmitRunConnection echoes the schedule's connectorInstanceId back
-    // verbatim, but the RS ingest path resolves connector_instance_id against
-    // the real connector-instance store (resolveOwnerConnectorNamespace):
-    // without a real row here, ingest falls through to the deterministic
-    // default-account instance id instead of this schedule's declared
-    // identity, and the run-admission fence (assertSqliteRunStillAdmitted)
-    // then finds no running row under that mismatched id. Register the row so
-    // admission and ingest agree on the same connector_instance_id, mirroring
-    // the fixture pattern above (see "requires an existing connector-instance
-    // row" comment).
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: spotifyManifest.connector_key,
       connectorInstanceId: spotifyManifest.connector_key,
-      createdAt: "2026-04-29T00:00:00.000Z",
-      displayName: spotifyManifest.display_name || spotifyManifest.connector_key,
+      displayName: spotifyManifest.display_name,
       ownerSubjectId: "scheduler_user",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_checkpoint_summary_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
     });
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
@@ -1516,24 +1528,12 @@ rl.on('line', (line) => {
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_terminal_counter_mismatch_user");
-    // fakeAdmitRunConnection echoes the schedule's connectorInstanceId back
-    // verbatim, but the RS ingest path resolves connector_instance_id against
-    // the real connector-instance store: without a real row here, ingest
-    // falls through to the deterministic default-account instance id instead
-    // of this schedule's declared identity, and the run-admission fence
-    // (assertSqliteRunStillAdmitted) then finds no running row under that
-    // mismatched id, masking the terminal-counter-mismatch scenario this test
-    // exists to exercise. Register the row so admission and ingest agree.
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: manifest.connector_id,
       connectorInstanceId: manifest.connector_id,
-      createdAt: "2026-04-29T00:00:00.000Z",
       displayName: manifest.display_name,
       ownerSubjectId: "scheduler_terminal_counter_mismatch_user",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_terminal_counter_mismatch_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
     });
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
@@ -2152,24 +2152,12 @@ rl.on('line', (line) => {
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_retryable_terminal_error_user");
-    // fakeAdmitRunConnection echoes the schedule's connectorInstanceId back
-    // verbatim, but the RS ingest path resolves connector_instance_id against
-    // the real connector-instance store: without a real row here, ingest
-    // falls through to the deterministic default-account instance id instead
-    // of this schedule's declared identity, and the run-admission fence
-    // (assertSqliteRunStillAdmitted) then finds no running row under that
-    // mismatched id, failing the retry's successful attempt at the ingest
-    // step. Register the row so admission and ingest agree.
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: manifest.connector_id,
       connectorInstanceId: manifest.connector_id,
-      createdAt: "2026-04-29T00:00:00.000Z",
       displayName: manifest.display_name,
       ownerSubjectId: "scheduler_retryable_terminal_error_user",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_retryable_terminal_error_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
     });
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
@@ -3062,16 +3050,13 @@ test("scheduler treats single_use grants as one successful run followed by exhau
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_single_use_user");
     const singleUseCanonicalKey = canonicalConnectorKey(spotifyManifest.connector_id);
     assert.ok(singleUseCanonicalKey, "expected the spotify fixture connector_id to canonicalize");
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: singleUseCanonicalKey,
       connectorInstanceId: spotifyManifest.connector_id,
-      createdAt: "2026-04-29T02:00:00.000Z",
-      displayName: spotifyManifest.display_name || spotifyManifest.connector_id,
+      displayName: spotifyManifest.display_name,
       ownerSubjectId: "scheduler_single_use_user",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_single_use_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T02:00:00.000Z",
+      timestamp: "2026-04-29T02:00:00.000Z",
     });
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
@@ -3485,23 +3470,12 @@ test("scheduler start is idempotent and does not launch a second immediate run",
     assert.equal(registerResp.status, 201);
 
     const ownerToken = await issueOwnerToken(asUrl, "scheduler_idempotent_start_user");
-    // fakeAdmitRunConnection echoes the schedule's connectorInstanceId back
-    // verbatim, but the RS ingest path resolves connector_instance_id against
-    // the real connector-instance store: without a real row here, ingest
-    // falls through to the deterministic default-account instance id instead
-    // of this schedule's declared identity, and the run-admission fence
-    // (assertSqliteRunStillAdmitted) then finds no running row under that
-    // mismatched id. Register the row so admission and ingest agree.
-    await createSqliteConnectorInstanceStore().upsert({
+    await registerSchedulerFixtureConnectorInstance({
       connectorId: spotifyManifest.connector_key,
       connectorInstanceId: spotifyManifest.connector_key,
-      createdAt: "2026-04-29T00:00:00.000Z",
-      displayName: spotifyManifest.display_name || spotifyManifest.connector_key,
+      displayName: spotifyManifest.display_name,
       ownerSubjectId: "scheduler_idempotent_start_user",
-      sourceBinding: { kind: "test_scheduler_fixture" },
       sourceBindingKey: "scheduler_idempotent_start_fixture",
-      sourceKind: "account",
-      updatedAt: "2026-04-29T00:00:00.000Z",
     });
     const scheduler = createScheduler({
       admitRunConnection: fakeAdmitRunConnection(),
