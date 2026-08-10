@@ -1319,6 +1319,7 @@ async function mergeScopedMessageArchivePasses(deps: {
   credentials: SlackCredentials;
   emit: CollectContext["emit"];
   messageResult: MessagesPassResult;
+  requested: CollectContext["requested"];
   scopedArchives: readonly SelectedScopedArchive[];
   state: CollectContext["state"];
   streamDeps: StreamDeps;
@@ -1330,6 +1331,7 @@ async function mergeScopedMessageArchivePasses(deps: {
   // `deps.credentials`/`deps.emit` are threaded for type consistency but
   // unused here.
   const requested = messageFamilyRequestedOnly(deps.streamDeps.requested);
+  const sinceEpochSeconds = parseSinceEpochSeconds(deps.requested, "messages");
   for (const archive of deps.scopedArchives) {
     if (!existsSync(archive.paths.sqlitePath)) {
       continue;
@@ -1346,6 +1348,7 @@ async function mergeScopedMessageArchivePasses(deps: {
           {
             allowLegacyMessageCursorFallback: false,
             ignoreMessageChannelCursors: false,
+            sinceEpochSeconds,
           }
         )
       );
@@ -1537,11 +1540,16 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
  *     nowIso() only as a fallback when the row's TS is unparseable,
  *     which threads into the record's `sent_at` (distinct from
  *     `emitted_at`, which the runtime stamps on the RECORD envelope).
+ *   - When `sinceEpochSeconds` is supplied, iteration stops when a message
+ *     ts falls before the declared boundary. The stop is a clean end of the
+ *     DECLARED scope (not a truncation), so STATE and coverage commit as
+ *     `complete` rather than `partial`.
  */
 export async function emitMessagesPass(
   deps: MessagesPassDeps,
   rows: Iterable<MessageRow>,
-  priorTs: string | null
+  priorTs: string | null,
+  sinceEpochSeconds: number | null = null
 ): Promise<MessagesPassResult> {
   if (priorTs) {
     // Row count is intentionally omitted: rows is now a streamed iterator
@@ -1563,9 +1571,19 @@ export async function emitMessagesPass(
   for (const r of rows) {
     const parsed = parseMessageRow(r, nowIso());
     const { ts } = parsed;
+    // Slack messages are ordered chronologically by ts (seconds.micros).
+    // When a declared `since` boundary is set, stop when a message's ts
+    // falls before it. This is a clean end of the DECLARED scope, not a
+    // truncation — the run met the boundary it was asked to walk, so STATE
+    // and coverage commit with `complete` instead of `partial`.
+    if (shouldStopAtSinceBoundary(ts, sinceEpochSeconds)) {
+      break;
+    }
     // Track the max ts seen in this run for the post-loop STATE emit.
     // Slack ts is a fixed-shape "seconds.micros" string; string compare
     // matches numeric order because both halves are zero-padded by Slack.
+    // Only track after the boundary check so maxMessageTs reflects only
+    // the rows actually processed (not rows that triggered the stop).
     maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
     recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
     if (wantMessages) {
@@ -1971,13 +1989,52 @@ function* iterateMessageRows(db: DatabaseSync, thresholds: MessageCursorThreshol
  * `emitMessagesPass` from this file so integration.test.ts can drive
  * it without opening sqlite.
  */
-function runMessagesUnifiedPass(deps: StreamDeps, thresholds: MessageCursorThresholds): Promise<MessagesPassResult> {
+function runMessagesUnifiedPass(
+  deps: StreamDeps,
+  thresholds: MessageCursorThresholds,
+  sinceEpochSeconds: number | null = null
+): Promise<MessagesPassResult> {
   // Slack message TS strings collate lexically the same way they order
   // chronologically (fixed-width integer-dot-decimal), so string > works.
   // iterateMessageRows is a lazy generator: emitMessagesPass pulls one row
   // at a time, so the unbounded MESSAGE table never lands in heap at once.
   const rows = iterateMessageRows(deps.db, thresholds);
-  return emitMessagesPass(deps, rows, thresholds.legacyLastTs);
+  return emitMessagesPass(deps, rows, thresholds.legacyLastTs, sinceEpochSeconds);
+}
+
+/**
+ * Check if a message ts falls before the declared since boundary. Used by
+ * emitMessagesPass to stop iteration when collection_scope.since is declared.
+ * ts is "seconds.microseconds"; extract seconds for direct comparison.
+ * Returns true if ts is before the boundary (iteration should stop).
+ */
+function shouldStopAtSinceBoundary(ts: string | null, sinceEpochSeconds: number | null): boolean {
+  if (sinceEpochSeconds === null || typeof ts !== "string") {
+    return false;
+  }
+  const [tsSecondsStr] = ts.split(".");
+  if (!tsSecondsStr) {
+    return false;
+  }
+  const tsSeconds = Math.floor(Number.parseFloat(tsSecondsStr));
+  return Number.isFinite(tsSeconds) && tsSeconds < sinceEpochSeconds;
+}
+
+/**
+ * Parse a stream's declared `time_range.since` into epoch seconds for the
+ * message walk to compare against `ts` directly (avoids per-message ISO-string
+ * reparse). Returns `null` for an absent, malformed, or unparseable bound —
+ * never throws, since a scope-less run (the default) must behave exactly as
+ * before this stop condition existed. Slack message ts is "seconds.microseconds";
+ * the comparison extracts seconds from ts for direct numeric comparison.
+ */
+function parseSinceEpochSeconds(requested: CollectContext["requested"], stream: string): number | null {
+  const since = requested.get(stream)?.time_range?.since;
+  if (typeof since !== "string" || !since.trim()) {
+    return null;
+  }
+  const parsed = Date.parse(since);
+  return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
 }
 
 function messageProgressLabel(channelCursorCount: number, priorTs: string | null): string {
@@ -2345,7 +2402,11 @@ async function runRequestedStreams(
   state: CollectContext["state"],
   credentials: SlackCredentials,
   emit: CollectContext["emit"],
-  options: { allowLegacyMessageCursorFallback?: boolean; ignoreMessageChannelCursors?: boolean } = {}
+  options: {
+    allowLegacyMessageCursorFallback?: boolean;
+    ignoreMessageChannelCursors?: boolean;
+    sinceEpochSeconds?: number | null;
+  } = {}
 ): Promise<MessagesPassResult> {
   if (deps.requested.has("workspace")) {
     deps.progress("Slack: emitting workspace record", { stream: "workspace" });
@@ -2372,7 +2433,11 @@ async function runRequestedStreams(
       ? {}
       : normalizeStringRecord(messagesState?.channel_last_ts);
     deps.progress(messageProgressLabel(Object.keys(channelLastTs).length, priorTs), { stream: "messages" });
-    result = await runMessagesUnifiedPass(deps, { channelLastTs, legacyLastTs: priorTs });
+    result = await runMessagesUnifiedPass(
+      deps,
+      { channelLastTs, legacyLastTs: priorTs },
+      options.sinceEpochSeconds ?? null
+    );
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
@@ -2664,6 +2729,7 @@ if (isMainModule(import.meta.url)) {
         runRequestedStreams(deps, state, { workspace, token, cookie }, emit, {
           allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
           ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
+          sinceEpochSeconds: parseSinceEpochSeconds(requested, "messages"),
         })
       );
       if (messageFamilyRequested && isUnscopedMessageBoundary && reconciledSourceCache.scopedArchives.length > 0) {
@@ -2671,6 +2737,7 @@ if (isMainModule(import.meta.url)) {
           credentials: { workspace, token, cookie },
           emit,
           messageResult,
+          requested,
           scopedArchives: reconciledSourceCache.scopedArchives,
           state,
           streamDeps: deps,
