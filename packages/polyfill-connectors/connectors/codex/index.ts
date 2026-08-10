@@ -65,6 +65,7 @@ import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
   buildLocalSourceInventory,
+  type CoverageRecord,
   type KnownLocalStore,
   listDirectoryInventory,
   openInventoryFingerprintCursor,
@@ -338,16 +339,8 @@ async function hashFilePrefix(path: string, guardBytes: number): Promise<string 
 
 // ─── Rollout directory walking ──────────────────────────────────────────
 
-async function listIfExists(dir: string): Promise<string[] | null> {
-  try {
-    return await readdir(dir);
-  } catch {
-    return null;
-  }
-}
-
 // Distinguish ENOENT (legitimate absence) from other errors (unreadable/permission failure)
-async function listIfExistsOrThrow(dir: string): Promise<string[] | null> {
+async function listIfExists(dir: string): Promise<string[] | null> {
   try {
     return await readdir(dir);
   } catch (e) {
@@ -1339,23 +1332,23 @@ async function processRolloutEntry(
 
 async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult> {
   let baseExists = false;
-  let baseIsUnreadable = false;
+  let scanOutcomeOnBaseError: "unreadable" | null = null;
 
   try {
-    baseExists = (await listIfExistsOrThrow(args.baseDir)) !== null;
-  } catch (e) {
-    // ENOENT is caught and handled by listIfExistsOrThrow returning null
-    // Any other error means the directory is unreadable
-    baseIsUnreadable = true;
+    baseExists = (await listIfExists(args.baseDir)) !== null;
+  } catch {
+    // listIfExists distinguishes ENOENT (returns null) from other errors (throws)
+    scanOutcomeOnBaseError = "unreadable";
   }
 
-  if (!baseExists || baseIsUnreadable) {
+  if (!baseExists) {
     emit({
       type: "PROGRESS",
       message: "Codex phase=index pass=index sessions_dir_readable=false",
     });
     await waitForEmitDrain();
-    const scanOutcome = baseIsUnreadable ? "unreadable" : "complete";
+    // If we caught an error, it's unreadable; if not, ENOENT = complete
+    const scanOutcome = scanOutcomeOnBaseError || "complete";
     return {
       parsedFiles: 0,
       messagesEmitted: 0,
@@ -1393,30 +1386,25 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
       }
       totalRollouts += 1;
       try {
-        const result = await processRolloutEntry({ ...args, emitRecord: countingEmit }, entry, totalRollouts);
+        const result = await processRolloutEntry(entry, { ...args, emitRecord: countingEmit }, totalRollouts);
         if (result === "parsed") {
           parsedRollouts += 1;
+          // Accumulate examined records from the parse that just completed
+          const cursor = args.newFileCursors[entry.path];
+          if (cursor) {
+            messagesExamined += cursor.message_count ?? 0;
+            functionCallsExamined += cursor.function_call_count ?? 0;
+          }
         }
-      } catch (e) {
+      } catch {
         // Any error during parsing (without code or other) makes scan incomplete
         scanOutcome = "parse_error";
         break;
       }
     }
-  } catch (e) {
+  } catch {
     // Enumeration error (e.g., directory traversal failure) makes scan incomplete
     scanOutcome = "unreadable";
-  }
-
-  // Count examined records from parse results during this scan
-  // Only count files we actually just parsed (present in newFileCursors but not in fileCursors before scan)
-  const priorCursors = new Set(Object.keys(args.fileCursors));
-  for (const [path, cursor] of Object.entries(args.newFileCursors)) {
-    if (!priorCursors.has(path)) {
-      // This is a newly parsed file in this scan
-      messagesExamined += cursor.message_count;
-      functionCallsExamined += cursor.function_call_count;
-    }
   }
 
   emit({
@@ -2060,10 +2048,12 @@ async function main(): Promise<void> {
         status = "incomplete";
       } else if (rolloutScan.messagesEmitted > 0) {
         status = "collected";
-      } else if (rolloutScan.messagesExamined > 0) {
+      } else if (rolloutScan.messagesExamined === 0) {
+        // True verified_empty: scan completed and zero records were examined
         status = "verified_empty";
       } else {
-        status = "verified_empty";
+        // Examined > 0 but emitted = 0: data exists but suppressed by fingerprint
+        status = "collected";
       }
       derivedRecords.push({
         id: "coverage:derived_messages",
@@ -2088,10 +2078,12 @@ async function main(): Promise<void> {
         status = "incomplete";
       } else if (rolloutScan.functionCallsEmitted > 0) {
         status = "collected";
-      } else if (rolloutScan.functionCallsExamined > 0) {
+      } else if (rolloutScan.functionCallsExamined === 0) {
+        // True verified_empty: scan completed and zero records were examined
         status = "verified_empty";
       } else {
-        status = "verified_empty";
+        // Examined > 0 but emitted = 0: data exists but suppressed by fingerprint
+        status = "collected";
       }
       derivedRecords.push({
         id: "coverage:derived_function_calls",
@@ -2117,11 +2109,13 @@ async function main(): Promise<void> {
     }
 
     // Emit STATE with snapshot including both static and derived records
-    const allCoverageRecords = [...inventory.coverage, ...derivedRecords];
+    // inventory.coverage are CoverageRecords, derivedRecords are RecordData with coverage fields
+    // Cast as unknown first, then to CoverageRecord for the snapshot (the fields match)
+    const allCoverageRecords = [...inventory.coverage, ...derivedRecords] as unknown as readonly CoverageRecord[];
     emit({
       type: "STATE",
       stream: "coverage_diagnostics",
-      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(allCoverageRecords as never) },
+      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(allCoverageRecords) },
     });
     await waitForEmitDrain();
   }
