@@ -139,12 +139,11 @@ test("SQLite: a write against an already-revoked connector instance is refused w
     const store = createSqliteConnectorInstanceStore();
 
     // `updateStatus` (unlike `deleteConnection`/`upsert`) is not wrapped in
-    // `withConnectorInstanceWrite` on either backend — SQLite's single-writer
-    // guarantee and Postgres's own transaction-scoped advisory lock inside
-    // `updateStatus` itself are sufficient, so there is no in-process gate
-    // hook to instrument here. A plain sequential await already proves the
-    // ordering under test: the revoke's transaction has fully committed
-    // before the write's own transaction opens and re-reads status.
+    // `withConnectorInstanceWrite` on either backend, so there is no
+    // in-process gate hook to instrument an ordering assertion against here
+    // (see the interleaving test below for that). This sequential case only
+    // proves the boring half: a revoke that has ALREADY fully committed
+    // before the write even starts is refused.
     store.updateStatus(connectorInstanceId, { revokedAt: NOW, status: "revoked", updatedAt: NOW });
 
     let writeError: unknown;
@@ -168,6 +167,70 @@ test("SQLite: a write against an already-revoked connector instance is refused w
       }
     ).n;
     assert.equal(recordCount, 0, "no record row may exist after a write refused against a revoked instance");
+  } finally {
+    closeDb();
+  }
+});
+
+test("SQLite: a revoke that commits AFTER the pre-check but BEFORE the write transaction opens is still refused — the in-transaction re-check closes the gap the pre-check cannot", async () => {
+  initDb();
+  try {
+    await registerConnector(manifest());
+    const connectorInstanceId = "cin_revoked_refusal_interleaved";
+    await seedSqliteInstance(connectorInstanceId, "active");
+    const storageTarget = { connector_id: CONNECTOR_ID, connector_instance_id: connectorInstanceId };
+    const store = createSqliteConnectorInstanceStore();
+
+    // `assertConnectorInstanceWritable`'s pre-check (a separate `await` from
+    // the durable write transaction) passes here, observing the
+    // still-`active` row. The hook then fires in the genuine async gap
+    // between that passing check and `writeTransaction` opening — exactly
+    // where a concurrent revoke could land undetected if the pre-check were
+    // the only guard. The revoke below runs and fully commits INSIDE the
+    // hook callback, before the writer resumes.
+    recordsModule.__setAdmissionPreCheckPhaseHookForTest((_point: string, context: { connectorInstanceId: string }) => {
+      if (context.connectorInstanceId !== connectorInstanceId) {
+        return;
+      }
+      store.updateStatus(connectorInstanceId, { revokedAt: NOW, status: "revoked", updatedAt: NOW });
+    });
+
+    let writeError: unknown;
+    try {
+      await ingestRecord(storageTarget, recordEnvelope("rec_interleaved"), { requireConnectionAdmission: true });
+    } catch (err) {
+      writeError = err;
+    } finally {
+      recordsModule.__setAdmissionPreCheckPhaseHookForTest(null);
+    }
+
+    // Fails on f43f80ea3 (before this fix): the pre-check passed while the
+    // row was still active, and nothing re-reads status inside
+    // `writeTransaction`, so the write silently succeeds despite the
+    // revoke having fully committed before the transaction opened.
+    assert.ok(
+      writeError instanceof Error,
+      "the write must throw once the in-transaction re-check is in place, even though the earlier pre-check observed an active row"
+    );
+    assert.equal(
+      (writeError as { code?: string }).code,
+      "connector_instance_not_writable",
+      `write must be refused with connector_instance_not_writable — got ${String(writeError)}`
+    );
+
+    const db = getDb();
+    const recordCount = (
+      db.prepare("SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = ?").get(connectorInstanceId) as {
+        n: number;
+      }
+    ).n;
+    assert.equal(recordCount, 0, "no record row may exist after a write refused by the in-transaction re-check");
+    const lexicalCount = (
+      db
+        .prepare("SELECT COUNT(*) AS n FROM lexical_search_index WHERE connector_instance_id = ?")
+        .get(connectorInstanceId) as { n: number }
+    ).n;
+    assert.equal(lexicalCount, 0, "no derived-index row may exist either — the write never durably committed");
   } finally {
     closeDb();
   }

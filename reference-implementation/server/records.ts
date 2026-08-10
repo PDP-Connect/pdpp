@@ -1442,6 +1442,7 @@ let deleteFaultHook: FaultHook | null = null;
 let recordIndexFaultHook: FaultHook | null = null;
 let sqliteRecordSortBackfillPhaseHook: AsyncFaultHook | null = null;
 let indexPublishPhaseHook: AsyncFaultHook | null = null;
+let admissionPreCheckPhaseHook: AsyncFaultHook | null = null;
 
 export function __setIngestFaultHookForTest(hook: unknown): void {
   ingestFaultHook = isFaultHook(hook) ? hook : null;
@@ -1482,6 +1483,26 @@ export function __setSqliteRecordSortBackfillPhaseHookForTest(hook: unknown): vo
   sqliteRecordSortBackfillPhaseHook = isAsyncFaultHook(hook) ? hook : null;
 }
 
+/**
+ * Async pause seam at the exact boundary `ingestRecord` crosses from "the
+ * pre-transaction `assertConnectorInstanceWritable` early-exit check passed"
+ * to "the durable write transaction is about to open." This is the genuine
+ * async gap a revoke (or delete) can land in: `withConnectorInstanceWrite`
+ * provides no atomicity between this check and the transaction, and
+ * `updateStatus` shares no lock with the ingest fence. Lets a test suspend a
+ * writer here, commit a concurrent revoke, then resume — proving the
+ * IN-TRANSACTION re-check (not this pre-check) is what actually closes the
+ * race. Fires with `{ connectorInstanceId }` at point
+ * `"after-admission-pre-check"`.
+ */
+export function __setAdmissionPreCheckPhaseHookForTest(hook: unknown): void {
+  admissionPreCheckPhaseHook = isAsyncFaultHook(hook) ? hook : null;
+}
+
+async function maybeAfterAdmissionPreCheckPhase(point: string, context: HookContext): Promise<void> {
+  await admissionPreCheckPhaseHook?.(point, context);
+}
+
 async function maybeSqliteRecordSortBackfillPhaseForTest(point: string, context: HookContext): Promise<void> {
   await sqliteRecordSortBackfillPhaseHook?.(point, context);
 }
@@ -1505,7 +1526,7 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
 }
 
 /**
- * Refuse a record/blob write for a `connector_instance_id` whose
+ * A record/blob write must be refused for a `connector_instance_id` whose
  * `connector_instances` row is gone, OR whose row exists but is `revoked` —
  * closing a delete/write and a revoke/write TOCTOU the coordinator fence's
  * mutual exclusion alone does not close: the fence only serializes a
@@ -1529,20 +1550,33 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
  * `ingestRecord`/`ingestRecords` stay a connector-agnostic durable storage
  * primitive for direct callers by default (internal repair paths, and
  * dozens of existing tests that ingest without ever enrolling a
- * `connector_instances` row) — this function is called from inside them
- * ONLY when the caller opts in via `RecordIngestOptions.requireConnectionAdmission`.
- * Owner HTTP ingest (server/routes/rs-mutation.ts) and device-exporter ingest
+ * `connector_instances` row) — this check is opted into ONLY via
+ * `RecordIngestOptions.requireConnectionAdmission`. Owner HTTP ingest
+ * (server/routes/rs-mutation.ts) and device-exporter ingest
  * (server/routes/ref-device-exporters.ts) both opt in on EVERY record, not
- * once per batch: each record acquires its own fresh, short-lived
- * connector-instance fence (see `ingestRecord`'s header), so only a
- * per-record re-check closes the delete/write TOCTOU for every record in a
- * batch, not just the first. `persistContentAddressedBlob` (blob writes,
- * server/index.ts) calls this function directly and unconditionally inside
- * its own fence, since it is reached only via the HTTP blob-write route.
- * Source-webhook ingest (server/routes/source-webhooks.ts) is deliberately
- * NOT wired to this check: it is connector-id-only generic ingest with no
- * per-connection admission concept at that layer, so it is out of scope for
- * this fix.
+ * once per batch. Source-webhook ingest (server/routes/source-webhooks.ts)
+ * is deliberately NOT wired to this check: it is connector-id-only generic
+ * ingest with no per-connection admission concept at that layer, so it is
+ * out of scope for this fix.
+ *
+ * THIS async function is only the cheap pre-check both backends run BEFORE
+ * their durable write transaction opens — an early exit for the common case,
+ * not the correctness guarantee. It cannot close the TOCTOU on its own: it
+ * is a separate `await` from the write transaction, so a revoke committed in
+ * the gap between this check passing and the transaction opening would slip
+ * through undetected. The AUTHORITATIVE, race-closing check runs INSIDE each
+ * backend's own durable write transaction, using the SAME
+ * `assertConnectorInstanceStatusWritable` predicate this function also
+ * calls: `assertPostgresConnectorInstanceWritable` (postgres-records.ts,
+ * called with the transaction's own client, inside the transaction-scoped
+ * advisory lock) and `assertSqliteConnectorInstanceWritableWithinTransaction`
+ * (this file, called from inside `writeTransaction` — no `await` between
+ * that read and the write it gates, so SQLite's single-writer connection
+ * makes it atomic with the mutation). `persistContentAddressedBlob`
+ * (blob writes, server/index.ts) is fenced the same way: no pre-check at the
+ * `withConnectorInstanceWrite` level (that fence is in-process only and, on
+ * Postgres, ends before the advisory lock is even acquired), only the
+ * in-transaction call on each backend's own write path.
  *
  * Reuses `ConnectorInstanceResolutionError`'s `connector_instance_not_found`
  * code for a missing row — the same typed outcome `deleteConnection`'s own
@@ -1552,16 +1586,13 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
  * DOES exist and conflating the two would misreport a revoke as a delete.
  * See harden-connector-instance-write-fence-transaction-native.
  */
-export async function assertConnectorInstanceWritable(connectorInstanceId: string): Promise<void> {
-  const status = isPostgresStorageBackend()
-    ? ((
-        await postgresQuery<{ status: string }>(
-          "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
-          [connectorInstanceId]
-        )
-      ).rows[0]?.status ?? null)
-    : ((getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)
-        ?.status ?? null);
+/**
+ * Pure predicate shared by every writability check on every backend, so the
+ * status→error-code mapping can only ever drift in one place. `status: null`
+ * means "no row" (existence check already failed upstream of this call);
+ * everything else is the row's own `connector_instances.status`.
+ */
+function assertConnectorInstanceStatusWritable(status: string | null, connectorInstanceId: string): void {
   if (status === null) {
     throw new ConnectorInstanceResolutionError(
       "connector_instance_not_found",
@@ -1576,6 +1607,40 @@ export async function assertConnectorInstanceWritable(connectorInstanceId: strin
       { connectorInstanceId }
     );
   }
+}
+
+export async function assertConnectorInstanceWritable(connectorInstanceId: string): Promise<void> {
+  const status = isPostgresStorageBackend()
+    ? ((
+        await postgresQuery<{ status: string }>(
+          "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+          [connectorInstanceId]
+        )
+      ).rows[0]?.status ?? null)
+    : ((getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)
+        ?.status ?? null);
+  assertConnectorInstanceStatusWritable(status, connectorInstanceId);
+}
+
+/**
+ * SQLite in-transaction re-check, mirroring `assertSqliteRunStillAdmitted`'s
+ * exact shape and rationale: the pre-transaction `assertConnectorInstanceWritable`
+ * check above closes nothing on its own — it is a separate `await` from the
+ * durable write's own `writeTransaction`, so a revoke (`updateStatus`, which
+ * is NOT wrapped in `withConnectorInstanceWrite` and shares no lock with the
+ * ingest fence) can commit in the gap between the pre-check passing and the
+ * write transaction opening. SQLite's single-writer connection makes THIS
+ * check atomic with the mutation it guards, because both run inside the SAME
+ * synchronous transaction callback — there is no `await` between this read
+ * and the write it gates. Must be called from inside the durable write
+ * transaction, never before it. See
+ * harden-connector-instance-write-fence-transaction-native.
+ */
+export function assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId: string): void {
+  const status =
+    (getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)?.status ??
+    null;
+  assertConnectorInstanceStatusWritable(status, connectorInstanceId);
 }
 
 /**
@@ -1611,6 +1676,9 @@ export async function ingestRecord(
     async (coordinatorOwnership) => {
       if (options.requireConnectionAdmission) {
         await assertConnectorInstanceWritable(coordinationInstanceId);
+        await maybeAfterAdmissionPreCheckPhase("after-admission-pre-check", {
+          connectorInstanceId: coordinationInstanceId,
+        });
       }
       return ingestRecordWithinCoordinator(storageTarget, record, { ...options, coordinatorOwnership });
     },
@@ -1804,14 +1872,14 @@ async function ingestRecordsWithinCoordinator(
   const changedRecords: DeferredRecordIndex[] = [];
   const perRecordOptions: RecordIngestOptions = {
     deferIndexes: true,
-    // Re-verified inside EVERY record's own locked transaction on Postgres
-    // (see postgresIngestRecord's requireConnectionAdmission handling), not
-    // once before the loop: the connector-instance advisory lock is now
-    // transaction-scoped, not held for the whole batch, so only a per-record
-    // check closes the delete/write TOCTOU for every record, not just the
-    // first. SQLite ingest ignores this option and relies on the pre-batch
-    // check below (ingestRecords) plus its own single-process, single-writer
-    // guarantee — no cross-process race is possible there.
+    // Re-verified inside EVERY record's own durable write transaction on
+    // BOTH backends (Postgres: postgresIngestRecord's requireConnectionAdmission
+    // handling, inside the transaction-scoped advisory lock; SQLite:
+    // assertSqliteConnectorInstanceWritableWithinTransaction, inside
+    // writeTransaction), not once before the loop: neither backend holds
+    // any lock across the whole batch, so only a per-record, in-transaction
+    // check closes the delete-or-revoke/write TOCTOU for every record, not
+    // just the first.
     ...(requireConnectionAdmission ? { requireConnectionAdmission } : {}),
     ...(runId ? { runId } : {}),
   };
@@ -2189,6 +2257,9 @@ async function ingestSqliteRecord(
   // maintenance can run *after* the commit succeeds.
   const outcome = writeTransaction<DurableIngestOutcome>(() => {
     assertSqliteRunStillAdmitted(options.runId, connectorInstanceId);
+    if (options.requireConnectionAdmission) {
+      assertSqliteConnectorInstanceWritableWithinTransaction(connectorInstanceId);
+    }
     const finishDurableOutcome = (value: DurableIngestOutcome): DurableIngestOutcome => {
       if (options.deviceReservation) {
         advanceSqliteDeviceIngestPrefix(options.deviceReservation, options.deviceReservation.inputIndex);
@@ -2592,6 +2663,34 @@ async function prepareDeviceFinalRecordsWithinCoordinator(
 }
 
 /**
+ * The version-CAS guard: an upsert publish is only current for a LIVE row
+ * at `expectedVersion`; a delete publish is only current for a TOMBSTONED
+ * row at `expectedVersion`. Version alone is a unique, monotonic-per-mutation
+ * token — `deleted` is written atomically WITH `version` in every durable
+ * mutation, so in principle "current version == expectedVersion" already
+ * implies "current deleted state matches whatever THAT mutation set." This
+ * explicit check makes that invariant load-bearing in the guard itself
+ * rather than an implicit property callers must never violate. Shared by
+ * both backend branches of `maintainRecordIndexesWithinPermit` — only the
+ * row-shape normalization differs (Postgres returns `version` as
+ * string|number and `deleted` as boolean; SQLite returns `version` as
+ * number and `deleted` as boolean|number). See
+ * harden-connector-instance-write-fence-transaction-native.
+ */
+function isRecordStillCurrent(
+  current: { version: number | string; deleted: boolean | number } | null | undefined,
+  expectedVersion: number,
+  op: "upsert" | "delete"
+): boolean {
+  return (
+    current !== null &&
+    current !== undefined &&
+    Number(current.version) === expectedVersion &&
+    Boolean(current.deleted) === (op === "delete")
+  );
+}
+
+/**
  * Publishes lexical AND semantic derived state for one record inside ONE
  * short atomic transaction, gated on a SINGLE re-read of `records.version`
  * still equalling `expectedVersion` at the moment that transaction commits.
@@ -2621,41 +2720,10 @@ async function prepareDeviceFinalRecordsWithinCoordinator(
  * `computeSemanticEntries` — THEN one short transaction that re-reads
  * `records.version`/`deleted` once and, only if still current, applies both
  * families' already-computed writes together before releasing. No provider
- * I/O or embedding call ever runs inside that transaction.
- *
- * Returns "stale" (both families, since they share one gate) when the
- * current `records` row has already moved past `expectedVersion` — treat as
- * success, not failure: a newer writer's own publish is authoritative.
- * Returns "published" when the transaction committed the writes.
+ * I/O or embedding call ever runs inside that transaction. A stale caller
+ * (current version has already moved past `expectedVersion`) silently
+ * no-ops — a newer writer's own publish is authoritative.
  */
-/**
- * The version-CAS guard: an upsert publish is only current for a LIVE row
- * at `expectedVersion`; a delete publish is only current for a TOMBSTONED
- * row at `expectedVersion`. Version alone is a unique, monotonic-per-mutation
- * token — `deleted` is written atomically WITH `version` in every durable
- * mutation, so in principle "current version == expectedVersion" already
- * implies "current deleted state matches whatever THAT mutation set." This
- * explicit check makes that invariant load-bearing in the guard itself
- * rather than an implicit property callers must never violate. Shared by
- * both backend branches of `maintainRecordIndexesWithinPermit` — only the
- * row-shape normalization differs (Postgres returns `version` as
- * string|number and `deleted` as boolean; SQLite returns `version` as
- * number and `deleted` as boolean|number). See
- * harden-connector-instance-write-fence-transaction-native.
- */
-function isRecordStillCurrent(
-  current: { version: number | string; deleted: boolean | number } | null | undefined,
-  expectedVersion: number,
-  op: "upsert" | "delete"
-): boolean {
-  return (
-    current !== null &&
-    current !== undefined &&
-    Number(current.version) === expectedVersion &&
-    Boolean(current.deleted) === (op === "delete")
-  );
-}
-
 async function maintainRecordIndexesWithinPermit(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
