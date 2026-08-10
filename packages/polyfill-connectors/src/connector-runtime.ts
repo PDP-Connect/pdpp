@@ -1177,7 +1177,7 @@ function makeEmitRecord(deps: {
       return emit({
         type: "RECORD",
         stream,
-        key: data.id,
+        key: String(data.id),
         data: { id: data.id },
         emitted_at: emittedAt,
         op: "delete",
@@ -1202,7 +1202,7 @@ function makeEmitRecord(deps: {
     const record: EmittedMessage = {
       type: "RECORD",
       stream,
-      key: data.id,
+      key: String(data.id),
       data,
       emitted_at: emittedAt,
     };

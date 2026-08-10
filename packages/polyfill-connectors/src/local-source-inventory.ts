@@ -143,7 +143,14 @@ export interface InventoryRecord extends RecordData {
 export interface CoverageRecord extends RecordData {
   id: string;
   reason: string;
-  status: CoverageStatus;
+  /**
+   * `"unaccounted"` alongside the closed {@link CoverageStatus} set: reserved
+   * (see `COLLECTOR_COVERAGE_STATUSES` in collector-runner.ts) for a
+   * connector-derived coverage record that could not classify a discovered
+   * store — e.g. a rollout scan that failed before it could examine
+   * anything. Never returned by `coverageStatus()`'s static classification.
+   */
+  status: CoverageStatus | "unaccounted";
   store: string;
   stream: string | null;
 }

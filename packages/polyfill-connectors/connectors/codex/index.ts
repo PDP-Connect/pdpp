@@ -1195,6 +1195,32 @@ function carryFileCursorForward(args: ScanRolloutsArgs, path: string, mtime: num
   args.newMtimes[path] = mtime;
 }
 
+/** Report `Codex phase=index sessions_dir_readable=false` and return the empty scan result. */
+async function reportMissingSessionsBase(scanOutcomeOnBaseError: "unreadable" | null): Promise<ScanRolloutsResult> {
+  emit({
+    type: "PROGRESS",
+    message: "Codex phase=index pass=index sessions_dir_readable=false",
+  });
+  await waitForEmitDrain();
+  // If we caught an error, it's unreadable; if not, ENOENT = complete
+  return {
+    parsedFiles: 0,
+    messagesEmitted: 0,
+    messagesExamined: 0,
+    functionCallsEmitted: 0,
+    functionCallsExamined: 0,
+    scanOutcome: scanOutcomeOnBaseError || "complete",
+  };
+}
+
+/** The examined-record counts a rollout file's carried-forward cursor vouches for. */
+function examinedCountsFromCursor(cursor: RolloutFileCursor | undefined): { functionCalls: number; messages: number } {
+  return {
+    functionCalls: cursor?.function_call_count ?? 0,
+    messages: cursor?.message_count ?? 0,
+  };
+}
+
 /**
  * Build (or rebuild) a rich cursor after a parse, hashing the committed prefix.
  *
@@ -1342,21 +1368,7 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
   }
 
   if (!baseExists) {
-    emit({
-      type: "PROGRESS",
-      message: "Codex phase=index pass=index sessions_dir_readable=false",
-    });
-    await waitForEmitDrain();
-    // If we caught an error, it's unreadable; if not, ENOENT = complete
-    const scanOutcome = scanOutcomeOnBaseError || "complete";
-    return {
-      parsedFiles: 0,
-      messagesEmitted: 0,
-      messagesExamined: 0,
-      functionCallsEmitted: 0,
-      functionCallsExamined: 0,
-      scanOutcome,
-    };
+    return await reportMissingSessionsBase(scanOutcomeOnBaseError);
   }
 
   // Local wrapper to track emissions without mutating args
@@ -1389,20 +1401,14 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
         const result = await processRolloutEntry(entry, { ...args, emitRecord: countingEmit }, totalRollouts);
         if (result === "parsed") {
           parsedRollouts += 1;
-          // Accumulate examined records from the parse that just completed
-          const cursor = args.newFileCursors[entry.path];
-          if (cursor) {
-            messagesExamined += cursor.message_count ?? 0;
-            functionCallsExamined += cursor.function_call_count ?? 0;
-          }
-        } else if (result === "skipped") {
-          // File was skipped but may have been examined in prior runs
-          // Track counts from the carried-forward cursor (if any) to show data exists even when suppressed
-          const cursor = args.newFileCursors[entry.path];
-          if (cursor) {
-            messagesExamined += cursor.message_count ?? 0;
-            functionCallsExamined += cursor.function_call_count ?? 0;
-          }
+        }
+        // A "parsed" file was just examined; a "skipped" file may still carry
+        // examined counts forward from a prior run's cursor — either way, the
+        // cursor at this path (fresh or carried-forward) is the source of truth.
+        if (result === "parsed" || result === "skipped") {
+          const counts = examinedCountsFromCursor(args.newFileCursors[entry.path]);
+          messagesExamined += counts.messages;
+          functionCallsExamined += counts.functionCalls;
         }
       } catch {
         // Any error during parsing (without code or other) makes scan incomplete
@@ -1646,7 +1652,7 @@ async function assertRequestedCodexSources(dirs: CodexDirs, requested: Map<strin
   if (requested.has("sessions")) {
     const hasRollouts = await isReadableDirectory(dirs.baseDir);
     const hasThreadsDb = await isReadableFile(dirs.stateDbPath);
-    if (!hasRollouts && !hasThreadsDb) {
+    if (!(hasRollouts || hasThreadsDb)) {
       // Both missing — check if unreadable (not just absent)
       const rolloutStatus = await checkDirectoryReadable(dirs.baseDir);
       if (rolloutStatus === "unreadable") {
@@ -1908,27 +1914,69 @@ async function emitLocalInventoryStreams(input: {
   }
 }
 
-// ─── main ───────────────────────────────────────────────────────────────
-
-async function main(): Promise<void> {
-  const startMsg = await readStartMessage();
-  if (startMsg.type !== "START") {
-    return fail("Expected START");
+/** Human-readable `reason` for a derived (messages/function_calls) coverage_diagnostics record. */
+function describeDerivedCoverageReason(input: {
+  emitted: number;
+  examined: number;
+  label: string;
+  scanOutcome: "complete" | "unreadable" | "parse_error";
+  status: "collected" | "unaccounted";
+}): string {
+  if (input.status === "unaccounted") {
+    return `rollout enumeration failed: ${input.scanOutcome}`;
   }
-
-  const requested = buildRequestedMap(startMsg);
-  if (!requested.size) {
-    return fail("START.scope.streams is required");
+  if (input.examined === 0) {
+    return "enumeration complete, 0 examined";
   }
+  if (input.emitted > 0) {
+    return `${input.emitted} ${input.label} records emitted`;
+  }
+  return `enumeration complete, ${input.examined} examined (${input.emitted} emitted)`;
+}
 
-  const resFilters = buildResourceFilters(requested);
-  const dirs = resolveCodexDirs();
-  const fileMtimes = readFileMtimes(startMsg);
-  const fileCursors = readPriorFileCursors(startMsg);
+/**
+ * A derived coverage_diagnostics CoverageRecord for one rollout-scanned
+ * stream (messages or function_calls), on the canonical coverage-status
+ * vocabulary (`local-source-inventory.ts`'s `CoverageStatus | "unaccounted"`):
+ * a scan that completed — even examining zero records — is `collected`
+ * (the reason carries the zero/positive detail); a scan that failed or
+ * could not finish (`unreadable` / `parse_error`) is `unaccounted`, since
+ * this connector cannot classify what it never got to examine.
+ */
+function buildDerivedCoverageRecord(input: {
+  emitted: number;
+  examined: number;
+  id: string;
+  label: string;
+  scanOutcome: "complete" | "unreadable" | "parse_error";
+  scopeFingerprint: string | undefined;
+  store: string;
+  stream: string;
+}): CoverageRecord {
+  const status: "collected" | "unaccounted" = input.scanOutcome === "complete" ? "collected" : "unaccounted";
+  return {
+    id: input.id,
+    store: input.store,
+    stream: input.stream,
+    status,
+    reason: describeDerivedCoverageReason({
+      emitted: input.emitted,
+      examined: input.examined,
+      label: input.label,
+      scanOutcome: input.scanOutcome,
+      status,
+    }),
+    ...(input.scopeFingerprint ? { collection_scope: input.scopeFingerprint } : {}),
+  };
+}
 
-  let total = 0;
-  const nowIso = (): string => new Date().toISOString();
-  const emittedAt = nowIso();
+/** Factory: returns the emitRecord closure + a live-updating emitted-count ref. */
+function makeCodexEmitRecord(deps: {
+  emittedAt: string;
+  resFilters: ReadonlyMap<string, ReadonlySet<string> | null>;
+}): { counters: { total: number }; emitRecord: (s: string, d: RecordData) => void } {
+  const { emittedAt, resFilters } = deps;
+  const counters = { total: 0 };
   const emitRecord = (s: string, d: RecordData): void => {
     // biome-ignore lint/suspicious/noEqualsToNull: id is string | number | null | undefined; == null intentionally covers both a missing id and an explicit null.
     if (d.id == null) {
@@ -1952,12 +2000,99 @@ async function main(): Promise<void> {
     emit({
       type: "RECORD",
       stream: s,
-      key: d.id,
+      key: String(d.id),
       data: d,
       emitted_at: emittedAt,
     });
-    total += 1;
+    counters.total += 1;
   };
+  return { counters, emitRecord };
+}
+
+/**
+ * Builds derived (rollout-scanned) coverage_diagnostics records for the
+ * requested streams, emits them alongside the static inventory coverage,
+ * then flushes the combined snapshot as the stream's STATE cursor.
+ */
+async function emitDerivedCoverage(input: {
+  emitRecord: (s: string, d: RecordData) => void;
+  enumerationScope: ReturnType<typeof readEnumerationScope>;
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
+  nowIso: () => string;
+  requested: Map<string, StreamScope>;
+  rolloutScan: ScanRolloutsResult;
+}): Promise<void> {
+  const { emitRecord, enumerationScope, inventory, nowIso, requested, rolloutScan } = input;
+  const derivedRecords: CoverageRecord[] = [];
+  const scopeFingerprint = enumerationScopeFingerprint(enumerationScope);
+
+  if (requested.has("messages")) {
+    derivedRecords.push(
+      buildDerivedCoverageRecord({
+        emitted: rolloutScan.messagesEmitted,
+        examined: rolloutScan.messagesExamined,
+        id: "coverage:derived_messages",
+        label: "message",
+        scanOutcome: rolloutScan.scanOutcome,
+        scopeFingerprint,
+        store: "derived_messages",
+        stream: "messages",
+      })
+    );
+  }
+
+  if (requested.has("function_calls")) {
+    derivedRecords.push(
+      buildDerivedCoverageRecord({
+        emitted: rolloutScan.functionCallsEmitted,
+        examined: rolloutScan.functionCallsExamined,
+        id: "coverage:derived_function_calls",
+        label: "function_call",
+        scanOutcome: rolloutScan.scanOutcome,
+        scopeFingerprint,
+        store: "derived_function_calls",
+        stream: "function_calls",
+      })
+    );
+  }
+
+  // Emit derived records
+  for (const record of derivedRecords) {
+    emitRecord("coverage_diagnostics", record);
+    await waitForEmitDrain();
+  }
+
+  // Emit STATE with snapshot including both static and derived records.
+  const allCoverageRecords: readonly CoverageRecord[] = [...inventory.coverage, ...derivedRecords];
+  emit({
+    type: "STATE",
+    stream: "coverage_diagnostics",
+    cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(allCoverageRecords) },
+  });
+  await waitForEmitDrain();
+}
+
+// ─── main ───────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const startMsg = await readStartMessage();
+  if (startMsg.type !== "START") {
+    return fail("Expected START");
+  }
+
+  const requested = buildRequestedMap(startMsg);
+  if (!requested.size) {
+    return fail("START.scope.streams is required");
+  }
+
+  const resFilters = buildResourceFilters(requested);
+  const dirs = resolveCodexDirs();
+  const fileMtimes = readFileMtimes(startMsg);
+  const fileCursors = readPriorFileCursors(startMsg);
+
+  const nowIso = (): string => new Date().toISOString();
+  const emittedAt = nowIso();
+  const { counters, emitRecord } = makeCodexEmitRecord({ emittedAt, resFilters });
 
   const needRollouts = requested.has("sessions") || requested.has("messages") || requested.has("function_calls");
 
@@ -2074,88 +2209,10 @@ async function main(): Promise<void> {
   await waitForEmitDrain();
 
   if (requested.has("coverage_diagnostics")) {
-    // Build and emit derived coverage records for messages and function_calls
-    const derivedRecords: RecordData[] = [];
-
-    if (requested.has("messages")) {
-      let status: "collected" | "verified_empty" | "incomplete";
-      if (rolloutScan.scanOutcome !== "complete") {
-        status = "incomplete";
-      } else if (rolloutScan.messagesEmitted > 0) {
-        status = "collected";
-      } else if (rolloutScan.messagesExamined === 0) {
-        // True verified_empty: scan completed and zero records were examined
-        status = "verified_empty";
-      } else {
-        // Examined > 0 but emitted = 0: data exists but suppressed by fingerprint
-        status = "collected";
-      }
-      derivedRecords.push({
-        id: "coverage:derived_messages",
-        store: "derived_messages",
-        stream: "messages",
-        status,
-        reason:
-          status === "incomplete"
-            ? `rollout enumeration failed: ${rolloutScan.scanOutcome}`
-            : status === "collected"
-              ? `${rolloutScan.messagesEmitted} message records emitted`
-              : `enumeration complete, ${rolloutScan.messagesExamined} examined (${rolloutScan.messagesEmitted} emitted)`,
-        ...(enumerationScopeFingerprint(enumerationScope)
-          ? { collection_scope: enumerationScopeFingerprint(enumerationScope) }
-          : {}),
-      });
-    }
-
-    if (requested.has("function_calls")) {
-      let status: "collected" | "verified_empty" | "incomplete";
-      if (rolloutScan.scanOutcome !== "complete") {
-        status = "incomplete";
-      } else if (rolloutScan.functionCallsEmitted > 0) {
-        status = "collected";
-      } else if (rolloutScan.functionCallsExamined === 0) {
-        // True verified_empty: scan completed and zero records were examined
-        status = "verified_empty";
-      } else {
-        // Examined > 0 but emitted = 0: data exists but suppressed by fingerprint
-        status = "collected";
-      }
-      derivedRecords.push({
-        id: "coverage:derived_function_calls",
-        store: "derived_function_calls",
-        stream: "function_calls",
-        status,
-        reason:
-          status === "incomplete"
-            ? `rollout enumeration failed: ${rolloutScan.scanOutcome}`
-            : status === "collected"
-              ? `${rolloutScan.functionCallsEmitted} function_call records emitted`
-              : `enumeration complete, ${rolloutScan.functionCallsExamined} examined (${rolloutScan.functionCallsEmitted} emitted)`,
-        ...(enumerationScopeFingerprint(enumerationScope)
-          ? { collection_scope: enumerationScopeFingerprint(enumerationScope) }
-          : {}),
-      });
-    }
-
-    // Emit derived records
-    for (const record of derivedRecords) {
-      emitRecord("coverage_diagnostics", record);
-      await waitForEmitDrain();
-    }
-
-    // Emit STATE with snapshot including both static and derived records
-    // inventory.coverage are CoverageRecords, derivedRecords are RecordData with coverage fields
-    // Cast as unknown first, then to CoverageRecord for the snapshot (the fields match)
-    const allCoverageRecords = [...inventory.coverage, ...derivedRecords] as unknown as readonly CoverageRecord[];
-    emit({
-      type: "STATE",
-      stream: "coverage_diagnostics",
-      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(allCoverageRecords) },
-    });
-    await waitForEmitDrain();
+    await emitDerivedCoverage({ emitRecord, enumerationScope, inventory, nowIso, requested, rolloutScan });
   }
 
-  emit({ type: "DONE", status: "succeeded", records_emitted: total });
+  emit({ type: "DONE", status: "succeeded", records_emitted: counters.total });
   flushAndExit(0);
 }
 

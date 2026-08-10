@@ -8,15 +8,19 @@ import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 
 /**
- * Truthful evidence contract for derived streams (messages, function_calls).
+ * Truthful evidence contract for derived streams (messages, function_calls),
+ * on the canonical local-source-inventory coverage-status vocabulary
+ * (`CoverageStatus | "unaccounted"` — see local-source-inventory.ts).
  *
  * Status MUST be:
- * - "collected" if records were actually emitted
- * - "verified_empty" only if scan completed AND count=0 AND no errors
- * - "incomplete" if enumeration failed (EACCES, parse_error, etc.)
+ * - "collected" if the rollout scan completed, whether or not it examined
+ *   or emitted anything — the `reason` field carries the zero/positive detail.
+ * - "unaccounted" if enumeration failed or could not finish (EACCES,
+ *   parse_error, etc.) — the connector cannot classify what it never
+ *   got to examine.
  *
- * ENOENT (missing rollout dir) = complete scan of empty set = verified_empty
- * EACCES/I/O = incomplete scan = incomplete status
+ * ENOENT (missing rollout dir) = complete scan of empty set = collected
+ * EACCES/I/O = incomplete scan = unaccounted
  */
 
 const FIXTURE_ROOT = join(import.meta.dirname, "../../fixtures/codex/source-home");
@@ -57,7 +61,7 @@ test("codex coverage truth: populated rollouts show collected status", async () 
   assert.equal(messagesRecord.data.status, "collected", "messages with emitted records must show collected");
 });
 
-test("codex coverage truth: empty rollouts (ENOENT) show verified_empty", async () => {
+test("codex coverage truth: empty rollouts (ENOENT) show collected (complete scan, zero examined)", async () => {
   // Create a fixture with no rollout directory
   const emptyHome = join(import.meta.dirname, "../../fixtures/codex/empty-home-no-rollouts");
 
@@ -86,17 +90,19 @@ test("codex coverage truth: empty rollouts (ENOENT) show verified_empty", async 
   assert(messagesRecord, "must have coverage record for messages");
   assert(functionCallsRecord, "must have coverage record for function_calls");
 
-  // ENOENT (missing directory) = complete scan of empty set = verified_empty
+  // ENOENT (missing directory) = complete scan of empty set = collected
   assert.equal(
     messagesRecord.data.status,
-    "verified_empty",
-    "messages with no rollouts (ENOENT) must show verified_empty"
+    "collected",
+    "messages with no rollouts (ENOENT) must show collected (complete scan, zero examined)"
   );
   assert.equal(
     functionCallsRecord.data.status,
-    "verified_empty",
-    "function_calls with no rollouts (ENOENT) must show verified_empty"
+    "collected",
+    "function_calls with no rollouts (ENOENT) must show collected (complete scan, zero examined)"
   );
+  assert.equal(messagesRecord.data.reason, "enumeration complete, 0 examined");
+  assert.equal(functionCallsRecord.data.reason, "enumeration complete, 0 examined");
 });
 
 test("codex coverage truth: derived coverage records included in STATE snapshot", async () => {
@@ -131,7 +137,7 @@ test("codex coverage truth: derived coverage records included in STATE snapshot"
   assert(storeNames.includes("derived_function_calls"), "STATE snapshot must include derived_function_calls store");
 });
 
-test("codex coverage truth: file read error makes coverage incomplete", async () => {
+test("codex coverage truth: file read error makes coverage unaccounted", async () => {
   // Use a temp directory with an unreadable day directory to trigger enumeration error
   const { mkdirSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -168,9 +174,9 @@ test("codex coverage truth: file read error makes coverage incomplete", async ()
     assert(messagesRecord, "must have coverage record for messages");
     assert(functionCallsRecord, "must have coverage record for function_calls");
 
-    // Directory enumeration error = incomplete status
-    assert.equal(messagesRecord.data.status, "incomplete", "file enumeration error must show incomplete");
-    assert.equal(functionCallsRecord.data.status, "incomplete", "file enumeration error must show incomplete");
+    // Directory enumeration error = unaccounted status (gap, not a classified empty)
+    assert.equal(messagesRecord.data.status, "unaccounted", "file enumeration error must show unaccounted");
+    assert.equal(functionCallsRecord.data.status, "unaccounted", "file enumeration error must show unaccounted");
   } finally {
     // Restore permissions before cleanup
     try {
@@ -214,7 +220,7 @@ test("codex coverage truth: suppressed-but-populated shows collected (fingerprin
   );
   const priorState = states1.at(-1)?.cursor;
 
-  // Second run with prior state: should show verified_empty (examined > 0, emitted = 0 due to fingerprint)
+  // Second run with prior state: should show collected (complete scan; examined > 0, emitted = 0 due to fingerprint)
   const result2 = await runConnectorProtocolSubprocess({
     allowFailedDone: true,
     cwd: join(import.meta.dirname, "../.."),
@@ -241,7 +247,7 @@ test("codex coverage truth: suppressed-but-populated shows collected (fingerprin
   );
 });
 
-test("codex coverage truth: nested unreadable directory makes coverage incomplete", async () => {
+test("codex coverage truth: nested unreadable directory makes coverage unaccounted", async () => {
   // Temp fixture with nested unreadable dir (EACCES at depth) to simulate permission error during traversal
   const { mkdirSync, chmodSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -278,9 +284,9 @@ test("codex coverage truth: nested unreadable directory makes coverage incomplet
     assert(messagesRecord, "must have coverage record for messages");
     assert(functionCallsRecord, "must have coverage record for function_calls");
 
-    // Nested unreadable = incomplete status (enumeration failed)
-    assert.equal(messagesRecord.data.status, "incomplete", "nested unreadable must show incomplete");
-    assert.equal(functionCallsRecord.data.status, "incomplete", "nested unreadable must show incomplete");
+    // Nested unreadable = unaccounted status (enumeration failed, a gap)
+    assert.equal(messagesRecord.data.status, "unaccounted", "nested unreadable must show unaccounted");
+    assert.equal(functionCallsRecord.data.status, "unaccounted", "nested unreadable must show unaccounted");
   } finally {
     // Restore permissions before cleanup
     try {
@@ -335,13 +341,14 @@ test("codex coverage truth: existing file re-parsed counts as examined", async (
 
   // Second run should also show examined > 0 (file re-parsed)
   assert(messagesRecord2, "second run must have coverage record");
-  assert(
-    ["collected", "verified_empty"].includes((messagesRecord2.data as any).status || ""),
-    "second run should indicate examined data was processed"
+  assert.equal(
+    messagesRecord2.data.status,
+    "collected",
+    "second run should indicate examined data was processed (complete scan)"
   );
 });
 
-test("codex coverage truth: genuine empty (ENOENT store root) shows verified_empty", async () => {
+test("codex coverage truth: genuine empty (ENOENT store root) shows collected (complete scan, zero examined)", async () => {
   // Empty home with no sessions directory at all
   const { mkdirSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -382,9 +389,17 @@ test("codex coverage truth: genuine empty (ENOENT store root) shows verified_emp
     assert(messagesRecord, "must have coverage record for messages");
     assert(functionCallsRecord, "must have coverage record for function_calls");
 
-    // ENOENT (missing sessions dir) = complete scan with examined=0 = verified_empty
-    assert.equal(messagesRecord.data.status, "verified_empty", "genuine empty should show verified_empty");
-    assert.equal(functionCallsRecord.data.status, "verified_empty", "genuine empty should show verified_empty");
+    // ENOENT (missing sessions dir) = complete scan with examined=0 = collected
+    assert.equal(
+      messagesRecord.data.status,
+      "collected",
+      "genuine empty should show collected (complete, zero examined)"
+    );
+    assert.equal(
+      functionCallsRecord.data.status,
+      "collected",
+      "genuine empty should show collected (complete, zero examined)"
+    );
   } finally {
     rmSync(emptyRoot, { recursive: true, force: true });
   }

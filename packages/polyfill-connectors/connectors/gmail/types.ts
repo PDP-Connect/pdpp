@@ -64,7 +64,7 @@ export interface StateMessage {
 export interface RecordMessage {
   data: Record<string, unknown>;
   emitted_at: string;
-  key: string | number;
+  key: string | readonly string[];
   stream: string;
   type: "RECORD";
 }

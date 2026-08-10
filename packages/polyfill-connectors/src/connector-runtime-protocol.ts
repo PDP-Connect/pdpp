@@ -321,7 +321,13 @@ export type EmittedMessage =
   | {
       type: "RECORD";
       stream: string;
-      key: string | number;
+      /**
+       * Primary key value: non-empty string, or non-empty string[] for
+       * compound keys (spec-core.md "The RECORD envelope"). A scalar
+       * `number` is never valid on the wire — connectors MUST stringify
+       * before emitting.
+       */
+      key: string | readonly string[];
       data: RecordData;
       emitted_at: string;
       op?: "delete";

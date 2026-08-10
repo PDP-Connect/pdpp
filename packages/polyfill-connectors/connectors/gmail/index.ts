@@ -3216,11 +3216,10 @@ function makeEmitRecord(
       return false;
     }
 
-    const key: string | number = typeof keyCandidate === "number" ? keyCandidate : canonical;
     await emit({
       type: "RECORD",
       stream,
-      key,
+      key: canonical,
       data: validation.data,
       emitted_at: emittedAt,
     });
