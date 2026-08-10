@@ -1,0 +1,340 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/venmo",
+  "connector_key": "venmo",
+  "manifest_uri": "https://registry.pdpp.org/connectors/venmo",
+  "version": "0.1.0",
+  "display_name": "Venmo",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "Venmo sign-in details",
+      "description": "Seal the Venmo sign-in details for this source. Venmo's own Developer API is retired to new integrators, so this connector authenticates the same way the Venmo apps do; a 6-digit SMS code may be requested on first login.",
+      "submit_label": "Save Venmo credential and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "Venmo phone, email, or username",
+          "type": "text",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "env": ["VENMO_USERNAME"]
+        },
+        {
+          "name": "password",
+          "label": "Venmo password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": ["VENMO_PASSWORD"]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": ["otp"],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "otp_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "medium",
+      "background_safe": false,
+      "assisted_after_owner_auth": true,
+      "rationale": "Manual by default because first login commonly serves an SMS 2FA challenge, but the resulting access token does not expire (per the documented unofficial client), so an owner can opt into a background schedule once a connection has authenticated once."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "profile",
+      "required": true,
+      "description": "The authenticated owner's own Venmo account.",
+      "display": {
+        "label": "Your Venmo profile",
+        "detail": "Display name, username, phone, profile picture, about text, join date, and whether the account is a business account. No balance or payment-method data."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "username": {
+            "type": ["string", "null"]
+          },
+          "first_name": {
+            "type": ["string", "null"]
+          },
+          "last_name": {
+            "type": ["string", "null"]
+          },
+          "display_name": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "phone": {
+            "type": ["string", "null"]
+          },
+          "profile_picture_url": {
+            "type": ["string", "null"],
+            "format": "uri"
+          },
+          "about": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "secondary"
+          },
+          "date_joined": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "is_business": {
+            "type": ["boolean", "null"]
+          }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "username",
+            "display_name",
+            "first_name",
+            "last_name",
+            "about"
+          ],
+          "semantic_fields": ["about"]
+        },
+        "range_filters": {
+          "date_joined": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "friends",
+      "required": true,
+      "description": "The owner's Venmo friends list.",
+      "display": {
+        "label": "Your Venmo friends",
+        "detail": "Display name, username, phone (when visible), profile picture, about text, join date, and whether the entry is a group or an active user. No payment history."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "username": {
+            "type": ["string", "null"]
+          },
+          "first_name": {
+            "type": ["string", "null"]
+          },
+          "last_name": {
+            "type": ["string", "null"]
+          },
+          "display_name": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "primary-title"
+          },
+          "phone": {
+            "type": ["string", "null"]
+          },
+          "profile_picture_url": {
+            "type": ["string", "null"],
+            "format": "uri"
+          },
+          "about": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "secondary"
+          },
+          "date_joined": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "is_group": {
+            "type": ["boolean", "null"]
+          },
+          "is_active": {
+            "type": ["boolean", "null"]
+          }
+        },
+        "required": ["id"]
+      },
+      "primary_key": ["id"],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "username",
+            "display_name",
+            "first_name",
+            "last_name",
+            "about"
+          ],
+          "semantic_fields": ["about"]
+        },
+        "range_filters": {
+          "date_joined": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by": ["is_group", "is_active"]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "transactions",
+      "required": true,
+      "description": "Payments sent, requested, and received that are visible to the owner. Amounts in USD cents. Refunds, bank transfers, top-ups, card authorizations/withdrawals, and disbursements are not modeled (see connector header for why).",
+      "display": {
+        "label": "Your Venmo transactions",
+        "detail": "Date, amount (USD cents), payment type (pay/charge), audience (private/friends/public), status, note, device used, and the counterparty (actor/target) on each side of the payment."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "payment_id": {
+            "type": ["string", "null"]
+          },
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "date_updated": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "date_completed": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "payment_type": {
+            "type": "string",
+            "enum": ["pay", "charge"]
+          },
+          "amount_cents": {
+            "type": "integer"
+          },
+          "audience": {
+            "type": ["string", "null"],
+            "enum": ["private", "friends", "public", null]
+          },
+          "status": {
+            "type": ["string", "null"],
+            "enum": [
+              "settled",
+              "cancelled",
+              "pending",
+              "failed",
+              "expired",
+              null
+            ]
+          },
+          "note": {
+            "type": ["string", "null"],
+            "x_pdpp_role": "secondary"
+          },
+          "device_used": {
+            "type": ["string", "null"]
+          },
+          "actor": {
+            "type": ["object", "null"],
+            "properties": {
+              "id": { "type": "string" },
+              "username": { "type": ["string", "null"] },
+              "display_name": { "type": ["string", "null"] }
+            }
+          },
+          "target": {
+            "type": ["object", "null"],
+            "properties": {
+              "id": { "type": "string" },
+              "username": { "type": ["string", "null"] },
+              "display_name": { "type": ["string", "null"] }
+            }
+          },
+          "is_owner_actor": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "date_created",
+          "payment_type",
+          "amount_cents",
+          "is_owner_actor"
+        ]
+      },
+      "primary_key": ["id"],
+      "cursor_field": "date_created",
+      "consent_time_field": "date_created",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": ["note", "status", "payment_type", "device_used"],
+          "semantic_fields": ["note"]
+        },
+        "range_filters": {
+          "date_created": ["gte", "gt", "lte", "lt"],
+          "date_updated": ["gte", "gt", "lte", "lt"],
+          "date_completed": ["gte", "gt", "lte", "lt"],
+          "amount_cents": ["gte", "gt", "lte", "lt"]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": ["amount_cents"],
+          "min": ["date_created", "amount_cents"],
+          "max": ["date_created", "amount_cents"],
+          "group_by": ["payment_type", "audience", "status", "is_owner_actor"],
+          "group_by_time": ["date_created"]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    }
+  ]
+}

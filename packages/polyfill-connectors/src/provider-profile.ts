@@ -275,6 +275,24 @@ export function groupmePacingProfile(): ProviderPacingProfile {
 }
 
 /**
+ * Venmo — 10000ms (6 req/min). Venmo's own Developer/Payouts API was retired
+ * to new integrators (venmo.com/docs/overview/, confirmed 2026-08-09) and
+ * publishes no rate-limit numbers for either the retired API or the internal
+ * `api.venmo.com/v1` surface this connector uses (documented only by the
+ * unofficial client github.com/mmohades/VenmoApiDocumentation). A public
+ * scraper author (gist.github.com/evanharwin, referenced via web search
+ * 2026-08-09) reports sustained 429s from a related public-feed endpoint
+ * under scraping load — direct evidence this provider does throttle, with no
+ * published threshold to target. Same "undocumented → be gentle" posture as
+ * GroupMe: a conservative 10s floor, well below any observed abuse
+ * threshold, with adaptive AIMD backoff to retreat further on any 429/403.
+ * Derived 2026-08-09: no published limit, use policy default matching GroupMe.
+ */
+export function venmoPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 10_000 };
+}
+
+/**
  * Jellyfin — PDPP operational default (100ms shared backoff, no invented limits).
  * Jellyfin is self-hosted with no published rate limits. We use PDPP's default
  * responsive pacing rather than inventing conservative figures. A typical run

@@ -105,6 +105,7 @@ export const REAL_UNLISTED_CONNECTORS: Record<string, { testFile: string }> = {
   spotify: { testFile: "connectors/spotify/schemas.test.ts" },
   strava: { testFile: "connectors/strava/schemas.test.ts" },
   twitter_archive: { testFile: "connectors/twitter_archive/parsers.test.ts" },
+  venmo: { testFile: "connectors/venmo/integration.test.ts" },
 };
 
 /**

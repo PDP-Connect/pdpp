@@ -170,6 +170,20 @@ const TARGETS = [
     // owner-entered origin — but iCloud is the overwhelmingly common real-world
     // origin, so this is a representative, not exhaustive, probe.
   },
+  {
+    connector: "venmo",
+    name: "v1/oauth/access_token (POST, no credentials)",
+    url: "https://api.venmo.com/v1/oauth/access_token",
+    method: "POST",
+    body: { phone_email_or_username: "", client_id: "1", password: "" },
+    expect: "refused",
+    // connectors/venmo/index.ts loginWithCredentials(): the connector's own
+    // login endpoint. Unofficial API (Venmo's own Developer/Payouts API was
+    // retired to new integrators, see connectors/venmo/index.ts header);
+    // documented by github.com/mmohades/VenmoApiDocumentation, fetched
+    // 2026-08-09. An empty-credential POST is expected to 400/401, proving
+    // the path is real rather than 404.
+  },
 ];
 
 async function probe(url, method, body, headers) {

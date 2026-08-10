@@ -95,6 +95,7 @@ const KNOWN_CONNECTORS: Record<string, ConnectorPaths> = {
   jellyfin: c("jellyfin"),
   netflix_export: c("netflix_export"),
   steam: c("steam"),
+  venmo: c("venmo"),
 };
 
 export const KNOWN_CONNECTOR_NAMES: string[] = Object.keys(KNOWN_CONNECTORS);
