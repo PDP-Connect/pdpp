@@ -5,9 +5,25 @@
  * Single shared derivation of embedding concurrency for BOTH layers that
  * need it: `search-semantic.ts`'s semantic-work admission semaphore and
  * `local-transformer-executor.ts`'s own `workLimit` (forwarded to the
- * child's job-dispatch pump). Computed once, from the same inputs, so the
- * two layers cannot disagree — see `docs`/report residual notes for the
- * pre-fix state where each called `effectiveCpuCount()` independently.
+ * child's job-dispatch pump). Computed once, from the same inputs — see
+ * `docs`/report residual notes for the pre-fix state where each called
+ * `effectiveCpuCount()` independently.
+ *
+ * `workLimit` is ALWAYS a member of `{1, 2, 4, 8}` (both the CPU- and
+ * memory-derived candidates are snapped through `concurrencyStepFor`
+ * before the final `min()`), so the two consumers' own default-derivation
+ * call sites (`local-transformer-executor.ts`'s unsnapped
+ * `Math.min(resolveEmbeddingConcurrency().workLimit, 8)` and
+ * `search-semantic.ts`'s `semanticWorkLimitStepForCpuCount(...)`) land on
+ * the identical number, not merely on values where one side's is provably
+ * always >= the other's. An earlier version of this function only snapped
+ * the CPU candidate, which left a real (if non-blocking — an independent
+ * review proved the resulting mismatch could only ever manifest as unused
+ * executor headroom, since the semaphore is always the sole caller of
+ * `executor.embed()` and stayed the binding outer gate) gap whenever memory
+ * was the tighter constraint and its raw worker count landed on a
+ * non-step value (3, 5, 6, 7, ...) — see `test/embedding-concurrency.test.ts`
+ * for the exact `cpu=4, mem=1200MiB` case that exercised it.
  *
  * Three inputs are combined, and the model deliberately does NOT treat
  * "more CPUs" as "more concurrency" on its own:
@@ -114,8 +130,20 @@ export function resolveEmbeddingConcurrency(
   memoryBudgetBytes: number = effectiveMemoryBudgetBytes()
 ): EmbeddingConcurrencyPlan {
   const memoryForWorkers = memoryBudgetBytes - PARENT_BASELINE_MEMORY_BYTES;
-  const memoryAllowedWorkers =
+  const rawMemoryAllowedWorkers =
     memoryForWorkers > 0 ? Math.max(1, Math.floor(memoryForWorkers / PER_WORKER_MEMORY_BUDGET_BYTES)) : 1;
+  // Snapped through the SAME step function as the CPU side, before the
+  // min() below — otherwise a memory-bound raw worker count that lands on
+  // a non-step value (3, 5, 6, 7, ...) makes `workLimit` itself a non-step
+  // value. That is safe (an independent review proved the executor's own
+  // unsnapped Math.min(rawWorkLimit, 8) default is always >= the
+  // semaphore's snapped default, so the semaphore — the sole caller of
+  // executor.embed() — remains the binding outer gate either way) but it
+  // means the two default-derivation call sites literally disagree on the
+  // number, not just safely nest. Snapping here makes them agree exactly,
+  // not just safely, closing that gap at the source instead of relying on
+  // both call sites individually reasoning about which one wins.
+  const memoryAllowedWorkers = concurrencyStepFor(rawMemoryAllowedWorkers);
 
   const cpuBudget = Math.max(1, Math.floor(cpuCount));
   const cpuAllowedWorkers = concurrencyStepFor(cpuBudget);
