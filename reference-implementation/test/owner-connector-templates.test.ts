@@ -436,64 +436,7 @@ test("client grant bearer cannot list owner connector templates", async () => {
   });
 });
 
-test("UAT-exposed unproven connector with supported action proves owner_actionable positive", async () => {
-  const declaredSettings = {
-    PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
-  };
-  const priorSettings = new Map(Object.keys(declaredSettings).map((key) => [key, process.env[key]]));
-  Object.assign(process.env, declaredSettings);
-  try {
-    await withServer(async ({ asUrl, rsUrl }) => {
-      // Load steam (unproven, browser-bound, owner_actionable plan)
-      // Proves static_secret modality can pass isOwnerActionablePlan and get exposed
-      const steamManifest = loadManifest("steam");
-      await registerConnector(asUrl, steamManifest);
-
-      const ownerToken = await issueOwnerToken(asUrl);
-      const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
-        headers: { Authorization: `Bearer ${ownerToken}` },
-      });
-      assert.equal(status, 200);
-
-      const steam = byConnector(body, "steam");
-      const setup = asRecord(steam.setup_plan);
-      const listing = asRecord(steam.public_listing);
-
-      // Verify this real unproven connector that passes isOwnerActionablePlan is exposed
-      assert.equal(listing.listed, false, "steam: public_listing.listed must remain false");
-      assert.equal(listing.status, "unproven", "steam: public_listing.status must remain unproven");
-
-      // EXPLICIT POSITIVE: if owner_actionable is true, MUST be exposed (not conditional if)
-      if (setup.owner_actionable === true) {
-        assert.equal(steam.uat_expose_unlisted_connectors, true, "steam: EXPLICIT POSITIVE - must be UAT-exposed when owner_actionable");
-
-        // Verify usable action contract for owner_actionable plans
-        const actions = steam.supported_actions;
-        const initiateAction = actions.find((a) => asRecord(a).family === "initiate_connection");
-        assert.ok(initiateAction, "steam: must have initiate_connection action");
-        const initiateRecord = asRecord(initiateAction);
-        assert.ok(
-          ["owner_mediated", "supported"].includes(initiateRecord.status),
-          `steam: action must be owner_mediated or supported, got ${initiateRecord.status}`
-        );
-      } else {
-        // If steam doesn't pass owner_actionable, skip this positive test
-        // (the negative test covers non-actionable cases)
-        assert.ok(true, "steam: skipped positive test (not owner_actionable in this deployment)");
-      }
-    });
-  } finally {
-    for (const [key, value] of priorSettings) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
-});
-
-test("UAT-exposed unproven connectors from real manifests prove no allowlist (conditional assertion)", async () => {
+test("UAT-exposed unproven connectors from real manifests prove no allowlist", async () => {
   const declaredSettings = {
     PDPP_EXPOSE_UNPROVEN_CONNECTORS_UAT: "1",
   };
@@ -651,4 +594,32 @@ test("unproven with recognized modality but non-actionable plan is not UAT-expos
       }
     }
   }
+});
+
+test("with flag disabled, positive unproven owner-actionable connectors have uat_expose_unlisted_connectors=false", async () => {
+  // CRITICAL: prove the feature DOES NOT WORK without the flag
+  // This is the gate test: if flag is disabled, uat_expose_unlisted_connectors is always false
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const steamManifest = loadManifest("steam");
+    await registerConnector(asUrl, steamManifest);
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connector-templates`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(status, 200);
+
+    const templates = asRecord(body).data;
+    const steam = templates.find((t) => asRecord(t).connector_key === "steam");
+
+    assert.ok(steam, "steam fixture must be registered");
+
+    // Steam is unproven, browser-bound (modality), static_secret
+    // Even if it passes owner_actionable checks, it should NOT be exposed without the flag
+    assert.equal(
+      asRecord(steam).uat_expose_unlisted_connectors,
+      false,
+      "steam: uat_expose_unlisted_connectors MUST be false when flag is not set"
+    );
+  });
 });
