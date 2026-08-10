@@ -39,8 +39,6 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
     { store: "cache", stream: "cache_inventory" },
     { store: "backups", stream: "backup_inventory" },
     { store: "config", stream: "config_inventory" },
-    { store: "debug", stream: "debug_artifacts" },
-    { store: "downloads", stream: "downloads" },
     { store: "auth", stream: null },
   ],
   codex: [
@@ -54,7 +52,6 @@ export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
     { store: "shell_snapshots", stream: "shell_snapshots" },
     { store: "memories", stream: null },
     { store: "context_mode", stream: null },
-    { store: "logs", stream: "logs" },
     { store: "config", stream: "config_inventory" },
     { store: "cache", stream: "cache_inventory" },
     { store: "auth", stream: null },

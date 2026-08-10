@@ -650,68 +650,6 @@
       "freshness_strategy": "device_heartbeat"
     },
     {
-      "name": "logs",
-      "description": "Deferred Codex logs inventory; log payloads require deterministic redaction before collection.",
-      "compaction_fingerprint": {
-        "exclude_keys": ["mtime_epoch", "size_bytes"]
-      },
-      "semantics": "mutable_state",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "store": {
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string",
-            "x_pdpp_role": "primary-title"
-          },
-          "path_hash": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": ["integer", "null"]
-          },
-          "mtime_epoch": {
-            "type": ["integer", "null"],
-            "x_pdpp_role": "event-time"
-          },
-          "classification": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "store",
-          "relative_path",
-          "path_hash",
-          "type",
-          "classification",
-          "reason"
-        ]
-      },
-      "primary_key": ["id"],
-      "cursor_field": "mtime_epoch",
-      "selection": {
-        "fields": true,
-        "resources": true
-      },
-      "incremental": false,
-      "required": false,
-      "coverage_policy": "deferred",
-      "coverage_strategy": "snapshot_import_receipt",
-      "freshness_strategy": "device_heartbeat"
-    },
-    {
       "name": "shell_snapshots",
       "description": "Metadata-only inventory for Codex shell snapshots; shell content is not collected.",
       "compaction_fingerprint": {

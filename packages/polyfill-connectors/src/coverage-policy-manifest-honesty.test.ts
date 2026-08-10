@@ -72,6 +72,54 @@ test("connector manifest streams: coverage_policy uses only valid enum values", 
   assert.deepEqual(violations, [], "All declared coverage_policy values must be in the recognized enum");
 });
 
+/**
+ * `deferred` is structurally different from the other accepted-coverage
+ * policies: `inventory_only` and `unavailable`/`unsupported` describe a
+ * complete, intentional policy (the store IS the metadata-only surface, or
+ * genuinely cannot be reached on this platform). `deferred` instead promises
+ * "not yet" — a stream that is declared and defaulted on, but for which no
+ * implementation exists to ever move it past `missing`/`deferred` on a valid
+ * installation. That combination is a permanent, un-keepable promise: an
+ * advertised stream a real owner can never see turn healthy.
+ *
+ * A production connector must not advertise a stream it cannot honestly
+ * collect. Either a narrow existing implementation collects it now (so it
+ * should be `collect`/`inventory_only`), or it should not be declared at all.
+ * See the `codex.logs` / `claude_code.debug_artifacts` / `claude_code.downloads`
+ * removal that closed this defect.
+ */
+test("connector manifest streams: coverage_policy must not be the permanently-unkeepable 'deferred'", () => {
+  const violations: string[] = [];
+
+  for (const filename of readdirSync(MANIFESTS_DIR).sort()) {
+    if (!filename.endsWith(".json")) {
+      continue;
+    }
+    const manifestPath = join(MANIFESTS_DIR, filename);
+    if (!existsSync(manifestPath)) {
+      continue;
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as ConnectorManifest;
+    const connectorKey = filename.replace(/\.json$/, "");
+
+    for (const stream of manifest.streams ?? []) {
+      if (stream.coverage_policy === "deferred") {
+        violations.push(
+          `${connectorKey}.${String(stream.name)}: coverage_policy="deferred" declares a stream that can never ` +
+            "become healthy by construction. Remove it from the manifest, or implement collection now and change " +
+            'coverage_policy to "collect" or "inventory_only".'
+        );
+      }
+    }
+  }
+
+  assert.deepEqual(
+    violations,
+    [],
+    "Declared/default streams must not be permanently missing by construction (coverage_policy: 'deferred')"
+  );
+});
+
 test("connector manifest streams: accepted-coverage policy must not combine with required: true", () => {
   const violations: string[] = [];
 

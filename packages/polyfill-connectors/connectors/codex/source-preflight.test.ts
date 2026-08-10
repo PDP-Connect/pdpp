@@ -129,7 +129,7 @@ test("codex inventory streams emit safe metadata and exclude auth payloads", asy
   assert.equal(typeof (coverageState?.cursor as { fetched_at?: unknown } | undefined)?.fetched_at, "string");
   const stores = (coverageState?.cursor as { stores?: unknown } | undefined)?.stores;
   assert(Array.isArray(stores), "successful collection must emit the committed coverage snapshot");
-  assert.equal(stores.length, 14);
+  assert.equal(stores.length, 13);
   assert(!JSON.stringify(coverageState).includes("secret-token"));
   assert(!JSON.stringify(coverageState).includes("reason"));
 });

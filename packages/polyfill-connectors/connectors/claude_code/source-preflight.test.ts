@@ -108,7 +108,7 @@ test("claude_code inventory streams emit safe metadata, one STATE per stream, an
   assert.equal(typeof (coverageState?.cursor as { fetched_at?: unknown } | undefined)?.fetched_at, "string");
   const stores = (coverageState?.cursor as { stores?: unknown } | undefined)?.stores;
   assert(Array.isArray(stores), "successful collection must emit the committed coverage snapshot");
-  assert.equal(stores.length, 11);
+  assert.equal(stores.length, 9);
   assert(!JSON.stringify(coverageState).includes("secret-token"));
   assert(!JSON.stringify(coverageState).includes("reason"));
 

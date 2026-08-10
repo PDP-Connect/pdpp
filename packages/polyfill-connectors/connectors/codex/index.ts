@@ -222,13 +222,6 @@ export const CODEX_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
     reason: "user-specific local convention; diagnostics only, not a general Codex stream",
   },
   {
-    store: "logs",
-    relativePath: "logs",
-    stream: "logs",
-    classification: "defer",
-    reason: "logs require deterministic redaction before collection",
-  },
-  {
     store: "config",
     relativePath: "config.toml",
     stream: "config_inventory",
@@ -1717,7 +1710,7 @@ function emitStateCursors({
       emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
     }
   }
-  // Inventory streams (history, session_index, logs, shell_snapshots,
+  // Inventory streams (history, session_index, shell_snapshots,
   // config_inventory, cache_inventory) own their STATE inside the fingerprint
   // gate (emitLocalInventoryStreams) and must NOT get a bare clobbering STATE
   // here. coverage_diagnostics is emitted after all collection output drains,
@@ -1864,7 +1857,6 @@ export const CODEX_GATED_INVENTORY_STREAMS = [
   "shell_snapshots",
   "config_inventory",
   "cache_inventory",
-  "logs",
 ] as const;
 
 /** Resolve one gated inventory stream's records: `shell_snapshots` is a live

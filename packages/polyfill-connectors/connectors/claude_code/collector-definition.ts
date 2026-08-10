@@ -24,7 +24,7 @@ import type { LocalCollectorDefinition } from "../../src/collector-definition.ts
  * exercises everything the connector can account for — including
  * `coverage_diagnostics`, which is what promotes a drained local collector off
  * `coverage_unknown`. The inventory streams emit metadata only (path hash,
- * size, mtime); deferred/excluded stores never read payload.
+ * size, mtime); excluded stores never read payload.
  */
 export const CLAUDE_CODE_DEFAULT_STREAMS = [
   "sessions",
@@ -36,8 +36,6 @@ export const CLAUDE_CODE_DEFAULT_STREAMS = [
   "file_history",
   "cache_inventory",
   "coverage_diagnostics",
-  "debug_artifacts",
-  "downloads",
   "backup_inventory",
   "config_inventory",
 ] as const;

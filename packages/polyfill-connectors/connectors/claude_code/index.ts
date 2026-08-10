@@ -147,20 +147,6 @@ export const CLAUDE_CODE_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
     reason: "configuration is inventoried without payload content",
   },
   {
-    store: "debug",
-    relativePath: "debug",
-    stream: "debug_artifacts",
-    classification: "defer",
-    reason: "debug payloads require deterministic redaction before collection",
-  },
-  {
-    store: "downloads",
-    relativePath: "downloads",
-    stream: "downloads",
-    classification: "defer",
-    reason: "download payloads require owner approval before collection",
-  },
-  {
     store: "auth",
     relativePath: "auth.json",
     stream: null,

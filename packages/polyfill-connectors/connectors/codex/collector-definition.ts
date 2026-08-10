@@ -39,7 +39,6 @@ export const CODEX_DEFAULT_STREAMS = [
   "skills",
   "history",
   "session_index",
-  "logs",
   "shell_snapshots",
   "config_inventory",
   "cache_inventory",
@@ -51,7 +50,7 @@ export const CODEX_DEFAULT_STREAMS = [
  * `codex` manifest gives a `consent_time_field` (`sessions.started_at`,
  * `messages.timestamp`, `function_calls.timestamp`).
  *
- * The remaining default streams (rules, prompts, skills, history, the log and
+ * The remaining default streams (rules, prompts, skills, history, and the
  * inventory stores) carry no time field, so a date bound is not measurable
  * against them; they are collected whole and reported as out-of-scope.
  */
