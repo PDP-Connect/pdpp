@@ -42,7 +42,13 @@ import { test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { emitMessagesPass, type MessagesPassDeps, runChannelsStream, type StreamDeps } from "./index.ts";
+import {
+  buildMessageRowsQuery,
+  emitMessagesPass,
+  type MessagesPassDeps,
+  runChannelsStream,
+  type StreamDeps,
+} from "./index.ts";
 import type { MessageRow, SlackDataBlob } from "./types.ts";
 
 interface RecordingHarness {
@@ -354,80 +360,60 @@ test("emitMessagesPass: priorTs=null — no incremental progress emit (full-run 
   assert.equal(progressCalls.length, 0, "full-run mode doesn't fire the incremental progress signal");
 });
 
-// ─── Bounded collection_scope.since support ─────────────────────────────────
+// ─── SQL-layer collection_scope.since filtering (buildMessageRowsQuery) ─────
 
-test("emitMessagesPass: sinceEpochSeconds stops at the declared boundary without truncating", async () => {
-  // Slack message ts is "seconds.microseconds". When collection_scope.since
-  // declares an epoch-seconds boundary, emitMessagesPass stops iterating
-  // once a row's ts falls before the boundary — this is a clean end of the
-  // DECLARED scope, not a truncation, so STATE and coverage still commit.
-  const { deps, emitted } = makeHarness();
-  const rows: MessageRow[] = [
-    makeRow({ TS: "1700000500.000000" }, {}), // emit (>= 1700000200)
-    makeRow({ TS: "1700000300.000000" }, {}), // emit
-    makeRow({ TS: "1700000150.000000" }, {}), // before boundary → stop
-    makeRow({ TS: "1700000100.000000" }, {}), // not iterated
-  ];
-  const sinceEpochSeconds = 1_700_000_200; // "since 2023-11-15T...Z"
-  const result = await emitMessagesPass(deps, rows, null, sinceEpochSeconds);
-
-  assert.equal(emitted.filter((r) => r.stream === "messages").length, 2, "stops at boundary, 2 rows emitted");
-  assert.equal(
-    result.maxMessageTs,
-    "1700000500.000000",
-    "maxMessageTs is the latest of the emitted rows, not rows that triggered the stop"
-  );
+test("buildMessageRowsQuery: since boundary composed with legacy cursor via AND", () => {
+  // The since predicate is baked into the SQL WHERE clause via AND with cursor
+  // predicates. A row must satisfy BOTH to be included.
+  const thresholds = {
+    channelLastTs: {},
+    legacyLastTs: "1700000000.000000",
+    sinceEpochSeconds: 1_700_000_200, // epoch seconds
+  };
+  const query = buildMessageRowsQuery(thresholds);
+  // The query should include both predicates:
+  // - m.TS > ? (from legacyLastTs)
+  // - CAST(m.TS AS INTEGER) >= ? (from sinceEpochSeconds)
+  assert.match(query.sql, /m\.TS\s+>\s+/);
+  assert.match(query.sql, /CAST\(m\.TS\s+AS\s+INTEGER\)/);
+  assert.match(query.sql, /AND/);
+  // Params should include both thresholds
+  assert.ok(query.params.includes("1700000000.000000"), "has legacy cursor param");
+  assert.ok(query.params.includes("1700000200"), "has since epoch param");
 });
 
-test("emitMessagesPass: sinceEpochSeconds=null (default) — no boundary, full traversal", async () => {
-  // Absence of collection_scope.since is the default: sinceEpochSeconds=null
-  // means unbounded iteration, backward-compatible with prior behavior.
-  const { deps, emitted } = makeHarness();
-  const rows: MessageRow[] = [
-    makeRow({ TS: "1700000500.000000" }, {}),
-    makeRow({ TS: "1700000100.000000" }, {}), // would be stopped by a boundary, but null means no boundary
-  ];
-  const result = await emitMessagesPass(deps, rows, null, null);
-
-  assert.equal(emitted.filter((r) => r.stream === "messages").length, 2, "no boundary: all rows emitted");
-  assert.equal(result.maxMessageTs, "1700000500.000000");
+test("buildMessageRowsQuery: since boundary alone (no cursor)", () => {
+  // When no cursor is present, only the since predicate applies.
+  const thresholds = {
+    channelLastTs: {},
+    legacyLastTs: null,
+    sinceEpochSeconds: 1_700_000_200,
+  };
+  const query = buildMessageRowsQuery(thresholds);
+  assert.match(query.sql, /WHERE.*CAST\(m\.TS\s+AS\s+INTEGER\)/);
+  assert.ok(query.params.includes("1700000200"), "has since epoch param");
 });
 
-test("emitMessagesPass: sinceEpochSeconds boundary respected across reactions + attachments", async () => {
-  // The boundary gate applies once per row before enrichment; when a row
-  // stops the pass, reactions + attachments for that row are not emitted.
+test("emitMessagesPass: non-monotonic row order with SQL-filtered since boundary", async () => {
+  // Rows are already filtered at the SQL layer (WHERE m.TS >= since), so
+  // emitMessagesPass must emit all filtered rows regardless of order.
+  // If rows arrive out-of-order (not newest-first), emitMessagesPass cannot
+  // safely break on the first old ts — it must process every row.
   const { deps, emitted } = makeHarness();
+  // Simulate SQL returning rows in non-chronological order (SQLite chose a
+  // query plan that sorted differently). All are in-scope (>= 1700000200):
   const rows: MessageRow[] = [
-    makeRow({ TS: "1700000300.000000" }, { reactions: [{ name: "thumbsup", users: ["U001"] }] }),
-    makeRow({ TS: "1700000200.000000" }, { reactions: [{ name: "thumbsdown", users: ["U002"] }] }), // boundary row (ts >= sinceEpochSeconds)
-    makeRow({ TS: "1700000100.000000" }, { reactions: [{ name: "fire", users: ["U003"] }] }), // before boundary
+    makeRow({ TS: "1700000300.000000" }, {}), // middle
+    makeRow({ TS: "1700000500.000000" }, {}), // latest
+    makeRow({ TS: "1700000250.000000" }, {}), // just after boundary
   ];
-  const sinceEpochSeconds = 1_700_000_200;
-  await emitMessagesPass(deps, rows, null, sinceEpochSeconds);
+  const result = await emitMessagesPass(deps, rows, null);
 
   const messages = emitted.filter((r) => r.stream === "messages");
-  const reactions = emitted.filter((r) => r.stream === "reactions");
-  assert.equal(messages.length, 2, "2 messages emitted (at and after boundary)");
   assert.equal(
-    reactions.length,
-    2,
-    "2 reactions emitted (one per emitted message, boundary row included, past boundary excluded)"
+    messages.length,
+    3,
+    "all in-scope rows emitted regardless of arrival order (SQL already filtered)"
   );
-});
-
-test("emitMessagesPass: channel-specific maxMessageTs still tracks correctly through boundary", async () => {
-  // The boundary stops iteration but doesn't invalidate per-channel maxTs tracking;
-  // each channel gets the max from rows actually emitted.
-  const { deps } = makeHarness();
-  const rows: MessageRow[] = [
-    makeRow({ CHANNEL_ID: "C0001", TS: "1700000500.000000" }, {}),
-    makeRow({ CHANNEL_ID: "C0002", TS: "1700000300.000000" }, {}),
-    makeRow({ CHANNEL_ID: "C0001", TS: "1700000150.000000" }, {}), // before boundary, not emitted
-  ];
-  const sinceEpochSeconds = 1_700_000_200;
-  const result = await emitMessagesPass(deps, rows, null, sinceEpochSeconds);
-
-  assert.equal(result.channelMaxTs.C0001, "1700000500.000000", "C0001 max is latest emitted row");
-  assert.equal(result.channelMaxTs.C0002, "1700000300.000000", "C0002 tracked independently");
-  assert.equal(Object.keys(result.channelMaxTs).length, 2, "only observed channels in the tracked set");
+  assert.equal(result.maxMessageTs, "1700000500.000000", "maxMessageTs is the true max");
 });

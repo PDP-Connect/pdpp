@@ -1348,7 +1348,7 @@ async function mergeScopedMessageArchivePasses(deps: {
           {
             allowLegacyMessageCursorFallback: false,
             ignoreMessageChannelCursors: false,
-            sinceEpochSeconds,
+            sinceEpochSeconds: sinceEpochSeconds ?? null,
           }
         )
       );
@@ -1540,16 +1540,13 @@ function recordChannelMaxTs(channelMaxTs: Record<string, string>, channelId: str
  *     nowIso() only as a fallback when the row's TS is unparseable,
  *     which threads into the record's `sent_at` (distinct from
  *     `emitted_at`, which the runtime stamps on the RECORD envelope).
- *   - When `sinceEpochSeconds` is supplied, iteration stops when a message
- *     ts falls before the declared boundary. The stop is a clean end of the
- *     DECLARED scope (not a truncation), so STATE and coverage commit as
- *     `complete` rather than `partial`.
+ *   - Rows are already filtered by collection_scope.since at the SQL layer
+ *     (buildMessageRowsQuery), so this function only emits in-scope rows.
  */
 export async function emitMessagesPass(
   deps: MessagesPassDeps,
   rows: Iterable<MessageRow>,
-  priorTs: string | null,
-  sinceEpochSeconds: number | null = null
+  priorTs: string | null
 ): Promise<MessagesPassResult> {
   if (priorTs) {
     // Row count is intentionally omitted: rows is now a streamed iterator
@@ -1571,19 +1568,9 @@ export async function emitMessagesPass(
   for (const r of rows) {
     const parsed = parseMessageRow(r, nowIso());
     const { ts } = parsed;
-    // Slack messages are ordered chronologically by ts (seconds.micros).
-    // When a declared `since` boundary is set, stop when a message's ts
-    // falls before it. This is a clean end of the DECLARED scope, not a
-    // truncation — the run met the boundary it was asked to walk, so STATE
-    // and coverage commit with `complete` instead of `partial`.
-    if (shouldStopAtSinceBoundary(ts, sinceEpochSeconds)) {
-      break;
-    }
     // Track the max ts seen in this run for the post-loop STATE emit.
     // Slack ts is a fixed-shape "seconds.micros" string; string compare
     // matches numeric order because both halves are zero-padded by Slack.
-    // Only track after the boundary check so maxMessageTs reflects only
-    // the rows actually processed (not rows that triggered the stop).
     maxMessageTs = selectMaxSlackTs(maxMessageTs, ts);
     recordChannelMaxTs(channelMaxTs, r.CHANNEL_ID, ts);
     if (wantMessages) {
@@ -1890,6 +1877,7 @@ export async function runUsersStream(deps: StreamDeps): Promise<void> {
 interface MessageCursorThresholds {
   channelLastTs: Record<string, string>;
   legacyLastTs: string | null;
+  sinceEpochSeconds: number | null;
 }
 
 export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: string[]; sql: string } {
@@ -1921,6 +1909,13 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // also has TS > threshold and survives the filter — the MAX(CHUNK_ID) pick is
   // unchanged. Pairs at/below the threshold are dropped by both shapes. The
   // no-cursor first run has no predicate and keeps the full aggregation.
+  //
+  // collection_scope.since is a declared boundary (epoch seconds). Unlike cursor
+  // predicates (which are monotonically advancing commitments), a since boundary
+  // is a declarative claim "only collect from this point onward." If supplied,
+  // it is composed with cursor predicates via AND: a row must pass both to be
+  // included. Slack's ts format is "seconds.microseconds", so we compare seconds
+  // to the boundary: CAST(m.TS AS INTEGER) extracts seconds numerically.
   const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let dedupWhere = "";
   if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
@@ -1931,6 +1926,16 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   } else if (thresholds.legacyLastTs) {
     dedupWhere = "WHERE m.TS > ?";
     params.push(thresholds.legacyLastTs);
+  }
+  // Compose since boundary (if supplied) with cursor predicates via AND.
+  if (thresholds.sinceEpochSeconds !== null) {
+    const sincePredicate = "CAST(m.TS AS INTEGER) >= ?";
+    params.push(String(thresholds.sinceEpochSeconds));
+    if (dedupWhere) {
+      dedupWhere = dedupWhere + " AND " + sincePredicate;
+    } else {
+      dedupWhere = "WHERE " + sincePredicate;
+    }
   }
 
   return {
@@ -1991,42 +1996,26 @@ function* iterateMessageRows(db: DatabaseSync, thresholds: MessageCursorThreshol
  */
 function runMessagesUnifiedPass(
   deps: StreamDeps,
-  thresholds: MessageCursorThresholds,
-  sinceEpochSeconds: number | null = null
+  thresholds: MessageCursorThresholds
 ): Promise<MessagesPassResult> {
   // Slack message TS strings collate lexically the same way they order
   // chronologically (fixed-width integer-dot-decimal), so string > works.
   // iterateMessageRows is a lazy generator: emitMessagesPass pulls one row
   // at a time, so the unbounded MESSAGE table never lands in heap at once.
+  // The since boundary (if supplied) is baked into the SQL WHERE clause by
+  // buildMessageRowsQuery, so rows are already filtered to the declared
+  // collection_scope.since boundary.
   const rows = iterateMessageRows(deps.db, thresholds);
-  return emitMessagesPass(deps, rows, thresholds.legacyLastTs, sinceEpochSeconds);
-}
-
-/**
- * Check if a message ts falls before the declared since boundary. Used by
- * emitMessagesPass to stop iteration when collection_scope.since is declared.
- * ts is "seconds.microseconds"; extract seconds for direct comparison.
- * Returns true if ts is before the boundary (iteration should stop).
- */
-function shouldStopAtSinceBoundary(ts: string | null, sinceEpochSeconds: number | null): boolean {
-  if (sinceEpochSeconds === null || typeof ts !== "string") {
-    return false;
-  }
-  const [tsSecondsStr] = ts.split(".");
-  if (!tsSecondsStr) {
-    return false;
-  }
-  const tsSeconds = Math.floor(Number.parseFloat(tsSecondsStr));
-  return Number.isFinite(tsSeconds) && tsSeconds < sinceEpochSeconds;
+  return emitMessagesPass(deps, rows, thresholds.legacyLastTs);
 }
 
 /**
  * Parse a stream's declared `time_range.since` into epoch seconds for the
- * message walk to compare against `ts` directly (avoids per-message ISO-string
- * reparse). Returns `null` for an absent, malformed, or unparseable bound —
- * never throws, since a scope-less run (the default) must behave exactly as
- * before this stop condition existed. Slack message ts is "seconds.microseconds";
- * the comparison extracts seconds from ts for direct numeric comparison.
+ * SQL WHERE clause. Returns `null` for an absent, malformed, or unparseable
+ * bound — never throws, since a scope-less run (the default) must behave
+ * exactly as before this stop condition existed. Slack message ts is
+ * "seconds.microseconds"; the SQL predicate uses CAST(m.TS AS INTEGER) to
+ * extract seconds for direct numeric comparison.
  */
 function parseSinceEpochSeconds(requested: CollectContext["requested"], stream: string): number | null {
   const since = requested.get(stream)?.time_range?.since;
@@ -2433,11 +2422,11 @@ async function runRequestedStreams(
       ? {}
       : normalizeStringRecord(messagesState?.channel_last_ts);
     deps.progress(messageProgressLabel(Object.keys(channelLastTs).length, priorTs), { stream: "messages" });
-    result = await runMessagesUnifiedPass(
-      deps,
-      { channelLastTs, legacyLastTs: priorTs },
-      options.sinceEpochSeconds ?? null
-    );
+    result = await runMessagesUnifiedPass(deps, {
+      channelLastTs,
+      legacyLastTs: priorTs,
+      sinceEpochSeconds: options.sinceEpochSeconds ?? null,
+    });
   }
   if (deps.requested.has("files")) {
     deps.progress("Slack: emitting files", { stream: "files" });
