@@ -90,24 +90,22 @@
   [data-pdpp-doc-theme] #nd-docs-layout {
     --fd-banner-height: 4rem;
     --fd-docs-height: calc(100dvh - 4rem);
+    /* Fumadocs reserves 3.5rem here by default, but the concept subnav is
+       3rem. Keep the grid row equal to the rendered header. */
+    --fd-header-height: 3rem;
     /* The table scrollport outsets through the article's right inset. The grid
        otherwise clips that extra width before it reaches the outer container. */
     overflow-x: visible;
   }
 
-  /* Keep one sticky navigation affordance: the sidebar trigger. The separate
-     TOC popover duplicates that navigation and is the row that crosses the
-     article while scrolling. */
+  /* Keep the sticky navigation row opaque while the TOC popover remains
+     available from its trigger. */
   [data-pdpp-doc-theme] #nd-subnav {
     background: var(--pdpp-concept-paper) !important;
     /* Paint over the table's right-hand bleed without extending the subnav
        border or changing the position of its controls. */
     box-shadow: var(--spacing-pad) 0 var(--pdpp-concept-paper);
     backdrop-filter: none;
-  }
-
-  [data-pdpp-doc-theme] [data-toc-popover] {
-    display: none;
   }
 
   [data-pdpp-doc-theme] #nd-page.pdpp-docs-page {
