@@ -69,7 +69,7 @@ follows in a later session.
 ### Required (about 30 minutes)
 
 1. [PDPP Core, Sections 4–7](https://pdpp.dev/docs/spec-core#record-model).
-   Focus on the rules and distinctions that connect the four sections:
+   Focus on how the four sections fit together:
 
    - In Section 4: streams, `append_only` and `mutable_state` semantics,
      incremental sync, and the RECORD envelope.
@@ -83,8 +83,8 @@ follows in a later session.
      grant lifetime, data time range, access mode, version layering, and
      revocation.
 
-   Skim the JSON examples and detailed schemas. Use field tables as reference
-   when a term is unclear. You do not need to memorize every member.
+   Skim the JSON examples and schemas. Use the field tables when a term is
+   unclear. You do not need to memorize every member.
 
 ### Context (optional, about 5 minutes)
 
@@ -95,11 +95,9 @@ follows in a later session.
 
 Questions for discussion:
 
-- What belongs in the common RECORD envelope, and what should each stream
-  schema define?
 - For a `provider_native` source, where do stream definitions, schemas, and
   consent metadata come from?
-- Which terms can the protocol enforce, and how should consent distinguish
-  policy declarations from client claims?
-- Does the grant pin enough information to remain enforceable if a manifest
-  or view changes?
+- Which selection-request fields can the protocol enforce, and how should
+  consent distinguish policy declarations from client claims?
+- Should an existing grant keep its resolved fields when its manifest or a
+  view definition changes?
