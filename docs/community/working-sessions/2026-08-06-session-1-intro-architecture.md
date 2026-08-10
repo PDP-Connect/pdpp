@@ -75,8 +75,8 @@ No protocol decisions were made. This was an introductory session.
 
 ## Next steps
 
-- Session 2 on 13 August will cover the record model and selection request,
-  Sections 4–5 of the core specification.
+- Session 2 on 13 August will cover the record model, manifest format,
+  selection request, and grant, Sections 4–7 of the core specification.
 - Community feedback is welcome in the PDP-Connect channel on the LFDT Discord.
 
 [Watch the Session 1 recording](https://www.youtube.com/watch?v=ncHmzE7oPQ4).
