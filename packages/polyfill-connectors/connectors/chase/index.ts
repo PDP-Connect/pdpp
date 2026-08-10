@@ -52,6 +52,7 @@ import { resolveConnectorArtifactDir } from "../../src/connector-artifact-root.t
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
+  buildFullScanCoverageMessage,
   type DetailGapMessage,
   type EmittedMessage,
   runConnector,
@@ -2271,6 +2272,13 @@ export async function runCurrentActivity(
 
   const emitted = await emitCurrentActivityForAccount(deps, account, dashboardHtml, fingerprintCursor);
   if (emitted === 0) {
+    // Zero parsed rows is never distinguishable here from a parse/render
+    // failure (the dashboard overview always shows something when it loads
+    // correctly), so this is a SKIP, not a proven-empty scan — per
+    // buildFullScanCoverageMessage's contract, coverage must NOT be emitted
+    // on this path. A future signal that positively confirms "no recent
+    // activity" (e.g. an explicit empty-state marker) could route here
+    // instead of selectors_pending and declare considered=covered=0.
     await deps.emit({
       type: "SKIP_RESULT",
       stream: "current_activity",
@@ -2285,6 +2293,12 @@ export async function runCurrentActivity(
       stream: "current_activity",
       message: `Emitted ${emitted} current_activity row(s) from dashboard overview`,
     });
+    // current_activity re-enumerates the full dashboard overview boundary
+    // every run (no separate detail-hydration phase), so it is a full-scan
+    // stream: considered = covered = the parsed row count. Only emitted on
+    // this genuinely successful parse — the 0-row branch above is a SKIP,
+    // not a proven-empty boundary, and must never fabricate coverage.
+    await deps.emit(buildFullScanCoverageMessage("current_activity", emitted));
   }
 
   await deps.emit({

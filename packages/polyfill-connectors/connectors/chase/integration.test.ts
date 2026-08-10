@@ -750,6 +750,21 @@ test("runCurrentActivity: single account + parseable overview HTML → emits row
   assert.equal(skips.length, 0, "single-account + parseable rows: no SKIP_RESULT");
   const state = messages.find((m) => m.type === "STATE" && m.stream === "current_activity");
   assert.ok(state, "STATE for current_activity must emit at end of branch");
+
+  // A successful, populated enumeration must declare full-scan coverage:
+  // considered = covered = the parsed row count, so the Collection Report
+  // proves `complete` instead of leaving current_activity at `unknown`
+  // forever (the reported defect for run_1786335882008).
+  const coverage = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> =>
+      m.type === "DETAIL_COVERAGE" && m.stream === "current_activity"
+  );
+  assert.ok(coverage, "expected a DETAIL_COVERAGE message for current_activity on a successful populated scan");
+  assert.equal(coverage.state_stream, "current_activity", "full-scan coverage is self-referential");
+  assert.equal(coverage.considered, 5, "considered must equal the enumerated row count");
+  assert.equal(coverage.covered, 5, "covered must equal considered on a full-scan stream");
+  assert.deepEqual(coverage.required_keys, [], "full-scan coverage carries no per-key detail lane");
+  assert.deepEqual(coverage.hydrated_keys, []);
 });
 
 test("runCurrentActivity: multiple filtered accounts → ambiguous_multi_account_overview SKIP, zero records", async () => {
@@ -871,6 +886,48 @@ test("runCurrentActivity: parser-zero diagnostic is persisted without changing s
     surfaceDiagnostic,
     "the durable skip keeps only the shared structural diagnostic"
   );
+
+  // An interrupted/failed scan (zero rows is indistinguishable from a parse
+  // failure here) must NEVER fabricate coverage — proving 15 records were
+  // "retained" on a prior successful run says nothing about THIS run's
+  // boundary, so a selectors_pending skip must carry no DETAIL_COVERAGE.
+  const coverage = messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "current_activity");
+  assert.equal(coverage, undefined, "selectors_pending must never emit DETAIL_COVERAGE (no false coverage)");
+});
+
+test("runCurrentActivity: ambiguous multi-account skip never emits DETAIL_COVERAGE (no false coverage)", async () => {
+  const { deps, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  const html = readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8");
+  const a = makeAccount({ internal_id: "A1", name: "Account A" });
+  const b = makeAccount({ internal_id: "B2", name: "Account B" });
+  await runCurrentActivity(deps, html, [a, b]);
+
+  const coverage = messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "current_activity");
+  assert.equal(
+    coverage,
+    undefined,
+    "attribution is ambiguous, not proven — ambiguous_multi_account_overview must never emit DETAIL_COVERAGE"
+  );
+});
+
+test("runCurrentActivity: empty filteredAccounts no-op never emits DETAIL_COVERAGE (no false coverage)", async () => {
+  const { deps, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  await runCurrentActivity(deps, "<html><body></body></html>", []);
+
+  const coverage = messages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "current_activity");
+  assert.equal(coverage, undefined, "no accounts in scope means nothing was enumerated — no coverage to declare");
 });
 
 const REFERENCE_DATE_ISO = "2026-07-10";
