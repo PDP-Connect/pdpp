@@ -29,6 +29,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { classifyRuntimeFailure } from "../runtime/classify-runtime-failure.ts";
 import { loadSyncState, runConnector } from "../runtime/index.ts";
 import { startServer } from "../server/index.ts";
 import { createRequestConnectorInstanceStore } from "../server/request-store-factories.ts";
@@ -344,6 +345,86 @@ test("runtime-level: accepted-prefix idempotent retry — resubmitting the same 
     assert.deepEqual(ids, ["ir1", "ir2"], "exactly one row per id after the retry — no duplicates");
   } finally {
     attempt2.cleanup();
+    await closeServer(server);
+  }
+});
+
+// Counterweight for the legacy `{ record: { key, data, emitted_at } }`
+// nesting bug fixed in detail-coverage-shortfall-severity.test.ts and
+// cli.test.ts: a malformed RECORD envelope is a CONNECTOR PROTOCOL
+// VIOLATION, rejected by runtime/record-message-validator.ts at the message
+// boundary — before storage. Before that validator existed, this exact
+// shape reached the durable write with key/data undefined, failed as an
+// unclassified `NOT NULL constraint failed` error, and classifyIngestFailure
+// defaulted it to systemic/retryable (the SAME ingest_batch_storage_error/
+// 503 contract asserted above for a genuine storage failure) — wrong, since
+// the identical envelope fails identically on every retry. Field-shape
+// coverage lives in record-message-validator.test.ts; this proves the
+// end-to-end wiring: correct classification AND no durable effect.
+test("runtime-level: a malformed RECORD is a protocol violation, rejected before any durable write or checkpoint commit", async () => {
+  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  const rsUrl = `http://localhost:${rsPort}`;
+  const connectorId = "runtime-malformed-record-no-write";
+  await registerManifest(asUrl, manifest(connectorId));
+  const ownerToken = await issueOwnerToken(asUrl);
+
+  const { connectorPath, cleanup } = createTestConnector([
+    // The exact legacy bug shape: key/data/emitted_at nested under `record`
+    // instead of top-level.
+    {
+      record: { data: { id: "malformed1", value: "should not land" }, emitted_at: nowIso(), key: "malformed1" },
+      stream: "items",
+      type: "RECORD",
+    },
+    { cursor: { cursor: "malformed_cursor" }, stream: "items", type: "STATE" },
+    { records_emitted: 1, status: "succeeded", type: "DONE" },
+  ]);
+
+  try {
+    await assert.rejects(
+      () =>
+        runConnector({
+          admitRunConnection: fakeAdmitRunConnection(),
+          collectionMode: "full_refresh",
+          connectorId,
+          connectorPath,
+          manifest: manifest(connectorId),
+          onInteraction: async () => ({}),
+          ownerToken,
+          persistState: true,
+          rsUrl,
+          scope: { streams: [{ name: "items" }] },
+          state: null,
+        }),
+      (err: unknown) => {
+        assert.equal(
+          classifyRuntimeFailure(err),
+          "connector_protocol_violation",
+          "a malformed RECORD envelope must classify as a protocol violation, not a retryable storage failure"
+        );
+        return true;
+      }
+    );
+
+    const state = (await loadSyncState(connectorId, ownerToken, { rsUrl })) as Record<
+      string,
+      { cursor?: string } | undefined
+    > | null;
+    assert.ok(
+      state?.items?.cursor !== "malformed_cursor",
+      "the cursor staged after a rejected RECORD envelope must NOT be committed"
+    );
+
+    const { body: itemsBody } = await fetchJson(
+      `${rsUrl}/v1/streams/items/records?connector_id=${encodeURIComponent(connectorId)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } }
+    );
+    const itemsRecords = (itemsBody as { data?: unknown[]; records?: unknown[] }).data || [];
+    assert.equal(itemsRecords.length, 0, "the malformed record must never land in durable storage");
+  } finally {
+    cleanup();
     await closeServer(server);
   }
 });

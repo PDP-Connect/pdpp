@@ -236,7 +236,7 @@ rl.on('line', (line) => {
  */
 function shortfallMessages(): Record<string, unknown>[] {
   return [
-    { record: { id: "K" }, stream: "holdings", type: "RECORD" },
+    { data: { id: "K" }, emitted_at: "2026-04-18T00:00:00Z", key: "K", stream: "holdings", type: "RECORD" },
     {
       detail_locator: { holding_id: "K", kind: "test.holding" },
       parent_stream: "holdings",
@@ -395,7 +395,7 @@ test("a revoked sibling connection never participates in the active run's covera
   // The active connection declares key K required with nothing to account for it
   // in ITS OWN authority. The sibling's gap must not silently satisfy it.
   const messages: Record<string, unknown>[] = [
-    { record: { id: "K" }, stream: "holdings", type: "RECORD" },
+    { data: { id: "K" }, emitted_at: "2026-04-18T00:00:00Z", key: "K", stream: "holdings", type: "RECORD" },
     {
       hydrated_keys: [],
       reference_only: true,
@@ -440,7 +440,7 @@ test("an undeclared coverage shortfall reports a gap and withholds the cursor in
 
   // No gap_keys and no DETAIL_GAP anywhere: key K is simply unaccounted for.
   const messages: Record<string, unknown>[] = [
-    { record: { id: "K" }, stream: "holdings", type: "RECORD" },
+    { data: { id: "K" }, emitted_at: "2026-04-18T00:00:00Z", key: "K", stream: "holdings", type: "RECORD" },
     {
       hydrated_keys: [],
       reference_only: true,

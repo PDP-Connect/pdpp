@@ -5817,7 +5817,7 @@ rl.on('line', (line) => {
       writeFileSync(
         connectorPath,
         `
-        console.log(JSON.stringify({ type: 'RECORD', stream: 'top_artists', record: { key: 'cli_run_failed', data: { id: 'cli_run_failed', name: 'CLI Failed Artist' }, emitted_at: '2026-04-18T00:00:00Z' } }));
+        console.log(JSON.stringify({ type: 'RECORD', stream: 'top_artists', key: 'cli_run_failed', data: { id: 'cli_run_failed', name: 'CLI Failed Artist' }, emitted_at: '2026-04-18T00:00:00Z' }));
         console.log(JSON.stringify({ type: 'STATE', stream: 'top_artists', value: { cursor: 'cli_failed_cursor' } }));
         process.exit(1);
       `
