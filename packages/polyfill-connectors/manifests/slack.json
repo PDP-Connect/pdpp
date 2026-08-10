@@ -103,6 +103,7 @@
   "streams": [
     {
       "name": "workspace",
+      "required": true,
       "description": "Authenticated Slack workspace: team identity, authenticated user/bot identity, enterprise affiliation, primary URL.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
@@ -178,6 +179,7 @@
     },
     {
       "name": "channels",
+      "required": true,
       "description": "Public/private channels, DMs, and group DMs visible to the authenticated user. Structural and identity fields only; member count is in the channel_stats stream.",
       "compaction_class": "point_in_time_real_field",
       "compaction_class_note": "num_members is a point-in-time sample carried on this record; retained history is never compactable.",
@@ -382,6 +384,7 @@
     },
     {
       "name": "channel_memberships",
+      "required": true,
       "description": "Channel ↔ user edges where slackdump could enumerate members.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
@@ -436,6 +439,7 @@
     },
     {
       "name": "users",
+      "required": true,
       "description": "Users (human + bot) visible to the authenticated principal.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -932,6 +936,7 @@
     },
     {
       "name": "files",
+      "required": true,
       "description": "File attachments referenced in messages. Metadata only by default.",
       "compaction_fingerprint": {
         "exclude_keys": []

@@ -54,6 +54,7 @@
   "streams": [
     {
       "name": "sessions",
+      "required": true,
       "description": "Codex CLI sessions. Canonical metadata comes from ~/.codex/state_5.sqlite#threads (title, archived, tokens_used, first_user_message, sandbox_policy, approval_mode), enriched with message/tool-call counts from the on-disk rollout JSONL.",
       "compaction_class": "recurring_snapshot",
       "compaction_class_note": "whole record is an evolving observation (message_count, last_event_at widen on growth); never compactable, never re-alarms as growth accumulates.",
@@ -171,6 +172,7 @@
     },
     {
       "name": "messages",
+      "required": true,
       "description": "Messages within Codex sessions: user prompts, assistant responses, and reasoning placeholders.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -243,6 +245,7 @@
     },
     {
       "name": "function_calls",
+      "required": true,
       "description": "Tool invocations and their outputs (shell commands, file ops) recorded in Codex sessions.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -317,6 +320,7 @@
     },
     {
       "name": "rules",
+      "required": true,
       "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules — the de-facto log of approval decisions. One record per rule line. The stream is named `rules` to match the real local directory; `approval_rules` was backlog shorthand, not an on-disk source name.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -373,6 +377,7 @@
     },
     {
       "name": "prompts",
+      "required": true,
       "description": "User-authored prompt templates from ~/.codex/prompts/*.md. Frontmatter (name, description) is parsed; body is the prompt content.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -429,6 +434,7 @@
     },
     {
       "name": "skills",
+      "required": true,
       "description": "User-authored skills from ~/.codex/skills/<name>/SKILL.md. Frontmatter (name, description) is parsed; body is the skill content.",
       "compaction_fingerprint": {
         "exclude_keys": []

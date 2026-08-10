@@ -385,6 +385,7 @@
     },
     {
       "name": "custom_instructions",
+      "required": true,
       "description": "The user's custom instructions (the 'What would you like ChatGPT to know about you' and 'How would you like ChatGPT to respond' fields).",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -443,6 +444,7 @@
     },
     {
       "name": "shared_conversations",
+      "required": true,
       "description": "Conversations the user has shared via public link.",
       "compaction_fingerprint": {
         "exclude_keys": []

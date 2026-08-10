@@ -48,6 +48,7 @@
   "streams": [
     {
       "name": "sessions",
+      "required": true,
       "description": "Claude Code sessions. One session = one CLI invocation in a specific project directory.",
       "compaction_class": "recurring_snapshot",
       "compaction_class_note": "aggregated per-session record; message_count/last_event_at widen on growth; never compactable, never re-alarms as growth accumulates.",
@@ -132,6 +133,7 @@
     },
     {
       "name": "messages",
+      "required": true,
       "description": "Messages within Claude Code sessions: user prompts and assistant responses. Includes both top-level session transcripts and nested subagent (sidechain) transcripts.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -222,6 +224,7 @@
     },
     {
       "name": "attachments",
+      "required": true,
       "description": "Non-message events: hook outputs, tool uses, file snapshots, plus tool-results blob files written to disk.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -302,6 +305,7 @@
     },
     {
       "name": "skills",
+      "required": true,
       "description": "User-authored Claude Code skills installed under ~/.claude/skills/<skill>/SKILL.md. Each record captures frontmatter metadata and the full body (capped at 20k chars).",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -365,6 +369,7 @@
     },
     {
       "name": "memory_notes",
+      "required": true,
       "description": "Project-scoped Claude Code memory notes under ~/.claude/projects/<project>/memory/*.md. Each record captures frontmatter metadata and the note body (capped at 20k chars).",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -437,6 +442,7 @@
     },
     {
       "name": "slash_commands",
+      "required": true,
       "description": "User-authored Claude Code slash commands under ~/.claude/commands/*.md. Each record captures frontmatter, the command body (capped at 20k chars), and the file's absolute path.",
       "compaction_fingerprint": {
         "exclude_keys": []

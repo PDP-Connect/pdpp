@@ -63,6 +63,7 @@
   "streams": [
     {
       "name": "budgets",
+      "required": true,
       "description": "YNAB budgets (plans) the user owns or collaborates on. Includes currency/date locale.",
       "compaction_fingerprint": {
         "exclude_keys": ["last_month", "last_modified_on"]
@@ -174,6 +175,7 @@
     },
     {
       "name": "accounts",
+      "required": true,
       "description": "Accounts within each budget (checking, savings, credit cards, loans, etc.).",
       "compaction_class": "point_in_time_real_field",
       "compaction_class_note": "balance/cleared_balance/uncleared_balance are point-in-time samples carried on this record; retained history is never compactable.",
@@ -599,6 +601,7 @@
     },
     {
       "name": "payee_locations",
+      "required": true,
       "description": "GPS coordinates where YNAB mobile has logged a payee interaction.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -895,6 +898,7 @@
     },
     {
       "name": "scheduled_transactions",
+      "required": true,
       "description": "Recurring and one-time scheduled transactions (upcoming bills, salary, rent, etc.).",
       "display": {
         "label": "Your scheduled transactions",

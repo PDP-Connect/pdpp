@@ -65,6 +65,7 @@
   "streams": [
     {
       "name": "accounts",
+      "required": true,
       "description": "Chase retail accounts (checking, savings, credit cards). Hybrid-sourced: identity + account type come from the QFX ACCTINFO response; friendly name, open date, and tier come from chase.com dashboard scrape.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
@@ -151,6 +152,7 @@
     },
     {
       "name": "transactions",
+      "required": true,
       "description": "Chase transactions per account, parsed from QFX (Quicken Web Connect) downloads. QFX is Chase's canonical transaction-export format: per-request date window is ~90 days, so the connector walks backward in 90-day chunks until QFX returns empty. Primary key is (account_id, fitid) — Chase's QFX FITID is a stable unique transaction identifier, so dedup across overlapping date windows collapses naturally. Amounts are in cents (integer, signed).",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at", "source"],
@@ -292,6 +294,7 @@
     },
     {
       "name": "current_activity",
+      "required": true,
       "description": "Chase UI-visible account activity at scrape time. This mutable freshness stream can include pending rows and recently posted current-cycle rows from the signed-in Chase activity UI. It is not the settled QFX ledger; pending rows may change, disappear, or later post under a different QFX FITID.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
@@ -416,6 +419,7 @@
     },
     {
       "name": "statements",
+      "required": true,
       "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and — when the PDF is hydrated on-device — a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"],

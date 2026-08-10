@@ -63,6 +63,7 @@
   "streams": [
     {
       "name": "user",
+      "required": true,
       "description": "The authenticated user's stable profile and identity fields. Sampled metrics (followers, following, public_repos, public_gists) are in the user_stats stream.",
       "compaction_class": "point_in_time_real_field",
       "compaction_class_note": "follower/repo/gist counts are point-in-time samples carried on this record; retained history is never compactable.",

@@ -286,6 +286,7 @@
     },
     {
       "name": "threads",
+      "required": true,
       "description": "Email threads, keyed by Gmail's X-GM-THRID. Derived from messages.",
       "compaction_fingerprint": {
         "exclude_keys": []
@@ -365,6 +366,7 @@
     },
     {
       "name": "labels",
+      "required": true,
       "description": "Gmail system + user labels.",
       "compaction_fingerprint": {
         "exclude_keys": []

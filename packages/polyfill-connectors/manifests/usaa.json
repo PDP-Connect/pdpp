@@ -65,6 +65,7 @@
   "streams": [
     {
       "name": "accounts",
+      "required": true,
       "description": "USAA retail accounts (checking, savings, credit cards, loans). Identity and settings only; point-in-time balances are in the `account_stats` observation stream.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
@@ -181,6 +182,7 @@
     },
     {
       "name": "transactions",
+      "required": true,
       "description": "USAA transactions. Primary key is a stable synthetic hash of (account_id, date, amount, original_description, ordinal-within-tuple) because USAA's CSV export does not expose transaction IDs. Amounts are in cents (integer, signed). Transactions come from two provenances: the 18-month CSV export (`source: 'csv_export'`) and parsed statement PDFs for older history (`source: 'pdf_statement_<YYYY-MM>'`). Because the id-hash input is identical across both paths, a CSV and a PDF record of the same logical transaction collapse to the same id on ingest.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
@@ -303,6 +305,7 @@
     },
     {
       "name": "statements",
+      "required": true,
       "description": "Statement index per account. Always includes title, delivery date, and account reference. When the connector successfully hydrates a statement PDF (by driving the 'Options → Download' menu on /my/documents), the row additionally carries `document_url` (file:// URI of the stored PDF), `pdf_path` (absolute on-disk path), and `pdf_sha256` (content hash). The PDFs themselves are stored under ~/.pdpp/usaa-statements/<account_slug>/<YYYY-MM>-<sha8>.pdf — per owner direction the archive is persistent, not scratch.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"],
@@ -406,6 +409,7 @@
     },
     {
       "name": "inbox_messages",
+      "required": true,
       "description": "Bank-generated messages in the USAA secure inbox.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
@@ -469,6 +473,7 @@
     },
     {
       "name": "credit_card_billing",
+      "required": true,
       "description": "Per-credit-card identity and settings: nickname, credit limit, APRs, card holders. Point-in-time balances, available credit, rewards, and cycle billing status are in the `credit_card_billing_stats` observation stream.",
       "compaction_fingerprint": {
         "exclude_keys": ["fetched_at"]
