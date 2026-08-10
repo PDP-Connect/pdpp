@@ -13,11 +13,12 @@
  * own. The dashboard (apps/console) reaches lexical retrieval through the same
  * public route over HTTP, so there is no second contract.
  *
- * Maintenance hooks (lexicalIndexUpsert, lexicalIndexDelete,
- * lexicalIndexDeleteByConnectorStream) are called from records.js at every
- * record write/update/delete site. JS-side rather than SQLite triggers
- * because index population needs to consult the connector manifest at write
- * time to know which fields are searchable — triggers cannot see manifests.
+ * Maintenance hooks (computeLexicalFields, applyLexicalFieldsWithClient/Sync,
+ * applyLexicalDeleteWithClient/Sync, lexicalIndexDeleteByConnectorStream) are
+ * called from records.js at every record write/update/delete site. JS-side
+ * rather than SQLite triggers because index population needs to consult the
+ * connector manifest at write time to know which fields are searchable —
+ * triggers cannot see manifests.
  */
 
 import { randomBytes } from "node:crypto";
@@ -61,15 +62,18 @@ import {
   postgresLexicalIndexCountByStream,
   postgresLexicalIndexDelete,
   postgresLexicalIndexDeleteByConnectorStream,
+  postgresLexicalIndexDeleteWithClient,
   postgresLexicalIndexInsertMany,
-  postgresLexicalIndexUpsert,
+  postgresLexicalIndexPublishWithClient,
   postgresLexicalMetaGetFingerprint,
   postgresLexicalMetaListStreamsForConnector,
   postgresLexicalMetaUpsertFingerprint,
+  postgresLexicalMetaUpsertFingerprintWithClient,
   postgresLexicalRecordsCountNonDeleted,
   postgresLexicalRecordsPageNonDeleted,
   postgresLexicalSearch,
 } from "./postgres-search.ts";
+import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import { compileRequestFilters, passesGrantRecordConstraints, passesRequestFilters } from "./record-filters.ts";
 import { mapSearchFanout } from "./search-fanout.ts";
@@ -119,6 +123,12 @@ interface LexicalIndexEntry {
   field: string;
   recordKey: string;
   text: string;
+  version: number;
+}
+interface CurrentLexicalBackfillRow {
+  deleted: boolean | number;
+  version: number;
+  [key: string]: unknown;
 }
 type LexicalHit = SearchLexicalSnapshotResult & { score: number };
 type LexicalQueryPlanEntry = SearchLexicalPlanEntry & {
@@ -597,96 +607,142 @@ async function getStreamLexicalFields(connectorId: string, stream: string): Prom
 
 // ─── Index maintenance (called from records.js) ────────────────────────────
 
+export interface ComputedLexicalFields {
+  declared: string[];
+  fields: Record<string, string>;
+}
+
 /**
- * Upsert FTS rows for a record's declared lexical_fields. No-op for streams
- * that don't participate. Replaces all rows for this (connector_id, stream,
- * record_key) atomically.
- *
- * `data` is the parsed record payload object (i.e. JSON.parse(record_json)),
- * not the JSON string.
+ * Computes the lexical field values a record's declared `lexical_fields`
+ * require. Cheap (no embedding I/O, unlike the semantic counterpart) but
+ * kept as its own step for the same reason: callers combine this with
+ * `computeSemanticEntries` (search-semantic.ts) and pass BOTH to a SINGLE
+ * version-gated transaction (`records.ts`'s `maintainRecordIndexesWithinPermit`)
+ * so lexical and semantic publish/delete land atomically together, gated on
+ * ONE re-read of `records.version` — never as two independently-gated CAS
+ * transactions, which would let a newer write's own publish interleave
+ * between this record's lexical and semantic halves and leave the two index
+ * families pointing at different versions. Returns `null` when the stream
+ * declares no lexical fields. See
+ * harden-connector-instance-write-fence-transaction-native.
  */
-export async function lexicalIndexUpsert({
+export async function computeLexicalFields({
   connectorId,
-  connectorInstanceId,
   stream,
-  recordKey,
   data,
   declaredFields,
 }: {
   connectorId: string;
-  connectorInstanceId?: string | null;
   stream: string;
-  recordKey: string;
   data?: JsonObject | null;
   declaredFields?: string[];
-}): Promise<void> {
+}): Promise<ComputedLexicalFields | null> {
   const declared = declaredFields === undefined ? await getStreamLexicalFields(connectorId, stream) : declaredFields;
   if (!declared) {
-    return;
+    return null;
   }
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
+  const fields = Object.fromEntries(
+    declared
+      .map((field): [string, unknown] => [field, data?.[field]])
+      .filter(([, value]) => typeof value === "string" && value.length > 0)
+  ) as Record<string, string>;
+  return { declared, fields };
+}
 
-  if (isPostgresStorageBackend()) {
-    const fields = Object.fromEntries(
-      declared
-        .map((field): [string, unknown] => [field, data?.[field]])
-        .filter(([, value]) => typeof value === "string" && value.length > 0)
-    );
-    await postgresLexicalIndexUpsert({
-      connectorId,
-      connectorInstanceId: resolvedConnectorInstanceId,
-      fields,
-      recordKey,
-      stream,
-    });
-  } else {
-    exec(referenceQueries.searchIndexDeleteByRecordKey, [resolvedConnectorInstanceId, stream, recordKey]);
-
-    for (const field of declared) {
-      const value = data?.[field];
-      if (typeof value !== "string" || value.length === 0) {
-        continue;
-      }
-      exec(referenceQueries.searchIndexInsertRow, [
-        connectorId,
-        resolvedConnectorInstanceId,
-        stream,
-        recordKey,
-        field,
-        value,
-      ]);
-    }
-  }
-  await lexicalMetaUpsertFingerprint({
+/**
+ * Applies already-computed lexical field values using the CALLER's existing
+ * Postgres transaction client — no version check, no transaction of its
+ * own. See `computeLexicalFields`'s header: the caller owns the single
+ * version-gated transaction both this and the semantic equivalent write
+ * into.
+ */
+export async function applyLexicalFieldsWithClient(
+  client: PostgresTransactionClient,
+  {
     connectorId,
-    connectorInstanceId: resolvedConnectorInstanceId,
-    fieldsFingerprint: fingerprintLexicalFields(declared),
+    connectorInstanceId,
+    stream,
+    recordKey,
+    computed,
+  }: {
+    connectorId: string;
+    connectorInstanceId: string;
+    stream: string;
+    recordKey: string;
+    computed: ComputedLexicalFields;
+  }
+): Promise<void> {
+  await postgresLexicalIndexPublishWithClient(client, {
+    connectorId,
+    connectorInstanceId,
+    fields: computed.fields,
+    recordKey,
+    stream,
+  });
+  await postgresLexicalMetaUpsertFingerprintWithClient(client, {
+    connectorId,
+    connectorInstanceId,
+    fieldsFingerprint: fingerprintLexicalFields(computed.declared),
     stream,
     updatedAt: new Date().toISOString(),
   });
 }
 
+/** Postgres client-scoped lexical delete — see `applyLexicalFieldsWithClient`'s header. */
+export async function applyLexicalDeleteWithClient(
+  client: PostgresTransactionClient,
+  { connectorInstanceId, stream, recordKey }: { connectorInstanceId: string; stream: string; recordKey: string }
+): Promise<void> {
+  await postgresLexicalIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+}
+
 /**
- * Delete all FTS rows for a single record. Called on hard or soft delete.
+ * Applies already-computed lexical field values synchronously for the
+ * SQLite backend, from INSIDE the caller's own `writeTransaction` callback
+ * (must be fully synchronous). See `applyLexicalFieldsWithClient`'s header
+ * for why this is not independently version-gated.
  */
-export async function lexicalIndexDelete({
+export function applyLexicalFieldsSync({
   connectorId,
   connectorInstanceId,
   stream,
   recordKey,
+  computed,
 }: {
   connectorId: string;
-  connectorInstanceId?: string | null;
+  connectorInstanceId: string;
   stream: string;
   recordKey: string;
-}): Promise<void> {
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
-  await getSearchIndexStore().indexDelete({
+  computed: ComputedLexicalFields;
+}): void {
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorInstanceId, stream, recordKey]);
+  for (const field of computed.declared) {
+    const value = computed.fields[field];
+    if (typeof value !== "string" || value.length === 0) {
+      continue;
+    }
+    exec(referenceQueries.searchIndexInsertRow, [connectorId, connectorInstanceId, stream, recordKey, field, value]);
+  }
+  exec(referenceQueries.searchMetaUpsertFingerprint, [
     connectorId,
-    connectorInstanceId: resolvedConnectorInstanceId,
-    recordKey,
+    connectorInstanceId,
     stream,
-  });
+    fingerprintLexicalFields(computed.declared),
+    new Date().toISOString(),
+  ]);
+}
+
+/** SQLite synchronous lexical delete — see `applyLexicalFieldsSync`'s header. */
+export function applyLexicalDeleteSync({
+  connectorInstanceId,
+  stream,
+  recordKey,
+}: {
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+}): void {
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorInstanceId, stream, recordKey]);
 }
 
 /**
@@ -779,8 +835,23 @@ async function rebuildLexicalInsertEntries(
       stream,
     });
   } else {
+    // Version-guarded, matching the Postgres branch: each entry's `version`
+    // is the `records.version` its text was read at during the backfill
+    // page read. Re-checked against the CURRENT row, inside the SAME
+    // transaction as the insert, immediately before writing — a row a
+    // concurrent delete/newer-write has since superseded is skipped rather
+    // than resurrected/overwritten. See
+    // harden-connector-instance-write-fence-transaction-native.
     transaction(() => {
       for (const entry of entries) {
+        const current = getOne<CurrentLexicalBackfillRow>(referenceQueries.recordsIngestGetCurrentRecordState, [
+          resolvedConnectorInstanceId,
+          stream,
+          entry.recordKey,
+        ]);
+        if (!current || current.deleted || current.version !== entry.version) {
+          continue;
+        }
         exec(referenceQueries.searchIndexInsertRow, [
           connectorId,
           resolvedConnectorInstanceId,
@@ -825,12 +896,13 @@ function parseLexicalIndexRecordsPage(
       // record stays intact for whoever needs to repair it.
       continue;
     }
+    const version = Number(row.version);
     for (const field of declaredFields) {
       const value = data?.[field];
       if (typeof value !== "string" || value.length === 0) {
         continue;
       }
-      entries.push({ field, recordKey: row.record_key, text: value });
+      entries.push({ field, recordKey: row.record_key, text: value, version });
     }
   }
 
@@ -1078,11 +1150,12 @@ async function resolveLexicalBackfillConnectorInstanceIds({
  * Drift-detect + rebuild the lexical index for every participating stream of
  * a manifest. Idempotent and safe to call repeatedly.
  *
- * Why this exists: write-path maintenance (lexicalIndexUpsert et al) only
- * keeps records that arrived AFTER the manifest declared lexical_fields in
- * sync. It cannot help with records that already existed when the extension
- * was enabled, or with streams whose lexical_fields declaration changed
- * across a restart. This pass closes that gap.
+ * Why this exists: write-path maintenance (computeLexicalFields/
+ * applyLexicalFieldsWithClient/Sync et al) only keeps records that arrived
+ * AFTER the manifest declared lexical_fields in sync. It cannot help with
+ * records that already existed when the extension was enabled, or with
+ * streams whose lexical_fields declaration changed across a restart. This
+ * pass closes that gap.
  *
  * Called from:
  *   - startServer (native mode: backfills the configured native connector)

@@ -97,6 +97,38 @@ async function maybeDeviceIngestPhaseFault(point: string, inputIndex?: number): 
   await deviceIngestPhaseFaultHook?.(point, inputIndex);
 }
 
+// Serializes concurrent HTTP attempts for the SAME (deviceId, batchId) — an
+// in-process, batch-identity-scoped lock, DELIBERATELY NOT the
+// connector-instance write coordinator. Two simultaneous retries of the
+// identical batch (a collector retry racing the original attempt after a
+// transport hiccup) must collapse onto one real execution -- one embedding
+// run, one durable write sequence -- rather than each redoing the same work
+// concurrently. Scoping this to the batch identity, not the connector
+// instance, is what keeps it from also blocking an unrelated writer (a
+// different batch, a blob upload) on the SAME connector instance: that
+// exclusion is what the connector-instance fence remains responsible for
+// (now per-record, not batch-duration), and it does not need to expand to
+// cover this. See harden-connector-instance-write-fence-transaction-native.
+const deviceIngestBatchAttemptTails = new Map<string, Promise<void>>();
+
+async function withDeviceIngestBatchAttempt<T>(deviceId: string, batchId: string, operation: () => Promise<T>) {
+  const key = `${deviceId}:${batchId}`;
+  const previous = deviceIngestBatchAttemptTails.get(key) ?? Promise.resolve();
+  const attempt = previous.then(operation, operation);
+  const tail = attempt.then(
+    () => undefined,
+    () => undefined
+  );
+  deviceIngestBatchAttemptTails.set(key, tail);
+  try {
+    return await attempt;
+  } finally {
+    if (deviceIngestBatchAttemptTails.get(key) === tail) {
+      deviceIngestBatchAttemptTails.delete(key);
+    }
+  }
+}
+
 let enrollPhaseFaultHook: ((point: string) => void | Promise<void>) | null = null;
 
 /**
@@ -438,12 +470,6 @@ interface ConnectorDetailGapStore {
 export interface MountRefDeviceExportersContext {
   acceptedCollectorProtocolVersions: readonly string[];
 
-  // Re-checks the connection once per device-ingest batch after its
-  // coordinator fence is acquired. Every record write reuses that held
-  // fence, so one check covers the whole loop. Closes the delete/write TOCTOU documented on
-  // `assertConnectorInstanceWritable` in server/records.ts.
-  assertConnectorInstanceWritable: (connectorInstanceId: string) => Promise<void>;
-
   // Canonical key resolution
   canonicalConnectorKey: (value: string | null | undefined) => string | null;
   createRequestConnectorInstanceStore: () => ConnectorInstanceStore;
@@ -463,6 +489,12 @@ export interface MountRefDeviceExportersContext {
   // Collector protocol enforcement (returns true if 409 was written)
   enforceCollectorProtocolVersion: (req: unknown, res: unknown) => boolean;
 
+  // Record ingest and sync state
+  // Schedules an operation onto the SAME per-connector-instance ordered index
+  // lane every other writer's derived-index maintenance uses — see
+  // `enqueueDeviceIndexMaintenance`'s header in server/records.ts.
+  enqueueDeviceIndexMaintenance: (connectorInstanceId: string, operation: () => Promise<void>) => Promise<void>;
+
   // Catalog entry registration at enroll time
   ensureReferenceConnectorCatalogEntry: (connectorId: string, displayName: string | null) => Promise<void>;
   generateReferenceSecret: (prefix: string, bytes: number) => string;
@@ -481,8 +513,6 @@ export interface MountRefDeviceExportersContext {
 
   // Hashing and sanitization
   hashDeviceSecret: (value: string) => string;
-
-  // Record ingest and sync state
   ingestRecord: (storageTarget: StorageTarget, record: unknown, options?: unknown) => Promise<unknown>;
   isDeviceSemanticAttemptSupported: () => boolean;
 
@@ -490,7 +520,12 @@ export interface MountRefDeviceExportersContext {
   // `{ store, stream, status }` triple per store — never paths, payloads,
   // the coverage `reason` text, or secrets.
   listLocalCoverageDiagnostics: (storageTarget: StorageTarget) => Promise<LocalCoverageRow[]>;
-  maintainRecordIndexes: (storageTarget: StorageTarget, record: unknown, options?: unknown) => Promise<void>;
+  maintainRecordIndexes: (
+    storageTarget: StorageTarget,
+    record: unknown,
+    expectedVersion: number,
+    options?: unknown
+  ) => Promise<unknown>;
   makeConnectorInstanceSourceBindingKey: (identity: { kind: string; local_binding_name: string }) => string;
   pdppError: PdppErrorFn;
   prepareDeviceFinalRecords: (
@@ -499,7 +534,7 @@ export interface MountRefDeviceExportersContext {
     attemptContext: DeviceAttemptContext,
     durablePrefixCount: number,
     ownership?: unknown
-  ) => Promise<{ inputIndex: number; record: unknown }[]>;
+  ) => Promise<{ inputIndex: number; record: unknown; version?: number }[]>;
   putSyncState: (
     storageTarget: StorageTarget,
     stateMap: Record<string, unknown>,
@@ -516,11 +551,6 @@ export interface MountRefDeviceExportersContext {
   requireOwnerSession: MiddlewareHandler;
   sanitizeDeviceExporterDiagnostic: (value: unknown, depth?: number) => unknown;
   sanitizeLocalCollectorGapDetails: (value: unknown) => string | null;
-  withConnectorInstanceWrite: <T>(
-    connectorInstanceId: string,
-    operation: (ownership: unknown) => Promise<T>,
-    ownership?: unknown
-  ) => Promise<T>;
 }
 
 // ─── Module-level helpers moved from server/index.js ────────────────────────
@@ -2456,7 +2486,18 @@ async function processDeviceIngestBatch(
   } = params;
   const identity = { batchSeq, bodyHash, connectorId, connectorInstanceId, sourceInstanceId };
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this boundary keeps reservation, durable prefix, derived repair, and terminal response precedence visible.
-  await ctx.withConnectorInstanceWrite(connectorInstanceId, async (coordinatorOwnership) => {
+  await withDeviceIngestBatchAttempt(deviceId, batchId, async () => {
+    // Reservation bookkeeping (lookup, ensure/refresh the `processing` row) is
+    // self-serialized on BATCH identity by `withDeviceIngestBatchAttempt`
+    // above (an in-process, batch-scoped lock) and by the store's own
+    // durable exclusion (`ensureProcessingBatch`'s INSERT-conflict on
+    // `(device_id, batch_id)`, `completeProcessingBatch`'s `SELECT ... FOR
+    // UPDATE` + `durable_prefix_count = record_count` CAS) — it never needs
+    // the connector-instance-wide fence. No connector-instance fence is held
+    // across this bookkeeping, so it can never make an unrelated
+    // same-instance writer (e.g. a concurrent blob upload) queue behind it,
+    // matching `ingestRecords`'s identical reasoning for the HTTP batch
+    // path. See harden-connector-instance-write-fence-transaction-native.
     maybeDeviceIngestStoreFault("before-get-batch-outcome");
     const existing = await ctx.deviceExporterStore.getBatchOutcome(deviceId, batchId);
     if (existing) {
@@ -2476,23 +2517,11 @@ async function processDeviceIngestBatch(
     }
 
     // New malformed candidates retain the historical 400, but an existing
-    // device/batch reservation owns conflict precedence.  Looking it up under
-    // the target fence first means a validly hashed same-batch request whose
-    // connector identity changes is a 409 with no new effects, rather than an
-    // unrelated pre-reservation validation error.
+    // device/batch reservation owns conflict precedence.
     if (!sourceConnectorMatches) {
       ctx.pdppError(res, 400, "invalid_request", "connector_id does not match source_instance_id", "connector_id");
       return;
     }
-
-    // Re-check the connection still exists before any new mutation below.
-    // Runs once, under the SAME held fence every write in this batch (the
-    // reservation, the per-record ctx.ingestRecord loop, and
-    // prepareDeviceFinalRecords) reuses via `coordinatorOwnership` — closes
-    // the delete/write TOCTOU for the whole batch in one check, not one per
-    // record. An already-accepted replay (returned above) is a historical
-    // read, not a new write, so it is intentionally NOT gated by this check.
-    await ctx.assertConnectorInstanceWritable(connectorInstanceId);
 
     // Accepted replays returned above intentionally do not consult the current
     // manifest or semantic backend. Every new/processing attempt does.
@@ -2541,13 +2570,23 @@ async function processDeviceIngestBatch(
       const storageTarget = referenceLocalDeviceStorageTarget(ctx, connectorId, connectorInstanceId);
       const attemptDeadline = performance.now() + batchAttemptDeadlineMs();
       const start = reservation.durablePrefixCount ?? 0;
+      const durableVersionByInputIndex = new Map<number, number>();
       for (let inputIndex = start; inputIndex < records.length; inputIndex += 1) {
         const record = records[inputIndex];
         assertBatchAttemptBefore(attemptDeadline);
+        // EACH record acquires its own fresh, short-lived connector-instance
+        // fence here — no batch-long `coordinatorOwnership` is threaded
+        // through, unlike the old design. `requireConnectionAdmission: true`
+        // re-checks the connector-instance row still exists inside THIS
+        // record's own locked transaction, closing the delete/write TOCTOU
+        // for every record in the batch, not only the first (mirrors
+        // `ingestRecords`'s per-record HTTP-path fix). This is what keeps an
+        // UNRELATED same-instance writer (e.g. a concurrent blob upload) from
+        // queuing behind the whole batch's duration — see
+        // harden-connector-instance-write-fence-transaction-native.
         // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-        await ctx.ingestRecord(storageTarget, record, {
+        const ingestOutcome = await ctx.ingestRecord(storageTarget, record, {
           attemptContext,
-          coordinatorOwnership,
           deferIndexes: true,
           deviceReservation: {
             batchId,
@@ -2559,7 +2598,24 @@ async function processDeviceIngestBatch(
             inputIndex,
             sourceInstanceId,
           },
+          requireConnectionAdmission: true,
         });
+        // Captured for the final-plan's derived-index publish below: that
+        // step needs to know the version EACH final key's content was
+        // durably committed at, to gate lexical/semantic publication on it
+        // still being current (see maintainRecordIndexesWithinPermit's
+        // header). A no-op/unchanged write has no new version to capture —
+        // the prior durable version for that key (if this input collapses
+        // into a repeat within the same batch) or the reservation's replay
+        // path already covers that case via prepareDeviceFinalRecords.
+        if (
+          ingestOutcome &&
+          typeof ingestOutcome === "object" &&
+          "version" in ingestOutcome &&
+          typeof ingestOutcome.version === "number"
+        ) {
+          durableVersionByInputIndex.set(inputIndex, ingestOutcome.version);
+        }
         await maybeDeviceIngestPhaseFault("after-durable-record", inputIndex);
         assertBatchAttemptBefore(attemptDeadline);
       }
@@ -2567,24 +2623,61 @@ async function processDeviceIngestBatch(
 
       const finalPlan = finalDeviceRecordPlan(records, connectorInstanceId);
       assertBatchAttemptBefore(attemptDeadline);
-      const authoritativeFinalPlan = await ctx.prepareDeviceFinalRecords(
-        storageTarget,
-        finalPlan,
-        attemptContext,
-        start,
-        coordinatorOwnership
-      );
+      // No `coordinatorOwnership` passthrough here either: `prepareDeviceFinalRecords`
+      // acquires its own fresh fence ONLY when it actually has repair work to
+      // do (a retry whose durable prefix already covered some final keys) —
+      // see its own short-circuit for the common first-attempt case.
+      const preparedFinalPlan = await ctx.prepareDeviceFinalRecords(storageTarget, finalPlan, attemptContext, start);
       assertBatchAttemptBefore(attemptDeadline);
-      await mapWithConcurrency(authoritativeFinalPlan, finalIndexPlanConcurrency(), async ({ record, inputIndex }) => {
-        assertBatchAttemptBefore(attemptDeadline);
-        await ctx.maintainRecordIndexes(storageTarget, record, {
-          attemptContext,
-          deviceFinalInputIndex: inputIndex,
-        });
-        // `mapWithConcurrency` waits for every started operation before it
-        // rethrows the lowest-index error. This postcondition therefore never
-        // releases the batch/instance fence around still-live child compute.
-        assertBatchAttemptBefore(attemptDeadline);
+      // A repaired (retry-repaired) entry already carries its own fresh
+      // `version` from `prepareDeviceFinalRecords`'s reread. A fresh
+      // (non-repaired) entry's version comes from THIS attempt's own durable
+      // loop above, keyed by its final `inputIndex` (finalDeviceRecordPlan
+      // collapses duplicate keys to the last input index that wrote them).
+      const authoritativeFinalPlan = preparedFinalPlan.map((entry) => ({
+        ...entry,
+        version: typeof entry.version === "number" ? entry.version : durableVersionByInputIndex.get(entry.inputIndex),
+      }));
+      // Index maintenance stays SYNCHRONOUS (awaited before the HTTP
+      // response), preserving the device-exporter contract that 201 implies
+      // lexical/semantic state is already searchable — unlike `ingestRecords`,
+      // which defers this work fire-and-forget. It does NOT run inside any
+      // connector-instance FENCE: `maintainRecordIndexes` uses its own
+      // unrelated admission semaphore (`withIndexWork`), never the write
+      // coordinator, so running it here (after every record's fence has
+      // already released) cannot make an unrelated same-instance writer
+      // queue behind it. It runs on the shared per-instance ordered index
+      // LANE (`enqueueDeviceIndexMaintenance`) every other writer uses for
+      // THROUGHPUT/scheduling reasons only — keeping this batch's slow
+      // embedding work off an unrelated same-instance writer's critical
+      // path. Correctness against a same-instance direct writer racing this
+      // batch's publish does NOT come from the lane's ordering: each
+      // `maintainRecordIndexes` call below is gated on `records.version`
+      // still matching the `version` captured above at the moment its own
+      // short publish transaction commits (see
+      // `maintainRecordIndexesWithinPermit`'s header) — a stale publish
+      // silently no-ops regardless of enqueue/completion order. See
+      // harden-connector-instance-write-fence-transaction-native.
+      await ctx.enqueueDeviceIndexMaintenance(connectorInstanceId, async () => {
+        await mapWithConcurrency(
+          authoritativeFinalPlan,
+          finalIndexPlanConcurrency(),
+          async ({ record, inputIndex, version }) => {
+            assertBatchAttemptBefore(attemptDeadline);
+            if (typeof version !== "number") {
+              // No durable version could be resolved for this key (e.g. it was
+              // never actually written this attempt and has no repair reread
+              // either) — nothing to gate a publish against, so there is
+              // nothing safe to publish. Left dirty for the reconcile sweep.
+              return;
+            }
+            await ctx.maintainRecordIndexes(storageTarget, record, version, {
+              attemptContext,
+              deviceFinalInputIndex: inputIndex,
+            });
+            assertBatchAttemptBefore(attemptDeadline);
+          }
+        );
       });
       assertBatchAttemptBefore(attemptDeadline);
       const response = {

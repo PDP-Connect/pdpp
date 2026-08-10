@@ -1,6 +1,6 @@
 -- @terminator: many
 -- @cursor_field: id
-SELECT id, record_key, record_json
+SELECT id, record_key, record_json, version
 FROM records
 WHERE connector_instance_id = ?
   AND stream = ?

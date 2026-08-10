@@ -2,22 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Focused throughput oracle for the common ingest capability.
- *
- * The fake Postgres lock pool is enabled while storage remains SQLite. That
- * isolates coordinator lifecycle calls from record-storage work: the old
- * one-record path performs one advisory acquire and release per record, while
- * `ingestRecords` must perform exactly one pair for the whole batch. The two
- * stream shapes also prove the optimization is not connector-specific.
+ * Focused throughput oracle for the common ingest capability (SQLite
+ * backend). Confirms `ingestRecords` holds ONE coordinator in-process fence
+ * for the whole batch (ownership reuse, no re-acquire per record) while each
+ * record still gets its own durable write transaction — the SQLite side of
+ * harden-connector-instance-write-fence-transaction-native's "no
+ * batch-duration lease" requirement. See
+ * postgres-transaction-connector-instance-lock.test.ts for the Postgres
+ * side, where the cross-process exclusion itself (not just the in-process
+ * fence) is also re-acquired per record, not once per batch.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  __setConnectorInstancePostgresLockPoolForTest,
-  withConnectorInstanceWrite,
-} from "../server/connector-instance-write-coordinator.ts";
+import { withConnectorInstanceWrite } from "../server/connector-instance-write-coordinator.ts";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import {
   __setIngestFaultHookForTest,
@@ -26,14 +25,6 @@ import {
   recordIndexWorkStatsForTests,
   withRecordIndexWorkForTests,
 } from "../server/records.ts";
-
-interface TestPostgresLockClient {
-  query: (
-    sql: string,
-    params: readonly unknown[]
-  ) => Promise<{ rows: Array<{ acquired?: boolean; unlocked?: boolean }> }>;
-  release: (error?: boolean) => void;
-}
 
 function records(stream: string, prefix: string) {
   return Array.from({ length: 3 }, (_, index) => ({
@@ -88,29 +79,12 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 
 test("common ingest reuses coordinator ownership for messages and timeline_points", async () => {
   initDb();
-  let lockQueries = 0;
-  let clientReleases = 0;
-  const client: TestPostgresLockClient = {
-    query: (sql) => {
-      lockQueries += 1;
-      return Promise.resolve(sql.includes("unlock") ? { rows: [{ unlocked: true }] } : { rows: [{ acquired: true }] });
-    },
-    release: () => {
-      clientReleases += 1;
-    },
-  };
-  __setConnectorInstancePostgresLockPoolForTest({
-    capacity: 8,
-    pool: { connect: async () => client },
-  });
-
   try {
     const beforeConnector = "https://probe.example/connectors/before";
     for (const record of records("messages", "before")) {
       // biome-ignore lint/performance/noAwaitInLoops: This is the serial baseline the oracle intentionally measures.
       await ingestRecord(beforeConnector, record);
     }
-    assert.equal(lockQueries, 6, "the pre-fix single-record path acquires and releases per record");
     assert.equal(countChanges(beforeConnector, "messages"), 3);
 
     const afterConnector = "https://probe.example/connectors/after";
@@ -118,8 +92,6 @@ test("common ingest reuses coordinator ownership for messages and timeline_point
     const timelinePoints = await ingestRecords(afterConnector, records("timeline_points", "point"));
     assert.equal(messages.filter((outcome) => outcome.accepted).length, 3);
     assert.equal(timelinePoints.filter((outcome) => outcome.accepted).length, 3);
-    assert.equal(lockQueries, 10, "two batches should add one acquire/release pair each");
-    assert.equal(clientReleases, 5);
     assert.equal(countChanges(afterConnector, "messages"), 3);
     assert.equal(countChanges(afterConnector, "timeline_points"), 3);
 
@@ -142,13 +114,18 @@ test("common ingest reuses coordinator ownership for messages and timeline_point
         { accepted: true, error: null },
       ]
     );
+    // Partial-batch atomicity: the failed record (fault-1) never lands, but
+    // records BEFORE and AFTER it in the same batch stay durably committed —
+    // proves the batch is NOT wrapped in one outer transaction (that would
+    // roll back fault-0 too). See
+    // harden-connector-instance-write-fence-transaction-native's "no
+    // batch-duration lease" requirement.
     assert.deepEqual(changeRows(failureConnector, "timeline_points"), [
       { record_key: "fault-0", version: 1 },
       { record_key: "fault-2", version: 2 },
     ]);
   } finally {
     __setIngestFaultHookForTest(null);
-    __setConnectorInstancePostgresLockPoolForTest(null);
     closeDb();
   }
 });

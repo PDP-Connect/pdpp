@@ -221,6 +221,7 @@ import {
   deleteConnectionRecordRowsSqlite,
   deleteRecord,
   drainConnectorInstanceIndexWork,
+  enqueueDeviceIndexMaintenance,
   enumerateConnectionStreams,
   getDatasetBlobBytes,
   getDatasetRecordChangesBytes,
@@ -3722,12 +3723,22 @@ async function persistContentAddressedBlob({
   data: Buffer;
 }) {
   return withConnectorInstanceWrite(connectorInstanceId, async (ownership) => {
-    // `persistContentAddressedBlob` is only reached via the HTTP blob-write
-    // route (not called directly by tests, unlike `ingestRecord`), so the
-    // existence re-check runs unconditionally, inside the fence, right
-    // before the write. See `assertConnectorInstanceWritable` in records.ts
-    // for the delete/write TOCTOU this closes.
-    await assertConnectorInstanceWritable(connectorInstanceId);
+    // On Postgres, the connector-instance existence re-check (closing the
+    // delete/write TOCTOU) now runs INSIDE the durable write's own locked
+    // transaction — see postgresPersistContentAddressedBlobWithinFence's
+    // unconditional assertPostgresConnectorInstanceWritable call — not here,
+    // pre-fence: `withConnectorInstanceWrite` is in-process only, so a check
+    // performed here would run before the transaction-scoped advisory lock
+    // and reopen the same TOCTOU it used to close. On SQLite there is no
+    // per-transaction re-check seam equivalent to Postgres's client-scoped
+    // one, so the check stays here, pre-write: SQLite's single-process,
+    // single-writer guarantee (this whole callback already runs under the
+    // in-process key gate above) makes a single pre-write check sufficient —
+    // no other writer can delete the row between this check and the write
+    // below. See harden-connector-instance-write-fence-transaction-native.
+    if (!isPostgresStorageBackend()) {
+      await assertConnectorInstanceWritable(connectorInstanceId);
+    }
     return persistContentAddressedBlobWithinFence({
       connectorId,
       connectorInstanceId,
@@ -3765,6 +3776,11 @@ async function persistContentAddressedBlobWithinFence({
       data,
       mimeType,
       recordKey,
+      // Only the HTTP blob-write route reaches this function (see the
+      // docstrings above and on postgresPersistContentAddressedBlob) — every
+      // call here is an external write that must be refused if the
+      // connection was deleted concurrently.
+      requireConnectionAdmission: true,
       stream,
     });
     if (stored.binding_inserted) {
@@ -5607,13 +5623,13 @@ export function buildAsApp(opts: ServerOpts = {}) {
   // enforcement; the adapter owns all route logic.
   const refDeviceExportersContext = {
     acceptedCollectorProtocolVersions,
-    assertConnectorInstanceWritable,
     canonicalConnectorKey,
     createRequestConnectorInstanceStore,
     DeviceBatchConflictError,
     deviceExporterStore,
     emitSpineEvent,
     enforceCollectorProtocolVersion,
+    enqueueDeviceIndexMaintenance,
     ensureReferenceConnectorCatalogEntry,
     generateReferenceSecret,
     generateSpineId,
@@ -5638,7 +5654,6 @@ export function buildAsApp(opts: ServerOpts = {}) {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     sanitizeDeviceExporterDiagnostic,
     sanitizeLocalCollectorGapDetails,
-    withConnectorInstanceWrite,
   };
 
   mountRefDeviceExporterEnrollmentCodes(

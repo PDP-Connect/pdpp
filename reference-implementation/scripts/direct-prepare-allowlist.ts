@@ -95,8 +95,8 @@ export const DIRECT_PREPARE_ALLOWLIST: readonly DirectPrepareAllowlistEntry[] = 
   },
   {
     category: "grandfathered_pre_wrapper",
-    line: 8352,
-    note: "backfillSqliteRecordSemanticTimesForManifest: prepared UPDATE records SET semantic_time = ? (per-record backfill write inside the writeTransaction). Re-derived 2026-08-10 (local-collector-stream-proof-0810): moved from 8300 by the declared-collection-scope reader added above it; the call site itself is unchanged.",
+    line: 8598,
+    note: "backfillSqliteRecordSemanticTimesForManifest: prepared UPDATE records SET semantic_time = ? (per-record backfill write inside the writeTransaction). Re-derived 2026-08-10 (harden-connector-instance-write-fence-transaction-native): moved from 8352 by the version-CAS additions earlier in the file (new imports, isRecordStillCurrent, maintainRecordIndexesWithinPermit's unified-transaction rewrite); the call site itself is unchanged.",
     path: "reference-implementation/server/records.ts",
   },
   {

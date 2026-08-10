@@ -7,6 +7,8 @@ import { parseCoverageDiagnosticsStateSnapshot } from "../../packages/polyfill-c
  */
 import { getDb } from "./db.ts";
 import { assertGrantedManifestReadAuthority, assertManifestReadAuthority } from "./manifest-read-authority.ts";
+import type { ComputedLexicalFields } from "./search.ts";
+import type { ComputedSemanticEntries } from "./search-semantic.ts";
 
 // Optional post-commit hook for outbound client event subscriptions. The
 // hook is invoked after a `record_changes` row has been durably committed
@@ -63,6 +65,7 @@ import {
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { markConnectorSummaryEvidenceDirty } from "./connector-summary-read-model.ts";
 import { applyDatasetSummaryRecordDelta, markDatasetSummaryProjectionStale } from "./dataset-summary-read-model.ts";
+import { COLLECTION_SCOPE_STATE_KEY, readStoredCollectionScope } from "./local-collection-scope.ts";
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from "./owner-auth.ts";
 import {
   postgresDeleteAllRecords,
@@ -120,7 +123,6 @@ import {
   ConnectorInstanceResolutionError,
   makeDefaultAccountConnectorInstanceId,
 } from "./stores/connector-instance-store.ts";
-import { COLLECTION_SCOPE_STATE_KEY, readStoredCollectionScope } from "./local-collection-scope.ts";
 import { getDefaultConnectorStateStore } from "./stores/connector-state-store.ts";
 import { advanceSqliteDeviceIngestPrefix } from "./stores/device-exporter-store.ts";
 import { markSearchIndexDirtySqlite, recordSearchIndexDirtyFailure } from "./stores/search-index-dirty-store.ts";
@@ -132,46 +134,18 @@ export { resolveRecordIdentityForBinding } from "./connection-identity.ts";
 // that boundary instead of creating a static route/import cycle.
 const LEXICAL_INDEX_MODULE = "./search.ts";
 const SEMANTIC_INDEX_MODULE = "./search-semantic.ts";
-interface RecordIndexIdentity {
-  connectorId: string;
-  connectorInstanceId: string;
-  recordKey: string;
-  stream: string;
-}
-
 interface RecordIndexStreamIdentity {
   connectorId: string;
   connectorInstanceId: string;
   stream: string;
 }
 
-interface RecordIndexUpsert extends RecordIndexIdentity {
-  data: unknown;
-  declaredFields?: string[] | undefined;
-}
-
-async function lexicalIndexDelete(args: RecordIndexIdentity): Promise<void> {
-  await (await import(LEXICAL_INDEX_MODULE)).lexicalIndexDelete(args);
-}
-
 async function lexicalIndexDeleteByConnectorStream(args: RecordIndexStreamIdentity): Promise<void> {
   await (await import(LEXICAL_INDEX_MODULE)).lexicalIndexDeleteByConnectorStream(args);
 }
 
-async function lexicalIndexUpsert(args: RecordIndexUpsert): Promise<void> {
-  await (await import(LEXICAL_INDEX_MODULE)).lexicalIndexUpsert(args);
-}
-
-async function semanticIndexDelete(args: RecordIndexIdentity): Promise<void> {
-  await (await import(SEMANTIC_INDEX_MODULE)).semanticIndexDelete(args);
-}
-
 async function semanticIndexDeleteByConnectorStream(args: RecordIndexStreamIdentity): Promise<void> {
   await (await import(SEMANTIC_INDEX_MODULE)).semanticIndexDeleteByConnectorStream(args);
-}
-
-async function semanticIndexUpsert(args: RecordIndexUpsert): Promise<void> {
-  await (await import(SEMANTIC_INDEX_MODULE)).semanticIndexUpsert(args);
 }
 
 type HookContext = Record<string, unknown>;
@@ -278,6 +252,7 @@ type RecordIngestAfterRecord = (record: RecordEnvelope, outcome: RecordIngestBat
 interface DeferredRecordIndex {
   index: number;
   record: RecordEnvelope;
+  version: number;
 }
 interface IngestRecordsWithinCoordinatorResult {
   changedRecords: DeferredRecordIndex[];
@@ -1247,6 +1222,36 @@ export function drainConnectorInstanceIndexWorkForTests(timeoutMs?: number): Pro
 }
 
 /**
+ * Device-exporter entry point onto the SAME per-connector-instance ordered
+ * index lane every other writer uses (`scheduleRecordIndexMaintenance` for
+ * direct upsert/delete, `runDeferredRecordIndexes` for HTTP batches). This is
+ * NOT merely a queue for throughput — the lane's strict FIFO processing (one
+ * job's operation fully completes, including its actual index write, before
+ * the next job's operation even starts) is what makes "the LAST job to
+ * enqueue publishes the index" equivalent to "the index reflects the CURRENT
+ * durable row," with no separate version check needed: every writer enqueues
+ * its own index job synchronously, immediately after its OWN durable commit,
+ * and durable commits for the same key are themselves strictly ordered by
+ * the connector-instance write fence (in-process key gate; on Postgres, the
+ * per-record `pg_advisory_xact_lock`) — so enqueue order always matches
+ * commit order. A device-exporter batch that instead ran
+ * `maintainRecordIndexes` inline, decoupled from this lane, could publish a
+ * STALE snapshot after a same-instance direct writer's own (correctly
+ * lane-ordered) publication already ran, corrupting the derived index
+ * relative to the winning durable record — this closes that gap. The caller
+ * AWAITS the returned promise (unlike the HTTP batch path's fire-and-forget
+ * use of the same lane) to preserve the device-exporter contract that its
+ * 201 response implies lexical/semantic state already reflects the accepted
+ * write. See harden-connector-instance-write-fence-transaction-native.
+ */
+export function enqueueDeviceIndexMaintenance(
+  connectorInstanceId: string,
+  operation: () => Promise<void>
+): Promise<void> {
+  return enqueueConnectorInstanceIndexWork(connectorInstanceId, operation);
+}
+
+/**
  * Test-only: enqueue an arbitrary operation onto the SAME per-connector-
  * instance tail chain `drainConnectorInstanceIndexWork` reads, so a test can
  * hold a tail open indefinitely (a controlled stand-in for a genuinely stuck
@@ -1436,6 +1441,7 @@ let ingestFaultHook: FaultHook | null = null;
 let deleteFaultHook: FaultHook | null = null;
 let recordIndexFaultHook: FaultHook | null = null;
 let sqliteRecordSortBackfillPhaseHook: AsyncFaultHook | null = null;
+let indexPublishPhaseHook: AsyncFaultHook | null = null;
 
 export function __setIngestFaultHookForTest(hook: unknown): void {
   ingestFaultHook = isFaultHook(hook) ? hook : null;
@@ -1451,6 +1457,24 @@ export function __setDeleteFaultHookForTest(hook: unknown): void {
 // repair on the same-identity retry.
 export function __setRecordIndexFaultHookForTest(hook: unknown): void {
   recordIndexFaultHook = isFaultHook(hook) ? hook : null;
+}
+
+/**
+ * Async pause seam at the exact boundary `maintainRecordIndexesWithinPermit`
+ * crosses from "expensive/unlocked compute done" to "the short version-gated
+ * publish transaction is about to open." Lets a test suspend an OLDER
+ * writer's publish here (after its own embedding/lexical compute finished,
+ * mirroring a slow provider call) while a NEWER writer's publish runs to
+ * completion, then resume — the adversarial interleaving the version-CAS
+ * exists to close. Fires with `{ connectorInstanceId, expectedVersion, op,
+ * recordKey, stream }` at point `"before-publish-transaction"`.
+ */
+export function __setIndexPublishPhaseHookForTest(hook: unknown): void {
+  indexPublishPhaseHook = isAsyncFaultHook(hook) ? hook : null;
+}
+
+async function maybeIndexPublishPhase(point: string, context: HookContext): Promise<void> {
+  await indexPublishPhaseHook?.(point, context);
 }
 
 /** Test-only seam for deterministic manifest registration ordering. */
@@ -1497,13 +1521,12 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
  * dozens of existing tests that ingest without ever enrolling a
  * `connector_instances` row) — this function is called from inside them
  * ONLY when the caller opts in via `RecordIngestOptions.requireConnectionAdmission`.
- * Owner HTTP ingest (server/routes/rs-mutation.ts) opts in on every call
- * that resolved a real connection. Device-exporter ingest
- * (server/routes/ref-device-exporters.ts) calls this function directly,
- * once per batch, immediately after acquiring the batch's coordinator fence
- * and before its first mutation — every record write in that batch reuses
- * the SAME held fence via `coordinatorOwnership`, so the one check covers
- * the whole batch. `persistContentAddressedBlob` (blob writes,
+ * Owner HTTP ingest (server/routes/rs-mutation.ts) and device-exporter ingest
+ * (server/routes/ref-device-exporters.ts) both opt in on EVERY record, not
+ * once per batch: each record acquires its own fresh, short-lived
+ * connector-instance fence (see `ingestRecord`'s header), so only a
+ * per-record re-check closes the delete/write TOCTOU for every record in a
+ * batch, not just the first. `persistContentAddressedBlob` (blob writes,
  * server/index.ts) calls this function directly and unconditionally inside
  * its own fence, since it is reached only via the HTTP blob-write route.
  * Source-webhook ingest (server/routes/source-webhooks.ts) is deliberately
@@ -1571,13 +1594,27 @@ export async function ingestRecord(
 }
 
 /**
- * Ingest one HTTP batch under a single connector-instance fence.
+ * Ingest one HTTP batch, EACH RECORD under its own short-lived
+ * connector-instance fence — never one fence held for the whole batch.
  *
- * Durable record mutations stay in one ordered phase under one
- * connector-instance ownership capability. Derived index work is serialized
- * on a separate per-instance lane after that fence releases, so embedding and
- * index latency cannot starve blob writers. When supplied, `afterRecord` is
- * awaited between a record's storage completion and the next record.
+ * Ordering (record N+1 never starts before record N, and its `afterRecord`,
+ * finish) comes from this function's own sequential `for` loop, not from
+ * holding a lease: the loop already awaits each record before starting the
+ * next, so no external lock is needed to enforce that order. `afterRecord`
+ * runs between two independently-acquired-and-released fences — it is
+ * never inside any lifecycle critical section (in-process key gate on
+ * either backend, or the Postgres transaction-scoped advisory lock) — so a
+ * slow `afterRecord` cannot make an UNRELATED same-instance writer (e.g. a
+ * concurrent blob upload) queue behind the whole batch's duration. Derived
+ * index work is serialized on a separate per-instance lane after the LAST
+ * record's fence releases, so embedding and index latency still cannot
+ * starve blob writers.
+ *
+ * This closes the exact live-incident shape (GroupMe run_1786382625843_1,
+ * GitHub run_1786382759095): a batch/afterRecord no longer holds ANY
+ * exclusion mechanism — Postgres advisory lock, in-process key gate, or
+ * admission slot — for longer than one record's own durable unit of work.
+ * See harden-connector-instance-write-fence-transaction-native.
  */
 export async function ingestRecords(
   storageTarget: RecordStorageTarget,
@@ -1592,51 +1629,41 @@ export async function ingestRecords(
     releaseFence = resolve;
   });
   try {
-    const result = await withConnectorInstanceWrite(
-      coordinationInstanceId,
-      async (coordinatorOwnership) => {
-        if (options.requireConnectionAdmission) {
-          await assertConnectorInstanceWritable(coordinationInstanceId);
-        }
-        const batch = await ingestRecordsWithinCoordinator(
-          storageTarget,
-          records,
-          coordinatorOwnership,
-          afterRecord,
-          options.runId
-        );
-        if (batch.changedRecords.length > 0) {
-          // Fire-and-forget: the HTTP batch ack must not await derived index
-          // work (see the single-record path's identical reasoning at
-          // scheduleRecordIndexMaintenance). Every changed record's stream
-          // already got its scope marked dirty inside its own commit
-          // transaction (ingestSqliteRecord/postgresIngestRecord run with
-          // deferIndexes: true below, which skips ONLY the inline
-          // maintainRecordIndexes call, never the durable dirty mark), so a
-          // crash here still converges via the reconcile sweep. `void`
-          // intentionally detaches this from the batch's own outcome array:
-          // derived-index failure must never retroactively flip an
-          // already-accepted outcome (see runDeferredRecordIndexes header).
-          // Storage-lifecycle fence: captured NOW, at schedule time -- see
-          // scheduleRecordIndexMaintenance's identical reasoning.
-          const scheduledGeneration = currentStorageGeneration();
-          enqueueConnectorInstanceIndexWork(
-            coordinationInstanceId,
-            () => runDeferredRecordIndexes(storageTarget, batch, scheduledGeneration),
-            fenceReleasedPromise
-          ).catch(() => {
-            // runDeferredRecordIndexes already catches every per-record
-            // failure internally; this only guards against the enclosing
-            // promise chain itself (e.g. enqueueConnectorInstanceIndexWork's
-            // own bookkeeping) ever rejecting unobserved.
-          });
-        }
-        return batch;
-      },
-      undefined
+    const batch = await ingestRecordsWithinCoordinator(
+      storageTarget,
+      records,
+      afterRecord,
+      options.runId,
+      options.requireConnectionAdmission
     );
+    if (batch.changedRecords.length > 0) {
+      // Fire-and-forget: the HTTP batch ack must not await derived index
+      // work (see the single-record path's identical reasoning at
+      // scheduleRecordIndexMaintenance). Every changed record's stream
+      // already got its scope marked dirty inside its own commit
+      // transaction (ingestSqliteRecord/postgresIngestRecord run with
+      // deferIndexes: true below, which skips ONLY the inline
+      // maintainRecordIndexes call, never the durable dirty mark), so a
+      // crash here still converges via the reconcile sweep. `void`
+      // intentionally detaches this from the batch's own outcome array:
+      // derived-index failure must never retroactively flip an
+      // already-accepted outcome (see runDeferredRecordIndexes header).
+      // Storage-lifecycle fence: captured NOW, at schedule time -- see
+      // scheduleRecordIndexMaintenance's identical reasoning.
+      const scheduledGeneration = currentStorageGeneration();
+      enqueueConnectorInstanceIndexWork(
+        coordinationInstanceId,
+        () => runDeferredRecordIndexes(storageTarget, batch, scheduledGeneration),
+        fenceReleasedPromise
+      ).catch(() => {
+        // runDeferredRecordIndexes already catches every per-record
+        // failure internally; this only guards against the enclosing
+        // promise chain itself (e.g. enqueueConnectorInstanceIndexWork's
+        // own bookkeeping) ever rejecting unobserved.
+      });
+    }
     releaseFence?.();
-    return result.outcomes;
+    return batch.outcomes;
   } finally {
     releaseFence?.();
   }
@@ -1660,7 +1687,7 @@ async function runDeferredRecordIndexes(
 ): Promise<void> {
   const connectorId = connectorIdForStorageTarget(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
-  for (const { record } of batch.changedRecords) {
+  for (const { record, version } of batch.changedRecords) {
     const { stream } = record;
     // Storage-lifecycle fence (server/storage-generation.ts), re-checked per
     // record: if storage closed/reinitialized partway through this batch's
@@ -1677,7 +1704,10 @@ async function runDeferredRecordIndexes(
     }
     try {
       // biome-ignore lint/performance/noAwaitInLoops: One connector instance's derived index repairs are intentionally ordered.
-      await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, {}), scheduledGeneration);
+      await withIndexWork(
+        () => maintainRecordIndexesWithinPermit(storageTarget, record, version, {}),
+        scheduledGeneration
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isCurrentStorageGeneration(scheduledGeneration)) {
@@ -1741,15 +1771,23 @@ async function yieldIfIngestBatchRecordDecidesTo(args: {
 async function ingestRecordsWithinCoordinator(
   storageTarget: RecordStorageTarget,
   records: readonly RecordEnvelope[],
-  coordinatorOwnership: ConnectorInstanceWriteOwnership,
   afterRecord?: RecordIngestAfterRecord,
-  runId?: string | null
+  runId?: string | null,
+  requireConnectionAdmission?: boolean
 ): Promise<IngestRecordsWithinCoordinatorResult> {
   const outcomes: Array<RecordIngestBatchOutcome | undefined> = new Array(records.length);
   const changedRecords: DeferredRecordIndex[] = [];
   const perRecordOptions: RecordIngestOptions = {
-    coordinatorOwnership,
     deferIndexes: true,
+    // Re-verified inside EVERY record's own locked transaction on Postgres
+    // (see postgresIngestRecord's requireConnectionAdmission handling), not
+    // once before the loop: the connector-instance advisory lock is now
+    // transaction-scoped, not held for the whole batch, so only a per-record
+    // check closes the delete/write TOCTOU for every record, not just the
+    // first. SQLite ingest ignores this option and relies on the pre-batch
+    // check below (ingestRecords) plus its own single-process, single-writer
+    // guarantee — no cross-process race is possible there.
+    ...(requireConnectionAdmission ? { requireConnectionAdmission } : {}),
     ...(runId ? { runId } : {}),
   };
   // Computed once per batch, not per record: the storage backend cannot
@@ -1762,14 +1800,19 @@ async function ingestRecordsWithinCoordinator(
   for (const [index, record] of records.entries()) {
     let outcome: RecordIngestBatchOutcome;
     try {
-      // Versions, current-state transitions, summaries, and after-commit
-      // notifications stay inside the one authoritative batch fence. Derived
-      // indexes are scheduled after that fence so expensive embedding work
-      // cannot starve an unrelated blob writer.
+      // `ingestRecord`, NOT a shared batch-held `coordinatorOwnership`: each
+      // record acquires and releases its OWN short-lived connector-instance
+      // fence (in-process key gate, admission slot, and — on Postgres —
+      // its own transaction-scoped advisory lock). The `for` loop's own
+      // sequential `await` is what preserves per-request ordering; no
+      // lease needs to be held across records for that. This is what keeps
+      // an unrelated same-instance writer (e.g. a concurrent blob upload)
+      // from queuing behind the WHOLE batch's duration — see
+      // harden-connector-instance-write-fence-transaction-native.
       // biome-ignore lint/performance/noAwaitInLoops: Durable version allocation and same-instance state transitions are intentionally ordered.
-      outcome = await ingestRecordWithinCoordinator(storageTarget, record, perRecordOptions);
-      if (outcome.accepted && outcome.changed) {
-        changedRecords.push({ index, record });
+      outcome = await ingestRecord(storageTarget, record, perRecordOptions);
+      if (outcome.accepted && outcome.changed && typeof outcome.version === "number") {
+        changedRecords.push({ index, record, version: outcome.version });
       }
     } catch (err) {
       outcome = {
@@ -1870,6 +1913,7 @@ function toPostgresIngestOptions(options: RecordIngestOptions) {
   return {
     ...(attemptContext ? { attemptContext } : {}),
     ...(options.deviceReservation ? { deviceReservation: options.deviceReservation } : {}),
+    ...(options.requireConnectionAdmission ? { requireConnectionAdmission: options.requireConnectionAdmission } : {}),
     ...(options.runId ? { runId: options.runId } : {}),
   };
 }
@@ -1934,8 +1978,8 @@ async function ingestPostgresRecord(
     // Fire-and-forget, same reasoning as ingestSqliteRecord: this scope's
     // dirty flag (written inside postgresIngestRecord's own transaction) is
     // what makes it safe not to await this before returning the ack.
-    if (!options.deferIndexes) {
-      scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, options);
+    if (!options.deferIndexes && typeof outcome.version === "number") {
+      scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, outcome.version, options);
     }
     __invokeClientEventEnqueueHook({
       connectionId: connectorInstanceId,
@@ -2244,7 +2288,7 @@ async function ingestSqliteRecord(
   // and read-time self-heal both check it. See scheduleRecordIndexMaintenance
   // and server/stores/search-index-dirty-store.ts.
   if (!options.deferIndexes) {
-    scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, options);
+    scheduleRecordIndexMaintenance(connectorInstanceId, stream, storageTarget, record, outcome.version, options);
   }
 
   // Colocated with the retained-size delta applied in the committed
@@ -2277,6 +2321,7 @@ async function ingestSqliteRecord(
   const result: RecordIngestOutcome = {
     accepted: true,
     changed: true,
+    version: outcome.version,
   };
   if (outcome.selfHeal) {
     result.self_healed = true;
@@ -2286,16 +2331,25 @@ async function ingestSqliteRecord(
 
 /**
  * Repair lexical and semantic derived state for an already committed record.
- * This is deliberately version-free; callers holding an instance fence may
- * invoke it after a committed durable phase or to repair a no-op replay.
+ * `expectedVersion` MUST be the durable `records.version` this `record`/its
+ * `data` snapshot was read or committed at — every derived-index write below
+ * is gated on that version still being current at publish time (see
+ * `maintainRecordIndexesWithinPermit`'s header). Callers holding an instance
+ * fence may invoke this after a committed durable phase or to repair a no-op
+ * replay, as long as they pass that replay's own current version, not a
+ * stale one.
  */
 export async function maintainRecordIndexes(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
+  expectedVersion: number,
   options: RecordIngestOptions = {},
   generation: number = currentStorageGeneration()
 ): Promise<void> {
-  return await withIndexWork(() => maintainRecordIndexesWithinPermit(storageTarget, record, options), generation);
+  return await withIndexWork(
+    () => maintainRecordIndexesWithinPermit(storageTarget, record, expectedVersion, options),
+    generation
+  );
 }
 
 /**
@@ -2316,6 +2370,7 @@ function scheduleRecordIndexMaintenance(
   stream: string,
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
+  version: number,
   options: RecordIngestOptions,
   startAfter?: Promise<void>
 ): Promise<void> {
@@ -2343,6 +2398,7 @@ function scheduleRecordIndexMaintenance(
         await maintainRecordIndexes(
           storageTarget,
           record,
+          version,
           options.attemptContext ? { attemptContext: options.attemptContext } : {},
           scheduledGeneration
         );
@@ -2392,6 +2448,16 @@ export async function prepareDeviceFinalRecords(
   durablePrefixCount = 0,
   coordinatorOwnership?: ConnectorInstanceWriteOwnership
 ) {
+  // No fence acquisition at all when there is nothing to repair: a
+  // first-attempt (non-retried) batch has every plan entry's inputIndex >=
+  // durablePrefixCount, so prepareDeviceFinalRecordsWithinCoordinator would
+  // immediately no-op anyway (see its own `skipped.length === 0` check
+  // below). Checking here, before acquiring, keeps a first-attempt batch
+  // from taking an extra connector-instance fence acquisition for work it
+  // was always going to skip.
+  if (plan.every((entry) => entry.inputIndex >= durablePrefixCount)) {
+    return [...plan];
+  }
   const connectorId = connectorIdForStorageTarget(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   return await withConnectorInstanceWrite(
@@ -2406,10 +2472,18 @@ function authoritativeFinalRecord(
   current: CurrentRecordRow | null
 ): DeviceRecordPlanEntry {
   const input = entry.record;
+  // `current.version` becomes this entry's `expectedVersion` for derived-index
+  // publication: a repair rereads the row fresh, so the version it carries IS
+  // the version the repaired `data`/`op` snapshot below was read at. When no
+  // row exists at all, there is nothing to gate a delete-publish against (no
+  // durable row was ever the basis for this entry); `version` is left
+  // undefined and the final index-maintenance step treats that as "already
+  // absent, no gated repair possible or needed."
   if (!current || current.deleted) {
     return {
       ...entry,
       record: { ...input, data: {}, op: "delete" },
+      version: current?.version,
     };
   }
   let data = current.record_json;
@@ -2424,6 +2498,7 @@ function authoritativeFinalRecord(
       emitted_at: current.emitted_at ?? input.emitted_at,
       op: "upsert",
     },
+    version: current.version,
   };
 }
 
@@ -2491,17 +2566,92 @@ async function prepareDeviceFinalRecordsWithinCoordinator(
   });
 }
 
+/**
+ * Publishes lexical AND semantic derived state for one record inside ONE
+ * short atomic transaction, gated on a SINGLE re-read of `records.version`
+ * still equalling `expectedVersion` at the moment that transaction commits.
+ * `expectedVersion` MUST be the version this specific `record`/`data`
+ * snapshot was durably committed at or computed from — passing a stale or
+ * synthetic version defeats the guard.
+ *
+ * Both index families are re-checked and written against the SAME version
+ * read, inside the SAME transaction/critical section — never as two
+ * independently-gated publishes. Two separately-gated CAS transactions
+ * would each individually be correct in isolation, but a newer write's own
+ * publish could complete in the window BETWEEN them, leaving lexical and
+ * semantic pointing at two different versions of the same record (mixed
+ * derived state) even though neither transaction was individually
+ * incorrect. This is the ONLY correctness mechanism against the
+ * stale-overwrite race (an older write's derived-index publish finishing
+ * after a newer write's own publish already landed): scheduling order —
+ * which lane a caller enqueues onto, FIFO or otherwise — is irrelevant to
+ * correctness here and must not be relied on as a substitute. A caller MAY
+ * still use a lane for throughput/scheduling reasons (e.g. keeping slow
+ * embedding work off an unrelated writer's critical path); this function's
+ * own single CAS is what makes that safe regardless of enqueue/completion
+ * order.
+ *
+ * Sequence: expensive/unlocked compute first (lexical field extraction,
+ * `embedDocumentWithAdmission`) — see `computeLexicalFields`/
+ * `computeSemanticEntries` — THEN one short transaction that re-reads
+ * `records.version`/`deleted` once and, only if still current, applies both
+ * families' already-computed writes together before releasing. No provider
+ * I/O or embedding call ever runs inside that transaction.
+ *
+ * Returns "stale" (both families, since they share one gate) when the
+ * current `records` row has already moved past `expectedVersion` — treat as
+ * success, not failure: a newer writer's own publish is authoritative.
+ * Returns "published" when the transaction committed the writes.
+ */
+/**
+ * The version-CAS guard: an upsert publish is only current for a LIVE row
+ * at `expectedVersion`; a delete publish is only current for a TOMBSTONED
+ * row at `expectedVersion`. Version alone is a unique, monotonic-per-mutation
+ * token — `deleted` is written atomically WITH `version` in every durable
+ * mutation, so in principle "current version == expectedVersion" already
+ * implies "current deleted state matches whatever THAT mutation set." This
+ * explicit check makes that invariant load-bearing in the guard itself
+ * rather than an implicit property callers must never violate. Shared by
+ * both backend branches of `maintainRecordIndexesWithinPermit` — only the
+ * row-shape normalization differs (Postgres returns `version` as
+ * string|number and `deleted` as boolean; SQLite returns `version` as
+ * number and `deleted` as boolean|number). See
+ * harden-connector-instance-write-fence-transaction-native.
+ */
+function isRecordStillCurrent(
+  current: { version: number | string; deleted: boolean | number } | null | undefined,
+  expectedVersion: number,
+  op: "upsert" | "delete"
+): boolean {
+  return (
+    current !== null &&
+    current !== undefined &&
+    Number(current.version) === expectedVersion &&
+    Boolean(current.deleted) === (op === "delete")
+  );
+}
+
 async function maintainRecordIndexesWithinPermit(
   storageTarget: RecordStorageTarget,
   record: RecordEnvelope,
+  expectedVersion: number,
   options: RecordIngestOptions
 ): Promise<void> {
   const connectorId = connectorIdForStorageTarget(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const { stream, key, data, op = "upsert" } = record;
   const recordKey = encodeKey(key);
+  const attemptFacts = options.attemptContext?.streams?.[stream] ?? null;
+
+  const lexicalModule = await import(LEXICAL_INDEX_MODULE);
+  const semanticModule = await import(SEMANTIC_INDEX_MODULE);
+
+  let computedLexical: ComputedLexicalFields | null = null;
+  let computedSemantic: ComputedSemanticEntries | null = null;
   if (op === "delete") {
-    await lexicalIndexDelete({ connectorId, connectorInstanceId, recordKey, stream });
+    // No compute phase for a delete — the fault-hook points still fire at
+    // the same conceptual boundary (after each family's "work," before the
+    // atomic transaction), preserving existing tests' fault-injection shape.
     maybeRecordIndexFault("after-lexical-index", {
       connectorId,
       connectorInstanceId,
@@ -2509,7 +2659,6 @@ async function maintainRecordIndexesWithinPermit(
       recordKey,
       stream,
     });
-    await semanticIndexDelete({ connectorId, connectorInstanceId, recordKey, stream });
     maybeRecordIndexFault("after-semantic-index", {
       connectorId,
       connectorInstanceId,
@@ -2517,38 +2666,116 @@ async function maintainRecordIndexesWithinPermit(
       recordKey,
       stream,
     });
-    return;
+  } else {
+    // Expensive/unlocked compute — must complete BEFORE the transaction
+    // below. Neither call touches any table.
+    computedLexical = await lexicalModule.computeLexicalFields({
+      connectorId,
+      data,
+      declaredFields: options.attemptContext ? (attemptFacts?.lexicalFields ?? []) : undefined,
+      stream,
+    });
+    maybeRecordIndexFault("after-lexical-index", {
+      connectorId,
+      connectorInstanceId,
+      finalInputIndex: options.deviceFinalInputIndex ?? null,
+      recordKey,
+      stream,
+    });
+    computedSemantic = await semanticModule.computeSemanticEntries({
+      connectorId,
+      connectorInstanceId,
+      data,
+      declaredFields: options.attemptContext ? (attemptFacts?.semanticFields ?? []) : undefined,
+      recordKey,
+      stream,
+    });
+    maybeRecordIndexFault("after-semantic-index", {
+      connectorId,
+      connectorInstanceId,
+      finalInputIndex: options.deviceFinalInputIndex ?? null,
+      recordKey,
+      stream,
+    });
   }
-  const attemptFacts = options.attemptContext?.streams?.[stream] ?? null;
-  await lexicalIndexUpsert({
-    connectorId,
+
+  await maybeIndexPublishPhase("before-publish-transaction", {
     connectorInstanceId,
-    data,
-    declaredFields: options.attemptContext ? (attemptFacts?.lexicalFields ?? []) : undefined,
+    expectedVersion,
+    op,
     recordKey,
     stream,
   });
-  maybeRecordIndexFault("after-lexical-index", {
-    connectorId,
-    connectorInstanceId,
-    finalInputIndex: options.deviceFinalInputIndex ?? null,
-    recordKey,
-    stream,
-  });
-  await semanticIndexUpsert({
-    connectorId,
-    connectorInstanceId,
-    data,
-    declaredFields: options.attemptContext ? (attemptFacts?.semanticFields ?? []) : undefined,
-    recordKey,
-    stream,
-  });
-  maybeRecordIndexFault("after-semantic-index", {
-    connectorId,
-    connectorInstanceId,
-    finalInputIndex: options.deviceFinalInputIndex ?? null,
-    recordKey,
-    stream,
+
+  if (isPostgresStorageBackend()) {
+    return withPostgresTransaction(async (client) => {
+      const current = await client.query<{ version: string | number; deleted: boolean }>(
+        `SELECT version, deleted FROM records
+          WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
+          FOR UPDATE`,
+        [connectorInstanceId, stream, recordKey]
+      );
+      if (!isRecordStillCurrent(current.rows[0], expectedVersion, op)) {
+        return;
+      }
+      if (op === "delete") {
+        await lexicalModule.applyLexicalDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+        await semanticModule.applySemanticDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+        return;
+      }
+      if (computedLexical) {
+        await lexicalModule.applyLexicalFieldsWithClient(client, {
+          computed: computedLexical,
+          connectorId,
+          connectorInstanceId,
+          recordKey,
+          stream,
+        });
+      }
+      if (computedSemantic) {
+        await semanticModule.applySemanticEntriesWithClient(client, {
+          computed: computedSemantic,
+          connectorId,
+          connectorInstanceId,
+          recordKey,
+          stream,
+        });
+      }
+    });
+  }
+
+  return writeTransaction(() => {
+    const current = getOne<CurrentRecordRow>(referenceQueries.recordsIngestGetCurrentRecordState, [
+      connectorInstanceId,
+      stream,
+      recordKey,
+    ]);
+    if (!isRecordStillCurrent(current, expectedVersion, op)) {
+      return;
+    }
+    if (op === "delete") {
+      lexicalModule.applyLexicalDeleteSync({ connectorInstanceId, recordKey, stream });
+      semanticModule.applySemanticDeleteSync({ connectorId, connectorInstanceId, recordKey, stream });
+      return;
+    }
+    if (computedLexical) {
+      lexicalModule.applyLexicalFieldsSync({
+        computed: computedLexical,
+        connectorId,
+        connectorInstanceId,
+        recordKey,
+        stream,
+      });
+    }
+    if (computedSemantic) {
+      semanticModule.applySemanticEntriesSync({
+        computed: computedSemantic,
+        connectorId,
+        connectorInstanceId,
+        recordKey,
+        stream,
+      });
+    }
   });
 }
 
@@ -4652,6 +4879,21 @@ export async function readCommittedLocalCoverageDiagnosticsByConnectionIds(conne
  * Persist explicit provenance for a rejected internal write against the
  * current manifest generation. It never writes a record: retained history is
  * diagnostic/dormant unless this independent signal says otherwise.
+ *
+ * PRE-EXISTING, OUT-OF-SCOPE COORDINATOR BYPASS: the Postgres branch below
+ * never acquires the connector-instance write coordinator (no
+ * `withConnectorInstanceWrite`/`lockConnectorInstanceId`) — it substitutes a
+ * `SELECT ... FOR UPDATE` on the `connector_instances` row as its own
+ * transaction-scoped exclusion. This predates
+ * harden-connector-instance-write-fence-transaction-native and is
+ * deliberately left as-is: this function writes only diagnostic evidence
+ * (`manifest_write_violations`), never a durable record, so it was never
+ * exposed to the batch/`afterRecord` bounded-wait defect this change fixes.
+ * Its own `FOR UPDATE` row lock is transaction-scoped and auto-releasing,
+ * the same category of primitive as `pg_advisory_xact_lock`, so it does not
+ * share the defect either. The SQLite branch below DOES go through
+ * `withConnectorInstanceWrite` — this asymmetry is pre-existing and out of
+ * scope for this change, not newly introduced by it.
  */
 export async function recordCurrentGenerationUndeclaredWrite(
   storageTarget: RecordStorageTarget,
@@ -6049,8 +6291,9 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
         connectorInstanceId,
         reason: "record delete changed connection count/stream evidence",
       });
-      await lexicalIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
-      await semanticIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
+      if (typeof outcome.version === "number") {
+        await maintainRecordIndexes(storageTarget, { key: decodeKey(recordId), op: "delete", stream }, outcome.version);
+      }
     }
     return outcome;
   }
@@ -6060,7 +6303,7 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
   const now = nowIso();
   const changeHistoryLimit = getChangeHistoryLimit();
 
-  const outcome = writeTransaction<{ kind: "changed" | "noop" }>(() => {
+  const outcome = writeTransaction<{ kind: "changed"; version: number } | { kind: "noop" }>(() => {
     const current = getOne<CurrentRecordRow>(referenceQueries.recordsIngestGetCurrentRecordState, [
       connectorInstanceId,
       stream,
@@ -6128,7 +6371,7 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
       stream,
     });
 
-    return { kind: "changed" };
+    return { kind: "changed", version: nextVersion };
   });
 
   if (outcome.kind === "noop") {
@@ -6146,9 +6389,12 @@ async function deleteRecordWithinCoordinator(storageTarget: RecordStorageTarget,
 
   // Derived index maintenance runs after the durable commit. Failures here
   // are not allowed to retroactively roll back the durable record mutation;
-  // recovery is the search-index drift detector's job.
-  await lexicalIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
-  await semanticIndexDelete({ connectorId, connectorInstanceId, recordKey: recordId, stream });
+  // recovery is the search-index drift detector's job. Gated on
+  // `outcome.version` (this delete's own durable version) so a same-instance
+  // writer that races and lands a newer version for this key first is never
+  // clobbered by this delete's publish landing late — see
+  // `maintainRecordIndexesWithinPermit`'s header.
+  await maintainRecordIndexes(storageTarget, { key: decodeKey(recordId), op: "delete", stream }, outcome.version);
 
   return 1;
 }

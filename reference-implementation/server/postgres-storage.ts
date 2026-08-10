@@ -20,6 +20,11 @@ import {
   makeConnectorInstanceSourceBindingKey,
   nonEmptyString,
 } from "./connector-instance-utils.ts";
+import {
+  ConnectorInstanceAdmissionError,
+  connectorInstanceAdvisoryLockKey,
+  connectorInstanceLockWaitMs,
+} from "./connector-instance-write-coordinator.ts";
 import { canonicalConnectorKey } from "./connector-key.ts";
 import { bumpStorageGeneration } from "./storage-generation.ts";
 
@@ -65,8 +70,6 @@ interface StorageOptions {
 
 let activeBackend: StorageBackend = "sqlite";
 let pool: PgPool | null = null;
-let lockPool: PgPool | null = null;
-let lockPoolCapacity = 0;
 
 // Semantic embedding storage mode, detected at bootstrap. 'vector' when the
 // pgvector extension is available and `semantic_search_blob.embedding` carries
@@ -263,20 +266,6 @@ export function getPostgresPool(): PgPool {
     throw new Error("Postgres storage has not been initialized.");
   }
   return pool;
-}
-
-export function getPostgresLockPool(): PgPool {
-  if (!lockPool) {
-    throw new Error("Postgres lock pool has not been initialized.");
-  }
-  return lockPool;
-}
-
-export function getPostgresLockPoolCapacity() {
-  if (lockPoolCapacity <= 0) {
-    throw new Error("Postgres lock pool capacity has not been initialized.");
-  }
-  return lockPoolCapacity;
 }
 
 const POSTGRES_LEASE_PRIORITY_CURRENT = ["interactive", "background"];
@@ -575,10 +564,64 @@ function coerceByteCount(value: unknown): number | null {
   return n;
 }
 
-export async function withPostgresTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+// Postgres SQLSTATE raised when `SET LOCAL lock_timeout` expires waiting on
+// any lock, including `pg_advisory_xact_lock` — see acquireConnectorInstanceXactLock.
+const POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE = "55P03";
+
+/**
+ * Acquires a TRANSACTION-scoped connector-instance advisory lock
+ * (`pg_advisory_xact_lock`) as the first statement inside an open
+ * transaction. Unlike the session-scoped `pg_try_advisory_lock` this
+ * subsystem used before, the lock releases itself automatically at this
+ * transaction's COMMIT or ROLLBACK — no separate unlock call, no dedicated
+ * connection, no risk of leaking a lock if the process holding it dies
+ * mid-callback. It rides the SAME connection `withPostgresTransaction`
+ * already checked out, so a caller acquiring this lock costs zero additional
+ * Postgres pool connections.
+ *
+ * Bounded wait: `SET LOCAL lock_timeout` (scoped to this transaction only)
+ * makes the subsequent blocking `pg_advisory_xact_lock` call fail fast with
+ * SQLSTATE 55P03 instead of queuing indefinitely at the Postgres lock
+ * manager. Translated to `ConnectorInstanceAdmissionError` so callers keep
+ * today's external contract (HTTP 503, `connector_instance_busy`).
+ *
+ * Concurrent transactions locking the SAME connector instance serialize FIFO
+ * at the Postgres lock manager — identical ordering guarantee to the prior
+ * session-scoped design, just transaction-scoped instead of session-scoped.
+ * See harden-connector-instance-write-fence-transaction-native.
+ */
+async function acquireConnectorInstanceXactLock(client: PoolClient, connectorInstanceId: string): Promise<void> {
+  const key = connectorInstanceAdvisoryLockKey(connectorInstanceId);
+  await client.query(`SET LOCAL lock_timeout = '${connectorInstanceLockWaitMs()}ms'`);
+  try {
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [key]);
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE) {
+      // ConnectorInstanceAdmissionError's constructor takes no arguments
+      // (matching its every other throw site in
+      // connector-instance-write-coordinator.ts), so the original
+      // lock_timeout error is not chained via `cause` — it carries no
+      // information beyond the SQLSTATE already checked above.
+      // biome-ignore lint/style/useErrorCause: matches ConnectorInstanceAdmissionError's existing no-arg constructor contract.
+      throw new ConnectorInstanceAdmissionError();
+    }
+    throw err;
+  }
+}
+
+/** The client type `withPostgresTransaction`'s callback receives — shared so callers that thread a client through several functions (e.g. version-gated derived-index publish) don't each redeclare it. */
+export type PostgresTransactionClient = PoolClient;
+
+export async function withPostgresTransaction<T>(
+  fn: (client: PoolClient) => Promise<T>,
+  options?: { lockConnectorInstanceId?: string }
+): Promise<T> {
   const client = await getPostgresPool().connect();
   try {
     await client.query("BEGIN");
+    if (options?.lockConnectorInstanceId) {
+      await acquireConnectorInstanceXactLock(client, options.lockConnectorInstanceId);
+    }
     const value = await fn(client);
     await client.query("COMMIT");
     return value;
@@ -668,11 +711,7 @@ export async function initPostgresStorage(
     await closePostgresStorage();
   }
 
-  const lockPoolMax = Number.parseInt(process.env.PDPP_PG_INGEST_LOCK_POOL_SIZE || "", 10);
-  const max = Number.isInteger(lockPoolMax) && lockPoolMax > 0 ? lockPoolMax : 4;
   pool = new Pool({ connectionString: config.databaseUrl });
-  lockPool = new Pool({ connectionString: config.databaseUrl, max });
-  lockPoolCapacity = max;
   activeBackend = "postgres";
   // Storage-lifecycle fence (server/storage-generation.ts): a fresh pool
   // means any deferred work scheduled against a prior pool (this function's
@@ -686,10 +725,7 @@ export async function initPostgresStorage(
 
 export async function closePostgresStorage() {
   const current = pool;
-  const currentLockPool = lockPool;
   pool = null;
-  lockPool = null;
-  lockPoolCapacity = 0;
   activeBackend = "sqlite";
   semanticEmbeddingColumnMode = "jsonb";
   semanticIterativeScanSupported = false;
@@ -700,9 +736,6 @@ export async function closePostgresStorage() {
   bumpStorageGeneration();
   if (current) {
     await current.end();
-  }
-  if (currentLockPool) {
-    await currentLockPool.end();
   }
 }
 

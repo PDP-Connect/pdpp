@@ -1259,7 +1259,7 @@ test("a post-durable index retry repairs from the newer authoritative writer on 
   });
 });
 
-test("device batch and direct ingest serialize on one instance while a sibling instance overlaps", async () => {
+test("device batch's derived (embedding) section does not block a same-instance direct writer; a sibling instance overlaps too", async () => {
   const previousSemanticLimit = process.env.PDPP_SEMANTIC_WORK_LIMIT;
   process.env.PDPP_SEMANTIC_WORK_LIMIT = "2";
   const deviceEmbeddingEntered = deferred();
@@ -1300,7 +1300,7 @@ test("device batch and direct ingest serialize on one instance while a sibling i
         },
       ];
       let batch: Promise<JsonResponse> | null = null;
-      let sameInstanceDirect: Promise<void> | null = null;
+      let sameInstanceDirect: Promise<unknown> | null = null;
       try {
         batch = postJson(
           `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
@@ -1317,7 +1317,16 @@ test("device batch and direct ingest serialize on one instance while a sibling i
         );
         await deviceEmbeddingEntered.promise;
 
-        let sameInstanceFinished = false;
+        // By the time embedding is entered, the device batch's durable
+        // record write already committed (durable phase runs BEFORE the
+        // derived/embedding phase) and released its per-record fence — the
+        // fence is never held through embedding (see
+        // harden-connector-instance-write-fence-transaction-native). A
+        // same-instance direct writer for the SAME key must therefore be
+        // able to proceed and complete WITHOUT waiting for the device
+        // batch's still-in-flight embedding: this is the exact live-incident
+        // shape being fixed (GroupMe run_1786387569309_3: same-instance
+        // /v1/blobs 503s while a batch's derived work was still in flight).
         sameInstanceDirect = ingestRecord(
           { connector_id: device.connector_id, connector_instance_id: device.connector_instance_id },
           {
@@ -1326,9 +1335,8 @@ test("device batch and direct ingest serialize on one instance while a sibling i
             key: "same-key",
             stream: "messages",
           }
-        ).then(() => {
-          sameInstanceFinished = true;
-        });
+        );
+        await sameInstanceDirect;
 
         await ingestRecord(
           { connector_id: device.connector_id, connector_instance_id: "cin_device_direct_sibling" },
@@ -1339,22 +1347,42 @@ test("device batch and direct ingest serialize on one instance while a sibling i
             stream: "messages",
           }
         );
-        assert.equal(
-          sameInstanceFinished,
-          false,
-          "direct writer waits for the device batch’s complete derived section"
-        );
 
         releaseDeviceEmbedding.resolve();
         const result = await batch;
         assert.equal(result.status, 201);
-        await sameInstanceDirect;
+        // The durable RECORD row must reflect the direct writer (it
+        // committed after the device's own durable write, per-record
+        // fenced).
         const finalRecord = selectRow<{ record_json: string }>(
           `SELECT record_json FROM records
           WHERE connector_instance_id = ? AND stream = 'messages' AND record_key = 'same-key'`,
           device.connector_instance_id
         );
         assert.equal(JSON.parse(finalRecord.record_json).content, "direct after device");
+        // Mutation-discriminating oracle: the device batch's embedding was
+        // still in-flight (stalled on `releaseDeviceEmbedding`) when the
+        // direct writer's OWN durable write and index publication already
+        // ran and completed. If the device batch's LATER, stale publication
+        // (still holding "device blocked" in its captured snapshot) were
+        // allowed to overwrite the index after the direct writer's correct
+        // publication, this would read "device blocked" instead of "direct
+        // after device" — the derived-index staleness race this test
+        // exists to rule out (see `enqueueDeviceIndexMaintenance`'s header
+        // in records.ts). Awaiting `batch` above already waited for the
+        // device batch's own index-lane job to finish (the route awaits it
+        // before responding 201), so no extra drain is needed here.
+        const lexicalRow = getDb()
+          .prepare(
+            `SELECT text FROM lexical_search_index
+            WHERE connector_instance_id = ? AND stream = 'messages' AND record_key = 'same-key' AND field = 'content'`
+          )
+          .get(device.connector_instance_id) as { text: string } | undefined;
+        assert.equal(
+          mustExist(lexicalRow, "lexical index row must exist for same-key").text,
+          "direct after device",
+          "lexical index must reflect the WINNING (direct) write, not a stale device-batch snapshot"
+        );
       } finally {
         releaseDeviceEmbedding.resolve();
         await Promise.allSettled([batch, sameInstanceDirect].filter(Boolean));

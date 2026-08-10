@@ -42,6 +42,7 @@ import test from "node:test";
 import { closeDb, getDb, initDb } from "../server/db.ts";
 import { startServer } from "../server/index.ts";
 import { closePostgresStorage } from "../server/postgres-storage.ts";
+import { drainConnectorInstanceIndexWork } from "../server/records.ts";
 import { buildSearchPlanForGrant, parseSearchParams } from "../server/search.ts";
 
 // ─── harness ────────────────────────────────────────────────────────────────
@@ -686,6 +687,11 @@ if (POSTGRES_URL) {
         });
       }
       await ingest(rsUrl, ownerToken, connectorId, "posts", records);
+      // Derived-index publish is deferred/fire-and-forget (records.ts);
+      // asserting on lexical content requires draining the per-connector-
+      // instance index lane first, per drainConnectorInstanceIndexWork's own
+      // documented contract for this exact case.
+      await drainConnectorInstanceIndexWork();
 
       const { status, body } = await fetchJson<SearchListResponse>(
         `${rsUrl}/v1/search?q=${encodeURIComponent(term)}&limit=5`,
@@ -1533,8 +1539,8 @@ test("buildSearchPlanForGrant honors declared ∩ authorized; parseSearchParams 
  *   4. Issue /v1/search — the historical records must show up immediately.
  *
  * Without the registerConnector backfill hook, step (4) would return zero
- * hits because the FTS5 write-path maintenance (lexicalIndexUpsert) only
- * runs on subsequent record writes, not on records that already existed.
+ * hits because the FTS5 write-path maintenance only runs on subsequent
+ * record writes, not on records that already existed.
  */
 test("pre-existing records become searchable after lexical_fields are declared (no re-ingest)", async () => {
   // Bypass the standard withHarness — it pre-registers manifests with
@@ -1602,8 +1608,8 @@ test("pre-existing records become searchable after lexical_fields are declared (
     assert.equal(regV1.status, 201);
 
     // (2) Ingest records BEFORE the extension is enabled. These records
-    // never reach lexicalIndexUpsert because the manifest declares no
-    // lexical_fields at the time of write.
+    // never reach lexical write-path maintenance because the manifest
+    // declares no lexical_fields at the time of write.
     const ownerToken = await issueOwnerToken(asUrl);
     await ingest(rsUrl, ownerToken, CONNECTOR_ID, "posts", [
       {

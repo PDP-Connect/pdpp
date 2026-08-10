@@ -357,7 +357,7 @@ test("SQLite negative control: generic ingest remains ungated unless a lifecycle
     });
     const outcome = await ingestRecord(storageTarget, recordEnvelope("rec_negative_control"));
 
-    assert.deepEqual(outcome, { accepted: true, changed: true });
+    assert.deepEqual(outcome, { accepted: true, changed: true, version: 1 });
     assert.equal(sqliteRowCounts(connectorInstanceId).records, 1);
   } finally {
     closeDb();

@@ -86,13 +86,17 @@ import {
   postgresListSemanticStreamsForConnector,
   postgresSemanticIndexDelete,
   postgresSemanticIndexDeleteByConnectorStream,
-  postgresSemanticIndexInsertMany,
+  postgresSemanticIndexDeleteWithClient,
+  postgresSemanticIndexInsertManyGuarded,
+  postgresSemanticIndexPublishWithClient,
   postgresSemanticIndexUpsertMany,
   postgresSemanticRecordsPage,
   postgresSemanticSearch,
   postgresUpsertSemanticMeta,
+  postgresUpsertSemanticMetaWithClient,
   postgresUpsertSemanticProgress,
 } from "./postgres-search.ts";
+import type { PostgresTransactionClient } from "./postgres-storage.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.ts";
 import type { CompiledFilter } from "./record-filters.ts";
 import { compileRequestFilters, passesGrantRecordConstraints, passesRequestFilters } from "./record-filters.ts";
@@ -306,6 +310,17 @@ interface SemanticIndexEntry {
   recordKey: string;
   scopeKey: string;
   vector: SemanticVector;
+  /**
+   * The `records.version` this entry's source text was read at — set only
+   * by the backfill path (`rebuildSemanticIndexForStream`), which re-checks
+   * it immediately before writing so a row a concurrent delete/newer-write
+   * has since superseded is skipped rather than resurrected/overwritten.
+   * Unset (undefined) for the live per-record ingest CAS path, which is
+   * already atomically gated elsewhere (records.ts's
+   * maintainRecordIndexesWithinPermit) and does not need this check
+   * repeated here. See harden-connector-instance-write-fence-transaction-native.
+   */
+  version?: number;
 }
 
 interface SemanticIndex {
@@ -2094,6 +2109,199 @@ export async function semanticIndexUpsert({
   }
 }
 
+export interface ComputedSemanticEntries {
+  declared: string[];
+  entries: SemanticIndexEntry[];
+}
+
+/**
+ * Computes (embeds) the semantic entries a record's declared fields require
+ * — the expensive, unlocked step. Returns `null` when there is nothing to
+ * publish (no backend, or the stream declares no semantic fields), which the
+ * caller should treat as "nothing to gate/write," not as a failure.
+ *
+ * Deliberately does NOT write anything: callers combine this with
+ * `computeLexicalFields` (search.ts) and pass both to a SINGLE version-gated
+ * transaction (see `records.ts`'s `maintainRecordIndexesWithinPermit`) so
+ * lexical and semantic publish/delete land atomically together, gated on
+ * ONE re-read of `records.version` — never as two independently-gated CAS
+ * transactions, which would let a newer write's own publish interleave
+ * between this record's lexical and semantic halves and leave the two index
+ * families pointing at different versions. See
+ * harden-connector-instance-write-fence-transaction-native.
+ */
+export async function computeSemanticEntries({
+  connectorId,
+  connectorInstanceId,
+  stream,
+  recordKey,
+  data,
+  declaredFields,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+  data?: SemanticRecordData | null;
+  declaredFields?: string[];
+}): Promise<ComputedSemanticEntries | null> {
+  if (!backend) {
+    return null;
+  }
+  const declared = declaredFields === undefined ? await getStreamSemanticFields(connectorId, stream) : declaredFields;
+  if (!declared) {
+    return null;
+  }
+  const entries = (
+    await Promise.all(
+      declared.map(async (field) => {
+        const text = normalizeSemanticEmbeddingInput(data?.[field]);
+        if (!text) {
+          return null;
+        }
+        return {
+          connectorId,
+          connectorInstanceId,
+          recordKey,
+          scopeKey: encodeScopeKey(stream, field),
+          vector: await embedDocumentWithAdmission(text),
+        } satisfies SemanticIndexEntry;
+      })
+    )
+  ).filter((entry): entry is SemanticIndexEntry => entry !== null);
+  return { declared, entries };
+}
+
+/**
+ * Applies already-computed semantic entries for a Postgres backend, using
+ * the CALLER's existing transaction client — no version check, no
+ * transaction of its own. The caller (`records.ts`) owns the single
+ * version-gated transaction both this and the lexical equivalent write into.
+ */
+export async function applySemanticEntriesWithClient(
+  client: PostgresTransactionClient,
+  {
+    connectorId,
+    connectorInstanceId,
+    stream,
+    recordKey,
+    computed,
+  }: {
+    connectorId: string;
+    connectorInstanceId: string;
+    stream: string;
+    recordKey: string;
+    computed: ComputedSemanticEntries;
+  }
+): Promise<void> {
+  if (!backend) {
+    return;
+  }
+  await postgresSemanticIndexPublishWithClient(client, {
+    connectorId,
+    connectorInstanceId,
+    entries: computed.entries,
+    recordKey,
+    stream,
+  });
+  if (computed.entries.length > 0) {
+    await postgresUpsertSemanticMetaWithClient(client, {
+      connectorId,
+      connectorInstanceId,
+      dimensions: backend.dimensions(),
+      distanceMetric: backend.distanceMetric(),
+      fieldsFingerprint: fingerprintSemanticFields(computed.declared),
+      modelId: backendStorageIdentity(backend),
+      stream,
+    });
+  }
+}
+
+/** Postgres client-scoped semantic delete — see `applySemanticEntriesWithClient`'s header. */
+export async function applySemanticDeleteWithClient(
+  client: PostgresTransactionClient,
+  { connectorInstanceId, stream, recordKey }: { connectorInstanceId: string; stream: string; recordKey: string }
+): Promise<void> {
+  if (!backend) {
+    return;
+  }
+  await postgresSemanticIndexDeleteWithClient(client, { connectorInstanceId, recordKey, stream });
+}
+
+/**
+ * Applies already-computed semantic entries synchronously for the SQLite
+ * backend, from INSIDE the caller's own `writeTransaction` callback (must be
+ * fully synchronous — better-sqlite3 transactions cannot contain `await`).
+ * See `applySemanticEntriesWithClient`'s header for why this is not
+ * independently version-gated.
+ */
+export function applySemanticEntriesSync({
+  connectorId,
+  connectorInstanceId,
+  stream,
+  recordKey,
+  computed,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+  computed: ComputedSemanticEntries;
+}): void {
+  if (!backend) {
+    return;
+  }
+  const index = ensureVectorIndex();
+  if (!index) {
+    return;
+  }
+  const activeBackend = backend;
+  // Delete only this logical record's stale vectors after embeddings
+  // succeed. Deleting by scope here would wipe every row for the field.
+  index.deleteRecord({ connectorId, connectorInstanceId, recordKey, stream });
+  if (computed.entries.length > 0 && typeof index.upsertMany === "function") {
+    index.upsertMany(computed.entries);
+  } else {
+    for (const entry of computed.entries) {
+      index.upsert(entry);
+    }
+  }
+  if (computed.entries.length > 0) {
+    exec(referenceQueries.searchSemanticMetaUpsert, [
+      connectorInstanceId,
+      connectorId,
+      stream,
+      fingerprintSemanticFields(computed.declared),
+      backendStorageIdentity(activeBackend),
+      activeBackend.dimensions(),
+      activeBackend.distanceMetric(),
+      new Date().toISOString(),
+    ]);
+  }
+}
+
+/** SQLite synchronous semantic delete — see `applySemanticEntriesSync`'s header. */
+export function applySemanticDeleteSync({
+  connectorId,
+  connectorInstanceId,
+  stream,
+  recordKey,
+}: {
+  connectorId: string;
+  connectorInstanceId: string;
+  stream: string;
+  recordKey: string;
+}): void {
+  if (!backend) {
+    return;
+  }
+  const index = ensureVectorIndex();
+  if (!index) {
+    return;
+  }
+  index.deleteRecord({ connectorId, connectorInstanceId, recordKey, stream });
+}
+
 export async function semanticIndexDelete({
   connectorId,
   connectorInstanceId,
@@ -2244,6 +2452,7 @@ async function buildSemanticIndexEntries(
     } catch {
       continue;
     }
+    const version = Number(row.version);
     for (const field of declaredFields) {
       const text = normalizeSemanticEmbeddingInput(data?.[field]);
       if (!text) {
@@ -2260,12 +2469,55 @@ async function buildSemanticIndexEntries(
           recordKey: row.record_key,
           scopeKey,
           vector: await embedDocumentWithAdmission(text),
+          version,
         });
       });
     }
   }
   await embeddingChain;
   return entries;
+}
+
+/**
+ * SQLite backfill guard: re-checks each entry's captured `version` against
+ * the CURRENT `records` row, immediately before the upsert call, and drops
+ * any entry a concurrent delete/newer-write has since superseded. Mirrors
+ * `postgresSemanticIndexInsertManyGuarded`'s JOIN check — SQLite has no
+ * single-statement equivalent (no cross-table JOIN inside an INSERT INTO a
+ * vec0 virtual table), so the check runs as an explicit read immediately
+ * before the write instead, both inside the same synchronous call stack
+ * (single-writer SQLite has no concurrent-transaction window here).
+ */
+function liveEntriesOnly(
+  entries: readonly SemanticIndexEntry[],
+  connectorInstanceId: string,
+  stream: string
+): SemanticIndexEntry[] {
+  return entries.filter((entry) => {
+    if (typeof entry.version !== "number") {
+      return true;
+    }
+    const current = dbGetOne<{ deleted: boolean | number; version: number }>(
+      referenceQueries.recordsIngestGetCurrentRecordState,
+      [connectorInstanceId, stream, entry.recordKey]
+    );
+    return current !== null && !current.deleted && current.version === entry.version;
+  });
+}
+
+async function upsertLiveSqliteEntries(
+  vectorIndex: SemanticIndex,
+  entries: readonly SemanticIndexEntry[],
+  connectorInstanceId: string,
+  stream: string
+): Promise<void> {
+  if (entries.length === 0) {
+    return;
+  }
+  const current = liveEntriesOnly(entries, connectorInstanceId, stream);
+  if (current.length > 0) {
+    await vectorIndex.upsertMany(current);
+  }
 }
 
 async function rebuildSemanticIndexForStream({
@@ -2329,9 +2581,9 @@ async function rebuildSemanticIndexForStream({
     );
     const nextIndexed = indexed + entries.length;
     if (usePostgres) {
-      await postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId, entries });
-    } else if (entries.length > 0) {
-      await vectorIndex.upsertMany(entries);
+      await postgresSemanticIndexInsertManyGuarded({ connectorId, connectorInstanceId, entries, stream });
+    } else {
+      await upsertLiveSqliteEntries(vectorIndex, entries, connectorInstanceId, stream);
     }
     if (currentProgressJob) {
       currentProgressJob = updateBackfillJob(currentProgressJob, {
