@@ -45,7 +45,7 @@ import { fileURLToPath } from "node:url";
 
 import { RUNTIME_GENERIC_REASON_CODES } from "../../../reference-implementation/runtime/display-messages.ts";
 import { connectorReasonDisplayMessages } from "./reason-display-messages.ts";
-import { scanConnectorForReasonEmissions } from "./reason-emission-scan.ts";
+import { DETAIL_GAP_MESSAGE_REASON_LITERALS, scanConnectorForReasonEmissions } from "./reason-emission-scan.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CONNECTORS_DIR = join(PACKAGE_ROOT, "connectors");
@@ -402,6 +402,114 @@ test("falsifiability: a DETAIL_GAP-shaped reason: literal resolves (the real gma
         literalReasons.includes("detail_gap_specific_reason"),
         "a reason: literal passed as an argument feeding a DETAIL_GAP-shaped object must be discovered"
       );
+    }
+  );
+});
+
+test('DETAIL_GAP_MESSAGE_REASON_LITERALS matches the real DetailGapMessage["reason"] protocol union exactly (compile-time exhaustiveness, confirmed at runtime)', () => {
+  // The real enforcement is compile-time: DETAIL_GAP_MESSAGE_REASON_KEYS is
+  // declared `satisfies Record<DetailGapMessage["reason"], true>` in
+  // reason-emission-scan.ts, so `tsc` rejects the file outright if the real
+  // union in connector-runtime-protocol.ts ever widens (a key goes missing)
+  // or narrows (an extra key appears) — verified directly by temporarily
+  // mutating connector-runtime-protocol.ts's `reason` union to add/remove a
+  // member and re-running `tsc --noEmit`; both directions produced a real
+  // compiler error naming the exact drifted key, then were reverted. This
+  // test is the runtime-visible half: it pins the array `Object.keys(...)`
+  // derives from that single compile-time-checked object, so a `node --test`
+  // run also has a concrete assertion (not just "trust the compile step ran
+  // clean") that the resolved literal set is exactly today's real union.
+  assert.deepEqual(
+    [...DETAIL_GAP_MESSAGE_REASON_LITERALS].sort(),
+    ["rate_limited", "retry_exhausted", "temporary_unavailable", "upstream_pressure"].sort(),
+    'DETAIL_GAP_MESSAGE_REASON_LITERALS must equal DetailGapMessage["reason"]\'s real members exactly ' +
+      "— if this fails, the protocol union changed and DETAIL_GAP_MESSAGE_REASON_KEYS should already have " +
+      "failed to compile before this test ever ran"
+  );
+  for (const code of DETAIL_GAP_MESSAGE_REASON_LITERALS) {
+    assert.ok(
+      RUNTIME_GENERIC_REASON_CODES.has(code),
+      `DetailGapMessage["reason"] member ${code} must be RI-generic — the type-annotation resolution path ` +
+        "(resolveTypeAnnotationLiterals) is only sound because every member of this closed union already is"
+    );
+  }
+});
+
+test('falsifiability: a DetailGapMessage["reason"]-typed parameter resolves via the compile-time-derived literal set, not a hand-maintained duplicate', () => {
+  // Mirrors amazon's buildOrderDetailGap / chase's buildAccountDetailGap /
+  // usaa's buildAccountTransactionDetailGap: `reason` is typed against the
+  // real cross-file DetailGapMessage["reason"] union, and the runtime value
+  // traces back through an unresolvable call chain — the type annotation is
+  // the ONLY thing that makes this resolvable at all.
+  withSyntheticConnectorFile(
+    "index.ts",
+    [
+      "import type { DetailGapMessage } from '../../src/connector-runtime-protocol.ts';",
+      "function buildGap(outcome: { reason: DetailGapMessage['reason'] }) {",
+      "  return { type: 'DETAIL_GAP', reason: outcome.reason };",
+      "}",
+      "function emitGap(outcome: { reason: DetailGapMessage['reason'] }) {",
+      "  return buildGap(outcome);",
+      "}",
+      "export { emitGap };",
+      "",
+    ].join("\n"),
+    (dir) => {
+      const { literalReasons, unresolved } = scanConnectorForReasonEmissions(dir);
+      assert.deepEqual(unresolved, []);
+      assert.deepEqual(
+        [...literalReasons].sort(),
+        [...DETAIL_GAP_MESSAGE_REASON_LITERALS].sort(),
+        "a DetailGapMessage['reason']-typed parameter must resolve to exactly the compile-time-derived literal set"
+      );
+    }
+  );
+});
+
+test("falsifiability: a SpreadElement with no own literal reason: property in an in-scope emission object is unresolved, not silently skipped (the real google_messages ...outcome.skip gap)", () => {
+  withSyntheticConnectorFile(
+    "index.ts",
+    [
+      "function emitSkip(outcome: { skip?: { reason: string; message: string } }) {",
+      "  if (outcome.skip) {",
+      "    return { type: 'SKIP_RESULT', stream: 'messages', ...outcome.skip };",
+      "  }",
+      "}",
+      "export { emitSkip };",
+      "",
+    ].join("\n"),
+    (dir) => {
+      const { literalReasons, unresolved } = scanConnectorForReasonEmissions(dir);
+      assert.deepEqual(literalReasons, [], "a spread-contributed reason must never be silently accepted as resolved");
+      assert.equal(unresolved.length, 1, "a spread that is the sole possible source of reason: must be unresolved");
+      assert.match(unresolved[0]?.snippet ?? "", /\.\.\.outcome\.skip/);
+    }
+  );
+});
+
+test("falsifiability: a SpreadElement alongside an own literal reason: property is correctly NOT flagged (the real usaa ...(diagnostic ? {...} : {}) pattern)", () => {
+  withSyntheticConnectorFile(
+    "index.ts",
+    [
+      "function emitSkip(diagnostic: Record<string, unknown> | null) {",
+      "  return {",
+      "    type: 'SKIP_RESULT',",
+      "    reason: 'session_dead_reauth_failed',",
+      "    message: 'USAA session expired',",
+      "    ...(diagnostic ? { diagnostics: { browser_surface: diagnostic } } : {}),",
+      "  };",
+      "}",
+      "export { emitSkip };",
+      "",
+    ].join("\n"),
+    (dir) => {
+      const { literalReasons, unresolved } = scanConnectorForReasonEmissions(dir);
+      assert.deepEqual(
+        unresolved,
+        [],
+        "a spread that cannot possibly contribute reason: (an own literal reason: already exists) must not be flagged"
+      );
+      assert.deepEqual(literalReasons, ["session_dead_reauth_failed"]);
     }
   );
 });

@@ -68,6 +68,24 @@
  *          argument passed to that parameter position across the
  *          function's same-file call sites (the google_maps
  *          `emitRequestedSkip` pattern).
+ *        - A `SpreadElement` inside an in-scope emission object literal
+ *          that has NO OWN literal `reason:` property (`{ type:
+ *          "SKIP_RESULT", stream, ...outcome.skip }`, the google_messages
+ *          pattern, where the spread is the only possible source of
+ *          `reason`) is fail-closed: reported as `unresolved`, one entry
+ *          per spread, never silently skipped. A spread alongside an own
+ *          literal `reason:` property (usaa's `{ type: "SKIP_RESULT",
+ *          reason: "session_dead_reauth_failed", ...(diagnostic ? {
+ *          diagnostics: {...} } : {}) }`, where the spread only ever
+ *          contributes an unrelated field) is correctly NOT flagged — the
+ *          own `reason:` property already resolves normally. Resolving
+ *          through a flagged spread would need a further hop into the
+ *          spread source's own shape on top of the existing one-hop bound;
+ *          rather than grow the bound to chase one shape, an authoring
+ *          change (destructure the reason at the call site into a literal
+ *          `reason:` property, or spread into a variable the scanner can
+ *          already resolve) is the fix, matching every other unresolved
+ *          case's remedy.
  *        - Anything beyond that one hop — a second-order call, a cross-file
  *          import, a template literal, a binary `+`, or a parameter whose
  *          call-site argument is itself not a literal — is FAIL-CLOSED:
@@ -89,6 +107,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { parse } from "@babel/parser";
+import type { DetailGapMessage } from "./connector-runtime-protocol.ts";
 
 export interface ReasonEmissionScanResult {
   /** Reason codes resolved (directly or via one hop) to a finite literal set. */
@@ -201,6 +220,10 @@ function isIdentifier(node: Node): node is IdentifierNode {
 
 function isCallExpression(node: Node): node is CallExpressionNode {
   return node.type === "CallExpression";
+}
+
+function isSpreadElement(node: Node): boolean {
+  return node.type === "SpreadElement";
 }
 
 /** Unwraps a function parameter node to its bound `Identifier` — either the parameter itself (`reason: T`) or, for a parameter with a default value (`reason: T = "x"`), the `AssignmentPattern`'s `left` (which is what carries the type annotation). `null` for a destructuring/other parameter shape. */
@@ -626,10 +649,10 @@ function resolveComputedMapAccess(mapName: string, program: Node): string[] | nu
  * value of this type can be anything outside the literal set, however deep
  * the runtime expression producing it is (an async classifier's return
  * type, a narrowed union member, etc.) — the protocol-level
- * `DetailGapMessage["reason"]` union (`reason-display-messages.test.ts`
- * imports it as `DETAIL_GAP_REASON_LITERALS`) is the motivating case: every
- * one of its four members is already RI-generic, so a `reason:
- * DetailGapMessage["reason"]`-typed parameter can never carry a
+ * `DetailGapMessage["reason"]` union (`DETAIL_GAP_MESSAGE_REASON_LITERALS`
+ * below, compile-time-checked exhaustive against the real type) is the
+ * motivating case: every one of its four members is already RI-generic, so
+ * a `reason: DetailGapMessage["reason"]`-typed parameter can never carry a
  * connector-specific code, no matter how many hops its runtime value takes
  * to compute. Returns `null` for any other annotation shape (a bare `string`,
  * an imported/cross-file type, a non-literal union member) — those stay
@@ -656,22 +679,30 @@ function resolveTypeAnnotationLiterals(typeAnnotationNode: Node | undefined, pro
 }
 
 /**
- * `DetailGapMessage["reason"]` (imported cross-file from
- * `src/connector-runtime-protocol.ts`, so its own definition is outside this
- * scanner's same-file resolution bound) is a fixed, closed protocol union —
- * pinned here by literal name/shape match, not re-derived via a real
- * cross-file type resolver. `DETAIL_GAP_REASON_LITERALS` in this file's
- * sibling test independently reads the actual interface property from
- * `connector-runtime-protocol.ts` and asserts it matches this constant
- * exactly, so a change to the real union (widen, narrow, rename) fails that
- * test rather than silently going stale here.
+ * `DetailGapMessage["reason"]` (imported cross-file, by TYPE only, from
+ * `src/connector-runtime-protocol.ts`) is a fixed, closed protocol union.
+ * `resolveDetailGapMessageReasonIndexedAccess` below still matches the
+ * `DetailGapMessage["reason"]` type-annotation SHAPE by name/string-literal
+ * comparison at the AST level (this scanner's normal same-file resolution
+ * bound genuinely cannot follow a cross-file type import at runtime) — but
+ * the VALUE SET it resolves to is no longer a hand-maintained array that
+ * could silently drift from the real union. `DETAIL_GAP_MESSAGE_REASON_KEYS`
+ * is `satisfies Record<DetailGapMessage["reason"], true>`: TypeScript
+ * itself rejects this file at compile time if a key is missing (the real
+ * union widens) or extra (the real union narrows) — drift is a `tsc`
+ * failure, not a silent gap. `Object.keys(...)` then derives the runtime
+ * array from that single compile-time-checked object, so there is exactly
+ * one source of truth for "what are DetailGapMessage's reason values,"
+ * never two lists that could disagree.
  */
-export const DETAIL_GAP_MESSAGE_REASON_LITERALS = [
-  "rate_limited",
-  "retry_exhausted",
-  "temporary_unavailable",
-  "upstream_pressure",
-];
+const DETAIL_GAP_MESSAGE_REASON_KEYS = {
+  rate_limited: true,
+  retry_exhausted: true,
+  temporary_unavailable: true,
+  upstream_pressure: true,
+} satisfies Record<DetailGapMessage["reason"], true>;
+
+export const DETAIL_GAP_MESSAGE_REASON_LITERALS: readonly string[] = Object.keys(DETAIL_GAP_MESSAGE_REASON_KEYS);
 
 function resolveDetailGapMessageReasonIndexedAccess(node: Node): string[] | null {
   const { objectType, indexType } = node as { objectType?: Node; indexType?: Node };
@@ -882,9 +913,52 @@ interface ScanContext {
   unresolved: { file: string; line: number; snippet: string }[];
 }
 
-/** Resolves and records every `reason:` property of one already-confirmed emission object literal, pushing into `ctx`'s literalReasons/unresolved accumulators. */
+/**
+ * Resolves and records every `reason:` property of one already-confirmed
+ * emission object literal, pushing into `ctx`'s literalReasons/unresolved
+ * accumulators.
+ *
+ * A `SpreadElement` is only a completeness risk when this object has NO OWN
+ * literal `reason:` property — that's the only shape where the spread could
+ * be the sole source of `reason` (`{ type: "SKIP_RESULT", stream,
+ * ...outcome.skip }`, the google_messages pattern, where `outcome.skip` is
+ * `{ reason: string; message: string } | undefined`). A spread that
+ * contributes some OTHER field alongside an own literal `reason:` (usaa's
+ * `{ type: "SKIP_RESULT", reason: "session_dead_reauth_failed", message,
+ * ...(diagnostic ? { diagnostics: {...} } : {}) }`, where the spread only
+ * ever adds `diagnostics`) is provably irrelevant to `reason` and must not
+ * be flagged — an own literal `reason:` property always wins JS's
+ * last-key-wins spread semantics only if the spread appears BEFORE it in
+ * source order; this scanner does not attempt to reason about spread/key
+ * ordering (a spread placed AFTER an own `reason:` property could in
+ * principle override it) because no real emission site in this codebase
+ * does that — the two live shapes are "spread is the only source" (flag)
+ * and "spread never touches reason" (own `reason:` present, ignore) — so
+ * checking "does an own literal `reason:` property exist at all" is the
+ * bound that actually needs to hold today, not "did the spread come first."
+ * Resolving through a flagged spread would need a further hop into the
+ * spread source's own shape (a same-file variable's initializer, then that
+ * initializer's own possibly-multi-branch return shape) — deeper
+ * indirection than any other resolution path in this file handles. Rather
+ * than grow the bound to chase it, this stays fail-closed: reported as
+ * `unresolved`, one entry per spread, never silently skipped.
+ */
 function recordEmissionObjectReasons(n: ObjectExpressionNode, enclosingFunction: Node | null, ctx: ScanContext): void {
+  const hasOwnReasonProperty = n.properties.some(
+    (prop) => isObjectProperty(prop) && objectPropertyKeyName(prop) === "reason"
+  );
+
   for (const prop of n.properties) {
+    if (isSpreadElement(prop)) {
+      if (!hasOwnReasonProperty) {
+        ctx.unresolved.push({
+          file: ctx.absPath,
+          line: nodeLine(prop),
+          snippet: ctx.raw.split("\n")[nodeLine(prop) - 1]?.trim() ?? "",
+        });
+      }
+      continue;
+    }
     if (objectPropertyKeyName(prop) !== "reason" || !isObjectProperty(prop)) {
       continue;
     }
