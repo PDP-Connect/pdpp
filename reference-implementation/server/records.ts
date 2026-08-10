@@ -1506,15 +1506,25 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
 
 /**
  * Refuse a record/blob write for a `connector_instance_id` whose
- * `connector_instances` row is gone — closing a delete/write TOCTOU the
- * coordinator fence's mutual exclusion alone does not close: the fence only
- * serializes a delete against a write for the SAME identity, it does not
- * reject a write that acquires the fence AFTER a delete already committed
- * and removed the row. Neither the SQLite nor the Postgres schema declares a
- * foreign key from `records`/`record_changes`/`blobs`/`blob_bindings` to
- * `connector_instances`, so without this check a post-delete write silently
+ * `connector_instances` row is gone, OR whose row exists but is `revoked` —
+ * closing a delete/write and a revoke/write TOCTOU the coordinator fence's
+ * mutual exclusion alone does not close: the fence only serializes a
+ * delete/revoke against a write for the SAME identity, it does not reject a
+ * write that acquires the fence AFTER a delete or revoke already committed.
+ * Neither the SQLite nor the Postgres schema declares a foreign key from
+ * `records`/`record_changes`/`blobs`/`blob_bindings` to `connector_instances`,
+ * so without the existence half of this check a post-delete write silently
  * resurrects a live `records` row for a tombstoned, no-longer-existent
- * connection.
+ * connection; without the status half, a post-revoke write silently lands
+ * for a connection the owner explicitly stopped.
+ *
+ * `active` and `draft` both admit writes — `draft` is the pre-activation
+ * state a static-secret connection's first successful ingest must itself be
+ * able to reach (activateDraft flips draft -> active only AFTER a write
+ * succeeds). `paused` is deliberately left unaffected: it is a
+ * scheduler/refresh-run policy signal, not a per-write admission gate, and
+ * narrowing it without evidence a fresh defect exists there is out of scope
+ * for this fix.
  *
  * `ingestRecord`/`ingestRecords` stay a connector-agnostic durable storage
  * primitive for direct callers by default (internal repair paths, and
@@ -1535,19 +1545,34 @@ function maybeRecordIndexFault(point: string, ctx: HookContext): void {
  * this fix.
  *
  * Reuses `ConnectorInstanceResolutionError`'s `connector_instance_not_found`
- * code — the same typed outcome `deleteConnection`'s own ownership check
- * raises — so callers already handling that code (e.g. a route's
- * `handleError` mapping to 404) require no new branch.
+ * code for a missing row — the same typed outcome `deleteConnection`'s own
+ * ownership check raises — so callers already handling that code (e.g. a
+ * route's `handleError` mapping to 404) require no new branch. A revoked row
+ * raises the distinct `connector_instance_not_writable` code, since the row
+ * DOES exist and conflating the two would misreport a revoke as a delete.
+ * See harden-connector-instance-write-fence-transaction-native.
  */
 export async function assertConnectorInstanceWritable(connectorInstanceId: string): Promise<void> {
-  const exists = isPostgresStorageBackend()
-    ? (await postgresQuery("SELECT 1 FROM connector_instances WHERE connector_instance_id = $1", [connectorInstanceId]))
-        .rows.length > 0
-    : Boolean(getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]));
-  if (!exists) {
+  const status = isPostgresStorageBackend()
+    ? ((
+        await postgresQuery<{ status: string }>(
+          "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+          [connectorInstanceId]
+        )
+      ).rows[0]?.status ?? null)
+    : ((getOne(referenceQueries.connectorInstancesGetById, [connectorInstanceId]) as { status?: string } | null)
+        ?.status ?? null);
+  if (status === null) {
     throw new ConnectorInstanceResolutionError(
       "connector_instance_not_found",
       `Connector instance '${connectorInstanceId}' does not exist; it may have been deleted concurrently with this write.`,
+      { connectorInstanceId }
+    );
+  }
+  if (status === "revoked") {
+    throw new ConnectorInstanceResolutionError(
+      "connector_instance_not_writable",
+      `Connector instance '${connectorInstanceId}' is revoked; it may have been revoked concurrently with this write.`,
       { connectorInstanceId }
     );
   }

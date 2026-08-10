@@ -1798,30 +1798,55 @@ async function assertPostgresRunStillAdmitted(
 
 /**
  * Opt-in re-check, inside the SAME locked transaction as the mutation it
- * guards, that the `connector_instances` row still exists before writing.
- * Mirrors `assertPostgresRunStillAdmitted`'s shape and rationale: the
+ * guards, that the `connector_instances` row still exists AND is in a
+ * writable lifecycle state before writing. Mirrors
+ * `assertPostgresRunStillAdmitted`'s shape and rationale: the
  * transaction-scoped advisory lock (`lockConnectorInstanceId`) only
  * serializes THIS transaction against another writer for the SAME
  * connector instance — it does not, on its own, reject a write whose
  * transaction starts fresh AFTER a concurrent delete already committed and
- * removed the row. Re-checking inside every locked transaction (not once
+ * removed the row, or after a concurrent revoke already committed and
+ * flipped its status. Re-checking inside every locked transaction (not once
  * before a whole batch) closes that TOCTOU for EVERY record in a batch, not
  * only the first — see server/records.ts's `assertConnectorInstanceWritable`
  * for the pre-transaction-native single-check precedent this replaces.
- * See harden-connector-instance-write-fence-transaction-native.
+ *
+ * `revoked` is the only status this rejects (2026-08-10 revise): revoke is
+ * the terminal "stop collecting" signal (server/routes/owner-connection-revoke.ts),
+ * so a write racing a concurrent revoke must not durably land after the
+ * owner revoked it. `active` and `draft` both admit writes -- `draft` is the
+ * pre-activation state a static-secret connection's first successful ingest
+ * itself must be able to reach (activateDraft flips draft -> active only
+ * AFTER a write succeeds), so rejecting `draft` here would make that
+ * connect path unable to ever complete. `paused` is deliberately left
+ * unaffected: it is a scheduler/refresh-run policy signal (whether to
+ * auto-run collection), not a per-write admission gate, and no caller of
+ * this assertion has ever depended on `paused` refusing writes -- narrowing
+ * to that state without evidence a fresh defect exists there is out of
+ * scope for this fix. See harden-connector-instance-write-fence-transaction-native.
  */
 async function assertPostgresConnectorInstanceWritable(
   client: PostgresTransactionClient,
   connectorInstanceId: string
 ): Promise<void> {
-  const result = await client.query("SELECT 1 FROM connector_instances WHERE connector_instance_id = $1", [
-    connectorInstanceId,
-  ]);
-  if (result.rowCount === 0) {
+  const {
+    rows: [row],
+  } = await client.query<{ status: string }>(
+    "SELECT status FROM connector_instances WHERE connector_instance_id = $1",
+    [connectorInstanceId]
+  );
+  if (!row) {
     const err: PgQueryError = new Error(
       `Connector instance '${connectorInstanceId}' does not exist; it may have been deleted concurrently with this write.`
     );
     err.code = "connector_instance_not_found";
+    throw err;
+  }
+  if (row.status === "revoked") {
+    const err: PgQueryError = new Error(
+      `Connector instance '${connectorInstanceId}' is revoked; it may have been revoked concurrently with this write.`
+    );
+    err.code = "connector_instance_not_writable";
     throw err;
   }
 }

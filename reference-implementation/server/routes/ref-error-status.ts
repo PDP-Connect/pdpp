@@ -101,6 +101,7 @@ export const codeToStatus: Readonly<Record<string, number>> = {
   connector_instance_inactive: 400,
   connector_instance_not_found: 404,
   connector_instance_not_revoked: 409,
+  connector_instance_not_writable: 409,
   connector_instance_owner_mismatch: 403,
   connector_instance_selector_required: 400,
   connector_instance_store_required: 500,

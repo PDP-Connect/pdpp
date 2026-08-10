@@ -609,6 +609,31 @@ async function acquireConnectorInstanceXactLock(client: PoolClient, connectorIns
   }
 }
 
+/**
+ * Test-only direct-invocation seam for `acquireConnectorInstanceXactLock`
+ * (2026-08-10 red-team follow-up): the prior dedicated-lock-pool design had
+ * a deterministic default-CI test (`__setConnectorInstancePostgresLockPoolForTest`)
+ * proving exactly-once advisory-lock acquisition against a fake pool/client.
+ * That whole mechanism was removed with the dedicated pool itself, leaving
+ * NO default-CI coverage of this module's real acquisition sequence (the
+ * `SET LOCAL lock_timeout` statement, the `pg_advisory_xact_lock` call with
+ * the derived key, and the `55P03` -> `ConnectorInstanceAdmissionError`
+ * translation) — only the dedicated-Postgres-gated tests in
+ * connector-instance-write-coordinator.test.ts exercise it, and those are
+ * skipped by default. Exporting the function itself (rather than an
+ * injectable fake pool) lets a test drive it directly against a fake
+ * `PoolClient`-shaped object with no real Postgres connection at all, which
+ * is both simpler than resurrecting a fake-pool seam and more precisely
+ * targeted at the one thing this module actually still does: the per-call
+ * (not per-batch) lock statement sequence.
+ */
+export function __acquireConnectorInstanceXactLockForTest(
+  client: PoolClient,
+  connectorInstanceId: string
+): Promise<void> {
+  return acquireConnectorInstanceXactLock(client, connectorInstanceId);
+}
+
 /** The client type `withPostgresTransaction`'s callback receives — shared so callers that thread a client through several functions (e.g. version-gated derived-index publish) don't each redeclare it. */
 export type PostgresTransactionClient = PoolClient;
 

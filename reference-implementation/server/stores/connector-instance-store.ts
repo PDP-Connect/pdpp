@@ -1891,15 +1891,28 @@ export function createPostgresConnectorInstanceStore() {
     // single conditional UPDATE keyed on `status = 'draft'` is the no-op /
     // concurrency guard: a row that is missing or not draft is untouched. See
     // add-static-secret-owner-session-connect-path design Decision 5.
+    // Transaction-scoped connector-instance advisory lock (2026-08-10,
+    // harden-connector-instance-write-fence-transaction-native): this is
+    // promoteSetupBinding's sibling branch in the same activateDraftConnection
+    // control-flow and was missed by that callsite audit -- an unfenced write
+    // here could race deleteConnection for the SAME connector instance
+    // (delete's row-erasing transaction and this UPDATE with no ordering
+    // guarantee between them). Locking matches every other Postgres mutator
+    // in this file.
     async activateDraft(
       connectorInstanceId: string,
       { now }: { now?: string } = {}
     ): Promise<ConnectorInstance | null> {
-      await postgresQuery(
-        `UPDATE connector_instances
-         SET status = 'active', updated_at = $1, revoked_at = NULL
-         WHERE connector_instance_id = $2 AND status = 'draft'`,
-        [now ?? new Date().toISOString(), connectorInstanceId]
+      await withPostgresTransaction(
+        async (client: PostgresTransactionClient) => {
+          await client.query(
+            `UPDATE connector_instances
+             SET status = 'active', updated_at = $1, revoked_at = NULL
+             WHERE connector_instance_id = $2 AND status = 'draft'`,
+            [now ?? new Date().toISOString(), connectorInstanceId]
+          );
+        },
+        { lockConnectorInstanceId: connectorInstanceId }
       );
       return await this.get(connectorInstanceId);
     },
