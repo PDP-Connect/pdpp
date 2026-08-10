@@ -1117,7 +1117,7 @@ export interface ScheduledTransactionsBudgetFact {
 }
 
 export async function collectScheduledTransactions(ctx: BudgetCtx): Promise<ScheduledTransactionsBudgetFact> {
-  const { budgetId, budgetOrdinal = 0, token, state, newState, emit, trackAndEmit, progress } = ctx;
+  const { budgetId, budgetOrdinal = 0, token, newState, emit, trackAndEmit, progress } = ctx;
   // Always perform full enumeration (never pass server_knowledge). One request per budget
   // returns the full inventory, guaranteeing enumeratedFresh = true.
   await progress("Fetching YNAB scheduled transactions window", {
