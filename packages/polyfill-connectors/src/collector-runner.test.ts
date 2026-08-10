@@ -4827,8 +4827,10 @@ test("nextRetryTime excludes leased rows (belong to active drainers)", async () 
     sourceInstanceId: srcId,
   });
 
-  const claimed = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId, limit: 2 });
-  assert.ok(claimed.length >= 2, "should claim both items");
+  const [claimedReady] = outbox.claimReady({ holder: "h1", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimedReady);
+  const [claimedLeased] = outbox.claimReady({ holder: "h2", leaseMs: 60_000, sourceInstanceId: srcId });
+  assert.ok(claimedLeased);
 
   const nextRetry = outbox.nextRetryTime({ sourceInstanceId: srcId });
   assert.ok(nextRetry, "nextRetryTime should return the ready item's time");
