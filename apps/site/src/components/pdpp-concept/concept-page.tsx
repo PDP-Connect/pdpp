@@ -31,7 +31,8 @@ export function PdppConceptPage({ children, home = false, className }: ConceptPa
         "lg:has-[>[data-slot=pdpp-concept-rail]]:grid-cols-[var(--spacing-rail)_minmax(0,1fr)]",
         "lg:has-[>[data-slot=pdpp-concept-rail]]:gap-x-gutter",
         // Short pages (home / 404): trim doc bottom pad
-        home && "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5!",
+        home &&
+          "**:data-[slot=pdpp-concept-doc]:pt-7! **:data-[slot=pdpp-concept-doc]:pb-5! max-md:**:data-[slot=pdpp-concept-doc]:pt-0!",
         className
       )}
       data-slot="pdpp-concept-page"
