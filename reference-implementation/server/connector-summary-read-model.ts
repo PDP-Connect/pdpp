@@ -222,9 +222,53 @@ function parseTerminalProjection(value: unknown): ConnectorListSummaryTerminalPr
 // the *Sync SQLite helpers reconcile uses to stay inside one better-sqlite3
 // transaction, and readConnectionRecordRecencyEvidence (out of this tranche).
 // ---------------------------------------------------------------------------
+
+/**
+ * Normalizes `markDirty`'s optional `sourceEventSeq` to a value both backends
+ * bind identically: a finite number, or SQL `NULL` meaning "leave the stored
+ * `source_event_seq` alone" (every caller's UPDATE wraps it in
+ * `COALESCE(?, source_event_seq)`).
+ *
+ * Both backends previously inlined their own guard and they did not agree.
+ * Postgres guarded `null` AND `undefined` — it had to, because `Number(undefined)`
+ * is `NaN` and Postgres's bigint column rejects it outright ("invalid input
+ * syntax for type bigint: 'NaN'"), throwing before the UPDATE ran and turning
+ * every omitted-`sourceEventSeq` dirty-mark into a silent no-op (swallowed by
+ * `markConnectorSummaryEvidenceDirty`'s best-effort catch). SQLite guarded only
+ * `null`, so it bound `NaN` — which better-sqlite3 coerces to SQL NULL, making
+ * `COALESCE` preserve the prior value. That accident is why the drift never
+ * produced a SQLite symptom, and why no test caught it.
+ *
+ * The genuine cross-backend divergence is a non-nullish UNPARSEABLE value
+ * (`"abc"`, `{}`): SQLite silently preserves the prior seq, Postgres throws and
+ * loses the whole dirty mark. Both now agree on the SQLite-shaped outcome —
+ * preserve, never throw — because a dirty marker is a best-effort latency hint
+ * and must never be the reason a connection fails to converge. Fail-open here
+ * is strictly safer than fail-closed: the reconcile sweep still repairs the row.
+ */
+export function normalizeSourceEventSeq(sourceEventSeq: unknown): number | null {
+  if (sourceEventSeq === null || sourceEventSeq === undefined) {
+    return null;
+  }
+  const parsed = Number(sourceEventSeq);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// ---------------------------------------------------------------------------
 function createConnectorSummaryStore() {
   if (isPostgresStorageBackend()) {
     return {
+      async listDirtyInstanceIds({ limit }: { limit: number }) {
+        const result = await postgresQuery(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT $1`,
+          [limit]
+        );
+        return (result.rows as Row[]).map((row) => String(row.connector_instance_id));
+      },
       async listEvidence({
         connectorInstanceId,
         connectorInstanceIds,
@@ -362,8 +406,7 @@ function createConnectorSummaryStore() {
         // best-effort catch, so every omitted-sourceEventSeq dirty-mark call
         // was a complete no-op against Postgres. Nullish (both `null` and
         // `undefined`) must bind SQL `NULL`, not `NaN`.
-        const boundSourceEventSeq =
-          sourceEventSeq === null || sourceEventSeq === undefined ? null : Number(sourceEventSeq);
+        const boundSourceEventSeq = normalizeSourceEventSeq(sourceEventSeq);
         await postgresQuery(
           `UPDATE connector_summary_evidence
               SET dirty = 1,
@@ -380,6 +423,18 @@ function createConnectorSummaryStore() {
     };
   }
   return {
+    listDirtyInstanceIds({ limit }: { limit: number }) {
+      const rows = getDb()
+        .prepare(
+          `SELECT connector_instance_id
+             FROM connector_summary_evidence
+            WHERE dirty <> 0
+            ORDER BY connector_instance_id ASC
+            LIMIT ?`
+        )
+        .all(limit) as Row[];
+      return rows.map((row) => String(row.connector_instance_id));
+    },
     listEvidence({
       connectorInstanceId,
       connectorInstanceIds,
@@ -526,7 +581,7 @@ function createConnectorSummaryStore() {
                   source_event_seq = COALESCE(?, source_event_seq)
             WHERE connector_instance_id = ?`
         )
-        .run(sanitized, sourceEventSeq === null ? null : Number(sourceEventSeq), connectorInstanceId);
+        .run(sanitized, normalizeSourceEventSeq(sourceEventSeq), connectorInstanceId);
     },
   };
 }
@@ -2807,6 +2862,268 @@ export async function reconcileDirtyConnectorSummaryEvidence(
 // before the loop begins, and an unscoped fold can exceed it afterward").
 // ---------------------------------------------------------------------------
 
+/**
+ * One bounded page of connections whose evidence is durably marked dirty,
+ * for the sweep's dirty-priority tranche. Best-effort by construction: the
+ * cursor walk is the correctness backstop, so a read failure here degrades
+ * to "no acceleration this round" (the walk still converges) rather than failing
+ * the whole maintenance tick.
+ */
+async function readDirtyInstanceIdPage(limit: number): Promise<readonly string[]> {
+  try {
+    return await createConnectorSummaryStore().listDirtyInstanceIds({ limit });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The keyset cursor walk over the canonical `connector_instances` set — the
+ * sweep's correctness backstop, which eventually covers EVERY connection
+ * regardless of any dirty marker. Each page runs the same scoped
+ * discovery+fold+repair+prune barrier (`observeConnectorSummaryEvidence`) a
+ * scoped read-time consumer would, so the unit is bounded by `pageSize`, not
+ * by N. The deadline is checked BETWEEN pages so a page already starting
+ * always gets its full remaining-budget allotment.
+ */
+async function runCursorWalk(args: {
+  readonly cursor: string | null;
+  readonly deadline: number;
+  readonly foldEventCap: { maxEvents?: number };
+  readonly maxPages: number;
+  readonly pageSize: number;
+}): Promise<{
+  readonly anyFoldIncomplete: boolean;
+  readonly coveredCompleteSet: boolean;
+  readonly cursor: string | null;
+  readonly discovered: number;
+  readonly repaired: number;
+  readonly skipped: number;
+}> {
+  const { cursor: initialCursor, deadline, maxPages, pageSize } = args;
+  let cursor = initialCursor;
+  let discovered = 0;
+  let repaired = 0;
+  let skipped = 0;
+  let pages = 0;
+  let coveredCompleteSet = false;
+  let anyFoldIncomplete = false;
+
+  for (;;) {
+    // Strictly deadline-gated, including the first page: `maxDurationMs` is a
+    // genuine bound on TOTAL wall-clock work, so no page — the most expensive
+    // unit here (discovery + fold + repair over `pageSize` connections) — may
+    // BEGIN after expiry. The walk's guarantee that clean rows still converge
+    // comes from running BEFORE any acceleration under the round's one
+    // deadline (see `runBoundedSummaryEvidenceSweep`), never from starting late.
+    if (pages >= maxPages || sweepNow() >= deadline) {
+      break;
+    }
+    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
+    const pageIds = await readInstanceIdPage(cursor, pageSize);
+    testOnlySweepDiscoveryHook("walk_page_ids");
+    if (pageIds.length === 0) {
+      coveredCompleteSet = true;
+      break;
+    }
+    // The discovery read above is itself awaited work and can consume what
+    // remained of the budget. Re-check BEFORE the expensive unit: a page whose
+    // observe would begin after expiry must not begin at all, and must not
+    // count as a processed page. The cursor is deliberately left where it was,
+    // so the next round revisits exactly these connections rather than
+    // skipping past a page nothing ever repaired.
+    if (sweepNow() >= deadline) {
+      break;
+    }
+    pages += 1;
+    // The cursor position BEFORE this page — the resume point when this
+    // page's OWN fold is incomplete, so a follow-up call revisits exactly
+    // these connections rather than advancing past them.
+    const cursorBeforeCurrentPage = cursor;
+    const pageStartedAt = Date.now();
+    const pageResult = await observeConnectorSummaryEvidence(pageIds, {
+      deadline,
+      ...args.foldEventCap,
+    });
+    discovered += pageIds.length;
+    repaired += pageResult.reconciled;
+    skipped += pageResult.skipped;
+    emitScopedObservationUnit(pageResult, pageIds.length, pageStartedAt);
+    if (pageResult.incomplete) {
+      // This page's fold did not fully converge within its budget — the
+      // sweep as a whole is incomplete regardless of how many pages
+      // followed, and the resume point is BEFORE this page (not past it).
+      anyFoldIncomplete = true;
+      cursor = cursorBeforeCurrentPage;
+      break;
+    }
+    cursor = pageIds.at(-1) ?? cursor;
+    if (pageIds.length < pageSize) {
+      // Short page: this was genuinely the last page of the complete set.
+      coveredCompleteSet = true;
+      break;
+    }
+  }
+
+  return { anyFoldIncomplete, coveredCompleteSet, cursor, discovered, repaired, skipped };
+}
+
+/**
+ * Complete-set orphan pruning, run only when a sweep genuinely covered every
+ * page AND every fold converged.
+ *
+ * The sweep's own pages already scoped-pruned every id they discovered was
+ * gone. What per-page scoped pruning CANNOT catch: an evidence row whose
+ * `connector_instance_id` was NEVER discovered by any page at all —
+ * impossible if every page's ids came from the same live instance table,
+ * EXCEPT for evidence rows that are pure orphans (their `connector_instances`
+ * row is gone, so no page ever produced their id). A genuinely complete run
+ * is safe to complete-prune exactly like `reconcileConnectorSummaryEvidence(null)`
+ * does, using the same complete live-instance read and prune primitive.
+ */
+async function pruneCompleteSetOrphans(): Promise<number> {
+  const liveInstanceRows = await readAllInstanceIdsForPruning();
+  return await pruneOrphanedEvidenceComplete(liveInstanceRows);
+}
+
+/**
+ * Emits the reconcile observation for one scoped observation unit — a
+ * dirty-priority tranche or a cursor-walk page. Both run the identical barrier
+ * (`observeConnectorSummaryEvidence`) over a bounded id set, so both report
+ * the same shape; the sole difference is which ids the unit covered.
+ */
+function emitScopedObservationUnit(
+  result: Awaited<ReturnType<typeof observeConnectorSummaryEvidence>>,
+  scopeSize: number,
+  startedAt: number
+): void {
+  emitConnectorSummaryReconcileObservation({
+    candidateReasonCounts: result.candidateReasonCounts,
+    candidatesInspected: result.candidatesInspected,
+    durationMs: Date.now() - startedAt,
+    failed: result.failed,
+    failureClasses: result.failureClasses,
+    incomplete: result.incomplete,
+    repairDurationMs: result.repairDurationMs,
+    repaired: result.reconciled,
+    resumePending: result.resumeAfterSeq !== null,
+    scopeKind: "scoped",
+    scopeSize,
+    skipped: result.skipped,
+    terminalFoldEventsRead: result.terminalFoldEventsRead,
+    terminalFoldMinimumCheckpointAfter: result.terminalFoldMinimumCheckpointAfter,
+    terminalFoldMinimumCheckpointBefore: result.terminalFoldMinimumCheckpointBefore,
+    terminalFoldParticipants: result.terminalFoldParticipants,
+    terminalFoldZeroProgress: result.terminalFoldZeroProgress,
+  });
+}
+
+/**
+ * Services ONE bounded page of durably-dirty connections, through the SAME
+ * scoped discovery+fold+repair+prune barrier (`observeConnectorSummaryEvidence`)
+ * the walk's own pages use.
+ *
+ * Runs AFTER the cursor walk, from whatever budget the walk left, under the
+ * round's one absolute deadline. That ordering is what makes the walk's turn
+ * structural: this tranche can never consume the round before the correctness
+ * backstop has had its chance. It is pure acceleration — it shortens the wait
+ * for a freshly-dirtied row from "whenever the cursor wraps" to "this round"
+ * whenever the round has time left, and is skipped entirely when it does not.
+ * Bounded by construction: at most `limit` connections.
+ *
+ * It deliberately does NOT de-duplicate against the page the walk just
+ * processed. An earlier revision read the walk's next page to skip overlapping
+ * ids, which made sense only while this tranche ran FIRST. With the walk
+ * running first that read is both obsolete and counterproductive: rows the
+ * walk genuinely repaired are no longer dirty, so they cannot be selected
+ * here anyway, while a row re-dirtied DURING the walk is precisely the row
+ * worth accelerating — and the skip would have suppressed it. Dropping the
+ * read removes one query and one post-await gate per round.
+ *
+ * The one awaited discovery read here is itself work that can consume what is
+ * left, so `deadline` is re-checked after it and immediately before the
+ * observe — a started unit may finish, but none may BEGIN late.
+ */
+async function runDirtyPriorityAcceleration(args: {
+  readonly deadline: number;
+  readonly limit: number;
+  readonly foldEventCap: { maxEvents?: number };
+}): Promise<{
+  readonly discovered: number;
+  readonly incomplete: boolean;
+  readonly repaired: number;
+  readonly skipped: number;
+}> {
+  const empty = { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
+  if (sweepNow() >= args.deadline) {
+    return empty;
+  }
+  const dirtyIds = await readDirtyInstanceIdPage(args.limit);
+  testOnlySweepDiscoveryHook("acceleration_dirty_ids");
+  if (dirtyIds.length === 0) {
+    return empty;
+  }
+  // The discovery read above is itself work that can consume the budget, so
+  // the deadline is re-checked here — immediately before the expensive unit
+  // and never assumed to still hold from the entry check. Bailing costs
+  // nothing durable: the dirty markers stay set, so the next round selects
+  // exactly these ids again.
+  if (sweepNow() >= args.deadline) {
+    return empty;
+  }
+  const startedAt = Date.now();
+  const result = await observeConnectorSummaryEvidence(dirtyIds, {
+    deadline: args.deadline,
+    ...args.foldEventCap,
+  });
+  emitScopedObservationUnit(result, dirtyIds.length, startedAt);
+  return {
+    discovered: dirtyIds.length,
+    incomplete: result.incomplete,
+    repaired: result.reconciled,
+    skipped: result.skipped,
+  };
+}
+
+/**
+ * Test-only deterministic seam fired immediately AFTER each awaited discovery
+ * read inside the sweep's two tranches, and a complete no-op in production
+ * (`__sweepDiscoveryHook` is never assigned outside a test).
+ *
+ * Exists so a test can prove the "no work unit BEGINS after expiry" contract
+ * without sleeps or wall-clock races: the hook advances an injected clock past
+ * the deadline at exactly the point a real slow discovery read would have
+ * consumed the budget, and the test then asserts that no observe/fold ran.
+ * `__testOnlySetSweepDiscoveryHook` is the only intended installer.
+ */
+let __sweepDiscoveryHook: ((point: "acceleration_dirty_ids" | "walk_page_ids") => void) | null = null;
+
+export function __testOnlySetSweepDiscoveryHook(
+  hook: ((point: "acceleration_dirty_ids" | "walk_page_ids") => void) | null
+): void {
+  __sweepDiscoveryHook = hook;
+}
+
+function testOnlySweepDiscoveryHook(point: "acceleration_dirty_ids" | "walk_page_ids"): void {
+  __sweepDiscoveryHook?.(point);
+}
+
+/**
+ * The sweep's clock, injectable for tests. Production always reads the real
+ * one; a test can substitute a controllable clock so deadline behavior is
+ * deterministic rather than a wall-clock race.
+ * `__testOnlySetSweepClock` is the only intended installer.
+ */
+let __sweepClock: (() => number) | null = null;
+
+export function __testOnlySetSweepClock(clock: (() => number) | null): void {
+  __sweepClock = clock;
+}
+
+function sweepNow(): number {
+  return __sweepClock ? __sweepClock() : Date.now();
+}
+
 export interface BoundedSweepResult {
   /** Total instances discovered+repaired+considered across every page processed this call. */
   readonly discovered: number;
@@ -2817,8 +3134,13 @@ export interface BoundedSweepResult {
    * converged (Sol fourth-verdict P1.2: "gate prunedComplete on both a
    * complete canonical connection census and complete folds") — the caller
    * should NOT treat this as a correctness gate (design.md "Startup is
-   * acceleration, not authority": the unbounded read-time barrier always
-   * covers whatever this sweep missed). `resumeAfterId`, when set, is the
+   * acceleration, not authority"). NOTE (2026-08-10): this used to read
+   * "the unbounded read-time barrier always covers whatever this sweep
+   * missed" — that barrier was removed from ordinary GET by the 2026-07-29
+   * terminal-gate revision, so the periodic sweep IS the only repair path
+   * now. What covers a missed page is the NEXT tick (resuming from
+   * `resumeAfterId`), plus the dirty-priority tranche for work that arrived
+   * since. `resumeAfterId`, when set, is the
    * exact cursor position to resume from on a follow-up call — for a
    * fold-incomplete page this is the id BEFORE that page (not past it), so
    * a follow-up call revisits the SAME still-incomplete page's connections
@@ -2885,101 +3207,112 @@ export async function runBoundedSummaryEvidenceSweep(options: {
   readonly afterId?: string | null;
   readonly maxEventsPerFold?: number;
 }): Promise<BoundedSweepResult> {
-  const deadline = Date.now() + options.maxDurationMs;
+  const deadline = sweepNow() + options.maxDurationMs;
   const pageSize = options.pageSize ?? 25;
   const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
 
   let discovered = 0;
   let repaired = 0;
   let skipped = 0;
-  let cursor = options.afterId ?? null;
-  // The cursor position BEFORE the page currently being processed — used
-  // as the resume point when that page's OWN fold is incomplete, so a
-  // follow-up call revisits this exact page's connections rather than
-  // advancing past them (the connection-page cursor alone cannot express
-  // "this page started but its fold did not finish").
-  let cursorBeforeCurrentPage = cursor;
-  let pages = 0;
-  let coveredCompleteSet = false;
-  let anyFoldIncomplete = false;
 
-  for (;;) {
-    if (Date.now() >= deadline || pages >= maxPages) {
-      break;
-    }
-    // biome-ignore lint/performance/noAwaitInLoops: Work is intentionally sequential to preserve ordering and state transitions.
-    const pageIds = await readInstanceIdPage(cursor, pageSize);
-    if (pageIds.length === 0) {
-      coveredCompleteSet = true;
-      break;
-    }
-    pages += 1;
-    cursorBeforeCurrentPage = cursor;
-    // Full discovery + fold + repair + scoped-prune for exactly this page —
-    // the same barrier a scoped read-time consumer runs, so the whole unit
-    // is bounded by pageSize, not by N. The page receives the sweep's one
-    // absolute cooperative deadline; it never fabricates another duration.
-    const pageStartedAt = Date.now();
-    const pageResult = await observeConnectorSummaryEvidence(pageIds, {
-      deadline,
-      ...(typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {}),
-    });
-    discovered += pageIds.length;
-    repaired += pageResult.reconciled;
-    skipped += pageResult.skipped;
-    emitConnectorSummaryReconcileObservation({
-      candidateReasonCounts: pageResult.candidateReasonCounts,
-      candidatesInspected: pageResult.candidatesInspected,
-      durationMs: Date.now() - pageStartedAt,
-      failed: pageResult.failed,
-      failureClasses: pageResult.failureClasses,
-      incomplete: pageResult.incomplete,
-      repairDurationMs: pageResult.repairDurationMs,
-      repaired: pageResult.reconciled,
-      resumePending: pageResult.resumeAfterSeq !== null,
-      scopeKind: "scoped",
-      scopeSize: pageIds.length,
-      skipped: pageResult.skipped,
-      terminalFoldEventsRead: pageResult.terminalFoldEventsRead,
-      terminalFoldMinimumCheckpointAfter: pageResult.terminalFoldMinimumCheckpointAfter,
-      terminalFoldMinimumCheckpointBefore: pageResult.terminalFoldMinimumCheckpointBefore,
-      terminalFoldParticipants: pageResult.terminalFoldParticipants,
-      terminalFoldZeroProgress: pageResult.terminalFoldZeroProgress,
-    });
-    if (pageResult.incomplete) {
-      // This page's fold did not fully converge within its budget — the
-      // sweep as a whole is incomplete regardless of how many pages
-      // followed, and the resume point is BEFORE this page (not past it),
-      // so a follow-up call revisits exactly the connections that did not
-      // finish rather than skipping them.
-      anyFoldIncomplete = true;
-      cursor = cursorBeforeCurrentPage;
-      break;
-    }
-    cursor = pageIds.at(-1) ?? cursor;
-    if (pageIds.length < pageSize) {
-      // Short page: this was genuinely the last page of the complete set.
-      coveredCompleteSet = true;
-      break;
-    }
-  }
+  // Dirty-priority acceleration (2026-08-10). The cursor walk is the
+  // correctness backstop — it eventually covers every connection — but it is
+  // ordered by `connector_instance_id`, NOT by when work arrived, so a
+  // connection invalidated a moment ago waits for the cursor to wrap the whole
+  // fleet: `ceil(N/pageSize)` ticks, entirely independent of when its run
+  // completed. That is the live UAT defect: write invalidation set `dirty = 1`
+  // correctly and nothing ever CONSUMED it (`dirty` is read only by
+  // `classifyCandidate`, to classify an id the walk already selected — never
+  // to select one), so a completed run's facts stayed unreadable on the
+  // owner's normal list/detail read.
+  //
+  // One bounded bite of the dirty set is serviced each round, through the SAME
+  // scoped discovery+fold+repair+prune barrier the walk's own pages use — no
+  // new engine, no polling, no read-path write. It is a LATENCY hint on the
+  // same contract as every other dirty marker here, never a correctness gate:
+  // a lost or never-set dirty flag still converges via the walk.
+  // Threaded identically into both tranches; resolved once so the two call
+  // sites cannot drift.
+  const foldEventCap: { maxEvents?: number } =
+    typeof options.maxEventsPerFold === "number" ? { maxEvents: options.maxEventsPerFold } : {};
 
-  let prunedComplete = false;
-  if (coveredCompleteSet && !anyFoldIncomplete) {
-    // The sweep's own pages already scoped-pruned every id they discovered
-    // was gone. What per-page scoped pruning CANNOT catch: an evidence row
-    // whose connector_instance_id was NEVER discovered by any page at all —
-    // impossible if every page's ids came from the same live instance
-    // table, EXCEPT for evidence rows that are pure orphans (their
-    // connector_instances row is gone, so no page ever produced their id).
-    // A genuinely complete run (every page covered, none skipped, every
-    // fold genuinely converged) is safe to complete-prune exactly like
-    // `reconcileConnectorSummaryEvidence(null)` does, using the same
-    // complete live-instance read and prune primitive.
-    const liveInstanceRows = await readAllInstanceIdsForPruning();
-    const dropped = await pruneOrphanedEvidenceComplete(liveInstanceRows);
-    repaired += dropped;
-    prunedComplete = true;
+  // ORDER: correctness backstop FIRST, acceleration second, both under the ONE
+  // absolute `deadline`.
+  //
+  // With cooperative, non-preemptible units you cannot simultaneously have
+  // dirty-FIRST ordering, a hard total wall-clock bound, and a guaranteed
+  // cursor turn every round: a tranche unit that overruns consumes the round,
+  // and the only ways to still give the walk a turn are to break the caller's
+  // bound (a fresh post-overrun deadline — what an earlier revision did, and
+  // it silently let a round exceed `maxDurationMs` by an unbounded amount) or
+  // to preempt a running unit (no such machinery here, and adding a second
+  // timer would be worse).
+  //
+  // Running the walk first dissolves the conflict instead of trading one
+  // contract away for another. What that buys, stated precisely:
+  //
+  //   - FIRST OPPORTUNITY every tick. The walk is offered the round's budget
+  //     before any acceleration can touch it. This is structural, not bought
+  //     with extra wall-clock.
+  //   - DURABLE RESUME. A round that makes no progress leaves the cursor
+  //     exactly where it was, so nothing is skipped and the next tick retries
+  //     the same page.
+  //   - EVENTUAL CONVERGENCE under repeated normally-budgeted ticks, given
+  //     folds that are finite and progressing.
+  //
+  // It does NOT guarantee a page per round, and this comment previously
+  // claimed it did. A zero or tiny budget, a discovery read that consumes the
+  // deadline, or a fold that legitimately reports incomplete each produce a
+  // round with no cursor advance — all correct behavior under a hard total
+  // deadline. Convergence is therefore a property of repeated adequately
+  // budgeted ticks, not an arithmetic bound on round count.
+  //
+  // The acceleration tranche then runs only from time that genuinely remains,
+  // under the same deadline.
+  //
+  // What this costs: under sustained overload the dirty-first ACCELERATION is
+  // sacrificed. Freshly-dirtied rows still converge — the walk repairs them
+  // when the cursor reaches them, exactly as it does for stale-but-not-dirty
+  // rows — they just lose the latency win. That is the right thing to give up
+  // first: acceleration is a latency hint, while the cursor turn is
+  // correctness and `maxDurationMs` is the caller's contract.
+  const walk = await runCursorWalk({
+    cursor: options.afterId ?? null,
+    deadline,
+    foldEventCap,
+    maxPages,
+    pageSize,
+  });
+  discovered += walk.discovered;
+  repaired += walk.repaired;
+  skipped += walk.skipped;
+
+  // Acceleration, from whatever the walk left. `runDirtyPriorityAcceleration` performs
+  // its own entry and post-await deadline checks, so an exhausted round makes
+  // it a no-op; the synchronous guard here keeps a spent round from paying even
+  // one microtask yield.
+  const acceleration =
+    sweepNow() < deadline
+      ? await runDirtyPriorityAcceleration({
+          deadline,
+          foldEventCap,
+          limit: pageSize,
+        })
+      : { discovered: 0, incomplete: false, repaired: 0, skipped: 0 };
+  discovered += acceleration.discovered;
+  repaired += acceleration.repaired;
+  skipped += acceleration.skipped;
+
+  const { coveredCompleteSet, cursor } = walk;
+  // A tranche whose own fold did not converge within budget makes the sweep as
+  // a whole incomplete, exactly like an incomplete walk page — it must not
+  // license complete-set pruning, which requires every fold to have genuinely
+  // converged.
+  const anyFoldIncomplete = acceleration.incomplete || walk.anyFoldIncomplete;
+
+  const prunedComplete = coveredCompleteSet && !anyFoldIncomplete;
+  if (prunedComplete) {
+    repaired += await pruneCompleteSetOrphans();
   }
 
   const incomplete = !coveredCompleteSet || anyFoldIncomplete;
