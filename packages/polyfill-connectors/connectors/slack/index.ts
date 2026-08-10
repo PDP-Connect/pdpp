@@ -1880,6 +1880,24 @@ interface MessageCursorThresholds {
   sinceTs: string | null;
 }
 
+/**
+ * Parses Slack ts format ("seconds.microseconds") into numeric components.
+ * Returns [epochSeconds, microseconds] as integers, or throws if format invalid.
+ * Handles variable-width epochs (pre-2001: 9 digits, current: 10 digits).
+ */
+function parseSlackTs(ts: string): [number, number] {
+  const match = ts.match(/^(\d+)\.(\d{6})$/);
+  if (!match || !match[1] || !match[2]) {
+    throw new Error(`Invalid Slack ts format: ${ts} (expected "seconds.microseconds")`);
+  }
+  const epochSeconds = parseInt(match[1], 10);
+  const microseconds = parseInt(match[2], 10);
+  if (!Number.isFinite(epochSeconds) || !Number.isFinite(microseconds)) {
+    throw new Error(`Invalid Slack ts components: ${ts}`);
+  }
+  return [epochSeconds, microseconds];
+}
+
 export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { params: string[]; sql: string } {
   const channelThresholds = Object.entries(thresholds.channelLastTs)
     .filter(([channelId, ts]) => channelId.length > 0 && ts.length > 0)
@@ -1916,13 +1934,12 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // declarative claim "only collect from this point onward." If supplied, it is
   // composed with cursor predicates via AND: a row must pass both to be included.
   //
-  // Slack's ts format is stored as "seconds.microseconds" (6-digit fractional
-  // seconds). For comparison: lexical comparison on "NNN.MMMMMM" matches
-  // chronological order because seconds are left-aligned and microseconds are
-  // zero-padded. Numeric comparison of (epochSeconds, fractionalPart string)
-  // is equivalent and avoids reliance on archive format assumptions.
-  // A boundary of ISO "2026-08-09T22:26:25.500Z" becomes "1691595985.500000"
-  // and excludes earlier microseconds in the same second via >= lexical compare.
+  // Slack's ts format is "seconds.microseconds" where seconds is Unix epoch
+  // (variable-width: 9 digits pre-2001, 10 digits 2001-2286, 11+ digits later).
+  // To compare timestamps correctly across variable-width epochs, we use numeric
+  // comparison: extract CAST(SUBSTR(m.TS, 1, INSTR(m.TS, '.') - 1) AS INTEGER)
+  // for seconds, then compare numerically. If seconds match, compare microseconds
+  // (the 6-digit suffix). This is exact and handles all epoch widths correctly.
   const dedupJoin = channelThresholds.length > 0 ? "LEFT JOIN thresholds t ON t.channel_id = m.CHANNEL_ID" : "";
   let dedupWhere = "";
   if (channelThresholds.length > 0 && thresholds.legacyLastTs) {
@@ -1937,9 +1954,17 @@ export function buildMessageRowsQuery(thresholds: MessageCursorThresholds): { pa
   // Compose since boundary (if supplied) with cursor predicates via AND.
   // sinceTs is the production output of parseIsoInstantToSlackTs, which
   // guarantees "seconds.microseconds" format with 6-digit fractional seconds.
+  // Parse it into numeric components for exact comparison.
   if (thresholds.sinceTs !== null) {
-    const sincePredicate = "m.TS >= ?";
-    params.push(thresholds.sinceTs);
+    const [sinceSecs, sinceMicros] = parseSlackTs(thresholds.sinceTs);
+    // Numeric comparison: m.TS >= sinceTs means either:
+    //   (epochSecs > sinceSecs) OR (epochSecs == sinceSecs AND microsecs >= sinceMicros)
+    const sincePredicate = `(
+        CAST(SUBSTR(m.TS, 1, INSTR(m.TS, '.') - 1) AS INTEGER) > ? OR
+        (CAST(SUBSTR(m.TS, 1, INSTR(m.TS, '.') - 1) AS INTEGER) = ? AND
+         CAST(SUBSTR(m.TS, INSTR(m.TS, '.') + 1) AS INTEGER) >= ?)
+      )`;
+    params.push(String(sinceSecs), String(sinceSecs), String(sinceMicros));
     if (dedupWhere) {
       dedupWhere = dedupWhere + " AND " + sincePredicate;
     } else {
@@ -2065,8 +2090,11 @@ export function parseIsoInstantToSlackTs(instant: string): string {
 
 /**
  * Converts an ISO 8601 instant from collection_scope.since to Slack ts format.
- * Returns null if since is absent (no bound declared); throws a typed error if
+ * Returns null if since is absent (undefined/null); throws a typed error if
  * since is present but malformed (configuration error).
+ *
+ * Absent is ONLY: null, undefined, or field not present. Present whitespace-only
+ * or any other non-ISO string is a configuration error and throws.
  *
  * This enforces the distinction: absent → unbounded collection (null), present
  * invalid → fail closed (throw), preventing silent scope widening.
@@ -2076,8 +2104,11 @@ export function parseIsoInstantToSlackTs(instant: string): string {
  */
 function parseSinceTs(requested: CollectContext["requested"], stream: string): string | null {
   const since = requested.get(stream)?.time_range?.since;
-  if (typeof since !== "string" || !since.trim()) {
+  if (since === null || since === undefined) {
     return null; // Absent bound: unbounded collection.
+  }
+  if (typeof since !== "string") {
+    throw new Error(`Expected string for collection_scope.since, got ${typeof since}: ${String(since)}`);
   }
   // Present since: throw on any validation error (not silent null).
   return parseIsoInstantToSlackTs(since);

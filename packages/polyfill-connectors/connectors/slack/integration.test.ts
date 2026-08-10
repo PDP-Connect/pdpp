@@ -365,40 +365,46 @@ test("emitMessagesPass: priorTs=null — no incremental progress emit (full-run 
 
 test("buildMessageRowsQuery: since boundary composed with legacy cursor via AND", () => {
   // The since predicate is baked into the SQL WHERE clause via AND with cursor
-  // predicates. A row must satisfy BOTH to be included.
+  // predicates. A row must satisfy BOTH to be included. The since predicate uses
+  // numeric comparison on parsed epoch seconds and microseconds to handle
+  // variable-width epochs correctly.
   const thresholds = {
     channelLastTs: {},
     legacyLastTs: "1700000000.000000",
     sinceTs: "1700000200.500000", // Slack ts format: seconds.microseconds
   };
   const query = buildMessageRowsQuery(thresholds);
-  // The query should include both predicates:
-  // - m.TS > ? (from legacyLastTs)
-  // - m.TS >= ? (from sinceTs, lexical comparison)
+  // The query should include both predicates composed via AND:
+  // - m.TS > ? (from legacyLastTs, lexical for cursor)
+  // - numeric comparison on CAST(SUBSTR(...)) for sinceTs
   assert.match(query.sql, /m\.TS\s+>\s+/);
-  assert.match(query.sql, /m\.TS\s+>=\s+/);
+  assert.match(query.sql, /CAST.*SUBSTR.*AS INTEGER/); // numeric parsing
   assert.match(query.sql, /AND/);
-  // Params should include both thresholds
+  // Params should include legacy cursor, then epochSeconds and microseconds for since
   assert.ok(query.params.includes("1700000000.000000"), "has legacy cursor param");
-  assert.ok(query.params.includes("1700000200.500000"), "has since ts param");
+  assert.ok(query.params.includes("1700000200"), "has since epochSeconds param");
+  assert.ok(query.params.includes("500000"), "has since microseconds param");
 });
 
 test("buildMessageRowsQuery: since boundary alone (no cursor)", () => {
-  // When no cursor is present, only the since predicate applies.
+  // When no cursor is present, only the numeric since predicate applies.
   const thresholds = {
     channelLastTs: {},
     legacyLastTs: null,
     sinceTs: "1700000200.500000",
   };
   const query = buildMessageRowsQuery(thresholds);
-  assert.match(query.sql, /WHERE.*m\.TS\s+>=\s+/);
-  assert.ok(query.params.includes("1700000200.500000"), "has since ts param");
+  assert.match(query.sql, /WHERE[\s\S]*CAST[\s\S]*SUBSTR[\s\S]*AS INTEGER/); // numeric comparison
+  assert.ok(query.params.includes("1700000200"), "has since epochSeconds param");
+  assert.ok(query.params.includes("500000"), "has since microseconds param");
 });
 
-test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (same-second before/at/after)", async () => {
-  // Real SQLite execution test: verify the since predicate filters correctly in
-  // the generated SQL with actual before/at/after rows in deliberately
-  // non-chronological insertion order, composed with a legacy cursor predicate.
+test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (cross-width epochs)", async () => {
+  // Real SQLite execution test: verify numeric comparison handles variable-width
+  // epoch seconds correctly. Lexical comparison fails on cross-width rows:
+  //   "978307200.000000" (9 digits, 2001-01-01, pre-9999999999)
+  //   "1723248385.500000" (10 digits, 2024-08-09)
+  // Lexically: "978..." < "172..." (wrong), but numerically: 978M < 1723M (correct).
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE MESSAGE (
@@ -412,13 +418,14 @@ test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (same
       CHUNK_ID INTEGER NOT NULL
     );
   `);
-  // Insert rows in non-chronological order. All rows have same second (1723248385)
-  // but different microseconds. Boundary is "1723248385.500000".
+  // Insert rows covering pre-2001 (9-digit epoch), current (10-digit), and
+  // same-second sub-microsecond cases. Insert in scrambled order.
   const rows = [
-    // Insert before/at/after in scrambled order to prove no implicit ordering.
-    { ts: "1723248385.600000", expected: true }, // after boundary (inserted first)
-    { ts: "1723248385.400000", expected: false }, // before boundary (inserted second)
-    { ts: "1723248385.500000", expected: true }, // at boundary (inserted third)
+    { ts: "1723248385.500000", expected: true }, // 2024-08-09 at boundary (inserted first)
+    { ts: "978307200.123456", expected: false }, // 2001-01-01 pre-2001 9-digit (inserted second)
+    { ts: "1723248385.400000", expected: false }, // same second, before boundary (inserted third)
+    { ts: "978307300.000000", expected: false }, // 2001-01-01 later time, still 9-digit (inserted fourth)
+    { ts: "1723248385.600000", expected: true }, // 2024-08-09 after boundary (inserted fifth)
   ];
   rows.forEach((row, idx) => {
     db.prepare(`
@@ -427,22 +434,28 @@ test("buildMessageRowsQuery + SQLite execution: since boundary with cursor (same
     `).run("C0001", row.ts, `msg-${idx}`, 1);
   });
 
-  // Build query with legacy cursor + since predicate composed via AND.
+  // Build query with no cursor (first run) + numeric since predicate at 2024 time.
+  // Boundary is "1723248385.500000" (10-digit epoch). The numeric comparison must
+  // include only rows where: epochSeconds > 1723248385 OR
+  // (epochSeconds == 1723248385 AND microsecs >= 500000).
   const thresholds = {
     channelLastTs: {},
-    legacyLastTs: "1723248000.000000", // Cursor before all three rows
-    sinceTs: "1723248385.500000", // Since boundary at .5 seconds
+    legacyLastTs: null, // No cursor: full archive scan
+    sinceTs: "1723248385.500000", // Since boundary at .5 seconds in 2024
   };
   const query = buildMessageRowsQuery(thresholds);
   const stmt = db.prepare(query.sql);
   const results = stmt.all(...query.params) as Array<{ TS: string }>;
 
-  // Verify only at/after boundary are returned (lexical >= comparison).
+  // Verify only rows >= boundary are returned, regardless of epoch width.
+  // Pre-2001 rows (978...) must be excluded even though they sort before 172...
+  // lexically. The numeric predicate must include only rows where:
+  //   epochSeconds > 1723248385 OR (epochSeconds == 1723248385 AND microsecs >= 500000)
   const returnedTs = results.map((r) => r.TS).sort();
   assert.deepEqual(
     returnedTs,
     ["1723248385.500000", "1723248385.600000"],
-    "since boundary filters correctly: before excluded, at/after included"
+    "numeric comparison filters correctly across epoch widths: pre-2001 9-digit excluded, current 10-digit at/after included"
   );
 });
 
