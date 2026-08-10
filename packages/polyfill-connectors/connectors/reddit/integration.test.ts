@@ -489,7 +489,7 @@ test("collectStream: schema-invalid item not counted in covered, still emitted f
       title: "broken",
       permalink: "/r/test/comments/broken01/broken/",
       url: null,
-      created_utc: 0,  // Invalid: isoFromUnix(0) → null, schema rejects empty created_utc
+      created_utc: 0, // Invalid: isoFromUnix(0) → null, schema rejects empty created_utc
     },
   };
   const valid = makePost("t3_valid", 200);
@@ -521,10 +521,37 @@ test("collectStream: schema-invalid item not counted in covered, still emitted f
 /** Create a mock page that redirects evaluate calls to a scripted fetch */
 function createMockPageForFetch(fetch: RedditListingFetch) {
   return {
-    evaluate: async (fn: (args: unknown) => Promise<unknown>, args: unknown): Promise<unknown> => {
+    evaluate: (_fn: (args: unknown) => Promise<unknown>, args: unknown): Promise<unknown> => {
       const { path } = args as { path: string };
       return fetch(path);
     },
+  };
+}
+
+/** Create minimal BrowserCollectContext for oracle tests */
+function createMockBrowserContext(
+  fetch: RedditListingFetch,
+  harness: ReturnType<typeof makeRecordingEmit>,
+  requestedStreams: string[]
+) {
+  const requested = new Map(requestedStreams.map((s) => [s, { name: s }]));
+  return {
+    capture: null,
+    credentials: { REDDIT_USERNAME: "anon" },
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    emittedAt: EMITTED_AT,
+    page: createMockPageForFetch(fetch) as any,
+    progress: async () => undefined,
+    requested,
+    state: {},
+    context: {} as any,
+    assist: async () => undefined,
+    completeAssistance: async () => undefined,
+    detailGaps: new Map(),
+    requestDetailGapPage: async () => undefined,
+    scope: { streams: new Map() },
+    sendInteraction: async () => undefined,
   };
 }
 
@@ -534,21 +561,9 @@ test("collectAllStreams: zero-count stream emits DETAIL_COVERAGE with considered
     [`${USER_PATH}/submitted.json`]: [okResult(listing([], null))],
   });
 
-  await collectAllStreams({
-    capture: null,
-    credentials: { REDDIT_USERNAME: "anon" },
-    emit: harness.emit,
-    emitRecord: harness.emitRecord,
-    emittedAt: EMITTED_AT,
-    page: createMockPageForFetch(fetch) as any,
-    progress: async () => undefined,
-    requested: new Set(["submitted"]),
-    state: {},
-  });
+  await collectAllStreams(createMockBrowserContext(fetch, harness, ["submitted"]));
 
-  const coverageMsg = harness.protocolMessages.find(
-    (m) => m.type === "DETAIL_COVERAGE" && m.stream === "submitted"
-  );
+  const coverageMsg = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "submitted");
   assert.ok(coverageMsg, "DETAIL_COVERAGE must be emitted for empty stream");
   assert.ok(coverageMsg && coverageMsg.type === "DETAIL_COVERAGE");
   assert.equal(coverageMsg.considered, 0, "zero enumeration proves boundary was checked");
@@ -567,31 +582,17 @@ test("collectAllStreams: one valid + one invalid child emits DETAIL_COVERAGE wit
       parent_id: "t3_post01",
       permalink: "/r/test/comments/post01/x/broken/",
       score: 0,
-      created_utc: 0,  // Invalid
+      created_utc: 0, // Invalid
     },
   };
   const valid = makeComment("t1_valid", 500);
   const { fetch } = makeScriptedFetch({
-    [`${USER_PATH}/comments.json`]: [
-      okResult(listing([broken, valid])),
-    ],
+    [`${USER_PATH}/comments.json`]: [okResult(listing([broken, valid]))],
   });
 
-  await collectAllStreams({
-    capture: null,
-    credentials: { REDDIT_USERNAME: "anon" },
-    emit: harness.emit,
-    emitRecord: harness.emitRecord,
-    emittedAt: EMITTED_AT,
-    page: createMockPageForFetch(fetch) as any,
-    progress: async () => undefined,
-    requested: new Set(["comments"]),
-    state: {},
-  });
+  await collectAllStreams(createMockBrowserContext(fetch, harness, ["comments"]));
 
-  const coverageMsg = harness.protocolMessages.find(
-    (m) => m.type === "DETAIL_COVERAGE" && m.stream === "comments"
-  );
+  const coverageMsg = harness.protocolMessages.find((m) => m.type === "DETAIL_COVERAGE" && m.stream === "comments");
   assert.ok(coverageMsg && coverageMsg.type === "DETAIL_COVERAGE");
   assert.equal(coverageMsg.considered, 2, "both enumerated items");
   assert.equal(coverageMsg.covered, 1, "only schema-valid item counts as covered");

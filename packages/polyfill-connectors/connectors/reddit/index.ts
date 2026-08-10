@@ -50,8 +50,8 @@
 import type { Page } from "playwright";
 import { ensureRedditSession } from "../../src/auto-login/reddit.ts";
 import {
-  buildDetailCoverageMessage,
   type BrowserCollectContext,
+  buildDetailCoverageMessage,
   type EmittedMessage,
   politeDelay,
   type RecordData,
@@ -348,14 +348,16 @@ export async function collectAllStreams(ctx: BrowserCollectContext): Promise<voi
       progress,
       capture,
     });
-    await emit(buildDetailCoverageMessage({
-      stream: stream.name,
-      stateStream: stream.name,
-      requiredKeys: [],
-      hydratedKeys: [],
-      considered: result.considered,
-      covered: result.covered,
-    }));
+    await emit(
+      buildDetailCoverageMessage({
+        stream: stream.name,
+        stateStream: stream.name,
+        requiredKeys: [],
+        hydratedKeys: [],
+        considered: result.considered,
+        covered: result.covered,
+      })
+    );
   }
 }
 
